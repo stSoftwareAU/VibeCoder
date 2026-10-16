@@ -3457,10 +3457,11 @@ Deno.test("processMergeConflict - a recovery turn that rewrites the false claim 
 });
 
 Deno.test("processMergeConflict - a recovery turn that leaves the false claim refuses the push and restores the head (Issue #3617)", async () => {
+  const lines: string[] = [];
   const { captured, result } = await runProcessor(
     makeInput(),
     makeGitScript({ mergedDiff: DIFF_WITHOUT_DOCS }),
-    undefined,
+    { logger: makeRecordingLogger(lines) },
     { workDirFiles: { [CLAIMING_SUMMARY_PATH]: CLAIMING_SUMMARY } },
   );
 
@@ -3478,6 +3479,10 @@ Deno.test("processMergeConflict - a recovery turn that leaves the false claim re
     captured.comments.find((c) => c.includes(CONFLICT_FAILED_MARKER)) ?? "";
   assertStringIncludes(failed, "docs/x.md");
   assertStringIncludes(failed, "after one recovery turn");
+  assert(
+    !lines.includes("Merge could not be reset after the summary-claim gate"),
+    "a successful reset was logged as a failure",
+  );
 });
 
 Deno.test("processMergeConflict - a recovery turn the provider refuses withdraws the attempt with the provider cause (Issue #3617)", async () => {
@@ -3509,6 +3514,7 @@ Deno.test("processMergeConflict - a recovery turn the provider refuses withdraws
 });
 
 Deno.test("processMergeConflict - a reset that fails after a refused push names the cause in the failure (Issue #3617)", async () => {
+  const lines: string[] = [];
   const { captured, result } = await runProcessor(
     makeInput(),
     makeGitScript({
@@ -3516,7 +3522,7 @@ Deno.test("processMergeConflict - a reset that fails after a refused push names 
       resetMergeCode: 128,
       resetMergeStderr: "fatal: Could not reset index file to revision '1111'.",
     }),
-    undefined,
+    { logger: makeRecordingLogger(lines) },
     { workDirFiles: { [CLAIMING_SUMMARY_PATH]: CLAIMING_SUMMARY } },
   );
 
@@ -3526,6 +3532,10 @@ Deno.test("processMergeConflict - a reset that fails after a refused push names 
     captured.comments.find((c) => c.includes(CONFLICT_FAILED_MARKER)) ?? "";
   assertStringIncludes(failed, "could NOT be reset");
   assertStringIncludes(failed, "Could not reset index file");
+  assert(
+    lines.includes("Merge could not be reset after the summary-claim gate"),
+    "the failed reset was not logged",
+  );
 });
 
 Deno.test("processMergeConflict - a summary whose claims are all present proceeds with no recovery turn (Issue #3617)", async () => {

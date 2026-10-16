@@ -1,0 +1,240 @@
+{
+ "version": 1,
+ "branchOutcomes": {
+  "noneAdded": false,
+  "entries": [
+   {
+    "path": "worker/deno/lib/docs_sweep_gate.ts",
+    "line": 370,
+    "outcome": "known changed-files list: an updated: path the diff lacks is blocked",
+    "test": "worker/deno/tests/docs_sweep_gate_test.ts",
+    "testName": "validateDocsSweep - an updated: path the base branch absorbed is named as unbacked",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/docs_sweep_gate.ts",
+    "line": 370,
+    "outcome": "null changed-files list: no updated: problem is raised",
+    "test": "worker/deno/tests/docs_sweep_gate_test.ts",
+    "testName": "validateDocsSweep - a null changed-files list raises no updated: problem",
+    "flipWentRed": "dropping the null check (and passing an empty list) turned it red"
+   },
+   {
+    "path": "worker/deno/lib/docs_sweep_gate.ts",
+    "line": 377,
+    "outcome": "one unbacked path reads \"it\", several read \"them\"",
+    "test": "worker/deno/tests/docs_sweep_gate_test.ts",
+    "testName": "validateDocsSweep - one unbacked updated: path reads \"it\", two read \"them\" (Issue #3617)",
+    "flipWentRed": "forcing the verb to \"them\" turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 184,
+    "outcome": "an implausible base ref is not-checked without running git",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "checkMergedSummaryClaims - a base ref starting with '-' is refused without running git (Issue #3617)",
+    "flipWentRed": "forcing the shape guard false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 202,
+    "outcome": "a failing git diff is not-checked with git's cause",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "checkMergedSummaryClaims - a base ref git cannot resolve is not-checked, with git's cause (Issue #3617)",
+    "flipWentRed": "disabling the guard turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 209,
+    "outcome": "a failing git ls-files is not-checked with git's cause",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "checkMergedSummaryClaims - a failing git ls-files is not-checked, with git's cause (Issue #3617)",
+    "flipWentRed": "disabling the guard turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 218,
+    "outcome": "more summaries than the cap is not-checked",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "checkMergedSummaryClaims - more than the cap of summaries is not-checked (Issue #3617)",
+    "flipWentRed": "forcing the cap check false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 233,
+    "outcome": "a summary deleted on disk is skipped",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "checkMergedSummaryClaims - a summary deleted on disk is skipped (Issue #3617)",
+    "flipWentRed": "removing the NotFound skip turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 239,
+    "outcome": "a summary over the character cap is not-checked",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "checkMergedSummaryClaims - a summary over the character cap is not-checked (Issue #3617)",
+    "flipWentRed": "disabling the size check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 248,
+    "outcome": "no summary in the changed files is no-summary",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "checkMergedSummaryClaims - no summary in the changed files is no-summary (Issue #3617)",
+    "flipWentRed": "deleting the early return turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 256,
+    "outcome": "a claim the merged diff lacks is a false claim; a backed one is not",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "checkMergedSummaryClaims - a claim the merged base already carries is false, the backed one is not (Issue #3617)",
+    "flipWentRed": "forcing the backed check true turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 291,
+    "outcome": "more than ten unbacked claims are counted, not named",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "describeUnbackedClaims - names at most ten claims, then counts the rest (Issue #3617)",
+    "flipWentRed": "forcing the cap check false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 412,
+    "outcome": "no summary proceeds with no note",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "gateMergedSummaryClaims - no summary proceeds with no note (Issue #3617)",
+    "flipWentRed": "returning a non-empty note turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 420,
+    "outcome": "a first check that could not run proceeds with the reason noted",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "gateMergedSummaryClaims - a check that could not run proceeds with the reason noted (Issue #3617)",
+    "flipWentRed": "refusing instead turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 450,
+    "outcome": "a recovery turn that could not run refuses with its error",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "gateMergedSummaryClaims - a recovery turn that could not run refuses with its error (Issue #3617)",
+    "flipWentRed": "disabling the guard turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 457,
+    "outcome": "a recovery turn the worker ended cuts the attempt short",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "gateMergedSummaryClaims - a recovery turn the worker ended cuts the attempt short (Issue #3617)",
+    "flipWentRed": "removing the terminated check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 458,
+    "outcome": "a recovery turn the provider refused cuts short with the cause",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "gateMergedSummaryClaims - a recovery turn the provider refused cuts the attempt short with the cause (Issue #3617)",
+    "flipWentRed": "forcing the check false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 466,
+    "outcome": "a claim still false after recovery refuses",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "gateMergedSummaryClaims - a claim still false after the recovery turn refuses (Issue #3617)",
+    "flipWentRed": "forcing the check false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_summary_claim_check.ts",
+    "line": 475,
+    "outcome": "a re-check that cannot run after recovery refuses (fail closed)",
+    "test": "worker/deno/tests/merge_summary_claim_check_test.ts",
+    "testName": "gateMergedSummaryClaims - a claim that cannot be checked again after the recovery turn refuses (Issue #3617)",
+    "flipWentRed": "forcing the check false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_merge_conflict_processor.ts",
+    "line": 523,
+    "outcome": "a failed git reset --merge names its cause in the failure",
+    "test": "worker/deno/tests/pr_merge_conflict_processor_test.ts",
+    "testName": "processMergeConflict - a reset that fails after a refused push names the cause in the failure (Issue #3617)",
+    "flipWentRed": "forcing restoreBeforeMerge to return \"\" turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_merge_conflict_processor.ts",
+    "line": 724,
+    "outcome": "an empty summary-claim note adds no section; a note is appended",
+    "test": "worker/deno/tests/pr_merge_conflict_processor_test.ts",
+    "testName": "processMergeConflict - a recovery turn that rewrites the false claim pushes with the note (Issue #3617)",
+    "flipWentRed": "always returning [] turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_merge_conflict_processor.ts",
+    "line": 1846,
+    "outcome": "a non-proceed gate refuses the push and restores the head",
+    "test": "worker/deno/tests/pr_merge_conflict_processor_test.ts",
+    "testName": "processMergeConflict - a recovery turn that leaves the false claim refuses the push and restores the head (Issue #3617)",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_merge_conflict_processor.ts",
+    "line": 1848,
+    "outcome": "a failed reset is logged at error; a successful one is not",
+    "test": "worker/deno/tests/pr_merge_conflict_processor_test.ts",
+    "testName": "processMergeConflict - a reset that fails after a refused push names the cause in the failure (Issue #3617)",
+    "flipWentRed": "forcing the log condition false turned it red; forcing it true turned the restores-the-head test red"
+   },
+   {
+    "path": "worker/deno/lib/pr_merge_conflict_processor.ts",
+    "line": 1856,
+    "outcome": "a cut-short gate withdraws the attempt uncharged",
+    "test": "worker/deno/tests/pr_merge_conflict_processor_test.ts",
+    "testName": "processMergeConflict - a recovery turn the worker ends withdraws the attempt, not spent (Issue #3617)",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_merge_conflict_processor.ts",
+    "line": 1864,
+    "outcome": "a provider-refused recovery turn withdraws with the provider cause",
+    "test": "worker/deno/tests/pr_merge_conflict_processor_test.ts",
+    "testName": "processMergeConflict - a recovery turn the provider refuses withdraws the attempt with the provider cause (Issue #3617)",
+    "flipWentRed": "collapsing the ternary to the run-end cause turned it red"
+   },
+   {
+    "path": "worker/deno/lib/merge_conflict_agent.ts",
+    "line": 149,
+    "outcome": "a prompt override replaces the merge-conflict template",
+    "test": "worker/deno/tests/pr_merge_conflict_processor_test.ts",
+    "testName": "processMergeConflict - a recovery turn that rewrites the false claim pushes with the note (Issue #3617)",
+    "flipWentRed": "forcing the override check false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/summary_claimed_paths.ts",
+    "line": 185,
+    "outcome": "an extension off the allowlist is not a claim",
+    "test": "worker/deno/tests/summary_claimed_paths_test.ts",
+    "testName": "normaliseClaimedPath - rejects a dotted config key",
+    "flipWentRed": "removing the allowlist check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/summary_claimed_paths.ts",
+    "line": 267,
+    "outcome": "a semicolon ends the updated: list",
+    "test": "worker/deno/tests/summary_claimed_paths_test.ts",
+    "testName": "extractUpdatedPaths - a semicolon ends the list",
+    "flipWentRed": "removing the break turned it red"
+   },
+   {
+    "path": "worker/deno/lib/summary_claimed_paths.ts",
+    "line": 270,
+    "outcome": "a sentence-ending period ends the updated: list",
+    "test": "worker/deno/tests/summary_claimed_paths_test.ts",
+    "testName": "extractUpdatedPaths - evidence after a semicolon-and-period is not a claim",
+    "flipWentRed": "forcing the condition false turned it red"
+   }
+  ]
+ }
+}
