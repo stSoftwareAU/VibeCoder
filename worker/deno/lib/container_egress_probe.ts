@@ -530,7 +530,8 @@ export async function probeContainerEgress(
 }
 
 /** Keep a runtime's diagnostic output to one short, single-line reason. */
-function firstLine(text: string, limit = 200): string {
+/** The first non-empty line of a runtime's output, clipped to `limit` characters. */
+export function firstLine(text: string, limit = 200): string {
   const line = (text ?? "").split("\n").map((part) => part.trim()).find((
     part,
   ) => part !== "");

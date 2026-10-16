@@ -25,6 +25,7 @@ import {
   type PrePrVerifierDeps,
   runInDisposableCheckout,
 } from "./pre_pr_verifier.ts";
+import { firstLine } from "./container_egress_probe.ts";
 import {
   buildBoundaryIntegrityInstruction,
   fenceUntrustedIssueText,
@@ -178,13 +179,11 @@ function notChecked(
     : { verification: { kind: "not_checked", reason } };
 }
 
-/** The first non-empty line of git's stderr, clipped for a reason. */
-function firstStderrLine(stderr: string | undefined): string {
-  const line =
-    (stderr ?? "").split("\n").map((l) => l.trim()).find((l) => l !== "") ?? "";
-  return line.length > MAX_STDERR_CHARS
-    ? `${line.slice(0, MAX_STDERR_CHARS - 1)}…`
-    : line;
+/** git's cause for a failed lookup: its first stderr line, or that git did not run. */
+function gitCause(result: { stderr: string } | null): string {
+  if (result === null) return ": git could not be spawned";
+  const detail = firstLine(result.stderr ?? "", MAX_STDERR_CHARS);
+  return detail ? `: ${detail}` : "";
 }
 
 /**
@@ -210,7 +209,7 @@ async function verifyInCheckout(
     checkout.path,
   );
   if (!diff || diff.code !== 0) {
-    const detail = firstStderrLine(diff?.stderr);
+    const detail = firstLine(diff?.stderr ?? "", MAX_STDERR_CHARS);
     return notChecked(
       `git diff failed${detail ? `: ${detail}` : ""}`,
     );
@@ -286,7 +285,7 @@ async function verifyInCheckout(
       checkout.path,
     );
     if (!listed || listed.code !== 0) {
-      throw new Error(`git ls-tree failed for ${path}`);
+      throw new Error(`git ls-tree failed for ${path}${gitCause(listed)}`);
     }
     if (listed.stdout.trim() === "") return null;
     const firstLine = listed.stdout.split("\n")[0] ?? "";
@@ -304,7 +303,7 @@ async function verifyInCheckout(
       checkout.path,
     );
     if (!blob || blob.code !== 0) {
-      throw new Error(`git cat-file failed for ${path}`);
+      throw new Error(`git cat-file failed for ${path}${gitCause(blob)}`);
     }
     const content = blob.stdout;
     return content === ""

@@ -135,7 +135,10 @@ branch diff, `<merge-base>...HEAD`. `docs/archive/pr-summaries/` is excluded fro
 the diff and removed from the disposable checkout. It never sees the PR summary
 or the implementation transcript. It reads the head with Read, Grep and Glob.
 Bash, Edit, Write, MultiEdit, NotebookEdit, Agent/Task, WebFetch and WebSearch
-are denied, so the pass cannot change the checkout or fetch from the web.
+are denied, so the pass cannot run commands or edit the checkout through them.
+The deny-list is not a network sandbox: an MCP tool attached to the run is not
+on it. The issue checkout is compared before and after the pass, so a change
+surfaces as not checked.
 
 It answers VulnHunter's four gates, each `pass`, `fail` or `skipped`, with a
 `path:line` citation: `sink_mitigated`, `reachability`, `class_eliminated` and

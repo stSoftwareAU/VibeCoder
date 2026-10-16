@@ -499,3 +499,31 @@ Deno.test("security-fix verifier: an invalid issue number is not checked", async
     await f.cleanup();
   }
 });
+
+Deno.test("security-fix verifier: a failed git lookup at the head names git's cause", async () => {
+  const f = await makeRepo();
+  try {
+    const model = fakeAsk({ output: reply() });
+    const deps = makeDeps(model.ask, []);
+    const runGit: SecurityFixVerifierDeps["runGit"] = (args, cwd) =>
+      args.includes("ls-tree")
+        ? Promise.resolve({
+          code: 128,
+          stdout: "",
+          stderr: "fatal: not a tree object\n",
+        })
+        : defaultSecurityFixVerifierDeps.runGit(args, cwd);
+    const result = await runSecurityFixVerifier(inputFor(f), {
+      ...deps,
+      runGit,
+    });
+    assertEquals(result.verification.kind, "not_checked");
+    if (result.verification.kind !== "not_checked") return;
+    assertStringIncludes(
+      result.verification.reason,
+      "fatal: not a tree object",
+    );
+  } finally {
+    await f.cleanup();
+  }
+});

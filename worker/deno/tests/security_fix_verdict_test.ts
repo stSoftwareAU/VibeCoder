@@ -212,6 +212,7 @@ Deno.test("parseCitation - tolerates surrounding backticks, whitespace and a lea
 Deno.test("parseCitation - rejects a path that is absolute, drive-lettered or backslashed", () => {
   assertEquals(parseCitation("/etc/passwd:1"), null);
   assertEquals(parseCitation("-rf:1"), null);
+  // No separate drive-prefix rule: the citation pattern refuses `C:/x.ts:1`.
   assertEquals(parseCitation("C:/x.ts:1"), null);
   assertEquals(parseCitation("src\\a.ts:1"), null);
 });

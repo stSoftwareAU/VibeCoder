@@ -64,7 +64,8 @@ function show(value: unknown): string {
 }
 
 /** Whether a string contains a NUL byte or a C0/C1 control character. */
-function hasControlCharacters(value: string): boolean {
+/** Whether a string contains a NUL byte or a C0/C1 control character. */
+export function hasControlCharacters(value: string): boolean {
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
     if (code <= 0x1f || code === 0x7f || (code >= 0x80 && code <= 0x9f)) {

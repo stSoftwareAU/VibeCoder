@@ -17,7 +17,9 @@
  * {@link HeadLineCounter}. Australian English throughout.
  */
 
+import { hasControlCharacters } from "./custom_label_prompts_config.ts";
 import { codeFenceFor, scrubUntrustedText } from "./prompt_delimiter.ts";
+import { isPlainObject } from "./codegraph_context_config.ts";
 
 /** The four gates the independent verifier answers, in prompt order. */
 export const SECURITY_FIX_VERIFIER_GATES = [
@@ -83,27 +85,15 @@ export const MAX_GATE_RATIONALE_CHARS = 500;
 
 const GATE_STATUSES: readonly string[] = ["pass", "fail", "skipped"];
 
-/** `path:line` or `path:start-end`; bounded so untrusted input cannot backtrack. */
+/**
+ * `path:line` or `path:start-end`; bounded so untrusted input cannot backtrack.
+ * The path group excludes `:`, so this pattern also refuses drive-letter paths.
+ */
 const CITATION_PATTERN =
   /^([^\s:][^\n:]{0,299}):([1-9]\d{0,6})(?:-[1-9]\d{0,6})?$/;
 
-/** A Windows drive prefix such as `C:`. */
-const DRIVE_PREFIX = /^[A-Za-z]:/;
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isGateStatus(value: string): value is SecurityFixGateStatus {
   return GATE_STATUSES.includes(value);
-}
-
-function hasControlCharacter(text: string): boolean {
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) return true;
-  }
-  return false;
 }
 
 function parseGateAnswer(
@@ -184,8 +174,8 @@ export function parseCitation(raw: string): SecurityFixCitation | null {
   if (!match) return null;
   const path = match[1] ?? "";
   if (
-    path.startsWith("/") || path.startsWith("-") || DRIVE_PREFIX.test(path) ||
-    path.includes("\\") || hasControlCharacter(path) ||
+    path.startsWith("/") || path.startsWith("-") ||
+    path.includes("\\") || hasControlCharacters(path) ||
     path.split("/").some((segment) =>
       segment === "" || segment === "." || segment === ".."
     )
