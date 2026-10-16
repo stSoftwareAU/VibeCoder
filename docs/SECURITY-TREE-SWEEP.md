@@ -190,9 +190,11 @@ Rules the sweep enforces:
   window, so a small edit above the site does not orphan the entry; a moved
   finding does, and shows up as **stale** plus a NEW finding — re-anchor it.
 - A `falsePositives` entry needs a `line` or a `snippet` (the normalised
-  source line: whitespace collapsed and trimmed). A `snippet` is matched
-  instead of `line` when present. An entry with neither would suppress every
-  finding of the rule in the file, so it is a baseline error.
+  source line: whitespace collapsed and trimmed). The snippet is compared only
+  when both the entry and the finding carry one; otherwise the `line` check
+  applies. A snippet-only entry never matches a finding that has no snippet,
+  so it fails closed. An entry with neither would suppress every finding of
+  the rule in the file, so it is a baseline error.
 - `evidence` is mandatory on a `falsePositives` entry: one or more
   repository-relative `path:line` citations of the defence, type constraint or
   non-attacker origin that eliminates the finding. Each path must resolve to a

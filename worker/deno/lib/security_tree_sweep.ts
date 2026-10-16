@@ -1426,6 +1426,15 @@ function trackingIssue(cluster: SweepCluster): number | null {
   return null;
 }
 
+/** True when a snippet-only entry meets a finding with no snippet: it must not match (Issue #3658). */
+function snippetOnlyUnanchored(
+  entry: SweepBaselineEntry,
+  cluster: SweepCluster,
+): boolean {
+  return entry.snippet !== undefined && entry.line === undefined &&
+    cluster.snippet === undefined;
+}
+
 /**
  * Classify each cluster against the baseline: `false-positive`, `accepted`,
  * `tracked` (mirrors an open `security` issue — Issue #1518) or `new`. Also
@@ -1445,7 +1454,7 @@ export function classifyClusters(
   const usedAccepted = new Set<number>();
   const rows: SweepRow[] = clusters.map((cluster) => {
     const fpIndex = baseline.falsePositives.findIndex((e) =>
-      entryMatches(e, cluster)
+      entryMatches(e, cluster) && !snippetOnlyUnanchored(e, cluster)
     );
     if (fpIndex >= 0) {
       usedFp.add(fpIndex);

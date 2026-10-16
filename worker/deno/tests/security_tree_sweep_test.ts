@@ -1815,6 +1815,47 @@ Deno.test("falsePositives - an entry with neither a line nor a snippet is refuse
   assertEquals(lineOnly.baseline.falsePositives.length, 1);
 });
 
+Deno.test("falsePositives - a snippet-only entry never suppresses a finding with no snippet (Issue #3658)", async () => {
+  // Without a line, entryMatches compares snippets only when BOTH sides carry
+  // one. A cluster with no snippet (unreadable or past EOF) used to fall
+  // through to the line check, which passes for an entry with no line.
+  const clusters = await dedupeFindings(parseSemgrepJson(SEMGREP_JSON));
+  const target = clusters.find((c) => c.path.endsWith("files.ts"));
+  assert(target);
+  assertEquals(target.snippet, undefined, "the fixture cluster has no snippet");
+  const snippetOnly = {
+    path: target.path,
+    rule: "path-traversal",
+    snippet: "const urlPattern = /https:/g;",
+    reason: "Snippet-only anchor, no line.",
+    evidence: ["worker/lib/guard.ts:3"],
+  };
+  const { baseline, errors } = parseSweepBaseline(
+    JSON.stringify({ falsePositives: [snippetOnly], accepted: [] }),
+    FIXTURE_TREE,
+  );
+  assertEquals(errors, []);
+  assertEquals(baseline.falsePositives.length, 1);
+  const unmatched = classifyClusters(clusters, baseline);
+  assertEquals(
+    unmatched.rows.find((r) => r.path === target.path)?.status,
+    "new",
+    "a snippet-only entry must fail closed against a finding with no snippet",
+  );
+
+  // Positive control: the same entry suppresses the finding once the
+  // finding's line reads back the same fingerprint.
+  const withSnippet = attachClusterSnippets(
+    clusters,
+    () => "const urlPattern = /https:/g;",
+  );
+  const matched = classifyClusters(withSnippet, baseline);
+  assertEquals(
+    matched.rows.find((r) => r.path === target.path)?.status,
+    "false-positive",
+  );
+});
+
 Deno.test("accepted - an entry needs no evidence and no anchor (Issue #3658)", () => {
   const { baseline, errors } = parseSweepBaseline(
     JSON.stringify({
