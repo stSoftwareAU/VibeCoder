@@ -47,6 +47,10 @@ import {
   createMergeConflictReplyReader,
   runMergeConflictAgent,
 } from "./merge_conflict_agent.ts";
+import {
+  checkMergedSummaryClaims,
+  gateMergedSummaryClaims,
+} from "./merge_summary_claim_check.ts";
 import { isMilestoneHead } from "./gated_head_guard.ts";
 import {
   type ConflictTakeoverDeps,
@@ -475,6 +479,50 @@ async function abortMerge(run: GitRunner, cwd: string): Promise<void> {
   await git(run, ["merge", "--abort"], cwd);
 }
 
+/**
+ * Put the local clone back at the pre-merge head when the summary-claim gate
+ * refuses or cuts short the merge (Issue #3617).
+ *
+ * Why a reset is needed: a clean merge is already committed locally. Left in
+ * place, the next pass would find the base already an ancestor of HEAD and
+ * take the stale-verdict ladder, whose nudge push would publish the merge with
+ * the false summary.
+ *
+ * What it discards: the merge commit this pass made (still in the reflog, and
+ * reproducible from `origin/<base>` and `headSha`) and the staged resolution
+ * or recovery edits.
+ *
+ * What it keeps: every commit up to `headSha`, untracked files, and — because
+ * this is `--merge` and not `--hard` — unstaged edits in files the merge did
+ * not touch.
+ *
+ * `git merge --abort` runs first and its exit is ignored: no merge may be in
+ * progress after a clean merge commit, so there is nothing to abort then.
+ *
+ * @param run - The git runner
+ * @param cwd - The clone the merge ran in
+ * @param headSha - The head the merge started from
+ * @returns `""` when the clone was reset; otherwise the text to append to the
+ *   failure detail, naming the reset that did not happen
+ */
+async function restoreBeforeMerge(
+  run: GitRunner,
+  cwd: string,
+  headSha: string,
+): Promise<string> {
+  await git(run, ["merge", "--abort"], cwd);
+  const reset = await git(
+    run,
+    ["reset", "--merge", "--end-of-options", headSha],
+    cwd,
+  );
+  if (reset.code === 0) return "";
+  const cause = reset.stderr.split("\n").map((line) => line.trim()).find((
+    line,
+  ) => line !== "") ?? "git reported no output";
+  return ` — and the local merge could NOT be reset to ${headSha}: ${cause}`;
+}
+
 // ---------------------------------------------------------------------------
 // Comment helpers
 // ---------------------------------------------------------------------------
@@ -631,6 +679,10 @@ export function buildRuleResolutionSection(
  * That flag replaced a refusal: aborting such a merge cost the attempt and
  * left the PR conflicting, which helped nobody.
  *
+ * The summary-claim note (Issue #3617) says what the PR summary was checked
+ * against before the push, and what the recovery turn did to it when it
+ * claimed changes the merge had absorbed. It sits above the stage timings.
+ *
  * The stage timings ride at the bottom (Issue #2308), so the twenty minutes
  * an attempt took are accounted for on the attempt's own conclusion.
  */
@@ -642,6 +694,7 @@ export function buildResolvedComment(
   ruleResolved: readonly ResolvedConflictFile[] = [],
   issueContext?: ConflictIssueContext | null,
   timings?: string,
+  summaryClaimNote?: string,
 ): string {
   const body = detail && detail.trim().length > 0
     ? detail.trim()
@@ -654,8 +707,20 @@ export function buildResolvedComment(
     body,
     ...buildIntentOverrideSection(parseIntentOverrides(detail), issueContext),
     ...buildRuleResolutionSection(ruleResolved, baseBranch, branchName),
+    ...buildSummaryClaimSection(summaryClaimNote),
     ...buildStageTimingSection(timings),
   ].join("\n");
+}
+
+/**
+ * The summary-claim note the resolved comment carries (Issue #3617).
+ *
+ * @param note - The rendered note, or undefined when there is none
+ * @returns The lines to append, or none at all
+ */
+function buildSummaryClaimSection(note?: string): string[] {
+  if (!note || note.trim().length === 0) return [];
+  return ["", note.trim()];
 }
 
 /**
@@ -1737,8 +1802,83 @@ async function resolveConflict(
     }
   }
 
+  // Issue #3617: the PR summary must not claim changes the merged diff no
+  // longer carries. Checked here, after the merge is resolved and before the
+  // push, so a false summary never reaches the PR body. A clean merge with no
+  // agent run is checked too.
+  const summaryGate = await gateMergedSummaryClaims({
+    repo,
+    prNumber,
+    baseBranch,
+    check: () =>
+      checkMergedSummaryClaims({
+        workDir,
+        baseRef: `origin/${baseBranch}`,
+        runGit: (args) => git(run, args, workDir),
+      }),
+    recover: async (prompt) => {
+      timer.start("agent");
+      const outcome = await runMergeConflictAgent({
+        repo,
+        target: { kind: "pr", prNumber },
+        baseBranch,
+        conflictedFiles: [],
+        issueContext: null,
+        workDir,
+        promptsDir: processorDeps.promptsDir,
+        customInstructions: processorDeps.customInstructions,
+        timeouts: {
+          claudeTimeout: processorDeps.claudeTimeout,
+          claudeNoOutputTimeout: processorDeps.claudeNoOutputTimeout,
+          maxRateLimitRetries: processorDeps.maxRateLimitRetries,
+        },
+        logger,
+        runAgent: deps.claude.runClaudeWithRetry,
+        promptOverride: { prompt },
+      });
+      timer.stop();
+      return outcome;
+    },
+    logger,
+  });
+  if (summaryGate.kind !== "proceed") {
+    const resetNote = await restoreBeforeMerge(run, workDir, headBeforeMerge);
+    if (resetNote !== "") {
+      logger.error("Merge could not be reset after the summary-claim gate", {
+        repo,
+        prNumber,
+        headBeforeMerge,
+        detail: resetNote,
+      });
+    }
+    if (summaryGate.kind === "cut-short") {
+      return await withdrawCutShortAttempt(
+        input,
+        processorDeps,
+        attemptCommentId,
+        conflictedFiles,
+        attemptNumber,
+        timer,
+        summaryGate.providerUnavailable === undefined
+          ? CUT_SHORT_BY_RUN_END
+          : cutShortByProvider(summaryGate.providerUnavailable),
+      );
+    }
+    return await failAttempt(
+      input,
+      processorDeps,
+      conflictedFiles,
+      summaryGate.detail + resetNote,
+      attemptNumber,
+      timer,
+      headBeforeMerge,
+    );
+  }
+  const summaryClaimNote = summaryGate.note;
+
   // Commit whatever the agent left staged and push. No force: the merge
   // commit fast-forwards the remote branch, so every PR commit survives.
+  // The summary-claim gate above has already run (Issue #3617).
   const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo);
   timer.start("push");
   const finalise = await deps.git.commitAndPushPending(
@@ -1867,6 +2007,7 @@ async function resolveConflict(
         ruleResolved,
         issueContext,
         recordStageTimings(input, processorDeps, timer),
+        summaryClaimNote,
       ),
     );
   } catch (err) {

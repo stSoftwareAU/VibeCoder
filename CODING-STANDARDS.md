@@ -1744,7 +1744,10 @@ for every PR summary — containing:
    [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)). The
    worker refuses to raise a PR whose diff changes code with no such line, or
    whose line has no real `section:` or `siblings:` part. It re-runs the quoted
-   sibling terms as it re-runs the grep terms.
+   sibling terms as it re-runs the grep terms. When the gate applies and the
+   changed-file list is known, each path listed after `updated:` must also be
+   in the PR's own diff, and a path the diff does not change is refused (Issue
+   #3617).
    Re-run the grep on the final head and list each hit you leave in place as
    `file:line — still true because …`, so the worker and the reviewer can
    check it: the worker re-runs the line's quoted terms over the head's docs

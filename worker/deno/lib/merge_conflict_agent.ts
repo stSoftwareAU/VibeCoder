@@ -84,6 +84,12 @@ export interface MergeConflictAgentRequest {
   repair?: MergeConflictRepairContext;
   /** The agent runner — `deps.claude.runClaudeWithRetry` in production. */
   runAgent: typeof runClaudeWithRetry;
+  /**
+   * A prompt built by the caller instead of the merge-conflict template — the
+   * summary-claim recovery turn (Issue #3617). The run bounds and outcome
+   * classification are unchanged.
+   */
+  promptOverride?: { prompt: string };
 }
 
 /**
@@ -137,37 +143,48 @@ export async function runMergeConflictAgent(
   const maxRetries = request.timeouts?.maxRateLimitRetries ??
     DEFAULT_CONFLICT_AGENT_RATE_LIMIT_RETRIES;
 
-  // `workDir` already is the checkout, so the repo context is read directly —
-  // appending the repo name looked one level too deep and injected nothing
-  // (Issue #1673).
-  const repoContextContent = await loadRepoContextContent(workDir, logger);
+  // Issue #3617: the summary-claim recovery turn brings its own prompt and no
+  // system prompt. Every other run is built from the merge-conflict template.
+  let prompt: { prompt: string; systemPrompt?: string };
+  if (request.promptOverride) {
+    prompt = { prompt: request.promptOverride.prompt };
+  } else {
+    // `workDir` already is the checkout, so the repo context is read directly —
+    // appending the repo name looked one level too deep and injected nothing
+    // (Issue #1673).
+    const repoContextContent = await loadRepoContextContent(workDir, logger);
 
-  const promptResult = await buildMergeConflictPrompt({
-    repo,
-    target,
-    baseBranch,
-    conflictedFiles,
-    customInstructions,
-    repoContextContent,
-    promptsDir,
-    issueContext,
-    // Issue #1965: absent for an ordinary resolution, so the prompt is the
-    // one this runner has always built.
-    ...(repair ? { repair } : {}),
-  });
-  if (!promptResult.ok) {
-    return {
-      ok: false,
-      error: new Error(
-        `failed to build the merge-conflict prompt: ${promptResult.error.message}`,
-      ),
+    const promptResult = await buildMergeConflictPrompt({
+      repo,
+      target,
+      baseBranch,
+      conflictedFiles,
+      customInstructions,
+      repoContextContent,
+      promptsDir,
+      issueContext,
+      // Issue #1965: absent for an ordinary resolution, so the prompt is the
+      // one this runner has always built.
+      ...(repair ? { repair } : {}),
+    });
+    if (!promptResult.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `failed to build the merge-conflict prompt: ${promptResult.error.message}`,
+        ),
+      };
+    }
+    prompt = {
+      prompt: promptResult.value.prompt,
+      systemPrompt: promptResult.value.systemPrompt,
     };
   }
 
   const claudeResult = await runAgent(
     {
-      prompt: promptResult.value.prompt,
-      systemPrompt: promptResult.value.systemPrompt,
+      prompt: prompt.prompt,
+      systemPrompt: prompt.systemPrompt,
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
       phase: "merge_conflict",
