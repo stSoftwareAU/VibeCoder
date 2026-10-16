@@ -1,0 +1,90 @@
+name: Checkov
+
+# Issue #3653 — CloudFormation security misconfiguration scan. Checkov scans
+# every CloudFormation template in the repository (no path filter) and the job
+# fails on any failed check, on any template Checkov cannot parse, and on any
+# skip that is not an inline `# checkov:skip=<ID>:<reason>` comment. No SARIF
+# upload: the job log and the job status are the whole report.
+#
+# Called by quality.yml, whose `gate` job is the one required check: this
+# workflow's result reaches the ruleset only through that call.
+#
+# The image reference and the scan arguments must equal `CHECKOV_IMAGE` and
+# `checkovScanArgs()` in worker/deno (lib/pinned_actions.ts and
+# lib/checkov_check.ts). worker/deno/tests/checkov_workflow_check_test.ts
+# asserts that through validateCheckovWorkflows (lib/checkov_workflow_check.ts),
+# so the CI scan and the local ./quality.sh stage cannot drift apart.
+#
+# The report is judged by worker/deno/checkov_report.ts, which applies the same
+# judgeCheckovRun the local stage applies. Checkov exits 0 for a template it
+# cannot parse, so the exit code alone is not a verdict: the report is read.
+#
+# `--entrypoint checkov` is explicit because the image's own entrypoint ignores
+# argv under GITHUB_ACTIONS=true.
+#
+# Third-party actions are pinned to 40-character commit SHAs (Issue #2123) so a
+# hijacked tag cannot inject code into the workflow. The version tag each SHA
+# corresponds to is captured in a leading comment for human readability.
+#
+# No concurrency group here: as a called workflow this file inherits its
+# caller's `github.workflow`, so a group of its own would cancel its siblings.
+# quality.yml holds the one group.
+
+on:
+  # Called by quality.yml only; the caller runs it once per pull request.
+  workflow_call:
+
+# Issue #2382 — Rule of Two: minimise workflow token capability. The scan only
+# reads the checkout, so the default GITHUB_TOKEN is narrowed to read-only.
+permissions:
+  contents: read
+
+jobs:
+  checkov:
+    name: checkov (CloudFormation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      # Issue #606: Opt into Node.js 24 to avoid deprecation warnings for
+      # actions still bundled with Node.js 20 (e.g. denoland/setup-deno@v2)
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install deno
+        # denoland/setup-deno@v2.0.5
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          # Issue #4403 (GHA-SUPPLY-019): exact toolchain from the repo's single source of
+          # truth (.deno-version, tied to the container image's Deno by test), never a
+          # floating range resolved at run time.
+          deno-version-file: .deno-version
+
+      # checkov_report.ts reaches remote jsr.io modules through its imports
+      # (lib/checkov_check.ts, semgrep_check.ts, git_timeout.ts), so the Deno
+      # module cache is warmed here as validate-scripts does (Issue #2619).
+      - name: Cache Deno modules
+        # actions/cache@v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('worker/deno/deno.lock') }}
+          # Issue #4404 (GHA-SUPPLY-010): exact-key only, no restore-keys.
+
+      - name: Scan CloudFormation templates with Checkov
+        run: |
+          set -euo pipefail
+          status=0
+          docker run --rm -v "$PWD:/src:ro" -w /src --entrypoint checkov \
+            bridgecrew/checkov:3.3.29@sha256:3cc125b5337717b7303dbddd4e79374c120687b5ff6a24f9abdad56b562469f3 \
+            -d . --framework cloudformation -o json --skip-download \
+            > "$RUNNER_TEMP/checkov.json" || status=$?
+          cd worker/deno
+          deno run --frozen --lock=deno.lock --allow-read checkov_report.ts --report "$RUNNER_TEMP/checkov.json" --checkov-exit "$status"

@@ -226,7 +226,8 @@ flowchart LR
 Development), **KISS** (Keep It Simple), **DRY** (Don't Repeat Yourself), and
 the rest of the playbook — and every PR runs the full quality gate
 (`./quality.sh`: `deno test`, `deno lint`, `deno check`, `deno fmt --check`,
-and semgrep over the changed files).
+semgrep over the changed files, and Checkov over CloudFormation templates
+where it is available).
 Have your cake and eat it too: more throughput, same (or better) gates. Full
 coding standards: [Coding Standards](CODING-STANDARDS.md).
 
@@ -412,6 +413,14 @@ run by `./quality.sh`, over the branch's changed files, using the same
 not baked into the image, so without it the stage reports `SKIPPED` and names
 the remedy. Install it (`pipx install semgrep`) to meet SAST findings before
 the push instead of after it.
+
+Optional: [Checkov](https://www.checkov.io/) **is** run by `./quality.sh` over
+the CloudFormation templates, at the same version as the blocking
+`checkov.yml` PR check. Install it (`pipx install checkov==3.3.29`) or run a
+container runtime that already holds the pinned image; without either, the
+stage reports `SKIPPED` and names the remedy. A skip must be inline and carry a
+reason, and in this repository is allowed only where the fix stops
+`infra/cloudformation/test-floci.sh` reaching CREATE_COMPLETE.
 
 ## 📚 One set of instructions
 

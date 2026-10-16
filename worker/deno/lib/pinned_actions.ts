@@ -166,6 +166,26 @@ export const SEMGREP_IMAGE =
   `semgrep/semgrep:${SEMGREP_IMAGE_TAG}@${SEMGREP_IMAGE_DIGEST}`;
 
 /**
+ * Checkov container image digest (Issue #3653).
+ *
+ * Kept identical to `.github/workflows/checkov.yml` in this repository so a
+ * hijacked tag cannot run in the CloudFormation scan. A test asserts the two
+ * references stay in lock-step.
+ */
+export const CHECKOV_IMAGE_DIGEST =
+  "sha256:3cc125b5337717b7303dbddd4e79374c120687b5ff6a24f9abdad56b562469f3";
+
+/**
+ * Release tag the Checkov digest was captured from (Issue #3653): the digest
+ * is immutable, the tag lets an updater track the release it names.
+ */
+export const CHECKOV_IMAGE_TAG = "3.3.29";
+
+/** Fully-qualified, tag+digest-pinned Checkov container image reference. */
+export const CHECKOV_IMAGE =
+  `bridgecrew/checkov:${CHECKOV_IMAGE_TAG}@${CHECKOV_IMAGE_DIGEST}`;
+
+/**
  * Render a `uses:` value pinned to an immutable commit SHA, with the
  * human-readable version as a trailing YAML comment.
  *

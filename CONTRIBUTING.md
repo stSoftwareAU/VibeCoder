@@ -92,8 +92,9 @@ runs:
 ```
 
 This delegates to `worker/deno/quality.ts` and runs Deno type-check, the
-Deno test suite, `deno lint`, `deno fmt --check`, markdownlint, and
-semgrep. CI additionally runs shellcheck over the repo's shell scripts —
+Deno test suite, `deno lint`, `deno fmt --check`, markdownlint, semgrep,
+and the Checkov CloudFormation scan (skipped loudly where Checkov is not
+installed). CI additionally runs shellcheck over the repo's shell scripts —
 the gate itself does not. Always redirect stdin from `/dev/null` so
 unattended runs cannot hang waiting for input.
 
@@ -124,8 +125,8 @@ Markdown files there are in that state on `main`, by design rather than by
 drift. Match the surrounding wrapping by hand, as the existing text does.
 
 CI-enforced workflows live under `.github/workflows/`, including
-`validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, and
-`semgrep.yml`. A green local `./quality.sh` is the best predictor of a
+`validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, `semgrep.yml`,
+and `checkov.yml`. A green local `./quality.sh` is the best predictor of a
 green PR.
 
 ### Semgrep (SAST) before the push
@@ -159,6 +160,27 @@ flowchart LR
   before it reaches the constructor. A dynamic regex over constants the
   code itself authored is still flagged — change the pattern rather than
   arguing with the rule (Issue #559).
+
+### Checkov (CloudFormation) before the push
+
+`checkov.yml` is a blocking PR check over every CloudFormation template in the
+repository. The gate runs the same pinned Checkov, arguments and judgement
+locally, so a misconfigured template is met before the push.
+
+- **Install it or it skips, loudly.** `pipx install checkov==3.3.29` puts the
+  binary on PATH. Alternatively, a container runtime already holding the
+  CI-pinned image (`bridgecrew/checkov:3.3.29@<digest>` from
+  `worker/deno/lib/pinned_actions.ts`) is used; the gate never pulls it. With
+  neither, the stage reports `SKIPPED` and names both remedies; `--strict`
+  turns that into a failure.
+- **A skip is accepted only inline, with a reason.** Write
+  `# checkov:skip=<ID>:<reason>` on the resource. A skip with no reason, or a
+  `Metadata` skip block, fails. In this repository a skip is allowed only where
+  the fix stops `infra/cloudformation/test-floci.sh` reaching CREATE_COMPLETE,
+  and the reason must say so.
+- **An unparseable template fails.** Checkov exits 0 on a template it cannot
+  parse, so the gate reads the report, not the exit code. A template like that
+  has no skip form: fix the template.
 
 ### Workflow hygiene
 

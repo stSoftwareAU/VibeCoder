@@ -1,0 +1,13 @@
+{
+  "issue": 3653,
+  "chunk": "top-up-3653",
+  "title": "top-up: the Checkov CloudFormation scan",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3653",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: checkov_check.ts and checkov_workflow_check.ts (#3653)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/checkov_check.ts",
+    "worker/deno/lib/checkov_workflow_check.ts"
+  ],
+  "sweptAt": "73127da34c84956d5ded9050cd085a2ae041dd40"
+}

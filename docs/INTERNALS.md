@@ -116,7 +116,7 @@ The quality gate is implemented in Deno TypeScript (`worker/deno/quality.ts` and
 `worker/deno/lib/quality_gate.ts`). The shell wrapper `quality.sh` is a thin
 launcher that locates Deno and delegates. The gate runs: benchmark audit,
 `deno test`, `deno lint`, `deno check`, `deno fmt --check`, plus mermaid,
-markdownlint, and semgrep.
+markdownlint, semgrep, and (where `checkov.yml` exists) checkov.
 Shell-script linting is **not** run by the worker — it is delegated to each
 target repo's own CI.
 
@@ -146,6 +146,19 @@ The agent container bakes `semgrep` at exactly `SEMGREP_IMAGE_TAG`
 (Issue #650), so a fleet run scans instead of skipping — before that the image
 shipped no `semgrep` binary and no container runtime, and the stage `SKIP`ped
 every time. See [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
+
+The **checkov** stage (`worker/deno/lib/checkov_check.ts`, Issue #3653) is the
+local twin of the required `checkov.yml` job. It is registered only in a
+checkout that carries `.github/workflows/checkov.yml`, and runs the same
+`CHECKOV_IMAGE` with `checkovScanArgs()` over every CloudFormation template,
+judged by `judgeCheckovRun` as `worker/deno/checkov_report.ts` judges CI. It
+uses a `checkov` binary on PATH (naming any version drift from
+`CHECKOV_IMAGE_TAG`) or a container runtime that **already holds** the pinned
+image, and never pulls it. Neither available, or a scan past the 300s deadline,
+reports `SKIPPED`; `--strict` promotes that to a failure. The worker container
+image does not carry Checkov, so a fleet run reports `SKIPPED`. A failed check,
+an unparseable template, or a skip without an inline reason fails; no SARIF is
+uploaded.
 
 Progress is **streamed**: every check emits one `✓ / ✗ / - name: STATUS (1.2s)`
 line to stdout the moment it settles (Issue #399), ahead of the detailed output

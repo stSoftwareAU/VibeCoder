@@ -52,6 +52,7 @@ import { scanWorkflowsForHygiene } from "./workflow_hygiene_check.ts";
 import { runMermaidCheck } from "./mermaid_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
 import { runSemgrepCheck } from "./semgrep_check.ts";
+import { checkovStageApplies, runCheckovCheck } from "./checkov_check.ts";
 import { checkReleaseTagRuleset } from "./release_tag_ruleset_check.ts";
 import {
   RELEASE_TAG_RULESET_PATH,
@@ -1193,6 +1194,20 @@ async function runSemgrepQualityCheck(
 }
 
 /**
+ * Run the Checkov CloudFormation scan over the repository (Issue #3653).
+ *
+ * The same pinned Checkov, arguments and judgement as the required `checkov`
+ * CI job. SKIPPED — loudly, with the reason — when Checkov is unavailable;
+ * strict mode promotes that to FAILED.
+ */
+async function runCheckovQualityCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const result = await runCheckovCheck(config.scriptDir);
+  return { name: "checkov", status: result.status, output: result.output };
+}
+
+/**
  * Whether a committed ruleset payload is present in this checkout.
  *
  * Only a genuine absence answers `false` — the worker's gate runs over
@@ -1765,6 +1780,15 @@ export async function runQualityGate(
   // SAST finding is met before the push rather than after it. Skipped loudly
   // when semgrep is unavailable.
   mainChecks.push(() => runSemgrepQualityCheck(config));
+
+  // Checkov (Issue #3653) — the same pinned Checkov, arguments and judgement
+  // as the required `checkov` CI job, over the CloudFormation templates. Only
+  // in a checkout that carries that workflow, so a monitored repository with
+  // no Checkov job is not scanned here. SKIPPED loudly when Checkov is
+  // unavailable — CI stays authoritative.
+  if (await checkovStageApplies(config.scriptDir)) {
+    mainChecks.push(() => runCheckovQualityCheck(config));
+  }
 
   // Release-tag ruleset reconciliation (Issue #1049) — only in a checkout that
   // carries the committed payload, so the worker's gate over a monitored repo
