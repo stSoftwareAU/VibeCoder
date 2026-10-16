@@ -518,6 +518,8 @@ Deno.test("suggest-improvements - a real run files every suggestion in VibeCoder
   assertEquals(result.message.startsWith("Created "), true);
   assertEquals(gh.store.issues.length, generateImprovements().length);
   assertEquals(gh.store.issues.every((i) => i.repo === VIBE), true);
+  const data = result.data as SuggestImprovementsData;
+  assertEquals(data.createdIssues, gh.store.issues.map((i) => i.number));
 });
 
 Deno.test("suggest-improvements - a configured custom label is never self-applied to a filed issue (Issue #847)", async () => {
@@ -643,4 +645,28 @@ Deno.test("suggest-improvements - the command routes against the configured repo
     assertStringIncludes(failure.error, 'step "classify"');
     assertStringIncludes(failure.error, "ctx.productRepos[0]");
   }
+});
+
+Deno.test("suggest-improvements - the command's injected clock sets the duplicate-search window (Issue #3745)", async () => {
+  // Under the injected clock (2020-01-15) a close on 2020-01-01 sits inside the
+  // 30-day duplicate window, so the existing issue is reused. On the wall clock
+  // (2026) it is far outside the window, so a new issue would be filed instead.
+  const title = generateImprovements()[0]!.title;
+  const store = fakeStore([], { [VIBE]: "WRITE" });
+  const existing = addIssue(store, VIBE, title);
+  existing.closedAt = "2020-01-01T00:00:00Z";
+  const gh = routingFakeGh(store);
+  const result = await createSuggestImprovementsCommand({
+    ghCommandFn: gh.ghCommandFn,
+    now: () => new Date("2020-01-15T00:00:00Z"),
+  }).execute({ repo: VIBE }, createMockConfig());
+
+  const data = result.data as SuggestImprovementsData;
+  const routed = (data.routed ?? []).find((r) => r.title === title);
+  assertEquals(routed?.action, "reused");
+  assertEquals(routed?.number, existing.number);
+  assertEquals(
+    gh.store.issues.filter((i) => i.title === title).map((i) => i.number),
+    [existing.number],
+  );
 });
