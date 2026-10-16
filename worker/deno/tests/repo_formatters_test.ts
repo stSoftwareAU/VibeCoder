@@ -116,7 +116,7 @@ function makeDeps(
 
 Deno.test("repo formatters - only root Cargo.toml runs cargo fmt at root", async () => {
   const { deps, commandCalls } = makeDeps(["Cargo.toml", "src/main.rs"]);
-  await runRepoFormatters(REPO_PATH, deps);
+  await runRepoFormatters(REPO_PATH, ["src/main.rs"], deps);
   const cargoCalls = commandCalls.filter((c) => c.cmd[0] === "cargo");
   const denoCalls = commandCalls.filter((c) => c.cmd[0] === "deno");
   assertEquals(cargoCalls.length, 1);
@@ -127,18 +127,27 @@ Deno.test("repo formatters - only root Cargo.toml runs cargo fmt at root", async
 
 Deno.test("repo formatters - only web/deno.json runs deno fmt at web", async () => {
   const { deps, commandCalls } = makeDeps(["web/deno.json", "web/main.ts"]);
-  await runRepoFormatters(REPO_PATH, deps);
+  await runRepoFormatters(REPO_PATH, ["web/main.ts"], deps);
   const denoCalls = commandCalls.filter((c) => c.cmd[0] === "deno");
   const cargoCalls = commandCalls.filter((c) => c.cmd[0] === "cargo");
   assertEquals(denoCalls.length, 1);
-  assertEquals(denoCalls[0]?.cmd, ["deno", "fmt"]);
+  assertEquals(denoCalls[0]?.cmd, [
+    "deno",
+    "fmt",
+    "--permit-no-files",
+    "main.ts",
+  ]);
   assertEquals(denoCalls[0]?.cwd, `${REPO_PATH}/web`);
   assertEquals(cargoCalls.length, 0);
 });
 
 Deno.test("repo formatters - deno.json and web/deno.jsonc runs deno fmt once at root", async () => {
-  const { deps, commandCalls } = makeDeps(["deno.json", "web/deno.jsonc"]);
-  await runRepoFormatters(REPO_PATH, deps);
+  const { deps, commandCalls } = makeDeps([
+    "deno.json",
+    "web/deno.jsonc",
+    "web/a.ts",
+  ]);
+  await runRepoFormatters(REPO_PATH, ["web/a.ts"], deps);
   const denoCalls = commandCalls.filter((c) => c.cmd[0] === "deno");
   assertEquals(denoCalls.length, 1);
   assertEquals(denoCalls[0]?.cwd, REPO_PATH);
@@ -146,7 +155,7 @@ Deno.test("repo formatters - deno.json and web/deno.jsonc runs deno fmt once at 
 
 Deno.test("repo formatters - root Cargo.toml and web/deno.json run both", async () => {
   const { deps, commandCalls } = makeDeps(["Cargo.toml", "web/deno.json"]);
-  await runRepoFormatters(REPO_PATH, deps);
+  await runRepoFormatters(REPO_PATH, ["src/lib.rs", "web/a.ts"], deps);
   const cargoCalls = commandCalls.filter((c) => c.cmd[0] === "cargo");
   const denoCalls = commandCalls.filter((c) => c.cmd[0] === "deno");
   assertEquals(cargoCalls.length, 1);
@@ -157,7 +166,7 @@ Deno.test("repo formatters - root Cargo.toml and web/deno.json run both", async 
 
 Deno.test("repo formatters - neither config present runs nothing and does not commit", async () => {
   const { deps, commandCalls, gitCalls } = makeDeps(["README.md"]);
-  const result = await runRepoFormatters(REPO_PATH, deps);
+  const result = await runRepoFormatters(REPO_PATH, ["README.md"], deps);
   assertEquals(commandCalls.length, 0);
   assertEquals(gitCalls.some((c) => c.args[0] === "add"), false);
   assertEquals(gitCalls.some((c) => c.args[0] === "commit"), false);
@@ -168,7 +177,7 @@ Deno.test("repo formatters - formatter that changes files commits once", async (
   const { deps, gitCalls } = makeDeps(["Cargo.toml"], {
     "cargo fmt --all": { exitCode: 0, changesTree: true },
   });
-  const result = await runRepoFormatters(REPO_PATH, deps);
+  const result = await runRepoFormatters(REPO_PATH, ["src/main.rs"], deps);
 
   const addCalls = gitCalls.filter((c) => c.args[0] === "add");
   const commitCalls = gitCalls.filter((c) => c.args[0] === "commit");
@@ -178,10 +187,14 @@ Deno.test("repo formatters - formatter that changes files commits once", async (
   const commitIndex = gitCalls.indexOf(commitCalls[0]!);
   const addIndex = gitCalls.indexOf(addCalls[0]!);
   assert(addIndex < commitIndex, "git add -u must run before git commit");
+  // Only the formatted scope is staged — never the whole tree (`add -u`).
+  assertEquals(addCalls[0]?.args, ["add", "-u", "--", ":(literal)."]);
 
   const message = commitCalls[0]?.args[2] ?? "";
   assert(message.startsWith("style: apply repository formatters"));
   assertStringIncludes(message, "Vibe-Coder-Run-Id: test-run-id");
+  // The subject is a paragraph of its own: the trailer must not join it.
+  assertEquals(message.split("\n")[1], "");
 
   assertEquals(result.committed, true);
   assertEquals(result.runs[0]?.changed, true);
@@ -191,7 +204,7 @@ Deno.test("repo formatters - formatter that changes nothing does not commit", as
   const { deps, gitCalls } = makeDeps(["Cargo.toml"], {
     "cargo fmt --all": { exitCode: 0 },
   });
-  const result = await runRepoFormatters(REPO_PATH, deps);
+  const result = await runRepoFormatters(REPO_PATH, ["src/main.rs"], deps);
   assertEquals(gitCalls.some((c) => c.args[0] === "add"), false);
   assertEquals(gitCalls.some((c) => c.args[0] === "commit"), false);
   assertEquals(result.committed, false);
@@ -205,7 +218,7 @@ Deno.test("repo formatters - non-zero exit is recorded, redacted, logged, and ne
       output: `NotFound: cargo: No such file or directory ${secret}`,
     },
   });
-  const result = await runRepoFormatters(REPO_PATH, deps);
+  const result = await runRepoFormatters(REPO_PATH, ["src/main.rs"], deps);
   assertEquals(result.failures.length, 1);
   assertEquals(result.failures[0]?.tool, "cargo fmt");
   assertEquals(result.failures[0]?.dir, ".");
@@ -229,7 +242,7 @@ Deno.test("repo formatters - ls-files git failure resolves with gitError and no 
     logger,
     runId: () => "test-run-id",
   };
-  const result = await runRepoFormatters(REPO_PATH, deps);
+  const result = await runRepoFormatters(REPO_PATH, ["src/main.rs"], deps);
   assertEquals(result.gitError, "ls-files boom");
   assertEquals(commandCalls.length, 0);
   assert(logger.warns.length > 0, "expected a warn on ls-files failure");
@@ -275,7 +288,7 @@ Deno.test("repo formatters - snapshot failure after a formatter fails loud with 
     runId: () => "test-run-id",
   };
 
-  const result = await runRepoFormatters(REPO_PATH, deps);
+  const result = await runRepoFormatters(REPO_PATH, ["src/main.rs"], deps);
 
   assertEquals(result.gitError, "diff boom");
   assertEquals(result.committed, false);
@@ -303,4 +316,85 @@ Deno.test("outermostConfigDirs - sibling-looking dirs with a shared prefix are b
     ["deno.json", "deno.jsonc"],
   );
   assertEquals(dirs, ["web", "webx"]);
+});
+
+// Wired into the issue run before the quality and pre-push gates: the
+// formatters touch only what the run changed, and never Markdown — `deno fmt`
+// re-wraps whole documents and trips markdownlint MD018.
+
+Deno.test("repo formatters - Markdown is never handed to deno fmt", async () => {
+  const files = ["deno.json", "README.md", "docs/x.markdown", "a.ts"];
+  const { deps, commandCalls } = makeDeps(files);
+  await runRepoFormatters(REPO_PATH, files.slice(1), deps);
+  const denoCalls = commandCalls.filter((c) => c.cmd[0] === "deno");
+  assertEquals(denoCalls.length, 1);
+  assertEquals(denoCalls[0]?.cmd, [
+    "deno",
+    "fmt",
+    "--permit-no-files",
+    "a.ts",
+  ]);
+});
+
+Deno.test("repo formatters - a Markdown-only change runs no formatter", async () => {
+  const { deps, commandCalls, gitCalls } = makeDeps([
+    "deno.json",
+    "README.md",
+    "a.ts",
+  ]);
+  const result = await runRepoFormatters(REPO_PATH, ["README.md"], deps);
+  assertEquals(commandCalls.length, 0);
+  assertEquals(gitCalls.some((c) => c.args[0] === "commit"), false);
+  assertEquals(result.committed, false);
+});
+
+Deno.test("repo formatters - only the changed code files are formatted", async () => {
+  const { deps, commandCalls } = makeDeps([
+    "deno.json",
+    "a.ts",
+    "b.ts",
+    "config.json",
+  ]);
+  await runRepoFormatters(REPO_PATH, ["a.ts", "config.json"], deps);
+  const denoCalls = commandCalls.filter((c) => c.cmd[0] === "deno");
+  assertEquals(denoCalls[0]?.cmd, [
+    "deno",
+    "fmt",
+    "--permit-no-files",
+    "a.ts",
+    "config.json",
+  ]);
+});
+
+Deno.test("repo formatters - a leading-dash path is never read as an option", async () => {
+  const { deps, commandCalls } = makeDeps(["deno.json", "-x.ts"]);
+  await runRepoFormatters(REPO_PATH, ["-x.ts"], deps);
+  const denoCalls = commandCalls.filter((c) => c.cmd[0] === "deno");
+  assertEquals(denoCalls[0]?.cmd.at(-1), "./-x.ts");
+});
+
+Deno.test("repo formatters - cargo fmt runs only when a Rust file under its root changed", async () => {
+  const { deps, commandCalls } = makeDeps([
+    "Cargo.toml",
+    "src/main.rs",
+    "README.md",
+  ]);
+  await runRepoFormatters(REPO_PATH, ["README.md"], deps);
+  assertEquals(commandCalls.filter((c) => c.cmd[0] === "cargo").length, 0);
+});
+
+Deno.test("repo formatters - stages only the files it formatted", async () => {
+  const { deps, gitCalls } = makeDeps(["web/deno.json", "web/main.ts"], {
+    "deno fmt --permit-no-files main.ts": { exitCode: 0, changesTree: true },
+  });
+  const result = await runRepoFormatters(REPO_PATH, ["web/main.ts"], deps);
+  const addCalls = gitCalls.filter((c) => c.args[0] === "add");
+  assertEquals(addCalls.length, 1);
+  assertEquals(addCalls[0]?.args, [
+    "add",
+    "-u",
+    "--",
+    ":(literal)web/main.ts",
+  ]);
+  assertEquals(result.committed, true);
 });

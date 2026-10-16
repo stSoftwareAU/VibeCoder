@@ -13,7 +13,10 @@ import {
   extractClosingIssueNumbers,
   extractIssueNumberFromPrTitle,
 } from "./pr_body.ts";
-import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
+import {
+  findMissingCriteria,
+  hasFollowUpChainStop,
+} from "./missing_criterion_close_guard.ts";
 import { runGhCommand } from "./github.ts";
 import {
   prTitleMatchesIssue,
@@ -153,6 +156,13 @@ export interface MergedPR {
    * field was collected — treat as none.
    */
   missingCriteria?: string[];
+  /**
+   * Whether the PR body carries the chain-stop section's marker (PR #3676
+   * review): the PR worked a partial-delivery follow-up whose gaps no further
+   * follow-up holds, so it does not close its issue. Absent on a cache entry
+   * written before this field was collected — treat as false.
+   */
+  followUpChainStop?: boolean;
   /**
    * The sub-agent tier from the PR body's `vibe-sub-agent-tier` marker,
    * `sonnet` when the body has none (Issue #3404). Absent on a cache entry
@@ -2113,6 +2123,7 @@ function parseMergedPrListing(output: string): MergedPR[] {
       closingRefs: extractClosingIssueNumbers(body),
       subAgentTier: subAgentTierFromBody(body) ?? "sonnet",
       ...(missingCriteria.length > 0 ? { missingCriteria } : {}),
+      ...(hasFollowUpChainStop(body) ? { followUpChainStop: true } : {}),
     });
   }
   return prs;
