@@ -623,7 +623,7 @@ export function validateGenericMermaidBlock(
 
   // Mermaid's flowchart lexer rejects unquoted text followed by a quoted
   // string inside one node shape (TEXT then STR), e.g. `D[a, "b"]`.
-  if (block.type === "flowchart" || block.type === "graph") {
+  if (block.type === "flowchart") {
     const mixed = findMixedQuotedFlowchartLabel(block.content);
     if (mixed !== null) {
       return {
@@ -640,7 +640,6 @@ export function validateGenericMermaidBlock(
 
 /** Characters that may form a node id, so `A[` is a node opener. */
 function isWordChar(ch: string): boolean {
-  if (ch.length !== 1) return false;
   return (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") ||
     (ch >= "0" && ch <= "9") || ch === "_";
 }
