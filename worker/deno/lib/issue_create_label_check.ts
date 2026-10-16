@@ -58,11 +58,16 @@ export interface CreateLabelCheckResult {
  *     labels cannot pass a positive allowlist that enumerates worker
  *     content, so that path is guarded the other way round: by the
  *     reserved-label denylist in `filterReservedLabelsWithWarning`
- *     (Issue #2825).
+ *     (Issue #2825);
+ *   - `issue_routing_filing.ts` — the routed filing entry point (Issue
+ *     #3743). Its labels come from the caller's draft (an operator's
+ *     `route-issue --label`, a suggested improvement), so it is guarded the
+ *     same way as `github.ts`, by `filterReservedLabelsWithWarning`.
  */
 export const CREATE_LABEL_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "worker/deno/lib/guarded_issue_labels.ts",
   "worker/deno/lib/github.ts",
+  "worker/deno/lib/issue_routing_filing.ts",
 ]);
 
 /**
