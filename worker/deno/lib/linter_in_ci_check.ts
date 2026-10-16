@@ -36,7 +36,8 @@
  *   - `html`               — `htmlhint` or `html-validate` invoked in CI
  *                            (no compile gate).
  *   - `github-actions`     — `actionlint` invoked in CI (no compile gate).
- *   - `aws-cloudformation` — `cfn-lint` invoked in CI (no compile gate).
+ *   - `aws-cloudformation` — `cfn-lint` AND Checkov both invoked in CI
+ *                            (no compile gate; Issue #3653).
  *   - `terraform`          — `tflint` invoked OR (`terraform validate`
  *     AND `terraform fmt -check`) both invoked in CI (no compile gate).
  */
@@ -57,8 +58,10 @@ export interface LinterCheckResult {
    * For buckets where a compile/syntax check is meaningful
    * (`rust`, `typescript`, `react`, `java`), this requires BOTH the
    * linter gate AND the compile gate to be present. For the remaining
-   * buckets (`html`, `github-actions`, `aws-cloudformation`,
-   * `terraform`) only the linter gate is required.
+   * buckets (`html`, `github-actions`, `terraform`) only the linter gate
+   * is required. `aws-cloudformation` is the exception: it requires BOTH
+   * `cfn-lint` and Checkov to be invoked (Issue #3653) and has no compile
+   * gate.
    */
   configured: boolean;
   /** Human-readable linter name (e.g. "cargo clippy", "ESLint"). */
@@ -653,24 +656,46 @@ function checkCfnLint(ctx: CheckContext): LinterCheckResult {
       workflowsLoaded: false,
     };
   }
-  if (anyWorkflowMatches(ctx.workflows, /cfn-lint/i)) {
+  // Issue #3653: the bucket requires BOTH cfn-lint (schema validity) and
+  // Checkov (security misconfiguration). Each is detected the same way.
+  const cfnLintInvoked = anyWorkflowMatches(ctx.workflows, /cfn-lint/i);
+  const checkovInvoked = anyWorkflowMatches(ctx.workflows, /checkov/i);
+  if (cfnLintInvoked && checkovInvoked) {
     return {
       configured: true,
       linter,
-      details:
-        "`cfn-lint` is invoked by a GitHub Actions workflow. No action " +
-        "required.",
+      details: "`cfn-lint` (schema validation) and Checkov (security " +
+        "misconfiguration scanning) are both invoked by a GitHub Actions " +
+        "workflow. No action required.",
     };
+  }
+  // Name whichever tool(s) are missing; both paragraphs when both are.
+  const missingClauses: string[] = [];
+  if (!cfnLintInvoked) {
+    missingClauses.push(
+      "No GitHub Actions workflow invokes `cfn-lint`. `cfn-lint` is the " +
+        "standard linter for AWS CloudFormation templates — it catches " +
+        "schema errors, invalid intrinsic functions, and resource-property " +
+        "mistakes before deployment. Add a CI step such as `cfn-lint " +
+        "templates/**/*.yaml` so template regressions fail the build.",
+    );
+  }
+  if (!checkovInvoked) {
+    missingClauses.push(
+      "No GitHub Actions workflow invokes Checkov. `cfn-lint` validates " +
+        "CloudFormation schema but not security, so open security groups, " +
+        "unencrypted storage, and over-broad IAM policies pass it " +
+        "unnoticed. Checkov (https://github.com/bridgecrewio/checkov) flags " +
+        "these security misconfigurations. Add a CI step such as `checkov " +
+        "-d . --framework cloudformation` (pinned image " +
+        "`bridgecrew/checkov:<tag>@sha256:<digest>`) so a misconfiguration " +
+        "fails the build.",
+    );
   }
   return {
     configured: false,
     linter,
-    details:
-      "No GitHub Actions workflow invokes `cfn-lint`. `cfn-lint` is the " +
-      "standard linter for AWS CloudFormation templates — it catches " +
-      "schema errors, invalid intrinsic functions, and resource-property " +
-      "mistakes before deployment. Add a CI step such as `cfn-lint " +
-      "templates/**/*.yaml` so template regressions fail the build.",
+    details: missingClauses.join(" "),
   };
 }
 
