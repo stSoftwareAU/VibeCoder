@@ -440,7 +440,7 @@ async function prepareDisposableCheckout(
   ];
   for (const [args, cwd] of steps) {
     const r = await deps.runGit(args, cwd);
-    if (!r || (r.code !== 0 && false)) {
+    if (!r || r.code !== 0) {
       return `git ${args[0]} failed while preparing the disposable checkout${
         r ? `: ${clip(r.stderr, 300)}` : ""
       }`;

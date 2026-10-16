@@ -80,6 +80,11 @@ import {
   type PrePrVerifierResult,
   runPrePrVerifier,
 } from "./pre_pr_verifier.ts";
+import {
+  runSecurityFixVerifier,
+  type SecurityFixVerifierInput,
+  type SecurityFixVerifierResult,
+} from "./security_fix_verifier.ts";
 import { cleanWorkingTree } from "./ignored_path_clean.ts";
 import { restoreSession } from "./session_manager.ts";
 import { branchHeadChanged, captureBranchHead } from "./branch_head_tracker.ts";
@@ -354,6 +359,16 @@ export interface ClaudeDeps {
    * a model, and so tests counting agent turns are unaffected.
    */
   runPrePrVerifier: (input: PrePrVerifierInput) => Promise<PrePrVerifierResult>;
+  /**
+   * The independent read-only security-fix verifier (Issue #3657): judges
+   * whether the finding is fixed by the branch, from the finding and the diff
+   * alone. A seam so a test can script its verdict. Optional: when absent, an
+   * active security-fix gate blocks as `trigger-closed-not-checked` — it never
+   * passes unchecked.
+   */
+  runSecurityFixVerifier?: (
+    input: SecurityFixVerifierInput,
+  ) => Promise<SecurityFixVerifierResult>;
   /**
    * Build or refresh the run's CodeGraph index (Issue #2159, part of #2145).
    *
@@ -725,6 +740,7 @@ export function createDefaultDeps(
       runClaudeWithRetry,
       runSummaryClaimQuestion: runClaudeWithRetry,
       runPrePrVerifier: (input) => runPrePrVerifier(input),
+      runSecurityFixVerifier: (input) => runSecurityFixVerifier(input),
       prepareCodegraphContext,
       prepareRtkRun,
       rtkProviderId,

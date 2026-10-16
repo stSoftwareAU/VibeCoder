@@ -12,7 +12,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import {
   readSecurityFixGateBlock,
@@ -28,6 +28,11 @@ import {
   type SecurityFixDiscrimination,
 } from "../lib/security_fix_discrimination.ts";
 import type { SecurityGateRunVerdict } from "../lib/security_fix_gate_retry.ts";
+import type {
+  SecurityFixGateAnswers,
+  SecurityFixVerification,
+} from "../lib/security_fix_verdict.ts";
+import type { SecurityFixVerifierInput } from "../lib/security_fix_verifier.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 /** The cited test, declared in TEST_DIFF and named by COMPLIANT_SUMMARY. */
@@ -42,6 +47,53 @@ const RED_GREEN: SecurityFixDiscrimination = {
   test: CITED_TEST,
   preFix: "fail",
   postFix: "pass",
+};
+
+/** Where every scripted gate cites: a line of the fix at the head. */
+const FIX_CITATION = "worker/deno/lib/sanitise.ts:1";
+
+const FIXED_GATES: SecurityFixGateAnswers = {
+  sink_mitigated: {
+    status: "pass",
+    citation: FIX_CITATION,
+    rationale: "the sink only sees allowlisted input",
+  },
+  reachability: {
+    status: "pass",
+    citation: FIX_CITATION,
+    rationale: "the trigger passes the allowlist first",
+  },
+  class_eliminated: {
+    status: "pass",
+    citation: FIX_CITATION,
+    rationale: "every injection payload is refused, not one literal",
+  },
+  sweep_complete: {
+    status: "pass",
+    citation: FIX_CITATION,
+    rationale: "no other query builds SQL from input",
+  },
+};
+
+/** The independent verifier's FIXED verdict (Issue #3657). */
+const FIXED: SecurityFixVerification = {
+  kind: "checked",
+  verdict: "FIXED",
+  gates: FIXED_GATES,
+};
+
+/** The sink still concatenates input, so the trigger stays open (Issue #3657). */
+const NOT_FIXED: SecurityFixVerification = {
+  kind: "checked",
+  verdict: "NOT_FIXED",
+  gates: {
+    ...FIXED_GATES,
+    sink_mitigated: {
+      status: "fail",
+      citation: FIX_CITATION,
+      rationale: "the sink still concatenates the input",
+    },
+  },
 };
 
 const SHA = "1f0c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c";
@@ -135,6 +187,15 @@ interface Scenario {
   discriminationThrows?: string;
   /** Make `rev-parse` and `fetch` fail so the base ref cannot be resolved. */
   baseRefUnresolvable?: boolean;
+  /** The issue body the run is given (the security finding). */
+  issueBody?: string;
+  /**
+   * Stub for the independent security-fix verifier (Issue #3657). Omitted
+   * means the verifier is not wired, which the gate must block on.
+   */
+  verification?: SecurityFixVerification;
+  /** Make the verifier stub throw this message instead of returning. */
+  verifierThrows?: string;
   /** Make every `diff --name-only` fail so no branch diff is collected. */
   diffUnavailable?: boolean;
 }
@@ -150,6 +211,8 @@ interface Outcome {
   repoPath: string;
   /** The verdicts the gate recorded on run state. */
   securityGateBlocks: SecurityGateRunVerdict[];
+  /** Every input the independent verifier was called with (Issue #3657). */
+  verifierInputs: SecurityFixVerifierInput[];
 }
 
 /** Run the live completion phase against a scenario and report what happened. */
@@ -158,6 +221,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const comments: string[] = [];
   let prCreateCalls = 0;
   const discriminationInputs: DiscriminationRunInput[] = [];
+  const verifierInputs: SecurityFixVerifierInput[] = [];
 
   const config = buildDefaultWorkerConfig();
   scenario.configure?.(config);
@@ -166,7 +230,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     repo: "stSoftwareAU/VibeCoder",
     issueNumber: 3939,
     issueTitle: "Security-fix gate never runs",
-    issueBody: "",
+    issueBody: scenario.issueBody ?? "",
     issueLabels: scenario.labels,
     issueComments: "",
     githubUser: "testbot",
@@ -193,6 +257,17 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           discriminationInputs.push(input);
           if (throws) return Promise.reject(new Error(throws));
           return Promise.resolve(stub!);
+        },
+      }
+      : {},
+    claude: scenario.verification || scenario.verifierThrows
+      ? {
+        runSecurityFixVerifier: (input: SecurityFixVerifierInput) => {
+          verifierInputs.push(input);
+          if (scenario.verifierThrows) {
+            return Promise.reject(new Error(scenario.verifierThrows));
+          }
+          return Promise.resolve({ verification: scenario.verification! });
         },
       }
       : {},
@@ -260,6 +335,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     discriminationInputs,
     repoPath,
     securityGateBlocks: state.securityGateBlocks ?? [],
+    verifierInputs,
   };
 }
 
@@ -305,6 +381,7 @@ Deno.test(
   "completion - allows a security PR that carries the full verification evidence",
   async () => {
     const outcome = await runCompletion({
+      verification: FIXED,
       labels: ["security", "work-on"],
       summary: COMPLIANT_SUMMARY,
       discrimination: RED_GREEN,
@@ -372,7 +449,7 @@ Deno.test(
       const block = await readSecurityFixGateBlock(stateDir, GATE_REPO, 3939);
       assertEquals(block?.missing, [
         "test-identifier-in-diff",
-        "trigger-closed",
+        "trigger-closed-not-checked",
       ]);
       assertEquals(block?.blockCount, 1);
     });
@@ -388,6 +465,7 @@ Deno.test(
       ]);
 
       const outcome = await runCompletion({
+        verification: FIXED,
         labels: ["security", "work-on"],
         summary: COMPLIANT_SUMMARY,
         discrimination: RED_GREEN,
@@ -457,6 +535,7 @@ Deno.test(
   "completion - red-to-green discrimination raises the PR and runs only the cited test over production files (Issue #3659)",
   async () => {
     const outcome = await runCompletion({
+      verification: FIXED,
       labels: ["security"],
       summary: COMPLIANT_SUMMARY,
       changedFiles: SECURITY_FILES,
@@ -479,6 +558,7 @@ Deno.test(
   "completion - a declared quality credential reaches the discrimination runner (Issue #3659)",
   async () => {
     const outcome = await runCompletion({
+      verification: FIXED,
       labels: ["security"],
       summary: COMPLIANT_SUMMARY,
       changedFiles: SECURITY_FILES,
@@ -710,5 +790,152 @@ Deno.test(
       outcome.reason ?? "",
       "discrimination runner failed: boom",
     );
+  },
+);
+
+// --- Independent security-fix verifier (Issue #3657) ------------------------
+
+const VERIFIER_LABELS = ["security", "work-on"];
+
+Deno.test(
+  "completion - a NOT_FIXED verdict blocks with trigger-closed and shows the verdict (Issue #3657)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: VERIFIER_LABELS,
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      verification: NOT_FIXED,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+    assertEquals(outcome.securityGateBlocks[0]?.missing, ["trigger-closed"]);
+    assertStringIncludes(
+      outcome.reason ?? "",
+      "Independent verifier verdict:",
+    );
+  },
+);
+
+Deno.test(
+  "completion - an unwired verifier blocks with trigger-closed-not-checked (Issue #3657)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: VERIFIER_LABELS,
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.securityGateBlocks[0]?.missing, [
+      "trigger-closed-not-checked",
+    ]);
+    assertStringIncludes(
+      outcome.reason ?? "",
+      "not checked: the security-fix verifier is not wired",
+    );
+  },
+);
+
+Deno.test(
+  "completion - a throwing verifier blocks with trigger-closed-not-checked (Issue #3657)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: VERIFIER_LABELS,
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      verifierThrows: "boom",
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.securityGateBlocks[0]?.missing, [
+      "trigger-closed-not-checked",
+    ]);
+    assertStringIncludes(
+      outcome.reason ?? "",
+      "security-fix verifier failed: boom",
+    );
+  },
+);
+
+Deno.test(
+  "completion - the verifier gets the finding, the title and the repo path, and no PR summary field (Issue #3657)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: VERIFIER_LABELS,
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      issueBody: "Input is concatenated into the SQL query.",
+      verification: FIXED,
+    });
+
+    assertEquals(outcome.verifierInputs.length, 1);
+    const input = outcome.verifierInputs[0]!;
+    assertEquals(
+      input.findingBody,
+      "Input is concatenated into the SQL query.",
+    );
+    assertEquals(input.issueTitle, "Security-fix gate never runs");
+    assertEquals(input.repo, "stSoftwareAU/VibeCoder");
+    assertEquals(input.issueNumber, 3939);
+    assertEquals(input.repoPath, outcome.repoPath);
+    assertEquals(input.baseRef, "origin/main");
+    // The fixer's own account never reaches the verifier.
+    assertEquals(Object.keys(input).sort(), [
+      "baseRef",
+      "findingBody",
+      "issueNumber",
+      "issueTitle",
+      "killAfterSeconds",
+      "logger",
+      "maxRetries",
+      "model",
+      "repo",
+      "repoPath",
+      "timeoutSeconds",
+    ]);
+  },
+);
+
+Deno.test(
+  "completion - a FIXED verdict with all other evidence lets the gate pass (Issue #3657)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: VERIFIER_LABELS,
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      verification: FIXED,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1, "gh pr create must run");
+    assertEquals(outcome.verifierInputs.length, 1);
+    assertEquals(outcome.securityGateBlocks.length, 0);
+  },
+);
+
+Deno.test(
+  "completion - the recorded gate block carries the verifier's verification (Issue #3657)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: VERIFIER_LABELS,
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      verification: NOT_FIXED,
+    });
+
+    // The in-run recovery re-runs the gate once, so each block is checked.
+    assert(outcome.securityGateBlocks.length > 0);
+    for (const block of outcome.securityGateBlocks) {
+      assertEquals(block.verification, NOT_FIXED);
+    }
   },
 );

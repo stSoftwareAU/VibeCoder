@@ -7,6 +7,10 @@
  * cases below supply diff evidence. Their original assertions — which prose
  * item is flagged — are unchanged.
  *
+ * Issue #3657: trigger-closed is driven by the independent verifier's verdict,
+ * never by summary prose. The cases below supply a FIXED verdict unless they
+ * test that item.
+ *
  * Australian English throughout.
  */
 
@@ -24,6 +28,11 @@ import {
   type SecurityFixDiffEvidence,
 } from "../lib/security_fix_gate.ts";
 import type { SecurityFixDiscrimination } from "../lib/security_fix_discrimination.ts";
+import type {
+  SecurityFixGateStatus,
+  SecurityFixVerdict,
+  SecurityFixVerification,
+} from "../lib/security_fix_verdict.ts";
 
 /** The worker-executed record a discriminating test produces: red then green. */
 const RED_GREEN: SecurityFixDiscrimination = {
@@ -55,6 +64,31 @@ const GOOD_DIFF: SecurityFixDiffEvidence = {
 +  assertThrows(() => query("' OR 1=1 --"));
 +});`,
 };
+
+/**
+ * A checked verifier verdict. The gate reads only the verdict; each gate answer
+ * shows the gate that would fail for it.
+ */
+function verified(verdict: SecurityFixVerdict): SecurityFixVerification {
+  const answer = (status: SecurityFixGateStatus) => ({
+    status,
+    citation: "worker/deno/lib/db.ts:1",
+    rationale: "",
+  });
+  const gates = {
+    sink_mitigated: answer("pass"),
+    reachability: answer("pass"),
+    class_eliminated: answer("pass"),
+    sweep_complete: answer("pass"),
+  };
+  if (verdict === "NOT_FIXED") gates.sink_mitigated = answer("fail");
+  if (verdict === "PARTIAL") gates.class_eliminated = answer("fail");
+  if (verdict === "INCONCLUSIVE") gates.sweep_complete = answer("skipped");
+  return { kind: "checked", verdict, gates };
+}
+
+/** The independent verifier's verdict that the original trigger is closed. */
+const FIXED_VERIFICATION = verified("FIXED");
 
 // --- hasSecurityLabel -------------------------------------------------------
 
@@ -408,7 +442,7 @@ Deno.test("evaluateSecurityFixGate - perfect prose alone does not pass the gate"
   assertEquals(result.ok, false);
   assertEquals(result.missing.includes("test-file-changed"), true);
   assertEquals(result.missing.includes("test-identifier-in-diff"), true);
-  // The trigger-closed statement is satisfied — only the machine checks fail.
+  // The verifier's FIXED verdict satisfies trigger-closed — only the machine checks fail.
   assertEquals(result.missing.includes("trigger-closed"), false);
 });
 
@@ -481,14 +515,14 @@ Deno.test("evaluateSecurityFixGate - blocks when the diff could not be collected
 
 // --- evaluateSecurityFixGate: active + missing prose ------------------------
 
-Deno.test("evaluateSecurityFixGate - flags a missing trigger-closed statement on a bare summary", () => {
+Deno.test("evaluateSecurityFixGate - flags trigger-closed on a bare summary when the verifier is not FIXED", () => {
   const result = evaluateSecurityFixGate({
     prSummaryContent:
       "## Summary\nFixed the vulnerability in `tests/db_test.ts::rejects_injection`. Closes #100.",
     issueLabels: "security,work-on",
     diff: GOOD_DIFF,
     discrimination: RED_GREEN,
-    verification: FIXED_VERIFICATION,
+    verification: verified("NOT_FIXED"),
   });
   assertEquals(result.isSecurityFix, true);
   assertEquals(result.ok, false);
@@ -504,7 +538,7 @@ against the unfixed code and passes after the fix.`;
     issueLabels: "security",
     diff: GOOD_DIFF,
     discrimination: RED_GREEN,
-    verification: FIXED_VERIFICATION,
+    verification: verified("NOT_FIXED"),
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing, ["trigger-closed"]);
@@ -602,7 +636,7 @@ Deno.test("evaluateSecurityFixGate - tolerates empty content", () => {
     issueLabels: "security",
     diff: GOOD_DIFF,
     discrimination: RED_GREEN,
-    verification: FIXED_VERIFICATION,
+    verification: verified("NOT_FIXED"),
   });
   assertEquals(result.isSecurityFix, true);
   assertEquals(result.ok, false);
@@ -611,6 +645,93 @@ Deno.test("evaluateSecurityFixGate - tolerates empty content", () => {
     "test-identifier-in-diff",
     "trigger-closed",
   ]);
+});
+
+// --- trigger-closed: the independent verifier's verdict (Issue #3657) -------
+
+/** Evaluate GOOD_SUMMARY and GOOD_DIFF under a given verifier verdict. */
+function evaluateVerified(verification: SecurityFixVerification | null) {
+  return evaluateSecurityFixGate({
+    prSummaryContent: GOOD_SUMMARY,
+    issueLabels: "security",
+    diff: GOOD_DIFF,
+    discrimination: RED_GREEN,
+    verification,
+  });
+}
+
+Deno.test("evaluateSecurityFixGate - a FIXED verdict satisfies trigger-closed (Issue #3657)", () => {
+  const result = evaluateVerified(FIXED_VERIFICATION);
+  assertEquals(result.ok, true);
+  assertEquals(result.missing.includes("trigger-closed"), false);
+  assertEquals(result.missing.includes("trigger-closed-not-checked"), false);
+});
+
+Deno.test("evaluateSecurityFixGate - NOT_FIXED, PARTIAL and INCONCLUSIVE each block as trigger-closed (Issue #3657)", () => {
+  for (const verdict of ["NOT_FIXED", "PARTIAL", "INCONCLUSIVE"] as const) {
+    const result = evaluateVerified(verified(verdict));
+    assertEquals(result.ok, false, verdict);
+    assertEquals(result.missing, ["trigger-closed"], verdict);
+  }
+});
+
+Deno.test("evaluateSecurityFixGate - a not_checked verification blocks as not checked (Issue #3657)", () => {
+  const result = evaluateVerified({
+    kind: "not_checked",
+    reason: "runner timed out",
+  });
+  assertEquals(result.ok, false);
+  assertEquals(result.missing, ["trigger-closed-not-checked"]);
+});
+
+Deno.test("evaluateSecurityFixGate - a null verification blocks as not checked (Issue #3657)", () => {
+  const result = evaluateVerified(null);
+  assertEquals(result.ok, false);
+  assertEquals(result.missing, ["trigger-closed-not-checked"]);
+  assertEquals(result.missing.includes("trigger-closed"), false);
+});
+
+Deno.test("evaluateSecurityFixGate - summary prose cannot satisfy trigger-closed past a NOT_FIXED verdict (Issue #3657)", () => {
+  // Regression: a sentence the old prose check accepted must not clear the item.
+  const summary =
+    `${GOOD_SUMMARY}\n\nThe original trigger is now closed with no trivial bypass.`;
+  const result = evaluateSecurityFixGate({
+    prSummaryContent: summary,
+    issueLabels: "security",
+    diff: GOOD_DIFF,
+    discrimination: RED_GREEN,
+    verification: verified("NOT_FIXED"),
+  });
+  assertEquals(result.missing, ["trigger-closed"]);
+});
+
+Deno.test("buildSecurityFixGateMessage - a blocked verdict shows the independent verifier block (Issue #3657)", () => {
+  const message = buildSecurityFixGateMessage(
+    ["trigger-closed"],
+    [],
+    null,
+    verified("NOT_FIXED"),
+  );
+  assertStringIncludes(message, "Independent verifier verdict:");
+  assertStringIncludes(
+    message,
+    "verdict: NOT_FIXED (derived by the worker from the gate answers)",
+  );
+});
+
+Deno.test("buildSecurityFixGateMessage - a not checked verifier states its reason (Issue #3657)", () => {
+  const message = buildSecurityFixGateMessage(
+    ["trigger-closed-not-checked"],
+    [],
+    null,
+    { kind: "not_checked", reason: "runner timed out" },
+  );
+  assertStringIncludes(message, "Independent verifier verdict:");
+  assertStringIncludes(message, "not checked: runner timed out");
+  assertStringIncludes(
+    message,
+    "whether the original trigger is closed is unchecked",
+  );
 });
 
 // --- citedSecurityTests (Issue #3659) ---------------------------------------
@@ -699,16 +820,22 @@ Deno.test("buildSecurityFixGateMessage - names each missing item", () => {
     ],
     [],
     null,
+    null,
   );
   assertStringIncludes(message, "must FAIL against the base branch");
-  assertStringIncludes(message, "ORIGINAL TRIGGER");
+  assertStringIncludes(message, "independent read-only verifier");
   assertStringIncludes(message, "TEST FILE");
   assertStringIncludes(message, "TEST IDENTIFIER");
   assertStringIncludes(message, "fail loud");
 });
 
 Deno.test("buildSecurityFixGateMessage - explains an uncollectable diff", () => {
-  const message = buildSecurityFixGateMessage(["diff-unavailable"], [], null);
+  const message = buildSecurityFixGateMessage(
+    ["diff-unavailable"],
+    [],
+    null,
+    null,
+  );
   assertStringIncludes(message, "git fetch origin");
   assertStringIncludes(message, "blocked rather than assumed good");
 });
@@ -718,6 +845,7 @@ Deno.test("buildSecurityFixGateMessage - shows the recorded runs for a checked r
     ["test-discriminates"],
     [],
     { ...RED_GREEN, preFix: "pass", postFix: "pass" },
+    null,
   );
   assertStringIncludes(message, "Recorded discrimination runs");
   assertStringIncludes(message, "tests/db_test.ts::rejects_injection");
@@ -730,6 +858,7 @@ Deno.test("buildSecurityFixGateMessage - shows the reason for a not_checked reco
     ["discrimination-not-checked"],
     [],
     { kind: "not_checked", reason: "base ref origin/main did not resolve" },
+    null,
   );
   assertStringIncludes(message, "Recorded discrimination runs");
   assertStringIncludes(message, "base ref origin/main did not resolve");
@@ -740,12 +869,18 @@ Deno.test("buildSecurityFixGateMessage - omits the recorded runs when discrimina
     ["trigger-closed"],
     [],
     RED_GREEN,
+    null,
   );
   assertEquals(message.includes("Recorded discrimination runs"), false);
 });
 
 Deno.test("buildSecurityFixGateMessage - describes who runs each check, not that no execution is required (Issue #3659)", () => {
-  const message = buildSecurityFixGateMessage(["trigger-closed"], [], null);
+  const message = buildSecurityFixGateMessage(
+    ["trigger-closed"],
+    [],
+    null,
+    null,
+  );
   assertEquals(message.includes("No execution is required"), false);
   assertStringIncludes(message, "executed by the worker");
 });

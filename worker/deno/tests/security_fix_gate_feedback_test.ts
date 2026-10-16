@@ -213,6 +213,14 @@ Deno.test("gate feedback - the contract states every required evidence item", ()
   assertStringIncludes(contract, "path/to/foo_test.ts::the test name");
 });
 
+Deno.test("gate feedback - the contract says the verifier checks trigger-closed, not static reasoning (Issue #3657)", () => {
+  // Flattened so a line wrap in the prompt text does not split the phrase.
+  const contract = buildSecurityFixEvidenceContract().replace(/\s+/g, " ");
+  assertStringIncludes(contract, "independent read-only verifier");
+  assertStringIncludes(contract, "never on your summary");
+  assertEquals(contract.includes("static reasoning"), false);
+});
+
 Deno.test("gate feedback - the retry section names the missing items and the count", () => {
   const block: SecurityFixGateBlock = {
     repo: REPO,

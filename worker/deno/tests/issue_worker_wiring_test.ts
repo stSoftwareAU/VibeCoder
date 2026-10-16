@@ -520,6 +520,11 @@ Deno.test("createDefaultDeps - uses the caller's logger so issue-phase lines rea
   assertEquals(typeof fallback.logger.info, "function");
 });
 
+Deno.test("createDefaultDeps - wires the real security-fix verifier (Issue #3657)", () => {
+  const deps = createDefaultDeps();
+  assertEquals(typeof deps.claude.runSecurityFixVerifier, "function");
+});
+
 Deno.test("createDefaultDeps - wires the real security-fix discrimination runner (Issue #3659)", async () => {
   const deps = createDefaultDeps();
   const runner = deps.quality.runSecurityFixDiscrimination;

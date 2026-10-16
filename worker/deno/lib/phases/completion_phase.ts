@@ -175,6 +175,7 @@ import {
   referencesFindingId,
   type SecurityFixDiffEvidence,
 } from "../security_fix_gate.ts";
+import type { SecurityFixVerification } from "../security_fix_verdict.ts";
 import {
   buildMutationGateComment,
   DEFAULT_MUTATION_BUDGET_SECONDS,
@@ -383,6 +384,72 @@ async function runSecurityDiscrimination(input: {
   } catch (error) {
     return notChecked(
       `discrimination runner failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
+ * Ask the independent security-fix verifier for its verdict on the trigger
+ * (Issue #3657). It reads its own diff in a disposable checkout, so it needs
+ * no diff from the caller. Never throws: any failure to run is reported as
+ * `not_checked`, which the pure gate blocks on.
+ */
+async function runSecurityVerification(input: {
+  comparableBase: Awaited<ReturnType<typeof resolveComparableBaseRef>>;
+  repo: string;
+  issueNumber: number;
+  issueTitle: string;
+  issueBody: string;
+  repoPath: string;
+  config: WorkerConfig;
+  state: PhaseState;
+  deps: WorkerDeps;
+}): Promise<SecurityFixVerification> {
+  const { comparableBase, config, state, deps } = input;
+  const logger = deps.logger;
+  const notChecked = (reason: string): SecurityFixVerification => {
+    logger.warn("Security-fix verifier did not run", { reason });
+    return { kind: "not_checked", reason };
+  };
+  if (!comparableBase.ok) {
+    return notChecked(
+      `the base ref is unresolvable: ${comparableBase.error.message}`,
+    );
+  }
+  const verifier = deps.claude.runSecurityFixVerifier;
+  if (!verifier) {
+    return notChecked("the security-fix verifier is not wired");
+  }
+  try {
+    const result = await verifier({
+      repo: input.repo,
+      issueNumber: input.issueNumber,
+      issueTitle: input.issueTitle,
+      findingBody: input.issueBody,
+      repoPath: input.repoPath,
+      baseRef: comparableBase.value,
+      timeoutSeconds: config.claudeTimeout,
+      killAfterSeconds: config.claudeKillAfter,
+      model: config.claudeModel || undefined,
+      maxRetries: config.maxRateLimitRetries,
+      logger,
+    });
+    if (result.run) recordClaudeRunStats(state, result.run);
+    if (result.verification.kind === "checked") {
+      logger.info("Security-fix verifier ran", {
+        verdict: result.verification.verdict,
+      });
+    } else {
+      logger.warn("Security-fix verifier did not run", {
+        reason: result.verification.reason,
+      });
+    }
+    return result.verification;
+  } catch (error) {
+    return notChecked(
+      `security-fix verifier failed: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
@@ -2558,7 +2625,11 @@ async function completionBody(
   // diff — a test file is changed, and the test identifier the summary names
   // really appears in that diff — and that test is then executed red→green
   // against the base and the fix (Issue #3659). The prose regression linkage
-  // was dropped: a sentence cannot show a test discriminates. Fail loud rather
+  // was dropped: a sentence cannot show a test discriminates. Whether the
+  // trigger itself is closed is judged by an independent read-only verifier
+  // (Issue #3657), which sees the finding and the branch diff but never the
+  // PR summary; only its FIXED verdict satisfies that item, and a verifier
+  // that cannot run blocks rather than passing unchecked. Fail loud rather
   // than mask a fault as success (Issue #3234). Per-repo only (Issue #3239);
   // opt out with the `skip_security_fix_check` repo config.
   //
@@ -2607,11 +2678,30 @@ async function completionBody(
       });
     }
 
+    // The independent verifier's verdict on the trigger (Issue #3657). It
+    // reads its own diff in a disposable checkout, so it runs whenever the
+    // gate is active, whether or not the diff above was collected.
+    let verification: SecurityFixVerification | null = null;
+    if (gateActive) {
+      verification = await runSecurityVerification({
+        comparableBase,
+        repo,
+        issueNumber,
+        issueTitle: ctx.issueTitle,
+        issueBody: ctx.issueBody,
+        repoPath: state.repoPath,
+        config,
+        state,
+        deps,
+      });
+    }
+
     const securityGate = evaluateSecurityFixGate({
       prSummaryContent: prBody,
       issueLabels,
       diff: securityDiff,
       discrimination,
+      verification,
     });
     // The verdict is carried in worker run state so the next attempt reads it
     // from a trusted channel (Issue #4057). The gate's issue comment cannot
@@ -2635,7 +2725,12 @@ async function completionBody(
       // owns the persistence, the comment and any escalation (Issue #1575).
       state.securityGateBlocks = [
         ...(state.securityGateBlocks ?? []),
-        { missing: securityGate.missing, declarations, discrimination },
+        {
+          missing: securityGate.missing,
+          declarations,
+          discrimination,
+          verification,
+        },
       ];
       return {
         status: "failure",
@@ -2643,6 +2738,7 @@ async function completionBody(
           securityGate.missing,
           declarations,
           discrimination,
+          verification,
         ),
       };
     }

@@ -53,21 +53,36 @@ Deno.test("gate retry - the prompt replays the verdict and forbids new work", ()
 
 Deno.test("gate retry - one verdict renders the ordinary block message", () => {
   const comment = buildSecurityFixGateBlockComment([
-    { missing: ["trigger-closed"], declarations: [], discrimination: null },
+    {
+      missing: ["trigger-closed"],
+      declarations: [],
+      discrimination: null,
+      verification: null,
+    },
   ]);
 
   assertStringIncludes(comment, "PR creation blocked");
-  assertStringIncludes(comment, "ORIGINAL TRIGGER");
+  assertStringIncludes(comment, "independent read-only verifier");
   assertEquals(comment.includes("Earlier verdicts in this run"), false);
 });
 
 Deno.test("gate retry - two verdicts ride in one comment", () => {
   const comment = buildSecurityFixGateBlockComment([
-    { missing: ["test-file-changed"], declarations: [], discrimination: null },
-    { missing: ["trigger-closed"], declarations: [], discrimination: null },
+    {
+      missing: ["test-file-changed"],
+      declarations: [],
+      discrimination: null,
+      verification: null,
+    },
+    {
+      missing: ["trigger-closed"],
+      declarations: [],
+      discrimination: null,
+      verification: null,
+    },
   ]);
 
-  assertStringIncludes(comment, "ORIGINAL TRIGGER");
+  assertStringIncludes(comment, "independent read-only verifier");
   assertStringIncludes(comment, "Earlier verdicts in this run");
   assertStringIncludes(comment, "Attempt 1: test-file-changed");
 });
@@ -136,8 +151,14 @@ async function recover(launchFails: boolean) {
           missing: ["test-file-changed"],
           declarations: [],
           discrimination: null,
+          verification: null,
         },
-        { missing: ["trigger-closed"], declarations: [], discrimination: null },
+        {
+          missing: ["trigger-closed"],
+          declarations: [],
+          discrimination: null,
+          verification: null,
+        },
       ],
     };
     const deps = createMockDeps({
