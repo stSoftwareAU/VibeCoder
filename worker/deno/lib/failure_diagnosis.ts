@@ -281,12 +281,14 @@ export interface WorkerGateMarker {
  * Every worker-written gate refusal, keyed by the prefix its failure reason
  * opens with (Issue #3735). A failure reason that quotes text the worker did
  * not write (tool output, agent text, issue or comment text) opens with one of
- * these markers, so the quoted text cannot forge a worse category. Every
- * classifier checks this registry with `startsWith` before its free-text rules:
- * `detectFailureCategory`, `classifyRunFailure`, `classifyCodingFailure`,
- * `detectHostFault`, and, via `isWorkerGateFailureRecord`, the host-fault and
- * milestone-refusal label-release sweeps. `shouldRetryInfrastructureFailure`
- * follows through `detectFailureCategory`. A new gate is one entry here.
+ * these markers, so the quoted text cannot forge a worse category.
+ * `detectFailureCategory` and `detectHostFault` read it with `startsWith` on
+ * the message (`workerGateCategoryOf`) before their free-text rules;
+ * `classifyRunFailure` and `classifyCodingFailure` first test the category they
+ * are given (`isWorkerGateCategory`); the host-fault and milestone-refusal
+ * label-release sweeps skip a posted record whose head category is registered
+ * (`isWorkerGateFailureRecord`). `shouldRetryInfrastructureFailure` follows
+ * through `detectFailureCategory`. A new gate refusal is one entry here.
  *
  * `PRE_PUSH_LOOKUP_FAILED_MARKER` is deliberately NOT registered: it maps to
  * `push_failure` (infrastructure, retried in-run), not an agent outcome.

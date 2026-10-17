@@ -99,8 +99,8 @@ the fault immediately rather than swallowing it into a green result.
   (`classifyCodingFailure` takes it from `detectFailureCategory`, and
   `shouldRetryInfrastructureFailure` follows through `detectFailureCategory`);
   the label-release sweeps skip any worker gate record
-  (`isWorkerGateFailureRecord`). A new gate is one registry entry; no
-  classifier names a gate marker of its own.
+  (`isWorkerGateFailureRecord`). A new gate refusal is one registry entry,
+  which each reader above then sees with no edit of its own.
   Without such a marker, the quoted cause line that the bullet above asks for
   lets a quoted `rate limit`, `timeout`, `SIGKILL`, `command not found`,
   `ENOSPC` or `Error:` turn a gate block into a transient, killed,
@@ -1091,9 +1091,9 @@ stale. Before calling a gate done (Issue #3149):
    the next line (`hasFollowUpChainStop` in
    `worker/deno/lib/missing_criterion_close_guard.ts`), or a `startsWith` on
    the worker-written prefix (`SUMMARY_RULE_GATE_MARKER` in
-   `worker/deno/lib/failure_diagnosis.ts`; every worker gate prefix is an
-   entry of `WORKER_GATE_MARKERS`, read by `workerGateCategoryOf`) — or after
-   the agent part has been
+   `worker/deno/lib/failure_diagnosis.ts`, one of the gate-refusal prefixes
+   registered in `WORKER_GATE_MARKERS` and read by
+   `workerGateCategoryOf`) — or after the agent part has been
    neutralised before the worker appends its own marker
    (`neutraliseAgentMarkers` in
    `worker/deno/lib/agent_marker_neutralisation.ts`,
