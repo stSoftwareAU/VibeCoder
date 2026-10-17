@@ -27,6 +27,12 @@
  * carries labels or assignees across: the body gets a `Labels not migrated:`
  * note instead.
  *
+ * Direct `gh issue create` call sites (and `gh api` REST or GraphQL issue
+ * creation) elsewhere in `worker/deno/lib` and
+ * `worker/deno/commands` are gated by the `issue_create_routing_check.ts`
+ * allowlist (Issue #3746): a new direct call site fails its test unless it is
+ * routed through `fileRoutedIssue` or listed with a one-line reason.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
@@ -107,11 +113,14 @@ export interface FileRoutedIssueOptions extends IssueRoutingGithubDeps {
 export class RoutedIssueFilingError extends Error {
   readonly step: RoutedIssueStep;
   readonly repository: string;
+  /** The routing decision, or `null` when the classify step itself failed. */
+  readonly decision: RoutingDecision | null;
 
   constructor(
     step: RoutedIssueStep,
     repository: string,
     cause: unknown,
+    decision: RoutingDecision | null,
   ) {
     super(
       `Routed issue filing failed at step "${step}" for ${repository}: ${
@@ -122,6 +131,7 @@ export class RoutedIssueFilingError extends Error {
     this.name = "RoutedIssueFilingError";
     this.step = step;
     this.repository = repository;
+    this.decision = decision;
   }
 }
 
@@ -169,12 +179,13 @@ function parseCreatedNumber(output: string): number {
 async function step<T>(
   name: RoutedIssueStep,
   repository: string,
+  decision: RoutingDecision | null,
   fn: () => Promise<T> | T,
 ): Promise<T> {
   try {
     return await fn();
   } catch (error) {
-    throw new RoutedIssueFilingError(name, repository, error);
+    throw new RoutedIssueFilingError(name, repository, error, decision);
   }
 }
 
@@ -184,7 +195,8 @@ async function step<T>(
  *
  * @throws RoutedIssueFilingError naming the failed step and repository; its
  *   `cause` is the underlying error (an `IssueRoutingPermissionError` for a
- *   refused write)
+ *   refused write) and its `decision` is the routing decision, or `null` when
+ *   classify failed
  */
 export async function fileRoutedIssue(
   draft: RoutedIssueDraft,
@@ -199,6 +211,7 @@ export async function fileRoutedIssue(
   const decision = await step(
     "classify",
     opts.targetRepo,
+    null,
     () =>
       opts.decision ??
         classifyIssueRouting(draft, opts.targetRepo, opts.context),
@@ -229,6 +242,7 @@ export async function fileRoutedIssue(
   const existing = await step(
     "search",
     repository,
+    decision,
     () => findRoutingDuplicates(repository, draft.title, deps),
   );
   if (existing.length > 0) {
@@ -238,6 +252,7 @@ export async function fileRoutedIssue(
   await step(
     "permission",
     repository,
+    decision,
     () => requireWriteAccess(repository, deps),
   );
   if (opts.dryRun) return result("would-create", null);
@@ -259,6 +274,7 @@ export async function fileRoutedIssue(
   const number = await step(
     "create",
     repository,
+    decision,
     async () =>
       parseCreatedNumber(
         await gh([
@@ -279,12 +295,13 @@ export async function fileRoutedIssue(
   const after = await step(
     "recheck",
     repository,
+    decision,
     () => findRoutingDuplicates(repository, draft.title, deps),
   );
   const older = after.find((n) => n < number);
   if (older === undefined) return result("created", number);
 
-  await step("close-duplicate", repository, () =>
+  await step("close-duplicate", repository, decision, () =>
     gh([
       "issue",
       "close",

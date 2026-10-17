@@ -53,20 +53,16 @@ export interface CreateLabelCheckResult {
  * Kept deliberately short, and every entry carries its reason:
  *   - `guarded_issue_labels.ts` — the chokepoint itself, which is where
  *     `--label` is supposed to be written;
- *   - `github.ts` — its labels come from the model's `suggest-improvements`
- *     output rather than a worker-curated constant. Externally-derived
- *     labels cannot pass a positive allowlist that enumerates worker
- *     content, so that path is guarded the other way round: by the
- *     reserved-label denylist in `filterReservedLabelsWithWarning`
- *     (Issue #2825);
  *   - `issue_routing_filing.ts` — the routed filing entry point (Issue
  *     #3743). Its labels come from the caller's draft (an operator's
- *     `route-issue --label`, a suggested improvement), so it is guarded the
- *     same way as `github.ts`, by `filterReservedLabelsWithWarning`.
+ *     `route-issue --label`, a suggested improvement). Externally-derived
+ *     labels cannot pass a positive allowlist that enumerates worker
+ *     content, so they are guarded the other way round: by the
+ *     reserved-label denylist in `filterReservedLabelsWithWarning`
+ *     (Issue #2825).
  */
 export const CREATE_LABEL_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   "worker/deno/lib/guarded_issue_labels.ts",
-  "worker/deno/lib/github.ts",
   "worker/deno/lib/issue_routing_filing.ts",
 ]);
 
