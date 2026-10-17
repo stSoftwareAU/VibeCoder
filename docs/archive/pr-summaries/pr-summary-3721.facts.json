@@ -367,8 +367,8 @@
         "path": "worker/deno/lib/pr_bot_lookup.ts",
         "line": 84,
         "outcome": "bot markerless body preservation",
-        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
-        "testName": "CI maintenance skips markerless bots and refreshes missing review metadata",
+        "test": "worker/deno/tests/pr_bot_lookup_test.ts",
+        "testName": "listBotPrs - carries the maintenance PrEntry fields through",
         "flipWentRed": "Flipped bot markerless body preservation in an isolated copy; this named test failed, then the original was restored."
       },
       {

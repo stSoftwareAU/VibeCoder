@@ -17,6 +17,25 @@ Reconcile lifecycle-ledger events into assignment and cohort estimates, with rol
 
 - Initial invocations have no PR identity, so mixed successful/abandoned siblings permit waste attribution only for explicitly linked follow-on records.
 
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Each fixture reconciles to a hand-computed expected total, by role and overall. — evidence: `worker/deno/tests/fixtures/lifecycle/scenarios.ts` defines six literal expected totals and role breakdowns, asserted by `worker/deno/tests/lifecycle_reconcile_test.ts` — reviewer: met
+- **met** — The restart fixture's duplicated events are counted once. — evidence: `worker/deno/tests/lifecycle_reconcile_test.ts::lifecycle reconciliation fixture: restart` — reviewer: met
+- **met** — Spend from a failed attempt and a timed-out attempt is included in the cohort total and in wasted spend. — evidence: `worker/deno/tests/lifecycle_reconcile_test.ts::lifecycle reconciliation fixture: failure` and `lifecycle reconciliation fixture: retry` assert total and wasted values for both results — reviewer: met
+- **met** — Unknown usage or pricing appears as a non-zero unknown count with `partial: true`, never as 0 USD. — evidence: `worker/deno/tests/lifecycle_reconcile_test.ts::lifecycle reconciliation retains unknown usage and pricing as a partial estimate` and `lifecycle reconciliation preserves the priced part of split-model usage` — reviewer: met
+- **partial** — Tests and `./quality.sh` pass. — evidence: 220 focused integration tests passed; exact frozen lifecycle tests passed independently — reviewer: partial — reason: The complete official quality gate is pending and must pass before PR creation.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — KISS/DRY and the review-enforced over-engineering checks: no standard-library reinvention, unnecessary dependency, single-implementation abstraction or duplicated in-repo policy; the observer reuses the existing CI decision, ledger validation, event keys and maintenance hooks.
+- **clean** — Fail-loud handling, allowlisted ledger data, old cache compatibility, deterministic deduplication, explicit unknown cost bounds, Australian English and scope discipline checked. Reopen/reclose, stale cached OPEN, current-head and late-quality observations have regression coverage.
+- **clean** — Tests exercise public behaviour. Fifty-one unique runtime branch mutants were killed with named failing tests matching the facts file. The sole existing expected-object change adds the carried body while retaining every previous field; removing only body copying made the existing named test fail. No assertion coverage was discarded.
+- **clean** — Quality evidence is accurately limited to completed scoped checks; full `./quality.sh` remains outstanding before PR creation. No remaining production or documentation correctness finding.
+
 ## Evidence
 
 The six fixtures in `worker/deno/tests/fixtures/lifecycle/scenarios.ts` assert hand-computed totals and roles for success, multiple PRs, failure, retry, cutoff and replay. `lifecycle_reconcile_test.ts` adds partial estimates, unknown counts, multiple files, cohort conflicts and attributed sibling waste. Shared validation and mutation evidence are in [pr-summary-3721.md](pr-summary-3721.md) and [its facts file](pr-summary-3721.facts.json).

@@ -43,6 +43,8 @@ the worker.
   - [Why it was rejected](#why-it-was-rejected)
   - [What remains in the code](#what-remains-in-the-code)
 - [Token Usage & Cost Tracking](#token-usage--cost-tracking)
+  - [Estimated API-equivalent cost and lifecycle ledger](#estimated-api-equivalent-cost-and-lifecycle-ledger)
+  - [Lifecycle outcomes and gated success](#lifecycle-outcomes-and-gated-success)
   - [Token Extraction](#token-extraction)
   - [Model Pricing](#model-pricing)
   - [Credit Logging](#credit-logging)
@@ -135,6 +137,8 @@ a section without a marker, fails `deno test`.
 | [Why it was rejected](#why-it-was-rejected) | ➖ | ➖ | ➖ | ➖ | The async/bounded-run mismatch is the worker's, not a vendor's |
 | [What remains in the code](#what-remains-in-the-code) | ➖ | ➖ | ➖ | ➖ | Offline estimation helpers only; nothing calls them at run time |
 | **[Token Usage & Cost Tracking](#token-usage--cost-tracking)** | ✅ | ✅ | ✅ | ✅ | Logged with a `provider` id. Codex and DeepSeek usage parses and is priced from the id's own row at the vendor's API-equivalent list price. Gemini's usage now decodes too ([#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938)), and its ids carry the same API-equivalent rows |
+| [Estimated API-equivalent cost and lifecycle ledger](#estimated-api-equivalent-cost-and-lifecycle-ledger) | ✅ | ✅ | ✅ | ✅ | Shared schema and token-pricing estimate; missing usage or pricing remains explicitly unknown for every provider |
+| [Lifecycle outcomes and gated success](#lifecycle-outcomes-and-gated-success) | ✅ | ✅ | ✅ | ✅ | Shared PR observations and classifier; success requires the same pre-merge quality and review evidence regardless of provider |
 | [Token Extraction](#token-extraction) | ✅ | ✅ | ✅ | ✅ | Codex usage is decoded from `turn.completed` / `token_count` (#1701). Gemini usage is decoded from its terminal `result` event's `stats.models` (#1938); a run that reports none is still warned about once, flagged `usageUnknown`, never zero (#366). DeepSeek emits the Claude CLI's `stream-json`, which the shared extractor reads |
 | [Model Pricing](#model-pricing) | ✅ | ✅ | ✅ | ✅ | Claude rows are the rate Anthropic bills. The eight routable Codex/Gemini/DeepSeek ids carry **API-equivalent** rows — the vendor's API list price for the same tokens — never a bill, because those providers run on a fixed-price subscription — and the run-stats sub-bullet says `(API-equivalent)` so the basis travels with the figure. An id outside the table is still charged at the upper bound and named in `unpricedModels` |
 | [Credit Logging](#credit-logging) | ✅ | ⚠️ | ⚠️ | ⚠️ | The entry is written and names the provider; Codex token fields are measured when the CLI reports them, else `usageUnknown`; cost comes from the model id's own row — API-equivalent for a non-Claude id — and is an upper bound only when the id has no row at all |
@@ -2702,6 +2706,8 @@ which only *reports* what a hypothetical discount would be. No
 
 ### Estimated API-equivalent cost and lifecycle ledger
 
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the ledger and reconciliation share one schema and estimate definition; incomplete telemetry remains explicit.
+
 **Estimated API-equivalent USD** means observed input, output, cache-creation
 and cache-read tokens multiplied by the published per-model pricing rows used by
 `cost_estimate.ts`, divided by one million. It is always an estimate of the API
@@ -2773,6 +2779,8 @@ attributed follow-on costs are counted as wasted. Missing assignment records
 produce an `unknown` cohort; conflicting recorded cohorts are refused.
 
 ### Lifecycle outcomes and gated success
+
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — outcomes depend on the PR's observed state and gates, independently of its coding provider.
 
 `classifyLifecycleOutcome(events, cutoff?)` returns one assignment state and
 retains each PR's own state. The live view omits the cutoff; a supplied cutoff
