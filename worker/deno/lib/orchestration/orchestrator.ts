@@ -332,22 +332,19 @@ export async function runExternalOrchestration(
   const existing = loaded.checkpoint;
   let resumed = false;
   let cp: OrchestrationCheckpoint;
-  if (existing !== undefined && existing.leaseId === leaseId) {
-    if (existing.state === "released") {
-      return {
-        state: "released",
-        reason: "lease already released",
-        managerOutput: existing.final?.managerOutput,
-        results: existing.results,
-        resumed: true,
-        invocations: existing.invocations,
-        costUsd: existing.costUsd,
-      };
-    }
+  if (
+    existing !== undefined && existing.leaseId === leaseId &&
+    existing.state !== "released"
+  ) {
     cp = existing;
     resumed = true;
   } else {
-    if (existing !== undefined) {
+    if (existing !== undefined && existing.leaseId === leaseId) {
+      // A released checkpoint is a completed prior run, not an interrupted one.
+      log(
+        `orchestration checkpoint for ${options.issueId} is released (the prior run completed); starting afresh under lease ${leaseId}`,
+      );
+    } else if (existing !== undefined) {
       log(
         `orchestration checkpoint for ${options.issueId} belongs to lease ${existing.leaseId}; starting afresh under lease ${leaseId}`,
       );

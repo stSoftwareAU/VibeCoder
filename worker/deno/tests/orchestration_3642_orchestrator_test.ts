@@ -98,18 +98,37 @@ Deno.test("handoff: manager plans, executor carries out, manager reviews", async
   });
 });
 
-Deno.test("a released run returns released on the same lease without calling again", async () => {
+Deno.test("a released run starts afresh on the same lease and calls the provider again", async () => {
   await withWorkDir(async (dir) => {
-    const first = fakeInvoker();
-    await runExternalOrchestration(optionsFor(dir, first.invoke));
+    const costed: Script = (call) => ({
+      ok: true,
+      output: `${phaseOf(call)} output`,
+      costUsd: 1,
+    });
+    const first = fakeInvoker(costed);
+    const firstOutcome = await runExternalOrchestration(
+      optionsFor(dir, first.invoke),
+    );
+    assertEquals(firstOutcome.state, "done");
+    assertEquals(firstOutcome.invocations, 3);
+    assertEquals(firstOutcome.costUsd, 3);
 
-    const second = fakeInvoker();
+    const second = fakeInvoker(costed);
     const outcome = await runExternalOrchestration(
       optionsFor(dir, second.invoke),
     );
-    assertEquals(outcome.state, "released");
-    assertEquals(outcome.resumed, true);
-    assertEquals(second.calls.length, 0);
+    assertEquals(outcome.state, "done");
+    assertEquals(outcome.resumed, false);
+    assertEquals(second.calls.map(phaseOf), ["plan", "execute", "review"]);
+    assertEquals(outcome.managerOutput, "review output");
+    assertEquals(outcome.results.length, 3);
+    // Counts and cost restart from zero rather than carrying the prior run over.
+    assertEquals(outcome.invocations, 3);
+    assertEquals(outcome.costUsd, 3);
+
+    const loaded = await loadCheckpoint(`${dir}/checkpoints`, "3642");
+    assertEquals(loaded.checkpoint?.state, "released");
+    assertEquals(loaded.checkpoint?.invocations, 3);
   });
 });
 

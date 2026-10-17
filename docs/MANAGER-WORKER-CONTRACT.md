@@ -51,16 +51,16 @@ relative to the repository root.
 
 | Area | Where | What it does today |
 | --- | --- | --- |
-| Split switch | `worker/deno/lib/issue_executor_split.ts:42-51` | `isIssueExecutorSplitEnabled` returns false unless the phase is `issue`. A repo boolean overrides the host value. |
+| Split switch | `worker/deno/lib/issue_executor_split.ts:42-59` | `isIssueExecutorSplitEnabled` returns false unless the phase is `issue`. A repo boolean overrides the host value. |
 | Host defaults | `worker/deno/lib/config_defaults.ts:506`, `:516`, `:522` | `issueExecutorSplit: true`, `issueSubAgentTier: "haiku"`, `issueReviewerAgents: true`. |
 | Config load | `worker/deno/lib/config.ts:982-1006` | Loads the three keys (`:982-983`, `:987-989`, `:992-993`); the tier goes through `resolveHostIssueSubAgentTier`. `external_orchestration` and its settings load at `:997-1006`, and the settings are validated at `:1347`. |
 | Production wiring | `worker/deno/commands/execute_claude_phase.ts:173-179` | Threads the host values into the phase options. |
 | Tier resolution | `worker/deno/lib/issue_sub_agent_tier.ts:43`, `:72` | Host value first, then the `repo_config` override. |
 | Executor definitions | `worker/deno/lib/issue_executor_agents.ts:37`, `:54`, `:114`, `:146` | Sonnet model constant, Haiku model constant, `["Agent"]` disallowed, `buildIssueExecutorAgents`. |
 | Reviewer definitions | `worker/deno/lib/issue_executor_agents.ts:208`, `:296` | Read-only tools `Read`, `Grep`, `Glob`; `buildIssueReviewerAgents`. |
-| Explorer definition | `worker/deno/lib/issue_executor_agents.ts:337`, `:374` | Haiku, read-only. Built only on the haiku tier (see assembly below). |
-| Assembly | `worker/deno/lib/issue_executor_agents.ts:420-435` | `buildIssueRunAgents` returns `undefined` when the split is off, reviewers are off and the tier is not haiku (`:424-426`). The explorer is added only on the haiku tier (`:435`). |
-| Phase wiring | `worker/deno/lib/execute_claude_phase.ts:1326-1348` | Resolves the split (`:1326-1331`), which is forced off when `externalOrchestration` is on (`:1326`). Then resolves the tier (the `"sonnet"` fallback applies only when no option is passed), then calls `buildIssueRunAgents` at `:1348`. The external path builds no `--agents` (`:1346-1347`). |
+| Explorer definition | `worker/deno/lib/issue_executor_agents.ts:337`, `:340`, `:374` | Haiku, read-only. Built only on the haiku tier (see assembly below). |
+| Assembly | `worker/deno/lib/issue_executor_agents.ts:420-436` | `buildIssueRunAgents` returns `undefined` when the split is off, reviewers are off and the tier is not haiku (`:424-426`). The explorer is added only on the haiku tier (`:434`). |
+| Phase wiring | `worker/deno/lib/execute_claude_phase.ts:1326-1348` | Resolves the split (`:1326-1331`), which is forced off when `externalOrchestration` is on (`:1326`). Then resolves the tier (the `"sonnet"` fallback applies only when no option is passed), then calls `buildIssueRunAgents` at `:1348`. The external path builds no `--agents` (`:1346-1348`). |
 | Edit guard | `worker/deno/lib/issue_executor_enforcement.ts:47`, `:58`, `:124`, `:138` | Guarded tools are `Edit` and `Write`. A call with `agent_id` present (an executor) is allowed. A call without it (the advisor) is denied, unless its `file_path` is one of the advisor's own run-record files (`isAdvisorRunRecordPath`, `:98`, `:142-145`): the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` or the PR-feedback reply file `.pr_response_message`. |
 | Hook settings | `worker/deno/lib/issue_executor_enforcement.ts:205`, `:240` | `buildIssueExecutorHookSettings` and `resolveIssueExecutorHookSettings` build the `--settings` payload. |
 | Guard CLI | `worker/deno/lib/issue_edit_guard_cli.ts:46` | `runIssueEditGuard` is the hook entry point. |
@@ -232,9 +232,9 @@ Supporting lifecycle code, each cited from the file it lives in:
   `recordPhaseCompletion` increments the phase count on a session-state record
   (called from `worker/deno/lib/planning_processor.ts:1872`). `:216`
   `buildSessionResumeArgs` returns the `--resume` or `--session-id` arguments.
-  `:233-247` `sessionResumeForProvider` filters the stored state to the calling
+  `:233` `sessionResumeForProvider` filters the stored state to the calling
   provider. A state tagged with another `providerId` is dropped (`:238`). An
-  untagged legacy state is kept only for `claude` or `deepseek` (`:239-245`).
+  untagged legacy state is kept only for `claude` or `deepseek` (`:240-242`).
   DeepSeek calls it at `worker/deno/lib/agent_provider.ts:1125-1128`. Compaction
   is a separate path (`stream_compaction.ts:67-70`, see section 7).
 
@@ -296,24 +296,25 @@ stateDiagram-v2
   released --> [*]
 ```
 
-- **Retry.** `invokeRole` (`worker/deno/lib/orchestration/orchestrator.ts:500-583`)
+- **Retry.** `invokeRole` (`worker/deno/lib/orchestration/orchestrator.ts:497-580`)
   retries an `error` or `timeout` call up to `maxRetries` extra times
-  (`:552-555`). A retry does not change state, except in the execute phase,
-  where the run moves `executing` to `dispatched` before the retry (`:553`).
+  (`:549-551`). A retry does not change state, except in the execute phase,
+  where the run moves `executing` to `dispatched` before the retry (`:550`).
 - **Auth and quota.** An `auth` or `quota` failure is refused at once, with no
-  retry (`:532-551`), as `auth_failure` or `quota_exhausted`.
-- **Last attempt.** A final `timeout` ends the run as `timed_out` (`:556-564`).
-  A final `error` is refused as `retries_exhausted` (`:565-573`).
+  retry (`:529-548`), as `auth_failure` or `quota_exhausted`.
+- **Last attempt.** A final `timeout` ends the run as `timed_out` (`:553-561`).
+  A final `error` is refused as `retries_exhausted` (`:562-570`).
 - **Cancellation and budget.** `isCancelled` is checked before each call
-  (`stopBeforeCall`, `:414-422`), and a cancel ends the run as `cancelled`.
-  Invocation and cost limits stop the run before the call (`:429-443`).
+  (`stopBeforeCall`, `:411-443`), and a cancel ends the run as `cancelled`.
+  Invocation and cost limits stop the run before the call (`:426-441`).
 - **Stale lease.** A lease that has lapsed is refused as `stale_lease`
-  (`:401-406`). That refusal does not overwrite the checkpoint (`:395`).
-- **Terminal done.** An accepted review moves the run to `done` (`:671`), saves
-  the final checkpoint (`:672-676`), then moves it to `released` (`:678`). The
-  outcome the run reports is `done`, while the checkpoint ends `released`. The
-  gate returns the manager's last result only on `done`
-  (`issue_run_gate.ts:247-249`).
+  (`:398-403` on resume, `:420-425` before a call). That refusal does not overwrite the checkpoint (`:392`).
+- **Terminal done.** An accepted review moves the run to `done` (`:668`), saves
+  the final checkpoint (`:669-673`), then moves it to `released` (`:675`). The
+  outcome the run reports is `done`, while the checkpoint ends `released`. A
+  later run on the same lease does not resume that released checkpoint; it
+  starts afresh (see Leases below). The gate returns the manager's last result
+  only on `done` (`issue_run_gate.ts:247-249`).
 - **Recovering.** A resumed run enters `recovering`. The only moves out of it are
   to `planning`, `dispatched`, `refused` or `released` (`types.ts:200`).
 
@@ -347,13 +348,13 @@ sequenceDiagram
   The gate uses the default of 1. The gate refuses `maxConcurrency` above 1
   (`issue_run_gate.ts:179-188`), so an operator who sets 2 gets that refusal at
   run time. The orchestrator itself accepts any whole number of one or more
-  (`orchestrator.ts:130-132`).
+  (`orchestrator.ts:130-131`).
 - **Capabilities.** A probe builds one invocation through each provider's
   descriptor, carrying one agent, a settings payload and a denied tool, and
   reads back what the argv keeps (`worker/deno/lib/orchestration/capabilities.ts:70-97`).
   A denied tool counts as enforced only when `--disallowed-tools` in the argv
   carries it (`:85-87`). `assertRoleSupported` (`:130-166`) checks, in order:
-  the provider is a target with a descriptor (`unsupported_provider`); the
+  the provider is a known orchestration provider with a descriptor (`unsupported_provider`); the
   role's required compaction, which only the manager needs
   (`ROLE_REQUIRED_CAPABILITIES`, `:49-57`; `unsupported_capability`); and that
   every denied tool is enforced (`missing_tool_support`). Compaction is
@@ -365,7 +366,7 @@ sequenceDiagram
   Whether DeepSeek passes the denied-tool check is decided by its probe at run
   time, and this contract does not pre-judge it.
 - **Billing.** A role's provider is refused as `metered_billing` only when its
-  billing mode is `metered` (`worker/deno/lib/orchestrator.ts:302-314`;
+  billing mode is `metered` (`worker/deno/lib/orchestration/orchestrator.ts:303-312`;
   `worker/deno/lib/provider_billing.ts:115`). The `unknown` and
   `fixed-subscription` modes are not refused (`provider_billing.ts:86`, `:96`,
   `:120`).
@@ -380,17 +381,25 @@ sequenceDiagram
   terminal (`checkpoint.ts:25-46`). A file that is not JSON, is not an object,
   has another schema, is malformed or names another issue is ignored with a
   warning, and the run starts fresh (`checkpoint.ts:105-146`). Writes go to a
-  temporary file that is renamed over the target, and a failed rename removes
+  temporary file that is renamed over the checkpoint file, and a failed rename removes
   the temporary file (`checkpoint.ts:155-172`).
 - **Idempotency.** The key is `<issueId>:<role>:<attempt>:<sha256 hex of brief>`
   (`checkpoint.ts:62-76`). A call whose key already has a recorded output is not
-  sent again on resume (`checkpoint.ts:53-54`). A changed brief gives a new key.
+  sent again on resume (`orchestrator.ts:506-508`). A changed brief gives a new key.
 - **Leases.** The gate's lease id is `issue-<issueNumber>`, which is stable per
   issue so a resumed run matches its checkpoint (`issue_run_gate.ts:230-231`).
   Each envelope carries `leaseExpiresAt = now + leaseTtlMs`
-  (`orchestrator.ts:496`), with `leaseTtlMs` defaulting to 15 minutes
+  (`orchestrator.ts:493`), with `leaseTtlMs` defaulting to 15 minutes
   (`DEFAULT_LEASE_TTL_MS`, `:42`), and `heartbeatIntervalMs = floor(leaseTtlMs / 3)`
-  (`:497`). A stale lease is refused as described under Lifecycle above.
+  (`:494`). A stale lease is refused as described under Lifecycle above.
+- **Resume or start afresh.** Only a checkpoint that is not `released` and
+  carries the same lease id is resumed (`orchestrator.ts:335-340`, `resumed`
+  true). A checkpoint already in `released` is a completed run, so a later run
+  on the same lease starts afresh (`:341-352`): a fresh checkpoint overwrites the
+  released file, with `invocations`, `costUsd`, `steps` and `results` reset to
+  zero or empty, so the provider is called again. A checkpoint under another
+  lease also starts afresh. Both fresh starts log a warning and report
+  `resumed` false.
 
 ## 6. Permissions and credential isolation
 
@@ -427,8 +436,9 @@ sequenceDiagram
   - Claude: `withholdNonSubscriptionCredentials` (`worker/deno/lib/claude_env.ts:177`)
     keeps non-subscription credentials out of subscription runs.
   - Codex: `buildIsolatedCodexChildEnv` (`worker/deno/lib/codex_env.ts:116`)
-    deletes `OPENAI_API_KEY`, `CODEX_API_KEY` and `CODEX_HOME`, and fails closed
-    when a Codex home is selected.
+    deletes `OPENAI_API_KEY`, `CODEX_API_KEY` and `CODEX_HOME`. When a Codex home is
+    selected it passes only that home, so a revoked subscription fails
+    authentication rather than falling back to an API key (`:105-111`).
   - DeepSeek: `ANTHROPIC_AUTH_TOKEN` is set only from `DEEPSEEK_API_KEY`
     (`worker/deno/lib/deepseek_env.ts:172-173`).
   - Gemini: `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`) delegates to
@@ -509,7 +519,7 @@ is refused (section 8).
   returns to the Claude-native `--agents` path. No code revert is needed.
 - **Rollback of the Claude-native split.** Setting `issue_executor_split: false` and
   `issue_reviewer_agents: false` alone does not remove `--agents` on the default
-  `haiku` tier. `buildIssueRunAgents` (`worker/deno/lib/issue_executor_agents.ts:420-435`)
+  `haiku` tier. `buildIssueRunAgents` (`worker/deno/lib/issue_executor_agents.ts:420-436`)
   still adds the explorer definition from `buildIssueExplorerAgents()`
   (`worker/deno/lib/issue_executor_agents.ts:374`) when `issue_sub_agent_tier`
   is `"haiku"`. A full rollback to no `--agents` argument also sets

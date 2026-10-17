@@ -264,6 +264,31 @@ Deno.test("orchestration gate - a resumed run reuses the completed manager plan 
   });
 });
 
+Deno.test("orchestration gate - a later run for the same issue starts afresh after a completed run (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    // First run completes and leaves a released checkpoint under issue-3642.
+    const firstFake = fakeRunner();
+    const first = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, firstFake.runClaudeWithRetry),
+    );
+    assertEquals(first.ok, true);
+    assertEquals(firstFake.calls.length, 3);
+
+    // Second run, same issue and state dir (e.g. after PR feedback): it must
+    // call the provider again rather than returning the released checkpoint.
+    const secondFake = fakeRunner();
+    const second = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, secondFake.runClaudeWithRetry),
+    );
+    assertEquals(second.ok, true);
+    assertEquals(secondFake.calls.length, 3);
+    if (!second.ok) return;
+    assertEquals(second.value.output, "manager review");
+  });
+});
+
 Deno.test("orchestration gate - createDefaultDeps wires runExternalOrchestratedIssueRun (Issue #3642)", () => {
   const deps = createDefaultDeps();
   assertEquals(typeof deps.runExternalOrchestratedIssueRun, "function");
