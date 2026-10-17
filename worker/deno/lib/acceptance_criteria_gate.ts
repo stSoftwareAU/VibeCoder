@@ -79,6 +79,12 @@ const ACCEPTED_SCOPE_HEADING_RE =
 // must read it rather than treating the issue as stating no criteria.
 const DONE_WHEN_HEADING_RE = /^\s{0,3}#{1,6}\s+done\s+when\s*(?::\s*)?$/i;
 
+// A "Definition of done" heading (Issue #3761). stSoftwareAU/NEAT-AI#4061 stated
+// its criteria here rather than under "Acceptance Criteria", so every gate keyed
+// on extractAcceptanceCriteria treated it as stating none. Same tail as above.
+const DEFINITION_OF_DONE_HEADING_RE =
+  /^\s{0,3}#{1,6}\s+definition\s+of\s+done\s*(?::\s*)?$/i;
+
 // Any markdown heading — used as the section boundary.
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
 
@@ -152,26 +158,31 @@ function collectListItems(sectionLines: string[]): string[] {
  * Extract the acceptance criteria stated in an issue body.
  *
  * Reads the list items under the `## Acceptance Criteria` heading, with any
- * task-list checkbox stripped. An issue with no such heading — or one whose
- * heading carries no list items — has no criteria, and the gate does not apply.
+ * task-list checkbox stripped. When that heading carries no list items, it
+ * falls back to the list under a `## Definition of done` heading (Issue #3761).
+ * An issue with neither — or with headings that carry no list items — has no
+ * criteria, and the gate does not apply.
  *
  * @param issueBody - The raw issue body.
  * @returns The criterion texts, in body order (empty when there are none).
  */
 export function extractAcceptanceCriteria(issueBody: string): string[] {
-  return listItemsUnder(issueBody, ACCEPTANCE_HEADING_RE);
+  const criteria = listItemsUnder(issueBody, ACCEPTANCE_HEADING_RE);
+  if (criteria.length > 0) return criteria;
+  return listItemsUnder(issueBody, DEFINITION_OF_DONE_HEADING_RE);
 }
 
 /**
  * Extract the scope an issue settled on (Issue #2562): its acceptance criteria
- * when it states them, otherwise the list under a grill-me
- * `### Accepted scope so far` heading, otherwise the list under a
- * `## Done when` heading (Issue #3486).
+ * when it states them (the `## Acceptance Criteria` list, or the
+ * `## Definition of done` list when there is none — Issue #3761), otherwise
+ * the list under a grill-me `### Accepted scope so far` heading, otherwise the
+ * list under a `## Done when` heading (Issue #3486).
  *
  * Deliberately separate from {@link extractAcceptanceCriteria}: the closure
- * gate keeps reading only the planner's criteria, and this wider reading is
- * used where a run's delivery is judged against everything the issue accepted
- * — a degraded run (`degraded_delivery.ts`).
+ * gate keeps reading only the criteria list, and this wider reading is used
+ * where a run's delivery is judged against everything the issue accepted — a
+ * degraded run (`degraded_delivery.ts`).
  *
  * @param issueBody - The raw issue body.
  * @returns The scope items, in body order (empty when the issue states none).
