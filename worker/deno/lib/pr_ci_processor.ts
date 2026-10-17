@@ -972,7 +972,7 @@ async function _processCiFailureLocked(
   // The body returns from a dozen places; the CodeGraph outcome is attached
   // here instead, so every successful one carries it (Issue #2160).
   // The RTK outcome rides the same carrier (Issue #2384).
-  const carrier: CiRunCarrier = {};
+  const carrier: CiRunCarrier = { lifecycleAttempt: currentRetries + 1 };
   try {
     const result = await _processCiWithHeartbeat(
       input,
@@ -1057,6 +1057,23 @@ async function recordCiFixTierRun(
 ): Promise<void> {
   if (!carrier.agentRan) return;
   const { deps, logger } = processorDeps;
+  try {
+    await deps.infrastructure.recordPrFollowOn({
+      workDir: processorDeps.workRoot,
+      repo: input.repo,
+      prNumber: input.prNumber,
+      followOn: "ci_fix",
+      cycle: String(input.checkRunId),
+      attempt: carrier.lifecycleAttempt ?? 1,
+      runStats: carrier.lifecycleStats ?? [],
+    });
+  } catch (error) {
+    logger.error(
+      `Lifecycle follow-on recording failed for ${input.repo}#${input.prNumber}: ${
+        redactSecrets(error instanceof Error ? error.message : String(error))
+      }`,
+    );
+  }
   const tier = await fetchPrSubAgentTier(
     input.repo,
     input.prNumber,
@@ -1146,6 +1163,10 @@ async function _isDownstreamAggregator(
 
 /** What the body hands back to every one of its successful return paths. */
 interface CiRunCarrier {
+  /** Every retry's usage, separate from the existing fleet counters (Issue #3720). */
+  lifecycleStats?: (RunStats | undefined)[];
+  /** Durable retry number for this check or review cycle (Issue #3720). */
+  lifecycleAttempt?: number;
   codegraphContext?: CodegraphContextResult;
   /** Issue #2384: `record()` writes `savedTokens` into this same object. */
   rtkOutput?: RtkOutputResult;
@@ -1826,6 +1847,7 @@ async function _processCiWithHeartbeat(
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
       phase: "ci_fix",
+      captureInvocationStats: true,
       repo,
       cwd: processorDeps.workDir,
       logger,
@@ -1843,6 +1865,12 @@ async function _processCiWithHeartbeat(
     },
   );
   if (claudeResult.ok) runStatsSink.push(claudeResult.value.runStats);
+  const lifecycleStatsSink = carrier.lifecycleStats ??= [];
+  lifecycleStatsSink.push(
+    ...(claudeResult.ok
+      ? claudeResult.value.invocationStats ?? [claudeResult.value.runStats]
+      : [undefined]),
+  );
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
   if (claudeResult.ok) graft.record(claudeResult.value.runStats);
   // Issue #2384: the saved-token figure, read whether or not the invocation
@@ -1882,6 +1910,7 @@ async function _processCiWithHeartbeat(
     graft,
     rtk,
     runStatsSink,
+    lifecycleStatsSink,
   );
 
   // Always commit and push any pending work (Issue #1643).
@@ -2748,6 +2777,7 @@ async function _runPostClaudeQualityCheck(
   rtk: RtkRun,
   /** Issue #3404: collects the retry's stats for the run's USD figure. */
   runStatsSink: (RunStats | undefined)[],
+  lifecycleStatsSink: (RunStats | undefined)[],
 ): Promise<PostClaudeQualityResult> {
   const {
     logger,
@@ -2830,6 +2860,7 @@ async function _runPostClaudeQualityCheck(
         timeoutSeconds: claudeTimeout,
         noOutputTimeout: claudeNoOutputTimeout,
         phase: "ci_fix",
+        captureInvocationStats: true,
         repo: input.repo,
         cwd,
         logger,
@@ -2841,6 +2872,11 @@ async function _runPostClaudeQualityCheck(
       { maxRetries: maxRateLimitRetries },
     );
     if (retryResult.ok) runStatsSink.push(retryResult.value.runStats);
+    lifecycleStatsSink.push(
+      ...(retryResult.ok
+        ? retryResult.value.invocationStats ?? [retryResult.value.runStats]
+        : [undefined]),
+    );
     if (retryResult.ok) codegraph.record(retryResult.value.runStats);
     if (retryResult.ok) graft.record(retryResult.value.runStats);
     // Re-read against the first baseline, so the figure covers both spawns.

@@ -723,6 +723,7 @@ async function verifyInCheckout(
 
   const asked = await deps.ask({
     prompt,
+    lifecycleRole: "reviewer",
     phase: "issue",
     repo: input.repo,
     issueNumber: input.issueNumber,
