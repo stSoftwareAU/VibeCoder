@@ -46,7 +46,7 @@ flowchart TD
     F2 --> R
     PG -- pass --> PR[Create / finalise PR]
     M[.pr_response_message] --> RT[pr_feedback: retryReplyPlaceholdersOnce]
-    RT --> C[readPrResponseMessage backstop<br/>error log + "[result not reported]"]
+    RT --> C["readPrResponseMessage backstop<br/>error log + #quot;[result not reported]#quot;"]
     M --> C
     C --> PRC[Public PR comment]
 ```

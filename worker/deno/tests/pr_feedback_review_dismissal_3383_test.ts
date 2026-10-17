@@ -249,6 +249,8 @@ interface RunOptions {
   markBehaviour?: MarkBehaviour;
   logger?: Logger;
   captured?: CapturedGh;
+  feedbackVerifierFn?: PrFeedbackProcessorDeps["feedbackVerifierFn"];
+  finaliseError?: string;
 }
 
 async function runScenario(options: RunOptions) {
@@ -304,10 +306,18 @@ async function runScenario(options: RunOptions) {
       finalUnpushedCount: 0,
     };
     const gitOverrides: Partial<GitDeps> = {
-      commitAndPushPending: (() => {
-        options.events.push("commitAndPushPending");
-        return Promise.resolve({ ok: true, value: commitAndPushResult });
-      }) as unknown as GitDeps["commitAndPushPending"],
+      commitAndPushPending:
+        (async (...args: Parameters<GitDeps["commitAndPushPending"]>) => {
+          if (options.finaliseError) {
+            return { ok: false, error: new Error(options.finaliseError) };
+          }
+          if (options.feedbackVerifierFn && args[7]) {
+            const verdict = await args[7]();
+            if (!verdict.ok) return verdict;
+          }
+          options.events.push("commitAndPushPending");
+          return Promise.resolve({ ok: true, value: commitAndPushResult });
+        }) as unknown as GitDeps["commitAndPushPending"],
     };
 
     const deps = createMockDeps({
@@ -324,6 +334,7 @@ async function runScenario(options: RunOptions) {
       deps,
       workDir,
       workRoot: workDir,
+      feedbackVerifierFn: options.feedbackVerifierFn,
       ...(options.verifyPushFn ? { verifyPushFn: options.verifyPushFn } : {}),
     };
 
@@ -988,3 +999,105 @@ Deno.test(
     }
   },
 );
+
+Deno.test("review-fix verifier - persistent findings hold without push or dismissal after one recovery", async () => {
+  const events: string[] = [];
+  let checks = 0;
+  const { result, captured } = await runScenario({
+    input: makeInput(),
+    events,
+    runBehaviours: ["ok", "ok", "ok"],
+    feedbackVerifierFn: () => {
+      checks++;
+      return Promise.resolve({
+        ok: false,
+        error: new Error("Earlier finding 1 remains partly fixed"),
+      });
+    },
+  });
+  assertEquals(checks, 2);
+  assertEquals(result.ok && result.value.processed, false);
+  assertEquals(result.ok && result.value.changesPushed, false);
+  assertEquals(events.some((e) => e === "commitAndPushPending"), false);
+  assertEquals(
+    events.some((e) => e.startsWith("markCommentProcessed:")),
+    false,
+  );
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure:")).length,
+    1,
+  );
+  assertEquals(
+    captured.calls.some((args) => args.includes("--disable-auto")),
+    true,
+  );
+  assertEquals(
+    captured.calls.some((args) => args.includes("standing-violation")),
+    true,
+  );
+});
+
+Deno.test("review-fix verifier - recovery must clear before pushing", async () => {
+  const events: string[] = [];
+  let checks = 0;
+  await runScenario({
+    input: makeInput(),
+    events,
+    commitAndPushResult: {
+      committedNewChanges: true,
+      commitsPushed: 1,
+      finalUnpushedCount: 0,
+    },
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    feedbackVerifierFn: () => {
+      checks++;
+      return Promise.resolve(
+        checks === 1
+          ? { ok: false, error: new Error("partial") }
+          : { ok: true, value: undefined },
+      );
+    },
+  });
+  assertEquals(checks, 2);
+  assertEquals(events.filter((e) => e === "commitAndPushPending").length, 1);
+  assertEquals(
+    events.some((e) =>
+      e.startsWith("markCommentProcessed:pr_review:rv-555:addressed")
+    ),
+    true,
+  );
+});
+
+Deno.test("review-fix verifier - ordinary inline feedback retains its existing path", async () => {
+  let checks = 0;
+  await runScenario({
+    input: makeInput({ commentType: "review" }),
+    events: [],
+    feedbackVerifierFn: () => {
+      checks++;
+      return Promise.resolve({ ok: true, value: undefined });
+    },
+  });
+  assertEquals(checks, 0);
+});
+
+Deno.test("review-fix verifier - a pre-flight failure cannot turn a rebuttal into a resolved review", async () => {
+  const events: string[] = [];
+  const { result } = await runScenario({
+    input: makeInput(),
+    events,
+    runBehaviours: ["rebuttal"],
+    finaliseError: "pre-flight failed before verification",
+  });
+  assertEquals(result.ok && result.value.processed, false);
+  assertEquals(
+    events.some((e) => e.startsWith("markCommentProcessed:")),
+    false,
+  );
+  assertEquals(
+    events.some((e) =>
+      e.includes("handlePrCommentFailure:") && e.includes("pre-flight failed")
+    ),
+    true,
+  );
+});

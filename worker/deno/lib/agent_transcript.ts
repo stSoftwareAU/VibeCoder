@@ -21,8 +21,14 @@
  * console secret redaction (Issue #3661) before hitting disk. Redaction is
  * line-based with partial-line carry — a secret split across two stdout
  * chunks is reassembled before the redactor sees it. The stream is NDJSON,
- * so a line is always a complete event (embedded newlines arrive escaped);
- * line-level redaction therefore sees the same unit the logger does.
+ * so a line is always a complete event (embedded newlines arrive escaped).
+ *
+ * A line that parses as JSON is redacted value by value, not as raw text
+ * ({@link redactTranscriptLine}, Issue #3826): the redaction rules read the
+ * escaped form `key: \"value\"` as a bare value starting with `\`, masked
+ * only the backslash, and left both an unparseable line and the value itself
+ * on disk. The scheduled transcript scan skips a line it cannot parse, so a
+ * broken line hid every signal on it.
  *
  * The tee is telemetry, never control flow: a write failure disables the
  * writer with a single warning, and a runaway stream stops at a size cap
@@ -40,7 +46,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { redactSecrets } from "./secret_redaction.ts";
+import { REDACTION_PLACEHOLDER, redactSecrets } from "./secret_redaction.ts";
 import { getRunId } from "./run_id.ts";
 import type { SessionLogAbsentReason } from "./run_callbacks.ts";
 
@@ -135,11 +141,230 @@ export function resetTranscriptAbsenceForTests(): void {
   transcriptAbsence.clear();
 }
 
+/**
+ * Redact one stream-json line without breaking its JSON (Issue #3826).
+ *
+ * A line that parses is redacted on its *decoded* strings and re-serialised,
+ * so no rule ever sees — or consumes — the backslash of an escaped quote. The
+ * raw-text pass still runs over the whole line, and nothing it masks is
+ * allowed back onto disk:
+ *
+ *  - a member whose key alone makes it a secret (`"api_key":"…"`) is masked
+ *    whole, as the raw pass masked it;
+ *  - a string or key holding text the raw pass masked but the decoded pass
+ *    kept (a rule whose context spans sibling strings, such as an AWS key id
+ *    beside its secret) is masked whole;
+ *  - a line that is clean decoded but not as raw text (a secret in an earlier
+ *    duplicate key, which `JSON.parse` drops) is re-serialised rather than
+ *    written as it arrived.
+ *
+ * Only a line clean both ways is written byte for byte. A line that is not
+ * JSON (a stray stderr line, a truncated tail) — or one the walk cannot finish,
+ * such as one nested deeper than the call stack — gets the raw-text pass,
+ * which is the most that can be done for it and never throws.
+ *
+ * @param line - One NDJSON line, without its newline
+ * @param redact - Text redactor (the console secret redaction)
+ * @returns The redacted line; valid JSON whenever the input was and could be
+ *          walked
+ */
+export function redactTranscriptLine(
+  line: string,
+  redact: (text: string) => string = redactSecrets,
+): string {
+  const raw = redact(line);
+  try {
+    return redactDecodedLine(line, raw, redact);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * The decoded half of {@link redactTranscriptLine}. Throws when the line is
+ * not JSON or is too deeply nested to walk; the caller falls back to `raw`.
+ */
+function redactDecodedLine(
+  line: string,
+  raw: string,
+  redact: (text: string) => string,
+): string {
+  const event: unknown = JSON.parse(line);
+  const rawChanged = raw !== line;
+  // Compare cross-string detections against a canonical serialisation whose
+  // structural separators carry whitespace. That preserves JSON.stringify's
+  // property order (including integer-like keys, matching Object.entries)
+  // while stopping a raw secret-assignment rule from reading through the end
+  // of one JSON string into the next member. Rules deliberately spanning
+  // siblings (for example the AWS key-id/secret pair) still see both strings.
+  const contextLine = spaceJsonSeparators(JSON.stringify(event));
+  const contextRaw = redact(contextLine);
+  const contextChanged = contextRaw !== contextLine;
+  let changed = false;
+  // Whether the key alone makes a member a secret, judged on a neutral value.
+  const secretNamed = (key: string): boolean => {
+    const probe = `${key}: "x1"`;
+    return redact(probe) !== probe;
+  };
+  const escaped = (text: string): string => JSON.stringify(text).slice(1, -1);
+  // The words of an escaped string, split on masks, whitespace, double quotes
+  // and escape sequences: the raw pass rewrites the escaped quote itself (the
+  // Issue #3826 backslash) and reads an escaped newline as ordinary text.
+  const words = (text: string): string[] =>
+    text.split(REDACTION_PLACEHOLDER)
+      .flatMap((run) => run.split(WORD_SEPARATOR))
+      .filter((word) => word !== "");
+  // Whether the raw pass masked something in `text`, through context outside
+  // it, that the decoded pass (`own`) kept.
+  //
+  // Strings and keys are visited in JSON.stringify/Object.entries order, so
+  // one cursor moves forward through `contextRaw` for the whole walk, and
+  // each string is looked for only in its own span after the cursor (its
+  // length, plus RAW_SPAN_SLACK, plus the numbers, booleans and nulls walked
+  // since the last string):
+  // the check stays linear in the line, as redaction over model and tool
+  // output must (SECURITY.md). A string the raw pass left alone matches its
+  // decoded mask; one it masked only through its own text — such as a bare
+  // value running past an escaped newline — matches its own raw-pass result
+  // (`local`). Anything else is checked word by word, and a word counts as
+  // lost only when `local` keeps it but the span does not: that is a mask
+  // made from context outside the string (an AWS key id in a sibling
+  // string). Words may share a position, because the raw pass rewrites the
+  // escaped quote.
+  let lineCursor = 0;
+  let skipped = 0;
+  const lostToRaw = (text: string, own: string): boolean => {
+    if (!contextChanged) return false;
+    const slack = RAW_SPAN_SLACK + skipped;
+    skipped = 0;
+    const whole = escaped(own);
+    const near = contextRaw.slice(
+      lineCursor,
+      lineCursor + whole.length + slack,
+    );
+    const at = near.indexOf(whole);
+    if (at !== -1) {
+      lineCursor += at + whole.length;
+      return false;
+    }
+    const local = redact(escaped(text));
+    const span = contextRaw.slice(
+      lineCursor,
+      lineCursor + Math.max(whole.length, local.length) + slack,
+    );
+    const localAt = span.indexOf(local);
+    if (localAt !== -1) {
+      lineCursor += localAt + local.length;
+      return false;
+    }
+    const kept = new Set(words(local));
+    let cursor = 0;
+    let reached = 0;
+    let lost = false;
+    for (const word of words(whole)) {
+      if (!kept.has(word)) continue;
+      const found = span.indexOf(word, cursor);
+      if (found === -1) {
+        lost = true;
+        continue;
+      }
+      cursor = found;
+      reached = Math.max(reached, found + word.length);
+    }
+    lineCursor += reached;
+    return lost;
+  };
+  // A string's own mask, widened to the whole string when the raw pass saw a
+  // secret in it through context the decoded string lacks (an AWS key id in
+  // a sibling string). Strings both passes agree on keep the finer mask.
+  const redactString = (text: string): string => {
+    const own = redact(text);
+    if (lostToRaw(text, own)) {
+      changed = true;
+      return REDACTION_PLACEHOLDER;
+    }
+    if (own !== text) changed = true;
+    return own;
+  };
+  const walk = (value: unknown): unknown => {
+    if (typeof value === "string") return redactString(value);
+    if (Array.isArray(value)) return value.map(walk);
+    if (value === null || typeof value !== "object") {
+      skipped += String(value).length + 1;
+      return value;
+    }
+    // Null prototype, so a `__proto__` member stays an ordinary own property.
+    const out: Record<string, unknown> = Object.create(null);
+    for (const [key, member] of Object.entries(value)) {
+      const name = redactString(key);
+      if (typeof member === "string" && secretNamed(key)) {
+        const assignment = `${key}: ${JSON.stringify(member)}`;
+        if (redact(assignment) !== assignment) {
+          changed = true;
+          out[name] = REDACTION_PLACEHOLDER;
+          continue;
+        }
+      }
+      out[name] = walk(member);
+    }
+    return out;
+  };
+  const redacted = walk(event);
+  return changed || rawChanged ? JSON.stringify(redacted) : line;
+}
+
+/**
+ * Add one space after structural commas and colons in compact JSON.
+ *
+ * This is deliberately token-aware: punctuation inside JSON strings is left
+ * untouched. The resulting text need not be written anywhere; it exists only
+ * to give the raw redactor the same sibling context without letting a
+ * non-whitespace lookahead cross a JSON member boundary.
+ */
+function spaceJsonSeparators(json: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const char of json) {
+    out += char;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+    } else if (char === "," || char === ":") {
+      out += " ";
+    }
+  }
+  return out;
+}
+
+/**
+ * How far past a string's own length its span in the raw-pass output may
+ * reach, beyond the non-string values walked before it: room for the JSON
+ * punctuation before it and for masks longer than what they replaced. A
+ * string not found within it is judged word by word, which only masks more.
+ */
+const RAW_SPAN_SLACK = 256;
+
+/** Splits escaped JSON string text into words: see `words` above. */
+const WORD_SEPARATOR = /(?:[\s"]|\\u[0-9a-fA-F]{4}|\\.)+/;
+
 /** Options for {@link AgentTranscriptWriter}. */
 export interface AgentTranscriptWriterOptions {
   /** Destination file; appended to, created if missing. */
   filePath: string;
-  /** Redactor applied to every whole line. Defaults to {@link redactSecrets}. */
+  /**
+   * Text redactor, applied through {@link redactTranscriptLine} to every
+   * whole line. Defaults to {@link redactSecrets}.
+   */
   redact?: (text: string) => string;
   /** Sink for the single disable warning (the worker logger's warn). */
   warn?: (message: string) => void;
@@ -207,7 +432,8 @@ export class AgentTranscriptWriter {
     const pieces = this.#carry.split("\n");
     this.#carry = pieces.pop() ?? "";
     if (pieces.length === 0) return;
-    this.#append(pieces.map((line) => this.#redact(line)).join("\n") + "\n");
+    const redacted = this.#redactLines(pieces);
+    if (redacted !== undefined) this.#append(redacted);
   }
 
   /** Flush any trailing partial line. Safe to call more than once. */
@@ -215,7 +441,28 @@ export class AgentTranscriptWriter {
     if (this.#disabled || this.#carry.length === 0) return;
     const tail = this.#carry;
     this.#carry = "";
-    this.#append(this.#redact(tail) + "\n");
+    const redacted = this.#redactLines([tail]);
+    if (redacted !== undefined) this.#append(redacted);
+  }
+
+  /**
+   * Redact whole lines for the file. The tee is telemetry, never control
+   * flow: it runs inside the agent's stdout pump, so a redactor that throws
+   * disables the writer with its single warning instead of propagating.
+   */
+  #redactLines(lines: string[]): string | undefined {
+    try {
+      return lines.map((line) => redactTranscriptLine(line, this.#redact))
+        .join("\n") + "\n";
+    } catch (err) {
+      this.#recordDisable("write_failed");
+      this.#warn?.(
+        `Agent transcript redaction for ${this.#filePath} failed (${
+          err instanceof Error ? err.message : String(err)
+        }) — tee disabled for this invocation`,
+      );
+      return undefined;
+    }
   }
 
   #append(text: string): void {

@@ -260,3 +260,30 @@ export function extractIssueNumberFromPrTitle(
     error: new Error(`No issue number found in title: ${title}`),
   };
 }
+
+/** The one unambiguous assignment marker on a worker-built PR (Issue #3720). */
+export function assignmentIdFromBody(body: string): string | undefined {
+  const ids = new Set(
+    Array.from(
+      body.matchAll(
+        /<!-- vibe-assignment-id id="([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})" -->/g,
+      ),
+      (match) => match[1],
+    ),
+  );
+  return ids.size === 1 ? [...ids][0] : undefined;
+}
+
+/** Embed only the worker-owned ID, refusing malformed identifiers. */
+export function buildAssignmentIdMarker(assignmentId: string): string {
+  const marker = `<!-- vibe-assignment-id id="${assignmentId}" -->`;
+  if (assignmentIdFromBody(marker) !== assignmentId) {
+    throw new Error("Invalid lifecycle assignment ID");
+  }
+  return marker;
+}
+
+/** Quoted documentation is not an attribution marker. */
+export function neutraliseAssignmentIdMarkers(text: string): string {
+  return text.replaceAll("<!-- vibe-assignment-id ", "vibe-assignment-id ");
+}
