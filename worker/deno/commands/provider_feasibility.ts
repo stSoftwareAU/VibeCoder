@@ -45,8 +45,8 @@ import {
   fleetBaselineModels,
   formatFeasibilityReport,
   modelKey,
-  type ProviderHostFacts,
   probeInvocationCapabilities,
+  type ProviderHostFacts,
 } from "../lib/provider_feasibility.ts";
 import { classifyProviderBilling } from "../lib/provider_billing.ts";
 import { redactSecrets } from "../lib/secret_redaction.ts";
@@ -148,10 +148,35 @@ export async function readCodexQuotaVisibility(
   if (budget.known) {
     return {
       visible: true,
-      detail: `${(budget.remainingFraction * 100).toFixed(1)}% remaining (${snapshot.source})`,
+      detail: `${
+        (budget.remainingFraction * 100).toFixed(1)
+      }% remaining (${snapshot.source})`,
     };
   }
   return { visible: false, detail: budget.reason };
+}
+
+/**
+ * Read a text file the worker may or may not have provisioned.
+ *
+ * A file that does not exist is an honest absence and reads as null. Any other
+ * failure — permission denied, a directory where a file belongs, an I/O fault —
+ * means the credential is present but cannot be read, and reporting it as
+ * absent would hide the fault behind a `billing-unknown` verdict. So it throws,
+ * naming only the error's kind, never the file's content.
+ *
+ * @param path - The file to read.
+ * @returns The file's text, or null when the file does not exist.
+ * @throws When the file exists but cannot be read.
+ */
+export function readOptionalTextFile(path: string): string | null {
+  try {
+    return Deno.readTextFileSync(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    const name = error instanceof Error ? error.name : "unknown-error";
+    throw new Error(`credential file ${path} is unreadable: ${name}`);
+  }
 }
 
 /**
@@ -178,12 +203,10 @@ export async function gatherProviderHostFacts(
   const credentialText = deps.readTextFile(
     providerCredentialPath(deps.credentialDir, descriptor),
   );
-  const entries = credentialText === null
-    ? []
-    : parseProviderCredentialEntries(
-      credentialText,
-      descriptor.credentials.envVars,
-    );
+  const entries = credentialText === null ? [] : parseProviderCredentialEntries(
+    credentialText,
+    descriptor.credentials.envVars,
+  );
   const fileValues: Record<string, string> = {};
   for (const entry of entries) {
     if (!(entry.name in fileValues)) fileValues[entry.name] = entry.value;
@@ -381,13 +404,7 @@ export const providerFeasibilityCommand: Command = {
       env: Deno.env.toObject(),
       workDir: config.workDir,
       credentialDir,
-      readTextFile: (path) => {
-        try {
-          return Deno.readTextFileSync(path);
-        } catch {
-          return null;
-        }
-      },
+      readTextFile: readOptionalTextFile,
       runVersion: runCliVersion,
       readCodexQuota: readCodexQuotaVisibility,
     };

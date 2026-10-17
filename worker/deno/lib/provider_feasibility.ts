@@ -22,10 +22,10 @@
  */
 
 import {
+  type AgentInvocationRequest,
   agentProviderById,
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
-  type AgentInvocationRequest,
 } from "./agent_provider.ts";
 import {
   DEFAULT_CLAUDE_MODEL,
@@ -143,7 +143,9 @@ export function fleetBaselineModels(): ReadonlySet<string> {
     STANDARDS_REVIEWER_MODEL,
     EXPLORER_MODEL,
   ];
-  return new Set(claudeModels.map((model) => modelKey(CLAUDE_PROVIDER_ID, model)));
+  return new Set(
+    claudeModels.map((model) => modelKey(CLAUDE_PROVIDER_ID, model)),
+  );
 }
 
 /** One row of the split: a role on a model, run by a manager's provider. */

@@ -12,11 +12,11 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildFeasibilityCombinations,
+  DEFAULT_FEASIBILITY_MODELS,
+  evaluateFeasibility,
   type FeasibilityCombination,
   type FeasibilityContext,
   type FeasibilityRow,
-  DEFAULT_FEASIBILITY_MODELS,
-  evaluateFeasibility,
   fleetBaselineModels,
   formatFeasibilityReport,
   modelKey,
@@ -263,7 +263,10 @@ Deno.test("a provider carrying agents and a settings hook has no role blockers",
     [modelKey("codex", "gpt-5")],
     capable,
   );
-  const manager = evaluateFeasibility(combo("manager", "codex", "gpt-5"), context);
+  const manager = evaluateFeasibility(
+    combo("manager", "codex", "gpt-5"),
+    context,
+  );
   const executor = evaluateFeasibility(
     combo("executor", "codex", "gpt-5"),
     context,
