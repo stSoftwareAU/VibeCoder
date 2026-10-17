@@ -1705,6 +1705,15 @@ flowchart TD
   advisor/executor pilot (#2320) counts its first-attempt pass rate off these
   exact strings, so re-casing or bolding the line empties the metric. A phase
   that runs no quality gate renders no such line, so its comment is unchanged.
+- **The run's quality-gate stages.** Directly after the attempt line, an
+  implementation run appends `- quality gate stages: …` (Issue #3726): each
+  stage of the latest gate run grouped as `passed`, `skipped` and `failed`, for
+  example ``passed: `deno lint`; skipped: `semgrep` (`semgrep: SKIPPED (offline)`)``.
+  A SKIPPED stage carries its reason, taken from the stage's output, redacted
+  and cut to one line, or `(no reason recorded)` when it left none. The line is
+  absent for a phase with no gate, and the `quality gate:` line above is
+  unchanged. The same text is logged as "Quality gate stage outcomes", so an
+  audit can match a CI-only failure to a stage that was skipped locally.
 - **The run's advisor/executor split.** Every implementation run appends a
   `- split: on` or `- split: off` bullet (Issue #2346), so pilot and control
   runs are separable when the numbers are read. A `split: on` run appends three

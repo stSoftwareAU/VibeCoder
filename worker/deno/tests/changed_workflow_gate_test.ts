@@ -21,6 +21,12 @@ import {
 } from "../lib/changed_workflow_gate.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
+import {
+  _resetSuppressionAuthorAllowlist,
+  _resetSuppressionCommitAuthors,
+  setSuppressionAuthorAllowlist,
+  setSuppressionCommitAuthors,
+} from "../lib/suppression_comments.ts";
 
 const CI_PATH = ".github/workflows/ci.yml";
 const GITLEAKS_PATH = ".github/workflows/gitleaks.yml";
@@ -383,7 +389,60 @@ Deno.test("changed-workflow gate - the message names the PR the block lands on (
   // The remediation is identical either way.
   for (const message of [withPr, withoutPr]) {
     assertStringIncludes(message, `[${verdict.findings[0]!.id}]`);
-    assertStringIncludes(message, "best-practice-ignore");
+    assertStringIncludes(message, "needs a human");
+    assert(
+      !message.includes("best-practice-ignore"),
+      "the gate honours no suppression marker, so it must not offer one (Issue #3683)",
+    );
+  }
+});
+
+// Issue #3683: the message must not tell the run to clear a finding with an
+// in-source marker, because the gate never honours one. This pins the premise
+// the message relies on: a marker is rejected while no verified commit identity
+// is configured, and the same marker is honoured once one is.
+Deno.test("changed-workflow gate - a best-practice-ignore marker does not clear a finding the run introduced (Issue #3683)", async () => {
+  _resetSuppressionCommitAuthors();
+  _resetSuppressionAuthorAllowlist();
+  try {
+    setSuppressionAuthorAllowlist(["nigel"]);
+
+    const { result } = runGate({ [CI_PATH]: TAG_PINNED });
+    const verdict = await result;
+    assertEquals(verdict.ok, false);
+    const finding = verdict.findings.find((f) => f.id.startsWith("BP-SHA-PIN"));
+    assert(
+      finding,
+      "fixture drift: TAG_PINNED no longer raises an action-pin finding",
+    );
+    const findingId = finding.id;
+
+    const marked = TAG_PINNED.replace(
+      "        uses: actions/checkout@v4\n",
+      `        # best-practice-ignore: ${findingId} — author=nigel expires=2099-12-31 pinned by trusted mirror\n` +
+        "        uses: actions/checkout@v4\n",
+    );
+    assert(marked !== TAG_PINNED, "fixture drift: the uses line was not found");
+
+    // No verified commit identity is configured, so the marker is rejected.
+    const rejected = await runGate({ [CI_PATH]: marked }).result;
+    assertEquals(rejected.ok, false);
+    assert(
+      rejected.findings.some((f) => f.id === findingId),
+      "the marker must not clear the finding while no commit identity is configured",
+    );
+
+    // Positive control: with the identity configured the same marker clears it.
+    setSuppressionCommitAuthors(["nigel"]);
+    const cleared = await runGate({ [CI_PATH]: marked }).result;
+    assertEquals(cleared.ok, true);
+    assert(
+      !cleared.findings.some((f) => f.id === findingId),
+      "the marker must clear the finding once the commit identity is configured",
+    );
+  } finally {
+    _resetSuppressionCommitAuthors();
+    _resetSuppressionAuthorAllowlist();
   }
 });
 

@@ -1,0 +1,12 @@
+{
+  "issue": 3748,
+  "chunk": "top-up-3748",
+  "title": "top-up: cross-repo split filing",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3748",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/issue_routing_split.ts, the one-issue-per-codebase split filing behind route-issue --part (#3748)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/issue_routing_split.ts"
+  ],
+  "sweptAt": "74f42527483bfd363955ceb25b2ebe92765d9e03"
+}

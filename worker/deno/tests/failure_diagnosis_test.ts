@@ -5,7 +5,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   CLONE_CORRUPT_MARKER,
   detectFailureCategory,
@@ -713,9 +718,10 @@ Deno.test("detectFailureCategory - a timeout that merely quotes the gate keeps i
 Deno.test("workflow_gate category - diagnosis, oneliner, display and validation all handle it (Issue #2044)", () => {
   assertEquals(normaliseFailureCategory("workflow_gate"), "workflow_gate");
   assertEquals(getFailureCategoryDisplay("workflow_gate"), "workflow-gate");
-  assertStringIncludes(
-    getFailureDiagnosis("workflow_gate"),
-    "best-practice-ignore",
+  assertStringIncludes(getFailureDiagnosis("workflow_gate"), "needs a human");
+  assert(
+    !getFailureDiagnosis("workflow_gate").includes("best-practice-ignore"),
+    "the gate honours no suppression marker, so its diagnosis must not offer one (Issue #3683)",
   );
   assertStringIncludes(
     getFailureDiagnosisOneliner("workflow_gate"),

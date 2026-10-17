@@ -1252,7 +1252,12 @@ as its own numbered REQUIRED ITEM. That turn may change code for a verifier item
 (the recovery prompt allows it for this item only), and the quality gate re-runs
 afterwards. Findings still present on the re-run are reported like other
 summary-gate blocks: a `failure` with no PR, or `summary_incomplete` over an
-existing PR, with the comment on the issue thread. `testChanges: meaningful`
+existing PR, with the comment on the issue thread. In the existing-PR case,
+auto-merge is withheld, `standing-violation` is applied and the surviving
+verifier findings are also posted on the PR (Issue #3796). A finding is
+settled by a fix or an evidence-backed dispute naming the finding in the
+final message; marking a criterion partial, listing a known gap or noting a
+test as not red-checked does not settle it (Issue #3797). `testChanges: meaningful`
 is not a finding and does not block.
 
 **When it cannot run.** A pass that cannot run (brief missing, git failure,
@@ -2345,7 +2350,12 @@ plus the two `quality.sh` hygiene rules — and every one of them decides from t
 file text alone: no network, no run history, no repository settings. On the
 branch diff they cost milliseconds. Any finding blocks the PR, and the failure
 names the check id, the file, the line and the detail, so the next attempt fixes
-the file rather than guessing.
+the file rather than guessing. The gate honours no in-file
+`best-practice-ignore` marker — it reads the branch's files without blame, and
+no production path configures a verified commit identity, so every marker is
+rejected — and prose in the PR summary does not clear it either: a finding that
+genuinely does not apply needs a human to review it, or a fix to the scanner
+(Issue #3683).
 
 **Only what the run touched is in scope.** A repository whose *pre-existing*
 workflow files already carry findings is the idle-task audit's business, not this
@@ -2880,6 +2890,15 @@ skips a PR carrying `standing-violation` and disarms one that is already armed
 it does not re-arm auto-merge on a PR that carried the label when the pass
 claimed it, and logs the hold instead (Issue #3685). Disarming an already
 armed PR is left to the sweep.
+The same hold applies when a pre-PR verifier block survives the recovery
+turn, whether it blocks alone or was folded into an earlier gate's notice
+(Issue #3796). The worker posts those findings on the PR with the leading
+`<!-- vibe-pre-pr-verifier-hold -->` marker. Failure to post is logged at
+error level; it does not arm auto-merge. The feedback scan accepts this
+top-level comment only through the special hold path when its author is a
+fleet login. It can process the host's own hold comment, but skips one with
+a fleet eyes reaction and still skips ordinary own-login comments
+(Issue #3798). Repairing the findings does not itself release the hold.
 The Issue #3196 reason rules still cannot see the diff. This routing runs
 whatever headings the linked issue uses, so an issue that states no criteria
 still has its summary's `## Standards Review` read (Issue #3761, NEAT-AI#4065).

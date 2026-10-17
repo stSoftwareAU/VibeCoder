@@ -454,6 +454,13 @@ Deno.test("gate comment and block reason name the findings", () => {
   assertStringIncludes(comment, "`x.ts:7`");
   assertStringIncludes(comment, "`z.ts:9`");
   assertStringIncludes(comment, "Procedure:");
+  assertStringIncludes(
+    comment,
+    "closed only by fixing it or disputing it with evidence",
+  );
+  assertStringIncludes(comment, "Marking a criterion `partial`");
+  assertStringIncludes(comment, "listing a known gap or open limitation");
+  assertStringIncludes(comment, '"not red-checked" does not close a finding');
   const reason = prePrVerifierBlockReason(review);
   assertStringIncludes(reason, "2 blocking finding(s)");
   assertStringIncludes(reason, "x.ts:7 — multi line problem");
