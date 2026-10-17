@@ -1,0 +1,401 @@
+{
+ "version": 1,
+ "branchOutcomes": {
+  "noneAdded": false,
+  "entries": [
+   {
+    "path": "worker/deno/lib/execute_claude_phase.ts",
+    "line": 1326,
+    "outcome": "switch on forces the native split off",
+    "test": "worker/deno/tests/external_orchestration_3642_phase_test.ts",
+    "testName": "external orchestration - the switch on builds no --agents even with the split and reviewers on (Issue #3642)",
+    "flipWentRed": "Dropped `!externalOrchestration &&` so the split stayed on; the named no-agents test failed."
+   },
+   {
+    "path": "worker/deno/lib/execute_claude_phase.ts",
+    "line": 1346,
+    "outcome": "switch on builds no --agents",
+    "test": "worker/deno/tests/external_orchestration_3642_phase_test.ts",
+    "testName": "external orchestration - the switch on builds no --agents even with the split and reviewers on (Issue #3642)",
+    "flipWentRed": "Set `issueRunAgents` to `false && externalOrchestration` so agents were built on the switch-on path; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/execute_claude_phase.ts",
+    "line": 1641,
+    "outcome": "switch on routes to the orchestrator",
+    "test": "worker/deno/tests/external_orchestration_3642_phase_test.ts",
+    "testName": "external orchestration - the switch on routes the run to the orchestrator and not the native call (Issue #3642)",
+    "flipWentRed": "Changed `if (externalOrchestration)` to `if (false)` so the native call ran; the named routing test failed."
+   },
+   {
+    "path": "worker/deno/lib/execute_claude_phase.ts",
+    "line": 1641,
+    "outcome": "switch off keeps the native call",
+    "test": "worker/deno/tests/external_orchestration_3642_phase_test.ts",
+    "testName": "external orchestration - the switch off keeps the native call and its sub-agents (Issue #3642)",
+    "flipWentRed": "Changed `if (externalOrchestration)` to `if (true)` so the switch-off run took the orchestrator path; the named native-call test failed."
+   },
+   {
+    "path": "worker/deno/lib/execute_claude_phase.ts",
+    "line": 1645,
+    "outcome": "switch on with no orchestrator wired fails closed",
+    "test": "worker/deno/tests/external_orchestration_3642_phase_test.ts",
+    "testName": "external orchestration - the switch on with no orchestrator wired fails closed (Issue #3642)",
+    "flipWentRed": "Replaced the fail-closed arm with a native `runClaudeWithRetry` call so the run succeeded; the named fail-closed test failed."
+   },
+   {
+    "path": "worker/deno/lib/config.ts",
+    "line": 999,
+    "outcome": "non-boolean switch fails the load",
+    "test": "worker/deno/tests/external_orchestration_3642_config_test.ts",
+    "testName": "external orchestration config - a non-boolean switch fails the load (Issue #3642)",
+    "flipWentRed": "Changed the typeof guard to `if (false)` so a non-boolean switch loaded; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/config.ts",
+    "line": 1357,
+    "outcome": "settings that are not an object fail the load",
+    "test": "worker/deno/tests/external_orchestration_3642_config_test.ts",
+    "testName": "external orchestration config - settings that are an array or a string fail the load (Issue #3642)",
+    "flipWentRed": "Removed `|| Array.isArray(raw)` so an array settings value loaded; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/config.ts",
+    "line": 1390,
+    "outcome": "negative max_retries fails the load",
+    "test": "worker/deno/tests/external_orchestration_3642_config_test.ts",
+    "testName": "external orchestration config - a negative max_retries fails the load and zero loads (Issue #3642)",
+    "flipWentRed": "Removed `|| (maxRetries as number) < 0` so -1 loaded; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/config.ts",
+    "line": 1400,
+    "outcome": "zero max_concurrency fails the load",
+    "test": "worker/deno/tests/external_orchestration_3642_config_test.ts",
+    "testName": "external orchestration config - a zero max_concurrency fails the load and one loads (Issue #3642)",
+    "flipWentRed": "Removed `|| (maxConcurrency as number) < 1` so 0 loaded; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/config.ts",
+    "line": 1441,
+    "outcome": "a role that is not an object fails the load",
+    "test": "worker/deno/tests/external_orchestration_3642_config_test.ts",
+    "testName": "external orchestration config - a role that is not an object fails the load and an object loads (Issue #3642)",
+    "flipWentRed": "Changed the role guard to `if (false)` so a string role loaded; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 126,
+    "outcome": "unknown provider refused before any runner call",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - an unknown manager provider is refused before any runner call (Issue #3642)",
+    "flipWentRed": "Changed the provider guard to `if (false)`; the named refusal test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 178,
+    "outcome": "priced result counts toward max_cost_usd",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - a priced runner result counts toward max_cost_usd (Issue #3642)",
+    "flipWentRed": "Changed `priced ? total : undefined` to `priced ? 0 : undefined`; the named max_cost_usd test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 186,
+    "outcome": "authentication failure maps to auth",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - an auth failure refuses with no fallback call (Issue #3642)",
+    "flipWentRed": "Changed the auth guard to `if (false)`; the named no-fallback test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 189,
+    "outcome": "rate-limit failure maps to quota with no retry",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - a rate-limit failure is a quota refusal with no retry (Issue #3642)",
+    "flipWentRed": "Removed the `rate-limit` operand (replaced with `false ||`); the named quota test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 196,
+    "outcome": "exit 124 maps to timeout",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - a runner exit 124 is a timeout that ends the run timed_out after its retries (Issue #3642)",
+    "flipWentRed": "Changed `exitCode === 124` to `=== 125`; the named timeout test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 199,
+    "outcome": "non-zero exit maps to error",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - a non-zero runner exit is an error that exhausts its retries (Issue #3642)",
+    "flipWentRed": "Changed `exitCode !== 0` to `> 1` so exit 1 counted as success; the named error test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 220,
+    "outcome": "maxConcurrency above 1 refused",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - maxConcurrency above 1 is refused (Issue #3642)",
+    "flipWentRed": "Changed the `maxConcurrency > 1` guard to `if (false)`; the named refusal test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 260,
+    "outcome": "runner Result failure maps to an error call",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - a runner Result failure maps to an error call that is retried (Issue #3642)",
+    "flipWentRed": "Changed the Result-failure kind from `error` to `auth` so no retry happened; the named retry test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 287,
+    "outcome": "done returns the last manager result",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - a run that completes returns the last manager result (Issue #3642)",
+    "flipWentRed": "Changed `&& lastManagerResult` to `&& false` so a completed run returned an error; the named test and six other gate tests failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 252,
+    "outcome": "blank issueId refused",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a blank issueId is refused as invalid_selection before any call",
+    "flipWentRed": "Changed the issueId blank guard to `if (false)`; the named blank-issueId test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 259,
+    "outcome": "blank leaseId refused",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a blank leaseId is refused as invalid_selection before any call",
+    "flipWentRed": "Changed the leaseId blank guard to `if (false)`; the named blank-leaseId test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 266,
+    "outcome": "non-positive leaseTtlMs refused",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a non-positive leaseTtlMs is refused as invalid_selection before any call",
+    "flipWentRed": "Changed the leaseTtlMs guard to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 273,
+    "outcome": "non-positive callTimeoutMs refused",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a non-positive callTimeoutMs is refused as invalid_selection",
+    "flipWentRed": "Changed the callTimeoutMs guard to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 292,
+    "outcome": "invalid bounds refused",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "invalid bounds are refused as invalid_selection before any call",
+    "flipWentRed": "Changed `if (problem !== undefined)` to `if (false)`; the named invalid-bounds test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 295,
+    "outcome": "delegation depth below 1 refused",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a delegation depth of zero refuses before any call",
+    "flipWentRed": "Changed the maxDelegationDepth guard to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 309,
+    "outcome": "unsupported executor provider refused",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "an unknown executor provider is refused as unsupported",
+    "flipWentRed": "Changed `if (refusal) return refusedAtStart(refusal)` to `if (false)`; the unknown-provider test and the denied-tools test both failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 317,
+    "outcome": "metered billing refused",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "metered billing refuses an orchestrated run before any call",
+    "flipWentRed": "Changed the metered guard to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 346,
+    "outcome": "interrupted run resumes under the same lease",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "an interrupted run resumes under the same lease without repeating the plan",
+    "flipWentRed": "Changed the resume condition to `false &&`; the named resume test and the stale-lease test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 347,
+    "outcome": "released checkpoint starts afresh",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a released run starts afresh on the same lease and calls the provider again",
+    "flipWentRed": "Changed `existing.state !== \"released\"` to `true` so a released run resumed; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 408,
+    "outcome": "stale lease refused on resume",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a stale lease refuses resume and leaves the heartbeat unrenewed",
+    "flipWentRed": "Changed `if (lapsed())` to `if (false)`; the named stale-lease test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 424,
+    "outcome": "cancellation stops before a call",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "cancellation before the first call makes no provider call",
+    "flipWentRed": "Changed the isCancelled guard to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 436,
+    "outcome": "invocation budget stops the run",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "an invocation budget stops the run before the next call",
+    "flipWentRed": "Changed the invocations guard to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 444,
+    "outcome": "cost cap stops the run",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a cost cap stops the run once spend reaches it",
+    "flipWentRed": "Changed the cost cap guard to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 554,
+    "outcome": "auth failure refuses at once",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "an auth failure refuses the run after one call",
+    "flipWentRed": "Changed `result.kind === \"auth\"` to `if (false)`; the named auth test and the redaction test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 564,
+    "outcome": "quota failure refuses at once",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "quota exhaustion refuses the run without retrying or switching provider",
+    "flipWentRed": "Changed the quota guard to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 575,
+    "outcome": "abandoned call ends timed_out, not retried",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "an abandoned call is not retried and ends the run timed_out",
+    "flipWentRed": "Changed `if (abandoned)` to `if (false)`; the named abandoned-call test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 584,
+    "outcome": "failed call retried",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a failed call is retried and the run then succeeds",
+    "flipWentRed": "Changed the retry guard to `if (false)`; the named retry test and the retries-exhausted test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 588,
+    "outcome": "final timeout ends timed_out",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a timeout that exhausts its attempts ends the run timed_out",
+    "flipWentRed": "Changed the timeout arm guard to `if (false)`; the named timeout test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 597,
+    "outcome": "final error refused retries_exhausted",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "retries exhausted refuses the run",
+    "flipWentRed": "Changed the final-error `kind` from `retries_exhausted` to `error`; the named refusal test and the redaction test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 623,
+    "outcome": "empty plan ends blocked",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "an empty manager plan ends the run blocked before any executor call",
+    "flipWentRed": "Changed the empty-plan guard to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 682,
+    "outcome": "empty review ends blocked",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "an empty manager review ends the run blocked",
+    "flipWentRed": "Changed the empty-review guard to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/checkpoint.ts",
+    "line": 114,
+    "outcome": "missing checkpoint loads as nothing",
+    "test": "worker/deno/tests/orchestration_3642_contracts_test.ts",
+    "testName": "a missing checkpoint loads as nothing and no warning",
+    "flipWentRed": "Changed the NotFound guard to `if (false)` so a missing file threw; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/checkpoint.ts",
+    "line": 120,
+    "outcome": "invalid JSON checkpoint ignored with a warning",
+    "test": "worker/deno/tests/orchestration_3642_contracts_test.ts",
+    "testName": "a checkpoint that is not valid JSON is ignored with a warning",
+    "flipWentRed": "Inserted a throw in the JSON-parse catch arm (line 121); the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/checkpoint.ts",
+    "line": 132,
+    "outcome": "old-version checkpoint ignored",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "an old-version checkpoint is ignored with a warning, not replayed",
+    "flipWentRed": "Changed the schema check to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/checkpoint.ts",
+    "line": 139,
+    "outcome": "checkpoint naming another issue ignored",
+    "test": "worker/deno/tests/orchestration_3642_contracts_test.ts",
+    "testName": "a checkpoint naming another issue is ignored with a warning",
+    "flipWentRed": "Removed `|| parsed.issueId !== issueId`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/checkpoint.ts",
+    "line": 173,
+    "outcome": "cleanup failure other than NotFound warns and rethrows",
+    "test": "worker/deno/tests/orchestration_3642_contracts_test.ts",
+    "testName": "a failed cleanup that is not NotFound warns with the temporary path and rethrows the rename error",
+    "flipWentRed": "Changed the NotFound rethrow guard to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/capabilities.ts",
+    "line": 148,
+    "outcome": "missing compaction refused",
+    "test": "worker/deno/tests/orchestration_3642_contracts_test.ts",
+    "testName": "codex cannot enforce a denied tool, so a role denying one is refused",
+    "flipWentRed": "GREEN: changed the compaction guard to `if (false)` and the named codex test still passed; no test in the suite refuses a role for missing compaction."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/capabilities.ts",
+    "line": 155,
+    "outcome": "denied tool without enforcement refused",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "an executor on a provider that cannot enforce denied tools is refused",
+    "flipWentRed": "Replaced `!probeProvider(provider).enforcesDeniedTools` with `false`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 235,
+    "outcome": "no agent state directory refuses the run",
+    "exempt": {
+     "kind": "untestable",
+     "reason": "resolveAgentStateDir returns null only with HOME and every state-dir variable unset; every gate test in worker/deno/tests/orchestration_3642_gate_test.ts passes stateDir, and clearing HOME process-wide races the parallel suite"
+    }
+   }
+  ]
+ }
+}

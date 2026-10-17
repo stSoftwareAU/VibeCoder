@@ -124,6 +124,20 @@ Deno.test("codex cannot enforce a denied tool, so a role denying one is refused"
   );
 });
 
+Deno.test("a manager on a provider without compaction is refused as unsupported_capability", () => {
+  // The denied list is empty, so only the compaction rule can refuse the manager.
+  for (const provider of ["codex", "gemini"] as const) {
+    const refusal = assertRoleSupported({ provider }, "manager", []);
+    assertEquals(refusal?.kind, "unsupported_capability");
+    assertStringIncludes(refusal?.message ?? "", "cannot compact its stream");
+  }
+  // Positive control: claude compacts, so the same manager call is not refused.
+  assertEquals(
+    assertRoleSupported({ provider: "claude" }, "manager", []),
+    undefined,
+  );
+});
+
 /**
  * Runs saveCheckpoint with Deno.rename failing and Deno.remove throwing
  * `removeError`, capturing console.warn. Every replaced API is restored in
