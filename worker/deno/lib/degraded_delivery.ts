@@ -84,7 +84,11 @@
  * by {@link rederiveReportedGapSection}. When the re-derived shortfalls differ
  * from the ones the follow-up was filed with, the section says the follow-up
  * may not list them rather than claiming they continue there, because a re-sync
- * never rewrites the follow-up (Issue #3677).
+ * never rewrites the follow-up (Issue #3677). A re-sync of a PR whose body
+ * carries no such section, but whose rebuilt summary newly marks a criterion
+ * `partial` or `missing`, instead files or reuses the follow-up through
+ * `pr_body_sync_follow_up.ts`, after re-verifying the issue's content (Issue
+ * #3678).
  *
  * The verdict and the rendering are pure; {@link fileDegradedFollowUp} is the
  * one I/O step, with `gh` injected.

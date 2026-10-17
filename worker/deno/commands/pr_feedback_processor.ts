@@ -30,6 +30,7 @@ import {
   processPrFeedback,
   summariseLargeComment,
 } from "../lib/pr_feedback_processor.ts";
+import { buildSyncFollowUpFiling } from "../lib/pr_body_sync_follow_up.ts";
 import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
 import {
   buildQualityInstructions,
@@ -202,6 +203,11 @@ export const prFeedbackProcessorCommand: Command = {
             allowedAuthors: config.allowedAuthors ?? [],
             authorisedCommenters: config.authorisedCommenters ?? [],
           },
+          // Issue #3678: files the follow-up for a newly reported gap.
+          syncFollowUpFiling: buildSyncFollowUpFiling(
+            config,
+            Deno.env.get("GITHUB_USER") ?? "",
+          ),
         };
 
         const result = await processPrFeedback(input, processorDeps);

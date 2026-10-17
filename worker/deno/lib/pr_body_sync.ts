@@ -7,11 +7,17 @@
  * partial-delivery section, bump note, footer). That leading section is
  * re-derived at sync time from the current issue and summary rather than
  * copied forward (Issue #3350, #3506), except that a partial-delivery section
- * whose follow-up number cannot be read is kept as it is. The sync only reads
- * the issue: it never writes to the follow-up (PR #3676 review). A
- * review-fix run that rewrites that summary file and pushes new commits never
- * touched the PR body again, so a reviewer reading the description kept
- * seeing the original summary while the diff underneath it changed.
+ * whose follow-up number cannot be read is kept as it is. Re-deriving a
+ * section the live body already carries only reads the issue and never writes
+ * to the follow-up (PR #3676 review). When the live body has no leading
+ * section and the rebuilt summary newly marks a criterion `partial` or
+ * `missing`, the sync files or reuses the follow-up (or, on a partial-delivery
+ * follow-up, hands the issue to a human) through `pr_body_sync_follow_up.ts`,
+ * from issue content that passed the pickup content-integrity check, and fails
+ * loudly if it cannot (Issue #3678). Before Issue #3089, a review-fix run that
+ * rewrote that summary file and pushed new commits never touched the PR body
+ * again, so a reviewer reading the description kept seeing the original summary
+ * while the diff underneath it changed.
  *
  * This module gives the completion phase's body-assembly logic a second
  * caller: a fix run that pushed only new commits (no PR yet created on this
@@ -83,6 +89,14 @@ import {
   findMissingCriteria,
   withholdIssueClose,
 } from "./missing_criterion_close_guard.ts";
+import {
+  addReportedGapSectionOnSync,
+  parseSyncParentIssue,
+  summaryReportsGap,
+  SYNC_PARENT_ISSUE_FIELDS,
+  type SyncFollowUpFiling,
+  type SyncParentIssue,
+} from "./pr_body_sync_follow_up.ts";
 
 /** Relative path of the PR summary file inside a repo checkout. */
 function prSummaryPath(issueNumber: number): string {
@@ -273,6 +287,12 @@ export interface SyncPrBodyDeps {
   /** Runs a `git` command. */
   runGitCommand: typeof runGitCommandType;
   logger: Logger;
+  /**
+   * Files the follow-up when the rebuilt summary newly reports a gap on a body
+   * with no leading section (Issue #3678). `undefined` means not wired, and
+   * such a sync then fails loudly rather than filing nothing.
+   */
+  followUpFiling: SyncFollowUpFiling | undefined;
 }
 
 /** Outcome of a sync attempt. */
@@ -385,6 +405,11 @@ function extractLeadingSection(body: string, heading: string): string {
  *   verified push — not that someone else pushed — so that case still
  *   proceeds; and
  * - the freshly assembled body actually differs from what is live.
+ *
+ * When the live body carries no leading section and the rebuilt summary newly
+ * marks a criterion `partial` or `missing`, the parent issue's follow-up is
+ * filed or reused first (Issue #3678). The sync fails rather than rebuild a
+ * body whose gap is recorded nowhere.
  */
 export async function syncPrBodyFromSummary(
   input: SyncPrBodyInput,
@@ -708,6 +733,47 @@ export async function syncPrBodyFromSummary(
       (liveChainStop && rederived !== ""
         ? withholdIssueClose(body, issueNumber)
         : body);
+  } else if (summaryReportsGap(body)) {
+    // Issue #3678: a fix run that newly marks a criterion partial or missing
+    // on a body with no leading section files or reuses the follow-up the
+    // completion phase would, rather than rebuilding the body with the gap
+    // recorded nowhere. The issue is re-verified before any of its text is
+    // written (see pr_body_sync_follow_up.ts).
+    let parentIssue: SyncParentIssue;
+    try {
+      const raw = await deps.runGhCommand([
+        "issue",
+        "view",
+        String(issueNumber),
+        "--repo",
+        input.repo,
+        "--json",
+        SYNC_PARENT_ISSUE_FIELDS,
+      ]);
+      parentIssue = parseSyncParentIssue(raw);
+    } catch (err) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to read issue #${issueNumber} to file the follow-up for PR #${input.prNumber}: ${
+            (err as Error).message
+          }`,
+        ),
+      };
+    }
+    const filed = await addReportedGapSectionOnSync({
+      repo: input.repo,
+      issueNumber,
+      prNumber: input.prNumber,
+      body,
+      issue: parentIssue,
+      filing: deps.followUpFiling,
+      gh: deps.runGhCommand,
+      runId: input.runId ?? "",
+      logger,
+    });
+    if (!filed.ok) return filed;
+    body = filed.value;
   }
 
   if (body.trim() === (view.body ?? "").trim()) {
