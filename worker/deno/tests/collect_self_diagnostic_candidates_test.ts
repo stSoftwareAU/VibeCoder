@@ -120,11 +120,13 @@ interface ThreadRow {
  * `issueCommentsContainMarker` reads, and the `--jq` projection that
  * `fetchMarkerComments` requests, which `parseMarkerCommentPages` takes as one
  * JSON array per page. `racingHost`, when given, is a second fleet host whose
- * announcement lands just before ours on our post.
+ * announcement lands just before ours on our post. `failDeletes` makes a DELETE
+ * of one of the listed ids reject with the given message, as `gh` does on a 403.
  */
 function makeThreadGh(calls: GhCall[], options: {
   seed?: Array<Pick<ThreadRow, "id" | "body" | "login">>;
   racingHost?: { id: number; login: string };
+  failDeletes?: { ids: number[]; message: string };
 } = {}): { rows: ThreadRow[]; ghFn: (args: string[]) => Promise<string> } {
   const rows: ThreadRow[] = [];
   let tick = 0;
@@ -154,6 +156,9 @@ function makeThreadGh(calls: GhCall[], options: {
     }
     if (args.includes("DELETE")) {
       const id = Number((args[3] ?? "").split("/").pop());
+      if (options.failDeletes?.ids.includes(id)) {
+        return Promise.reject(new Error(options.failDeletes.message));
+      }
       const index = rows.findIndex((r) => r.id === id);
       if (index === -1) {
         return Promise.reject(new Error("gh: Not Found (HTTP 404)"));
@@ -647,5 +652,86 @@ Deno.test("self-schedule - a stranger's announcement marker is never deleted (Is
   assert(
     !deleteTargets(calls).some((target) => target.endsWith("/50")),
     "no DELETE is issued against the stranger's comment",
+  );
+});
+
+Deno.test("self-schedule - a stranger's marker between two fleet comments is never deleted (Issue #3597)", async () => {
+  const calls: GhCall[] = [];
+  const audited: string[] = [];
+  // Fleet marker (oldest), then a stranger's marker, then a newer fleet
+  // duplicate. The stranger sits between the kept comment and the duplicate,
+  // so a prune without the fleet filter would delete it.
+  const thread = makeThreadGh(calls, {
+    seed: [
+      {
+        id: 40,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        login: FLEET_LOGIN,
+      },
+      {
+        id: 50,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        login: "drive-by-attacker",
+      },
+      {
+        id: 60,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        login: FLEET_LOGIN,
+      },
+    ],
+  });
+  const { result } = await collect({
+    issues: [makeIssue()],
+    gh: thread.ghFn,
+    deps: captureDeps(audited, []),
+  });
+
+  assertEquals(result.candidates.length, 1);
+  assertEquals(thread.rows.map((r) => r.id), [40, 50]);
+  assertEquals(deleteTargets(calls), [
+    `repos/${SELF_DIAGNOSTIC_REPO}/issues/comments/60`,
+  ]);
+});
+
+Deno.test("self-schedule - a 403 on the duplicate delete refuses the schedule (Issue #3597)", async () => {
+  const calls: GhCall[] = [];
+  const logs: string[] = [];
+  // The fleet marker is already on the thread, so nothing is posted; the only
+  // remaining work is pruning the newer duplicate, and gh refuses that DELETE.
+  const thread = makeThreadGh(calls, {
+    seed: [
+      {
+        id: 40,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        login: FLEET_LOGIN,
+      },
+      {
+        id: 41,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        login: FLEET_LOGIN,
+      },
+    ],
+    failDeletes: {
+      ids: [41],
+      message: "gh: Must have admin rights to Repository. (HTTP 403)",
+    },
+  });
+  const { result } = await collect({
+    issues: [makeIssue()],
+    gh: thread.ghFn,
+    deps: captureDeps([], logs),
+  });
+
+  assertEquals(result.candidates, []);
+  assertEquals(result.refusals.length, 1);
+  assertEquals(result.refusals[0]!.cause, "announce-failed");
+  assertStringIncludes(result.refusals[0]!.detail, "HTTP 403");
+  assertStringIncludes(result.refusals[0]!.detail, "comment 41");
+  assertEquals(deleteTargets(calls), [
+    `repos/${SELF_DIAGNOSTIC_REPO}/issues/comments/41`,
+  ]);
+  assert(
+    logs.some((l) => l.includes("[self-schedule] refused")),
+    "the refusal is logged",
   );
 });

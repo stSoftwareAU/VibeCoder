@@ -76,8 +76,12 @@ import {
   isDependencyBlocked,
 } from "./issue_finder_common.ts";
 import { isIssueTimeDeferred } from "./time_deferral.ts";
-import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import {
+  type AlertDedupAuthorOptions,
+  resolveAlertDedupAuthors,
+} from "./alert_dedup_authors.ts";
 import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
+import { pruneDuplicateFleetMarkerComments } from "./marker_comment_pages.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { escalateUnworkableWorkOn } from "./escalate_unworkable_work_on.ts";
 import { recordMutation, resolveRunId } from "./audit_journal.ts";
@@ -450,7 +454,8 @@ export async function collectSelfDiagnosticCandidates(
 
     // Visible and traceable before it is actionable: the audit entry and the
     // announcement are both written before the candidate is emitted, and the
-    // announcement is posted at most once per issue.
+    // announcement is posted once per scan; a racing duplicate is pruned to the
+    // oldest fleet-authored one.
     const marker = formatSelfScheduleMarker(family.id);
     let announced: boolean;
     try {
@@ -543,6 +548,39 @@ export async function collectSelfDiagnosticCandidates(
         `[self-schedule] scheduled ${repo}#${issue.number} ` +
           `(family=${family.id}, cap=${maxInFlight})`,
       );
+    }
+
+    // Issue #3597: two scans can both see no announcement and both post one.
+    // Prune after the post, and also when the marker was already seen, so an
+    // existing duplicate is healed rather than left on the thread.
+    const fleet = await resolveAlertDedupAuthors(deps.dedupAuthors ?? {}, log);
+    if (fleet.length > 0) {
+      try {
+        await pruneDuplicateFleetMarkerComments(
+          repo,
+          issue.number,
+          marker,
+          ghFn,
+          fleet,
+        );
+      } catch (err) {
+        const detail = `duplicate announcements could not be pruned: ${
+          errorText(err)
+        }`;
+        refusals.push({
+          issueNumber: issue.number,
+          cause: "announce-failed",
+          detail,
+        });
+        log(`[self-schedule] refused ${repo}#${issue.number}: ${detail}`);
+        diag?.logIssueSkipped(
+          repo,
+          issue.number,
+          "self-schedule-refused",
+          detail,
+        );
+        continue;
+      }
     }
 
     diag?.logIssueEligible(repo, issue.number);

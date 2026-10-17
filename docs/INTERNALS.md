@@ -3223,8 +3223,9 @@ left out; the issue is still told which dependency it waits on.
   human's task.
 - **One comment, edited in place.** The hidden `vibe-held-issue-gate` marker
   carries a key over the gate; an unchanged key writes nothing, a changed one
-  edits the fleet's newest marker comment. Only a fleet-authored marker is
-  trusted or edited.
+  edits the oldest fleet-authored marker comment and deletes any later fleet
+  duplicates a race left behind. Only a fleet-authored marker is trusted,
+  edited or deleted; a non-fleet comment is never touched.
 - **Bounded reads.** A gate confirmed on GitHub is remembered in the issue
   cache for 24 hours (`held_issue_gate_<n>`); an unchanged gate inside that
   window reads no thread at all. Every slot on every host scans, so without

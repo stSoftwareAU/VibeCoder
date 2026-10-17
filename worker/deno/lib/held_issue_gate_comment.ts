@@ -6,8 +6,8 @@
  * stream, a closed dependency whose code only lands when a milestone merges, or
  * a dependency still open — looks identical from outside to an issue the fleet
  * has forgotten. So the fleet says which gate holds it, in **one** comment:
- * posted once and **edited in place** when the gate changes, so the fleet never
- * adds a second one.
+ * posted once and **edited in place** when the gate changes. A racing duplicate
+ * is pruned to the oldest fleet-authored one, so the fleet keeps one comment.
  *
  * That is the difference from `chain_root_comment.ts`, whose poster is POST-only
  * and keyed by root+reason: when the gate moved on, the old comment simply
@@ -51,6 +51,7 @@ import type { BlockedCandidateInfo } from "./issue_finder_logger.ts";
 import {
   deleteIssueComment,
   fetchMarkerComments,
+  pruneDuplicateFleetMarkerComments,
   updateIssueComment,
 } from "./marker_comment_pages.ts";
 
@@ -236,11 +237,13 @@ export function buildHeldIssueGateComment(
 /**
  * Write the held-issue gate comment at most once, editing it when it is stale.
  *
- * Reads the whole thread for the marker first, keeps only the comments a fleet
- * account wrote, and works from the newest of those — {@link fetchMarkerComments}
- * returns rows in page order, so that is the last one.
+ * Prunes the thread first: the oldest fleet-authored marker comment is kept and
+ * any later fleet duplicates are deleted, so the kept comment is the one that
+ * gets edited. Nothing is posted over an existing kept comment. A POST is
+ * followed by a second prune, so two runs that raced to post converge on one
+ * comment.
  *
- * @returns "unchanged" when the newest fleet marker already names this gate,
+ * @returns "unchanged" when the kept fleet marker already names this gate,
  *   "edited" when it named a different one, "posted" when there was none
  */
 export async function upsertHeldIssueGateComment(opts: {
@@ -254,24 +257,22 @@ export async function upsertHeldIssueGateComment(opts: {
   ghFn: GhFn;
   /**
    * Fleet logins whose comments may be trusted for dedup and edited — required,
-   * not optional. An empty list trusts nothing and posts.
+   * not optional. An empty list trusts nothing: no comment is kept, none is
+   * deleted, and the gate is posted.
    */
   fleetAuthors: string[];
 }): Promise<HeldIssueGateOutcome> {
   const comment = buildHeldIssueGateComment(opts.gate);
 
-  const existing = await fetchMarkerComments(
+  const kept = await pruneDuplicateFleetMarkerComments(
     opts.repo,
     opts.issueNumber,
     HELD_ISSUE_GATE_MARKER,
     opts.ghFn,
+    opts.fleetAuthors,
   );
-  const ours = existing.filter((c) =>
-    isFleetAuthor(c.author, opts.fleetAuthors)
-  );
-  const newest = ours.at(-1);
 
-  if (newest === undefined) {
+  if (kept === null) {
     await opts.ghFn([
       "api",
       "-X",
@@ -280,12 +281,19 @@ export async function upsertHeldIssueGateComment(opts: {
       "-f",
       `body=${comment.body}`,
     ]);
+    await pruneDuplicateFleetMarkerComments(
+      opts.repo,
+      opts.issueNumber,
+      HELD_ISSUE_GATE_MARKER,
+      opts.ghFn,
+      opts.fleetAuthors,
+    );
     return "posted";
   }
 
-  if (newest.body.includes(`key="${comment.key}"`)) return "unchanged";
+  if (kept.body.includes(`key="${comment.key}"`)) return "unchanged";
 
-  await updateIssueComment(opts.repo, newest.id, comment.body, opts.ghFn);
+  await updateIssueComment(opts.repo, kept.id, comment.body, opts.ghFn);
   return "edited";
 }
 

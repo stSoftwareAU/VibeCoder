@@ -13,10 +13,17 @@
  * the two modules cannot drift apart again — a second copy is a second place
  * for the next page-one bug to hide.
  *
+ * {@link pruneDuplicateFleetMarkerComments} is the shared cleanup for a
+ * find-then-create race: two runs can both see no marker and both post one.
+ * It keeps the oldest fleet-authored comment and deletes the rest, so the
+ * thread converges on one comment, and it never touches a comment a fleet
+ * account did not write.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import type { AlertDedupCommentRow } from "./alert_dedup_authors.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 
 /** Page size requested per call — the GitHub REST maximum. */
 export const MARKER_COMMENTS_PER_PAGE = 100;
@@ -172,4 +179,62 @@ export async function deleteIssueComment(
   } catch (err) {
     return err instanceof Error ? err : new Error(String(err));
   }
+}
+
+/**
+ * Keep the oldest fleet-authored marker comment and delete the duplicates.
+ *
+ * Two runs can each find no marker and each post one, and nothing else ever
+ * removes the second, so the thread keeps both. This converges it: the oldest
+ * fleet comment survives, and every later fleet comment carrying the marker is
+ * deleted. A comment a fleet account did not write is never deleted, and an
+ * empty fleet list deletes nothing.
+ *
+ * Every delete is attempted before anything is thrown, so one failure does not
+ * leave the rest of the duplicates standing.
+ *
+ * @param repo - Repository in "owner/repo" format
+ * @param issueNumber - Issue or PR number whose thread is pruned
+ * @param marker - Marker prefix that identifies the duplicated comment
+ * @param ghCommandFn - Runs `gh` (injectable for testing)
+ * @param fleetAuthors - Logins whose comments may be deleted; empty deletes nothing
+ * @returns The kept comment, or null when no fleet-authored comment carries the marker
+ * @throws One aggregated Error naming each duplicate that could not be deleted
+ */
+export async function pruneDuplicateFleetMarkerComments(
+  repo: string,
+  issueNumber: number,
+  marker: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  fleetAuthors: string[],
+): Promise<MarkerComment | null> {
+  if (fleetAuthors.length === 0) return null;
+
+  const comments = await fetchMarkerComments(
+    repo,
+    issueNumber,
+    marker,
+    ghCommandFn,
+  );
+  const ours = comments.filter((c) => isFleetAuthor(c.author, fleetAuthors));
+  const [kept, ...duplicates] = ours;
+  if (kept === undefined) return null;
+
+  const failures: string[] = [];
+  for (const duplicate of duplicates) {
+    const err = await deleteIssueComment(repo, duplicate.id, ghCommandFn);
+    if (err === null) continue;
+    // gh reports an already-removed comment as HTTP 404 (observed:
+    // `{"message":"Not Found",...,"status":"404"}` then `gh: Not Found (HTTP 404)`).
+    if (/HTTP 404\b|"status":\s*"404"/.test(err.message)) continue;
+    failures.push(`comment ${duplicate.id}: ${err.message}`);
+  }
+
+  if (failures.length > 0) {
+    throw new Error(
+      `could not delete ${failures.length} duplicate fleet marker comment(s) ` +
+        `on ${repo}#${issueNumber}: ${failures.join("; ")}`,
+    );
+  }
+  return kept;
 }
