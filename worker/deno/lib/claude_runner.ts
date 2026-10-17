@@ -15,6 +15,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { withLifecycleInvocation } from "./lifecycle_recording.ts";
+
 import type { AgentDecodedOutput, AgentFailure } from "./agent_output.ts";
 import {
   type AgentMcpServerRequest,
@@ -232,6 +234,8 @@ const DEFAULT_ERROR_SCAN_TAIL_LINES = 30;
 
 /** Result from a Claude run with retry. */
 export interface ClaudeRunResult {
+  /** Per-attempt usage retained for lifecycle follow-on costs (Issue #3720). */
+  invocationStats?: (RunStats | undefined)[];
   /**
    * Exit code (0 = success, 124 = timeout, 2 = rate limit exhaustion,
    * 137 = out of memory or killed — see {@link outOfMemory} and
@@ -445,6 +449,10 @@ export interface ClaudeRunResult {
 
 /** Options for running Claude with timeout. */
 export interface RunClaudeOptions {
+  /** Retain each retry's usage for lifecycle follow-on attribution (Issue #3720). */
+  captureInvocationStats?: boolean;
+  /** Explicit observable role for lifecycle telemetry (Issue #3719). */
+  lifecycleRole?: import("./lifecycle_ledger.ts").LifecycleRole;
   /** The prompt to send to Claude. */
   prompt: string;
   /**
@@ -1124,6 +1132,15 @@ export function killCompletionCapMs(killAfterSeconds: number): number {
 }
 
 export async function runClaudeWithTimeout(
+  options: RunClaudeOptions,
+): Promise<Result<ClaudeExecutionResult>> {
+  return await withLifecycleInvocation(
+    options,
+    () => runClaudeWithTimeoutBody(options),
+  );
+}
+
+async function runClaudeWithTimeoutBody(
   options: RunClaudeOptions,
 ): Promise<Result<ClaudeExecutionResult>> {
   const {
@@ -2895,6 +2912,7 @@ async function runRetryLadder(
   // phase's credential switch, Issue #1670 — can spend what is left of the
   // budget rather than a fresh one.
   let totalInvocations = 0;
+  const invocationStats: (RunStats | undefined)[] = [];
 
   /**
    * The last invocation's normalised decode and classification (Issue #1695),
@@ -2918,6 +2936,7 @@ async function runRetryLadder(
     ...(invokedAgentFailure ? { agentFailure: invokedAgentFailure } : {}),
     ...value,
     invocationsBilled: totalInvocations,
+    ...(options.captureInvocationStats ? { invocationStats } : {}),
     ...(invokedProvider ? { provider: invokedProvider } : {}),
     ...(invokedExtensions ? { extensions: invokedExtensions } : {}),
     ...(preflightDegraded
@@ -2995,6 +3014,9 @@ async function runRetryLadder(
     }
     totalInvocations++;
     const result = await runClaudeWithTimeout(currentOptions);
+    if (options.captureInvocationStats) {
+      invocationStats.push(result.ok ? result.value.runStats : undefined);
+    }
 
     if (!result.ok) {
       return {

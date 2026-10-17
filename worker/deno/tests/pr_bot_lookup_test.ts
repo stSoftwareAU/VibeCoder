@@ -112,6 +112,7 @@ Deno.test("listBotPrs - carries the maintenance PrEntry fields through", async (
   assertEquals(admitted.length, 1);
   assertEquals(admitted[0], {
     number: 42,
+    body: "",
     title: "chore(deps): bump std to 1.2.3",
     headRefName: "dependabot/deno/std-1.2.3",
     headRefOid: "deadbeef",
