@@ -49,8 +49,12 @@ cites a precedent file only after confirming it exists. Closes #3680.
 ## Evidence
 
 This is a prompt, docs and policy-test change with no runtime code. The policy
-test `worker/deno/tests/timing_assertion_policy_test.ts` pins each changed
-surface.
+test `worker/deno/tests/timing_assertion_policy_test.ts` pins four of the
+changed surfaces: `prompts/coding_guidelines/prompt.md`,
+`prompts/test_audit/prompt.md`, `CODING-STANDARDS.md` and
+`prompts/security_scan/prompt.md`. It does not read
+`prompts/best_practices/prompt.md`, `docs/TEST-AUDIT-SCAN.md` or
+`docs/SECURITY-SCAN.md`; those edits are covered only by the docs sweep below.
 
 ```mermaid
 flowchart TD
@@ -116,6 +120,7 @@ counters (#2320).
 - Removed assertions, each made untrue by the issue:
   - `assertStringIncludes(collapsed, HELPER);` — the issue forbids the injected guidelines from citing the VibeCoder-only `assertLinearGrowth`. A whole-file absence check replaces it.
   - `assertStringIncludes(collapsed, "Ratio assertions are not a finding");` — the issue limits the carve-out to repositories that explicitly allow ratios. Pins on "A ratio of two readings is a timing assertion too" and "Stay silent on a ratio only where the repository's own testing standard explicitly allows ratio tests" replace it, plus a whole-file absence check of the old phrase.
+- Edited in place, so the gate counts the old form as removed: in `timing policy - the guidelines no longer ban measuring outright (Issue #786)`, removed from `worker/deno/tests/timing_assertion_policy_test.ts`: `assertEquals( phraseAnywhere(whole, "Do not measure performance inside unit tests"), false, "coding_guidelines still carries the flat ban, which forbids the ratio " + "assertions CODING-STANDARDS.md requires", );` — #3680 reduces the ratio to a last resort, so "CODING-STANDARDS.md requires" ratio assertions is untrue. The same assertion stays in the same test with only its message changed to "assertions CODING-STANDARDS.md allows as a last resort"; the whole-file absence check on the flat ban is unchanged.
 - Red-check: I copied the new test file into a worktree of the base branch `origin/milestone/fleet-guidance-tests-twins-and-portability` and ran it there.
   - All five new or edited Issue #3680 tests went red, each on its own pin or absence check.
   - The edited auditor test also went red: section is missing pin "A ratio of two readings is a timing assertion too".
