@@ -5,70 +5,107 @@
     "entries": [
       {
         "path": "worker/deno/lib/marker_comment_pages.ts",
-        "line": 219,
-        "outcome": "a comment a non-fleet account wrote is filtered out and never deleted",
+        "line": 212,
+        "outcome": "an empty fleet list keeps nothing, deletes nothing and reads no thread",
         "test": "worker/deno/tests/marker_comment_pages_prune_test.ts",
-        "testName": "prune - never deletes a comment a non-fleet account wrote",
-        "flipWentRed": "dropping the fleet filter let a non-fleet comment be deleted; the stranger tests went red"
+        "testName": "prune - an empty fleet list deletes nothing and keeps nothing",
+        "flipWentRed": "deleting the early return made the test go red: the thread read was issued"
       },
       {
         "path": "worker/deno/lib/marker_comment_pages.ts",
-        "line": 221,
-        "outcome": "no fleet-authored marker comment means nothing is kept and nothing is deleted",
+        "line": 220,
+        "outcome": "a comment a non-fleet account wrote is filtered out and never kept or deleted",
+        "test": "worker/deno/tests/collect_self_diagnostic_candidates_test.ts",
+        "testName": "self-schedule - a stranger's announcement marker is never deleted (Issue #3597)",
+        "flipWentRed": "replacing the fleet filter with every comment made it go red: the stranger's marker counted as the announcement, so ours was never posted"
+      },
+      {
+        "path": "worker/deno/lib/marker_comment_pages.ts",
+        "line": 222,
+        "outcome": "no fleet-authored marker comment returns null and deletes nothing",
         "test": "worker/deno/tests/marker_comment_pages_prune_test.ts",
         "testName": "prune - returns null and deletes nothing when no fleet comment carries the marker",
-        "flipWentRed": "throwing instead of returning null when no fleet comment is kept: FAILED, 30 passed, 6 failed across the two files"
+        "flipWentRed": "throwing instead of returning null made this test and the held-gate posting tests go red"
       },
       {
         "path": "worker/deno/lib/marker_comment_pages.ts",
         "line": 229,
-        "outcome": "a duplicate DELETE answered with HTTP 404 counts as already removed",
+        "outcome": "a duplicate DELETE GitHub answers as not found counts as already removed",
         "test": "worker/deno/tests/marker_comment_pages_prune_test.ts",
         "testName": "prune - a DELETE answered with HTTP 404 counts as already deleted",
-        "flipWentRed": "not tolerating HTTP 404 on delete made the already-removed test go red"
+        "flipWentRed": "not tolerating a not-found delete made the already-removed test go red"
       },
       {
         "path": "worker/deno/lib/marker_comment_pages.ts",
         "line": 233,
-        "outcome": "a non-404 delete failure is thrown, naming every duplicate that was not deleted",
+        "outcome": "any other delete failure is thrown, naming every duplicate that was not deleted",
         "test": "worker/deno/tests/marker_comment_pages_prune_test.ts",
         "testName": "prune - a DELETE refused with HTTP 403 throws, naming every failed comment",
-        "flipWentRed": "swallowing a non-404 delete failure made the HTTP 403 test go red"
+        "flipWentRed": "swallowing the failures made the HTTP 403 test go red"
       },
       {
         "path": "worker/deno/lib/held_issue_gate_comment.ts",
         "line": 284,
-        "endLine": 290,
-        "outcome": "after a POST the thread is re-pruned, so a racing run's duplicate is removed",
+        "outcome": "after a POST the thread is pruned again, so a racing run's duplicate is removed",
         "test": "worker/deno/tests/held_issue_gate_comment_test.ts",
         "testName": "upsertHeldIssueGateComment - two concurrent upserts for the same issue and key leave exactly one held-gate comment",
-        "flipWentRed": "removing the re-prune after the POST made the concurrent-upsert test go red"
+        "flipWentRed": "removing the prune after the POST made the concurrent-upsert test go red"
       },
       {
         "path": "worker/deno/lib/held_issue_gate_comment.ts",
         "line": 294,
-        "outcome": "a kept comment whose body already carries the key is left unchanged",
+        "outcome": "a kept comment that already carries the key is left unchanged",
         "test": "worker/deno/tests/held_issue_gate_comment_test.ts",
         "testName": "upsertHeldIssueGateComment - an unchanged gate writes nothing, a changed gate edits in place",
-        "flipWentRed": "the unchanged check flipped: FAILED, 26 passed, 3 failed"
+        "flipWentRed": "flipping the unchanged check made three tests go red"
+      },
+      {
+        "path": "worker/deno/lib/held_issue_gate_comment.ts",
+        "line": 378,
+        "outcome": "a v1 recheck-cache entry from before the prune existed is ignored, so the thread is read and pruned",
+        "test": "worker/deno/tests/held_issue_gate_comment_test.ts",
+        "testName": "reportHeldIssueGate - a warm pre-#3597 cache entry does not hide existing duplicates (Issue #3597)",
+        "flipWentRed": "restoring the v1 key made the test go red: the outcome was cached, not unchanged"
       },
       {
         "path": "worker/deno/lib/collect_self_diagnostic_candidates.ts",
-        "line": 566,
-        "endLine": 583,
-        "outcome": "a refused duplicate delete on the self-schedule path refuses the schedule and does not post",
+        "line": 471,
+        "outcome": "the fleet identity is resolved once per scan, not once per issue",
+        "test": "worker/deno/tests/collect_self_diagnostic_candidates_test.ts",
+        "testName": "self-schedule - fleet authors are resolved once per scan, not once per issue (Issue #3597)",
+        "flipWentRed": "resolving on every issue made the test go red: the config loader ran twice"
+      },
+      {
+        "path": "worker/deno/lib/collect_self_diagnostic_candidates.ts",
+        "line": 479,
+        "outcome": "a kept fleet announcement means the issue is already announced, so nothing is audited or posted",
+        "test": "worker/deno/tests/collect_self_diagnostic_candidates_test.ts",
+        "testName": "self-schedule - the announcement is posted once, not once per scan",
+        "flipWentRed": "forcing announced to false made the test go red: the decision was audited and posted again"
+      },
+      {
+        "path": "worker/deno/lib/collect_self_diagnostic_candidates.ts",
+        "line": 480,
+        "outcome": "a failed read or duplicate delete before posting refuses the schedule as announce-failed",
         "test": "worker/deno/tests/collect_self_diagnostic_candidates_test.ts",
         "testName": "self-schedule - a 403 on the duplicate delete refuses the schedule (Issue #3597)",
-        "flipWentRed": "swallowing the self-schedule catch let the 403 duplicate delete go through; the refusal test went red"
+        "flipWentRed": "removing the continue in that catch made the test go red: the candidate was emitted"
       },
       {
         "path": "worker/deno/lib/collect_self_diagnostic_candidates.ts",
-        "line": 557,
-        "outcome": "the self-schedule prune runs only when the fleet author list is non-empty",
-        "exempt": {
-          "kind": "untestable",
-          "reason": "equivalent mutant: the guard only skips a call that returns null for an empty list (worker/deno/lib/marker_comment_pages.ts:211), so no observable outcome differs; forcing the guard true left all 23 tests in worker/deno/tests/collect_self_diagnostic_candidates_test.ts green, the file that calls the enclosing function"
-        }
+        "line": 560,
+        "outcome": "after posting the announcement the thread is pruned again, so a racing host's duplicate is removed",
+        "test": "worker/deno/tests/collect_self_diagnostic_candidates_test.ts",
+        "testName": "self-schedule - a racing fleet announcement leaves exactly one (Issue #3597)",
+        "flipWentRed": "removing the prune after the post made the racing test go red"
+      },
+      {
+        "path": "worker/deno/lib/collect_self_diagnostic_candidates.ts",
+        "line": 567,
+        "outcome": "a failed prune after the post refuses the schedule as announce-failed",
+        "test": "worker/deno/tests/collect_self_diagnostic_candidates_test.ts",
+        "testName": "self-schedule - a failed prune after the post refuses the schedule (Issue #3597)",
+        "flipWentRed": "removing the continue in that catch made the test go red: the candidate was emitted"
       }
     ]
   }

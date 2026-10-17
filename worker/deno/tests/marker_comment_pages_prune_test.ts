@@ -134,6 +134,7 @@ Deno.test("prune - an empty fleet list deletes nothing and keeps nothing", async
 
   assertEquals(kept, null);
   assertEquals(thread.attempted, []);
+  assertEquals(thread.calls, [], "an empty fleet reads nothing");
   assertEquals(
     thread.calls.some((args) => args.includes("DELETE")),
     false,
