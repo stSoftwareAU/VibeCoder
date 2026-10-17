@@ -15,14 +15,20 @@
  * is the gate on a PR and the worker's type-check gate is the gate on a
  * milestone branch.
  *
+ * The prose pins are scoped with `section()` to the heading holding each
+ * rule, and assert whole sentences with `assertPins()` (Issue #3557,
+ * CODING-STANDARDS.md § "Re-scoping an existing drift test").
+ *
  * Australian English is used throughout (behaviour, colour, organisation).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { buildMergeConflictPrompt } from "../lib/prompt_builder.ts";
 import { loadPrompt, validatePromptTemplate } from "../lib/prompt_manager.ts";
+import { assertPins, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
+const MERGE_CONFLICT_DOC = "prompts/merge_conflict/prompt.md";
 
 /** Template prose is hard-wrapped by `deno fmt`, so match on flattened text. */
 function flatten(text: string): string {
@@ -148,31 +154,32 @@ Deno.test("merge_conflict - the rendered prompt never tells the agent to abort t
 // --- Judgement on every conflicted file (Issue #2306) ---
 
 Deno.test("merge_conflict - asks for one judgement line per conflicted file", async () => {
-  const body = flatten(await loadMergeConflict());
-  assertStringIncludes(
-    body,
-    "Judgement: <path> — <kept …; dropped …; because …>",
-  );
-  assertStringIncludes(body, "one line per conflicted file");
-  assertStringIncludes(body, ".pr_response_message");
+  const doc = await readRepoDoc(MERGE_CONFLICT_DOC);
+  assertPins(section(doc, "Where Both Sides Cannot Stand"), [
+    "Write into `.pr_response_message`, one line per conflicted file, in exactly this shape:",
+    "`Judgement: <path> — <kept …; dropped …; because …>`",
+  ]);
 });
 
 Deno.test("merge_conflict - a genuine contradiction is decided, not handed back", async () => {
-  const body = flatten(await loadMergeConflict());
-  assertStringIncludes(body, "both intents are best served by");
-  assertStringIncludes(body, "Originating Issues");
+  const doc = await readRepoDoc(MERGE_CONFLICT_DOC);
   // The mechanical side-pick stays forbidden — only the abort rule went.
-  assertStringIncludes(body, "Never side-pick");
+  assertPins(section(doc, "Where Both Sides Cannot Stand"), [
+    "resolve to the outcome **both intents are best served by**",
+    "read the **Originating Issues** block below when one is present",
+    "a side-pick is mechanical (`-X ours`, `checkout --theirs`, deleting the awkward half), and it is still forbidden",
+  ]);
 });
 
 // --- The never-side-pick contract survives ---
 
 Deno.test("merge_conflict - keeps the never-side-pick contract", async () => {
-  const body = await loadMergeConflict();
-  assertStringIncludes(body, "Never side-pick");
-  assertStringIncludes(body, "git merge -X ours");
-  assertStringIncludes(body, "git checkout --ours");
-  assertStringIncludes(body, "duplicate");
+  const doc = await readRepoDoc(MERGE_CONFLICT_DOC);
+  assertPins(section(doc, "The Contract — Both Sides Survive"), [
+    "**Perform a real merge. Never side-pick.**",
+    "`git merge -X ours` / `-X theirs`, `git checkout --ours <file>` / `--theirs <file>`, or any other whole-hunk or whole-file side-pick",
+    "The one exception is a genuine **duplicate**: both sides added the *same* content",
+  ]);
 });
 
 // Issue #2306 changed this example's outcome deliberately: the agent no
@@ -204,60 +211,54 @@ Deno.test("merge_conflict - the contradictory timeout example is decided by judg
 // --- The bounded dependency carve-out ---
 
 Deno.test("merge_conflict - names the carve-out in the contract section", async () => {
-  const body = await loadMergeConflict();
-  const start = body.indexOf("## The Contract — Both Sides Survive");
-  const end = body.indexOf("## What To Do", start);
-  assert(start >= 0 && end > start, "contract section missing");
-  const contract = body.slice(start, end);
-  assertStringIncludes(contract, "carve-out");
-  assertStringIncludes(contract, "dependency-version");
+  const doc = await readRepoDoc(MERGE_CONFLICT_DOC);
+  assertPins(section(doc, "The Contract — Both Sides Survive"), [
+    "### The Dependency-Version Carve-Out — Settled Before You Ran",
+  ]);
 });
 
 Deno.test("merge_conflict - the carve-out is bounded to dependency-version hunks in known manifests", async () => {
-  const body = await loadMergeConflict();
-  assertStringIncludes(body, "only");
-  for (
-    const manifest of ["deno.json", "package.json", "Cargo.toml", "go.mod"]
-  ) {
-    assertStringIncludes(body, manifest);
-  }
+  const doc = await readRepoDoc(MERGE_CONFLICT_DOC);
   // A source-code constant is explicitly outside the carve-out.
-  assertStringIncludes(body, "source code");
+  assertPins(section(doc, "The Dependency-Version Carve-Out"), [
+    "**The carve-out is bounded to dependency-version hunks in those manifest files.** It is not licence to generalise.",
+    "Do not settle a conflicting constant, config value, threshold or string anywhere else by taking the newer one",
+    "A dependency-version hunk in a known manifest — `deno.json`/`deno.jsonc`, `package.json`, `Cargo.toml`, `go.mod` —",
+    "A value in source code has no such order",
+  ]);
 });
 
 Deno.test("merge_conflict - states the rules run before this prompt and take the higher version", async () => {
-  const body = await loadMergeConflict();
-  assertStringIncludes(body, "before");
-  assertStringIncludes(body, "higher");
-  assertStringIncludes(body, "semver");
+  const doc = await readRepoDoc(MERGE_CONFLICT_DOC);
+  assertPins(section(doc, "The Dependency-Version Carve-Out"), [
+    "settled deterministically by the worker **before** this prompt is built, so it never reaches you",
+    "is resolved per dependency key by taking the **higher** published semver, whichever branch carries it",
+  ]);
 });
 
 Deno.test("merge_conflict - says lock files are regenerated, never merged", async () => {
-  const body = await loadMergeConflict();
-  assertStringIncludes(body, "regenerate");
-  for (
-    const lock of ["deno.lock", "package-lock.json", "Cargo.lock", "go.sum"]
-  ) {
-    assertStringIncludes(body, lock);
-  }
+  const doc = await readRepoDoc(MERGE_CONFLICT_DOC);
+  assertPins(section(doc, "The Dependency-Version Carve-Out"), [
+    "**Lock files.** `deno.lock`, `package-lock.json`, `Cargo.lock` and `go.sum` are **never** text-merged.",
+    "The worker regenerates them from the already-merged manifest with the ecosystem's own tool.",
+  ]);
 });
 
 Deno.test("merge_conflict - tells the agent rule-resolved files are not in the conflicted list", async () => {
-  const body = await loadMergeConflict();
-  const start = body.indexOf("## The Contract — Both Sides Survive");
-  const end = body.indexOf("## What To Do", start);
-  const contract = body.slice(start, end);
-  assertStringIncludes(contract, "conflicted-file list");
-  assertStringIncludes(contract, "not listed");
+  const doc = await readRepoDoc(MERGE_CONFLICT_DOC);
+  assertPins(section(doc, "The Dependency-Version Carve-Out"), [
+    "Files the rules resolved are already staged and are **not listed** in the conflicted-file list at the end of this prompt",
+  ]);
   // The placeholder itself is injected once, at the end of the template.
-  assertEquals(body.split("{{CONFLICTED_FILES}}").length - 1, 1);
+  assertEquals(doc.split("{{CONFLICTED_FILES}}").length - 1, 1);
 });
 
 Deno.test("merge_conflict - gives the total-order rationale so the carve-out is not generalised", async () => {
-  const body = await loadMergeConflict();
-  assertStringIncludes(body, "total order");
-  assertStringIncludes(body, "rule");
-  assertStringIncludes(body, "judgement");
+  const doc = await readRepoDoc(MERGE_CONFLICT_DOC);
+  assertPins(section(doc, "The Dependency-Version Carve-Out"), [
+    "**Why this is a rule and not a judgement:** dependency versions have a total order",
+    "which is exactly why the timeout example below is a judgement you make by reading the code, not a rule you apply",
+  ]);
 });
 
 // --- The narrowed issue-intent carve-out (Issue #1114) ---
