@@ -243,6 +243,53 @@ Deno.test("closureGapFindings: numbered verdict copies match without truncating 
   assertStringIncludes(unrelated[0]!.problem, "No verdict was reported");
 });
 
+Deno.test("closureGapFindings: rendered copies of already-numbered criteria match", () => {
+  const items = metClosureItems(block(
+    "- **met** — 1. detect in seconds, one probe from inside a container — evidence: a — reviewer: met",
+    "- **met** — 2) 3. Imports `@std/assert` in every test — evidence: b — reviewer: met",
+    `- **met** — 4. ${
+      "x".repeat(CLOSURE_CRITERION_MAX)
+    } — evidence: c — reviewer: met`,
+  ));
+  assertEquals(items.length, 3);
+  const copies = renderClosureEntriesSection(items, "numbered-copy")
+    .split("\n").filter((line) => /^\d+\. /.test(line));
+  assertEquals(copies.length, items.length);
+  assertStringIncludes(copies[0]!, "1. 1. detect in seconds");
+  assertStringIncludes(copies[1]!, "2. 2) 3. Imports");
+  assertEquals(
+    closureGapFindings(items, copies.map((copy) => v(copy, "met")), PATH),
+    [],
+  );
+  assertEquals(
+    closureGapFindings(
+      items,
+      items.map((item) => v(item.criterion, "met")),
+      PATH,
+    ),
+    [],
+  );
+  for (const verdict of ["partial", "missing"] as const) {
+    const findings = closureGapFindings(
+      items,
+      copies.map((copy) => v(copy, verdict)),
+      PATH,
+    );
+    assertEquals(findings.length, items.length);
+    for (const finding of findings) {
+      assertStringIncludes(finding.problem, `was rated ${verdict}`);
+    }
+  }
+  const unrelated = closureGapFindings(items, [
+    v("1. 1. Unrelated criterion", "met"),
+  ], PATH);
+  assertEquals(unrelated.length, 1);
+  assertStringIncludes(
+    unrelated[0]!.problem,
+    "No verdict was reported for 3 of 3",
+  );
+});
+
 Deno.test("closureGapFindings: the fix offers delivery or a dispute, never a partial downgrade", () => {
   const out = closureGapFindings(
     ITEMS,
