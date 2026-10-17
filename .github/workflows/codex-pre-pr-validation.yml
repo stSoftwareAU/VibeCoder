@@ -5,12 +5,13 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: milestone-pre-pr-validation
-  cancel-in-progress: true
+  group: milestone-pre-pr-validation-${{ github.sha }}
+  cancel-in-progress: false
 jobs:
-  registry-smoke:
+  full-quality:
+    name: Full quality (main baseline)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - name: Checkout exact source revision
         # actions/checkout@v7.0.1
@@ -24,27 +25,18 @@ jobs:
         uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
         with:
           deno-version-file: .deno-version
-      - name: Check pinned dependencies and PowerShell
-        working-directory: worker/deno
+      - name: Install repository Node version
+        # actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .node-version
+      - name: Install pinned quality tools
         run: |
           set -euo pipefail
+          npm install -g --ignore-scripts markdownlint-cli2@0.23.2
+          pipx install semgrep==1.173.0
           command -v pwsh
-          deno task test tests/doc_prose_claims_test.ts < /dev/null
-      - name: Export public pinned package cache
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import base64, json, pathlib, subprocess, zlib
-          root = pathlib.Path(json.loads(subprocess.check_output(['deno', 'info', '--json']))['modulesCache']) / 'https' / 'jsr.io'
-          result = []
-          for path in root.iterdir():
-              raw = path.read_bytes()
-              if b'\n// denoCacheMetadata=' not in raw:
-                  continue
-              body, footer = raw.rsplit(b'\n// denoCacheMetadata=', 1)
-              meta = json.loads(footer)
-              url = meta['url']
-              if any(url.startswith(prefix) for prefix in ['https://jsr.io/@std/assert/1.0.18', 'https://jsr.io/@std/internal/1.0.12']):
-                  result.append({'filename': path.name, 'url': url, 'body': base64.b64encode(body).decode(), 'type': meta['headers'].get('content-type', 'application/typescript')})
-          print('PUBLIC_CACHE_EXPORT=' + base64.b64encode(zlib.compress(json.dumps(result).encode())).decode())
-          PY
+      - name: Run unchanged repository quality gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./quality.sh < /dev/null
