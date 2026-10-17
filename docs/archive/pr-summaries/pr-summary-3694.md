@@ -11,7 +11,7 @@ A run that an external SIGTERM ended (exit 143) was auto-filed as an `oom` worke
 ### Essential Design Decisions
 
 - Worker-written evidence still counts. That covers the kill headline `Claude was killed (exit 137, SIGKILL)`, the `Processes at the kill` block with kernel OOM lines, and the `Memory pressure at kill: high` probe line.
-- The CLI's own V8 heap abort is not lost: the runner's `detectOutOfMemory` catches it before the kill path runs and returns `outOfMemory`. The classifier then sees `buildOutOfMemoryMessage`'s worker-worded headline.
+- The CLI's own V8 heap abort never reaches the `killed` arm, so this change does not affect it. The runner's `detectOutOfMemory` catches it, and `buildOutOfMemoryMessage` (`worker/deno/lib/execute_claude_phase.ts`) writes neither SIGKILL nor SIGTERM. `detectFailureCategory`'s timeout rule matches that message's "not a transient rate limit or timeout" wording, so `classifyRunFailure` sees it as `timeout`, never as `killed`.
 
 ### Undiscoverable Facts
 
