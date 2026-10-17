@@ -1,0 +1,184 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 325,
+        "outcome": "refuses paths outside the approved Markdown scope",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - rejects unsafe paths, symlink aliases and overlapping spans",
+        "flipWentRed": "Replaced if (!isSummaryClaimPath(file) && !isManualProsePath(file)) with if (false); the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 330,
+        "outcome": "refuses symlink aliases before writing",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - rejects unsafe paths, symlink aliases and overlapping spans",
+        "flipWentRed": "Replaced if (await Deno.realPath(path) !== path) with if (false); the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 342,
+        "outcome": "rejects oversized replacement replies",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - rejects malformed index sets and oversized replies before any write",
+        "flipWentRed": "Replaced if (reply.length > MAX_CORRECTED_SUMMARY_CHARS) with if (false); the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 348,
+        "outcome": "requires the complete replacement inventory",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - rejects missing, duplicate, unknown or ambiguous replacements",
+        "flipWentRed": "Replaced parsed.replacements.length !== findings.length with false; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 360,
+        "outcome": "rejects non-numeric replacement indices",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - rejects malformed index sets and oversized replies before any write",
+        "flipWentRed": "Replaced !Number.isInteger(item?.index) || with false ||; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 361,
+        "outcome": "rejects a non-string replacement",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - rejects missing, duplicate, unknown or ambiguous replacements",
+        "flipWentRed": "Replaced typeof item.text !== \"string\" with false; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 378,
+        "outcome": "refuses ambiguous matching spans",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - rejects missing, duplicate, unknown or ambiguous replacements",
+        "flipWentRed": "Replaced if (!match || pattern.exec(original)) with if (!match); the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 394,
+        "outcome": "refuses overlapping replacement spans",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - rejects unsafe paths, symlink aliases and overlapping spans",
+        "flipWentRed": "Replaced if (edit.end > boundary) with if (false); the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 395,
+        "outcome": "preserves bytes after each flagged span",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - replaces only unique flagged spans, preserving surrounding bytes",
+        "flipWentRed": "Replaced  + text.slice(edit.end) with nothing; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 412,
+        "outcome": "unreadable manuals retain confirmed findings",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - unchanged and unreadable confirmed claims survive a flaky recheck",
+        "flipWentRed": "Replaced let remains = true; with let remains = false;; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 422,
+        "outcome": "unchanged manual findings survive a flaky recheck",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - unchanged and unreadable confirmed claims survive a flaky recheck",
+        "flipWentRed": "Replaced remains && !carried.some with false && !carried.some; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 423,
+        "outcome": "deduplicates by file as well as sentence",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - unchanged and unreadable confirmed claims survive a flaky recheck",
+        "flipWentRed": "Replaced f.file === finding.file && with true &&; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 424,
+        "outcome": "distinct sentences in one file remain distinct findings",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - unchanged and unreadable confirmed claims survive a flaky recheck",
+        "flipWentRed": "Replaced normaliseWhitespace(f.sentence) ===           normaliseWhitespace(finding.sentence) with true; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 455,
+        "outcome": "offers indexed manual correction instead of a summary rewrite",
+        "test": "worker/deno/tests/completion_phase_summary_claim_check_test.ts",
+        "testName": "completion - a later doc finding gets a narrow sentence correction turn",
+        "flipWentRed": "Replaced const manualMode = (pending.docFindings?.length ?? 0) > 0; with const manualMode = false;; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 501,
+        "outcome": "timed-out replies never write manual text",
+        "test": "worker/deno/tests/completion_phase_summary_claim_check_test.ts",
+        "testName": "completion - a timed-out correction reply cannot write manual text",
+        "flipWentRed": "Replaced if (r.value.timedOut) throw new Error(\"Claim correction timed out\"); with nothing; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 524,
+        "outcome": "commits corrected manual text before the completion recheck",
+        "test": "worker/deno/tests/completion_phase_summary_claim_check_test.ts",
+        "testName": "completion - a later doc finding gets a narrow sentence correction turn",
+        "flipWentRed": "Replaced if (changed) { with if (false) {; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 3696,
+        "outcome": "late manual-only claims receive the correction turn",
+        "test": "worker/deno/tests/completion_phase_summary_claim_check_test.ts",
+        "testName": "completion - a later doc finding gets a narrow sentence correction turn",
+        "flipWentRed": "Replaced summarySource !== null && shouldOfferClaimCorrection(state) with summarySource !== null && shouldOfferClaimCorrection(state) && claimCheck.docFindings.length === 0; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 817,
+        "outcome": "surviving manual claims withhold auto-merge",
+        "test": "worker/deno/tests/completion_phase_summary_claim_check_test.ts",
+        "testName": "completion - a surviving doc finding is held after its one correction turn",
+        "flipWentRed": "Replaced || block.docHoldComment.length > 0 with || false; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 3352,
+        "outcome": "mixed-gate blocks retain the manual hold",
+        "test": "worker/deno/tests/completion_phase_summary_claim_check_test.ts",
+        "testName": "completion - a manual finding beside another gate is held without an extra correction turn",
+        "flipWentRed": "Replaced docHoldComment: (claimCheck?.docFindings.length ?? 0) > 0 with docHoldComment: false; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 818,
+        "outcome": "manual hold comments reach the PR repair path",
+        "test": "worker/deno/tests/completion_phase_summary_claim_check_test.ts",
+        "testName": "completion - a surviving doc finding is held after its one correction turn",
+        "flipWentRed": "Replaced [block.verifierHoldComment, block.docHoldComment] with [block.verifierHoldComment]; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 3038,
+        "outcome": "completion applies manual carry-forward before deciding gates",
+        "test": "worker/deno/tests/completion_phase_summary_claim_check_test.ts",
+        "testName": "completion - an unchanged manual finding cannot disappear in a flaky correction recheck",
+        "flipWentRed": "Replaced await carryForwardManualClaims( with await (async (r) => r)(; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/summary_claim_correction.ts",
+        "line": 360,
+        "outcome": "rejects duplicate indices with the inventory error before planning edits",
+        "test": "worker/deno/tests/summary_claim_correction_test.ts",
+        "testName": "manual correction - rejects malformed index sets and oversized replies before any write",
+        "flipWentRed": "Removed the duplicate-index check; the test failed because the error became an overlapping-span error instead of the required invalid-index error."
+      }
+    ]
+  }
+}

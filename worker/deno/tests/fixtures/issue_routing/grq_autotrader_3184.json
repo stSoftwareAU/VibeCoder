@@ -1,0 +1,4 @@
+{
+  "title": "fix(worker): stSoftwareAU/GRQ-AutoTrader keeps failing at setup — runs die in the first minute",
+  "body": "<!-- VIBE_REPO_FAST_FAILURE_TALLY:stSoftwareAU/GRQ-AutoTrader -->\n\nAuto-filed by the Vibe Coder (Issue #2956): **stSoftwareAU/GRQ-AutoTrader** is being tallied for fast failures across the fleet. Every host adds a marker comment here each time its own run fails fast against this repository (inside 60s, or before any output at all).\n\nWhen 3 fast failures fall inside a rolling 24 h window the back-off marker is added to this issue, and every host then skips stSoftwareAU/GRQ-AutoTrader until this issue is closed (Issue #2955).\n\nClosing this issue releases the back-off; a fresh tally starts from the next fast failure."
+}
