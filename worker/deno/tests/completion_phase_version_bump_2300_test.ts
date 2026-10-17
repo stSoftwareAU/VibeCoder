@@ -129,7 +129,13 @@ async function run(indexHtmlPatch: string) {
             },
           });
         }
-        if (cmdArgs[0] === "diff" && cmdArgs.includes("--")) {
+        const pathspecAt = cmdArgs.indexOf("--");
+        // The prose scope also reads a whole-branch diff ending in `--`.
+        // This spy records only the screenshot gate's per-file patch reads.
+        if (
+          cmdArgs[0] === "diff" && pathspecAt >= 0 &&
+          pathspecAt + 1 < cmdArgs.length
+        ) {
           const file = cmdArgs[cmdArgs.length - 1]!;
           patchedFiles.push(file);
           return Promise.resolve({

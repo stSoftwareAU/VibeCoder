@@ -65,6 +65,10 @@ import type { IssuePhaseRun } from "./fleet_telemetry.ts";
 import type { IssueExecutorSplitStats } from "./issue_executor_enforcement.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
+import {
+  formatGateStageOutcomes,
+  type GateStageOutcome,
+} from "./gate_stage_outcome.ts";
 import { getRunId } from "./run_id.ts";
 import type { IssueSubAgentTier } from "../types.ts";
 import {
@@ -388,6 +392,23 @@ export function buildQualityGateStatsLine(
 }
 
 /**
+ * Render each quality-gate stage's outcome for the stats block (Issue #3726).
+ *
+ * One line beside {@link buildQualityGateStatsLine}'s, so an audit can tell a
+ * stage that passed from one that was skipped (and why). The existing
+ * `quality gate:` line is stable by contract and is not touched.
+ *
+ * @param stages - The latest gate run's stage outcomes
+ * @returns The bullet line, or `""` when no stages were recorded
+ */
+export function buildQualityGateStagesStatsLine(
+  stages?: readonly GateStageOutcome[],
+): string {
+  if (!stages) return "";
+  return `- quality gate stages: ${formatGateStageOutcomes(stages)}`;
+}
+
+/**
  * Render the run's Graft line for the stats block (Issue #2105, part of #2060).
  *
  * One line on every run, so the figures are readable on the issue itself
@@ -608,6 +629,8 @@ export function measureIssuePhaseRun(args: {
  * @param args.qualityGate - What the run's quality gate did (Issue #2345);
  *   omitted — every phase that runs no gate — renders no such line, so those
  *   comments are byte-for-byte what they were before
+ * @param args.qualityGateStages - Each gate stage's outcome from the latest
+ *   gate run (Issue #3726); omitted renders no line
  * @param args.rtk - What this run's RTK preparation produced (Issue #2385);
  *   omitted renders exactly the comment this function rendered before the
  *   line existed
@@ -634,6 +657,7 @@ export function buildIssueRunStatsComment(args: {
   graft?: GraftContextResult;
   codegraph?: CodegraphContextResult;
   qualityGate?: QualityGateAttemptOutcome;
+  qualityGateStages?: readonly GateStageOutcome[];
   rtk?: RtkOutputResult;
   subAgentDegradation?: IssueSubAgentDegradation;
   agentRefusal?: AgentRefusalOutcome;
@@ -663,6 +687,10 @@ export function buildIssueRunStatsComment(args: {
   // Issue #2345: the gate's own outcome, beside the figures of the run it
   // gated and ahead of the cumulative issue total.
   const qualityGateLine = buildQualityGateStatsLine(args.qualityGate);
+  // Issue #3726: each stage's outcome, directly after the gate's own line.
+  const qualityGateStagesLine = buildQualityGateStagesStatsLine(
+    args.qualityGateStages,
+  );
   // Issues #2344, #2346: whether the run was split, and what the split did.
   const splitLines = buildExecutorSplitStatsLines(
     args.phase,
@@ -681,8 +709,8 @@ export function buildIssueRunStatsComment(args: {
     subAgentLine ? `\n${subAgentLine}` : ""
   }${refusalLine ? `\n${refusalLine}` : ""}${
     graftLine ? `\n${graftLine}` : ""
-  }${codegraphLine}${
-    qualityGateLine ? `\n${qualityGateLine}` : ""
+  }${codegraphLine}${qualityGateLine ? `\n${qualityGateLine}` : ""}${
+    qualityGateStagesLine ? `\n${qualityGateStagesLine}` : ""
   }${splitBlock}${rtkLine}`;
   const totalLine = buildIssueCostTotalLine(
     tallyIssueCost([...(args.priorComments ?? []), body]),
@@ -855,6 +883,8 @@ export async function postIssueRunStatsComment(args: {
   codegraph?: CodegraphContextResult;
   /** What this run's quality gate did (Issue #2345); omitted renders no line. */
   qualityGate?: QualityGateAttemptOutcome;
+  /** Each gate stage's outcome (Issue #3726); omitted renders no line. */
+  qualityGateStages?: readonly GateStageOutcome[];
   /** What this run's RTK preparation produced (Issue #2385). */
   rtk?: RtkOutputResult;
   /** A haiku-tier run served a previous-generation Haiku (Issue #3405); omitted renders no line. */
@@ -887,6 +917,9 @@ export async function postIssueRunStatsComment(args: {
   const graft = args.graft ? { graft: args.graft } : {};
   const codegraph = args.codegraph ? { codegraph: args.codegraph } : {};
   const qualityGate = args.qualityGate ? { qualityGate: args.qualityGate } : {};
+  const qualityGateStages = args.qualityGateStages
+    ? { qualityGateStages: args.qualityGateStages }
+    : {};
   const rtk = args.rtk ? { rtk: args.rtk } : {};
 
   // Built without the issue's comments first, purely to answer "is there
@@ -950,6 +983,7 @@ export async function postIssueRunStatsComment(args: {
         ...graft,
         ...codegraph,
         ...qualityGate,
+        ...qualityGateStages,
         ...rtk,
         ...(args.subAgentDegradation
           ? { subAgentDegradation: args.subAgentDegradation }

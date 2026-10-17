@@ -379,6 +379,31 @@ Deno.test("completion - a gate that never passed is reported as failed (Issue #2
   assertStringIncludes(stats.body, "- quality gate: failed");
 });
 
+Deno.test("completion - reports the quality gate stage outcomes (Issue #3726)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [claudeRun(["claude-opus-4-8"])],
+    qualityGateOutcome: { status: "passed", attempt: 1 },
+    qualityGateStages: [
+      {
+        name: "semgrep",
+        status: "SKIPPED",
+        reason: "semgrep: SKIPPED (offline)",
+      },
+    ],
+  });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertStringIncludes(
+    stats.body,
+    "- quality gate stages: skipped: `semgrep` (`semgrep: SKIPPED (offline)`)",
+  );
+});
+
 Deno.test("completion - a run that never reached the gate mentions none (Issue #2345)", async () => {
   const ctx = makeContext();
   const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });

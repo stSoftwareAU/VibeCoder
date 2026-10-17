@@ -3,6 +3,9 @@
  *
  * Generates actionable improvement suggestions for the Vibe Coder project
  * and optionally creates GitHub issues for each suggestion using the gh CLI.
+ * Issues are filed through the issue router (`fileRoutedIssue`, Issue #3745),
+ * so each lands in the repository that owns it. `--dry-run` with `--repo`
+ * runs the router's read-only steps and reports what it would do.
  *
  * Issue #192 — Initial suggest improvements command.
  * Issue #209 — Updated with prompt and workflow improvement suggestions.
@@ -16,9 +19,11 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
   createGitHubIssuesWithPartialFailures,
   type CreateIssuesResult,
+  type RoutedImprovement,
 } from "../lib/github.ts";
 import { validateSuggestImprovementsArgs } from "../lib/command_args.ts";
 import { customLabelPromptLabels } from "../lib/custom_label_prompts_config.ts";
+import { plural } from "../lib/codebase_map.ts";
 
 /**
  * Represents a single improvement suggestion.
@@ -183,79 +188,116 @@ export function formatImprovementAsIssueBody(improvement: Improvement): string {
   ].join("\n");
 }
 
+/** The worker's own repository; worker improvements route here (Issue #3745). */
+const WORKER_REPO = "stSoftwareAU/VibeCoder";
+
 /** Typed data returned by the suggest-improvements command (Issue #223). */
 export interface SuggestImprovementsData {
   improvements: Improvement[];
   repo: string | null;
   createdIssues?: CreateIssuesResult["createdIssues"];
   failures?: CreateIssuesResult["failures"];
+  routed?: CreateIssuesResult["routed"];
+}
+
+/** Injection points for {@link createSuggestImprovementsCommand}; production defaults apply when omitted. */
+export interface SuggestImprovementsDeps {
+  ghCommandFn?: (args: string[]) => Promise<string>;
+  now?: () => Date;
+}
+
+/**
+ * Build the suggest-improvements command with the given dependencies.
+ */
+export function createSuggestImprovementsCommand(
+  deps: SuggestImprovementsDeps = {},
+): Command {
+  return {
+    name: "suggest-improvements",
+    description:
+      "Generate and optionally create GitHub issues for improvement suggestions",
+
+    async execute(
+      args: Record<string, unknown>,
+      config: WorkerConfig,
+    ): Promise<CommandResult<SuggestImprovementsData>> {
+      // Validate args using typed schema (Issue #630)
+      const parsed = validateSuggestImprovementsArgs(args);
+      if (!parsed.ok) {
+        return {
+          success: false,
+          message: parsed.error.message,
+        };
+      }
+
+      const { dryRun, repo } = parsed.value;
+      const improvements = generateImprovements();
+
+      if (!repo) {
+        const count = improvements.length;
+        return {
+          success: true,
+          message: `Generated ${count} improvement suggestion${
+            count === 1 ? "" : "s"
+          } (dry-run)`,
+          data: {
+            improvements,
+            repo: repo ?? null,
+          },
+        };
+      }
+
+      const result = await createGitHubIssuesWithPartialFailures(
+        improvements,
+        repo,
+        {
+          routingContext: {
+            vibeCoderRepo: WORKER_REPO,
+            productRepos: config.repos,
+          },
+          dryRun,
+          // Issue #847: a configured custom label dispatches a privileged phase,
+          // so the worker must never self-apply one on an issue it files.
+          extraReservedLabels: customLabelPromptLabels(config),
+          ghCommandFn: deps.ghCommandFn,
+          now: deps.now,
+        },
+      );
+
+      const count = (action: RoutedImprovement["action"]) =>
+        result.routed.filter((r) => r.action === action).length;
+      const created = result.createdIssues.length;
+      const reused = count("reused");
+      const summary = dryRun
+        ? `Dry run: ${
+          plural(count("would-create"), "improvement issue")
+        } would be created and ${
+          plural(count("would-reuse"), "existing issue")
+        } reused, routed from ${repo}`
+        : `Created ${plural(created, "improvement issue")} and reused ${
+          plural(reused, "existing issue")
+        }, routed from ${repo}`;
+      const failureMsg = result.failures.length > 0
+        ? ` (${result.failures.length} failed)`
+        : "";
+
+      return {
+        success: result.failures.length === 0,
+        message: summary + failureMsg,
+        data: {
+          improvements,
+          createdIssues: result.createdIssues,
+          failures: result.failures,
+          routed: result.routed,
+          repo,
+        },
+      };
+    },
+  };
 }
 
 /**
  * Suggest improvements command implementation.
  */
-export const suggestImprovementsCommand: Command = {
-  name: "suggest-improvements",
-  description:
-    "Generate and optionally create GitHub issues for improvement suggestions",
-
-  async execute(
-    args: Record<string, unknown>,
-    config: WorkerConfig,
-  ): Promise<CommandResult<SuggestImprovementsData>> {
-    // Validate args using typed schema (Issue #630)
-    const parsed = validateSuggestImprovementsArgs(args);
-    if (!parsed.ok) {
-      return {
-        success: false,
-        message: parsed.error.message,
-      };
-    }
-
-    const { dryRun, repo } = parsed.value;
-    const improvements = generateImprovements();
-
-    if (dryRun || !repo) {
-      const count = improvements.length;
-      return {
-        success: true,
-        message: `Generated ${count} improvement suggestion${
-          count === 1 ? "" : "s"
-        } (dry-run)`,
-        data: {
-          improvements,
-          repo: repo ?? null,
-        },
-      };
-    }
-
-    const result = await createGitHubIssuesWithPartialFailures(
-      improvements,
-      repo,
-      undefined,
-      undefined,
-      // Issue #847: a configured custom label dispatches a privileged phase, so
-      // the worker must never self-apply one on an issue it files.
-      customLabelPromptLabels(config),
-    );
-
-    const successMsg =
-      `Created ${result.createdIssues.length} improvement issue${
-        result.createdIssues.length === 1 ? "" : "s"
-      } in ${repo}`;
-    const failureMsg = result.failures.length > 0
-      ? ` (${result.failures.length} failed)`
-      : "";
-
-    return {
-      success: result.failures.length === 0,
-      message: successMsg + failureMsg,
-      data: {
-        improvements,
-        createdIssues: result.createdIssues,
-        failures: result.failures,
-        repo,
-      },
-    };
-  },
-};
+export const suggestImprovementsCommand: Command =
+  createSuggestImprovementsCommand();
