@@ -17,6 +17,7 @@ import {
   readSecurityFixGateBlock,
   recordSecurityFixGateBlock,
   resolveSecurityGateStateDir,
+  sanitiseDiscrimination,
   type SecurityFixGateBlock,
 } from "../lib/security_fix_gate_feedback.ts";
 import { SECURITY_FIX_EVIDENCE_DESCRIPTIONS } from "../lib/security_fix_gate.ts";
@@ -150,6 +151,37 @@ Deno.test("gate feedback - unknown evidence kinds in state are discarded", async
   });
 });
 
+/** Overwrite the persisted file for an issue with an old-shape block. */
+async function seedOldShapeBlock(
+  stateDir: string,
+  missing: string[],
+): Promise<void> {
+  await recordSecurityFixGateBlock(stateDir, REPO, 4030, ["trigger-closed"]);
+  const [file] = [...Deno.readDirSync(stateDir)].map((entry) => entry.name);
+  await Deno.writeTextFile(
+    `${stateDir}/${file}`,
+    JSON.stringify({ version: 1, missing, blockCount: 2 }),
+  );
+}
+
+Deno.test("gate feedback - an old block carrying the dropped regression-test kind keeps only the live kinds (Issue #3659)", async () => {
+  await withStateDir(async (stateDir) => {
+    await seedOldShapeBlock(stateDir, ["regression-test", "trigger-closed"]);
+    const block = await readSecurityFixGateBlock(stateDir, REPO, 4030);
+    assertEquals(block?.missing, ["trigger-closed"]);
+  });
+});
+
+Deno.test("gate feedback - an old block holding only the dropped regression-test kind reads as absent (Issue #3659)", async () => {
+  await withStateDir(async (stateDir) => {
+    await seedOldShapeBlock(stateDir, ["regression-test"]);
+    assertEquals(
+      await readSecurityFixGateBlock(stateDir, REPO, 4030),
+      undefined,
+    );
+  });
+});
+
 Deno.test("gate feedback - an unconfigured store fails loud on write", async () => {
   const read = await readSecurityFixGateBlock("", REPO, 4030);
   assertEquals(read, undefined);
@@ -172,7 +204,7 @@ Deno.test("gate feedback - the contract states every required evidence item", ()
     const kind of [
       "test-file-changed",
       "test-identifier-in-diff",
-      "regression-test",
+      "test-discriminates",
       "trigger-closed",
     ] as const
   ) {
@@ -369,3 +401,154 @@ Deno.test(
     assertStringIncludes(section, "The gate matched these test declarations");
   },
 );
+
+// --- The executed discrimination record (PR #3921 review) -------------------
+
+const RECORD = {
+  kind: "checked",
+  test: { file: "tests/sanitise_test.ts", name: "rejects injection attempt" },
+  preFix: "pass",
+  postFix: "pass",
+} as const;
+
+Deno.test("gate feedback - a discrimination record survives the store and renders for the next attempt", async () => {
+  await withStateDir(async (stateDir) => {
+    await recordSecurityFixGateBlock(
+      stateDir,
+      REPO,
+      4030,
+      ["test-discriminates"],
+      { discrimination: RECORD },
+    );
+    const block = await readSecurityFixGateBlock(stateDir, REPO, 4030);
+    assertEquals(block?.discrimination, RECORD);
+
+    const section = buildSecurityFixGateFeedbackSection(
+      block as SecurityFixGateBlock,
+    );
+    assertStringIncludes(section, "rejects injection attempt");
+    assertStringIncludes(
+      section,
+      "base production files: pass (expected fail)",
+    );
+    assertStringIncludes(section, "head: pass (expected pass)");
+    assertStringIncludes(section, "never reaches the vulnerable code path");
+    assertEquals(section.includes("may already be correct"), false);
+  });
+});
+
+Deno.test("gate feedback - a block file written before the discrimination field existed still reads", async () => {
+  await withStateDir(async (stateDir) => {
+    await seedOldShapeBlock(stateDir, ["test-discriminates"]);
+    const block = await readSecurityFixGateBlock(stateDir, REPO, 4030);
+    assertEquals(block?.missing, ["test-discriminates"]);
+    assertEquals(block?.discrimination, undefined);
+    // Without a record the section still states the verdict and does not
+    // promise the code is already correct.
+    const section = buildSecurityFixGateFeedbackSection(
+      block as SecurityFixGateBlock,
+    );
+    assertStringIncludes(section, "must FAIL against the base branch");
+    assertEquals(section.includes("Recorded discrimination runs"), false);
+  });
+});
+
+Deno.test("gate feedback - a malformed or oversized discrimination record is dropped or bounded on read", async () => {
+  await withStateDir(async (stateDir) => {
+    await recordSecurityFixGateBlock(stateDir, REPO, 4030, ["trigger-closed"]);
+    const [file] = [...Deno.readDirSync(stateDir)].map((entry) => entry.name);
+    const write = (discrimination: unknown) =>
+      Deno.writeTextFile(
+        `${stateDir}/${file}`,
+        JSON.stringify({
+          version: 1,
+          missing: ["test-discriminates"],
+          blockCount: 1,
+          discrimination,
+        }),
+      );
+
+    await write({ ...RECORD, preFix: "maybe" });
+    assertEquals(
+      (await readSecurityFixGateBlock(stateDir, REPO, 4030))?.discrimination,
+      undefined,
+    );
+    await write({ kind: "not_checked", reason: 7 });
+    assertEquals(
+      (await readSecurityFixGateBlock(stateDir, REPO, 4030))?.discrimination,
+      undefined,
+    );
+    await write({ kind: "not_checked", reason: "x".repeat(5000) });
+    const bounded = (await readSecurityFixGateBlock(stateDir, REPO, 4030))
+      ?.discrimination;
+    assertEquals(
+      bounded?.kind === "not_checked" ? bounded.reason.length : -1,
+      300,
+    );
+  });
+});
+
+Deno.test("gate feedback - sanitiseDiscrimination accepts both live shapes and refuses the rest", () => {
+  assertEquals(sanitiseDiscrimination(RECORD), RECORD);
+  assertEquals(
+    sanitiseDiscrimination({ kind: "not_checked", reason: " cause " }),
+    { kind: "not_checked", reason: "cause" },
+  );
+  for (
+    const bad of [
+      null,
+      "checked",
+      {},
+      { kind: "checked" },
+      { ...RECORD, test: { file: "", name: "n" } },
+      { ...RECORD, test: { file: "f", name: "" } },
+      { ...RECORD, preFix: "maybe" },
+      { ...RECORD, kind: "weird" },
+      { ...RECORD, postFix: undefined },
+    ]
+  ) {
+    assertEquals(sanitiseDiscrimination(bad), undefined);
+  }
+});
+
+Deno.test("gate feedback - sanitiseDiscrimination keeps valid other-test runs and drops invalid ones individually", () => {
+  const other = {
+    test: { file: " tests/other_test.ts ", name: " other case " },
+    preFix: "pass",
+    postFix: "pass",
+  };
+  assertEquals(
+    sanitiseDiscrimination({
+      ...RECORD,
+      others: [other, { test: { file: "f", name: "" }, preFix: "fail" }, null],
+    }),
+    {
+      ...RECORD,
+      others: [{
+        test: { file: "tests/other_test.ts", name: "other case" },
+        preFix: "pass",
+        postFix: "pass",
+      }],
+    },
+  );
+  // Only invalid entries leaves the deciding run, with no `others` key.
+  assertEquals(
+    sanitiseDiscrimination({ ...RECORD, others: [{ kind: "x" }] }),
+    RECORD,
+  );
+  assertEquals(sanitiseDiscrimination({ ...RECORD, others: "nope" }), RECORD);
+});
+
+Deno.test("gate feedback - a block without a discrimination kind never renders the record", () => {
+  // The fixture carries a record, so only the missing kinds keep it out.
+  const section = buildSecurityFixGateFeedbackSection({
+    repo: REPO,
+    issueNumber: 4030,
+    missing: ["trigger-closed"],
+    blockedAt: "",
+    blockCount: 1,
+    discrimination: RECORD,
+  });
+  assertEquals(section.includes("Recorded discrimination runs"), false);
+  assertStringIncludes(section, "may already be correct");
+});

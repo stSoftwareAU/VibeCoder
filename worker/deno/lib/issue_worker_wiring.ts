@@ -209,6 +209,11 @@ import {
   runMutationCheck,
 } from "./mutation_runner.ts";
 import {
+  type DiscriminationRunInput,
+  runSecurityFixDiscrimination,
+  type SecurityFixDiscrimination,
+} from "./security_fix_discrimination.ts";
+import {
   fileBaselineCarryoverTracker,
   fileRedCheckTracker,
 } from "./baseline_carryover_tracker.ts";
@@ -528,6 +533,15 @@ export interface QualityDeps {
   runMutationCheck?: (
     input: MutationRunInput,
   ) => Promise<MutationCheckResult>;
+  /**
+   * Run the cited security test red→green: against the base production files,
+   * then against the fix (Issue #3659). Optional: when absent, a security-fix
+   * PR whose discrimination check is due blocks as `discrimination-not-checked`
+   * — it never passes unchecked.
+   */
+  runSecurityFixDiscrimination?: (
+    input: DiscriminationRunInput,
+  ) => Promise<SecurityFixDiscrimination>;
 }
 
 // ---------------------------------------------------------------------------
@@ -806,6 +820,8 @@ export function createDefaultDeps(
       writeBaselineQualityCache,
       runMutationCheck: (input) =>
         runMutationCheck(input, defaultMutationRunnerSeams()),
+      runSecurityFixDiscrimination: (input) =>
+        runSecurityFixDiscrimination(input, defaultMutationRunnerSeams()),
     },
   };
 }

@@ -17,7 +17,12 @@ import {
   recoverFromSecurityGateBlock,
   shouldEscalateBlockedRuns,
 } from "../lib/security_fix_gate_retry.ts";
-import type { SecurityFixGateBlock } from "../lib/security_fix_gate_feedback.ts";
+import {
+  readSecurityFixGateBlock,
+  resolveSecurityGateStateDir,
+  type SecurityFixGateBlock,
+} from "../lib/security_fix_gate_feedback.ts";
+import type { SecurityFixDiscrimination } from "../lib/security_fix_discrimination.ts";
 import { SECURITY_FIX_GATE_MARKER } from "../lib/failure_diagnosis.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -53,7 +58,7 @@ Deno.test("gate retry - the prompt replays the verdict and forbids new work", ()
 
 Deno.test("gate retry - one verdict renders the ordinary block message", () => {
   const comment = buildSecurityFixGateBlockComment([
-    { missing: ["trigger-closed"], declarations: [] },
+    { missing: ["trigger-closed"], declarations: [], discrimination: null },
   ]);
 
   assertStringIncludes(comment, "PR creation blocked");
@@ -63,8 +68,8 @@ Deno.test("gate retry - one verdict renders the ordinary block message", () => {
 
 Deno.test("gate retry - two verdicts ride in one comment", () => {
   const comment = buildSecurityFixGateBlockComment([
-    { missing: ["test-file-changed"], declarations: [] },
-    { missing: ["trigger-closed"], declarations: [] },
+    { missing: ["test-file-changed"], declarations: [], discrimination: null },
+    { missing: ["trigger-closed"], declarations: [], discrimination: null },
   ]);
 
   assertStringIncludes(comment, "ORIGINAL TRIGGER");
@@ -106,11 +111,21 @@ Deno.test("gate retry - the escalation quotes the verdict and names the gate", (
  * verdicts. `launchFails` makes the retry invocation fail; otherwise the
  * re-run completion attempt fails again (a second block).
  */
-async function recover(launchFails: boolean) {
+async function recover(
+  launchFails: boolean,
+  options: {
+    verdicts?: PhaseState["securityGateBlocks"];
+    /** Overrides the work directory; `""` leaves the verdict store unconfigured. */
+    workDir?: string;
+    /** Runs before the temporary work directory is removed. */
+    inspect?: (workDir: string, prompts: string[]) => Promise<void>;
+  } = {},
+) {
+  const prompts: string[] = [];
   const root = await Deno.makeTempDir();
   try {
     const config = buildDefaultWorkerConfig();
-    config.workDir = `${root}/work`;
+    config.workDir = options.workDir ?? `${root}/work`;
     const ctx: IssueContext = {
       repo: BLOCK.repo,
       issueNumber: BLOCK.issueNumber,
@@ -131,9 +146,13 @@ async function recover(launchFails: boolean) {
       executeStartTime: 0,
       baselineQualityPassed: true,
       baselineQualityOutput: "",
-      securityGateBlocks: [
-        { missing: ["test-file-changed"], declarations: [] },
-        { missing: ["trigger-closed"], declarations: [] },
+      securityGateBlocks: options.verdicts ?? [
+        {
+          missing: ["test-file-changed"],
+          declarations: [],
+          discrimination: null,
+        },
+        { missing: ["trigger-closed"], declarations: [], discrimination: null },
       ],
     };
     const deps = createMockDeps({
@@ -147,15 +166,17 @@ async function recover(launchFails: boolean) {
           }) as unknown as GitHubClient,
       },
       claude: {
-        runClaudeWithRetry: () =>
-          Promise.resolve(
+        runClaudeWithRetry: (opts) => {
+          prompts.push(opts.prompt);
+          return Promise.resolve(
             launchFails
               ? { ok: false as const, error: new Error("rate limited") }
               : {
                 ok: true as const,
                 value: { exitCode: 0, output: "done", timedOut: false },
               },
-          ),
+          );
+        },
       },
       quality: {
         runQualityGate: () =>
@@ -170,12 +191,14 @@ async function recover(launchFails: boolean) {
           }),
       },
     });
-    return await recoverFromSecurityGateBlock(
+    const result = await recoverFromSecurityGateBlock(
       ctx,
       state,
       deps,
       () => Promise.resolve({ status: "failure", reason: "blocked again" }),
     );
+    await options.inspect?.(config.workDir, prompts);
+    return result;
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -197,4 +220,132 @@ Deno.test("gate retry - a retry that cannot be launched ends the run in failure,
   const reason = result.status === "failure" ? result.reason : "";
   assertEquals(reason.startsWith(SECURITY_FIX_GATE_MARKER), false);
   assertStringIncludes(reason, "could not be launched (rate limited)");
+});
+
+// --- The executed discrimination record reaches the retry (PR #3921 review) --
+
+const GREEN_GREEN: SecurityFixDiscrimination = {
+  kind: "checked",
+  test: { file: "tests/sanitise_test.ts", name: "rejects injection attempt" },
+  preFix: "pass",
+  postFix: "pass",
+};
+
+const DISCRIMINATION_BLOCK: SecurityFixGateBlock = {
+  repo: BLOCK.repo,
+  issueNumber: BLOCK.issueNumber,
+  missing: ["test-discriminates"],
+  blockedAt: "2026-09-08T00:00:00.000Z",
+  blockCount: 0,
+  discrimination: GREEN_GREEN,
+};
+
+Deno.test("gate retry - a test-discriminates prompt names both outcomes and does not say the code is already correct", () => {
+  const prompt = buildSecurityFixGateRetryPrompt(DISCRIMINATION_BLOCK);
+
+  assertStringIncludes(prompt, "Recorded discrimination runs");
+  assertStringIncludes(prompt, "rejects injection attempt");
+  assertStringIncludes(prompt, "base production files: pass (expected fail)");
+  assertStringIncludes(prompt, "head: pass (expected pass)");
+  assertStringIncludes(prompt, "never reaches the vulnerable code path");
+  assertStringIncludes(prompt, "NOT assumed correct");
+  assertEquals(prompt.includes("very likely already correct"), false);
+  assertEquals(prompt.includes("commit nothing"), false);
+});
+
+Deno.test("gate retry - a test that fails at the head is told the code is not correct", () => {
+  const prompt = buildSecurityFixGateRetryPrompt({
+    ...DISCRIMINATION_BLOCK,
+    discrimination: { ...GREEN_GREEN, preFix: "fail", postFix: "fail" },
+  });
+
+  assertStringIncludes(prompt, "head: fail (expected pass)");
+  assertStringIncludes(prompt, "FAILS at the head");
+  assertEquals(
+    prompt.includes("never reaches the vulnerable code path"),
+    false,
+  );
+});
+
+Deno.test("gate retry - a discrimination-not-checked prompt carries the recorded cause", () => {
+  const prompt = buildSecurityFixGateRetryPrompt({
+    ...DISCRIMINATION_BLOCK,
+    missing: ["discrimination-not-checked"],
+    discrimination: {
+      kind: "not_checked",
+      reason:
+        'the cited test did not run at the head: error: Module not found "x"',
+    },
+  });
+
+  assertStringIncludes(prompt, "Module not found");
+  assertStringIncludes(prompt, "could NOT run the cited test");
+  assertEquals(prompt.includes("commit nothing"), false);
+});
+
+Deno.test("gate retry - a block that is not a discrimination verdict keeps the wording-fault guidance", () => {
+  // The fixture holds a record, so only the missing kinds can keep it out.
+  const prompt = buildSecurityFixGateRetryPrompt({
+    ...BLOCK,
+    discrimination: GREEN_GREEN,
+  });
+
+  assertEquals(prompt.includes("Recorded discrimination runs"), false);
+  assertStringIncludes(prompt, "very likely already correct");
+  assertStringIncludes(prompt, "commit nothing");
+});
+
+Deno.test("gate retry - the escalation for a discrimination block points at the recorded runs", () => {
+  const escalation = buildBlockedRunsEscalation({
+    ...DISCRIMINATION_BLOCK,
+    blockCount: 2,
+  });
+
+  assertStringIncludes(escalation.nextStep, "Recorded discrimination runs");
+  assertEquals(escalation.nextStep.includes("security_fix_gate.ts"), false);
+});
+
+Deno.test("gate retry - the run's discrimination record is persisted and replayed into the retry prompt", async () => {
+  let stored: SecurityFixGateBlock | undefined;
+  let prompt = "";
+  await recover(false, {
+    verdicts: [
+      {
+        missing: ["test-discriminates"],
+        declarations: [],
+        discrimination: GREEN_GREEN,
+      },
+    ],
+    inspect: async (workDir, prompts) => {
+      stored = await readSecurityFixGateBlock(
+        resolveSecurityGateStateDir(workDir),
+        BLOCK.repo,
+        BLOCK.issueNumber,
+      );
+      prompt = prompts[0] ?? "";
+    },
+  });
+
+  assertEquals(stored?.discrimination, GREEN_GREEN);
+  assertStringIncludes(prompt, "base production files: pass (expected fail)");
+});
+
+Deno.test("gate retry - a verdict that cannot be persisted still replays its discrimination record to the retry", async () => {
+  let prompt = "";
+  await recover(false, {
+    workDir: "",
+    verdicts: [
+      {
+        missing: ["test-discriminates"],
+        declarations: [],
+        discrimination: GREEN_GREEN,
+      },
+    ],
+    inspect: (_workDir, prompts) => {
+      prompt = prompts[0] ?? "";
+      return Promise.resolve();
+    },
+  });
+
+  assertStringIncludes(prompt, "base production files: pass (expected fail)");
 });

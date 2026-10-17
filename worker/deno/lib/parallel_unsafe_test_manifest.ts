@@ -293,6 +293,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // at a time; only a growth measurement separates that linear scan from a
   // backtracking one on hostile opener runs (Issue #3769).
   "tests/mermaid_validator_growth_3769_test.ts",
+  // The security-fix gate's cited-test parsing scans diff lines an agent
+  // (steered by an untrusted issue body) writes; only a growth measurement
+  // separates its linear declaration scan from a backtracking one on an
+  // unclosed quote run (Issue #3659).
+  "tests/security_fix_gate_growth_test.ts",
 ];
 
 /**
