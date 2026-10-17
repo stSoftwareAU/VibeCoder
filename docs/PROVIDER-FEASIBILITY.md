@@ -2,11 +2,11 @@
 
 **Issue:** #3647
 
-This is the prerequisite to any cross-provider rollout of the manager–worker split. It changes no default, no routing and no billing path, and the Claude fleet is untouched. Codex is not installed on the host where this was written, so nothing here was verified live. The live steps are an operator procedure (section 5). Related: [Provider parity](PROVIDER-PARITY.md), [Manager-worker contract](MANAGER-WORKER-CONTRACT.md), [Subscription soak](SUBSCRIPTION-SOAK.md).
+This is the prerequisite to any cross-provider rollout of the manager–worker split. It changes no default, no routing and no billing path, and the Claude fleet is untouched. Codex is not installed on this worker host. The one live step run here was the read-only `provider-feasibility` command (section 6). The Codex login, quota read, refresh, resume and model turn are operator procedure (section 5). Related: [Provider parity](PROVIDER-PARITY.md), [Manager-worker contract](MANAGER-WORKER-CONTRACT.md), [Subscription soak](SUBSCRIPTION-SOAK.md).
 
 ## 1. Verdict
 
-The verdicts are what `provider-feasibility` prints for these rows at this change. They are read from the evaluator (`worker/deno/lib/provider_feasibility.ts`), not from a host run. Two evaluator rules shape the table. First, a model not validated on the host prints `unavailable` whatever else is true (`provider_feasibility.ts:352-355`); its structural blockers still appear in `blockers=`, so the row prints `no-go` once validated. Second, only the Claude fleet's models count as validated without an operator record: `DEFAULT_CLAUDE_MODEL`, the `PHASE_MODEL_DEFAULTS` values and the issue sub-agent constants (`provider_feasibility.ts:135-149`). No Codex model does.
+The verdicts are what `provider-feasibility` prints for these rows at this change. The table is read from the evaluator (`worker/deno/lib/provider_feasibility.ts`) and matches the host run quoted in section 6. Two evaluator rules shape it. First, a model not validated on the host prints `unavailable` whatever else is true (`provider_feasibility.ts:352-355`). Its structural blockers still appear in `blockers=`, so the row prints `no-go` once validated. Second, only the Claude fleet's models count as validated without an operator record: `DEFAULT_CLAUDE_MODEL`, the `PHASE_MODEL_DEFAULTS` values and the issue sub-agent constants (`provider_feasibility.ts:135-149`). No Codex model does.
 
 | Provider and model | Role (manager provider) | Printed verdict | Basis |
 | --- | --- | --- | --- |
@@ -15,8 +15,8 @@ The verdicts are what `provider-feasibility` prints for these rows at this chang
 | codex `gpt-5-codex`, `gpt-5`, `gpt-5-mini` | manager (codex) | **unavailable**; no-go once validated | `buildInvocation` emits neither `--agents` nor `--settings` (`agent_provider.ts:870-906`), so `no-sub-agent-definitions` and `no-advisor-edit-guard` apply. Not validated on any host by default. |
 | codex `gpt-5-codex`, `gpt-5`, `gpt-5-mini` | executor, reviewer (codex) | **unavailable**; no-go once validated | Same-provider, so the same two blockers. |
 | codex `gpt-5-codex`, `gpt-5`, `gpt-5-mini` | executor, reviewer (claude) | **unavailable**; no-go once validated | `cross-provider-dispatch-not-implemented` (`provider_feasibility.ts:331-336`). |
-| codex `gpt-6-astra` | manager (codex) | **unavailable**; no-go regardless | Codex cannot carry the manager contract (row above). The vendor does not state availability (section 5), and there is no price row (`api-equivalent-price-missing`). |
-| codex `gpt-6.1-sol` | executor, reviewer (claude) | **unavailable**; no-go once validated | Vendor-exposed in the CLI on paid plans (dated quote, section 5), but cross-provider dispatch is not implemented. No price row. |
+| codex `gpt-6-astra` | manager (codex) | **unavailable**; no-go regardless | Codex cannot carry the manager contract (row above). The vendor does not state which plans or sign-in methods get Astra (section 6), and there is no price row (`api-equivalent-price-missing`). |
+| codex `gpt-6.1-sol` | executor, reviewer (claude) | **unavailable**; no-go once validated | Vendor-exposed in the CLI on paid plans (fetched 2026-10-17, section 6), but cross-provider dispatch is not implemented. No price row. |
 | codex `gpt-6.1-sol` | manager, executor, reviewer (codex) | **unavailable**; no-go once validated | Same-provider blockers as above. |
 | gemini, deepseek (only if named with `--providers` and `--models`) | any | **unavailable**; no-go once validated | No fixed-price subscription is declared (`agent_provider.ts:965`, `:1057`), so the billing blocker applies. Out of the subscription-only scope. |
 
@@ -29,14 +29,14 @@ This change offers no API-key workaround. A subscription run withholds `OPENAI_A
 | Unattended Codex under a ChatGPT subscription; zero intervention after setup | Designed path: one `codex login --device-auth` at setup, persisted under `CODEX_HOME` in agent state. No restart path runs `codex login`, and a revoked login should classify as unavailable rather than prompt. | `CODEX-SUBSCRIPTION-AUTH.md` (One-time login; Restart behaviour); `SUBSCRIPTION-SOAK.md` section 3 | no — operator procedure |
 | Noninteractive renewal | Refresh is the CLI's own, per the OpenAI behaviour cited in `CODEX-SUBSCRIPTION-AUTH.md`. Whether it succeeds unattended is the soak's test. | `CODEX-SUBSCRIPTION-AUTH.md` (Why `CODEX_HOME` is persistent); `SUBSCRIPTION-SOAK.md` section 4 | no — operator procedure |
 | Quota and remaining-usage visibility | No free Codex quota probe. The budget is the newest rollout `token_count` snapshot (remaining is `100 - used_percent`), and a fresh `CODEX_HOME` is `unknown` (`no-rate-limit-event`) until a paid turn. Unknown is never zero; the row shows `quota-unknown`. `codex exec --json` carries no `rate_limits`, so the rollout file is the only source (source-level claim in `CODEX-BUDGET-SOURCES.md`, not re-verified here). | `codex_budget.ts:1-32`, `:548`; `provider_quota.ts:9-10`; `PROVIDER-PARITY.md:192-196`; `CODEX-BUDGET-SOURCES.md` (five facts; What was rejected) | no — operator procedure |
-| Limits and failure behaviour | Codex failures classify as authentication (`codex_output_adapter.ts:387-406`), quota-exhausted (`:410-422`), invalid-session (`:426-434`), model-unavailable (`:436-445`), network (`:447-458`), rate-limit with retry-after (`:460-473`) or task-failure (`:475-480`), using the categories in `agent_output.ts:77-88`. In auto mode a failing provider is unavailable until its reset, or for five minutes when none was reported (`PROVIDER-PARITY.md:133-136`; `provider_auto_state.ts:27-28`). A bare HTTP 429 is recorded as a throttle, not an exhausted window (`CODEX-BUDGET-SOURCES.md`, Two honest limitations). The CLI does not expose retry-after to the adapter (`CODEX-BUDGET-SOURCES.md`, five facts). The vendor page publishes no per-model rate limit. | as cited | no — operator procedure |
+| Limits and failure behaviour | Codex failures classify as authentication (`codex_output_adapter.ts:387-406`), quota-exhausted (`:410-422`), invalid-session (`:426-434`), model-unavailable (`:436-445`), network (`:447-458`), rate-limit with retry-after (`:460-473`) or task-failure (`:475-480`), using the categories in `agent_output.ts:77-88`. A bare HTTP 429 is recorded as a throttle, not an exhausted window (`CODEX-BUDGET-SOURCES.md`, Two honest limitations). The CLI does not expose retry-after to the adapter (`CODEX-BUDGET-SOURCES.md`, five facts). In auto mode a failing provider is unavailable until its reset, or for five minutes when none was reported (`PROVIDER-PARITY.md:133-136`; `provider_auto_state.ts:27-28`). The vendor page gives no per-model rate limit. | as cited | no — operator procedure |
 | Credential isolation | `buildIsolatedCodexChildEnv` deletes `OPENAI_API_KEY`, `CODEX_API_KEY` and `CODEX_HOME` from its copy, then sets only the selected account's values (`codex_env.ts:116-145`). The container mounts only enabled providers' credential directories, read-only (`CONTAINMENT.md:80`, `:115-119`). | as cited | no — operator procedure |
 | Per-host container CLI install | Codex is pinned at 0.147.0 with per-architecture SHA-256 (`container/tools.json:62-71`). `codex.sh` checks the archive digest (`container/providers/codex.sh:58-59`, `:72`) and the installed `--version` (`:83-90`). It is not in the default image (`container/tools.json:97`, `installedProviders: ["claude"]`); a host adds it through `AGENT_PROVIDERS` (`container/Containerfile:135`). | as cited | no — image not built here |
 | Session resume | `codex exec resume <id>` (`codex_executor.ts:345-347`), using the `thread_id` read from the CLI output (`codex_output_adapter.ts:200`). Used only for a stored Codex session with a prior phase (`session_resume.ts:179-186`). | as cited | no — operator procedure |
 | Sandboxed tools | Codex runs with `--dangerously-bypass-approvals-and-sandbox` (`codex_executor.ts:56`), so its own sandbox and approvals are off. The container is the boundary: read-only root (`CONTAINMENT.md:177`), outbound-only network (`:325-330`). Claude runs with `--dangerously-skip-permissions` (`agent_provider.ts:606`). | as cited | no — operator procedure |
-| Repeatable smoke test, no production side effects | `provider-feasibility` is read-only by code: one `--version` per provider, no model turn, no GitHub call, no file written (`worker/deno/commands/provider_feasibility.ts:1-12`, `:99-107`). | as cited | no — not run for this document |
+| Repeatable smoke test, no production side effects | `provider-feasibility` is read-only by code: one `--version` per provider, no model turn, no GitHub call, no file written (`worker/deno/commands/provider_feasibility.ts:1-12`, `:99-112`). The same command was run on this host (section 6). | as cited; section 6 | yes — run on this worker host, 2026-10-17; see section 6 |
 | Astra-as-manager; Sol-as-executor | Both `unavailable` on this host (section 1). No API-key or metered route was tested or offered. | section 1 | no — operator procedure (section 5) |
-| `CODEX_HOME` default (found while reading) | With `CODEX_HOME` unset, the billing probe resolves the home to `<agent-state>/codex` (`agent_provider.ts:802-803`; `agent_state_dir.ts:54-58`; `codex_auth_mode.ts:171-180`). The child gets `CODEX_HOME` only from the parent environment or credential overlay (`agent_provider.ts:923`; `codex_env.ts:130-136`). No code in `lib/`, `commands/` or `container/` that I searched exports the default to the child. The CLI default is `$HOME/.codex` (`commands/codex_budget.ts:36-44`). | code read only | no — operator procedure |
+| `CODEX_HOME` default (follow-up #3955) | With `CODEX_HOME` unset, the billing probe resolves the home to `<agent-state>/codex` (`agent_provider.ts:802-803`; `agent_state_dir.ts:54-58`; `codex_auth_mode.ts:171-180`). The child gets `CODEX_HOME` only from the parent environment or the credential overlay (`agent_provider.ts:923`; `codex_env.ts:130-136`). No code under `lib/`, `commands/` or `container/` exports the default to the child. The CLI default is `$HOME/.codex` (`commands/codex_budget.ts:36-44`). Filed as stSoftwareAU/VibeCoder#3955, "Codex billing probe and child disagree on CODEX_HOME when it is not set explicitly". | code read; #3955 | no — operator procedure |
 
 ## 3. Provider capability matrix
 
@@ -52,7 +52,8 @@ This change offers no API-key workaround. A subscription run withholds `OPENAI_A
 | Container install | In the default image (`container/tools.json:97`) | Pinned; opt-in via `AGENT_PROVIDERS` | Pinned; not default | Pinned; not default |
 
 - Sub-agents run inside the advisor's single CLI process (contract section 6). Claude is the only provider with a sub-agent and guard path today.
-- The evaluator's `cli-sandbox-bypassed` caveat is keyed to Codex's flag only (`provider_feasibility.ts:182`, `:212`), so Claude's `--dangerously-skip-permissions` is not reported.
+- The evaluator's `cli-sandbox-bypassed` caveat is keyed to Codex's flag only (`provider_feasibility.ts:182`, `:212`, `:344`), so Claude's `--dangerously-skip-permissions` is not reported.
+- The evaluator's own quota reading is Codex-only (`commands/provider_feasibility.ts:228-230`). Every Claude row therefore prints `quota-unknown (no free quota probe for this provider)`, even though the status adapter above exists.
 
 ## 4. API-equivalent cost attribution caveats
 
@@ -64,7 +65,7 @@ Decision (2026-10-13): report estimated API-equivalent USD only. No subscription
 4. **No row for `gpt-6-astra` or `gpt-6.1-sol`.** `lookupModelPricing` returns `null` (`token_usage.ts:638`, `:691`). The two surfaces then disagree. Run statistics leave the model out of the total, show `pricing unknown` and mark the heading `(partial — see below)` (`cost_estimate.ts:267-285`, `:347-359`). The credit log and daily summary charge it at `UNPRICED_UPPER_BOUND_PRICING` and list it in `unpricedModels` (`token_usage.ts:477-485`, `:744-752`; `credit_tracker.ts:514`, `:543`, `:547`). That upper bound is deliberate (Issue #3870). A run's run-statistics figure can therefore be lower than what the spend ceiling counts.
 5. **Missing usage is unknown, never zero.** A Codex run with no usable usage is `usageUnknown` and carries a warning (`provider_token_usage.ts:108-135`). The credit entry records the flag (`claude_runner.ts:2456-2476`), and the daily summary counts it separately (`credit_tracker.ts:479`).
 6. **Sub-agents.** Claude's `--agents` sub-agents run inside the advisor's CLI process (contract section 6), so their tokens sit in the advisor's invocation. A per-model split needs Claude's per-model breakdown. Without one, a multi-model run is marked `sub-agents: not costed` (`planning_run_stats.ts:599-637`; `cost_estimate.ts:374`). The Codex adapter reads no per-model breakdown or served-model list, so a Codex run cannot be split by role.
-7. **Retries and failed attempts.** Recorded: every `runClaudeWithTimeout` invocation that settles writes one credit entry (`claude_runner.ts:2465`) before failure classification (`:2510`). The retry loop calls it once per attempt and counts `totalInvocations` (`claude_runner.ts:3015-3016`), so each attempt is its own entry. A failed attempt is costed at whatever usage it reported, and otherwise recorded as `usageUnknown`. Not confirmed, so missing data: attempts that fail before the child settles; retries made by other modules (I did not trace whether `infra_retry.ts`, `haiku_refusal_retry.ts` and others re-enter the same call); and a lost credit write, which is fire-and-forget and only logs a warning (`claude_runner.ts:2484`).
+7. **Retries and failed attempts.** Recorded: every `runClaudeWithTimeout` invocation that settles writes one credit entry (`claude_runner.ts:2465`) before failure classification (`:2510`). The retry loop calls it once per attempt and counts `totalInvocations` (`claude_runner.ts:3015-3016`), so each attempt is its own entry. A failed attempt is costed at whatever usage it reported, and otherwise recorded as `usageUnknown`. Not confirmed, so treated as missing data: attempts that fail before the child settles; retries made by other modules (whether `infra_retry.ts`, `haiku_refusal_retry.ts` and others re-enter the same call is not traced); and a lost credit write, which is fire-and-forget and only logs a warning (`claude_runner.ts:2484`).
 8. **Model attribution.** The credit model is the requested id (`claude_runner.ts:2439`). An unresolved model is logged as the sentinel `default` (`claude_runner.ts:769`), which has no price row and is charged at the upper bound.
 
 **Missing data, explicitly:** Codex subscription consumption in tokens or windows (never converted, so every Codex figure is API-equivalent only); the Codex served model (not recorded); prices for `gpt-6-astra` and `gpt-6.1-sol` (none); attempts that fail before the child settles and retries outside the runner wrapper (not traced); failed credit appends (warning only); and a per-role split for any Codex run.
@@ -81,12 +82,12 @@ deno run --allow-read --allow-env --allow-run mod.ts provider-feasibility \
   [--validated-models codex:gpt-6.1-sol,...] [--codex-home DIR] [--credential-dir DIR]
 ```
 
-- Runs only `<binary> --version` per provider, under a scrubbed environment (`commands/provider_feasibility.ts:99-107`). No model turn, no GitHub API call, no file written (`:1-12`).
-- Reads the provider's `provider.env` under the credential directory as the worker provisions it (`commands/provider_feasibility.ts:194-210`). Output carries variable names and state labels only, passed through `redactSecrets` (`:368-376`).
-- Default candidates: claude `opus`, `sonnet`, `haiku`; codex `gpt-5-codex`, `gpt-5`, `gpt-5-mini`, `gpt-6-astra`, `gpt-6.1-sol` (`provider_feasibility.ts:93-110`).
+- Runs only `<binary> --version` per provider, under a scrubbed environment (`commands/provider_feasibility.ts:99-112`). No model turn, no GitHub API call, no file written (`:1-12`).
+- Reads the provider's `provider.env` under the credential directory as the worker provisions it. The file values overlay the parent environment (`commands/provider_feasibility.ts:203-214`). Output carries variable names and state labels only, passed through `redactSecrets` (`:120`, `:365-373`).
+- Default candidates: claude `opus`, `sonnet`, `haiku`; codex `gpt-5-codex`, `gpt-5`, `gpt-5-mini`, `gpt-6-astra`, `gpt-6.1-sol` (`provider_feasibility.ts:93-112`).
 - Rows: one manager row per model, then for each manager provider one executor and one reviewer row per model. That is 40 rows by default (`provider_feasibility.ts:242-266`).
 - Capabilities come from each provider's own `buildInvocation` output (`--agents`, `--settings`, `--dangerously-bypass-approvals-and-sandbox`), not a hard-coded list (`provider_feasibility.ts:193-214`).
-- `--validated-models` adds to the fleet baseline (`commands/provider_feasibility.ts:338-341`). `--codex-home` sets `CODEX_HOME` for the probe (`:343-345`).
+- `--validated-models` adds to the fleet baseline (`commands/provider_feasibility.ts:326-338`). `--codex-home` sets `CODEX_HOME` for the probe (`:340-342`).
 
 Output format (`provider_feasibility.ts:372-380`):
 
@@ -110,7 +111,7 @@ flowchart TD
 ### Reading the verdicts
 
 - `go`: no blocker. Caveats may still apply.
-- `no-go`: at least one blocker; the `blockers=` list says which.
+- `no-go`: at least one blocker. The `blockers=` list says which.
 - `unavailable`: not validated on this host. Its structural blockers are still listed, so validation alone does not turn a Codex row into `go`.
 
 ### Live entitlement check (opt-in, manual)
@@ -127,24 +128,36 @@ This consumes fixed-price subscription quota. It must never use an API key.
      "Reply with the single word OK"
    ```
 
+   The `codex exec --model gpt-6.1-sol` form matches the vendor page's CLI example `codex exec -m gpt-6.1-sol` (fetched 2026-10-17). Only `--sandbox read-only` is unverified against an installed CLI.
+
 3. If it fails as model-unavailable, authentication or quota-exhausted (`codex_output_adapter.ts:387-445`), record nothing.
 4. On success, re-run the smoke test with `--validated-models codex:gpt-6.1-sol`. The command writes no file, so the operator keeps the record.
 5. To read the quota snapshot without a turn, run `deno run --allow-read --allow-env mod.ts codex-budget --codex-home <dir>` from `worker/deno` (`CODEX-BUDGET-SOURCES.md`, The live diagnostic).
 6. The restart and token-refresh steps are in [Subscription soak](SUBSCRIPTION-SOAK.md) sections 3 and 4, not restated here.
 
-The `--sandbox read-only` flag and the `codex exec --model` form come from the task brief. They were not checked against the installed CLI, because Codex is not installed here.
+## 6. What was and was not verified on this host
 
-## 6. What was not verified on this host
+**Observed run, this worker host, 2026-10-17.** From `worker/deno`:
 
-- Codex is not installed (`codex: command not found`) and there is no `CODEX_HOME`. No login, quota read, refresh, resume or model turn was run.
-- The `provider-feasibility` command was not run for this document; section 1 is read from code.
-- Vendor statements are quoted from the task brief (learn.chatgpt.com/docs/models, retrieved 2026-10-17). They were not re-fetched here, and they are dated.
-- Entitlement of `gpt-5`, `gpt-5-codex` and `gpt-5-mini` under ChatGPT sign-in: the vendor page does not mention them. They are not claimed to be retired. Unverified.
+```bash
+deno run --frozen --lock=deno.lock --allow-read --allow-env --allow-run --allow-sys=hostname mod.ts provider-feasibility
+```
+
+Observed header: `[feasibility] rows=40 go=9 no-go=6 unavailable=25`. The rows match the table in section 1:
+
+- Claude: the nine rows for `opus`, `sonnet` and `haiku` as manager, and as executor and reviewer under a Claude manager, printed `go`. Each carries the caveat `quota-unknown (no free quota probe for this provider)`.
+- Codex: every Codex row (25) printed `unavailable`. Each carried `cli-not-installed (not on PATH)`, `billing-unknown (subscription-credential-missing)` and the caveat `quota-unknown (no-session-file)`.
+- No-go: the six Claude executor and reviewer rows under a Codex manager, each blocked by `cross-provider-dispatch-not-implemented`.
+- Stderr on the same run carried three `[SECURITY] refusing to stage the gh credential` lines (`lib/gh_credential_stage.ts:420`) and a final `[SECURITY] cannot re-stage the gh credential` line (`:435`). The run has no `--allow-write`, so staging was refused and nothing was written. The code path that reaches staging was not traced, so "no file written" holds under this permission set.
+
+**Not verified:**
+
+- Codex is not installed on this host (the evaluator reports `cli-not-installed (not on PATH)`). No login, quota read, refresh, resume or model turn was run.
+- Vendor statements were fetched on 2026-10-17 from https://developers.openai.com/codex/models, which redirected to https://learn.chatgpt.com/docs/models. They are dated to that fetch. The page says the GPT-6.1 Sol launch rollout includes Plus, Pro, Business, Enterprise and Edu in Codex, that Enterprise and Edu keep it off until an administrator enables it, and that "Free and Go are not included at launch". It says Astra availability "depends on the rollout, your sign-in method, and your client" and that "Some paid plans omit Astra Extra High", without stating which plans or sign-in methods get Astra. It gives no per-model rate limit. It states that `gpt-5.4` and `gpt-5.4-mini` retired from Codex with ChatGPT sign-in on August 31, 2026, that `gpt-5.5` retires on October 14, 2026 at 19:00 UTC, and that `gpt-5.2` and `gpt-5.3-codex` are deprecated. It does not mention `gpt-5`, `gpt-5-codex` or `gpt-5-mini`. Their entitlement under ChatGPT sign-in is therefore unverified, and they are not claimed to be retired.
 - Whether the pinned CLI 0.147.0 (`container/tools.json:65`) accepts `gpt-6-astra` or `gpt-6.1-sol` is unverified. A model-unavailable result may come from the pin rather than the entitlement.
-- Astra availability by plan and sign-in method: the vendor text does not state it.
-- No container image was built; `codex.sh` was read, not run.
-- Gemini and DeepSeek sandbox and quota facts are unverified.
-- The `CODEX_HOME` default divergence (section 2) is code-read only. Whether the child's default home persists inside the container is unverified.
+- No container image was built. `codex.sh` was read, not run.
+- Gemini and DeepSeek sandbox facts are unverified. The evaluator's quota reading covers Codex only (section 3).
+- The `CODEX_HOME` default divergence (section 2, #3955) is code-read only. Whether the child's default home persists inside the container is unverified.
 - Evaluator gap: `cli-sandbox-bypassed` covers only Codex's flag, so Claude's bypass is not reported (section 3).
 
 ## 7. What would change the verdicts
