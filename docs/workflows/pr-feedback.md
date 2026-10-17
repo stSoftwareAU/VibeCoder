@@ -220,7 +220,7 @@ also reads the parent issue, re-verifies its content, and files or reuses the
 follow-up (or hands a partial-delivery follow-up to a human) before it writes
 the new section. This is the one path where a re-sync touches the follow-up;
 see
-[the fix-run gap case](workflows/issue-processing.md#a-healthy-runs-own-gaps-get-a-follow-up-too-issue-3506)
+[the fix-run gap case](issue-processing.md#a-healthy-runs-own-gaps-get-a-follow-up-too-issue-3506)
 (Issue #3678).
 
 Writing `Refs #N` in the summary does not stop the rebuilt description from
