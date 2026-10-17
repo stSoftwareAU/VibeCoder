@@ -22,7 +22,9 @@ declared `AgentProviderBilling` capability off its descriptor, tests the
 declared variables for a non-blank value, and — for a provider that keeps its
 billing state outside the environment — calls that provider's own
 `resolveStoredBilling` hook. Codex's hook is the only one today, and it reads
-`$CODEX_HOME/auth.json` through the existing `resolveCodexAuthMode`.
+`$CODEX_HOME/auth.json` through the existing `resolveCodexAuthMode`, and only
+when `CODEX_HOME` is set explicitly (Issue #3955); with it unset the hook
+reports nothing.
 
 Untrusted inputs, and how each reaches the output:
 
@@ -30,8 +32,8 @@ Untrusted inputs, and how each reaches the output:
 | ----- | ------ | ----------------- |
 | `providerId` | `.config.json`, `agent_provider_fallback`, a repo pin | used only as a `Map` key for descriptor lookup; an unregistered id returns `provider-not-registered` rather than throwing or matching by prefix |
 | `context.env` | the caller's injected lookup, never ambient by default | values are tested for non-blank length only; no value is parsed, compared or copied into the result |
-| `context.workDir` | worker configuration | passed through to the descriptor hook, which composes the Codex home path via the existing `resolveAgentStateDir` |
-| `$CODEX_HOME/auth.json` | the Codex CLI's own persisted state | read by `resolveCodexAuthMode`, already swept under top-up-1697; only the presence/shape of fields is inspected, never a token value |
+| `context.workDir` | worker configuration | no longer names a Codex home: the Codex hook reads only an explicit `CODEX_HOME` (Issue #3955), not an agent-state fallback |
+| `$CODEX_HOME/auth.json` | the Codex CLI's own persisted state | read by `resolveCodexAuthMode` when `CODEX_HOME` is explicit, already swept under top-up-1697; only the presence/shape of fields is inspected, never a token value |
 
 | Property | Result |
 | -------- | ------ |
@@ -55,8 +57,9 @@ The classification is deliberately tied to how the child environment is
 actually built. `buildIsolatedCodexChildEnv` withholds `OPENAI_API_KEY` and
 `CODEX_API_KEY` whenever an explicit `CODEX_HOME` is selected, so the probe
 ignores the environment in exactly that case and consults `auth.json` alone;
-without an explicit `CODEX_HOME` the keys do reach the child and keep their
-precedence here. Reporting a mode the run will not spend is the failure this
+without an explicit `CODEX_HOME` the keys do reach the child, and the probe
+does not read `auth.json` at all: it reports nothing, so the declared variables
+decide (Issue #3955). Reporting a mode the run will not spend is the failure this
 alignment removes — in the unsafe direction it would under-report metered
 spend, and in the safe direction it raised a false alarm on every legitimate
 subscription fallback.
