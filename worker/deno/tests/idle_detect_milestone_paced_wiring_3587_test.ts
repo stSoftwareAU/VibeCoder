@@ -83,13 +83,46 @@ function stubGh(args: string[]): Promise<string> {
   return Promise.resolve("[]");
 }
 
-/** Build the production deps over a fresh work dir, optionally with a paced ledger. */
-async function buildDeps(paced: boolean): Promise<{
+/**
+ * Where the factory reads its work dirs. `workDir` is the factory's `workDir`
+ * option (and `repoDir`), `configWorkDir` is the `config.workDir` option, and
+ * `ledgerDir` is the directory the paced pacing ledger is written to.
+ */
+interface WorkDirLayout {
+  workDir: string;
+  configWorkDir: string;
+  ledgerDir: string;
+}
+
+/** One dir serves as all three operands: the layout the single-dir tests use. */
+function sharedLayout(dir: string): WorkDirLayout {
+  return { workDir: dir, configWorkDir: dir, ledgerDir: dir };
+}
+
+/** Run `body` with a fresh temp dir, removed in `finally`. */
+async function withTempDir<T>(
+  body: (dir: string) => Promise<T>,
+): Promise<T> {
+  const dir = await Deno.makeTempDir({ prefix: "idle-paced-3587-" });
+  try {
+    return await body(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+  }
+}
+
+/** Run `body` with two fresh temp dirs, both removed in `finally`. */
+function withTempDirPair<T>(
+  body: (first: string, second: string) => Promise<T>,
+): Promise<T> {
+  return withTempDir((first) => withTempDir((second) => body(first, second)));
+}
+
+/** Build the production deps over the layout, optionally with a paced ledger. */
+async function buildDeps(paced: boolean, layout: WorkDirLayout): Promise<{
   deps: Awaited<ReturnType<typeof createProductionRunCoreDeps>>["deps"];
   lines: string[];
-  cleanup: () => Promise<void>;
 }> {
-  const workDir = await Deno.makeTempDir({ prefix: "idle-paced-3587-" });
   if (paced) {
     const streaks: SyncStreaks = {
       [syncStreakKey(REPO, createMilestoneBranchName(MILESTONE))]: {
@@ -98,52 +131,49 @@ async function buildDeps(paced: boolean): Promise<{
         conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
       },
     };
-    await saveSyncStreaks(milestoneSyncStreakPath(workDir), streaks);
+    await saveSyncStreaks(milestoneSyncStreakPath(layout.ledgerDir), streaks);
   }
   const lines: string[] = [];
   const { deps } = await createProductionRunCoreDeps({
-    repoDir: workDir,
-    workDir,
+    repoDir: layout.workDir,
+    workDir: layout.workDir,
     githubUser: WORKER_USER,
     logger: createLogger({ write: (line: string) => lines.push(line) }),
-    config: { ...buildDefaultWorkerConfig(), repos: [REPO], workDir },
+    config: {
+      ...buildDefaultWorkerConfig(),
+      repos: [REPO],
+      workDir: layout.configWorkDir,
+    },
     idleDetectGhCommandFn: stubGh,
   });
-  return {
-    deps,
-    lines,
-    cleanup: () =>
-      Deno.remove(workDir, { recursive: true }).catch(() => undefined),
-  };
+  return { deps, lines };
 }
 
 /** Run the idle-detect audit once and return its log lines. */
-async function auditLines(paced: boolean): Promise<string[]> {
-  const { deps, lines, cleanup } = await buildDeps(paced);
-  try {
-    await deps.runIdleDetectAudit!({
-      tick: 1,
-      scanFoundClaimable: false,
-      scanExcludedRepos: [],
-    });
-    return lines;
-  } finally {
-    await cleanup();
-  }
+async function auditLines(
+  paced: boolean,
+  layout: WorkDirLayout,
+): Promise<string[]> {
+  const { deps, lines } = await buildDeps(paced, layout);
+  await deps.runIdleDetectAudit!({
+    tick: 1,
+    scanFoundClaimable: false,
+    scanExcludedRepos: [],
+  });
+  return lines;
 }
 
 /** Run the idle-task filer once, with idle capacity, and return its log lines. */
-async function filerLines(paced: boolean): Promise<string[]> {
+async function filerLines(
+  paced: boolean,
+  layout: WorkDirLayout,
+): Promise<string[]> {
   // Idle capacity from the #925 slot ledger, so the filer proceeds past its
   // zero-idle-slot early return.
   startSlotIdleAccounting(Date.now(), 2);
-  const { deps, lines, cleanup } = await buildDeps(paced);
-  try {
-    await deps.runIdleTaskFiler!();
-    return lines;
-  } finally {
-    await cleanup();
-  }
+  const { deps, lines } = await buildDeps(paced, layout);
+  await deps.runIdleTaskFiler!();
+  return lines;
 }
 
 function repoLine(lines: string[], marker: string): string {
@@ -160,7 +190,9 @@ function repoLine(lines: string[], marker: string): string {
 Deno.test(
   "idle-detect audit - a paced milestone's issue is held as run_local_hold, not claimable (Issue #3587)",
   async () => {
-    const lines = await auditLines(true);
+    const lines = await withTempDir((dir) =>
+      auditLines(true, sharedLayout(dir))
+    );
     const line = repoLine(lines, "[idle-detect]");
     assert(line.includes("claimable=0"), line);
     assert(line.includes("reason=run_local_hold"), line);
@@ -174,7 +206,10 @@ Deno.test(
 Deno.test(
   "idle-detect audit - without a ledger entry the same issue is claimable (Issue #3587 negative control)",
   async () => {
-    const line = repoLine(await auditLines(false), "[idle-detect]");
+    const lines = await withTempDir((dir) =>
+      auditLines(false, sharedLayout(dir))
+    );
+    const line = repoLine(lines, "[idle-detect]");
     assert(line.includes("claimable=1"), line);
   },
 );
@@ -189,7 +224,10 @@ Deno.test(
       // A non-deferral finish (not a claim refusal), so the registry operand
       // of `loadIdleDetectionHold` is what holds the issue.
       sharedProcessedIssues().record(REPO, 3587, "failure");
-      const line = repoLine(await auditLines(false), "[idle-detect]");
+      const lines = await withTempDir((dir) =>
+        auditLines(false, sharedLayout(dir))
+      );
+      const line = repoLine(lines, "[idle-detect]");
       assert(line.includes("claimable=0"), line);
       assert(line.includes("reason=run_local_hold"), line);
     } finally {
@@ -199,9 +237,41 @@ Deno.test(
 );
 
 Deno.test(
+  "idle-detect audit - config.workDir wins: the paced ledger in config.workDir holds the issue even when the factory workDir has none (Issue #3587)",
+  async () => {
+    const line = await withTempDirPair(async (configDir, factoryDir) => {
+      const lines = await auditLines(true, {
+        workDir: factoryDir,
+        configWorkDir: configDir,
+        ledgerDir: configDir,
+      });
+      return repoLine(lines, "[idle-detect]");
+    });
+    assert(line.includes("claimable=0"), line);
+  },
+);
+
+Deno.test(
+  "idle-detect audit - the factory workDir is the fallback when config.workDir is empty: the paced ledger there holds the issue (Issue #3587)",
+  async () => {
+    const line = await withTempDir(async (factoryDir) => {
+      const lines = await auditLines(true, {
+        workDir: factoryDir,
+        configWorkDir: "",
+        ledgerDir: factoryDir,
+      });
+      return repoLine(lines, "[idle-detect]");
+    });
+    assert(line.includes("claimable=0"), line);
+  },
+);
+
+Deno.test(
   "idle-task filer - a paced milestone's issue is not startable work, so the fleet-wide gate does not hold filing (Issue #3587)",
   async () => {
-    const lines = await filerLines(true);
+    const lines = await withTempDir((dir) =>
+      filerLines(true, sharedLayout(dir))
+    );
     const line = repoLine(lines, "[repo-busy-idle-task]");
     assert(line.includes("scope=real_work"), line);
     assert(line.includes("startable=0"), line);
@@ -215,7 +285,9 @@ Deno.test(
 Deno.test(
   "idle-task filer - without a ledger entry the same issue is startable work (Issue #3587 negative control)",
   async () => {
-    const lines = await filerLines(false);
+    const lines = await withTempDir((dir) =>
+      filerLines(false, sharedLayout(dir))
+    );
     const line = repoLine(lines, "[repo-busy-idle-task]");
     assert(line.includes("scope=real_work"), line);
     assert(line.includes("startable=1"), line);
