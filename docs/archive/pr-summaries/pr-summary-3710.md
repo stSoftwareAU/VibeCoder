@@ -77,7 +77,7 @@ This backend change has no UI screenshot.
 
 - Removed from `worker/deno/tests/summary_claim_correction_test.ts`: `assertStringIncludes(prompt, PROMPT_OPTS.summaryContent.trim());`
   Required by: "Give the turn the summary by path"
-  Replaced by: ``assertStringIncludes(prompt, `Read the original summary from \`${SUMMARY_PATH}\``,);``
+  Replaced by: ```assertStringIncludes(prompt, `Read the original summary from \`${SUMMARY_PATH}\``,);```
 - Removed from `worker/deno/tests/summary_claim_correction_test.ts`: `assertEquals(beginCount, 2);`
   Required by: "Do not ask for a verbatim echo of scrubbed text."
   Replaced by: `assertEquals(beginCount, 1);`

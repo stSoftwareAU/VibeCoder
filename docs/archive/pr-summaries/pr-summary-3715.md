@@ -74,6 +74,13 @@ unreadable source and both production callers. No UI change.
   Required by: "widen the selection beyond `.md`."
   Replaced by: ``assertStringIncludes(err instanceof Error ? err.message : String(err), `requires manual, prompt or source paths, got '${bad}'`,);``
 
+- Removed from `worker/deno/tests/summary_claim_check_test.ts`: `const err = assertThrows(() => buildSummaryClaimQuestionPrompt({ ...PROMPT_BASE, docFiles: [bad] }));`
+  Required by: "widen the selection beyond `.md`."
+
+The assertion line is retained. The scanner reports its changed loop context:
+TypeScript leaves the invalid-path table and the unsupported binary path
+replaces it; new accepted-source tests cover TypeScript.
+
 **Branch outcomes:**
 
 - Comments included / strings, executable code and tests excluded — `worker/deno/tests/doc_prose_claims_test.ts`.

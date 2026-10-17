@@ -79,6 +79,13 @@ comment-only quotes. No UI change.
   data. It gains a real `Required by:` field and matching issue-body fixture;
   the assertion being tested and every actual completion expectation remain.
 
+- Removed from `worker/deno/tests/completion_phase_removed_assertion_test.ts`: ``- Removed from \`crates/api/tests/decisions.rs\`: \`assert_eq!(record.score.to_string(), "-0.5")\` — #2253 changes the score to a rating, so the old value is untrue``
+  Required by: "each removed assertion's Test Plan entry must carry one of two structured reasons"
+
+This scanner-reported removal is assertion-shaped summary fixture text,
+not an executable assertion. Its new structured reason is the behaviour
+under test; the score assertion and actual completion checks remain.
+
 **Branch outcomes:**
 
 - Valid quote accepted / short, fabricated or comment-only quote refused — `worker/deno/tests/removed_assertion_reasons_test.ts`, `worker/deno/tests/completion_phase_removed_assertion_test.ts`.
