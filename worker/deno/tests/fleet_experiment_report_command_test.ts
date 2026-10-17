@@ -293,3 +293,41 @@ Deno.test("fleet-experiment-report - covariates that are not JSON are refused", 
     assertStringIncludes(result.message, "covariates");
   });
 });
+
+Deno.test("fleet-experiment-report - a follow-on seen by two hosts is costed once", async () => {
+  await withWorkDir(async (dir) => {
+    // The follow-on key carries no host or run id, so the same event written
+    // by two hosts must be kept once across the two ledger files.
+    const followOn = buildLifecycleEvent({
+      kind: "follow_on",
+      assignmentId: ASSIGNMENT_IDS[0],
+      runId: "run-shared-1",
+      host: "host-1",
+      repo: "org/a",
+      issueNumber: 101,
+      recordedAt: daysAgo(1),
+      followOn: "ci_fix",
+      cycle: "ci-run-9001",
+      attempt: 1,
+      prNumber: 3800,
+      usage: "known",
+      pricing: "known",
+      estimatedApiEquivalentUsd: 0.5,
+    });
+    await writeLedger(`${dir}/lifecycle_ledger_host-1.jsonl`, [
+      assignment("host-1", ASSIGNMENT_IDS[0], 101, 2),
+      followOn,
+    ]);
+    await writeLedger(`${dir}/lifecycle_ledger_host-2.jsonl`, [
+      assignment("host-2", ASSIGNMENT_IDS[0], 101, 2),
+      followOn,
+    ]);
+    const result = await run({ format: "json" }, configFor(dir));
+    assertEquals(result.success, true);
+    const parsed = JSON.parse(result.message) as {
+      records: Array<{ costUsd: number }>;
+    };
+    assertEquals(parsed.records.length, 1);
+    assertEquals(parsed.records[0]?.costUsd, 0.5);
+  });
+});

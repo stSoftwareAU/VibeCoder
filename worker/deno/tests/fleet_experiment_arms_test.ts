@@ -90,7 +90,9 @@ Deno.test("fleet experiment arms - no default arm uses Fable", () => {
 });
 
 Deno.test("fleet experiment arms - Astra and Sol candidates await feasibility", () => {
-  const astraSol = DEFAULT_EXPERIMENT_ARMS.find((arm) => arm.id === "astra-sol");
+  const astraSol = DEFAULT_EXPERIMENT_ARMS.find((arm) =>
+    arm.id === "astra-sol"
+  );
   const astraHaiku = DEFAULT_EXPERIMENT_ARMS.find((arm) =>
     arm.id === "astra-haiku"
   );
@@ -198,7 +200,12 @@ Deno.test("fleet experiment arms - only active arms are chosen", async () => {
     },
   ];
   for (let issue = 1; issue <= 500; issue++) {
-    const chosen = await assignExperimentArm("seed-b", "acme/beta", issue, arms);
+    const chosen = await assignExperimentArm(
+      "seed-b",
+      "acme/beta",
+      issue,
+      arms,
+    );
     assert(chosen === "sonnet-haiku" || chosen === "codex-test");
   }
 });
@@ -207,7 +214,12 @@ Deno.test("fleet experiment arms - equal weights split 2000 issues about evenly"
   const arms = baseArms();
   const counts = new Map<string, number>();
   for (let issue = 1; issue <= 2000; issue++) {
-    const chosen = await assignExperimentArm("seed-c", "acme/alpha", issue, arms);
+    const chosen = await assignExperimentArm(
+      "seed-c",
+      "acme/alpha",
+      issue,
+      arms,
+    );
     counts.set(chosen, (counts.get(chosen) ?? 0) + 1);
   }
   const controlShare = (counts.get("sonnet-haiku") ?? 0) / 2000;
@@ -223,7 +235,12 @@ Deno.test("fleet experiment arms - weights are respected", async () => {
   const arms = withArm(baseArms(), 0, { weight: 3 });
   let controlCount = 0;
   for (let issue = 1; issue <= 2000; issue++) {
-    const chosen = await assignExperimentArm("seed-d", "acme/alpha", issue, arms);
+    const chosen = await assignExperimentArm(
+      "seed-d",
+      "acme/alpha",
+      issue,
+      arms,
+    );
     if (chosen === "sonnet-haiku") controlCount++;
   }
   const controlShare = controlCount / 2000;

@@ -13,16 +13,14 @@ import {
   assertEquals,
   assertStringIncludes,
 } from "@std/assert";
+import { type ExperimentArm } from "../lib/fleet_experiment_arms.ts";
 import {
-  type ExperimentArm,
-} from "../lib/fleet_experiment_arms.ts";
-import {
-  type AssignmentRecord,
   type ArmSummary,
+  type AssignmentRecord,
   buildAssignmentRecords,
   buildExperimentReport,
-  experimentRecordsCsv,
   type ExperimentOptions,
+  experimentRecordsCsv,
   type ExperimentReport,
   formatExperimentReport,
 } from "../lib/fleet_experiment_report.ts";
@@ -65,7 +63,9 @@ const ARMS: ExperimentArm[] = [
 ];
 
 /** The default options, with a small bootstrap so the tests stay fast. */
-function options(overrides: Partial<ExperimentOptions> = {}): ExperimentOptions {
+function options(
+  overrides: Partial<ExperimentOptions> = {},
+): ExperimentOptions {
   return {
     now: NOW,
     windowDays: 30,
@@ -124,7 +124,13 @@ function assignment(
 /** An outcome for issue `id`. */
 function outcome(
   id: number,
-  name: "pr_opened" | "quality_green" | "review_approved" | "merged" | "failed" | "pending",
+  name:
+    | "pr_opened"
+    | "quality_green"
+    | "review_approved"
+    | "merged"
+    | "failed"
+    | "pending",
   recordedAt: string,
   host = "host-a",
   repo = "acme/alpha",
@@ -179,9 +185,11 @@ function invocation(
     provider: "claude",
     model: opts.model ?? "sonnet",
     result: opts.result ?? "success",
-    ...(opts.usd === undefined
-      ? {}
-      : { usage: "known", pricing: "known", estimatedApiEquivalentUsd: opts.usd }),
+    ...(opts.usd === undefined ? {} : {
+      usage: "known",
+      pricing: "known",
+      estimatedApiEquivalentUsd: opts.usd,
+    }),
   });
 }
 
@@ -214,7 +222,10 @@ function armOf(report: ExperimentReport, id: string): ArmSummary {
 }
 
 /** Find one record by issue number, failing the test when it is absent. */
-function recordFor(records: readonly AssignmentRecord[], id: number): AssignmentRecord {
+function recordFor(
+  records: readonly AssignmentRecord[],
+  id: number,
+): AssignmentRecord {
   const found = records.find((record) => record.assignmentId === uuid(id));
   assert(found !== undefined, `record for issue ${id} is missing`);
   return found;
@@ -245,7 +256,9 @@ Deno.test("fleet experiment report - a merge without review approval is unverifi
   const control = armOf(report, "sonnet-haiku");
   assertEquals(control.merged, 0);
   assertEquals(control.mergedUnverified, 1);
-  assert(report.warnings.some((warning) => warning.code === "unverified-merge"));
+  assert(
+    report.warnings.some((warning) => warning.code === "unverified-merge"),
+  );
 });
 
 Deno.test("fleet experiment report - a pending assignment inside the horizon is immature and excluded", () => {
@@ -285,7 +298,12 @@ Deno.test("fleet experiment report - failed retries' cost is included", () => {
   const events = [
     assignment(1, "sonnet-haiku", ago(6)),
     invocation(1, { role: "manager", attempt: 1, result: "failure", usd: 0.4 }),
-    invocation(1, { role: "executor", attempt: 2, result: "success", usd: 0.6 }),
+    invocation(1, {
+      role: "executor",
+      attempt: 2,
+      result: "success",
+      usd: 0.6,
+    }),
     followOn(1, "retry", 2, 0.1),
     outcome(1, "failed", ago(5)),
   ];
@@ -383,9 +401,14 @@ Deno.test("fleet experiment report - biased assignment fires on a skewed covaria
     events.push(assignment(id, cohort, ago(5)));
     events.push(outcome(id, "pr_opened", ago(5)));
     // Control is all large; the candidate is all small, so the pool is half and half.
-    covariates[`acme/alpha#${id}`] = { size: cohort === "sonnet-haiku" ? "large" : "small" };
+    covariates[`acme/alpha#${id}`] = {
+      size: cohort === "sonnet-haiku" ? "large" : "small",
+    };
   }
-  const report = buildExperimentReport(events, options({ minPerArm: 10, covariates }));
+  const report = buildExperimentReport(
+    events,
+    options({ minPerArm: 10, covariates }),
+  );
   const warning = report.warnings.find((item) =>
     item.code === "biased-assignment" && item.arm === "sonnet-haiku"
   );
@@ -403,7 +426,10 @@ Deno.test("fleet experiment report - biased assignment does not fire on a balanc
     // Each arm holds the same half-and-half mix of sizes.
     covariates[`acme/alpha#${id}`] = { size: id % 2 === 0 ? "large" : "small" };
   }
-  const report = buildExperimentReport(events, options({ minPerArm: 10, covariates }));
+  const report = buildExperimentReport(
+    events,
+    options({ minPerArm: 10, covariates }),
+  );
   assertEquals(
     report.warnings.filter((item) => item.code === "biased-assignment").length,
     0,
@@ -492,7 +518,9 @@ Deno.test("fleet experiment report - weekly rows bucket by Monday in UTC", () =>
   ];
   const report = buildExperimentReport(events, options({ windowDays: 30 }));
   assertEquals(
-    report.weekly.map((row) => [row.weekStart, row.arm, row.assigned, row.merged]),
+    report.weekly.map((
+      row,
+    ) => [row.weekStart, row.arm, row.assigned, row.merged]),
     [
       ["2026-10-05", "sonnet-haiku", 1, 0],
       ["2026-10-12", "sonnet-haiku", 2, 1],

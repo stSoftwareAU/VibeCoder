@@ -354,7 +354,9 @@ const FAILURE_OUTCOMES: readonly OutcomeEvent["outcome"][] = [
  * "merged" counts only with both quality_green and review_approved. A bare
  * merged outcome is merged_unverified and is never counted as success.
  */
-function statusOf(names: ReadonlySet<OutcomeEvent["outcome"]>): AssignmentStatus {
+function statusOf(
+  names: ReadonlySet<OutcomeEvent["outcome"]>,
+): AssignmentStatus {
   if (names.has("merged")) {
     return names.has("quality_green") && names.has("review_approved")
       ? "merged"
@@ -397,15 +399,14 @@ function buildRecord(
     }
   }
 
-  const failedInvocations = invocations.filter((event) =>
-    event.result !== "success"
-  ).length;
-  const quotaLimitedInvocations = invocations.filter((event) =>
-    event.result === "usage_limited" || event.quotaStatus === "limited"
-  ).length;
-  const reviewRejections = followOns.filter((event) =>
-    event.followOn === "pr_feedback"
-  ).length;
+  const failedInvocations =
+    invocations.filter((event) => event.result !== "success").length;
+  const quotaLimitedInvocations =
+    invocations.filter((event) =>
+      event.result === "usage_limited" || event.quotaStatus === "limited"
+    ).length;
+  const reviewRejections =
+    followOns.filter((event) => event.followOn === "pr_feedback").length;
   const gateFailures = gates.filter((event) => event.result === "fail").length;
   const firstPassCi = gates.length === 0 ? null : gateFailures === 0;
 
@@ -426,9 +427,8 @@ function buildRecord(
   const manager = intent.treatment.roles.find((role) =>
     role.role === "manager"
   );
-  const usesExcludedModel = intent.treatment.roles.some((role) =>
-    isExcludedModel(role.model)
-  ) ||
+  const usesExcludedModel =
+    intent.treatment.roles.some((role) => isExcludedModel(role.model)) ||
     invocations.some((event) =>
       isExcludedModel(event.model) ||
       isExcludedModel(event.servedModel) ||
@@ -613,9 +613,8 @@ function summariseArm(
 ): ArmSummary {
   const mature = records.filter((record) => record.mature);
   const merged = records.filter((record) => record.status === "merged");
-  const matureMerged = mature.filter((record) =>
-    record.status === "merged"
-  ).length;
+  const matureMerged =
+    mature.filter((record) => record.status === "merged").length;
   const costUsd = sum(mature.map((record) => record.costUsd));
   const mergedPerUsd = mature.length > 0 && costUsd > 0
     ? matureMerged / costUsd
@@ -646,21 +645,18 @@ function summariseArm(
     known: arms.some((arm) => arm.id === armId),
     assigned: records.length,
     mature: mature.length,
-    pending: records.filter((record) =>
-      record.status === "pending" && !record.mature
-    ).length,
-    censoredAtHorizon: records.filter((record) =>
-      record.censored && record.mature
-    ).length,
+    pending:
+      records.filter((record) => record.status === "pending" && !record.mature)
+        .length,
+    censoredAtHorizon:
+      records.filter((record) => record.censored && record.mature).length,
     merged: merged.length,
-    mergedUnverified: records.filter((record) =>
-      record.status === "merged_unverified"
-    ).length,
+    mergedUnverified:
+      records.filter((record) => record.status === "merged_unverified").length,
     failed: records.filter((record) => record.status === "failed").length,
     costUsd,
-    costUnknownAssignments: mature.filter((record) =>
-      record.costUnknownCount > 0
-    ).length,
+    costUnknownAssignments:
+      mature.filter((record) => record.costUnknownCount > 0).length,
     mergedPerUsd,
     mergedPerUsdInterval,
     mergeRate,
@@ -852,9 +848,10 @@ function biasedAssignmentWarnings(
         warnings.push({
           code: "biased-assignment",
           arm: summary.armId,
-          message: `Arm ${summary.armId} covariate "${key}" differs from the pooled mix by total variation ${
-            distance.toFixed(2)
-          }, above ${BIAS_TOTAL_VARIATION}.`,
+          message:
+            `Arm ${summary.armId} covariate "${key}" differs from the pooled mix by total variation ${
+              distance.toFixed(2)
+            }, above ${BIAS_TOTAL_VARIATION}.`,
         });
       }
     }
@@ -883,9 +880,10 @@ function exposureWarnings(
       warnings.push({
         code: "unequal-exposure",
         arm: arm.id,
-        message: `Arm ${arm.id} received ${summary.assigned} of ${totalAssigned} active assignments (${
-          (share * 100).toFixed(1)
-        }%), against an expected ${(expected * 100).toFixed(1)}%.`,
+        message:
+          `Arm ${arm.id} received ${summary.assigned} of ${totalAssigned} active assignments (${
+            (share * 100).toFixed(1)
+          }%), against an expected ${(expected * 100).toFixed(1)}%.`,
       });
     }
   }
@@ -900,7 +898,8 @@ function exposureWarnings(
       warnings.push({
         code: "unequal-exposure",
         arm: arm.id,
-        message: `Arm ${arm.id} covered ${summary.hostDays} host-day(s), less than half the maximum of ${maxHostDays} across active arms.`,
+        message:
+          `Arm ${arm.id} covered ${summary.hostDays} host-day(s), less than half the maximum of ${maxHostDays} across active arms.`,
       });
     }
   }
@@ -921,45 +920,50 @@ function buildWarnings(
       warnings.push({
         code: "low-sample",
         arm: summary.armId,
-        message: `Arm ${summary.armId} has ${summary.mature} mature assignment(s), below the ${minPerArm} needed per arm.`,
+        message:
+          `Arm ${summary.armId} has ${summary.mature} mature assignment(s), below the ${minPerArm} needed per arm.`,
       });
     }
     if (summary.costUnknownAssignments > 0) {
       warnings.push({
         code: "missing-cost",
         arm: summary.armId,
-        message: `Arm ${summary.armId} has ${summary.costUnknownAssignments} mature assignment(s) with no estimated USD, so its merged per USD is a lower bound on cost and is overstated.`,
+        message:
+          `Arm ${summary.armId} has ${summary.costUnknownAssignments} mature assignment(s) with no estimated USD, so its merged per USD is a lower bound on cost and is overstated.`,
       });
     }
     if (!summary.known) {
       warnings.push({
         code: "unknown-arm",
         arm: summary.armId,
-        message: `Cohort ${summary.armId} is not a configured arm, so its ${summary.assigned} assignment(s) are not compared with the arms.`,
+        message:
+          `Cohort ${summary.armId} is not a configured arm, so its ${summary.assigned} assignment(s) are not compared with the arms.`,
       });
     }
   }
 
-  const unverified = records.filter((record) =>
-    record.status === "merged_unverified"
-  ).length;
+  const unverified =
+    records.filter((record) => record.status === "merged_unverified").length;
   if (unverified > 0) {
     warnings.push({
       code: "unverified-merge",
-      message: `${unverified} assignment(s) show a merged PR without both quality_green and review_approved; these are not counted as success.`,
+      message:
+        `${unverified} assignment(s) show a merged PR without both quality_green and review_approved; these are not counted as success.`,
     });
   }
   if (unattributedEvents > 0) {
     warnings.push({
       code: "unattributed-events",
-      message: `${unattributedEvents} lifecycle event(s) could not be attributed to an assignment and were not counted.`,
+      message:
+        `${unattributedEvents} lifecycle event(s) could not be attributed to an assignment and were not counted.`,
     });
   }
   const excluded = records.filter((record) => record.usesExcludedModel).length;
   if (excluded > 0) {
     warnings.push({
       code: "excluded-model",
-      message: `${excluded} assignment(s) used a Fable model, which is excluded from every arm.`,
+      message:
+        `${excluded} assignment(s) used a Fable model, which is excluded from every arm.`,
     });
   }
   warnings.push(...exposureWarnings(summaries, activeArms));
@@ -999,14 +1003,13 @@ function decideVerdict(
     if (merged < PRELIMINARY_MERGED) {
       return {
         kind: "no-decision",
-        reason: `arm ${id} has ${merged} merged assignment(s); preliminary evidence needs at least ${PRELIMINARY_MERGED}`,
+        reason:
+          `arm ${id} has ${merged} merged assignment(s); preliminary evidence needs at least ${PRELIMINARY_MERGED}`,
       };
     }
   }
 
-  const blocking = warnings.find((warning) =>
-    BLOCKING_CODES.has(warning.code)
-  );
+  const blocking = warnings.find((warning) => BLOCKING_CODES.has(warning.code));
   if (blocking !== undefined) {
     const where = blocking.arm === undefined ? "" : ` for arm ${blocking.arm}`;
     return {
@@ -1023,7 +1026,8 @@ function decideVerdict(
     if (interval === null) {
       return {
         kind: "no-decision",
-        reason: `arm ${id} has no merged-per-USD interval, so no arm can be separated`,
+        reason:
+          `arm ${id} has no merged-per-USD interval, so no arm can be separated`,
       };
     }
   }
@@ -1038,7 +1042,8 @@ function decideVerdict(
       return {
         kind: "leading-arm",
         arm: candidate.id,
-        reason: `arm ${candidate.id} has the highest merged per USD, with its 99% interval above every other active arm`,
+        reason:
+          `arm ${candidate.id} has the highest merged per USD, with its 99% interval above every other active arm`,
       };
     }
   }
@@ -1158,7 +1163,9 @@ export function formatExperimentReport(report: ExperimentReport): string {
     }
   }
   lines.push("");
-  const arm = report.verdict.arm === undefined ? "" : ` (${report.verdict.arm})`;
+  const arm = report.verdict.arm === undefined
+    ? ""
+    : ` (${report.verdict.arm})`;
   lines.push(
     `Verdict: ${report.verdict.kind}${arm}. ${report.verdict.reason}.`,
   );

@@ -251,14 +251,23 @@ async function resolveLedgerPaths(
 /**
  * Read every resolved ledger. A fault in any one of them fails the whole
  * report, naming that ledger, so a damaged file is never read as a short one.
+ *
+ * The reader dedupes within one file only. Follow-on and PR outcome keys carry
+ * no host, so two hosts can write the same event; the first event per
+ * `eventKey` is kept across every file, so its cost is counted once.
  */
 async function readAllLedgers(
   paths: readonly string[],
 ): Promise<Parsed<LifecycleEvent[]>> {
   const events: LifecycleEvent[] = [];
+  const seen = new Set<string>();
   for (const path of paths) {
     try {
-      for (const event of await readLifecycleLedger(path)) events.push(event);
+      for (const event of await readLifecycleLedger(path)) {
+        if (seen.has(event.eventKey)) continue;
+        seen.add(event.eventKey);
+        events.push(event);
+      }
     } catch (error) {
       if (error instanceof LifecycleLedgerReadError) {
         return { ok: false, message: error.message };

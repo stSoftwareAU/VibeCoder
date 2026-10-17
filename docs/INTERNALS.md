@@ -1222,7 +1222,9 @@ volume with no ledgers, fails the command; it is never reported as empty.
 **Cohorts.** Records are grouped by the cohort recorded on each issue's
 `assignment` event when the issue was assigned. The grouping is
 intention-to-treat: a later fallback, or another host's assignment event for
-the same issue, never moves an issue to a different arm.
+the same issue, never moves an issue to a different arm. Events are
+deduplicated by `eventKey` across all hosts' ledgers, so a follow-on or PR
+outcome written by two hosts is counted once.
 
 **Arms.** The control is the Sonnet manager with a Haiku executor
 (`sonnet-haiku`), per the 2026-10-16 owner decision. The candidates Astra/Sol

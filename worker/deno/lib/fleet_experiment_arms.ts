@@ -150,11 +150,16 @@ export function validateExperimentArms(arms: readonly ExperimentArm[]): void {
     );
   }
   if (control.status !== "active") {
-    throw new ExperimentArmError("control-inactive", "the control must be active");
+    throw new ExperimentArmError(
+      "control-inactive",
+      "the control must be active",
+    );
   }
 
   for (const arm of arms) {
-    if (isExcludedModel(arm.manager.model) || isExcludedModel(arm.executor.model)) {
+    if (
+      isExcludedModel(arm.manager.model) || isExcludedModel(arm.executor.model)
+    ) {
       throw new ExperimentArmError(
         "excluded-model",
         "Fable models are excluded from every arm",

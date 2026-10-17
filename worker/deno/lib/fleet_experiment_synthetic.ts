@@ -122,7 +122,10 @@ function at<T>(values: readonly T[], index: number): T {
 
 /** Pick one entry of a non-empty list with the PRNG. */
 function pick<T>(values: readonly T[], random: () => number): T {
-  return at(values, Math.min(values.length - 1, Math.floor(random() * values.length)));
+  return at(
+    values,
+    Math.min(values.length - 1, Math.floor(random() * values.length)),
+  );
 }
 
 /** A version-4 UUID in lowercase hex, drawn from the PRNG. */
@@ -176,9 +179,18 @@ export async function generateSyntheticHistory(
   const unknownCostShare = opts.unknownCostShare ?? 0;
   requireFraction(unknownCostShare, "unknownCostShare");
   for (const spec of opts.arms) {
-    requireFraction(spec.mergeProbability, `mergeProbability for ${spec.arm.id}`);
-    requireNonNegative(spec.managerCostUsd, `managerCostUsd for ${spec.arm.id}`);
-    requireNonNegative(spec.executorCostUsd, `executorCostUsd for ${spec.arm.id}`);
+    requireFraction(
+      spec.mergeProbability,
+      `mergeProbability for ${spec.arm.id}`,
+    );
+    requireNonNegative(
+      spec.managerCostUsd,
+      `managerCostUsd for ${spec.arm.id}`,
+    );
+    requireNonNegative(
+      spec.executorCostUsd,
+      `executorCostUsd for ${spec.arm.id}`,
+    );
   }
   const armsById = new Map(opts.arms.map((spec) => [spec.arm.id, spec]));
   const arms = opts.arms.map((spec) => spec.arm);
