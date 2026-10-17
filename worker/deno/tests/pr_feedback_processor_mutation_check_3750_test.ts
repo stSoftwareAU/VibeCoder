@@ -18,6 +18,8 @@ import {
   processPrFeedback,
 } from "../lib/pr_feedback_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type {
   ClaudeDeps,
   GitDeps,
@@ -294,6 +296,70 @@ function baseProcessorDeps(
     qualityInstructions: "",
   };
 }
+
+Deno.test("prFeedbackProcessorCommand honours the repo's mutation skip and budget", async () => {
+  const workDir = await makeWorkDir();
+  try {
+    for (const skipMutationCheck of [true, false]) {
+      const mutationInputs: MutationRunInput[] = [];
+      const events: string[] = [];
+      const deps = createMockDeps({
+        logger: makeSilentLogger(),
+        claude: {
+          runClaudeWithRetry: makeClaudeMock(events, [
+            "Fixed",
+            verdictBlock([]),
+          ], []),
+        },
+        github: { runGhCommand: makeDriftGh([]) },
+        quality: {
+          runMutationCheck: makeMutationStub(mutationInputs, CLEAN_RESULT),
+        },
+        git: {
+          setupRepo: () => Promise.resolve({ ok: true, value: workDir }),
+          runGitCommand: makeGit(),
+        },
+      });
+      const config = buildDefaultWorkerConfig({
+        workDir,
+        repoConfig: {
+          "org/repo": {
+            skipMutationCheck,
+            mutationCheckBudgetSeconds: 31,
+            qualityCredentials: {
+              mint: "printf 'MUTATION_REVIEW_FIX=synthetic\\n'",
+            },
+          },
+        },
+      });
+      const result = await prFeedbackProcessorCommand.execute(
+        {
+          operation: "process",
+          repo: "org/repo",
+          "pr-number": 42,
+          "branch-name": "issue-42-fix-bug",
+          "comment-type": "review",
+          "comment-id": skipMutationCheck ? "skip" : "budget",
+          "comment-body": "Fix the retry path",
+        },
+        config,
+        deps,
+      );
+      assertEquals(result.success, true, result.message);
+      assertEquals(events, ["agent:0", "agent:1"]);
+      assertEquals(mutationInputs.length, skipMutationCheck ? 0 : 1);
+      if (!skipMutationCheck) {
+        assertEquals(mutationInputs[0]!.budgetSeconds, 31);
+        assertEquals(
+          mutationInputs[0]!.credentialEnv?.MUTATION_REVIEW_FIX,
+          "synthetic",
+        );
+      }
+    }
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // A survivor on this run's own line drives the recovery turn and the reply.

@@ -77,6 +77,38 @@ const REPLAY_FILES = {
 const PARTIAL =
   "the block describes partial test additions, not whole-file counts";
 
+Deno.test("a single whole-file count ignores partial markers in its trailing description", () => {
+  for (
+    const description of [
+      "covers the extended retry path",
+      "covers a retry added to cleanup",
+    ]
+  ) {
+    const summary = plan(
+      `- New \`tests/a_test.ts\` (5 tests at head): ${description}.`,
+    );
+    assertEquals(mismatchesOf(summary, { "tests/a_test.ts": 6 }), [
+      [["tests/a_test.ts"], 5, 6],
+    ]);
+    assertEquals(uncheckedLines(summary, { "tests/a_test.ts": 6 }), []);
+    assertEquals(mismatchesOf(summary, { "tests/a_test.ts": 5 }), []);
+  }
+});
+
+Deno.test("a single added-to figure remains partial", () => {
+  const summary = plan(
+    "- Added to `tests/a_test.ts` (5 tests): covers the retry path.",
+  );
+  assertEquals(mismatchesOf(summary, { "tests/a_test.ts": 6 }), []);
+  assertEquals(
+    findUncheckedRunResults({
+      summary,
+      headCounts: counts({ "tests/a_test.ts": 6 }),
+    }).map((u) => u.reason),
+    [PARTIAL],
+  );
+});
+
 Deno.test("a block mixing a partial addition and a whole-file count checks only the whole-file count", () => {
   const summary = plan(
     "- 3 tests added to `tests/a_test.ts` (34 tests in all), and `tests/b_test.ts` (8 tests) passes.",

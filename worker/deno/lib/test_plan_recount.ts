@@ -21,8 +21,10 @@
  * unchecked, and it does not block the other figures. "now has N" gives a
  * file's whole total and takes precedence over a partial figure for it. A
  * figure whose file the PR did not change is unchecked on its own. A count
- * with no file name, in a sentence of its own, is unchecked on its own. A
- * single-figure block and an ambiguous pairing keep the block-level skip.
+ * with no file name, in a sentence of its own, is unchecked on its own.
+ * Partial markers apply only before their figure, including in a single-figure
+ * block; descriptive prose after it cannot turn a whole-file count partial.
+ * Single-figure totals and ambiguous pairings keep the block-level checks.
  *
  * The PR summary is untrusted, agent-authored text, so this module only
  * ever uses bounded, hardcoded regexes against it (never `new RegExp` built
@@ -435,15 +437,6 @@ const CLAIM_RE = /(?<![\w.#])(\d{1,5})\s+(tests?|passed)\b/gi;
 const RESULT_RE =
   /(?<![\w.#])(\d{1,5})\s+(passed|failed)\b[\s,;|]*(?:and\s+)?(\d{1,5})\s+(passed|failed)\b/gi;
 /**
- * Block-level partial-addition check for a single-claim block (Issue #3740).
- * "added to", "extended", "with N tests" or "+N tests" make the one figure a
- * partial addition, not the file's whole count. A multi-claim block is read per claim
- * instead, so this regex is not used there.
- */
-const PARTIAL_ADD_RE =
-  /\badded to\b|\bextended\b|\bwith\s+\d{1,5}\s+tests?\b|(?<![\w.#])\+\s*\d{1,5}\s+tests?\b/i;
-
-/**
  * Split a Test Plan section into logical blocks, one claim each.
  *
  * Logical units come from the shared `markdownLogicalUnits` (Issue #3356), so
@@ -565,7 +558,7 @@ interface BlockToken {
 }
 
 /**
- * How one figure in a multi-claim block is read (Issue #3740): `whole` is a
+ * How one figure in a block is read (Issue #3740): `whole` is a
  * whole-file count, `total` a "now has N" total, `partial` an addition that is
  * never compared, `loose` a token-less count in its own sentence, `unknown` a
  * figure whose file the PR did not change, and `ambiguous` a pairing that
@@ -619,11 +612,11 @@ function scanBlockTokens(
 }
 
 /**
- * Read each figure of a multi-claim block on its own (Issue #3740). A figure
+ * Read each figure of a block on its own (Issue #3740). A figure
  * is a whole-file count when only "`file` (" sits between the file name and
  * it, with no "added", "extended" or "+" since the previous claim or file
  * name. "N tests added to `file`", "N to `file`", "+N tests", "Added to `file`
- * (N tests" and "extended `file` with N tests" are partial. "now has N" is
+ * (N tests" and "`file` with N tests" are partial. "now has N" is
  * the file's total and takes precedence over a partial figure for it.
  *
  * Two scope rules refine this (Issue #3740). First, "extended" governs every
@@ -712,7 +705,7 @@ function classifyBlockClaims(
       }
       if (
         !isPassed && PARTIAL_GAP_RE.test(gap) &&
-        (MARKER_RE.test(markerSeg) || governed)
+        (MARKER_RE.test(markerSeg) || governed || /\bwith\s*$/i.test(gap))
       ) {
         return { start, end, claimed, role: "partial", owner: own };
       }
@@ -776,9 +769,9 @@ function bareToTokens(
 
 /**
  * One pass over the Test Plan section (Issue #3143, #3740). Runs and single
- * claims keep their block-level checks; a multi-claim block is classified per
- * figure by `classifyBlockClaims` and then compared or reported figure by
- * figure. Both `findTestPlanMismatches` and `findUncheckedRunResults` read
+ * claims keep their block-level total checks; partial additions in every block
+ * are classified per figure by `classifyBlockClaims` before comparison.
+ * Both `findTestPlanMismatches` and `findUncheckedRunResults` read
  * this result.
  */
 function scanTestPlan(
@@ -850,8 +843,8 @@ function scanTestPlan(
     if (claimMatches.length === 0) continue;
     const line = rawLine.trim().slice(0, 300);
     const skip = (reason: string) => unchecked.push({ line, reason });
-    // A single claim keeps the block-level checks; several claims are read
-    // one at a time (Issue #3740).
+    // A single claim keeps the block-level file checks; partial additions
+    // are classified per figure in every block (Issue #3740).
     const passedBlock = claimMatches.some((m) =>
       (m[2] ?? "").toLowerCase() === "passed"
     );
@@ -873,10 +866,17 @@ function scanTestPlan(
       skip("the block mixes tests and passed counts");
       continue;
     }
-    // "Added to file (3 tests)" describes tests added to an existing file,
-    // not the file's whole declaration count. A "passed" command result
-    // is still the whole run.
-    if (!multi && !isPassedClaim && PARTIAL_ADD_RE.test(rawLine)) {
+    const blockTokens = scanBlockTokens(rawLine, opts.headCounts);
+    const roled = classifyBlockClaims(
+      rawLine,
+      claimMatches,
+      blockTokens,
+      isPassedClaim,
+      totalMatches,
+    );
+    // Only the claim's own segment can make it partial; later descriptive
+    // prose such as "covers the extended retry path" cannot do so.
+    if (!multi && roled.some((c) => c.role === "partial")) {
       skip(PARTIAL_REASON);
       continue;
     }
@@ -902,16 +902,6 @@ function scanTestPlan(
       }
     };
 
-    const blockTokens = scanBlockTokens(rawLine, opts.headCounts);
-    const roled = multi
-      ? classifyBlockClaims(
-        rawLine,
-        claimMatches,
-        blockTokens,
-        isPassedClaim,
-        totalMatches,
-      )
-      : [];
     const bareTo = multi
       ? bareToTokens(rawLine, blockTokens, roled)
       : new Set<number>();

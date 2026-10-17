@@ -549,7 +549,10 @@ Six checks run, each only when it applies:
    `x_test.ts` (N tests" without "now has" — is not compared with that file's
    whole count, while a whole-file count in the same unit ("the new
    `b_test.ts` (N tests", "`b_test.ts` (N tests" with no "added" or "+" before
-   it, "now has N", "the file now has N") is. An unchanged test file leaves
+   it, "now has N", "the file now has N") is. Partial markers are read only
+   before their figure, even in a unit with one figure: prose after
+   "`a_test.ts` (N tests at head)", such as "covers the extended retry path",
+   does not make that count partial. An unchanged test file leaves
    only its own figure unchecked, not the whole unit, and a token-less count
    in a separate sentence ("The related suites (689 tests) passed") is
    unchecked on its own. Lines it skips with `--filter`, unrecognised "N new
@@ -622,7 +625,9 @@ Six checks run, each only when it applies:
    survivor is a hit for the recovery turn, which may add or change tests and
    docs but no production code. A budget, cap or runner error is reported, not
    a hit. Survivors still left are reported in the PR reply; they do not block
-   the push. Details: [Diff-scoped mutation check](../mutation-check.md#review-fix-runs-issue-3750).
+   the push. The standalone `pr-feedback-processor process` command passes
+   the loaded repository configuration to this check as the run loop does.
+   Details: [Diff-scoped mutation check](../mutation-check.md#review-fix-runs-issue-3750).
 
 Any hit gets **one** recovery turn — a Test Plan figure the recount could not
 check is a hit too (Issue #3740) — and the agent, with full tools, is asked
