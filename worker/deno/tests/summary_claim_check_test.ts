@@ -1353,7 +1353,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - docFiles add the doc instruction an
   assertStringIncludes(withDocs, "SECURITY.md");
   assertStringIncludes(
     withDocs,
-    "check only the lines this branch's diff adds or edits",
+    "check the lines this branch's diff adds or edits",
   );
   assertStringIncludes(withDocs, "For the summary file:");
   const without = buildSummaryClaimQuestionPrompt({
@@ -1362,7 +1362,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - docFiles add the doc instruction an
     boundaryId: "0123456789ab",
   });
   assertFalse(
-    without.includes("check only the lines this branch's diff adds or edits"),
+    without.includes("check the lines this branch's diff adds or edits"),
   );
   assertFalse(without.includes("For the summary file:"));
 });
@@ -1372,7 +1372,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - rejects non-prose and over-cap docF
     const bad of [
       "docs/archive/pr-summaries/pr-summary-3.md",
       "../x.md",
-      "lib/x.ts",
+      "lib/x.bin",
     ]
   ) {
     const err = assertThrows(() =>
@@ -1380,7 +1380,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - rejects non-prose and over-cap docF
     );
     assertStringIncludes(
       err instanceof Error ? err.message : String(err),
-      `requires manual or prompt Markdown paths, got '${bad}'`,
+      `requires manual, prompt or source paths, got '${bad}'`,
     );
   }
   const many = (n: number) =>
@@ -1628,4 +1628,72 @@ Deno.test("buildSummaryClaimGateComment - summary and doc findings render both b
       "PR summary describes named code wrongly",
     ),
   );
+});
+
+Deno.test("runSummaryClaimCheck - source comments and unchanged related manual sections reach the same claim gate", async () => {
+  const codeSentence = "Entries record only one field.";
+  const manualSentence = "The gate runs at two points.";
+  await withDocRepo({
+    "lib/gate.ts":
+      `/** ${codeSentence} */\nexport interface Gate {\n  first: string;\n  second: string;\n}\n`,
+    "docs/manual.md":
+      `# Manual\n## Gate points\n${manualSentence}\nEvery failure is refused.\n## Unrelated\nOld unrelated prose.\n`,
+    "docs/other.md":
+      "# Other\n## Invocation\n`gate.ts` never runs before a push.\n",
+  }, async (dir) => {
+    let captured = "";
+    const result = await runSummaryClaimCheck({
+      ...docInput(dir, ["lib/gate.ts"]),
+      summaryContent:
+        "## Summary\n\n**Docs sweep** — section: docs/manual.md#gate-points; siblings: none — no member added\n",
+    }, {
+      runGit: async (args) => ({
+        code: 0,
+        stderr: "",
+        stdout: args[0] === "ls-files"
+          ? "lib/gate.ts\ndocs/manual.md\ndocs/other.md\n"
+          : "+++ b/lib/gate.ts\n@@ -3,0 +4,1 @@\n+  second: string;\n",
+      }),
+      askQuestion: async (prompt) => {
+        captured = prompt;
+        return okResult(`${DRIFT_VERDICT_OPEN}\n${
+          JSON.stringify({
+            findings: [
+              {
+                file: "lib/gate.ts",
+                sentence: codeSentence,
+                reason: "lib/gate.ts:4 adds a second field",
+              },
+              {
+                file: "docs/manual.md",
+                sentence: manualSentence,
+                reason: "lib/gate.ts:4 adds a third point",
+              },
+            ],
+          })
+        }\n<!-- /vibe-drift-verdict -->`);
+      },
+      logger: makeLogger(),
+    });
+    assertEquals(result.docFindings.map((f) => f.sentence), [
+      codeSentence,
+      manualSentence,
+    ]);
+    assert(summaryClaimCheckBlocked(result));
+    assertStringIncludes(captured, "lib/gate.ts:1-1 — source comment");
+    assertStringIncludes(
+      captured,
+      "docs/manual.md:2-4 — affected manual section",
+    );
+    assertStringIncludes(
+      captured,
+      "docs/other.md:2-4 — affected manual section",
+    );
+    assertStringIncludes(captured, "Grep the whole head tree");
+    assertFalse(
+      result.docFindings.some((f) =>
+        f.sentence === "Every failure is refused."
+      ),
+    );
+  });
 });

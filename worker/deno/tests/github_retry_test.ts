@@ -9,12 +9,22 @@
  * - removeLabel only ignores "label not found" errors
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createGitHubIssuesWithPartialFailures,
   isLabelNotFoundError,
 } from "../lib/github.ts";
 import type { Improvement } from "../commands/suggest_improvements.ts";
+import { fakeStore, routingFakeGh } from "./support/routing_fake_gh.ts";
+
+const VIBE = "stSoftwareAU/VibeCoder";
+const GRQ = "stSoftwareAU/GRQ";
+/** A worker change: the router files it in VibeCoder (Issue #3745). */
+const WORKER_NOTE = "`worker/deno/lib/foo.ts` needs work.";
+const ROUTING = {
+  routingContext: { vibeCoderRepo: VIBE, productRepos: [GRQ] },
+  dryRun: false,
+};
 
 // --- isLabelNotFoundError tests ---
 
@@ -51,28 +61,23 @@ Deno.test("github - createGitHubIssuesWithPartialFailures returns all successes"
   const improvements: Improvement[] = [
     {
       title: "Improvement 1",
-      description: "Desc 1",
+      description: WORKER_NOTE,
       category: "testing",
       labels: ["enhancement"],
     },
     {
       title: "Improvement 2",
-      description: "Desc 2",
+      description: WORKER_NOTE,
       category: "security",
       labels: ["enhancement"],
     },
   ];
-
-  let callCount = 0;
-  const mockRunGhCommand = async (_args: string[]): Promise<string> => {
-    callCount++;
-    return `https://github.com/org/repo/issues/${callCount}`;
-  };
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
 
   const result = await createGitHubIssuesWithPartialFailures(
     improvements,
-    "org/repo",
-    mockRunGhCommand,
+    VIBE,
+    { ...ROUTING, ghCommandFn: gh.ghCommandFn },
   );
 
   assertEquals(result.createdIssues, [1, 2]);
@@ -83,50 +88,52 @@ Deno.test("github - createGitHubIssuesWithPartialFailures continues after failur
   const improvements: Improvement[] = [
     {
       title: "Improvement 1",
-      description: "Desc 1",
+      description: WORKER_NOTE,
       category: "testing",
       labels: ["enhancement"],
     },
     {
       title: "Will Fail",
-      description: "Desc 2",
+      description: WORKER_NOTE,
       category: "security",
       labels: ["enhancement"],
     },
     {
       title: "Improvement 3",
-      description: "Desc 3",
+      description: WORKER_NOTE,
       category: "resilience",
       labels: ["enhancement"],
     },
   ];
-
-  let callCount = 0;
-  const mockRunGhCommand = async (_args: string[]): Promise<string> => {
-    callCount++;
-    if (callCount === 2) {
-      throw new Error("HTTP 500 Internal Server Error");
-    }
-    return `https://github.com/org/repo/issues/${callCount}`;
-  };
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }), {
+    failWhen: (args) =>
+      args[0] === "issue" && args[1] === "create" && args.includes("Will Fail")
+        ? new Error("HTTP 500 Internal Server Error")
+        : undefined,
+  });
 
   const result = await createGitHubIssuesWithPartialFailures(
     improvements,
-    "org/repo",
-    mockRunGhCommand,
+    VIBE,
+    { ...ROUTING, ghCommandFn: gh.ghCommandFn },
   );
 
-  assertEquals(result.createdIssues, [1, 3]);
+  assertEquals(result.createdIssues, [1, 2]);
   assertEquals(result.failures.length, 1);
   assertEquals(result.failures[0]!.title, "Will Fail");
-  assertEquals(result.failures[0]!.error, "HTTP 500 Internal Server Error");
+  assertStringIncludes(
+    result.failures[0]!.error,
+    "HTTP 500 Internal Server Error",
+  );
+  assertStringIncludes(result.failures[0]!.error, 'step "create"');
+  assertStringIncludes(result.failures[0]!.error, "(routing: ");
 });
 
 Deno.test("github - createGitHubIssuesWithPartialFailures handles all failures", async () => {
   const improvements: Improvement[] = [
     {
       title: "Improvement 1",
-      description: "Desc 1",
+      description: WORKER_NOTE,
       category: "testing",
       labels: ["enhancement"],
     },
@@ -138,8 +145,8 @@ Deno.test("github - createGitHubIssuesWithPartialFailures handles all failures",
 
   const result = await createGitHubIssuesWithPartialFailures(
     improvements,
-    "org/repo",
-    mockRunGhCommand,
+    VIBE,
+    { ...ROUTING, ghCommandFn: mockRunGhCommand },
   );
 
   assertEquals(result.createdIssues.length, 0);
@@ -153,8 +160,8 @@ Deno.test("github - createGitHubIssuesWithPartialFailures handles empty improvem
 
   const result = await createGitHubIssuesWithPartialFailures(
     [],
-    "org/repo",
-    mockRunGhCommand,
+    VIBE,
+    { ...ROUTING, ghCommandFn: mockRunGhCommand },
   );
 
   assertEquals(result.createdIssues.length, 0);
