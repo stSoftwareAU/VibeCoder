@@ -724,6 +724,7 @@ Deno.test("self-schedule - a 403 on the duplicate delete refuses the schedule (I
 
   assertEquals(result.candidates, []);
   assertEquals(result.refusals.length, 1);
+  assertEquals(result.refusals[0]!.issueNumber, 39);
   assertEquals(result.refusals[0]!.cause, "announce-failed");
   assertStringIncludes(result.refusals[0]!.detail, "HTTP 403");
   assertStringIncludes(result.refusals[0]!.detail, "comment 41");
