@@ -109,7 +109,7 @@
       },
       {
         "path": "worker/deno/lib/pr_feedback_drift_check.ts",
-        "line": 1389,
+        "line": 1622,
         "outcome": "no figure unchecked and no hit: the check returns clean without a recovery turn",
         "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
         "testName": "runPrFeedbackDriftCheck - a Test Plan with no unchecked figure stays clean with no recovery turn (Issue #3740)",
@@ -117,7 +117,7 @@
       },
       {
         "path": "worker/deno/lib/pr_feedback_drift_check.ts",
-        "line": 1408,
+        "line": 1645,
         "outcome": "an unchecked Test Plan figure alone triggers the recovery turn with the figure fenced into the prompt",
         "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
         "testName": "runPrFeedbackDriftCheck - an unchecked Test Plan figure runs the recovery turn with the figure fenced into it (Issue #3740)",
@@ -125,7 +125,7 @@
       },
       {
         "path": "worker/deno/lib/pr_feedback_drift_check.ts",
-        "line": 1432,
+        "line": 1671,
         "outcome": "the unchecked figures and their reasons are handed to the recovery prompt",
         "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
         "testName": "runPrFeedbackDriftCheck - an unchecked Test Plan figure runs the recovery turn with the figure fenced into it (Issue #3740)",
@@ -133,7 +133,7 @@
       },
       {
         "path": "worker/deno/lib/pr_feedback_drift_check.ts",
-        "line": 1486,
+        "line": 1737,
         "outcome": "a figure still unchecked after the recovery turn goes into the residual and the reply",
         "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
         "testName": "runPrFeedbackDriftCheck - an unchecked Test Plan figure that survives recovery is reported in the residual and the reply (Issue #3740)",
@@ -141,7 +141,7 @@
       },
       {
         "path": "worker/deno/lib/pr_feedback_drift_check.ts",
-        "line": 1518,
+        "line": 1781,
         "outcome": "a figure the recovery turn removed leaves the residual empty, so the run counts as recovered",
         "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
         "testName": "runPrFeedbackDriftCheck - an unchecked Test Plan figure the recovery turn removes is recovered, not reported (Issue #3740)",
@@ -149,7 +149,7 @@
       },
       {
         "path": "worker/deno/lib/pr_feedback_drift_check.ts",
-        "line": 1420,
+        "line": 1806,
         "outcome": "the residual warning reports the unchecked Test Plan figure count",
         "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
         "testName": "runPrFeedbackDriftCheck - the residual warning reports the unchecked Test Plan figure count (Issue #3740)",
@@ -157,7 +157,7 @@
       },
       {
         "path": "worker/deno/lib/pr_feedback_drift_check.ts",
-        "line": 743,
+        "line": 835,
         "outcome": "formatDriftResidual renders unchecked figures under their own heading, flattened, with no found-hit intro",
         "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
         "testName": "formatDriftResidual - renders unchecked Test Plan figures under their own heading, flattened, without a found-hit intro (Issue #3740)",
