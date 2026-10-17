@@ -296,6 +296,17 @@ Deno.test("manual correction - replaces only unique flagged spans, preserving su
   );
 });
 
+Deno.test("manual correction - regex syntax in findings stays literal", () => {
+  const sentence = String.raw`The pattern (a+)+$ [x] .* | \\ matches.`;
+  const original = `Keep. ${sentence} Keep too.`;
+  const result = applyFlaggedSentenceReplacements(
+    JSON.stringify({ replacements: [{ index: 1, text: "Correct." }] }),
+    [{ file: "docs/manual.md", sentence, reason: "code differs" }],
+    new Map([["docs/manual.md", original]]),
+  );
+  assertEquals(result.get("docs/manual.md"), "Keep. Correct. Keep too.");
+});
+
 Deno.test("manual correction - rejects missing, duplicate, unknown or ambiguous replacements", () => {
   const findings = [{
     file: "docs/manual.md",

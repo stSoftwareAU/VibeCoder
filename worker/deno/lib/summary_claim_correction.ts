@@ -370,6 +370,10 @@ export function applyFlaggedSentenceReplacements(
     ) {
       throw new Error("Flagged sentence is no longer locatable");
     }
+    // Every non-whitespace token is escaped as literal text. The only regex
+    // operator we introduce is whitespace between non-empty literal tokens;
+    // findings cannot inject quantifiers, groups or alternation.
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
     const pattern = new RegExp(
       finding.sentence.trim().split(/\s+/).map(escapeRegExp).join("\\s+"),
       "g",
