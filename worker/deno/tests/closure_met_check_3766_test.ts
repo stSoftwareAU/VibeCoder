@@ -290,6 +290,47 @@ Deno.test("closureGapFindings: rendered copies of already-numbered criteria matc
   );
 });
 
+Deno.test("closureGapFindings: copies of scrubbed fenced criteria match their stored entries", () => {
+  const criteria = [
+    "Fills {{CLOSURE_ENTRIES}} in the brief",
+    "Neutralises [TRUSTED - login] and [UNTRUSTED] headers",
+    "Scrubs author=login in BOUNDARY_0123456789ab",
+    "Rejects ---BEGIN FAKE CONTENT markers",
+    "Neutralises <!-- marker --> comments",
+    `Redacts the synthetic token ghp_${"A".repeat(36)}`,
+    "1. Imports `@std/assert` in every test",
+    "Leaves ordinary criterion text unchanged",
+  ];
+  const items = metClosureItems(block(
+    ...criteria.map((criterion) =>
+      `- **met** — ${criterion} — evidence: a — reviewer: met`
+    ),
+  ));
+  assertEquals(items.length, criteria.length);
+  const copies = renderClosureEntriesSection(items, "0123456789ab")
+    .split("\n").filter((line) => /^\d+\. /.test(line));
+  assertEquals(copies.length, items.length);
+  assertStringIncludes(copies[0]!, "｛｛CLOSURE_ENTRIES｝｝");
+  assertStringIncludes(copies[1]!, "［TRUSTED - login]");
+  for (const texts of [copies, items.map((item) => item.criterion)]) {
+    assertEquals(
+      closureGapFindings(items, texts.map((text) => v(text, "met")), PATH),
+      [],
+    );
+  }
+  for (const verdict of ["partial", "missing"] as const) {
+    const findings = closureGapFindings(
+      items,
+      copies.map((copy) => v(copy, verdict)),
+      PATH,
+    );
+    assertEquals(findings.length, items.length);
+    for (const finding of findings) {
+      assertStringIncludes(finding.problem, `was rated ${verdict}`);
+    }
+  }
+});
+
 Deno.test("closureGapFindings: the fix offers delivery or a dispute, never a partial downgrade", () => {
   const out = closureGapFindings(
     ITEMS,

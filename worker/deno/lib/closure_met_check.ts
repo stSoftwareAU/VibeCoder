@@ -12,7 +12,10 @@
 
 import { parseClosureEntries } from "./acceptance_criteria_gate.ts";
 import { subjectOf } from "./closure_criterion_match.ts";
-import { fenceUntrustedIssueText } from "./prompt_delimiter.ts";
+import {
+  fenceUntrustedIssueText,
+  scrubUntrustedText,
+} from "./prompt_delimiter.ts";
 import { gapText, normaliseVerdictText } from "./review_checklists.ts";
 
 /** A closure entry marked `met`, as the verifier is asked to judge it. */
@@ -123,7 +126,10 @@ export function parseClosureEntryVerdicts(
 }
 
 /**
- * Match key for a criterion. Zero-width characters are stripped before
+ * Match key for a criterion. Apply the fence's idempotent scrub to both the
+ * stored criterion and the verifier's copy, so delimiter rewrites and secret
+ * redaction cannot turn a reported verdict into a false gap.
+ * Zero-width characters are stripped before
  * `gapText` re-adds its own after "@", so a stored criterion and a verifier's
  * copy of it (with or without the invisible character) key the same.
  * Strip all leading list numbers before clipping, including the criterion's own.
@@ -131,10 +137,11 @@ export function parseClosureEntryVerdicts(
 const keyOf = (text: string): string =>
   normaliseVerdictText(
     gapText(
-      text.replace(/[\u200b-\u200d\ufeff]/g, "").trimStart().replace(
-        /^(?:\d+[.)]\s+)+/,
-        "",
-      ),
+      scrubUntrustedText(text).replace(/[\u200b-\u200d\ufeff]/g, "").trimStart()
+        .replace(
+          /^(?:\d+[.)]\s+)+/,
+          "",
+        ),
       CLOSURE_CRITERION_MAX,
     ),
   );
