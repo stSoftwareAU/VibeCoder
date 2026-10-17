@@ -1269,10 +1269,11 @@ async function executeClaudePhaseBody(
   // work to executors on the run's sub-agent tier — Haiku by default, Sonnet
   // under `issue_sub_agent_tier: "sonnet"` (Issue #3402) — and the prompt
   // carries the advisor/executor block that tells it to (Issue #2343). Off
-  // (`issue_executor_split: false`) — `agents` stays absent, no argument is
-  // emitted, the block renders as nothing, and no executor definitions are
-  // built (reviewer and explorer definitions are governed by their own
-  // settings). Resolved
+  // (`issue_executor_split: false`), no executor definitions are built and the
+  // advisor/executor block renders nothing. `--agents` is still emitted when
+  // reviewer agents are on (`issue_reviewer_agents`, default on), or when the
+  // Haiku sub-agent tier adds the explorer definition (see
+  // `buildIssueRunAgents` in `issue_executor_agents.ts`). Resolved
   // before the prompt is built so the prompt and the argv cannot disagree.
   const issueExecutorSplit = isIssueExecutorSplitEnabled(
     "issue",
@@ -1290,8 +1291,8 @@ async function executeClaudePhaseBody(
   deps.log(
     `Issue sub-agent tier resolved to '${issueSubAgentTier}' (Issue #3402)`,
   );
-  // The reviewer sub-agents (Issue #2575): host-wide, off by default until
-  // the pilot in docs/MODEL-AND-CACHING.md clears it.
+  // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
+  // #2812); `issue_reviewer_agents: false` opts out.
   const issueRunAgents = buildIssueRunAgents({
     executorSplit: issueExecutorSplit,
     reviewerAgents: options.issueReviewerAgents === true,

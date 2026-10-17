@@ -672,8 +672,8 @@ async function executeClaudeBody(
     `Issue sub-agent tier resolved to '${issueSubAgentTier}' for ${repo} ` +
       `(Issue #3402)`,
   );
-  // The reviewer sub-agents (Issue #2575): host-wide, off by default until
-  // the pilot in docs/MODEL-AND-CACHING.md clears it.
+  // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
+  // #2812); `issue_reviewer_agents: false` opts out.
   const issueRunAgents = buildIssueRunAgents({
     executorSplit: issueExecutorSplit,
     reviewerAgents: config.issueReviewerAgents === true,

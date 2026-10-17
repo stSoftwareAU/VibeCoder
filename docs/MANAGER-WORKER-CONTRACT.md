@@ -38,7 +38,10 @@ phases, except where they share the provider seam; the billing policy itself
   (`worker/deno/lib/claude_env.ts:177`).
 - **Host-validated prerequisite:** a model that a provider has not shipped in
   the host's supported set. It must be validated on the host before any
-  configuration names it. It is never a default.
+  configuration names it. It is never a default. Astra and Sol availability is
+  a prerequisite to validate per host, by checking that the CLI is installed
+  and the account is entitled. It is never assumed. Until a host is validated,
+  no routing changes for it.
 
 ## 3. Existing behaviour audit
 
@@ -81,17 +84,21 @@ Per-provider behaviour, from the same file:
   silently (`:1129`). `buildChildEnv` (`:1135`) uses `buildDeepSeekChildEnv`
   (`worker/deno/lib/deepseek_env.ts:157`).
 
-Discrepancy: the task brief said DeepSeek "strips both and warns loudly". The
-code warns only for `agents`. `settingsJson` is removed without a warning. This
-document describes the code.
+DeepSeek strips both `agents` and `settingsJson`
+(`worker/deno/lib/agent_provider.ts:1117-1118`). It warns only for `agents`,
+through `warnDeepSeekAgentsUnsupported`, and drops `settingsJson` silently
+(`worker/deno/lib/agent_provider.ts:1129`).
 
 Lifecycle entry points are covered in section 5.
 
-Unconfirmed: the brief said the PR-review phase defaults to Opus through a
-`DEFAULT_CLAUDE_MODEL_*` value. `PHASE_MODEL_DEFAULTS`
-(`worker/deno/lib/config_defaults.ts:1222-1238`) has no `pr_review` key. Only a
-comment above `DEFAULT_CLAUDE_MODEL_ISSUE` (around `:1094-1096`) mentions it.
-This is not confirmed and is not stated as fact here.
+The issue owner states that the PR reviewer stays on Opus. The code has no
+`pr_review` key: `PHASE_MODEL_DEFAULTS` (`worker/deno/lib/config_defaults.ts:1222-1239`)
+does not list one. PR feedback and review runs use the host `claude_model`
+(`worker/deno/lib/pr_feedback_processor.ts:764`, `processorDeps.claudeModel ??
+DEFAULT_CLAUDE_MODEL`), which defaults to `DEFAULT_CLAUDE_MODEL = "opus"`
+(`worker/deno/lib/config_defaults.ts:968`, and `worker/deno/lib/config.ts:596`).
+The comment above `DEFAULT_CLAUDE_MODEL_ISSUE` (`worker/deno/lib/config_defaults.ts:1094-1096`)
+records the intent.
 
 ## 4. Target contract
 
@@ -103,7 +110,7 @@ section exists in the worker yet.
 
 | Role | Duty | Tools | Today (Claude) |
 | --- | --- | --- | --- |
-| Manager | Plans, dispatches, verifies. Does not edit. | Full read, dispatch | Advisor. `Edit` and `Write` denied without `agent_id`. |
+| Manager | Plans, dispatches, verifies. Read-only for edits. | Full read, dispatch | Advisor. `Edit` and `Write` are denied when `agent_id` is absent, by the #2344 `PreToolUse` hook delivered via `--settings`. Enforced on Claude only today. |
 | Executor | Makes the mechanical edits in one unit of work. | Edit, Write, read tools. No dispatch. | `buildIssueExecutorAgents`, with `Agent` disallowed. |
 | Spec reviewer | Checks the change against the issue. Read-only. | `Read`, `Grep`, `Glob` | `buildIssueReviewerAgents`. |
 | Standards reviewer | Checks the change against the standards. Read-only. | `Read`, `Grep`, `Glob` | `buildIssueReviewerAgents`. |
@@ -114,6 +121,8 @@ section exists in the worker yet.
 The manager sends one `TaskEnvelope` per unit of work. The worker returns one
 `StructuredResult`. Both are plain data, so any provider can carry them. The
 result must be checked by the host before the manager acts on it.
+
+The shapes below are the *target* shape. They are not code that exists today.
 
 ```ts
 // Target, not implemented. Sketch only (Issue #3641).
@@ -139,11 +148,31 @@ export interface TaskEnvelope {
   readonly workspaceDir: string;
   // The manager's instruction for this one unit of work.
   readonly brief: string;
+  // The issue this unit of work belongs to.
+  readonly issueId: string;
+  // The branch the executor works on.
+  readonly branch: string;
+  // Rules the executor must not break.
+  readonly constraints: readonly string[];
+  // Checks the result must meet before the manager accepts it.
+  readonly acceptanceCriteria: readonly string[];
+  // Conditions that end the attempt early, for example budget exhausted, refusal, or blocked on dependency.
+  readonly stopConditions: readonly string[];
+  // Retries allowed after the first attempt.
+  readonly maxRetries: number;
+  // Wall-clock limit for one attempt, in milliseconds.
+  readonly timeoutMs: number;
+  // Identifier of the lease that grants this dispatch.
+  readonly leaseId: string;
+  // ISO 8601 time after which the lease is lost unless renewed.
+  readonly leaseExpiresAt: string;
+  // Interval between executor heartbeats, in milliseconds.
+  readonly heartbeatIntervalMs: number;
 }
 
 export interface StructuredResult {
   readonly role: TargetRole;
-  readonly status: "done" | "blocked" | "failed";
+  readonly status: "done" | "blocked" | "failed" | "cancelled" | "timed_out";
   readonly filesChanged: readonly string[];
   readonly summary: string;
   // Command output or test names that back the summary.
@@ -193,7 +222,9 @@ Supporting lifecycle code, each cited from the file it lives in:
 ### Target
 
 The target adds an explicit state for the provider check, so an unsupported
-provider is refused before any sub-agent starts.
+provider is refused before any sub-agent starts. It also adds retries,
+cancellation, timeouts, leases with heartbeats, and recovery. These are target
+behaviour, not code that exists today.
 
 ```mermaid
 stateDiagram-v2
@@ -203,14 +234,38 @@ stateDiagram-v2
   Planning --> Dispatched: TaskEnvelope issued
   Dispatched --> Executing: provider carries the contract
   Executing --> Reviewing: StructuredResult done
-  Executing --> Blocked: StructuredResult blocked or failed
+  Executing --> Blocked: StructuredResult blocked, or failed with no retries left
+  Executing --> Dispatched : retry (attempt < maxRetries)
+  Executing --> TimedOut : timeoutMs exceeded
+  Executing --> Cancelled : cancel requested
+  Executing --> Recovering : lease lost or heartbeat missed
+  Recovering --> Dispatched : lease reclaimed, attempts remain
+  Recovering --> Released : no lease or no attempts left
   Reviewing --> Done: reviewers pass
   Reviewing --> Blocked: reviewers reject
+  TimedOut --> Released: timeout reported
+  Cancelled --> Released: cancellation reported
   Blocked --> Released: cooldown
   Done --> Released
   Refused --> Released
   Released --> [*]
 ```
+
+- **Executing to Dispatched (retry).** A failed attempt is dispatched again
+  while the attempt count is below `maxRetries`.
+- **Executing to TimedOut.** The attempt ran past `timeoutMs`. It is stopped
+  and released with the timeout reported. This diagram does not retry it.
+- **Executing to Cancelled.** A cancel request stops the attempt. It is
+  released with the cancellation reported and is not reviewed.
+- **Executing to Recovering.** The lease lapsed or no heartbeat arrived within
+  `heartbeatIntervalMs`. The host treats the executor as gone and starts
+  recovery.
+- **Recovering to Dispatched.** The host takes a fresh lease and dispatches
+  again, while attempts remain.
+- **Recovering to Released.** No lease can be reclaimed, or no attempts remain.
+  The claim is released.
+- **TimedOut or Cancelled to Released.** Terminal paths. The reason is recorded
+  on release.
 
 ## 6. Permissions and credential isolation
 
@@ -267,9 +322,14 @@ checked against the provider here.
 - **No default change.** `issue_executor_split` stays `true`,
   `issue_sub_agent_tier` stays `"haiku"` and `issue_reviewer_agents` stays
   `true`. Nothing in the rollout changes them.
-- **Rollback.** Set `issue_executor_split: false` and
-  `issue_reviewer_agents: false`. The `--agents` argument is then absent and the
-  run is a single session, as it was before the split.
+- **Rollback.** Setting `issue_executor_split: false` and
+  `issue_reviewer_agents: false` alone does not remove `--agents` on the default
+  `haiku` tier. `buildIssueRunAgents` (`worker/deno/lib/issue_executor_agents.ts:420-434`)
+  still adds the explorer definition from `buildIssueExplorerAgents()`
+  (`worker/deno/lib/issue_executor_agents.ts:374`) when `issue_sub_agent_tier`
+  is `"haiku"`. A full rollback to no `--agents` argument also sets
+  `issue_sub_agent_tier: "sonnet"`. The run is then a single session, as it was
+  before the split.
 
 ## 9. Incremental implementation order
 
@@ -302,7 +362,7 @@ flowchart TD
 These tests cover the behaviour this document describes. Each file was
 confirmed to exist under `worker/deno/tests/`.
 
-- `worker/deno/tests/manager_worker_contract_3641_test.ts` (updated for this issue)
+- `worker/deno/tests/manager_worker_contract_3641_test.ts` (added for this issue)
 - `worker/deno/tests/issue_executor_split_test.ts`
 - `worker/deno/tests/readme_docs_reachability_test.ts`
 - `worker/deno/tests/agent_provider_readme_docs_test.ts`
@@ -328,5 +388,6 @@ confirmed to exist under `worker/deno/tests/`.
   `issue_sub_agent_tier` key.
 - [#3473](https://github.com/stSoftwareAU/VibeCoder/issues/3473): the Sonnet
   manager over Haiku executors.
-- [#3801](https://github.com/stSoftwareAU/VibeCoder/issues/3801): listed in the
-  issue brief. No description is recorded in this repository.
+- [#3801](https://github.com/stSoftwareAU/VibeCoder/issues/3801): defaults the
+  `issue` phase to a Sonnet manager (high effort) over Haiku executors (merged;
+  decision recorded under #3473).
