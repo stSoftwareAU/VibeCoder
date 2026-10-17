@@ -24,6 +24,7 @@ import {
   runCliVersion,
   runProviderFeasibility,
 } from "../commands/provider_feasibility.ts";
+import { resolveCodexHome } from "../lib/codex_auth_mode.ts";
 import type { FeasibilityRow } from "../lib/provider_feasibility.ts";
 import type { CommandResult } from "../types.ts";
 
@@ -369,5 +370,112 @@ Deno.test("readOptionalTextFile returns the content of a real file", async () =>
     const path = `${workDir}/provider.env`;
     await Deno.writeTextFile(path, "CLAUDE_CODE_OAUTH_TOKEN=abc\n");
     assertEquals(readOptionalTextFile(path), "CLAUDE_CODE_OAUTH_TOKEN=abc\n");
+  });
+});
+
+Deno.test("a version probe that prints nothing and exits 0 reports no version output", async () => {
+  await withDirs(async (dirs) => {
+    const script = `${dirs.workDir}/silent-cli`;
+    await Deno.writeTextFile(script, "#!/bin/sh\nexit 0\n");
+    await Deno.chmod(script, 0o755);
+    const result = await runCliVersion(script, { PATH: "/usr/bin:/bin" });
+    assertEquals(result, { ok: false, detail: "no version output" });
+  });
+});
+
+Deno.test("a binary without execute permission reports its real error name", async () => {
+  await withDirs(async (dirs) => {
+    const file = `${dirs.workDir}/not-executable`;
+    await Deno.writeTextFile(file, "#!/bin/sh\necho hi\n");
+    await Deno.chmod(file, 0o644);
+    const result = await runCliVersion(file, { PATH: "/usr/bin:/bin" });
+    assertEquals(result, { ok: false, detail: "PermissionDenied" });
+  });
+});
+
+Deno.test("a Codex home with a known budget reports it visible with a remaining percentage", async () => {
+  const home = await Deno.makeTempDir({
+    prefix: "provider-feasibility-budget-",
+  });
+  try {
+    const dir = `${home}/sessions/2026/09/09`;
+    await Deno.mkdir(dir, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/rollout-2026-09-09T01-00-00-x.jsonl`,
+      Deno.readTextFileSync(
+        new URL(
+          "./fixtures/codex_budget/rollout_chatgpt_subscription.jsonl",
+          import.meta.url,
+        ),
+      ),
+    );
+    const result = await readCodexQuotaVisibility(home);
+    assertEquals(result.visible, true);
+    assertStringIncludes(result.detail, "% remaining");
+    assert(/% remaining/.test(result.detail));
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("an empty --providers list fails and says it names no provider", async () => {
+  await withDirs(async (dirs) => {
+    const result = await runProviderFeasibility(
+      { providers: " , " },
+      fakeDeps(dirs, {}, newRecorder()),
+    );
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "names no provider");
+  });
+});
+
+Deno.test("a --validated-models entry for an unregistered provider fails and names it", async () => {
+  await withDirs(async (dirs) => {
+    const result = await runProviderFeasibility(
+      { providers: "claude", "validated-models": "nope:model" },
+      fakeDeps(dirs, {}, newRecorder()),
+    );
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "nope");
+  });
+});
+
+Deno.test("a --models entry already in the defaults is not duplicated", async () => {
+  await withDirs(async (dirs) => {
+    const result = await runProviderFeasibility(
+      { providers: "claude,codex", models: "codex:gpt-5" },
+      fakeDeps(dirs, {}, newRecorder()),
+    );
+    const rows = rowsOf(result);
+    const codexManagers = rows.filter((row) =>
+      row.role === "manager" && row.provider === "codex"
+    );
+    assertEquals(codexManagers.length, 5);
+  });
+});
+
+Deno.test("--codex-home is the home the quota probe reads", async () => {
+  await withDirs(async (dirs) => {
+    const recorder = newRecorder();
+    const codexHome = `${dirs.workDir}/explicit-codex-home`;
+    await runProviderFeasibility(
+      { providers: "codex", "codex-home": codexHome },
+      fakeDeps(dirs, {}, recorder),
+    );
+    assertEquals(recorder.quotaHomes, [codexHome]);
+  });
+});
+
+Deno.test("without --codex-home the quota probe reads the agent-state Codex home", async () => {
+  await withDirs(async (dirs) => {
+    const recorder = newRecorder();
+    await runProviderFeasibility(
+      { providers: "codex" },
+      fakeDeps(dirs, {}, recorder),
+    );
+    assertEquals(recorder.quotaHomes, [
+      resolveCodexHome(dirs.workDir, () => undefined),
+    ]);
+    assert(recorder.quotaHomes[0] !== "", "expected a non-empty Codex home");
   });
 });

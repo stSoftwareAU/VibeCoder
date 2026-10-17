@@ -226,10 +226,7 @@ export async function gatherProviderHostFacts(
   const version = await deps.runVersion(descriptor.binary, childEnv);
 
   const quota = descriptor.id === CODEX_PROVIDER_ID
-    ? await deps.readCodexQuota(
-      (parentEnv.CODEX_HOME ?? "").trim() ||
-        resolveCodexHome(deps.workDir, lookup),
-    )
+    ? await deps.readCodexQuota(resolveCodexHome(deps.workDir, lookup))
     : { visible: false, detail: "no free quota probe for this provider" };
 
   return {

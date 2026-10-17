@@ -346,3 +346,43 @@ Deno.test("formatFeasibilityReport writes the header counts and one line per row
   assertStringIncludes(lines[2]!, "blockers=a; b caveats=none");
   assertEquals(lines.length, 4);
 });
+
+Deno.test("a reviewer on codex under a claude manager is no-go on the cross-provider guard only", () => {
+  const row = evaluateFeasibility(
+    combo("reviewer", "codex", "gpt-6.1-sol", "claude"),
+    contextWith(
+      [goodFacts("claude"), goodFacts("codex")],
+      [modelKey("codex", "gpt-6.1-sol")],
+    ),
+  );
+  assertEquals(row.verdict, "no-go");
+  assertEquals(row.blockers, [
+    "cross-provider-dispatch-not-implemented (sub-agents run inside the claude manager's CLI process)",
+  ]);
+  assert(!row.blockers.includes("no-sub-agent-definitions"));
+});
+
+Deno.test("a reviewer with an unregistered manager provider is no-go and stops at once", () => {
+  const row = evaluateFeasibility(
+    combo("reviewer", "claude", "sonnet", "nope"),
+    contextWith([goodFacts("claude")]),
+  );
+  assertEquals(row.verdict, "no-go");
+  assertEquals(row.blockers, ["manager-provider-not-registered"]);
+  assertEquals(row.caveats, []);
+});
+
+Deno.test("a validated model with host and role blockers is no-go, not unavailable", () => {
+  // Only the claude host is probed, so codex's host blocker and the
+  // cross-provider blocker both apply; the model is validated, so the verdict
+  // is no-go rather than unavailable.
+  const row = evaluateFeasibility(
+    combo("executor", "codex", "gpt-6.1-sol", "claude"),
+    contextWith([goodFacts("claude")], [modelKey("codex", "gpt-6.1-sol")]),
+  );
+  assertEquals(row.verdict, "no-go");
+  assertEquals(row.blockers, [
+    "host-not-probed",
+    "cross-provider-dispatch-not-implemented (sub-agents run inside the claude manager's CLI process)",
+  ]);
+});
