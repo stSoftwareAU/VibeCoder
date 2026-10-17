@@ -1,0 +1,32 @@
+name: Milestone pre-PR validation
+on:
+  push:
+    branches: [codex/validate-milestones-106-111]
+permissions:
+  contents: read
+concurrency:
+  group: milestone-pre-pr-validation
+  cancel-in-progress: true
+jobs:
+  registry-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source revision
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 6effe8f3b2e261c89a22a2ea10e25c88c911ba00
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install repository Deno version
+        # denoland/setup-deno@v2.0.5
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          deno-version-file: .deno-version
+      - name: Check pinned dependencies and PowerShell
+        working-directory: worker/deno
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          deno task test tests/doc_prose_claims_test.ts < /dev/null
