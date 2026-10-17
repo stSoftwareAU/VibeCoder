@@ -14,9 +14,10 @@
  * `missing`, the sync files or reuses the follow-up (or, on a partial-delivery
  * follow-up, hands the issue to a human) through `pr_body_sync_follow_up.ts`,
  * from issue content that passed the pickup content-integrity check, and fails
- * loudly if it cannot (Issue #3678). A review-fix run that rewrites that summary file and pushes new commits never
- * touched the PR body again, so a reviewer reading the description kept
- * seeing the original summary while the diff underneath it changed.
+ * loudly if it cannot (Issue #3678). Before Issue #3089, a review-fix run that
+ * rewrote that summary file and pushed new commits never touched the PR body
+ * again, so a reviewer reading the description kept seeing the original summary
+ * while the diff underneath it changed.
  *
  * This module gives the completion phase's body-assembly logic a second
  * caller: a fix run that pushed only new commits (no PR yet created on this

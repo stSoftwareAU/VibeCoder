@@ -11,8 +11,9 @@
  *
  * This module is the sync's equivalent of the completion guard. Because the
  * sync fetches the parent issue afresh, it re-verifies the issue's title and
- * body with the pickup content-integrity check (Issue #3647; THREAT-MODEL
- * AP-7) before any of that text is written into a follow-up or a comment.
+ * body with the pickup content-integrity check (`pickup_content_integrity.ts`;
+ * THREAT-MODEL AP-7) before any of that text is written into a follow-up or a
+ * comment.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -101,7 +102,11 @@ export function parseSyncParentIssue(raw: string): SyncParentIssue {
 
 /** What a sync needs to file a follow-up the live PR body does not yet point at. */
 export interface SyncFollowUpFiling {
-  /** Re-verifies the parent issue's content (Issue #3647); `blocked` files nothing. */
+  /**
+   * Re-verifies the parent issue's content with the pickup content-integrity
+   * check (`pickup_content_integrity.ts`; THREAT-MODEL AP-7); `blocked` files
+   * nothing.
+   */
   verifyIssueContent: (
     repo: string,
     issueNumber: number,
@@ -205,7 +210,8 @@ export async function addReportedGapSectionOnSync(args: {
 
   try {
     // The sync fetched the issue afresh, so its text is verified before any
-    // of it reaches a follow-up or a comment (Issue #3647; THREAT-MODEL AP-7).
+    // of it reaches a follow-up or a comment (the pickup content-integrity
+    // check, `pickup_content_integrity.ts`; THREAT-MODEL AP-7).
     const verified = await filing.verifyIssueContent(
       repo,
       issueNumber,

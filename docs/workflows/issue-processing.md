@@ -2593,8 +2593,8 @@ run:
   `addReportedGapSectionOnSync` in `worker/deno/lib/pr_body_sync_follow_up.ts`):
   1. reads the parent issue (`gh issue view --json title,body,labels,author,milestone`);
   2. re-verifies that title and body with `verifyPickupContentIntegrity`
-     (Issue #3647, THREAT-MODEL AP-7) before writing any of that text anywhere,
-     because the sync fetched it fresh;
+     (`pickup_content_integrity.ts`, THREAT-MODEL AP-7) before writing any of
+     that text anywhere, because the sync fetched it fresh;
   3. if the issue is itself a partial-delivery follow-up (its body carries a
      `degraded-follow-up-<N>` `finding-id` marker), hands it to a human exactly
      as the completion phase does (`handFollowUpToHuman`: `needs-human` label
