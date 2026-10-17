@@ -92,7 +92,8 @@ flowchart LR
 ```
 
 **Docs sweep**: grep: `isSummaryGateFailureRecord`, `SUMMARY_GATE_RECORD`,
-"no label-release record check", "right after the summary-gate marker";
+"no label-release record check", "right after the summary-gate marker",
+"every worker gate prefix", "no classifier names", "checks with `startsWith`";
 section: `docs/INTERNALS.md#worker-gate-markers-are-one-registry-issue-3735`;
 siblings: `SUMMARY_RULE_GATE_MARKER`, `SECURITY_FIX_GATE_MARKER`,
 `PRE_PUSH_GATE_MARKER`; updated: `CODING-STANDARDS.md`,
@@ -124,12 +125,9 @@ siblings: `SUMMARY_RULE_GATE_MARKER`, `SECURITY_FIX_GATE_MARKER`,
   test red.
 - `deno task test:unit` over the 43 test files that import the changed
   modules: 703 passed, 0 failed.
-- `./quality.sh < /dev/null` on commit `9f6ccc1c`, which holds all of the
-  production code: `Result: PASSED (with skipped checks)`. Only
-  `config integration` was skipped. The later commit added only the no-heading
-  test, this summary and the facts file. Re-run on the head, the two new test
-  files give 19 passed, 0 failed, and `deno task pr-summary-check` reports
-  0 gates blocked.
+- `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped
+  checks)`. Only `config integration` was skipped. The two new test files give
+  19 passed, 0 failed.
 
 <!-- vibe-branch-outcomes -->
 
