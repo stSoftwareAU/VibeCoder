@@ -214,6 +214,15 @@ for a gated milestone head are skipped, and only a worker-authored PR is
 edited. A failed sync is logged once at warning and does not fail the run
 (Issue #3089).
 
+When the live body carries no leading degraded or partial-delivery section and
+the rebuilt summary newly marks a criterion `partial` or `missing`, the sync
+also reads the parent issue, re-verifies its content, and files or reuses the
+follow-up (or hands a partial-delivery follow-up to a human) before it writes
+the new section. This is the one path where a re-sync touches the follow-up;
+see
+[the fix-run gap case](workflows/issue-processing.md#a-healthy-runs-own-gaps-get-a-follow-up-too-issue-3506)
+(Issue #3678).
+
 Writing `Refs #N` in the summary does not stop the rebuilt description from
 closing the issue, since the rebuild appends `Closes #N` unless a closing
 keyword is already present; marking each unmet acceptance criterion `missing`

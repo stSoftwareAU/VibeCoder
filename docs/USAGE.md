@@ -120,9 +120,15 @@ every item. A leading `Partial delivery — handed to a human` section, which a
 healthy run on a partial-delivery follow-up carries instead of filing a nested
 one (PR #3676 review; a degraded run still files one), is rebuilt from the current gaps and dropped when none
 remains.
-A re-sync only reads the issue; it never edits or files the follow-up. See the
-degraded-run section of
-[issue-processing.md](workflows/issue-processing.md).
+Re-deriving a section the body already carries only reads the issue; it never
+edits or files the follow-up. The one case where a sync files or reuses the
+follow-up is a body with no such section whose rebuilt summary newly marks a
+criterion `partial` or `missing` (Issue #3678): the sync re-verifies the
+issue's content, then files or reuses the `idle-task` follow-up and prepends a
+`Partial delivery — follow-up filed` section, or hands a partial-delivery
+follow-up to a human. If the issue cannot be read or verified, or the filing
+fails, the sync fails and leaves the body as it was. See the degraded-run
+section of [issue-processing.md](workflows/issue-processing.md).
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale
