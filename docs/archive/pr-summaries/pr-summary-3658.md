@@ -229,8 +229,9 @@ flowchart LR
     guard test's positive control). The former snippet operand was
     unreachable once the parser refused an entry with neither anchor, so it
     was removed rather than exempted.
-  - `content_tooling_env_test.ts`: `runInChild` given `env: {}` → 0 passed,
-    2 failed; `clearEnv: false` → 77 passed, 1 failed.
+  - `content_tooling_env_test.ts` (2 tests): `runInChild` given `env: {}`
+    (the canary dropped) → 0 passed, 2 failed. Unmutated head: 2 passed,
+    0 failed.
 - `deno task test:unit tests/security_tree_sweep_test.ts < /dev/null` on the
   final head: `ok | 77 passed | 0 failed`. The mutation-check counts above are out of
   these 77. The `snippetOnlyUnanchored` red-check counts were taken before

@@ -242,7 +242,9 @@ head. It uses the mutation gate's runner seams and runs
 `deno test --no-check -A --filter <name> <file>` from the test's nearest
 `deno.json`, `deno.jsonc` or `deno.lock` directory, counting an outcome only
 when deno reports the named test's own `<name> ... ok` or `<name> ... FAILED`
-line. Red then green passes; green then green, red then red and green then red
+line. A Rust `#[test] fn` runs `cargo test --no-fail-fast [--test <stem>]
+<name>` from the nearest `Cargo.toml` package, counting only cargo's
+`test <path> ... ok` or `... FAILED` line for that test. Red then green passes; green then green, red then red and green then red
 block with the evidence kind `test-discriminates`. The prose
 `regression-test` evidence (`REGRESSION_TEST_REFERENCE` and
 `BEFORE_AFTER_LINKAGE`) was removed, and `buildSecurityFixGateMessage` no

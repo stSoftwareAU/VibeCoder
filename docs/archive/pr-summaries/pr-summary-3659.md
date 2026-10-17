@@ -26,8 +26,9 @@ run. The prose `regression-test` requirement is removed. Closes #3659.
 
 ### Essential Design Decisions
 
-- A run counts as pass or fail only when deno prints the named test's own
-  unindented `<name> ... ok` or `<name> ... FAILED` line. Several broken runs
+- A run counts as pass or fail only when the runner prints the named test's own
+  line: deno's unindented `<name> ... ok` or `<name> ... FAILED`, or cargo's
+  `test <path> ... ok` or `... FAILED` for a Rust test. Several broken runs
   exit cleanly or print nothing for the test: a filter that matches nothing
   (exit 0, `0 passed`), a missing import, a timeout, a git failure, an exhausted
   budget. All of them return `not_checked`, so a runner fault can never read as
@@ -44,8 +45,9 @@ run. The prose `regression-test` requirement is removed. Closes #3659.
   with `cargo test --no-fail-fast [--test <stem>] <name>` in the nearest
   `[package]` directory and read from the named `test <path> ... ok|FAILED` line
   (PR #3921 review). A security fix whose cited test is in another language
-  blocks as `discrimination-not-checked`, with a reason that names the language
-  rather than saying nothing was cited, unless the repository sets
+  blocks as `discrimination-not-checked`, with a reason that says the worker
+  runs only Deno and Rust tests and lists the cited files (or, when no
+  executable test was cited at all, says so), unless the repository sets
   `skip_security_fix_check`. That is fail-closed by design: "could not run"
   blocks.
 - The record travels on the block verdict in run state
