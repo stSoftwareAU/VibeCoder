@@ -1032,7 +1032,10 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body cites a doc line
     // hasNothingToMerge's ahead_by probe — distinct from the not-planned
     // module's plain compare call below (no --jq).
     if (key.includes("/compare/") && key.includes("--jq")) {
-      return "5";
+      return JSON.stringify({
+        ahead_by: 5,
+        files: [{ filename: "worker.ts" }],
+      });
     }
     if (key.includes("/compare/")) {
       return JSON.stringify({
@@ -1135,7 +1138,10 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes the not-pl
     }
 
     if (key.includes("/compare/") && key.includes("--jq")) {
-      return "5";
+      return JSON.stringify({
+        ahead_by: 5,
+        files: [{ filename: "worker.ts" }],
+      });
     }
     if (key.includes("/compare/")) {
       throw new Error("compare API unavailable");
@@ -1234,7 +1240,10 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes an uncheck
     }
 
     if (key.includes("/compare/") && key.includes("--jq")) {
-      return "5";
+      return JSON.stringify({
+        ahead_by: 5,
+        files: [{ filename: "worker.ts" }],
+      });
     }
     if (key.includes("/compare/")) {
       return JSON.stringify({
@@ -1336,7 +1345,10 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body omits not-planne
     // `findNotPlannedDocReferences` to fetch the diff) must stay unused,
     // since there are no not-planned candidates for it to look for.
     if (key.includes("/compare/") && key.includes("--jq")) {
-      return "5";
+      return JSON.stringify({
+        ahead_by: 5,
+        files: [{ filename: "worker.ts" }],
+      });
     }
     if (key.includes("/compare/")) {
       compareCalls++;
@@ -1435,7 +1447,10 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body holds and cites 
     }
 
     if (key.includes("/compare/") && key.includes("--jq")) {
-      return "5";
+      return JSON.stringify({
+        ahead_by: 5,
+        files: [{ filename: "worker.ts" }],
+      });
     }
     if (key.includes("/compare/")) {
       return JSON.stringify({
@@ -3505,7 +3520,10 @@ Deno.test("Issue #1133 - tracking issue left open when summary PR creation fails
     }
     // ...and has commits ahead of the default branch (something to merge).
     if (key.includes("api") && key.includes("/compare/")) {
-      return "5";
+      return JSON.stringify({
+        ahead_by: 5,
+        files: [{ filename: "worker.ts" }],
+      });
     }
     // But the summary PR genuinely fails to be created.
     if (key.includes("pr create")) {
@@ -3889,6 +3907,91 @@ Deno.test("getOpenMilestoneTrackers - returns only tracking-shaped open issues, 
 
 // --- hasNothingToMerge -----------------------------------------------------
 
+Deno.test("hasNothingToMerge - an ahead branch with no changed files needs no roll-up (Issue #3910)", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    if (args[1]?.includes("/branches/")) return "milestone/scan";
+    if (args[1]?.includes("/compare/")) {
+      return JSON.stringify({ ahead_by: 12, files: [] });
+    }
+    throw new Error(`Unexpected gh call: ${args.join(" ")}`);
+  };
+  assertEquals(
+    await hasNothingToMerge("owner/repo", "milestone/scan", "main", ghFn),
+    true,
+  );
+});
+
+Deno.test("hasNothingToMerge - incomplete or malformed comparisons keep the milestone open (Issue #3910)", async () => {
+  for (
+    const comparison of [
+      "",
+      "not-json",
+      "null",
+      "[]",
+      "{}",
+      '{"ahead_by":12}',
+      '{"ahead_by":12,"files":null}',
+      '{"ahead_by":12,"files":{}}',
+      '{"ahead_by":12,"files":""}',
+      '{"ahead_by":9007199254740992,"files":[]}',
+      '{"ahead_by":"12","files":[]}',
+      '{"ahead_by":-1,"files":[]}',
+      '{"ahead_by":0.5,"files":[]}',
+    ]
+  ) {
+    const ghFn = async (args: string[]): Promise<string> =>
+      args[1]?.includes("/branches/") ? "milestone/scan" : comparison;
+    assertEquals(
+      await hasNothingToMerge("owner/repo", "milestone/scan", "main", ghFn),
+      false,
+      comparison,
+    );
+  }
+});
+
+Deno.test("checkAndHandleMilestoneCompletions - closes a sync-only milestone without a tracker or roll-up (Issue #3910)", async () => {
+  const calls: string[] = [];
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    calls.push(key);
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+    if (key.includes("/branches/")) return "milestone/scan";
+    if (key.includes("/compare/")) {
+      return JSON.stringify({ ahead_by: 12, files: [] });
+    }
+    if (key.includes("PATCH")) return "{}";
+    if (/\/milestones(?:\?|$)/.test(key)) {
+      return JSON.stringify([{ title: "scan", number: 105, open_issues: 0 }]);
+    }
+    if (key.includes(".default_branch")) return "main";
+    if (isClosedIssueRead(key)) {
+      return JSON.stringify([{
+        number: 100,
+        title: "delivered work",
+        milestone: { title: "scan" },
+      }]);
+    }
+    return "[]";
+  };
+  const result = await checkAndHandleMilestoneCompletions(
+    createMockDeps({ ghCommandFn: ghFn }),
+  );
+  assert(result.ok);
+  assertEquals(result.value.summaryPrsCreated, 0);
+  assert(
+    calls.some((key) =>
+      key.includes("PATCH") && key.includes("/milestones/105") &&
+      key.includes("state=closed")
+    ),
+  );
+  assertFalse(
+    calls.some((key) =>
+      key.includes("issue create") || key.includes("pr create")
+    ),
+  );
+});
+
 Deno.test("hasNothingToMerge - true when the milestone branch is missing (Issue #3214)", async () => {
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
@@ -3905,7 +4008,9 @@ Deno.test("hasNothingToMerge - true when the branch is 0 commits ahead (Issue #3
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
     if (key.includes("/branches/")) return "milestone/scan";
-    if (key.includes("/compare/")) return "0";
+    if (key.includes("/compare/")) {
+      return JSON.stringify({ ahead_by: 0 });
+    }
     return "[]";
   };
   assertEquals(
@@ -3918,7 +4023,12 @@ Deno.test("hasNothingToMerge - false when the branch has commits ahead (Issue #3
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
     if (key.includes("/branches/")) return "milestone/scan";
-    if (key.includes("/compare/")) return "31";
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        ahead_by: 31,
+        files: [{ filename: "worker.ts" }],
+      });
+    }
     return "[]";
   };
   assertEquals(
@@ -4092,7 +4202,10 @@ Deno.test("checkAndHandleMilestoneCompletions - closes duplicate trackers each p
       return JSON.stringify({ name: "milestone/milestone-3" });
     }
     if (key.includes("api") && key.includes("/compare/")) {
-      return "12";
+      return JSON.stringify({
+        ahead_by: 12,
+        files: [{ filename: "worker.ts" }],
+      });
     }
     if (key.includes("pr list")) return "[]";
     if (key.includes("pr create")) {
@@ -4320,7 +4433,12 @@ async function run3474(sc: Scenario3474) {
       if (sc.branchExists) return BRANCH_3474;
       throw new Error("Not found");
     }
-    if (key.includes("api") && key.includes("/compare/")) return "5";
+    if (key.includes("api") && key.includes("/compare/")) {
+      return JSON.stringify({
+        ahead_by: 5,
+        files: [{ filename: "worker.ts" }],
+      });
+    }
     if (key.includes("number,state,headRefName")) {
       if (sc.classifyThrows) throw new Error("gh boom");
       return JSON.stringify(sc.prs);

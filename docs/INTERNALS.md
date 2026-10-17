@@ -3157,7 +3157,8 @@ ran. Tracker, summary PR and milestone froze forever. Four guards in
    unchanged.
 2. **Nothing-to-merge closes directly.** `hasNothingToMerge()` is checked
    _before_ creating a tracker. When the milestone branch is missing, or exists
-   but is 0 commits ahead of the default branch, no tracker/PR is created — any
+   but is 0 commits ahead of the default branch or its comparison reports no
+   changed files, no tracker/PR is created — any
    open trackers are closed and the milestone is closed directly with a one-line
    log. Fails safe: an ambiguous compare leaves the milestone open.
 3. **Duplicate-tracker self-heal.** Each pass,
