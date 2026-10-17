@@ -763,7 +763,9 @@ Issue #3395 adds a worker step, the pre-PR verifier
 called from
 [`worker/deno/lib/phases/completion_phase.ts`](../worker/deno/lib/phases/completion_phase.ts)).
 It is not a sub-agent the issue prompt dispatches: it is one extra model pass
-the worker makes itself.
+the worker makes itself. It also judges each closure entry the
+summary marks `met` (Issue #3766); see
+[issue-processing.md](workflows/issue-processing.md#pre-pr-verifier-issue-3395).
 
 - **Model.** The `issue` phase's model, resolved by the same
   [precedence chain](#%EF%B8%8F-modeleffort-precedence-chain) as the main

@@ -61,6 +61,10 @@ comment-only quotes. No UI change.
 
 ## Test Plan
 
+- After merging main `723d4d1`, all 680 scoped completion, summary, prose,
+  assertion and prompt-guidance tests passed with the frozen lock. This
+  includes both branches' correction and hold regressions plus the new
+  combination cases recorded in [#3710](pr-summary-3710.md).
 - `worker/deno/tests/removed_assertion_reasons_test.ts`: 18 reason scenarios.
 - Existing `worker/deno/tests/removed_assertion_gate_test.ts` and
   `worker/deno/tests/removed_assertion_gate_context_test.ts` keep their expected outcomes; valid

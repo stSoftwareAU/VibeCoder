@@ -730,9 +730,10 @@ reference in someone else's CI. So:
 
 You wrote the code, so you are the worst-placed reader of it: the context that
 produced a change is the context most likely to believe it. When the issue body
-carries acceptance criteria, **before you write the PR summary**, dispatch **two
-reviewer sub-agents in parallel** (one `Agent` message, two tool calls) and let
-their verdicts — not your recollection — populate the summary.
+carries acceptance criteria (an `## Acceptance Criteria` or `## Definition of
+done` list), **before you write the PR summary**, dispatch **two reviewer
+sub-agents in parallel** (one `Agent` message, two tool calls) and let their
+verdicts — not your recollection — populate the summary.
 
 Each reviewer gets the finished diff and nothing else from your context. Do not
 pass your implementation transcript, your reasoning, or your own assessment: a
@@ -760,7 +761,9 @@ reviewer its path.
   question: where does the diff depart from a documented standard in a way that
   affects correctness, security or the stated requirements? Ask it to return
   one `violation` entry per such departure, with the `file:line` it saw, and the
-  `clean` areas it checked and found compliant. A rule the target
+  `clean` areas it checked and found compliant. Ask it to name each `file:line`
+  with the repo-relative path exactly as `git diff --name-only` prints it, in
+  backticks, never reworded. A rule the target
   repository's standards say is **enforced by review** — no lint, formatter or
   CI check catches it, in words such as "by review only" or "a finding a
   reader has to raise" — is the exception to that question: there the review
@@ -829,6 +832,11 @@ the summary says who judged it:
   `file:line`, then `reason: fixed in this diff`, or, only for a breach the
   Standards reviewer saw in unchanged context already on the base branch,
   `reason: pre-existing, filed #<n>` linking the follow-up issue you filed.
+  The evidence names the repo-relative path exactly as `git diff --name-only`
+  prints it, in backticks, with no prose rewording (no spaces for underscores,
+  no shortened directory): the worker places the breach against the diff by
+  that path, and one it cannot match to a changed file or a file at HEAD is
+  treated as on the branch's own lines and holds auto-merge (Issue #3613).
   A breach in a line this diff adds or changes may not be deferred: "stands",
   "left for a follow-up" and "out of scope" are not reasons, and the gate
   blocks PR creation on any reason that neither records a fix nor links an
@@ -839,7 +847,9 @@ the summary says who judged it:
   marker for a review you did not run is the over-claim this gate exists to
   prevent.
 - **Issues with no acceptance criteria are unaffected** — no reviewers, neither
-  block.
+  block. A `## Standards Review` the summary carries anyway is still read: each
+  `violation` in it is held to the reason rules above, so an own-line breach
+  left standing blocks the PR and holds auto-merge (Issue #3761).
 
 A gate reads both blocks before the PR is raised and blocks PR creation when one
 of these rules is broken, commenting on the issue with every rule it found
@@ -859,13 +869,18 @@ completion attempt that has a PR summary to read, whether or not the issue
 carries acceptance criteria. You dispatch nothing for it. Its blocking findings
 come back as a REQUIRED ITEM in the one recovery turn and, unlike the other
 items, may need a code change: fix the code and its tests, then make the
-summary match.
+summary match. It is also handed every closure entry you marked `met` and
+judges each against the head: an entry it rates `partial` or `missing`, or
+leaves without a verdict, is a blocking finding. Mark `met` only when the diff
+delivers every case the criterion names.
 
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
 If the issue body carries a `## Acceptance Criteria` (or `## Acceptance
 criteria`) section, those criteria are the target this run is measured against.
-The `## Acceptance Criteria` block inside
+A `## Definition of done` list counts the same way when the issue has no
+Acceptance Criteria list (Issue #3761). The `## Acceptance Criteria` block
+inside
 `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` records the Spec
 reviewer's verdict on each one — one entry per stated criterion, in this shape:
 
@@ -911,9 +926,11 @@ one is broken:
   by code in this diff; when in doubt, use `partial` and say what is left. The
   independent Spec reviewer above is the structural half of this rule — where
   your status differs from its verdict, the departure is recorded, never
-  silent.
+  silent — and the pre-PR verifier then re-judges each `met` entry; a `partial`,
+  `missing` or absent verdict from it blocks.
 - **Issues with no acceptance criteria are unaffected** — emit the block only
-  when the issue states criteria.
+  when the issue states criteria (an Acceptance Criteria or Definition of done
+  list).
 
 One more rule no gate parses — a reviewer sends the PR back for it:
 
@@ -1261,7 +1278,8 @@ The file MUST contain:
    reviewer's block described in [Independent Review Before the PR](#independent-review-before-the-pr--spec-and-standards-on-separate-axes)
    — its provenance marker, then each `violation` with evidence and outcome, and
    the `clean` areas it checked. Kept on its own heading: the two axes are never
-   merged or reranked
+   merged or reranked. A Standards Review included for an issue without criteria
+   is still checked for `violation` reasons (Issue #3761)
 7. **Test Plan**: List the tests added or modified. Write a result line only
    after the command has run on the final head, and state the actual outcome
    (passed, or failed with its first error) — never write a placeholder token

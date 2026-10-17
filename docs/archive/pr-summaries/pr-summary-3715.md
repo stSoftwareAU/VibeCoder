@@ -20,6 +20,8 @@ Closes #3715. Shared scope work is described in [#3731](pr-summary-3731.md).
   headers and attached declaration comments are included for changed code.
 - Findings are confirmed against selected comment text, then use the existing
   doc-finding recovery path. Source files under docs also trigger this check.
+- After ordinary recovery, a surviving source comment holds an existing PR
+  without entering the Markdown-only sentence correction turn from #3865.
 - The existing 20-file cap remains. Missing diff data, unreadable tracked
   source and unterminated source literals are explicitly not checked.
 
@@ -57,10 +59,18 @@ unreadable source and both production callers. No UI change.
 
 ## Test Plan
 
+- After merging main `723d4d1`, all 680 scoped completion, summary, prose,
+  assertion and prompt-guidance tests passed with the frozen lock. This
+  includes both branches' correction and hold regressions plus the new
+  combination cases recorded in [#3710](pr-summary-3710.md).
 - `worker/deno/tests/doc_prose_claims_test.ts` exercises lexical selection,
   attached headers, malformed input and tracked unreadable source.
 - `worker/deno/tests/summary_claim_check_test.ts` confirms selected source and
   manual findings reach the first-run gate.
+- `worker/deno/tests/completion_phase_summary_claim_check_test.ts` confirms a
+  surviving source comment stays unchanged and holds the PR after one ordinary
+  recovery, without an extra Markdown-only correction recheck. This combination
+  regression failed before the main `723d4d1` integration fix.
 - `worker/deno/tests/pr_feedback_drift_check_3347_test.ts` uses real temporary
   Git repositories to exercise review-fix selection and recovery, including a
   generator under docs whose executable string is never recovered as prose.
@@ -89,3 +99,4 @@ replaces it; new accepted-source tests cover TypeScript.
 - Unchanged attached header included / unreadable tracked source not checked — `worker/deno/tests/doc_prose_claims_test.ts`.
 - Selected source finding recovered / executable quotation ignored — `worker/deno/tests/pr_feedback_drift_check_3347_test.ts`.
 - Source and manual findings use existing first-run gate — `worker/deno/tests/summary_claim_check_test.ts`.
+- Source finding holds after ordinary recovery / manual finding can take its narrow correction — `worker/deno/tests/completion_phase_summary_claim_check_test.ts`.

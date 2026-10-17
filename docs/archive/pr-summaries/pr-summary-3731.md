@@ -58,6 +58,10 @@ and an exported function identifier, and record capped sections. No UI change.
 
 ## Test Plan
 
+- After merging main `723d4d1`, all 680 scoped completion, summary, prose,
+  assertion and prompt-guidance tests passed with the frozen lock. This
+  includes both branches' correction and hold regressions plus the new
+  combination cases recorded in [#3710](pr-summary-3710.md).
 - `worker/deno/tests/doc_prose_claims_test.ts`: named section, basename and
   identifier references, archive exclusion, cap and exact issue syntax.
 - `worker/deno/tests/summary_claim_check_test.ts` and
