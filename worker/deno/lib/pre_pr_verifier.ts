@@ -53,6 +53,7 @@ import {
 import {
   type ClosureEntryVerdict,
   closureGapFindings,
+  type MetClosureItem,
   metClosureItems,
   parseClosureEntryVerdicts,
   renderClosureEntriesSection,
@@ -310,8 +311,8 @@ export function buildPrePrVerifierPrompt(opts: {
   changedFiles: readonly string[] | null;
   /** Rendered checklist section; "" when none applies. */
   reviewChecklists: string;
-  /** Rendered closure-entry section; "" when the summary marks none met. */
-  closureEntries: string;
+  /** Closure entries the summary marks `met`; [] when it marks none. */
+  closureItems: readonly MetClosureItem[];
   boundaryId?: string;
 }): string {
   if (!Number.isInteger(opts.issueNumber) || opts.issueNumber <= 0) {
@@ -334,6 +335,7 @@ export function buildPrePrVerifierPrompt(opts: {
     ),
   ];
   const blocks = ["linked issue"];
+  if (opts.closureItems.length > 0) blocks.push("closure entries");
   if (opts.previousFindings?.length) blocks.push("earlier findings");
   if (files !== null) {
     context.push(
@@ -383,7 +385,10 @@ export function buildPrePrVerifierPrompt(opts: {
       ).join("\n")
       : "No earlier review of this change asked for fixes.",
     REVIEW_CHECKLISTS: opts.reviewChecklists,
-    CLOSURE_ENTRIES: opts.closureEntries,
+    CLOSURE_ENTRIES: renderClosureEntriesSection(
+      opts.closureItems,
+      boundaryId,
+    ),
   });
 
   return [
@@ -741,7 +746,7 @@ async function verifyInCheckout(
     summaryPath: input.summaryPath,
     changedFiles: input.changedFiles,
     reviewChecklists,
-    closureEntries: renderClosureEntriesSection(metItems),
+    closureItems: metItems,
     previousFindings: input.previousFindings,
   });
 
