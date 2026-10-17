@@ -1772,18 +1772,18 @@ the Branch outcomes gate sees the list rendered at the
 `<!-- vibe-branch-outcomes -->` marker, and blocks on an invalid facts file or
 on a facts file beside a hand-written list.
 
-CI runs it on every push to a PR that carries a summary: the `PR summary
+CI runs the same gates on every push to a pull request: the `PR summary
 freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
 `deno task pr-summary-ci --base <base-branch> --head-branch <head-branch>`
-(Issue #3768). It finds the PR's `pr-summary-<N>.md` from an `issue-<N>-…`
-head branch, and fails when the PR's newest non-merge commit changing `worker/`,
-`prompts/` or `.claude/` is newer than the newest commit changing that summary
-or its facts file. Rewrite the summary for the head in that push, whoever makes
-it. The step then runs the `pr-summary-check` gates and fails on a blocked one;
-gates needing the issue body or labels are reported as not checked. A PR
-carrying no summary passes with a log line. On a head branch that is not an
-`issue-<N>` branch (milestone roll-ups, sync PRs) the summary is reported as not
-checked.
+(Issue #3768). On an `issue-<N>-…` head branch whose diff carries
+`pr-summary-<N>.md` (or its facts file), it fails when the PR's newest non-merge
+commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
+commit changing that summary or its facts file. Rewrite the summary for the head
+in that push, whoever makes it. The step then runs the `pr-summary-check` gates
+and fails on a blocked one; gates needing the issue body or labels are reported
+as not checked. A PR carrying no summary passes with a log line. On a head
+branch that is not an `issue-<N>` branch (milestone roll-ups, sync PRs) the
+summary is reported as not checked.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests

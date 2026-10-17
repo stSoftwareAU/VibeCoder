@@ -176,8 +176,13 @@ async function runChecked(
 /**
  * The PR's commits, newest first, with the files each one changed.
  *
- * Merge commits are skipped: a merge that brings the base in is not a change
- * the PR made. Fails loud when git cannot be read.
+ * Merge commits contribute no files, because `git diff-tree` without `-m`
+ * prints nothing for a merge. So a merge that brings the base in, even one
+ * carrying its own conflict-resolution edit, never counts as a code or summary
+ * change: this is the same commit set `git log --no-merges` gives. The
+ * `--topo-order` walk keeps a child ahead of its parent even when the child's
+ * committer date is older, so the newest-first judgement follows the graph.
+ * Fails loud when git cannot be read.
  */
 export async function listPrCommits(
   runGit: GitRunner,
@@ -186,7 +191,7 @@ export async function listPrCommits(
 ): Promise<Result<CommitChange[], Error>> {
   const revs = await runChecked(
     runGit,
-    ["rev-list", "--no-merges", "--topo-order", `${baseRef}..HEAD`],
+    ["rev-list", "--topo-order", `${baseRef}..HEAD`],
     cwd,
   );
   if (!revs.ok) return revs;
@@ -197,7 +202,7 @@ export async function listPrCommits(
   for (const sha of shas) {
     const files = await runChecked(
       runGit,
-      ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", sha],
+      ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", sha],
       cwd,
     );
     if (!files.ok) return files;
@@ -226,9 +231,11 @@ export type PrSummaryCiResult =
     kind: "checked";
     issueNumber: number;
     summaryPath: string;
-    /** `null` when the summary file is missing, so there is nothing to judge. */
-    freshness: Freshness | null;
-    missingSummary: boolean;
+    /**
+     * `summary_missing` when only the facts file is on the branch, so there is
+     * no summary to judge; the gates are then not run.
+     */
+    freshness: Freshness | { kind: "summary_missing" };
     gates: GateReport[];
   };
 
@@ -275,8 +282,7 @@ export async function runPrSummaryCi(
           kind: "checked",
           issueNumber,
           summaryPath,
-          freshness: null,
-          missingSummary: true,
+          freshness: { kind: "summary_missing" },
           gates: [],
         },
       };
@@ -313,7 +319,6 @@ export async function runPrSummaryCi(
       issueNumber,
       summaryPath,
       freshness,
-      missingSummary: false,
       gates: gates.value,
     },
   };
@@ -322,8 +327,8 @@ export async function runPrSummaryCi(
 /** Whether the CI run should fail. */
 export function ciFailed(result: PrSummaryCiResult): boolean {
   if (result.kind !== "checked") return false;
-  return result.missingSummary ||
-    result.freshness?.kind === "stale" ||
+  return result.freshness.kind === "summary_missing" ||
+    result.freshness.kind === "stale" ||
     hasBlock(result.gates);
 }
 
@@ -347,22 +352,16 @@ const MAX_LISTED_CODE_PATHS = 5;
 
 /** The freshness section of a checked result. */
 function freshnessLines(result: CheckedResult): string[] {
-  if (result.missingSummary) {
-    const factsPath = prSummaryFactsPath(result.issueNumber);
-    return [
-      `[BLOCKED] ${FRESHNESS_TITLE}`,
-      `    - the facts file ${factsPath} is on the branch but the summary ` +
-      `${result.summaryPath} is not`,
-    ];
-  }
   const freshness = result.freshness;
-  if (freshness === null) {
-    return [
-      `[NOT_CHECKED] ${FRESHNESS_TITLE}`,
-      "    note: freshness was not judged",
-    ];
-  }
   switch (freshness.kind) {
+    case "summary_missing": {
+      const factsPath = prSummaryFactsPath(result.issueNumber);
+      return [
+        `[BLOCKED] ${FRESHNESS_TITLE}`,
+        `    - the facts file ${factsPath} is on the branch but the summary ` +
+        `${result.summaryPath} is not`,
+      ];
+    }
     case "fresh":
       return [
         `[PASSED] ${FRESHNESS_TITLE}`,

@@ -76,6 +76,15 @@ Deno.test("summaryIssueOf - reads the issue from the summary and facts names onl
   assertEquals(summaryIssueOf("pr-summary-42.md"), null);
 });
 
+Deno.test("summaryIssueOf - a number beyond the safe integer range is null", () => {
+  assertEquals(
+    summaryIssueOf(
+      "docs/archive/pr-summaries/pr-summary-12345678901234567890.md",
+    ),
+    null,
+  );
+});
+
 // --- Pure: freshness ----------------------------------------------------------
 
 Deno.test("judgeFreshness - code newer than the summary is stale and names the summary commit", () => {
@@ -229,7 +238,6 @@ Deno.test("ciFailed - stale, missing and blocked fail; fresh, unchecked and not-
     issueNumber: 42,
     summaryPath: SUMMARY_PATH,
     freshness: { kind: "fresh", summaryCommit: "s1" },
-    missingSummary: false,
     gates: [],
     ...overrides,
   });
@@ -248,7 +256,7 @@ Deno.test("ciFailed - stale, missing and blocked fail; fresh, unchecked and not-
       summaryCommit: null,
     },
   })));
-  assert(ciFailed(checked({ freshness: null, missingSummary: true })));
+  assert(ciFailed(checked({ freshness: { kind: "summary_missing" } })));
   assert(ciFailed(checked({ gates: [blocked] })));
   assert(!ciFailed(checked({})));
   assert(!ciFailed(checked({ freshness: { kind: "no_code_change" } })));
@@ -269,7 +277,6 @@ Deno.test("formatCiReport - a control character in a code path cannot start a ne
       codeFiles: ["worker/a\n::error::x"],
       summaryCommit: null,
     },
-    missingSummary: false,
     gates: [],
   };
   const text = formatCiReport(result);
@@ -353,7 +360,7 @@ Deno.test("pr-summary-ci - base-only merge commits are ignored, so a fresh summa
   await withRepo(async (clone) => {
     await startBranch(clone, BRANCH);
     await commitCode(clone, "export const a = 1;\n");
-    await commitSummary(clone);
+    const summarySha = await commitSummary(clone);
 
     // The base moves on with a code change, and the branch merges it in.
     await gitOk(["checkout", "main"], clone);
@@ -381,6 +388,9 @@ Deno.test("pr-summary-ci - base-only merge commits are ignored, so a fresh summa
     const r = await runCi(clone, BRANCH);
     assertEquals(r.code, 0);
     assertStringIncludes(r.stdout, "[PASSED] Summary freshness");
+    // The note must name the summary commit, not the merge: a merge that
+    // brought the base in must never be taken for the summary's own commit.
+    assertStringIncludes(r.stdout, `changed in commit ${summarySha}`);
   });
 });
 
@@ -430,5 +440,88 @@ Deno.test("pr-summary-ci - an unresolvable base exits 2", async () => {
     assertEquals(r.code, 2);
     assertStringIncludes(r.stderr, "not resolvable");
     assertEquals(r.stdout, "");
+  });
+});
+
+/**
+ * Commit `file` with fixed author and committer dates, so a commit can be
+ * dated older than its parent; returns its SHA.
+ */
+async function commitFileDated(
+  clone: string,
+  file: string,
+  contents: string,
+  isoDate: string,
+): Promise<string> {
+  const dir = file.slice(0, file.lastIndexOf("/"));
+  await Deno.mkdir(`${clone}/${dir}`, { recursive: true });
+  await Deno.writeTextFile(`${clone}/${file}`, contents);
+  await gitOk(["add", file], clone);
+  const out = await new Deno.Command("git", {
+    args: ["commit", "-m", "dated change"],
+    cwd: clone,
+    env: { GIT_AUTHOR_DATE: isoDate, GIT_COMMITTER_DATE: isoDate },
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  if (out.code !== 0) {
+    throw new Error(
+      `dated commit failed: ${new TextDecoder().decode(out.stderr)}`,
+    );
+  }
+  return (await gitOk(["rev-parse", "HEAD"], clone)).trim();
+}
+
+Deno.test("pr-summary-ci - a code commit that is a child of the summary but dated earlier is still stale", async () => {
+  await withRepo(async (clone) => {
+    await startBranch(clone, BRANCH);
+    // S: the summary, dated 2021. C: its child with the code change, dated
+    // 2020, so C is older than S by date.
+    const summarySha = await commitFileDated(
+      clone,
+      SUMMARY_PATH,
+      GOOD_SUMMARY,
+      "2021-01-02T00:00:00Z",
+    );
+    const codeSha = await commitFileDated(
+      clone,
+      CODE_FILE,
+      "export const a = 2;\n",
+      "2020-01-01T00:00:00Z",
+    );
+    // X: a second child of the summary on a side branch, dated now, merged
+    // in as M. Only a merge leaves two commits queued at once, so only there
+    // does the commit-date order differ from the parent-child order.
+    await gitOk(["checkout", "-b", "side-x", summarySha], clone);
+    const sideSha = await commitFileDated(
+      clone,
+      "docs/side.md",
+      "side\n",
+      new Date().toISOString(),
+    );
+    await gitOk(["checkout", BRANCH], clone);
+    await gitOk(["merge", "--no-ff", "-m", "merge side", sideSha], clone);
+
+    const r = await runCi(clone, BRANCH);
+    assertEquals(r.code, 1);
+    assertStringIncludes(r.stdout, "[BLOCKED] Summary freshness");
+    assertStringIncludes(r.stdout, codeSha);
+  });
+});
+
+Deno.test("pr-summary-ci - a branch changing only the facts file, with no summary, is blocked", async () => {
+  await withRepo(async (clone) => {
+    await startBranch(clone, BRANCH);
+    await commitCode(clone, "export const a = 1;\n");
+    await Deno.mkdir(`${clone}/docs/archive/pr-summaries`, { recursive: true });
+    await commitFile(clone, FACTS_PATH, "{}\n", "facts only");
+
+    const r = await runCi(clone, BRANCH);
+    assertEquals(r.code, 1);
+    assertStringIncludes(r.stdout, "[BLOCKED] Summary freshness");
+    assertStringIncludes(
+      r.stdout,
+      `the facts file ${FACTS_PATH} is on the branch but the summary ${SUMMARY_PATH} is not`,
+    );
   });
 });
