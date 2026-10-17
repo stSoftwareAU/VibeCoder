@@ -225,20 +225,26 @@ edited. A failed sync is logged once at warning and does not fail the run
 (Issue #3089).
 
 **Priority 1.64 — Reconcile PR Body Digests** (Issue #3760) covers pushes the
-worker did not make. The re-sync above runs only after the worker's own pushes,
-so a review-fix commit pushed by hand, from a laptop or an interactive Claude
-Code session, left the live description on the old summary until some later
-worker push. Each cycle the pass lists the open fleet-authored PRs (the
-push-capable maintenance author set) in every monitored repo. For a PR whose
-body carries both the worker marker and the `vibe-pr-summary sha256` digest
-marker, it reads `pr-summary-<N>.md` (falling back to the legacy
-`docs/pr-summary-<N>.md`) and `pr-summary-<N>.facts.json` at the PR's head
-commit through the contents API (`gh api
-repos/{repo}/contents/<path>?ref=<head>`), with no checkout, and computes the
-same digest the body records. When the digest matches, nothing is edited and
-nothing is logged; the match is remembered for that head and recorded digest for
-the life of the worker process, so later cycles make no contents calls for that
-PR until its head or body changes. When it differs, the pass logs that it is
+worker did not make. The re-sync above runs only on the worker's own runs (PR
+feedback, CI fix and merge conflict, after their push; a PR-feedback run that
+pushed nothing also runs it, Issue #3315), so a review-fix commit pushed by
+hand, from a laptop or an interactive Claude Code session, never reaches it:
+the live description stayed on the old summary until some later worker push.
+Each cycle the pass lists the open fleet-authored PRs (the push-capable
+maintenance author set) in the repos due that cycle (`pollRepos`). A listing
+entry with no body (the fleet prefetch's cached maintenance entries carry none)
+is first fetched with `gh pr view <n> --json body,headRefOid`; a failure there
+is logged at warning naming the cause, as for a contents read failure, and the
+body is left unchanged. For a PR whose body carries both the worker marker and
+the `vibe-pr-summary sha256` digest marker, it reads `pr-summary-<N>.md`
+(falling back to the legacy `docs/pr-summary-<N>.md`) and
+`pr-summary-<N>.facts.json` at the PR's head commit through the contents API
+(`gh api repos/{repo}/contents/<path>?ref=<head>`), with no checkout, and
+computes the same digest the body records. When the digest matches, nothing is
+edited and nothing is logged. The match is memoised per PR, keyed on the head
+SHA and the recorded digest, and reused only while both are unchanged, so later
+cycles make no contents calls for that PR; an entry is pruned once the PR is no
+longer listed. When it differs, the pass logs that it is
 rebuilding, fetches the PR head into a disposable shallow clone in a temporary
 directory, runs the same `syncPrBodyFromSummary` rebuild there, and then deletes
 the clone. Every part of that rebuild applies unchanged: the milestone section,

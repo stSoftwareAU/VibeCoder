@@ -1,21 +1,30 @@
 /**
- * PR body digest reconcile on each PR scan (Issue #3760).
+ * PR body digest reconcile, run on each PR scan for the repos due in that
+ * cycle's polling selection (Issue #3760).
  *
- * The post-push body sync in `pr_body_sync.ts` runs only when the worker
- * itself pushes a fix. A push made outside the worker (by a human, or another
- * tool) moves the PR head, and the body then keeps describing the old summary.
- * This pass runs on each scan. For every worker-authored PR whose body records
- * a summary digest, it reads the summary and facts file at the PR head through
- * the contents API (no checkout) and compares the digest. Only a mismatch
- * rebuilds the body: a disposable shallow clone is checked out at the head and
- * the existing {@link syncPrBodyFromSummary} runs against it, so it keeps that
- * function's ancestry guard and carry-over rules. A head that moved again since
- * the listing fails that guard and is skipped, not overwritten.
+ * The post-push body sync in `pr_body_sync.ts` runs only on the worker's own
+ * runs: after a PR-feedback, CI-fix or merge-conflict push, or when a
+ * PR-feedback run finds nothing left to push (`nothingLeftToPush`, Issue
+ * #3315). So a push made outside the worker
+ * (by a human, or another tool) never reaches it, and the body keeps describing
+ * the old summary. This pass covers that case. For every worker-authored PR
+ * whose body records a summary digest, it reads the summary and facts file at
+ * the PR head through the contents API (no checkout) and compares the digest.
+ * Only a mismatch rebuilds the body: a disposable shallow clone is checked out
+ * at the head and the existing {@link syncPrBodyFromSummary} runs against it, so
+ * it keeps that function's ancestry guard and carry-over rules. A head that
+ * moved again since the listing fails that guard and is skipped, not
+ * overwritten.
  *
- * Steady state is silent (Issue #3651). A PR whose recorded digest matches the
- * head is memoised in `inSync` and logs nothing and makes no edit. A body with
- * no digest marker is a legacy body, still covered by the post-push before-SHA
- * rule. A failed read never rewrites the body; it is logged and counted.
+ * A prefetched listing entry carries no body, so one without a body is read
+ * with `gh pr view` before the check, and the fetched head is the one used.
+ *
+ * Steady state is silent (Issue #3651). The memo `inSync` is keyed per PR on
+ * head SHA plus recorded digest. An entry is reused only while both are
+ * unchanged, and is pruned when the PR is no longer listed. A PR whose recorded
+ * digest matches the head logs nothing and makes no edit. A body with no digest
+ * marker is a legacy body, still covered by the post-push before-SHA rule. A
+ * failed read never rewrites the body; it is logged and counted.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -46,6 +55,52 @@ export const PR_BODY_RECONCILE_LOG_TAG = "[pr-body-reconcile]";
 
 /** A full 40-hex commit SHA. Anything else never reaches a URL or git argv. */
 const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/;
+
+/**
+ * The body and head of a PR, read live with `gh pr view`. A failed call, a reply
+ * that is not JSON, or a body that is not a string is an error, never a skip.
+ */
+async function viewPrBodyAndHead(
+  repo: string,
+  prNumber: number,
+  gh: (args: string[]) => Promise<string>,
+): Promise<
+  | { kind: "ok"; body: string; headRefOid: string }
+  | { kind: "error"; reason: string }
+> {
+  let view: { body?: unknown; headRefOid?: unknown } | null;
+  try {
+    view = JSON.parse(
+      await gh([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "body,headRefOid",
+      ]),
+    );
+  } catch (err) {
+    return {
+      kind: "error",
+      reason: `Failed to read PR #${prNumber} with gh pr view: ${
+        errorMessage(err)
+      }`,
+    };
+  }
+  if (typeof view?.body !== "string") {
+    return {
+      kind: "error",
+      reason: `gh pr view for PR #${prNumber} returned no body`,
+    };
+  }
+  return {
+    kind: "ok",
+    body: view.body,
+    headRefOid: typeof view.headRefOid === "string" ? view.headRefOid : "",
+  };
+}
 
 /** Outcome of reading the summary digest at a ref. */
 export type HeadSummaryDigest =
@@ -283,8 +338,10 @@ export interface ReconcilePrBodiesDeps {
   followUpFiling: SyncFollowUpFiling | undefined;
   cache?: IssueCache;
   /**
-   * Process-lifetime memo: `${repo}#${pr}` → `${headRefOid}:${recordedDigest}`
-   * last confirmed in sync (or confirmed to have no summary).
+   * Memo keyed per PR as `${repo}#${pr}`, holding `${headRefOid}:${recordedDigest}`
+   * last confirmed in sync (or confirmed to have no summary). An entry is reused
+   * only while both the head and the digest are unchanged, and is pruned when
+   * the PR is no longer listed.
    */
   inSync: Map<string, string>;
   /** Default: {@link disposableHeadCheckout}. */
@@ -335,14 +392,30 @@ export async function reconcilePrBodyDigests(
     const login = pr.author?.login;
     if (login && !isFleetAuthor(login, opts.maintenanceAuthors)) return;
 
-    const body = pr.body ?? "";
+    // A prefetched maintenance entry carries no body, so read it live (Issue #3760).
+    let body = pr.body ?? "";
+    let headRefOid = pr.headRefOid ?? "";
+    if (typeof pr.body !== "string") {
+      const view = await viewPrBodyAndHead(repo, pr.number, deps.runGhCommand);
+      if (view.kind === "error") {
+        summary.readFailures += 1;
+        deps.logger.warn(
+          logLine(
+            "PR body digest check could not read the PR body — leaving the body unchanged (Issue #3760)",
+          ),
+          { repo, prNumber: pr.number, reason: view.reason },
+        );
+        return;
+      }
+      body = view.body;
+      headRefOid = view.headRefOid;
+    }
     const issueNumber = issueNumberFromMarker(body);
     if (issueNumber === undefined) return;
     const recordedDigest = summaryDigestFromBody(body);
     // Legacy body: the post-push before-SHA rule still covers it.
     if (recordedDigest === undefined) return;
     // Interpolated into an API URL and git argv: validate at the boundary.
-    const headRefOid = pr.headRefOid ?? "";
     if (!FULL_SHA_PATTERN.test(headRefOid)) return;
 
     const key = `${repo}#${pr.number}`;

@@ -30,6 +30,7 @@ import {
 } from "../lib/pr_body_sync.ts";
 import { buildIdempotencyMarker } from "../lib/pr_body.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { IssueCache } from "../lib/issue_cache.ts";
 import {
   prSummaryDigestInput,
   prSummaryFactsPath,
@@ -100,6 +101,8 @@ interface GhFixture {
   failing?: Record<string, string>;
   /** Reply to `gh pr view` (the end-to-end sync). */
   view?: string;
+  /** Makes `gh pr view` throw this message instead of replying. */
+  viewError?: string;
 }
 
 interface Harness {
@@ -122,6 +125,7 @@ function harness(fixture: GhFixture): Harness {
       return JSON.stringify(fixture.prs ?? []);
     }
     if (args[0] === "pr" && args[1] === "view") {
+      if (fixture.viewError !== undefined) throw new Error(fixture.viewError);
       return fixture.view ?? "";
     }
     if (args[0] === "pr" && args[1] === "edit") {
@@ -502,6 +506,152 @@ Deno.test("reconcile - prepareCheckout failure: warn with its message, sync not 
   assertEquals(synced, 0);
   assertStringIncludes(warnText(h.logs), "clone exploded");
   assertEquals(editCalls(h).length, 0);
+});
+
+// --- Prefetched listing entries (no body) -----------------------------------
+
+/** A stale head, distinct from HEAD_SHA, that the cached entry records. */
+const STALE_SHA = "f".repeat(40);
+
+/** A prefetched `prs_maint_<author>` entry: the `toMaintenanceEntry` shape, no body. */
+function bodylessCacheEntry(headRefOid: string): unknown {
+  return {
+    number: PR_NUMBER,
+    headRefName: "fix-branch",
+    headRefOid,
+    baseRefName: "main",
+    author: { login: FLEET_LOGIN },
+  };
+}
+
+/** An issue cache holding the prefetched `prs_maint_<author>` entry for `REPO`. */
+async function seededCache(entry: unknown) {
+  const dir = await Deno.makeTempDir({ prefix: "pr-body-reconcile-cache-" });
+  const cache = new IssueCache(dir);
+  await cache.write(REPO, `prs_maint_${FLEET_LOGIN}`, [entry]);
+  return { cache, cleanup: () => Deno.remove(dir, { recursive: true }) };
+}
+
+Deno.test("reconcile - a cached listing entry with no body is fetched with gh pr view and a mismatch is still rebuilt", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const { cache, cleanup } = await seededCache(bodylessCacheEntry(STALE_SHA));
+  try {
+    const h = harness({
+      files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+      view: JSON.stringify({ body, headRefOid: HEAD_SHA }),
+    });
+    const prepareCalls: Array<[string, string]> = [];
+    const syncInputs: SyncPrBodyInput[] = [];
+
+    const summary = await reconcilePrBodyDigests(
+      OPTS,
+      passDeps(h, new Map(), {
+        cache,
+        prepareCheckout: async (repo, sha) => {
+          prepareCalls.push([repo, sha]);
+          return {
+            ok: true,
+            value: {
+              path: "/tmp/fake-pr-head-checkout",
+              cleanup: async () => {},
+            },
+          };
+        },
+        syncFn: async (input) => {
+          syncInputs.push(input);
+          return {
+            ok: true,
+            value: { status: "updated", issueNumber: ISSUE_NUMBER },
+          };
+        },
+      }),
+    );
+
+    assertEquals(summary, { checked: 1, rebuilt: 1, readFailures: 0 });
+    assertEquals(
+      h.calls.filter((c) => c[0] === "pr" && c[1] === "view"),
+      [[
+        "pr",
+        "view",
+        String(PR_NUMBER),
+        "--repo",
+        REPO,
+        "--json",
+        "body,headRefOid",
+      ]],
+      "one gh pr view for the bodyless entry",
+    );
+    assertEquals(
+      prepareCalls,
+      [[REPO, HEAD_SHA]],
+      "the fetched head is checked out, not the cached one",
+    );
+    assertEquals(syncInputs.length, 1, "exactly one sync");
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("reconcile - a gh pr view failure for a bodyless entry is logged with the cause, no checkout, no rebuild", async () => {
+  const { cache, cleanup } = await seededCache(bodylessCacheEntry(HEAD_SHA));
+  try {
+    const h = harness({
+      files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+      viewError: "gh command failed (exit 1): HTTP 502 Bad Gateway",
+    });
+    let prepared = 0;
+    let synced = 0;
+
+    const summary = await reconcilePrBodyDigests(
+      OPTS,
+      passDeps(h, new Map(), {
+        cache,
+        prepareCheckout: async (repo, sha) => {
+          prepared += 1;
+          return REFUSE_PREPARE(repo, sha);
+        },
+        syncFn: async (input, deps) => {
+          synced += 1;
+          return REFUSE_SYNC(input, deps);
+        },
+      }),
+    );
+
+    assertEquals(summary, { checked: 0, rebuilt: 0, readFailures: 1 });
+    assertStringIncludes(warnText(h.logs), "HTTP 502 Bad Gateway");
+    assertEquals(prepared, 0, "no checkout");
+    assertEquals(synced, 0, "no rebuild");
+    assertEquals(editCalls(h).length, 0);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("reconcile - a bodyless cached entry whose fetched body digest matches stays silent", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const { cache, cleanup } = await seededCache(bodylessCacheEntry(HEAD_SHA));
+  try {
+    const h = harness({
+      files: { [ARCHIVE_PATH]: SUMMARY_V1 },
+      view: JSON.stringify({ body, headRefOid: HEAD_SHA }),
+    });
+    const inSync = new Map<string, string>();
+
+    const summary = await reconcilePrBodyDigests(
+      OPTS,
+      passDeps(h, inSync, { cache }),
+    );
+
+    assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 0 });
+    assertEquals(h.logs, []);
+    assertEquals(editCalls(h).length, 0);
+    assertEquals(
+      inSync.get(`${REPO}#${PR_NUMBER}`),
+      `${HEAD_SHA}:${await digestOf(SUMMARY_V1)}`,
+    );
+  } finally {
+    await cleanup();
+  }
 });
 
 // --- Facts file and summary candidates --------------------------------------

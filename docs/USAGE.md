@@ -109,10 +109,11 @@ the older rule: rebuilt only when this run's own push changed the summary
 file or its facts file. So the description never drifts from a summary rewritten
 after creation, for as long as that run's conditions are met. Priority 1.64 also
 catches a push the worker did not make (Issue #3760), such as a review-fix
-commit pushed by hand: each cycle it re-syncs an open fleet-authored PR whose
-recorded digest differs from the summary at its head (see [the PR feedback
-workflow](workflows/pr-feedback.md)). A re-sync re-derives a leading
-`Degraded run` section from the issue's current body and the rebuilt summary
+commit pushed by hand: each cycle it re-syncs, in the repos due that cycle, an
+open fleet-authored PR whose recorded digest differs from the summary at its
+head (see [the PR feedback workflow](workflows/pr-feedback.md)). A re-sync
+re-derives a leading `Degraded run` section from the issue's current body and
+the rebuilt summary
 rather than copying it, keeping only the original run's
 reason and follow-up number (Issue #3350). A leading `Partial delivery —
 follow-up filed` section is re-derived from the same inputs (Issue #3506): it is
