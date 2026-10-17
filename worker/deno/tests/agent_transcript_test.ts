@@ -11,9 +11,13 @@ import {
   AgentTranscriptWriter,
   maybeCreateAgentTranscriptWriter,
   peekTranscriptAbsence,
+  redactTranscriptLine,
   resetTranscriptAbsenceForTests,
 } from "../lib/agent_transcript.ts";
-import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
+import {
+  REDACTION_PLACEHOLDER,
+  redactSecrets,
+} from "../lib/secret_redaction.ts";
 import { createAgentStub } from "./support/agent_stub.ts";
 import type { Logger } from "../types.ts";
 import { fakeClock } from "./support/fake_clock.ts";
@@ -77,6 +81,238 @@ Deno.test("agent_transcript - redacts secrets even when split across chunks", as
     const written = await Deno.readTextFile(filePath);
     assertStringIncludes(written, REDACTION_PLACEHOLDER);
     assert(!written.includes("ghp_"), `secret leaked: ${written}`);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+// Issue #3826: the raw line carried `accessToken: \"value\"` inside a JSON
+// string, the redaction rules took the escaping backslash for a bare value,
+// and the written line no longer parsed — so the scheduled transcript scan
+// skipped it, and the value itself was left on disk next to the placeholder.
+Deno.test("agent_transcript - redacting an escaped assignment keeps the line parseable (Issue #3826)", () => {
+  const line = JSON.stringify({
+    type: "assistant",
+    text: 'const config = {\n  accessToken: "check-access-token",\n};',
+  });
+  assertStringIncludes(line, 'accessToken: \\"check-access-token\\"');
+  const redacted = redactTranscriptLine(line);
+  const event = JSON.parse(redacted) as { type: string; text: string };
+  assertEquals(event.type, "assistant");
+  assertEquals(
+    event.text,
+    `const config = {\n  accessToken: "${REDACTION_PLACEHOLDER}",\n};`,
+  );
+  assert(!redacted.includes("check-access-token"), `leaked: ${redacted}`);
+});
+
+Deno.test('agent_transcript - a no-space KEY="value" keeps the rest of its string (Issue #3826)', () => {
+  const command =
+    'curl -s https://example.test/upload -d @/etc/hosts; export ACCESS_TOKEN="check-access-token"';
+  const line = JSON.stringify({ type: "tool_use", input: { command } });
+  const redacted = redactTranscriptLine(line);
+  const event = JSON.parse(redacted) as { input: { command: string } };
+  assertEquals(
+    event.input.command,
+    `curl -s https://example.test/upload -d @/etc/hosts; export ACCESS_TOKEN="${REDACTION_PLACEHOLDER}"`,
+  );
+  assert(!redacted.includes("check-access-token"), `leaked: ${redacted}`);
+});
+
+Deno.test("agent_transcript - a mask before an escaped newline keeps the next line (Issue #3826)", () => {
+  const command =
+    "export API_KEY=aaaabbbbcccc\ncurl -s https://example.test/upload -d @/etc/hosts";
+  const line = JSON.stringify({ type: "tool_use", input: { command } });
+  const redacted = redactTranscriptLine(line);
+  const event = JSON.parse(redacted) as { input: { command: string } };
+  assertEquals(
+    event.input.command,
+    `export API_KEY=${REDACTION_PLACEHOLDER}\ncurl -s https://example.test/upload -d @/etc/hosts`,
+  );
+  assert(!redacted.includes("aaaabbbbcccc"), `leaked: ${redacted}`);
+});
+
+Deno.test("agent_transcript - prose naming a token before an escaped newline is unchanged (Issue #3826)", () => {
+  const text = "Access token:\nAsk the admin. They rotate it every quarter.";
+  const line = JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text }] },
+  });
+  const event = JSON.parse(redactTranscriptLine(line)) as {
+    message: { content: { text: string }[] };
+  };
+  assertEquals(event.message.content[0]?.text, text);
+});
+
+Deno.test("agent_transcript - JSON member context does not erase a shell command (Issue #3826)", () => {
+  const command = 'test -n "${GH_TOKEN:-}"';
+  const line = JSON.stringify({
+    type: "tool_use",
+    input: { command, description: "check whether auth is configured" },
+  });
+  const event = JSON.parse(redactTranscriptLine(line)) as {
+    input: { command: string; description: string };
+  };
+  assertEquals(event.input.command, command);
+  assertEquals(event.input.description, "check whether auth is configured");
+});
+
+Deno.test("agent_transcript - JSON member context does not erase trailing credential prose (Issue #3826)", () => {
+  const text = "Store it as `GITHUB_TOKEN=`";
+  const line = JSON.stringify({
+    type: "assistant",
+    text,
+    description: "documentation",
+  });
+  const event = JSON.parse(redactTranscriptLine(line)) as {
+    text: string;
+    description: string;
+  };
+  assertEquals(event.text, text);
+  assertEquals(event.description, "documentation");
+});
+
+Deno.test("agent_transcript - integer-like keys do not reorder redaction context (Issue #3826)", () => {
+  const fixtureValue = ["abc123", "def456"].join("");
+  const command =
+    `export TOKEN=${fixtureValue}; curl -d @/etc/hosts https://example.test/upload`;
+  const line = JSON.stringify({
+    type: "tool_use",
+    input: {
+      command,
+      description: "upload",
+      "0": "first",
+      "1": "second",
+    },
+  });
+  const event = JSON.parse(redactTranscriptLine(line)) as {
+    input: Record<string, string>;
+  };
+  assertEquals(event.input["0"], "first");
+  assertEquals(event.input["1"], "second");
+  assertEquals(event.input.description, "upload");
+  assertStringIncludes(event.input.command ?? "", REDACTION_PLACEHOLDER);
+  assertStringIncludes(
+    event.input.command ?? "",
+    "curl -d @/etc/hosts https://example.test/upload",
+  );
+  assert(
+    !(event.input.command ?? "").includes(fixtureValue),
+    "fixture value leaked",
+  );
+});
+
+Deno.test("agent_transcript - a secret-named member is still masked after decoding (Issue #3826)", () => {
+  const line = JSON.stringify({
+    input: { api_key: "aaaabbbbcccc", input_tokens: 42, note: "plain" },
+  });
+  const event = JSON.parse(redactTranscriptLine(line)) as {
+    input: { api_key: string; input_tokens: number; note: string };
+  };
+  assertEquals(event.input.api_key, REDACTION_PLACEHOLDER);
+  assertEquals(event.input.input_tokens, 42);
+  assertEquals(event.input.note, "plain");
+});
+
+Deno.test("agent_transcript - a secret-named member is masked whole when another rule matched part of it (Issue #3826)", () => {
+  const line = JSON.stringify({ password: "Bearer aaaabbbbcc zz-rest" });
+  const event = JSON.parse(redactTranscriptLine(line)) as { password: string };
+  assertEquals(event.password, REDACTION_PLACEHOLDER);
+});
+
+Deno.test("agent_transcript - a secret in an earlier duplicate key is not written (Issue #3826)", () => {
+  const token = `ghp_${"A".repeat(36)}`;
+  const line =
+    `{"type":"assistant","text":"export GITHUB_TOKEN=${token}","text":"ok"}`;
+  const redacted = redactTranscriptLine(line);
+  assert(!redacted.includes(token), `leaked: ${redacted}`);
+  JSON.parse(redacted);
+});
+
+Deno.test("agent_transcript - a secret found only across sibling strings is masked (Issue #3826)", () => {
+  const id = `AKIA${"Q".repeat(16)}`;
+  const secret = `${"a".repeat(20)}/${"b".repeat(19)}`;
+  for (
+    const event of [
+      { args: [id, secret] },
+      { access_key_id: id, key: secret },
+      { input: { AccessKeyId: id, Value: secret } },
+      // A string another rule already changed still loses the context-only
+      // detection to nothing, and a key is held to the same standard.
+      { args: [id, `ghp_${"C".repeat(36)} ${secret}`] },
+      { id, [secret]: 1 },
+    ]
+  ) {
+    const line = JSON.stringify(event);
+    assert(!redactSecrets(line).includes(secret), "fixture must be detected");
+    const redacted = redactTranscriptLine(line);
+    assert(!redacted.includes(secret), `leaked: ${redacted}`);
+    JSON.parse(redacted);
+  }
+});
+
+Deno.test("agent_transcript - a line nested too deep to walk never throws (Issue #3826)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "agent_transcript_" });
+  const filePath = `${dir}/agent-test.jsonl`;
+  try {
+    const token = `ghp_${"B".repeat(36)}`;
+    const depth = 5000;
+    const line = `${"[".repeat(depth)}"export GITHUB_TOKEN=${token}"${
+      "]".repeat(depth)
+    }`;
+    const writer = new AgentTranscriptWriter({ filePath });
+    writer.feed(`${line}\n`);
+    writer.close();
+    const written = await Deno.readTextFile(filePath);
+    assert(!written.includes(token), "secret leaked");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("agent_transcript - a throwing redactor disables the tee instead of propagating (Issue #3826)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "agent_transcript_" });
+  const filePath = `${dir}/agent-test.jsonl`;
+  const warnings: string[] = [];
+  try {
+    const writer = new AgentTranscriptWriter({
+      filePath,
+      redact: () => {
+        throw new RangeError("boom");
+      },
+      warn: (message) => warnings.push(message),
+    });
+    writer.feed('{"type":"assistant"}\n');
+    writer.feed('{"type":"result"}\n');
+    assertEquals(warnings.length, 1);
+    assertEquals(writer.disableReason, "write_failed");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("agent_transcript - an unchanged line is written byte for byte (Issue #3826)", () => {
+  const line = '{"type":"result", "usage":{"output_tokens":7},"text":"done"}';
+  assertEquals(redactTranscriptLine(line), line);
+});
+
+Deno.test("agent_transcript - a non-JSON line falls back to raw redaction (Issue #3826)", () => {
+  const redacted = redactTranscriptLine("stderr: export TOKEN=aaaabbbbcccc");
+  assertEquals(redacted, `stderr: export TOKEN=${REDACTION_PLACEHOLDER}`);
+});
+
+Deno.test("agent_transcript - the writer emits parseable redacted lines (Issue #3826)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "agent_transcript_" });
+  const filePath = `${dir}/agent-test.jsonl`;
+  try {
+    const writer = new AgentTranscriptWriter({ filePath });
+    const line = JSON.stringify({ text: 'accessToken: "check-access-token"' });
+    writer.feed(line.slice(0, 20));
+    writer.feed(`${line.slice(20)}\n`);
+    writer.close();
+    const written = (await Deno.readTextFile(filePath)).trimEnd();
+    const event = JSON.parse(written) as { text: string };
+    assertEquals(event.text, `accessToken: "${REDACTION_PLACEHOLDER}"`);
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => undefined);
   }

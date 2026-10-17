@@ -1,0 +1,10 @@
+{
+  "issue": 3731,
+  "chunk": "top-up-3731",
+  "title": "top-up: affected source-comment and manual prose scope",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3731",
+  "definition": "shared diff and manual-section selection for first-run and review-fix prose checks",
+  "status": "claimed",
+  "paths": ["worker/deno/lib/doc_prose_scope.ts"],
+  "sweptAt": "6effe8f3b2e261c89a22a2ea10e25c88c911ba00"
+}

@@ -45,8 +45,8 @@ const LEADING_STATUS_RE =
 const LABEL_BOUNDARY_RE = /\b(?:evidence|reviewer|reason)\s*[:\-—]/i;
 
 /** The entry's subject: the text between its leading status and its first
- * labelled field. */
-function subjectOf(entry: ClosureEntry): string {
+ * labelled field. Also used by closure_met_check.ts. */
+export function subjectOf(entry: ClosureEntry): string {
   const afterStatus = entry.text.replace(LEADING_STATUS_RE, "");
   const boundary = afterStatus.search(LABEL_BOUNDARY_RE);
   const subject = boundary === -1
