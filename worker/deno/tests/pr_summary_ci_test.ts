@@ -8,7 +8,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStrictEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import type { GitRunner } from "../lib/git_base_ref.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import {
@@ -576,6 +581,7 @@ Deno.test("listPrCommits - a runner error names the git command and its cause", 
   const runGit: GitRunner = () =>
     Promise.resolve({ ok: false as const, error: new Error("spawn failed") });
   const r = await listPrCommits(runGit, "origin/main", "/repo");
+  assertStrictEquals(r.ok, false);
   assert(!r.ok);
   assertStringIncludes(r.error.message, "git rev-list");
   assertStringIncludes(r.error.message, "spawn failed");
@@ -599,9 +605,31 @@ Deno.test("listPrCommits - a non-zero diff-tree exit names the exit code and git
         },
     );
   const r = await listPrCommits(runGit, "origin/main", "/repo");
+  assertStrictEquals(r.ok, false);
   assert(!r.ok);
   assertStringIncludes(r.error.message, "exited 128");
   assertStringIncludes(r.error.message, "fatal: bad object deadbeef");
+});
+
+Deno.test("runPrSummaryCi - every git call, base resolution included, runs in the repository root", async () => {
+  const calls: { args: string[]; cwd: string | undefined }[] = [];
+  const runGit: GitRunner = (args, options) => {
+    calls.push({ args, cwd: options?.cwd });
+    return Promise.resolve({
+      ok: true as const,
+      value: { code: 0, stdout: "", stderr: "" },
+    });
+  };
+  const r = await runPrSummaryCi({
+    baseBranch: "main",
+    headBranch: BRANCH,
+    runGit,
+    repoRoot: "/repo-root",
+    readTextFile: () => Promise.reject(new Error("must not read")),
+  });
+  assertEquals(r, { ok: true, value: { kind: "no_summary" } });
+  assertEquals(calls.map((c) => c.args[0]), ["rev-parse", "diff"]);
+  for (const call of calls) assertEquals(call.cwd, "/repo-root");
 });
 
 // --- Branch-outcome coverage: summary read and repository root ---------------

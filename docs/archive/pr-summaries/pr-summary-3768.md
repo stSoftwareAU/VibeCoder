@@ -110,7 +110,7 @@ still misses the manual for the changed surface (the existing gate's
 
 ## Test Plan
 
-- `worker/deno/tests/pr_summary_ci_test.ts` (new, 38 tests): pure tests of
+- `worker/deno/tests/pr_summary_ci_test.ts` (new, 39 tests): pure tests of
   `isCodePath`, `summaryIssueOf`, `judgeFreshness`, `selectSummary`,
   `parseArgs`, `ciFailed` and `formatCiReport`, plus integration tests on a
   real git remote and clone (`setupGitRepoFixture`) with the real
@@ -127,6 +127,13 @@ still misses the manual for the changed surface (the existing gate's
     `[PASSED] Acceptance-criteria closure`
   - ancestry order — `pr-summary-ci - a code commit that is a child of the summary but dated earlier is still stale`
     went red with `--topo-order` removed
+  - mutation pins on `pr_summary_ci.ts`, each red-checked under
+    `deno test --no-check` with the line deleted: the two `ok: false`
+    properties in `runChecked` (runner error, non-zero exit) are pinned by
+    `assertStrictEquals(r.ok, false)` in `listPrCommits - a runner error names the git command and its cause`
+    and `listPrCommits - a non-zero diff-tree exit names the exit code and git's stderr`;
+    `cwd: repoRoot` on the base-ref resolution is pinned by
+    `runPrSummaryCi - every git call, base resolution included, runs in the repository root`
 - `worker/deno/tests/pr_summary_ci_workflow_3768_test.ts` (new, 10 tests): the
   workflow validator for the new step. The real file passes. One negative per
   invariant: step removed, `--head-branch` dropped, `env.HEAD_REF` changed,
