@@ -40,7 +40,7 @@ Existing doc hits left in place, each still true after this change:
 - `docs/IDLE-TASK-FRAMEWORK.md:1051`: the census still drops `untrustedLabelIssues` before the tier-3 (`idle_decision_census.ts:1187`) and work-on (`:1207`) suppression checks.
 - `docs/IDLE-TASK-FRAMEWORK.md:1136`: an untrusted-author priority label still does not suppress either, by the same mechanism.
 
-Gate: `./quality.sh`: PASSED (config integration SKIPPED)
+Original implementation gate: `./quality.sh`: PASSED (config integration SKIPPED)
 
 Load-bearing fakes: the gh timeline stub in the wiring tests stands in for `paginateTimeline`, which `wasLabelAddedByAllowedAuthor` in `worker/deno/lib/issue_query.ts` reads. It mirrors GitHub's `labeled` timeline event (`event`, `label.name`, `actor.login`). The property relied on is that the adder login is read from `actor.login`.
 
@@ -80,5 +80,48 @@ Top-up coverage: `docs/audits/lib-sweep-coverage/top-up-3571.json` covers the ne
   - fixture `toCensusInput` with `untrustedLabelIssues` emptied → both new differential tests turn red (`FAILED | 6 passed | 2 failed`);
   - helper `:90` (untrusted marking inverted) → the bot, allowed-author, trusted-label and fleet-login tests turn red.
 - Production wiring red-check, re-run in this pass: `run_core_production_deps.ts:5967` replaced by an empty `new Set<number>()` with `deno task test:unit tests/idle_census_label_author_wiring_3571_test.ts < /dev/null` from `worker/deno`. The result was red: "production deps - a top-priority add by an untrusted bot is claim_refused, not claimable (Issue #3571)" failed at line 131, `FAILED | 1 passed | 1 failed`. Restored with `git checkout -- worker/deno/lib/run_core_production_deps.ts`.
+
+### PR #3963 review fix: bound census timeline reads
+
+The production caller now filters through the census's existing
+`isUnblockedFor` before computing label trust and obtains its `gh` wrapper from
+`TimelineBatchRegistry`. The registry is the same instance the claim collectors
+use and the iteration reset clears. No new cache or trust rule was introduced.
+The exported `isUnblockedFor` has a production caller in
+`run_core_production_deps.ts`; its behaviour is unchanged.
+
+- Added the production wiring case "production deps - census batches only
+  eligible timelines and reuses them until the iteration resets (PR #3963)"
+  in `worker/deno/tests/idle_census_label_author_wiring_3571_test.ts`.
+  It supplies 30 trusted low-priority issues, an assigned issue, a blocked
+  issue and an idle-task. It asserts two GraphQL batches containing exactly
+  the 30 eligible numbers, zero REST timeline calls, 30 claimable issues and
+  zero trust refusals. Repeating the census adds no calls; resetting the
+  iteration adds two fresh batches. The batch size is imported from production.
+- Test-first red proof: before the fix, this case failed with 32 REST timeline
+  calls, including the assigned and blocked issues; the two original wiring
+  tests passed. After the fix all three passed. No existing assertion was
+  removed or changed.
+- Mutation checks: at `worker/deno/lib/run_core_production_deps.ts:5983`,
+  replacing `isUnblockedFor` with label presence alone made the same test fail
+  because the batches included issues 101 and 102. At line 5985, replacing the
+  shared registry with a new registry made it fail because the repeated census
+  issued four calls instead of two. Both mutations were restored.
+- Validation: 322 census, timeline-batch, claim-path and idle-detect tests
+  passed; the manifest gate passed with 687 tests and one existing ignored
+  test. Type-checking, scoped Deno lint and formatting, and Markdown lint
+  passed. These are the review-fix checks; the earlier full-gate result above
+  records the original implementation validation. A new full quality run was
+  stopped before the unit suite finished; it is not a pass. Its completed
+  type, lint, format, Markdown and Mermaid checks passed, release-tag ruleset
+  reconciliation reported a failure, and Semgrep was skipped. Required CI
+  remains the full validation for this review fix.
+- Docs sweep: updated the label-author and cheap-probe paragraphs in
+  `docs/IDLE-TASK-FRAMEWORK.md#idle-decision-claimable-work-census` to describe
+  the eligibility filter, iteration reuse, 25-issue batch limit and existing
+  REST fallback on a failed batch. Unvisited repos can still require batches;
+  the documentation makes no zero-timeline-call promise. The existing
+  re-label escape hatch limitation remains unchanged. Issue #3964 covers the
+  separate audit classification gap.
 
 <!-- vibe-branch-outcomes -->

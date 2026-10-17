@@ -13,7 +13,8 @@ Nothing checked a closure entry the agent marked `met` against the criterion it 
   - `ReviewReply` gains a required `closure` array, which `parseReviewReply` fills (`[]` when the reply omits it).
   - `verifyInCheckout` appends the closure gap findings after the checklist gaps.
 - `prompts/pr_review_brief/prompt.md`: a new step 8 asks for one verdict per listed entry. `met` is allowed only when the change delivers every case, path and test the criterion names. The reply JSON carries `closure`.
-- `.claude/skills/review-fleet-prs/SKILL.md`: the fleet reviewer fills the new field from the PR body, so it gets the same per-entry instruction. `post.ts` does not check the array itself.
+- `.claude/skills/review-fleet-prs/scripts/gate.ts`: reads the PR body in its search and renders `closureEntries` through `renderClosureEntriesSection(metClosureItems(body))`, so the fleet path gets the same redaction, fresh untrusted boundary and per-entry instruction as the worker.
+- `.claude/skills/review-fleet-prs/SKILL.md`: copies that gate field verbatim into the brief, never raw criteria. `post.ts` does not check the array itself.
 - Docs and the issue prompt say the verifier now re-judges each `met` entry.
 
 ## Spec
@@ -26,7 +27,7 @@ Nothing checked a closure entry the agent marked `met` against the criterion it 
 ### Essential Design Decisions
 
 - "No verdict" is never a pass. A reply without `closure`, or with a criterion that does not match a listed one, leaves the entry unreported, and that blocks the PR.
-- The criterion text is bounded and neutralised by `gapText`. Both sides of the match are keyed the same way (`normaliseVerdictText(gapText(…))` after stripping zero-width characters, so `gapText`'s invisible space after `@` cannot make the keys differ), so differences in case, spacing, backticks or that space still match.
+- The criterion text is bounded and neutralised by `gapText`. Matching accepts keys for the raw criterion and its once-scrubbed rendered form, without scrubbing the verifier's copy again. Keys use `normaliseVerdictText(gapText(…))` after stripping zero-width characters, so differences in case, spacing, backticks or the invisible space after `@` still match. Verdicts on both forms are considered together; a `met` verdict cannot hide a `partial` or `missing` verdict on the other form.
 - A malformed verdict entry is dropped, never thrown on: a throw turned the whole reply, real findings included, into `not_checked`. The gap finding's fix offers delivery or an evidence-backed dispute only, matching the gate comment's procedure (PR #3890 review).
 - Closure gaps are ordinary findings, so `prePrVerifierBlocked`, the block reason and the in-run recovery turn need no change.
 - Trailing separators are stripped with a backwards scan rather than a trailing-run regex, so hostile input stays linear.
@@ -58,6 +59,50 @@ The closure, verifier, shared-brief and completion-phase suites pass 109 tests
 on this follow-up; full CI is still required. Main at `65bdd763` is merged
 as a second parent, preserving closure verdicts and earlier-findings checks.
 
+Review 5556946831's fleet-path boundary fix is verified by 140 passing tests
+across the fleet checklist, gate and audit suites plus the worker verifier
+and closure suites. The added regression failed before implementation
+(missing section) and when the section was mutated to raw criteria (missing
+boundary). Removing the PR-body field from the GraphQL request also made it
+fail. Fresh per-render boundaries, criteria placement, the external instruction,
+and empty/no-met bodies are covered. No existing assertion was removed.
+Main through `6effe8f3` is included; full CI remains required.
+
+Review 5557514840 exposed cross-entry scrubbing: a forged BEGIN marker changed
+the next entry's `content`, and a private-key header consumed the later entry.
+Two new regressions failed against the joined-block scrub (26 passed, 2 failed).
+The renderer now scrubs each criterion separately, then puts
+the already-scrubbed lines inside one fresh shared boundary without scrubbing
+them again. Both regressions copy the actual displayed lines, assert that each
+entry remains independently rendered and check that `met` verdicts cover them.
+The 11 focused closure, verifier, fleet, brief, completion and manual-claim
+suites passed 285 tests, then 292 after integrating current main; lint and
+formatting pass for the touched TypeScript. No existing assertion was removed.
+Main through `a4ce4146` is included, retaining PR #3894's correction/hold changes
+and the subsequent main updates to them, with the completion/correction code
+and tests identical to main. The earlier-findings regression is preserved.
+Full CI is still required; no new local full
+quality-gate pass is claimed.
+
+Review 5557691326 showed that the scrub is not idempotent: delimiter rewriting
+can expose a template value to secret redaction on a second pass, and overlapping
+boundary tokens can also change again. The new regression failed against
+`e504540b` with `No verdict was reported for 5 of 5`, covering token placeholders,
+an API-key template, a password/trust-marker example and overlapping boundary
+tokens. Matching now accepts the raw criterion or the exact once-scrubbed form
+the renderer lists, never another scrub of the verifier's copy. This avoids
+assuming either idempotence or convergence within an arbitrary pass limit.
+Both forms retain the existing normalisation and worst-verdict behaviour.
+
+Thirteen focused suites pass 298 tests, including the earlier-findings and
+review-feedback verifier suites. Removing either accepted key made the new
+regression fail. Taking only the first matching form also made it fail: a
+`met` verdict must not hide a blocking verdict on the other form. Removing the
+empty-match block made the existing no-verdict regression fail. No existing
+assertion was changed or removed. Lint and formatting pass for the changed
+TypeScript. The manifest/completeness task passed (687 passed, one ignored).
+Full CI remains required; no new local full-quality pass is claimed.
+
 ```mermaid
 flowchart LR
     S[PR summary] -->|parseClosureEntries, met only| M[metClosureItems]
@@ -80,7 +125,8 @@ flowchart LR
 
 - Retain `runPrePrVerifier: earlier findings need complete fixed verdicts even when findings is empty` unchanged from the target branch. It checks that omitted and partial earlier-finding verdicts block, and a complete fixed verdict passes; the closure fixes do not replace this regression coverage.
 
-- New tests in `worker/deno/tests/closure_met_check_3766_test.ts` (25 tests) cover:
+- `review_fleet_prs_checklists_3594_test.ts`: `gate: closure criteria are fenced data in the fleet reviewer brief` exercises the real gate output and outbound search request; `gate: no met closure entries gives an empty fleet section` covers empty and partial-only bodies. Existing helper defaults remain empty and existing checklist assertions stay unchanged. Related rules checked: the shared brief, the worker renderer and the skill's existing field-fill instructions; the fleet now copies the shared renderer's output rather than maintaining a second rule. Applying the rule to this diff found no remaining raw-criteria fill instruction.
+- Tests in `worker/deno/tests/closure_met_check_3766_test.ts` (29 tests) cover:
   - extraction, de-duplication, neutralising and clipping
   - each trailing separator kind
   - linear growth on hostile separator runs (`assertLinearGrowth`)
@@ -88,6 +134,7 @@ flowchart LR
   - each finding branch: partial, missing, worst-wins, no verdict, more than five, singular, no note, unlisted verdicts ignored, and normalised matching
   - numbered verdict copies (`1.` and `1)`), leading whitespace and a full-length criterion; a numbered partial verdict still blocks and an unrelated numbered criterion covers nothing
   - already-numbered criteria copied from the rendered list, including mixed repeated prefixes; partial/missing still block and unrelated verdicts cover nothing
+  - non-idempotent scrub cases copied from the real renderer, raw copies, and partial/missing verdicts on either form alongside a met verdict on the other
 - New tests in `worker/deno/tests/pre_pr_verifier_3395_test.ts`, run against real git:
   - `a met closure entry the verifier rates partial blocks, with a finding on the summary`
   - `a clean reply with no closure array blocks: no verdict on a met entry is never a pass`
@@ -104,7 +151,7 @@ flowchart LR
   - `makeDeps(() => Promise.resolve(okRun({ output: REPLY_CLEAN })), []),` was replaced by a stub that also captures the prompt. Every assertion the test made is kept.
 - Call site check: replacing `closureItems: metItems` with `[]` in `verifyInCheckout` turns `a met closure entry the verifier rates partial blocks, with a finding on the summary` red. Removing the `closureGapFindings` append turns both that test and `a clean reply with no closure array blocks…` red.
 - Callers checked for the now-required `ReviewReply.closure` and `buildPrePrVerifierPrompt`'s required `closureItems`: the synthetic review in `pre_pr_verifier.ts`, `createMockDeps` in `lib/issue_worker_wiring.ts`, and `tests/completion_phase_pre_pr_verifier_3395_test.ts`. All three now pass `closure: []`. `deno check` over `lib/`, `tests/` and the fleet scripts passes.
-- A dead operand (`matching.length === 0`) found by flip checks was removed.
+- The original redundant `matching.length === 0` operand was removed. The two-form lookup now produces an array even when neither key matches, so its empty-array check is required and the no-verdict regression goes red when it is removed.
 - Targeted run at `3d880384` (before restoring the target branch's earlier-findings regression): `deno task test:unit tests/closure_met_check_3766_test.ts tests/pre_pr_verifier_3395_test.ts tests/pr_review_brief_shared_3395_test.ts tests/completion_phase_pre_pr_verifier_3395_test.ts tests/review_fleet_prs_checklists_3594_test.ts tests/review_fleet_prs_log_2678_test.ts tests/independent_review_gate_test.ts` passed: parallel pass 147 passed, 0 failed; serial pass 23 passed, 0 failed.
 - `./quality.sh` at `3d880384`, before restoring the target branch's earlier-findings regression: Result PASSED (with skipped checks, as the gate reports them). CI must re-run the restored test on the updated head; no new local full-gate pass is claimed.
 

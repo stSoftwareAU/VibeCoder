@@ -74,6 +74,22 @@
         "test": "worker/deno/tests/idle_census_label_author_wiring_3571_test.ts",
         "testName": "production deps - a top-priority add by an untrusted bot is claim_refused, not claimable (Issue #3571)",
         "flipWentRed": "re-run in this pass: replacing the censusUntrustedLabelIssues call at :5967 with an empty set turned it red (FAILED | 1 passed | 1 failed)"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 5983,
+        "outcome": "production filters assigned, blocked and non-priority issues before timeline batching",
+        "test": "worker/deno/tests/idle_census_label_author_wiring_3571_test.ts",
+        "testName": "production deps - census batches only eligible timelines and reuses them until the iteration resets (PR #3963)",
+        "flipWentRed": "replacing isUnblockedFor with label presence made the wiring test fail: batch numbers unexpectedly included assigned issue 101 and blocked issue 102"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 5985,
+        "outcome": "production reuses the iteration timeline registry instead of issuing fresh timeline reads",
+        "test": "worker/deno/tests/idle_census_label_author_wiring_3571_test.ts",
+        "testName": "production deps - census batches only eligible timelines and reuses them until the iteration resets (PR #3963)",
+        "flipWentRed": "using a new TimelineBatchRegistry for each census made the wiring test fail: the repeated census made four GraphQL calls instead of two"
       }
     ]
   }

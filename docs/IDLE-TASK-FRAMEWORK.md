@@ -1050,7 +1050,9 @@ until a trusted author applies the label. The census therefore counts it as
 as claimable, does not report it as `run_local_hold`, and does not let it
 suppress lower tiers. `untrustedLabelIssues` is the caller-precomputed set; the
 census drops those issues before the tier-3 and work-on suppression checks, as
-the scan drops them.
+the scan drops them. Before checking trust, production applies the census's
+own `isUnblockedFor` label and assignee filter. Assigned issues, issues with a
+blocking label, and issues without a priority label need no trust lookup.
 
 The **work-stream occupancy** gate (Issue #1050) is the fifth instance, and the
 first to be found in the audit rather than the census. `isMilestoneOccupied`
@@ -1186,12 +1188,22 @@ field state under
 so a state that once produced an inversion alert can never produce one silently
 again.
 
-Two deliberate limits keep both instruments cheap probes rather than a second
-scan: only **merged** PRs count (a closed-unmerged PR blocks for a cooldown
-window that clears itself), and the re-label escape hatch is **not** modelled,
-because it needs a per-issue timeline call. Both make the census _under_-count,
-which at worst files an idle-task while work exists — the bounded-harm
-direction.
+Two deliberate limits keep both instruments bounded: only **merged** closed
+PRs count (a closed-unmerged PR blocks for a cooldown window that clears itself),
+and the re-label escape hatch is **not** modelled. Both make the census
+_under_-count, which at worst files an idle-task while work exists — the
+bounded-harm direction.
+
+The census's priority-label trust check shares `TimelineBatchRegistry` with the
+claim scan. Timelines already fetched in this iteration cost no further API
+call; missing eligible issues are fetched in GraphQL batches of at most 25.
+Thus 30 missing issues cost two batch calls, rather than 30 sequential REST
+reads. A repo the scan did not visit may still need those batches. The registry
+resets at the iteration boundary, so a previous iteration's trusted result is
+not reused as live evidence. A failed batch retains the collectors' per-issue
+REST fallback; a failed trust read is logged and treated as trusted by the
+advisory census. This bounds the normal path without claiming that every
+census run makes no timeline calls.
 
 Any monitored repo holding ≥1 unblocked `top-priority` / `work-on` /
 `low-priority` issue at this moment is the **inversion signal**; `idle-task` is

@@ -886,7 +886,7 @@ const IGNORE_OPEN_PRS_LABEL = "ignore-open-prs";
  * True when `issue` carries `label`, has no blocking label, and has no
  * assignees — i.e. the worker could pick it up right now.
  */
-function isUnblockedFor(issue: CensusIssue, label: string): boolean {
+export function isUnblockedFor(issue: CensusIssue, label: string): boolean {
   if (!issue.labels.includes(label)) return false;
   if (issue.assignees.length > 0) return false;
   if (issue.labels.some((l) => BLOCKING_SET.has(l))) return false;

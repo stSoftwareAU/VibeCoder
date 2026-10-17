@@ -19,6 +19,7 @@ import { assert, assertEquals } from "@std/assert";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
 import { createLogger } from "../lib/logger.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { TIMELINE_BATCH_SIZE } from "../lib/timeline_batch.ts";
 
 const REPO = "org/label-author-fixture";
 const WORKER_USER = "worker-bot";
@@ -140,5 +141,142 @@ Deno.test(
     const line = await censusLine(ALICE, [ALICE]);
     assert(line.includes("claim_refused=0"), line);
     assert(line.includes("top_priority=1"), line);
+  },
+);
+
+Deno.test(
+  "production deps - census batches only eligible timelines and reuses them until the iteration resets (PR #3963)",
+  async () => {
+    const workDir = await Deno.makeTempDir({ prefix: "census-batch-wiring-" });
+    const eligible = Array.from({ length: 30 }, (_, index) => ({
+      ...FIXTURE_FIELDS,
+      number: index + 1,
+      labels: [{ name: "low-priority" }],
+    }));
+    const issues = [
+      ...eligible,
+      { ...eligible[0], number: 101, assignees: [{ login: "someone" }] },
+      {
+        ...eligible[0],
+        number: 102,
+        labels: [{ name: "low-priority" }, { name: "needs-revision" }],
+      },
+      { ...eligible[0], number: 103, labels: [{ name: "idle-task" }] },
+    ];
+    const batchNumbers: number[][] = [];
+    const restTimelines: string[][] = [];
+    const lines: string[] = [];
+    const ghFn = (args: string[]): Promise<string> => {
+      if (args[0] === "issue" && args[1] === "list") {
+        const requested = (args[args.indexOf("--json") + 1] ?? "").split(",");
+        return Promise.resolve(
+          JSON.stringify(issues.map((issue) =>
+            Object.fromEntries(
+              Object.entries(issue).filter(([field]) =>
+                requested.includes(field)
+              ),
+            )
+          )),
+        );
+      }
+      if (args[0] === "api" && args[1] === "graphql") {
+        const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+        const entries = [...query.matchAll(/(n\d+): issue\(number: (\d+)\)/g)];
+        batchNumbers.push(entries.map((match) => Number(match[2])));
+        return Promise.resolve(JSON.stringify({
+          data: {
+            repository: Object.fromEntries(entries.map((match) => [match[1], {
+              timelineItems: {
+                nodes: [{
+                  __typename: "LabeledEvent",
+                  createdAt: "2026-01-01T00:00:00Z",
+                  label: { name: "low-priority" },
+                  actor: { login: ALICE },
+                }],
+              },
+            }])),
+          },
+        }));
+      }
+      if (args[0] === "api" && (args[1] ?? "").includes("/timeline")) {
+        restTimelines.push(args);
+        return Promise.resolve(JSON.stringify([{
+          event: "labeled",
+          label: { name: "low-priority" },
+          actor: { login: ALICE },
+          created_at: "2026-01-01T00:00:00Z",
+        }]));
+      }
+      return Promise.resolve("[]");
+    };
+    const byRepo = new Map([[
+      REPO,
+      { allowedAuthors: [ALICE], authorisedCommenters: [ALICE] },
+    ]]);
+    const { deps, cleanup } = await createProductionRunCoreDeps({
+      repoDir: workDir,
+      workDir,
+      githubUser: WORKER_USER,
+      logger: createLogger({ write: (line: string) => lines.push(line) }),
+      config: { ...buildDefaultWorkerConfig(), repos: [REPO], workDir },
+      resolveTrustedAuthors: () => Promise.resolve({ ok: true, byRepo }),
+      idleDetectGhCommandFn: ghFn,
+    });
+    try {
+      assertEquals((await deps.refreshTrustedAuthors!()).ok, true);
+      await deps.runIdleDetectAudit!({
+        tick: 1,
+        scanFoundClaimable: false,
+        scanExcludedRepos: [],
+      });
+      const census = () =>
+        deps.runIdleDecisionCensus!({
+          decisionPoint: "filing",
+          claimScanCompleted: true,
+          claimedRepos: [],
+          scanExcludedRepos: [],
+        });
+      await census();
+      assertEquals(
+        restTimelines,
+        [],
+        "healthy batching needs no REST timelines",
+      );
+      assertEquals(
+        batchNumbers.length,
+        Math.ceil(eligible.length / TIMELINE_BATCH_SIZE),
+      );
+      assertEquals(batchNumbers.flat(), eligible.map((issue) => issue.number));
+      assert(
+        lines.some((line) => line.includes("low_priority=30")),
+        lines.join("\n"),
+      );
+      assert(
+        lines.some((line) => line.includes("claim_refused=0")),
+        lines.join("\n"),
+      );
+      await census();
+      assertEquals(
+        batchNumbers.length,
+        Math.ceil(eligible.length / TIMELINE_BATCH_SIZE),
+        "same iteration reuses the shared registry",
+      );
+      assertEquals(restTimelines, []);
+      deps.resetIterationCaches!();
+      await census();
+      assertEquals(
+        batchNumbers.length,
+        2 * Math.ceil(eligible.length / TIMELINE_BATCH_SIZE),
+        "a new iteration refreshes trusted timelines",
+      );
+      assertEquals(
+        batchNumbers.flat(),
+        [...eligible, ...eligible].map((issue) => issue.number),
+      );
+      assertEquals(restTimelines, []);
+    } finally {
+      cleanup();
+      await Deno.remove(workDir, { recursive: true });
+    }
   },
 );

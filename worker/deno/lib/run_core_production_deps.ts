@@ -48,6 +48,7 @@ import { createLogger } from "./logger.ts";
 import { LOG_FILE_PREFIX, LOG_FILE_SUFFIX } from "./credit_tracker.ts";
 import {
   buildDefaultWorkerConfig,
+  LABEL_DEFAULTS,
   OPERATIONAL_DEFAULTS,
 } from "./config_defaults.ts";
 import {
@@ -235,6 +236,7 @@ import { secondaryLatchCount } from "./primary_quota_latch.ts";
 import {
   buildIdleDecisionCensus,
   formatIdleDecisionCensus,
+  isUnblockedFor,
   type RepoCensusSkipReason,
   resolveRepoScanState,
 } from "./idle_decision_census.ts";
@@ -5971,11 +5973,25 @@ export async function createProductionRunCoreDeps(
             // `wasLabelAddedByAllowedAuthor`) so such an issue counts as
             // `claim_refused`, not claimable. Best-effort per issue: a failed
             // timeline read counts the issue trusted and is logged loudly.
+            // PR #3963: skip issues the census already excludes for labels
+            // or assignment, and share the scan's iteration timeline batch.
+            const priorityIssues = issues.filter((issue) =>
+              [
+                LABEL_DEFAULTS.topPriorityLabel,
+                LABEL_DEFAULTS.workOnLabel,
+                LABEL_DEFAULTS.lowPriorityLabel,
+              ].some((label) => isUnblockedFor(issue, label))
+            );
+            const censusGh = await timelineBatchRegistry.getBatchedGh(
+              repo,
+              priorityIssues.map((issue) => issue.number),
+              options.idleDetectGhCommandFn ?? runGhCommand,
+            );
             const untrustedLabelIssues = await censusUntrustedLabelIssues(
               repo,
-              issues,
+              priorityIssues,
               trustedAuthorsFor(config, repo),
-              options.idleDetectGhCommandFn ?? runGhCommand,
+              censusGh,
               timelineCache,
               resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
               (msg) => logger.warn(msg),
