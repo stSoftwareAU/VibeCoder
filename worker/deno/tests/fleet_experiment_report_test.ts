@@ -852,6 +852,9 @@ Deno.test("fleet experiment report - first-pass CI reads only the quality gate",
     assignment(2, "sonnet-haiku", ago(5)),
     gate(2, "quality", "fail", ago(4)),
     gate(2, "quality", "pass", ago(3), 2),
+    // A skipped quality gate is not a judgement, so first-pass CI is unknown.
+    assignment(3, "sonnet-haiku", ago(5)),
+    gate(3, "quality", "skipped", ago(3)),
   ];
   const report = buildExperimentReport(events, options());
   const closed = recordFor(report.records, 1);
@@ -860,4 +863,7 @@ Deno.test("fleet experiment report - first-pass CI reads only the quality gate",
   const retried = recordFor(report.records, 2);
   assertEquals(retried.firstPassCi, false);
   assertEquals(retried.gateFailures, 1);
+  const skipped = recordFor(report.records, 3);
+  assertEquals(skipped.firstPassCi, null);
+  assertEquals(skipped.gateFailures, 0);
 });

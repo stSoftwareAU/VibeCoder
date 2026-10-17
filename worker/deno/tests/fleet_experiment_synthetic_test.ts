@@ -190,3 +190,38 @@ Deno.test("fleet experiment synthetic - unknown costs raise a missing-cost warni
   const report = buildExperimentReport(events, reportOptions());
   assert(report.warnings.some((warning) => warning.code === "missing-cost"));
 });
+
+Deno.test("fleet experiment synthetic - only PR events carry a PR number", async () => {
+  const { events } = await generateSyntheticHistory(historyOptions());
+  const positiveInteger = (value: unknown): boolean =>
+    typeof value === "number" && Number.isInteger(value) && value > 0;
+  const seen = { failed: 0, pr_opened: 0, merged: 0, gate: 0 };
+  for (const event of events) {
+    if (event.kind === "outcome" && event.outcome === "failed") {
+      seen.failed++;
+      assert(
+        !("prNumber" in event),
+        `failed outcome for ${event.assignmentId} carries a prNumber`,
+      );
+    } else if (
+      event.kind === "outcome" &&
+      (event.outcome === "pr_opened" || event.outcome === "merged")
+    ) {
+      seen[event.outcome]++;
+      assert(
+        positiveInteger(event.prNumber),
+        `${event.outcome} outcome for ${event.assignmentId} lacks a positive prNumber`,
+      );
+    } else if (event.kind === "gate") {
+      seen.gate++;
+      assert(
+        positiveInteger(event.prNumber),
+        `gate event for ${event.assignmentId} lacks a positive prNumber`,
+      );
+    }
+  }
+  assert(seen.failed > 0, "no failed outcome was generated");
+  assert(seen.pr_opened > 0, "no pr_opened outcome was generated");
+  assert(seen.merged > 0, "no merged outcome was generated");
+  assert(seen.gate > 0, "no gate event was generated");
+});
