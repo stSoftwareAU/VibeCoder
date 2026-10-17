@@ -34,6 +34,7 @@ import { assertNever } from "./assert_never.ts";
 import {
   type FailureCategory,
   isOutOfCreditMessage,
+  isWorkerGateCategory,
 } from "./failure_diagnosis.ts";
 import { isSecondaryRateLimitMessage } from "./secondary_rate_limit.ts";
 
@@ -203,10 +204,11 @@ const AGENT_OUTCOME: RunFailureClassification = {
  * ORDER MATTERS and is fixed here, most specific first — exactly as
  * `detectFailureCategory` documents its own ordering:
  *
- * 0. `summary_incomplete` and `security_fix_gate` (Issue #3454) — answered
+ * 0. Every registered worker gate category (`WORKER_GATE_MARKERS`: summary,
+ *    security-fix and pre-push gates; Issues #3431, #3454, #3716) — answered
  *    before everything else, because the gate refusal quotes the agent's
- *    summary or tests and a quoted "ENOSPC", usage limit or stack trace
- *    must not turn it into another class.
+ *    summary, tests or tool output and a quoted "ENOSPC", usage limit or stack
+ *    trace must not turn it into another class.
  * 1. Account limits (`rate_limit` category, out-of-credit message) — the
  *    highest-cost false positive is auto-filing on a fleet-wide usage cap,
  *    so these win over everything, including a stack trace in the same
@@ -239,18 +241,13 @@ export function classifyRunFailure(
 ): RunFailureClassification {
   const message = failureMessage ?? "";
 
-  // The PR-summary gate refusal quotes the agent's own summary, so any
-  //    message-pattern rule below (secondary limit, out-of-credit, stale
-  //    lineage, disk-full) can trip on that quotation. The category is
-  //    `summary_incomplete` only for a worker-authored marker prefix (or an
-  //    existing-PR finalise), so it answers first (Issue #3431; PR #3440).
-  if (category === "summary_incomplete") return AGENT_OUTCOME;
-  // Same for the security-fix gate refusal (Issue #3454): marker-prefixed
-  // worker text quoting agent test declarations.
-  if (category === "security_fix_gate") return AGENT_OUTCOME;
-  // And the pre-push gate block (PR #3716 review): marker-prefixed worker text
-  // quoting raw formatter, linter and test output.
-  if (category === "pre_push_gate") return AGENT_OUTCOME;
+  // A worker gate refusal (summary, security-fix or pre-push gate) quotes text
+  //    the worker did not write, so any message-pattern rule below (secondary
+  //    limit, out-of-credit, stale lineage, disk-full) can trip on that
+  //    quotation. The category is a gate category only for a worker-authored
+  //    marker prefix (or, for `summary_incomplete`, an existing-PR finalise),
+  //    so it answers first (Issues #3431, #3454; PR #3716).
+  if (isWorkerGateCategory(category)) return AGENT_OUTCOME;
 
   // 1. Account limits: usage / rate limit and out-of-credit are never a
   //    worker fault. Checked before anything else so a stack trace or a

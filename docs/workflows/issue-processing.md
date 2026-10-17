@@ -3265,8 +3265,9 @@ fault. The posted
 `## Automated Processing Failed` comment embeds the reason under a heading, so
 the two label-release sweeps that re-classify a posted body
 (`host_fault_release.ts` and `milestone_branch_refusal_release.ts`) recognise
-the record by its worker-written `**Category:** \`summary-incomplete\`` line at
-the head of the comment (`isSummaryGateFailureRecord`) and leave its labels
+the record by its worker-written `**Category:**` line at the head of the
+comment naming any registered gate category, such as `summary-incomplete`
+(`isWorkerGateFailureRecord`), and leave its labels
 alone, however the quoted summary reads. The catch-all `Error:` rule excludes `::` paths.
 
 A run refused by the security-fix gate is categorised `security_fix_gate`
@@ -3277,7 +3278,9 @@ or "timeout") are not read as a crash, timeout or rate limit. The completion
 phase's first-block reason stays unmarked, because the in-run retry always
 replaces it. It is an `agent-outcome` with the normal retry and `failed-once` rules.
 A retry that could not be launched is not marked and keeps its own category.
-There is no label-release record check for this category.
+The two label-release sweeps also leave its posted comment alone, because its
+head `**Category:** \`security-fix-gate\`` line is a registered gate record
+(`isWorkerGateFailureRecord`).
 
 ## 🔁 One run, one attempt per issue
 

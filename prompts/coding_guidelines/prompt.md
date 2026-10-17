@@ -216,6 +216,14 @@ a fault must never be masked as success.
   summary. Observe the real tool's output for each failure class the reason
   claims to tell apart (see **Observe the real tool before you rely on it**),
   and test it as **A failure-reason test asserts the cause** says.
+- **A recorded failure reason that quotes text the worker did not write opens
+  with a worker-written marker.** When a recorded reason quotes tool output,
+  agent text, or issue or comment text, open it with a marker the worker writes,
+  which every classifier of that reason checks with `startsWith` before its
+  free-text rules, so a quoted `rate limit`, `timeout` or `Error:` cannot pick
+  the category. In the Vibe Coder repository, register the marker in
+  `WORKER_GATE_MARKERS` in `worker/deno/lib/failure_diagnosis.ts` (see
+  `CODING-STANDARDS.md`).
 
 <!-- guidelines-layer: code -->
 

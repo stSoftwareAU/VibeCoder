@@ -5085,6 +5085,26 @@ repairing the host's clone for the issue to become claimable again. See
 [docs/workflows/README.md](workflows/README.md#per-lane-worktrees-issue-394)
 for the sweep-then-re-clone repair ladder that produces this category.
 
+#### Worker gate markers are one registry (Issue #3735)
+
+Each failure reason that opens with a worker-written marker (the
+`summary_incomplete`, `security_fix_gate` and `pre_push_gate` markers below) is
+one entry in `WORKER_GATE_MARKERS` in `failure_diagnosis.ts`: the marker mapped
+to its `FailureCategory`. `detectFailureCategory`, `classifyRunFailure`
+(`run_outcome_classifier.ts`), `classifyCodingFailure`
+(`coding_failure_ladder.ts`) and `detectHostFault` (`host_fault.ts`) each read
+the registry with `startsWith` before their free-text rules, and
+`shouldRetryInfrastructureFailure` follows through `detectFailureCategory`. The
+host-fault and milestone-refusal label-release sweeps skip any posted failure
+comment that `isWorkerGateFailureRecord` recognises: one whose head
+`**Category:**` line names a registered gate category's display
+(`summary-incomplete`, `security-fix-gate`, `pre-push-gate`).
+`PRE_PUSH_LOOKUP_FAILED_MARKER` is deliberately not registered: a failed git or
+remote lookup stays `push_failure`, an infrastructure category. A new gate is one
+registry entry with its own category, plus its hostile quotes in
+`worker/deno/tests/worker_gate_markers_3735_test.ts`, which runs every entry
+through every classifier for the raw reason and for the posted comment.
+
 #### `summary_incomplete` is its own failure category (Issue #3431)
 
 When the completion phase's PR-summary gates refuse a run, the refusal text
@@ -5114,9 +5134,9 @@ the posted comment instead, which buries the marker, so they need the check
 below. The posted failure comment embeds
 the reason under a heading, so the marker no longer opens the body; the
 host-fault and milestone-refusal label-release sweeps, which re-classify posted
-bodies, therefore skip a record whose worker-written `**Category:**` line at the
-head of the comment is `summary-incomplete` (`isSummaryGateFailureRecord` in
-`failure_diagnosis.ts`). A quoted `ignoring broken ref` or milestone `GH013`
+bodies, therefore skip any record whose worker-written `**Category:**` line at the
+head of the comment names a registered gate category, such as
+`summary-incomplete` (`isWorkerGateFailureRecord` in `failure_diagnosis.ts`). A quoted `ignoring broken ref` or milestone `GH013`
 rejection in a refused summary cannot strip `failed-once` or `failed`.
 
 #### `security_fix_gate` is its own failure category (Issue #3454)
@@ -5135,8 +5155,8 @@ from the in-run retry (`reportBlock` in `security_fix_gate_retry.ts` with
 `countsAsBlockedRun` true). The completion phase's first-block reason
 (`completion_phase.ts`) stays unmarked, because `recoverFromSecurityGateBlock`
 always replaces it, so it never ends a run.
-`detectFailureCategory` matches it with `startsWith`, right after the
-summary-gate marker, giving `security_fix_gate` (display `security-fix-gate`),
+`detectFailureCategory` matches it with `startsWith` from the
+`WORKER_GATE_MARKERS` registry, giving `security_fix_gate` (display `security-fix-gate`),
 which is `not_code_fixable` (class `agent-outcome`), not infrastructure, and
 follows the normal retry and `failed-once` rules. `classifyCodingFailure`
 returns a `ladder` decision with cooldown `non_transient` for it,
@@ -5145,8 +5165,11 @@ returns a `ladder` decision with cooldown `non_transient` for it,
 quotes the marker later keeps its own category. A retry that could not be
 launched at all (a rate limit, a failed spawn) is deliberately not marked: that
 is a real launch fault and its own error text must still be classified. The
-posted issue comment is unchanged. Unlike `summary_incomplete`, there is no
-`isSummaryGateFailureRecord`-style record check for the label-release sweeps.
+posted issue comment is unchanged. The host-fault and milestone-refusal
+label-release sweeps also skip that comment, because its head
+`**Category:** \`security-fix-gate\`` line is a registered gate record
+(`isWorkerGateFailureRecord`), so a quoted test declaration cannot strip
+`failed-once` or `failed`.
 
 #### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
 
@@ -5163,13 +5186,14 @@ removed. The shared mechanism is the one described under
 prefixed to the gate's message in `gateBeforePush()`, which redacts
 and cuts that message first; an error that is not a `PrePushGateBlockedError`
 is reported without the marker (see "Two limits" below).
-`detectFailureCategory` matches it with `startsWith` after the summary-gate and
-security-fix markers, giving `pre_push_gate` (display `pre-push-gate`), which is
+`detectFailureCategory` matches it with `startsWith` from the
+`WORKER_GATE_MARKERS` registry, giving `pre_push_gate` (display `pre-push-gate`), which is
 `not_code_fixable` (class `agent-outcome`) and not infrastructure, so
 `shouldRetryInfrastructureFailure` declines it. `classifyCodingFailure` returns
 a `ladder` decision with cooldown `non_transient`, `classifyRunFailure` answers
 it before the free-text rules and `detectHostFault` returns `null`, so a block
 always gets one normal attempt and a failure comment carrying the gate output.
+The label-release sweeps skip that comment too (`isWorkerGateFailureRecord`).
 A message that merely quotes the marker later keeps its own category. The final
 mile of `commitAndPushPending` (Step 1b) returns the same unmarked
 `[PRE_PUSH_BLOCKED]` error to its PR-processor callers, which log it and do not
