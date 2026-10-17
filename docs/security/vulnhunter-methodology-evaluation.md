@@ -242,7 +242,9 @@ head. It uses the mutation gate's runner seams and runs
 `deno test --no-check -A --filter <name> <file>` from the test's nearest
 `deno.json`, `deno.jsonc` or `deno.lock` directory, counting an outcome only
 when deno reports the named test's own `<name> ... ok` or `<name> ... FAILED`
-line. Red then green passes; green then green, red then red and green then red
+line. A Rust `#[test] fn` runs `cargo test --no-fail-fast [--test <stem>]
+<name>` from the nearest `Cargo.toml` package, counting only cargo's
+`test <path> ... ok` or `... FAILED` line for that test. Red then green passes; green then green, red then red and green then red
 block with the evidence kind `test-discriminates`. The prose
 `regression-test` evidence (`REGRESSION_TEST_REFERENCE` and
 `BEFORE_AFTER_LINKAGE`) was removed, and `buildSecurityFixGateMessage` no
@@ -260,11 +262,11 @@ head (expect green), and records both results. **Closes #3512:** no. It removes
 a self-reported claim on the security-fix surface only. **Closes #3615:** no,
 and it does not add an instance. A run that cannot execute (runner error,
 unresolvable base ref or merge base, timeout, the 600 s budget exhausted, cited
-test not reported, no string-named Deno test cited, runner not wired) blocks
+test not reported, no Deno or Rust test cited, runner not wired) blocks
 with the evidence kind `discrimination-not-checked`, never counting as the red
-run, so the check does not fail open. Only Deno tests can be executed today, so
-a security fix in a non-Deno repo blocks as not checked unless the repo sets
-`skip_security_fix_check`.
+run, so the check does not fail open. Only Deno and Rust tests can be executed
+today, so a security fix whose cited test is in another language blocks as not
+checked unless the repo sets `skip_security_fix_check`.
 
 ## Deliberately excluded
 

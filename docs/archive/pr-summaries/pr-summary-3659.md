@@ -26,8 +26,9 @@ run. The prose `regression-test` requirement is removed. Closes #3659.
 
 ### Essential Design Decisions
 
-- A run counts as pass or fail only when deno prints the named test's own
-  unindented `<name> ... ok` or `<name> ... FAILED` line. Several broken runs
+- A run counts as pass or fail only when the runner prints the named test's own
+  line: deno's unindented `<name> ... ok` or `<name> ... FAILED`, or cargo's
+  `test <path> ... ok` or `... FAILED` for a Rust test. Several broken runs
   exit cleanly or print nothing for the test: a filter that matches nothing
   (exit 0, `0 passed`), a missing import, a timeout, a git failure, an exhausted
   budget. All of them return `not_checked`, so a runner fault can never read as
@@ -37,18 +38,30 @@ run. The prose `regression-test` requirement is removed. Closes #3659.
   stays at its head version. The disposable checkout is a `git clone --shared`
   of the issue checkout, detached at the head, with no remote, and removed
   afterwards. The issue checkout is never modified.
-- Only Deno tests can be executed today (a string-named `Deno.test` in a
-  `*_test.*` / `*.test.*` file under a `deno.json`/`deno.jsonc`/`deno.lock`
-  project). A security fix in a non-Deno repository therefore blocks as
-  `discrimination-not-checked` unless the repository sets
+- Deno and Rust tests can be executed today. A Deno test is a string-named
+  `Deno.test` in a `*_test.*` / `*.test.*` file under a
+  `deno.json`/`deno.jsonc`/`deno.lock` project, run with `deno test --filter`. A
+  Rust test is a `#[test] fn` in a `.rs` file under a `Cargo.toml` package, run
+  with `cargo test --no-fail-fast [--test <stem>] <name>` in the nearest
+  `[package]` directory and read from the named `test <path> ... ok|FAILED` line
+  (PR #3921 review). A security fix whose cited test is in another language
+  blocks as `discrimination-not-checked`, with a reason that says the worker
+  runs only Deno and Rust tests and lists the cited files (or, when no
+  executable test was cited at all, says so), unless the repository sets
   `skip_security_fix_check`. That is fail-closed by design: "could not run"
   blocks.
 - The record travels on the block verdict in run state
-  (`SecurityGateRunVerdict.discrimination` in `state.securityGateBlocks`), the
-  same channel the gate's verdict already uses, and is rendered in the block
-  message as "Recorded discrimination runs" (scrubbed and code-fenced). A
-  passing run is logged at info and is not written to run state, because the
-  gate writes run state only when it blocks.
+  (`SecurityGateRunVerdict.discrimination` in `state.securityGateBlocks`) and is
+  rendered in the block message as "Recorded discrimination runs" (scrubbed and
+  code-fenced). It is also persisted in the verdict store
+  (`SecurityFixGateBlock.discrimination`, bounded on write and on read), so the
+  in-run retry and the next run replay it with a note on what each outcome
+  means; the retry prompt no longer calls the code "very likely already
+  correct" or offers "commit nothing" for a discrimination block (PR #3921
+  review). The field is optional in the version-1 file: an older file reads as
+  having none, so the store key is not bumped. A passing run is logged at info
+  and is not written to run state, because the gate writes run state only when
+  it blocks.
 
 ### Undiscoverable Facts
 
@@ -75,10 +88,10 @@ flowchart TD
     B -- yes --> C[resolve base ref, credentials, runner]
     C -- fails --> NC[discrimination-not-checked]
     C --> D[disposable clone --shared, detached at head]
-    D --> E["deno test --filter name (head)"]
+    D --> E["deno test --filter / cargo test name (head)"]
     E -- no named line / timeout --> NC
     E --> F[restore merge-base versions of changed non-test files]
-    F --> G["deno test --filter name (base)"]
+    F --> G["deno test --filter / cargo test name (base)"]
     G -- no named line / timeout --> NC
     G --> H{base fail and head pass?}
     H -- yes --> OK[gate passes]
@@ -86,10 +99,17 @@ flowchart TD
 ```
 
 - `worker/deno/lib/security_fix_discrimination.ts`: the new runner,
-  `runSecurityFixDiscrimination` and `namedTestOutcome`.
+  `runSecurityFixDiscrimination`, `namedTestOutcome` and, for Rust,
+  `namedRustTestOutcome`; `findCargoPackageDir` in `mutation_runner.ts` resolves
+  the package directory.
+- `worker/deno/lib/security_fix_gate_feedback.ts` and
+  `worker/deno/lib/security_fix_gate_retry.ts`: the bounded discrimination
+  record in the persisted verdict, its replay in the feedback section and retry
+  prompt, and the discrimination-specific escalation step.
 - `worker/deno/lib/security_fix_gate.ts`:
   - New `citedSecurityTests` (hunk-aware, so an added line reading `+++ b/…`
-    cannot re-attribute a test to another file).
+    cannot re-attribute a test to another file); a `.rs` section is cited by its
+    `fn` name.
   - New kinds `test-discriminates` and `discrimination-not-checked`, and
     `regression-test` removed.
   - The block message now renders the recorded runs.
@@ -99,6 +119,16 @@ flowchart TD
   `quality.runSecurityFixDiscrimination`.
 - `docs/audits/lib-sweep-coverage/top-up-3659.json`: registers the new module
   with the lib sweep ledger.
+
+**Docs sweep (PR #3921 review)** — grep: `only Deno`, `string-named`,
+`non-Deno`, `very likely already correct`, `commit nothing`,
+`SecurityGateRunVerdict.discrimination`; section:
+`docs/security-fix-gate-feedback.md#the-executed-red-to-green-check-issue-3659`
+and `#the-verdict-store`; siblings: `declarations`, `blockCount`; updated:
+`docs/security-fix-gate-feedback.md`, `docs/CONFIGURATION.md`,
+`docs/INTERNALS.md`, `docs/security/vulnhunter-methodology-evaluation.md`; no
+other hit — the `only Deno` text in `docs/archive/pr-summaries/pr-summary-870.md:77`
+and `-2344.md:83` is about Deno source and the Deno seed, unrelated to the gate.
 
 **Docs sweep** — grep: `regression-test`, `REGRESSION_TEST_REFERENCE`,
 `BEFORE_AFTER_LINKAGE`, "No execution is required", "fail-before/pass-after",
@@ -163,7 +193,7 @@ is a verb there, unrelated to the gate.
 The Spec reviewer also rated two proposal items `partial`. These are not
 acceptance criteria. (a) "Record both outcomes in run state": a passing run is
 logged but not written to run state, because the gate's verdict is carried in
-run state only on a block today. (b) "Reuse its runner where it fits": the seams
+run state and the verdict store only on a block today. (b) "Reuse its runner where it fits": the seams
 and config-dir lookup are reused, but the named-test invocation and output
 parsing are new, since `runMutationCheck` mutates lines rather than running one
 test.
@@ -202,8 +232,14 @@ test.
 
 ## Test Plan
 
-- New `worker/deno/tests/security_fix_discrimination_test.ts` (26 tests):
-  - `namedTestOutcome` cases built from observed deno output.
+- New `worker/deno/tests/security_fix_discrimination_test.ts` (37 tests):
+  - `namedTestOutcome` cases built from observed deno output, and
+    `namedRustTestOutcome` cases in the shape `cargo test` prints
+    (`test <path> ... ok|FAILED`).
+  - Rust scenarios with a fake cargo over a real git repository: red→green,
+    red at the head, a build failure quoting rustc's cause, no package
+    manifest, a virtual workspace manifest, a root package reached by climbing,
+    a name that is not a function name, and a test outside `tests/`.
   - Real-git scenario tests for red→green, green→green, red→red, could-not-run,
     a missing base ref, a timeout, no Deno marker, empty or branch-added
     production files, an exhausted budget, and an unexpected throw.
@@ -211,7 +247,9 @@ test.
 - `worker/deno/tests/security_fix_gate_test.ts`:
   - Discrimination evaluation (red→green, green→green, red→red, green→red,
     not_checked, null, missing identifier).
-  - `citedSecurityTests`, including the two header-spoofing evasion cases.
+  - `citedSecurityTests`, including the two header-spoofing evasion cases, a
+    Rust `#[test] fn` cited by its function name, and a Rust `fn` with no test
+    attribute and a pytest `def` (neither yields a runnable citation).
   - Message rendering.
 - New `worker/deno/tests/security_fix_gate_growth_test.ts`: linear-growth
   hostile case for `STRING_NAME_PATTERN` (wall-clock, serial lane).
@@ -223,8 +261,17 @@ test.
 - `worker/deno/tests/issue_worker_wiring_test.ts`: the production wiring reaches
   the real runner.
 - `worker/deno/tests/security_fix_gate_feedback_test.ts`: two old-shape
-  persisted-block tests (`regression-test` dropped on read).
-- `worker/deno/tests/security_fix_gate_retry_test.ts` and
+  persisted-block tests (`regression-test` dropped on read); and, for the
+  persisted discrimination record, a round trip that renders for the next
+  attempt, a file written before the field existed, a malformed or oversized
+  record, `sanitiseDiscrimination` over both live shapes and each refusal, and a
+  block without a discrimination kind that never renders the record.
+- `worker/deno/tests/security_fix_gate_retry_test.ts`: seven tests that the
+  retry prompt names the recorded base and head outcomes (green→green, red at
+  the head, not checked with its cause), keeps the wording-fault guidance for
+  other blocks, points the escalation at the recorded runs, and persists and
+  replays the record (also when the store cannot be written). Fixtures take
+  `discrimination: null`.
   `worker/deno/tests/completion_phase_security_gate_retry_test.ts`: fixtures
   updated for the new verdict field and the runner stub.
 - Removed assertions. The issue drops the prose `regression-test` requirement,
@@ -249,9 +296,13 @@ test.
   - The `productionFiles` filter.
   - The `citedTestIdentifierInDiff` operand.
   - Every runner branch listed in the facts file.
+- PR #3921 review: every branch the fix adds was flipped on its own and the
+  named test went red, including each operand of the compound conditions (the
+  runnable-test `find`, the cargo name match, `sanitiseDiscrimination`'s checked
+  guard and `blocksOnDiscrimination`); the entries are in the facts file.
 - Edited expectations: the gate-block `missing` list in
   `completion_phase_security_gate_test.ts` still goes red when the identifier
   guard is removed.
-- `./quality.sh < /dev/null` on commit `19fd7c89`: passed — every stage passed (parallel and serial Deno test passes included) except `config integration`, which skipped because the checkout has no `.config.json`.
+- `./quality.sh < /dev/null` on the PR #3921 review-fix tree: passed — every stage passed (parallel and serial Deno test passes included) except `config integration`, which skipped because the checkout has no `.config.json`.
 
 <!-- vibe-branch-outcomes -->

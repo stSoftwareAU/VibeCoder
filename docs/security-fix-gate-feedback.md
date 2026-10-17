@@ -98,10 +98,22 @@ remote and deleted afterwards. The issue checkout itself is untouched.
   it must fail. Files the branch added have no base version and stay at head.
 
 The run reuses the mutation gate's runner seams (`MutationRunnerSeams`,
-allowlisted child environment) and executes
-`deno test --no-check -A --filter <name> <file>` from the test's nearest
-`deno.json`, `deno.jsonc` or `deno.lock` directory. An outcome counts only when
-deno reports the named test's own `<name> ... ok` or `<name> ... FAILED` line.
+allowlisted child environment) and executes one of two commands, chosen by the
+cited test's file:
+
+- a Deno test: `deno test --no-check -A --filter <name> <file>` from the test's
+  nearest `deno.json`, `deno.jsonc` or `deno.lock` directory. An outcome counts
+  only when deno reports the named test's own `<name> ... ok` or
+  `<name> ... FAILED` line.
+- a Rust test (a `.rs` file; the cited name is the `fn` name after a `#[test]`
+  attribute): `cargo test --no-fail-fast [--test <stem>] <name>` from the
+  nearest `Cargo.toml` that declares a `[package]`. A file directly under
+  `tests/` is its own `--test <stem>` target. An outcome counts only when cargo
+  reports a `test <path> ... ok` or `... FAILED` line whose path is the name or
+  ends in `::<name>`; a failure beats a pass when several tests share the name,
+  and an `ignored` test is not a pass. A compile failure prints no such line, so
+  it is `not_checked`, quoting rustc's first `error[…]` line.
+
 The base ref comes from the completion phase's `resolveComparableBaseRef`, which
 fetches `origin/<base>` when the shallow checkout lacks it (Issue #3494).
 
@@ -109,14 +121,25 @@ Red then green passes. Green then green, red then red and green then red block
 with `test-discriminates`. A run that cannot execute blocks with
 `discrimination-not-checked` and is never counted as the red run (the #3615
 shape): a runner error, an unresolvable base ref or merge base, a timeout, the
-600 s budget exhausted, a cited test deno does not report, no string-named Deno
-test cited, or no runner wired. Only Deno tests can be executed today, so a
-security fix in a non-Deno repo blocks as not checked unless the repo sets
-`skip_security_fix_check`.
+600 s budget exhausted, a cited test deno or cargo does not report, a build
+failure, no Deno or Rust test cited, or no runner wired. Only Deno and Rust
+tests can be executed today, so a security fix whose cited test is in another
+language blocks as not checked unless the repo sets `skip_security_fix_check`.
+The reason says which: "the language of the cited test cannot be executed" when
+a test is cited but cannot be run, and "cites no test the worker can execute"
+when the summary cites none the worker can run.
 
 Both outcomes are recorded on the block verdict in run state
-(`SecurityGateRunVerdict.discrimination` in `state.securityGateBlocks`) and
-rendered in the block message as "Recorded discrimination runs". The prose
+(`SecurityGateRunVerdict.discrimination` in `state.securityGateBlocks`),
+rendered in the block message as "Recorded discrimination runs", **and
+persisted** in the verdict store below, so the in-run retry and the next run see
+the same record. The replay names which outcome each run gave and what it means:
+green then green (the test never reaches the vulnerable path), and red or green
+then red at the head (the branch does not satisfy its own test) need opposite
+repairs, and a `not_checked` block carries its recorded cause (for example
+`Module not found` or a rustc error). For these kinds the retry prompt does not
+say the code is "very likely already correct" and does not offer "commit
+nothing": an executed result is not a matching mistake. The prose
 `regression-test` evidence kind is gone; the self-reported `trigger-closed`
 statement remains.
 
@@ -131,8 +154,11 @@ Blocked verdicts live in a directory **beside** `workDir`, never inside it:
 The sibling placement is the same reasoning as the content-approval baseline —
 `nukeWorkDir` and an agent-driven `rm` inside the work tree must not be able to
 erase the record. Each file holds the missing evidence kinds, the ISO timestamp
-of the last block, the test declarations the gate matched, and a running
-`blockCount` so a repeat loop is visible in the retry prompt and the worker log.
+of the last block, the test declarations the gate matched, the bounded
+discrimination record (an optional field added to the version-1 file — a file
+written before it existed reads as having none, so the key is not bumped), and a
+running `blockCount` so a repeat loop is visible in the retry prompt and the
+worker log.
 
 Since Issue #1575, `blockCount` counts **blocked runs** — runs that ended in
 `failure` from the gate — not blocks. The first block inside a run is recovered
@@ -142,8 +168,10 @@ host-local: it clears the moment the gate passes, and a different host starts at
 zero.
 
 Reads are defensive even though the file is worker-written: unknown evidence
-kinds are discarded and a corrupt file reads as absent, so nothing that lands in
-that directory can inject text into the next prompt. A verdict that cannot be
+kinds are discarded, a discrimination record that does not fit its shape is
+dropped and its text is length-capped (it is scrubbed and code-fenced when
+rendered), and a corrupt file reads as absent, so nothing that lands in that
+directory can inject text into the next prompt. A verdict that cannot be
 persisted (an unconfigured `workDir`) is logged loudly rather than dropped
 silently — the PR is blocked either way, but an operator can see that the next
 attempt will start blind.
@@ -171,8 +199,8 @@ The retry always runs; it is never skipped on time-budget grounds. A run that
 passes on the retry raises its PR and posts **no** block comment for the first
 verdict. A run blocked twice ends in `failure` exactly as a block did before,
 with **one** comment carrying both verdicts. Only its category changed: the
-run's failure reason opens with the worker's `SECURITY_FIX_GATE_MARKER`, so it is
-categorised `security_fix_gate` (an `agent-outcome`, Issue #3454) and test
+run's failure reason opens with the worker's `SECURITY_FIX_GATE_MARKER`, so it
+is categorised `security_fix_gate` (an `agent-outcome`, Issue #3454) and test
 declarations quoted in it are not misread as a crash, timeout or rate limit.
 
 ### Recognising a false block
@@ -186,9 +214,9 @@ what nobody could tell during #1385.
 
 A retry the worker could not launch at all — a rate limit, a failed spawn — is
 not a second gate verdict: the block is still reported on the issue, but it
-charges no blocked run, so a flaky CLI cannot spend the hand-off budget below. Its reason is
-deliberately left unmarked, so the launch error is still classified on its own
-text.
+charges no blocked run, so a flaky CLI cannot spend the hand-off budget below.
+Its reason is deliberately left unmarked, so the launch error is still
+classified on its own text.
 
 ### Test declarations the gate recognises
 

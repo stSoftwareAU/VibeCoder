@@ -27,16 +27,19 @@
  *
  * Children run under the mutation runner's allowlisted environment
  * (`buildUntrustedCommandEnv`, applied by the {@link MutationRunnerSeams}
- * `runProcess`); the repository's declared credentials reach the `deno` runs
- * only, never git.
+ * `runProcess`); the repository's declared credentials reach the `deno` and
+ * `cargo` runs only, never git.
  *
- * Only Deno tests are runnable today.
+ * Deno tests (`deno test --filter`) and Rust tests (`cargo test <name>`, run in
+ * the nearest package directory) are runnable; a cited test in any other
+ * language is `not_checked`, naming its language as the cause.
  *
  * Australian English spelling used throughout.
  */
 
 import { isDenoTestFile } from "./mutation_gate.ts";
 import {
+  findCargoPackageDir,
   findDenoConfigDir,
   type MutationRunnerSeams,
   type ProcessResult,
@@ -70,7 +73,7 @@ export interface DiscriminationRunInput {
   /** Cited tests, in summary/diff order. */
   tests: CitedSecurityTest[];
   budgetSeconds: number;
-  /** Passed as `runProcess` `opts.env` to the deno runs only. */
+  /** Passed as `runProcess` `opts.env` to the deno and cargo runs only. */
   credentialEnv?: Record<string, string>;
 }
 
@@ -123,6 +126,40 @@ function matchStatus(rest: string, marker: string): boolean {
   return tail === "" || (tail.startsWith(" (") && tail.endsWith(")"));
 }
 
+/**
+ * The outcome `cargo test` reported for the test whose function is `name`: a
+ * `test <path> ... ok` or `... FAILED` line whose path is `name` or ends in
+ * `::name` (a test inside a `mod`). "fail" wins when several tests share the
+ * name and any failed; null for anything else (absent, `ignored`), so a filter
+ * that matches nothing, or a build that never reached the tests, is never a
+ * pass.
+ */
+export function namedRustTestOutcome(
+  stdout: string,
+  name: string,
+): DiscriminationRunOutcome | null {
+  let outcome: DiscriminationRunOutcome | null = null;
+  for (const raw of stripAnsi(stdout).split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (!line.startsWith("test ")) continue;
+    const sep = line.indexOf(" ... ");
+    if (sep < 0) continue;
+    const path = line.slice(5, sep);
+    if (path !== name && !path.endsWith(`::${name}`)) continue;
+    const status = line.slice(sep + 5);
+    if (status === "FAILED") return "fail";
+    if (status === "ok") outcome = "pass";
+  }
+  return outcome;
+}
+
+/** A Rust function name, as a `cargo test` filter. Leading `-` can never match. */
+const RUST_TEST_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function isRustFile(file: string): boolean {
+  return file.endsWith(".rs");
+}
+
 function notChecked(reason: string): SecurityFixDiscrimination {
   return { kind: "not_checked", reason };
 }
@@ -148,17 +185,26 @@ async function discriminate(
   seams: MutationRunnerSeams,
 ): Promise<SecurityFixDiscrimination> {
   const test = input.tests.find((t) =>
-    isDenoTestFile(t.file) && t.name.trim() !== ""
+    t.name.trim() !== "" && (isRustFile(t.file) || isDenoTestFile(t.file))
   );
   if (test === undefined) {
     if (input.tests.length === 0) {
       return notChecked(
-        "the PR summary cites no string-named test declared in the branch diff",
+        "the PR summary cites no test the worker can execute: only a " +
+          "string-named Deno test or a Rust `fn` test declared in the branch " +
+          "diff is run (a test in another language cannot be executed)",
       );
     }
     return notChecked(
-      "only Deno tests can be executed by the worker; no cited test is in a " +
-        `Deno test file (cited: ${input.tests.map((t) => t.file).join(", ")})`,
+      "the language of the cited test cannot be executed: the worker runs " +
+        "only Deno and Rust tests " +
+        `(cited: ${input.tests.map((t) => t.file).join(", ")})`,
+    );
+  }
+  const rust = isRustFile(test.file);
+  if (rust && !RUST_TEST_NAME.test(test.name)) {
+    return notChecked(
+      `the cited Rust test name "${clip(test.name)}" is not a function name`,
     );
   }
   if (input.baseRef === "" || input.baseRef.startsWith("-")) {
@@ -229,18 +275,28 @@ async function discriminate(
     );
     await git("remote remove", ["remote", "remove", "origin"], checkout);
 
-    const configDir = await findDenoConfigDir(checkout, test.file, seams);
-    if (configDir === null) {
-      return notChecked(
-        `no deno.json, deno.jsonc or deno.lock above ${test.file}`,
-      );
-    }
     const normalised = test.file.split("/").filter((p) => p !== "" && p !== ".")
       .join("/");
+    const configDir = rust
+      ? await findCargoPackageDir(checkout, test.file, seams)
+      : await findDenoConfigDir(checkout, test.file, seams);
+    if (configDir === null) {
+      return notChecked(
+        rust
+          ? `no Cargo.toml declaring a package above ${test.file}`
+          : `no deno.json, deno.jsonc or deno.lock above ${test.file}`,
+      );
+    }
     const relTest = configDir === ""
       ? normalised
       : normalised.slice(configDir.length + 1);
     const cwd = configDir === "" ? checkout : `${checkout}/${configDir}`;
+    const [cmd, args] = rust
+      ? ["cargo", rustTestArgs(relTest, test.name)] as const
+      : [
+        "deno",
+        ["test", "--no-check", "-A", "--filter", test.name, relTest],
+      ] as const;
 
     const runTest = async (
       where: string,
@@ -249,8 +305,8 @@ async function discriminate(
     > => {
       guard(`the ${where} run`);
       const res: ProcessResult = await seams.runProcess(
-        "deno",
-        ["test", "--no-check", "-A", "--filter", test.name, relTest],
+        cmd,
+        [...args],
         {
           cwd,
           timeoutMs: remaining(),
@@ -260,7 +316,9 @@ async function discriminate(
         },
       );
       if (res.timedOut) return { reason: `the ${where} run timed out` };
-      const outcome = namedTestOutcome(res.stdout, test.name);
+      const outcome = rust
+        ? namedRustTestOutcome(res.stdout, test.name)
+        : namedTestOutcome(res.stdout, test.name);
       if (outcome === null) {
         return {
           reason: `the cited test did not run at the ${where}: ${
@@ -311,9 +369,27 @@ async function discriminate(
   }
 }
 
+/**
+ * `cargo test` arguments for one function. A file directly under `tests/` is its
+ * own integration-test target, so `--test <stem>` skips building every other
+ * target; any other layout runs the name as a filter across the package.
+ */
+function rustTestArgs(relTest: string, name: string): string[] {
+  const target = /^tests\/([A-Za-z0-9_-]+)\.rs$/.exec(relTest)?.[1];
+  return [
+    "test",
+    "--no-fail-fast",
+    ...(target === undefined ? [] : ["--test", target]),
+    name,
+  ];
+}
+
 function runFailureCause(res: ProcessResult, name: string): string {
   const lines = stripAnsi(res.stderr).split("\n").map((l) => l.trim());
-  const errorLine = lines.find((l) => l.startsWith("error:"));
+  // `error:` is deno's and cargo's summary; `error[E…]:` is rustc's own cause.
+  const errorLine = lines.find((l) =>
+    l.startsWith("error:") || l.startsWith("error[")
+  );
   if (errorLine !== undefined) return errorLine;
   const first = lines.find((l) => l !== "");
   if (first !== undefined) return first;

@@ -119,7 +119,7 @@
       "line": 215,
       "snippet": "\"import { assertLinear\" + 'Growth } from \"./support/gro' + 'wth.ts\";',",
       "evidence": [
-        "worker/deno/lib/parallel_unsafe_test_manifest.ts:414"
+        "worker/deno/lib/parallel_unsafe_test_manifest.ts:439"
       ],
       "reason": "Deliberate, and the missing space is the point: the fixture is assembled from halves so this test file does not itself contain the literal `assertLinearGrowth`, which the manifest scan under test searches for. Written whole, the fixture would classify its own test file as measuring wall-clock time. Same triage as the `export_branding_test.ts` split fixtures (Issue #1518 triage, js/missing-space-in-concatenation)."
     }
