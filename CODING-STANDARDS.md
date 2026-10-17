@@ -1045,6 +1045,38 @@ recovery must name the code that does it. List the steps and their finishers
 in the PR summary. A step whose failure leaves work that no path ever
 completes is a blocking self-review finding (Issue #3562).
 
+**A new caller of a shared mutation names its concurrent callers.** When a
+change makes a path reach code that mutates shared state (the shared clone, a
+PR head or branch, a state or ledger file, a cross-host budget), list every
+caller that can be in that code at the same time: other pool lanes on the same
+repository, maintenance passes, other hosts. A test that drives one caller
+stays green while two of them race. Then do both:
+
+- **Serialise it:** take the lock the existing callers use, or add one where
+  none exists: a per-process `Map<key, Promise>` queue for lanes in one
+  process (in the Vibe Coder worker, `runExclusive` in
+  `worker/deno/lib/ensure_repo_clone.ts`), and the cross-host PR lock for a PR
+  (`acquireBranchUpdateLock` in `worker/deno/lib/pr_branch_lock.ts`). A lock
+  the existing callers take is one of the guards **A new path to an existing
+  outcome keeps that outcome's guards** says the new path keeps.
+- **Decide under the lock:** once the lock is held, re-read whatever made the
+  action due or needed (the clone still corrupt, the head unchanged, the
+  attempt tally, the window not yet spent), and stand down if it no longer is.
+  A reading taken before the lock is stale once the lock is held:
+  `ensureRepoClone` re-probes the clone after it waits, so a second lane
+  reuses the fresh clone instead of being refused as a repeat corruption.
+
+Prove it with a test that runs two callers at once, holds the first inside the
+mutation until the second has started, using a barrier rather than a sleep
+(in the Vibe Coder worker, `createRendezvous` in
+`worker/deno/tests/support/rendezvous.ts`; see **Rendezvous, never sleep, to
+prove concurrency** in `CODING-STANDARDS.md`), and asserts the action happens
+once. Then drop the lock, and separately move the re-read back before it, and
+confirm the test goes red each time. List the concurrent callers and the lock
+each takes in the PR summary. A new route into a shared mutation with no lock,
+a decision read before the lock, or no two-caller test is a blocking
+self-review finding (Issue #3714).
+
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head, named **relative to the
