@@ -33,3 +33,17 @@ Deno.test("citedSecurityTests - a long unclosed quote run on a declaration line 
   );
   assertEquals(result.length <= 1, true);
 });
+
+Deno.test("citedSecurityTests - a long run of '::' citations in the summary grows linearly (PR #3921)", () => {
+  const result = assertLinearGrowth(
+    "FULL_CITED_NAME_PATTERN over a '::' run",
+    (chars) => "::".repeat(chars / 2) + "\n",
+    (summary) =>
+      citedSecurityTests(
+        summary,
+        '+++ b/tests/a_test.ts\n+Deno.test("rejects_injection", () => {});',
+      ),
+    { baseChars: 12_500 },
+  );
+  assertEquals(result.length <= 1, true);
+});

@@ -34,6 +34,10 @@
  * the nearest package directory) are runnable; a cited test in any other
  * language is `not_checked`, naming its language as the cause.
  *
+ * Every cited test is run in turn under one shared budget, and the fix is
+ * discriminated when any one of them goes red at the base and green at the head
+ * (see {@link runSecurityFixDiscrimination}).
+ *
  * Australian English spelling used throughout.
  */
 
@@ -54,13 +58,20 @@ export interface CitedSecurityTest {
   name: string;
 }
 
+/** One cited test's two runs: the base's production files, then the head. */
+export interface DiscriminationRun {
+  test: CitedSecurityTest;
+  preFix: DiscriminationRunOutcome;
+  postFix: DiscriminationRunOutcome;
+}
+
+/**
+ * `checked` carries the deciding run (a red-to-green test if the summary cited
+ * one, else the first) and, when the summary cited several tests, every other
+ * run in `others`. The gate decides on the deciding run alone.
+ */
 export type SecurityFixDiscrimination =
-  | {
-    kind: "checked";
-    test: CitedSecurityTest;
-    preFix: DiscriminationRunOutcome;
-    postFix: DiscriminationRunOutcome;
-  }
+  | ({ kind: "checked"; others?: DiscriminationRun[] } & DiscriminationRun)
   | { kind: "not_checked"; reason: string };
 
 export interface DiscriminationRunInput {
@@ -126,10 +137,20 @@ function matchStatus(rest: string, marker: string): boolean {
   return tail === "" || (tail.startsWith(" (") && tail.endsWith(")"));
 }
 
+/** libtest appends this to the path of a `#[should_panic]` test's line. */
+const SHOULD_PANIC_SUFFIX = " - should panic";
+
+function stripShouldPanic(path: string): string {
+  return path.endsWith(SHOULD_PANIC_SUFFIX)
+    ? path.slice(0, -SHOULD_PANIC_SUFFIX.length)
+    : path;
+}
+
 /**
  * The outcome `cargo test` reported for the test whose function is `name`: a
  * `test <path> ... ok` or `... FAILED` line whose path is `name` or ends in
- * `::name` (a test inside a `mod`). "fail" wins when several tests share the
+ * `::name` (a test inside a `mod`), with libtest's ` - should panic` suffix on
+ * a `#[should_panic]` test ignored. "fail" wins when several tests share the
  * name and any failed; null for anything else (absent, `ignored`), so a filter
  * that matches nothing, or a build that never reached the tests, is never a
  * pass.
@@ -144,7 +165,7 @@ export function namedRustTestOutcome(
     if (!line.startsWith("test ")) continue;
     const sep = line.indexOf(" ... ");
     if (sep < 0) continue;
-    const path = line.slice(5, sep);
+    const path = stripShouldPanic(line.slice(5, sep));
     if (path !== name && !path.endsWith(`::${name}`)) continue;
     const status = line.slice(sep + 5);
     if (status === "FAILED") return "fail";
@@ -167,32 +188,38 @@ function notChecked(reason: string): SecurityFixDiscrimination {
 /** Carries a not_checked reason out of the step helpers. */
 class NotChecked extends Error {}
 
+/** Whether the worker can execute this cited test (a Deno or Rust one). */
+function isRunnable(t: CitedSecurityTest): boolean {
+  return t.name.trim() !== "" && (isRustFile(t.file) || isDenoTestFile(t.file));
+}
+
+/** The budget shared by every cited test's runs. */
+interface Clock {
+  totalSeconds: number;
+  remaining: () => number;
+}
+
+/**
+ * Run every cited test the worker can execute (the caller bounds the count), in
+ * order, within one shared budget. The fix is discriminated when any one of
+ * them goes red at the base and green at the head: each cited test is a test
+ * the summary names in full, so one that discriminates is evidence enough, and
+ * the other runs are recorded beside it. When none does, a test that could not
+ * be run makes the whole result `not_checked`, because that test may be the
+ * one that discriminates.
+ */
 export async function runSecurityFixDiscrimination(
   input: DiscriminationRunInput,
   seams: MutationRunnerSeams,
 ): Promise<SecurityFixDiscrimination> {
-  try {
-    return await discriminate(input, seams);
-  } catch (err) {
-    if (err instanceof NotChecked) return notChecked(err.message);
-    const message = err instanceof Error ? err.message : String(err);
-    return notChecked(`discrimination runner failed: ${message}`);
-  }
-}
-
-async function discriminate(
-  input: DiscriminationRunInput,
-  seams: MutationRunnerSeams,
-): Promise<SecurityFixDiscrimination> {
-  const test = input.tests.find((t) =>
-    t.name.trim() !== "" && (isRustFile(t.file) || isDenoTestFile(t.file))
-  );
-  if (test === undefined) {
+  const runnable = input.tests.filter(isRunnable);
+  if (runnable.length === 0) {
     if (input.tests.length === 0) {
       return notChecked(
         "the PR summary cites no test the worker can execute: only a " +
           "string-named Deno test or a Rust `fn` test declared in the branch " +
-          "diff is run (a test in another language cannot be executed)",
+          "diff, and named in full in the summary, is run (a test in another " +
+          "language cannot be executed)",
       );
     }
     return notChecked(
@@ -201,6 +228,92 @@ async function discriminate(
         `(cited: ${input.tests.map((t) => t.file).join(", ")})`,
     );
   }
+  if (input.baseRef === "" || input.baseRef.startsWith("-")) {
+    return notChecked(`unusable base ref "${input.baseRef}"`);
+  }
+
+  const start = seams.now();
+  const clock: Clock = {
+    totalSeconds: input.budgetSeconds,
+    remaining: () => input.budgetSeconds * 1000 - (seams.now() - start),
+  };
+  const runs: Array<
+    { test: CitedSecurityTest; result: SecurityFixDiscrimination }
+  > = [];
+  for (const test of runnable) {
+    try {
+      runs.push({
+        test,
+        result: await discriminate(input, test, seams, clock),
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      runs.push({
+        test,
+        result: notChecked(
+          err instanceof NotChecked
+            ? message
+            : `discrimination runner failed: ${message}`,
+        ),
+      });
+    }
+  }
+  return combineRuns(runs);
+}
+
+function combineRuns(
+  runs: Array<{ test: CitedSecurityTest; result: SecurityFixDiscrimination }>,
+): SecurityFixDiscrimination {
+  const only = runs[0];
+  if (runs.length === 1 && only !== undefined) return only.result;
+  const checked: DiscriminationRun[] = [];
+  for (const { result } of runs) {
+    if (result.kind === "checked") {
+      checked.push({
+        test: result.test,
+        preFix: result.preFix,
+        postFix: result.postFix,
+      });
+    }
+  }
+  const winner = checked.find((c) =>
+    c.preFix === "fail" && c.postFix === "pass"
+  );
+  if (winner !== undefined) return withOthers(winner, checked);
+  if (checked.length < runs.length) {
+    // A test that did not run may be the one that discriminates.
+    return notChecked(
+      `${runs.length - checked.length} of ${runs.length} cited tests could ` +
+        `not be run: ${
+          runs.map(({ test, result }) =>
+            `${test.file}::${clip(test.name)} ${
+              result.kind === "checked"
+                ? `base ${result.preFix}, head ${result.postFix}`
+                : clip(result.reason)
+            }`
+          ).join("; ")
+        }`,
+    );
+  }
+  return withOthers(checked[0] as DiscriminationRun, checked);
+}
+
+function withOthers(
+  deciding: DiscriminationRun,
+  all: DiscriminationRun[],
+): SecurityFixDiscrimination {
+  const others = all.filter((c) => c !== deciding);
+  return others.length === 0
+    ? { kind: "checked", ...deciding }
+    : { kind: "checked", ...deciding, others };
+}
+
+async function discriminate(
+  input: DiscriminationRunInput,
+  test: CitedSecurityTest,
+  seams: MutationRunnerSeams,
+  clock: Clock,
+): Promise<SecurityFixDiscrimination> {
   const rust = isRustFile(test.file);
   if (rust && !RUST_TEST_NAME.test(test.name)) {
     return notChecked(
@@ -211,13 +324,11 @@ async function discriminate(
     return notChecked(`unusable base ref "${input.baseRef}"`);
   }
 
-  const budgetMs = input.budgetSeconds * 1000;
-  const start = seams.now();
-  const remaining = () => budgetMs - (seams.now() - start);
+  const remaining = clock.remaining;
   const guard = (what: string) => {
     if (remaining() <= 0) {
       throw new NotChecked(
-        `the discrimination budget of ${input.budgetSeconds}s ran out before ${what}`,
+        `the discrimination budget of ${clock.totalSeconds}s ran out before ${what}`,
       );
     }
   };

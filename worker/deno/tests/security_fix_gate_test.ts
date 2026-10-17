@@ -684,13 +684,76 @@ Deno.test("citedSecurityTests - a deleted file section is skipped", () => {
 });
 
 Deno.test("citedSecurityTests - caps the number of cited tests", () => {
-  const names = Array.from({ length: 15 }, (_, i) => `rejects_injection_${i}`);
   const summary = "`tests/db_test.ts::rejects_injection`";
-  const lines = names.map((n) =>
-    `+Deno.test("rejects_injection ${n}", () => {});`
+  const sections = Array.from(
+    { length: 15 },
+    (_, i) =>
+      `+++ b/tests/db_${i}_test.ts\n+Deno.test("rejects_injection", () => {});`,
   );
-  const diff = `+++ b/tests/db_test.ts\n${lines.join("\n")}`;
-  assertEquals(citedSecurityTests(summary, diff).length, 10);
+  assertEquals(citedSecurityTests(summary, sections.join("\n")).length, 10);
+});
+
+// A cited test is chosen by its full name, not by a word it shares (PR #3921).
+
+const SPACED_SUMMARY =
+  "Added `tests/sanitise_test.ts::sanitise - rejects dot-dot traversal`.";
+
+Deno.test("citedSecurityTests - a spaced name picks only the declaration with that whole name", () => {
+  const diff = `+++ b/tests/sanitise_test.ts
++Deno.test("sanitise - accepts a plain relative path", () => {});
++Deno.test("sanitise - rejects dot-dot traversal", () => {});`;
+  assertEquals(citedSecurityTests(SPACED_SUMMARY, diff), [
+    {
+      file: "tests/sanitise_test.ts",
+      name: "sanitise - rejects dot-dot traversal",
+    },
+  ]);
+});
+
+Deno.test("citedSecurityTests - the static gate still accepts the shared-word citation", () => {
+  // Control: the loose static match sees the uncited declaration too, so only
+  // the exact match in citedSecurityTests keeps it from being run.
+  const diff =
+    `+Deno.test("sanitise - accepts a plain relative path", () => {});`;
+  assertEquals(citedTestIdentifierInDiff(SPACED_SUMMARY, diff), true);
+  assertEquals(
+    citedSecurityTests(SPACED_SUMMARY, `+++ b/tests/sanitise_test.ts\n${diff}`),
+    [],
+  );
+});
+
+Deno.test("citedSecurityTests - several full-name citations each pick their own declaration, in diff order", () => {
+  const summary = `- \`tests/a_test.ts::first case rejects traversal\`
+- \`tests/b_test.ts::second case rejects traversal\``;
+  const diff = `+++ b/tests/a_test.ts
++Deno.test("first case rejects traversal", () => {});
++Deno.test("first case accepts a plain path", () => {});
++++ b/tests/b_test.ts
++Deno.test("second case rejects traversal", () => {});`;
+  assertEquals(citedSecurityTests(summary, diff), [
+    { file: "tests/a_test.ts", name: "first case rejects traversal" },
+    { file: "tests/b_test.ts", name: "second case rejects traversal" },
+  ]);
+});
+
+Deno.test("citedSecurityTests - a name written in prose without backticks falls back to its first word", () => {
+  const summary = "Added tests/db_test.ts::rejects_injection to cover it.";
+  const diff = `+++ b/tests/db_test.ts
++Deno.test("rejects_injection", () => {});
++Deno.test("rejects_injection_other", () => {});`;
+  assertEquals(citedSecurityTests(summary, diff), [
+    { file: "tests/db_test.ts", name: "rejects_injection" },
+  ]);
+});
+
+Deno.test("citedSecurityTests - a quoted name matches only that declaration", () => {
+  const summary = '`tests/db_test.bats::"handles empty input"`';
+  const diff = `+++ b/tests/db_test.ts
++Deno.test("handles empty input", () => {});
++Deno.test("handles empty input and more", () => {});`;
+  assertEquals(citedSecurityTests(summary, diff), [
+    { file: "tests/db_test.ts", name: "handles empty input" },
+  ]);
 });
 
 // --- buildSecurityFixGateMessage --------------------------------------------
@@ -729,6 +792,26 @@ Deno.test("buildSecurityFixGateMessage - shows the recorded runs for a checked r
   assertStringIncludes(message, "tests/db_test.ts::rejects_injection");
   assertStringIncludes(message, "base production files: pass (expected fail)");
   assertStringIncludes(message, "head: pass (expected pass)");
+});
+
+Deno.test("buildSecurityFixGateMessage - lists every cited test's runs when several were run (PR #3921)", () => {
+  const message = buildSecurityFixGateMessage(
+    ["test-discriminates"],
+    [],
+    {
+      ...RED_GREEN,
+      preFix: "pass",
+      postFix: "pass",
+      others: [{
+        test: { file: "tests/db_test.ts", name: "second cited case" },
+        preFix: "pass",
+        postFix: "fail",
+      }],
+    },
+  );
+  assertStringIncludes(message, "tests/db_test.ts::rejects_injection");
+  assertStringIncludes(message, "tests/db_test.ts::second cited case");
+  assertStringIncludes(message, "head: fail (expected pass)");
 });
 
 Deno.test("buildSecurityFixGateMessage - shows the reason for a not_checked record (Issue #3659)", () => {

@@ -56,6 +56,7 @@
 import { codeFenceFor, scrubUntrustedText } from "./prompt_delimiter.ts";
 import type {
   CitedSecurityTest,
+  DiscriminationRun,
   SecurityFixDiscrimination,
 } from "./security_fix_discrimination.ts";
 
@@ -159,6 +160,14 @@ const TEST_IDENTIFIER_PATTERNS: RegExp[] = [
   /\b(?:Deno\.test|@test|it|test)\s*\(?\s*["'`]([^"'`\n]{3,160})["'`]/g,
 ];
 
+/**
+ * The whole name after a `::` citation, up to the closing backtick or the end of
+ * the line, so a spaced name (`foo_test.ts::sanitise - rejects traversal`) is
+ * read in full rather than as its first word (PR #3921 review). No `\s*` before
+ * the class: the capture is trimmed by {@link normalise}.
+ */
+const FULL_CITED_NAME_PATTERN = /::([^`\n]{3,200})/g;
+
 /** Lowercase and collapse punctuation so `a_b` and `a b` compare equal. */
 function normalise(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -211,6 +220,39 @@ export function extractTestIdentifiers(content: string): string[] {
     }
   }
   return [...identifiers];
+}
+
+/**
+ * The names a PR summary cites for the tests it says it added (PR #3921
+ * review), as normalised whole names for an exact comparison with a declared
+ * name — unlike {@link extractTestIdentifiers}, which the static gate matches
+ * as a whole token inside a declaration line.
+ *
+ * `full` holds each `::` citation read to its closing backtick or end of line,
+ * and each quoted or inline name. `tokens` holds the first word of a `::`
+ * citation (`::rejects_injection`), for a name written in prose with no closing
+ * backtick; it is the first word of a spaced name too, so the caller consults it
+ * only when no full name matched a declaration.
+ */
+export function extractCitedTestNames(
+  content: string,
+): { full: Set<string>; tokens: Set<string> } {
+  const scanned = content.slice(0, MAX_SCAN_CHARS);
+  const collect = (patterns: RegExp[]): Set<string> => {
+    const found = new Set<string>();
+    for (const pattern of patterns) {
+      for (const match of scanned.matchAll(pattern)) {
+        const candidate = normalise(match[1] ?? "");
+        if (isMeaningfulIdentifier(candidate)) found.add(candidate);
+      }
+    }
+    return found;
+  };
+  const [token, ...quoted] = TEST_IDENTIFIER_PATTERNS;
+  return {
+    full: collect([FULL_CITED_NAME_PATTERN, ...quoted]),
+    tokens: collect(token ? [token] : []),
+  };
 }
 
 /**
@@ -379,9 +421,11 @@ export const MAX_CITED_SECURITY_TESTS = 10;
  *
  * The file sections come from the `+++ b/<path>` headers of the unified diff;
  * `+++ /dev/null` (a deletion) names no file and is skipped. The match rule is
- * the one {@link citedTestIdentifierInDiff} applies: a summary identifier must
- * be a whole token of the normalised declaration line. The name returned is the
- * first string literal on that line, as written — or, in a `.rs` file, the
+ * stricter than the static one {@link citedTestIdentifierInDiff} applies: the
+ * declared name, normalised, must EQUAL a name the summary cites
+ * ({@link extractCitedTestNames}), so a declaration sharing only a word with the
+ * cited name is not run in its place. The name returned is the first string
+ * literal on the declaration line, as written — or, in a `.rs` file, the
  * function name after `fn`.
  *
  * Only declarations the worker can run by name are returned: a string-named
@@ -396,8 +440,8 @@ export function citedSecurityTests(
   content: string,
   testDiffText: string,
 ): CitedSecurityTest[] {
-  const identifiers = extractTestIdentifiers(content);
-  if (identifiers.length === 0) return [];
+  const cited = extractCitedTestNames(content);
+  if (cited.full.size === 0 && cited.tokens.size === 0) return [];
 
   const sections: { file: string; lines: string[] }[] = [];
   // Hunk-aware split: inside a hunk every line is content, so an added line
@@ -443,25 +487,33 @@ export function citedSecurityTests(
     }
   }
 
-  const found: CitedSecurityTest[] = [];
-  const seen = new Set<string>();
+  const declared: Array<CitedSecurityTest & { normalised: string }> = [];
   for (const section of sections) {
     if (!section.file) continue;
     for (const declaration of testDeclarationLines(section.lines.join("\n"))) {
-      const normalised = normalise(declaration);
-      if (!identifiers.some((id) => containsWholeToken(normalised, id))) {
-        continue;
-      }
       const name = section.file.endsWith(".rs")
         ? RUST_FN_NAME_PATTERN.exec(declaration)?.[1] ?? ""
         : STRING_NAME_PATTERN.exec(declaration)?.[2] ?? "";
       if (!name.trim()) continue;
-      const key = `${section.file}\u0000${name}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      found.push({ file: section.file, name });
-      if (found.length >= MAX_CITED_SECURITY_TESTS) return found;
+      declared.push({ file: section.file, name, normalised: normalise(name) });
     }
+  }
+
+  // The declared name must equal the cited name, not merely contain a word of
+  // it: a looser match picks tests the summary never meant (PR #3921 review).
+  let chosen = declared.filter((d) => cited.full.has(d.normalised));
+  if (chosen.length === 0) {
+    chosen = declared.filter((d) => cited.tokens.has(d.normalised));
+  }
+
+  const found: CitedSecurityTest[] = [];
+  const seen = new Set<string>();
+  for (const { file, name } of chosen) {
+    const key = `${file}\u0000${name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    found.push({ file, name });
+    if (found.length >= MAX_CITED_SECURITY_TESTS) break;
   }
   return found;
 }
@@ -620,11 +672,15 @@ export function isSecurityFixEvidenceKind(
 export function formatDiscriminationRecord(
   discrimination: SecurityFixDiscrimination,
 ): string {
+  const runLines = (run: DiscriminationRun) => [
+    `${run.test.file}::${run.test.name}`,
+    `base production files: ${run.preFix} (expected fail)`,
+    `head: ${run.postFix} (expected pass)`,
+  ];
   const lines = discrimination.kind === "checked"
     ? [
-      `${discrimination.test.file}::${discrimination.test.name}`,
-      `base production files: ${discrimination.preFix} (expected fail)`,
-      `head: ${discrimination.postFix} (expected pass)`,
+      ...runLines(discrimination),
+      ...(discrimination.others ?? []).flatMap((o) => ["", ...runLines(o)]),
     ]
     : [discrimination.reason];
   const body = scrubUntrustedText(lines.join("\n"));

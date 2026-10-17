@@ -378,6 +378,7 @@ async function runSecurityDiscrimination(input: {
         test: result.test,
         preFix: result.preFix,
         postFix: result.postFix,
+        others: result.others,
       });
     } else {
       logger.warn("Security-fix discrimination check did not run", {
