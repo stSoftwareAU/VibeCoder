@@ -8,35 +8,48 @@ concurrency:
   group: milestone-pre-pr-validation-${{ github.sha }}
   cancel-in-progress: false
 jobs:
-  diagnostic:
-    name: Diagnose baseline subprocess environment
+  full-quality:
+    name: Full quality (milestone ${{ matrix.milestone }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - milestone: 106
+            revision: e842eb79adaf80084acc655af49c7d1064cd7a31
+          - milestone: 111
+            revision: 93f03976833f2dffaa4effd39d344b6b2a3f3bc4
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Checkout exact source revision
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 6effe8f3b2e261c89a22a2ea10e25c88c911ba00
+          ref: ${{ matrix.revision }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+      - name: Install repository Deno version
+        # denoland/setup-deno@v2.0.5
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
         with:
           deno-version-file: .deno-version
-      - name: Record binary and trace entrypoint tests
+      - name: Install repository Node version
+        # actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .node-version
+      - name: Install pinned quality tools
         run: |
           set -euo pipefail
-          command -v deno
-          sha256sum "$(command -v deno)"
-          deno --version
-          sudo apt-get update -qq
-          sudo apt-get install -y strace
-          cd worker/deno
-          strace -f -e trace=unlink,unlinkat,rename,renameat,renameat2,execve -o /tmp/entrypoint.trace deno task test tests/run_entrypoint_test.ts < /dev/null
-      - name: Inspect tool state and trace
-        if: always()
-        run: |
-          command -v deno || true
-          ls -l /opt/hostedtoolcache/deno/2.9.6/x64 || true
-          deno --version || true
-          sha256sum /opt/hostedtoolcache/deno/2.9.6/x64/deno || true
-          grep -E '(/deno|deno upgrade|deno clean)' /tmp/entrypoint.trace | tail -150 || true
-          git status --short
+          npm install -g --ignore-scripts markdownlint-cli2@0.23.2
+          pipx install semgrep==1.173.0
+          command -v pwsh
+          # Existing bootstrap-command tests deliberately replace PATH with
+          # system directories. Keep the exact pinned binary reachable there.
+          sudo install -m 0755 "$(command -v deno)" /usr/local/bin/deno
+          cmp "$(command -v deno)" /usr/local/bin/deno
+          git remote set-head origin main
+      - name: Run unchanged repository quality gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./quality.sh < /dev/null
