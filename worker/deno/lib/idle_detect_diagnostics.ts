@@ -45,8 +45,10 @@
  *   6. This run is not holding the issue back (Issue #655) — the
  *      `isIssueInCooldown` predicate `find_oldest_issue.ts` filters every
  *      tier's candidates against, covering the persisted retry cooldown and
- *      the per-run processed-issue registry. Requires the caller to supply
- *      `runLocalHoldFn`; without it this gate is skipped.
+ *      the per-run processed-issue registry. The predicate is also handed
+ *      the issue's milestone title so a paced milestone can be held (Issue
+ *      #3587). Requires the caller to supply `runLocalHoldFn`; without it
+ *      this gate is skipped.
  *
  * The probe deliberately stops short of the remaining run-local filters
  * (the closed-PR cooldown, the per-cycle adaptive floor) so the diagnostic
@@ -1157,8 +1159,16 @@ export interface AuditClaimableStateOptions {
    * and must be cheap; a throw is caught and falls back to no hold, exactly
    * as the PR fetches do — omitting the gate restores the old over-count
    * rather than silently reporting a repo as having nothing to do.
+   *
+   * It also receives the issue's milestone title (`""` when none), so
+   * production can hold every issue of a milestone the persisted pacing
+   * ledger paces (Issue #3587) — the claim scan's `milestone-behind` skip.
    */
-  runLocalHoldFn?: (repo: string, issueNumber: number) => boolean;
+  runLocalHoldFn?: (
+    repo: string,
+    issueNumber: number,
+    milestone: string,
+  ) => boolean;
   /**
    * Whether the weekly-quota pace guard is engaged for this cycle (Issues
    * #1885, #1915) — forwarded verbatim to
@@ -1332,7 +1342,7 @@ export async function auditClaimableState(
       try {
         runLocalHolds = new Set(
           issues
-            .filter((i) => opts.runLocalHoldFn!(repo, i.number))
+            .filter((i) => opts.runLocalHoldFn!(repo, i.number, i.milestone))
             .map((i) => i.number),
         );
       } catch {

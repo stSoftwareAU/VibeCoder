@@ -754,11 +754,12 @@ The gate now answers from the same `classifyIssues` the idle-detect audit runs
 (restricted to `REAL_WORK_LABELS`), and the filer supplies it the scan's own
 inputs: the fleet identity, the fleet's open and merged PRs — read through the
 shared issue cache the scan populates — and this run's hold set, passed down
-from the worker loop. The issue probe is one unfiltered `gh issue list` per
-repo, because occupancy is a property of the whole work stream and the issue
-that occupies it need carry no discovery label at all; the PR probes run only
-for a repository whose issues survive the cheap gates, so an empty or plainly
-busy repository still costs exactly one call. Any gate whose data is missing
+from the worker loop, which since Issue #3587 also holds the issues of a paced
+milestone. The issue probe is one unfiltered `gh issue list` per repo, because
+occupancy is a property of the whole work stream and the issue that occupies it
+need carry no discovery label at all; the PR probes run only for a repository
+whose issues survive the cheap gates, so an empty or plainly busy repository
+still costs exactly one call. Any gate whose data is missing
 is simply not applied, which leaves that gate's over-count in place — the
 direction that suppresses filing rather than flooding it. It repairs the
 filing half of the idle-vs-work-on inversion, where the per-repo busy check
@@ -1000,15 +1001,19 @@ cycle for #622 and #623 — both handed back earlier that day, neither carrying 
 single GitHub-visible blocker — and filed VibeCoder#655 against a scan that was
 right. `run_core_production_deps.ts` now resolves the hold set **once** and
 hands the same set to all three readers, and excluded issues are reported as
-`run_local_hold=<n>`. Issue #3464 adds a third source, in the census only: the
-issues whose milestone the persisted pacing ledger
-(`milestone_sync_failures.json`, Issue #1780) holds, which the scan skips as
-`milestone-behind`. The census reads that ledger through the scan's own
-`milestonePacedUntil`, so a persistently paced milestone no longer raises a
-false `inversion_signal`. `idle_detect_diagnostics.ts` and
-`repo_busy_for_idle_task.ts` do not read the ledger yet. The per-cycle adaptive-floor deferral (Issue #245) is the
-one source still unmodelled; it is rebuilt every cycle, so it cannot hold a
-streak open the way the registry did.
+`run_local_hold=<n>`. Issue #3464 adds a third source: the issues whose
+milestone the persisted pacing ledger (`milestone_sync_failures.json`, Issue
+#1780) holds, which the scan skips as `milestone-behind`. The census reads that
+ledger through the scan's own `milestonePacedUntil`, so a persistently paced
+milestone no longer raises a false `inversion_signal`. Issue #3587 applies the
+same read to the idle-detect audit (`idle_detect_diagnostics.ts`) and to the
+idle-task filer's fleet-wide startable-work gate (`repo_busy_for_idle_task.ts`),
+both through the shared `loadIdleDetectionHold` in
+`worker/deno/lib/run_core_production_deps.ts`. A paced issue is reported as
+`run_local_hold` there too, so a paced milestone no longer fires
+`ALERT mis_classification` or suppresses idle-task filing. The per-cycle
+adaptive-floor deferral (Issue #245) is the one source still unmodelled; it is
+rebuilt every cycle, so it cannot hold a streak open the way the registry did.
 
 **A refused claim is not a finished run (Issue #2405).** The hold records that
 an issue is held, and until #2405 not *why*. A claim the claim path **deferred**
@@ -1066,7 +1071,8 @@ which counted those same two issues for the life of the run — so
 `[idle-detect] ... ALERT mis_classification ...` fired on every tick beside the
 census's inversion alert, and the audit's `claimableTotal` suppressed the
 idle-task filer with it. It now applies the hold as its last gate, reporting
-`reason=run_local_hold` on the per-repo line, exactly as it took the open-PR
+`reason=run_local_hold` on the per-repo line (the hold includes paced
+milestones since Issue #3587), exactly as it took the open-PR
 gate in Issue #4223 and the merged-PR gate in GRQ#4419. A hold source that
 throws falls back to no hold, so a failure restores the old over-count rather
 than reporting a repo as having nothing to do. The audit also reports

@@ -1276,6 +1276,62 @@ Deno.test("auditClaimableState - a throwing hold source never blocks the audit (
   assertEquals(result.claimableTotal, 1);
 });
 
+Deno.test("auditClaimableState - an issue in a paced milestone is held, not counted claimable (Issue #3587)", async () => {
+  // The milestone pacing ledger paces "Paced Milestone"; the hold predicate
+  // is told the issue's milestone title and holds on that alone.
+  const logs: string[] = [];
+  const result = await auditClaimableState({
+    repos: ["stSoftwareAU/VibeCoder"],
+    workerUser: "vibe",
+    tick: 1,
+    scanFoundClaimable: false,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify([
+        {
+          number: 622,
+          labels: [{ name: "work-on" }],
+          assignees: [],
+          milestone: { title: "Paced Milestone" },
+        },
+      ])),
+    runLocalHoldFn: (_repo, _num, milestone) => milestone === "Paced Milestone",
+    log: (line) => logs.push(line),
+    hostnameFn: () => "host",
+    pidFn: () => 1,
+  });
+
+  assertEquals(result.claimableTotal, 0);
+  assert(
+    logs.some((l) => l.includes("reason=run_local_hold")),
+    `the per-repo line must say why; got:\n${logs.join("\n")}`,
+  );
+});
+
+Deno.test("auditClaimableState - a hold for a different milestone leaves the paced-milestone issue claimable (Issue #3587)", async () => {
+  // Positive control: the same fixture, but the hold names another milestone.
+  const result = await auditClaimableState({
+    repos: ["stSoftwareAU/VibeCoder"],
+    workerUser: "vibe",
+    tick: 1,
+    scanFoundClaimable: false,
+    ghCommandFn: () =>
+      Promise.resolve(JSON.stringify([
+        {
+          number: 622,
+          labels: [{ name: "work-on" }],
+          assignees: [],
+          milestone: { title: "Paced Milestone" },
+        },
+      ])),
+    runLocalHoldFn: (_repo, _num, milestone) => milestone === "Other Milestone",
+    log: () => {},
+    hostnameFn: () => "host",
+    pidFn: () => 1,
+  });
+
+  assertEquals(result.claimableTotal, 1);
+});
+
 Deno.test("auditClaimableState - openIssuesFn serves the listing so the audit makes no gh issue list call of its own (Issue #1456)", async () => {
   const ghCalls: string[][] = [];
   const logs: string[] = [];
