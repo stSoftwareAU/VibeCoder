@@ -259,6 +259,25 @@ Deno.test("collectRunOwnDiff - negative control: a run whose only action is merg
   });
 });
 
+/**
+ * Merge a history that shares nothing with the checkout, as a run that merged
+ * an unrelated branch would. Leaves the checkout on `pr`.
+ */
+async function mergeUnrelatedHistory(dir: string, name: string) {
+  await gitOk(dir, ["checkout", "--orphan", name]);
+  await gitOk(dir, ["rm", "-r", "-q", "-f", "."]);
+  await writeFile(dir, `${name}.ts`, lines(`${name}-line`));
+  await commitAll(dir, `${name} history`);
+  await gitOk(dir, ["checkout", "pr"]);
+  await gitOk(dir, [
+    "merge",
+    "--no-ff",
+    "--no-edit",
+    "--allow-unrelated-histories",
+    name,
+  ]);
+}
+
 Deno.test("collectRunOwnDiff - two unrelated merges are refused", async () => {
   await withRepo(async (dir) => {
     await writeFile(dir, "lib/a.ts", lines("a1"));
@@ -266,22 +285,8 @@ Deno.test("collectRunOwnDiff - two unrelated merges are refused", async () => {
     await gitOk(dir, ["checkout", "-b", "pr"]);
     const beforeSha = await gitOk(dir, ["rev-parse", "HEAD"]);
 
-    // Two histories that share nothing with the PR or with each other.
-    for (const name of ["x1", "x2"]) {
-      await gitOk(dir, ["checkout", "--orphan", name]);
-      await gitOk(dir, ["rm", "-r", "-q", "--cached", "."]);
-      await Deno.remove(`${dir}/lib/a.ts`);
-      await writeFile(dir, `${name}.ts`, lines(`${name}-line`));
-      await commitAll(dir, `${name} history`);
-      await gitOk(dir, ["checkout", "pr"]);
-      await gitOk(dir, [
-        "merge",
-        "--no-ff",
-        "--no-edit",
-        "--allow-unrelated-histories",
-        name,
-      ]);
-    }
+    await mergeUnrelatedHistory(dir, "x1");
+    await mergeUnrelatedHistory(dir, "x2");
 
     const message = errorMessage(
       await collectRunOwnDiff(
@@ -289,7 +294,39 @@ Deno.test("collectRunOwnDiff - two unrelated merges are refused", async () => {
         beforeSha,
       ),
     );
-    assertStringIncludes(message, "unrelated");
+    assertStringIncludes(
+      message,
+      "this run merged more than one unrelated history",
+    );
+  });
+});
+
+Deno.test("collectRunOwnDiff - an unrelated merge followed by a merge of main is refused", async () => {
+  await withRepo(async (dir) => {
+    await writeFile(dir, "lib/a.ts", lines("a1"));
+    await commitAll(dir, "base");
+    await gitOk(dir, ["checkout", "-b", "pr"]);
+    const beforeSha = await gitOk(dir, ["rev-parse", "HEAD"]);
+
+    // main advances, so merging it is related history that git can merge
+    // with the run's base. Only the containment check refuses x1 here.
+    await mergeUnrelatedHistory(dir, "x1");
+    await gitOk(dir, ["checkout", "main"]);
+    await writeFile(dir, "lib/a.ts", lines("a1", "a-main-new"));
+    await commitAll(dir, "main advances");
+    await gitOk(dir, ["checkout", "pr"]);
+    await gitOk(dir, ["merge", "--no-ff", "--no-edit", "main"]);
+
+    const message = errorMessage(
+      await collectRunOwnDiff(
+        countingRunGit(dir).runGit,
+        beforeSha,
+      ),
+    );
+    assertStringIncludes(
+      message,
+      "this run merged more than one unrelated history",
+    );
   });
 });
 

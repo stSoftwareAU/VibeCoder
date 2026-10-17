@@ -184,7 +184,7 @@ export async function collectRunOwnDiff(
       error: failure("listing the untracked files", untracked),
     };
   }
-  for (const path of [] as string[]) {
+  for (const path of untracked.stdout.split("\0")) {
     if (path === "" || isWorkerStatePath(path)) continue;
     // `--no-index` exits 1 when the files differ, which is the expected case.
     const added = await runGit([
