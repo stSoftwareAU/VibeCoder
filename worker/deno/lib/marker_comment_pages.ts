@@ -25,6 +25,7 @@
 import type { AlertDedupCommentRow } from "./alert_dedup_authors.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { isDefinitiveNotFound } from "./github_not_found.ts";
+import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 
 /** Page size requested per call — the GitHub REST maximum. */
 export const MARKER_COMMENTS_PER_PAGE = 100;
@@ -74,26 +75,38 @@ export function parseMarkerCommentPages(
     if (!Array.isArray(parsed)) continue;
 
     for (const entry of parsed as Array<Record<string, unknown>>) {
-      if (
-        typeof entry.body !== "string" ||
-        !entry.body.includes(markerPrefix)
-      ) {
-        continue;
-      }
-      const row: MarkerComment = {
-        id: Number(entry.id),
-        body: entry.body,
-        createdAt: String(entry.created_at ?? ""),
-        author: typeof entry.author === "string" ? entry.author : null,
-      };
-      if (typeof entry.updated_at === "string" && entry.updated_at !== "") {
-        row.updatedAt = entry.updated_at;
-      }
-      rows.push(row);
+      const row = markerCommentRow(entry, markerPrefix);
+      if (row !== null) rows.push(row);
     }
   }
 
   return rows;
+}
+
+/**
+ * One projected comment as a {@link MarkerComment}, or null when its body does
+ * not carry the marker.
+ *
+ * @param entry - A comment in the `markerJq` shape (`author`, not `user`)
+ * @param markerPrefix - Only a comment whose body contains it is returned
+ */
+function markerCommentRow(
+  entry: Record<string, unknown>,
+  markerPrefix: string,
+): MarkerComment | null {
+  if (typeof entry.body !== "string" || !entry.body.includes(markerPrefix)) {
+    return null;
+  }
+  const row: MarkerComment = {
+    id: Number(entry.id),
+    body: entry.body,
+    createdAt: String(entry.created_at ?? ""),
+    author: typeof entry.author === "string" ? entry.author : null,
+  };
+  if (typeof entry.updated_at === "string" && entry.updated_at !== "") {
+    row.updatedAt = entry.updated_at;
+  }
+  return row;
 }
 
 /**
@@ -125,6 +138,42 @@ export async function fetchMarkerComments(
   ]);
 
   return parseMarkerCommentPages(payload, markerPrefix);
+}
+
+/**
+ * {@link fetchMarkerComments} with a page cap (Issue #3709, SEC-2ab604fe9137).
+ *
+ * `--paginate` follows every page with no limit, so an unbounded thread is
+ * read into memory in full. This reads explicit pages through
+ * {@link fetchIssueCommentPages}, which stops at `MAX_COMMENT_PAGES` and
+ * throws rather than return a truncated thread.
+ *
+ * @param repo - Repository in "owner/repo" format
+ * @param issueNumber - Issue or PR number whose thread is read
+ * @param markerPrefix - Only comments whose body contains it are returned
+ * @param ghCommandFn - Runs `gh` (injectable for testing)
+ * @returns Every matching comment, oldest first
+ * @throws when a page cannot be read or parsed, or the thread exceeds the cap
+ */
+export async function fetchMarkerCommentsBounded(
+  repo: string,
+  issueNumber: number,
+  markerPrefix: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<MarkerComment[]> {
+  const comments = await fetchIssueCommentPages(repo, issueNumber, ghCommandFn);
+  const rows: MarkerComment[] = [];
+  for (const raw of comments) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const comment = raw as Record<string, unknown>;
+    const user = comment.user as { login?: unknown } | null | undefined;
+    const row = markerCommentRow(
+      { ...comment, author: user?.login },
+      markerPrefix,
+    );
+    if (row !== null) rows.push(row);
+  }
+  return rows;
 }
 
 /**
@@ -199,6 +248,8 @@ export async function deleteIssueComment(
  * @param marker - Marker prefix that identifies the duplicated comment
  * @param ghCommandFn - Runs `gh` (injectable for testing)
  * @param fleetAuthors - Logins whose comments may be deleted; empty deletes nothing
+ * @param readMarkerComments - The thread read; {@link fetchMarkerCommentsBounded}
+ *   caps it at `MAX_COMMENT_PAGES`
  * @returns The kept comment, or null when no fleet-authored comment carries the marker
  * @throws One aggregated Error naming each duplicate that could not be deleted
  */
@@ -208,10 +259,11 @@ export async function pruneDuplicateFleetMarkerComments(
   marker: string,
   ghCommandFn: (args: string[]) => Promise<string>,
   fleetAuthors: string[],
+  readMarkerComments: typeof fetchMarkerComments = fetchMarkerComments,
 ): Promise<MarkerComment | null> {
   if (fleetAuthors.length === 0) return null;
 
-  const comments = await fetchMarkerComments(
+  const comments = await readMarkerComments(
     repo,
     issueNumber,
     marker,

@@ -11,7 +11,11 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { pruneDuplicateFleetMarkerComments } from "../lib/marker_comment_pages.ts";
+import {
+  fetchMarkerCommentsBounded,
+  pruneDuplicateFleetMarkerComments,
+} from "../lib/marker_comment_pages.ts";
+import { MAX_COMMENT_PAGES } from "../lib/issue_comment_pages.ts";
 
 const MARKER = "vibe-test-marker";
 const FLEET = "vibe-coder-bot";
@@ -211,4 +215,74 @@ Deno.test("prune - a partial delete failure throws naming only the failed commen
   assertStringIncludes(thrown.message, "comment 2");
   assertEquals(thrown.message.includes("comment 3"), false);
   assertEquals(thread.deleted, [3]);
+});
+
+/** A raw REST comment, as an explicit `?page=` read returns it. */
+function restComment(id: number, login: string | null, body?: string) {
+  return {
+    id,
+    body: body ?? row(id, login).body,
+    created_at: row(id, login).created_at,
+    updated_at: row(id, login).updated_at,
+    user: login === null ? null : { login },
+  };
+}
+
+Deno.test("bounded read - reads explicit pages and keeps the marker rows with their authors", async () => {
+  const calls: string[][] = [];
+  const page1 = [
+    restComment(1, FLEET),
+    ...Array.from(
+      { length: 99 },
+      (_, i) => restComment(100 + i, "stranger", "chatter"),
+    ),
+  ];
+  const page2 = [restComment(2, "stranger"), restComment(3, null)];
+  const ghFn = (args: string[]): Promise<string> => {
+    calls.push([...args]);
+    const page = Number(/[?&]page=(\d+)/.exec(args[1] ?? "")?.[1]);
+    return Promise.resolve(JSON.stringify(page === 1 ? page1 : page2));
+  };
+
+  const rows = await fetchMarkerCommentsBounded("owner/repo", 7, MARKER, ghFn);
+
+  assertEquals(rows.map((r) => [r.id, r.author]), [
+    [1, FLEET],
+    [2, "stranger"],
+    [3, null],
+  ]);
+  assertEquals(rows[0]!.createdAt, "2026-01-01T00:00:00Z");
+  assertEquals(rows[0]!.updatedAt, "2026-01-01T00:00:00Z");
+  assertEquals(calls.length, 2);
+  assertEquals(calls.some((c) => c.includes("--paginate")), false);
+});
+
+Deno.test("bounded read - a thread past the page cap throws, and the prune deletes nothing", async () => {
+  const calls: string[][] = [];
+  const fullPage = JSON.stringify(
+    Array.from({ length: 100 }, (_, i) => restComment(i + 1, FLEET)),
+  );
+  const ghFn = (args: string[]): Promise<string> => {
+    calls.push([...args]);
+    return Promise.resolve(fullPage);
+  };
+
+  let thrown: Error | undefined;
+  try {
+    await pruneDuplicateFleetMarkerComments(
+      "owner/repo",
+      7,
+      MARKER,
+      ghFn,
+      [FLEET],
+      fetchMarkerCommentsBounded,
+    );
+  } catch (err) {
+    thrown = err instanceof Error ? err : new Error(String(err));
+  }
+
+  assert(thrown !== undefined, "expected the capped read to throw");
+  assertStringIncludes(thrown.message, `exceeded ${MAX_COMMENT_PAGES} pages`);
+  assertEquals(calls.length, MAX_COMMENT_PAGES);
+  assertEquals(calls.some((c) => c.includes("DELETE")), false);
 });

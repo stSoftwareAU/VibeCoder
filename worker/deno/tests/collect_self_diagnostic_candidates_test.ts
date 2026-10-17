@@ -28,6 +28,7 @@ import { createIssueFetcher } from "../lib/issue_finder_common.ts";
 import type { FindIssuesOptions } from "../lib/issue_finder_common.ts";
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
+import { MAX_COMMENT_PAGES } from "../lib/issue_comment_pages.ts";
 import type { WorkerConfig } from "../types.ts";
 
 const WORKER_LOGIN = "vibe-bot";
@@ -490,6 +491,11 @@ Deno.test("self-schedule - a failed announcement refuses the schedule", async ()
 
   assertEquals(result.candidates, []);
   assertEquals(result.refusals[0]!.cause, "announce-failed");
+  assertStringIncludes(
+    result.refusals[0]!.detail,
+    "the announcement could not be posted",
+  );
+  assertStringIncludes(result.refusals[0]!.detail, "HTTP 403");
   assert(logs.some((l) => l.includes("announcement")));
 });
 
@@ -847,4 +853,47 @@ Deno.test("self-schedule - a failed prune after the post refuses the schedule (I
     logs.some((l) => l.includes("[self-schedule] refused")),
     "the refusal is logged",
   );
+});
+
+Deno.test("self-schedule - an announcement thread past the page cap is refused, not read without limit (Issue #3597)", async () => {
+  const calls: GhCall[] = [];
+  const logs: string[] = [];
+  // Every page is full, so the thread never ends. The read must stop at the
+  // cap and fail loud rather than follow `--paginate` to the end.
+  const fullPage = JSON.stringify(
+    Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      body: "chatter",
+      created_at: "2026-10-17T12:00:00Z",
+      user: { login: "stranger" },
+    })),
+  );
+  const gh = (args: string[]): Promise<string> => {
+    calls.push({ args: [...args] });
+    if (args[0] === "api" && (args[1] ?? "").includes("/comments")) {
+      return Promise.resolve(fullPage);
+    }
+    return Promise.resolve("[]");
+  };
+  const { result } = await collect({
+    issues: [makeIssue()],
+    gh,
+    deps: captureDeps([], logs),
+  });
+
+  const reads = calls.filter((c) =>
+    c.args[0] === "api" && (c.args[1] ?? "").includes("/comments")
+  );
+  assertEquals(reads.length, MAX_COMMENT_PAGES);
+  assertEquals(reads.some((c) => c.args.includes("--paginate")), false);
+  assertEquals(result.candidates, []);
+  assertEquals(result.refusals.length, 1);
+  assertEquals(result.refusals[0]!.cause, "announce-failed");
+  assertStringIncludes(result.refusals[0]!.detail, "exceeded");
+  assertEquals(
+    calls.filter((c) => c.args.join(" ").includes("issue comment")).length,
+    0,
+    "nothing is posted over an unreadable thread",
+  );
+  assertEquals(deleteTargets(calls), []);
 });

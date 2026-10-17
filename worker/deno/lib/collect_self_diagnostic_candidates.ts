@@ -85,7 +85,10 @@ import {
   type AlertDedupAuthorOptions,
   resolveAlertDedupAuthors,
 } from "./alert_dedup_authors.ts";
-import { pruneDuplicateFleetMarkerComments } from "./marker_comment_pages.ts";
+import {
+  fetchMarkerCommentsBounded,
+  pruneDuplicateFleetMarkerComments,
+} from "./marker_comment_pages.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { escalateUnworkableWorkOn } from "./escalate_unworkable_work_on.ts";
 import { recordMutation, resolveRunId } from "./audit_journal.ts";
@@ -464,7 +467,8 @@ export async function collectSelfDiagnosticCandidates(
     // Visible and traceable before it is actionable: the audit entry and the
     // announcement are both written before the candidate is emitted. The
     // announcement is pruned to the oldest fleet-authored marker before and
-    // after posting, so a racing duplicate does not survive on the thread.
+    // after posting, so a racing duplicate does not survive on the thread. The
+    // read is capped at MAX_COMMENT_PAGES and fails loud past it (Issue #3709).
     const marker = formatSelfScheduleMarker(family.id);
     let announced: boolean;
     try {
@@ -475,6 +479,7 @@ export async function collectSelfDiagnosticCandidates(
         marker,
         ghFn,
         fleet,
+        fetchMarkerCommentsBounded,
       );
       announced = kept !== null;
     } catch (err) {
@@ -563,6 +568,7 @@ export async function collectSelfDiagnosticCandidates(
           marker,
           ghFn,
           fleet,
+          fetchMarkerCommentsBounded,
         );
       } catch (err) {
         const detail = `could not read or prune announcements: ${

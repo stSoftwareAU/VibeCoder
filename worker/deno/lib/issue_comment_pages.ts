@@ -128,8 +128,11 @@ function markerCommentAuthors(
  *
  * **The author is checked, not just the marker** (Issue #1216). Every caller
  * uses the result to *suppress* an action — the blocking-PR stall escalation,
- * a stall-reason comment, a self-schedule announcement, a CI nudge — and a
- * comment body is text any GitHub account may write. Matching on the body
+ * a stall-reason comment, a CI nudge — and a comment body is text any GitHub
+ * account may write. (The self-schedule announcement left this helper in
+ * Issue #3597: it now reads its marker rows through
+ * `fetchMarkerCommentsBounded` in `marker_comment_pages.ts`, bounded by
+ * {@link fetchIssueCommentPages}, so it can prune duplicates.) Matching on the body
  * alone let one planted `<!-- vibe-… -->` comment silence those diagnostics on
  * that thread for good, and silence is the direction nobody notices. This is
  * the {@link file://./alert_dedup_authors.ts} control applied to the raw REST
