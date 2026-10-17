@@ -14,6 +14,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import { isConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import {
@@ -281,6 +282,63 @@ Deno.test(
       assertStringIncludes(reasoning, "shared.txt");
       assertStringIncludes(reasoning, "superset");
     } finally {
+      await fx.cleanup();
+    }
+  },
+);
+
+Deno.test(
+  "syncMilestoneBranchWithDefault - a rule-refused push says the sync PR was raised (Issues #589, #3690)",
+  async () => {
+    const fx = await setupDeletedOnMain();
+    // The `milestone/**` ruleset as git sees it: only the milestone ref is
+    // refused, so the sync branch push lands.
+    const hook = `${fx.root}/remote.git/hooks/pre-receive`;
+    await Deno.writeTextFile(
+      hook,
+      [
+        "#!/bin/sh",
+        "while read -r old new ref; do",
+        '  case "$ref" in',
+        "    refs/heads/milestone/*)",
+        '      echo "! [remote rejected] $ref (push declined due to repository rule violations)" >&2',
+        "      exit 1;;",
+        "  esac",
+        "done",
+        "exit 0",
+      ].join("\n") + "\n",
+    );
+    await Deno.chmod(hook, 0o755);
+    // Stub the `gh` process boundary only.
+    const ghCalls: string[][] = [];
+    _setGhSpawnRunner((args) => {
+      ghCalls.push([...args]);
+      const stdout = args[1] === "list"
+        ? "[]"
+        : args[1] === "create"
+        ? "https://github.com/owner/repo/pull/77\n"
+        : "";
+      return Promise.resolve({ code: 0, success: true, stdout, stderr: "" });
+    });
+    try {
+      const result = await syncMilestoneBranchWithDefault(
+        "milestone/1048",
+        "main",
+        { cwd: fx.clone },
+        "owner/repo",
+        passingGate,
+      );
+      assert(
+        result.ok,
+        `expected a successful sync: ${!result.ok && result.error.message}`,
+      );
+      assertStringIncludes(
+        result.value.message,
+        `RAISED a sync PR from '${syncBranchFor("milestone/1048")}'`,
+      );
+      assert(ghCalls.some((args) => args[1] === "create"));
+    } finally {
+      _resetGhSpawnRunner();
       await fx.cleanup();
     }
   },

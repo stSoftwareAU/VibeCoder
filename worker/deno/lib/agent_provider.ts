@@ -401,9 +401,11 @@ export interface AgentInvocationRequest {
    * `PreToolUse` guard, which denies the advisor's own `Edit`/`Write` calls
    * while allowing an executor's — a distinction `disallowedTools` cannot
    * express, because a tool removed from the session pool is gone for
-   * sub-agents too — and RTK's `PreToolUse` Bash entry. Absent or empty —
-   * every run that has not opted into either — emits no argument, and the
-   * argv is the one every host spawned before. Claude-only: DeepSeek shares
+   * sub-agents too — and RTK's `PreToolUse` Bash entry. Absent or empty — a
+   * run with neither the split guard nor RTK's hook (the split is on by
+   * default for `issue` runs; `issue_executor_split: false` turns it off) —
+   * emits no argument, and the argv is the one every host spawned before.
+   * Claude-only: DeepSeek shares
    * the CLI but its endpoint implements no hooks, so that descriptor strips
    * the field, and no other provider takes the flag.
    */
@@ -607,10 +609,11 @@ function buildClaudeCliArgs(
     args.push("--disallowed-tools", disallowed.join(","));
   }
   // Sub-agent definitions (Issue #2342), beside the tool policy they extend.
-  // Absent — every invocation that has not opted into the split — pushes
-  // nothing, so the argv below it is unchanged. There is no fallback if the
-  // CLI rejects the flag: an older binary fails the run with its own error
-  // rather than quietly reverting to single-model routing.
+  // Absent — no sub-agent definitions were built (see `buildIssueRunAgents` in
+  // `issue_executor_agents.ts`) — pushes nothing, so the argv below it is
+  // unchanged. There is no fallback if the CLI rejects the flag: an older
+  // binary fails the run with its own error rather than quietly reverting to
+  // single-model routing.
   if (request.agents) {
     args.push("--agents", JSON.stringify(request.agents));
   }

@@ -123,6 +123,7 @@ import { gitOperationsCommand } from "./commands/git_operations.ts";
 import { branchCleanupCommand } from "./commands/branch_cleanup.ts";
 import { claudeAuthCommand } from "./commands/claude_auth.ts";
 import { codexBudgetCommand } from "./commands/codex_budget.ts";
+import { providerFeasibilityCommand } from "./commands/provider_feasibility.ts";
 import { claudeRunnerCommand } from "./commands/claude_runner.ts";
 import { reviewRoundCommand } from "./commands/review_round.ts";
 import { answerSanitiserCommand } from "./commands/answer_sanitiser.ts";
@@ -325,6 +326,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(branchCleanupCommand);
   registry.register(claudeAuthCommand);
   registry.register(codexBudgetCommand);
+  registry.register(providerFeasibilityCommand);
   registry.register(claudeRunnerCommand);
   registry.register(reviewRoundCommand);
   registry.register(answerSanitiserCommand);

@@ -2272,7 +2272,7 @@ Deno.test(
         raiseSyncPrCalls.push([repo, milestoneBranch, defaultBranch]);
         return Promise.resolve({
           ok: true,
-          value: { branch: "sync/milestone-x", opened: true },
+          value: { branch: "sync/milestone-x", opened: true, pushed: true },
         });
       },
     });

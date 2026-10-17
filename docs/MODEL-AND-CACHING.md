@@ -5,6 +5,8 @@ optimises costs through prompt caching, and tracks token usage. It also records
 why the Anthropic Batch API was evaluated and deliberately **not** wired into
 the worker.
 
+See also: [Manager-worker contract](MANAGER-WORKER-CONTRACT.md) for how the manager hands work to sub-agents across providers.
+
 ## Table of Contents
 
 - [Provider Applicability](#provider-applicability) — which behaviours apply
