@@ -484,7 +484,7 @@ against the branch head captured before the agent ran, plus any untracked
 files. The check is skipped when there is no before-run head, or the push
 changed nothing.
 
-Five checks run, each only when it applies:
+Six checks run, each only when it applies:
 
 1. **Model drift pass** — only when the push changes a code file, a test
    file, a recognised source file (`isProseSourcePath`, including source under
@@ -543,16 +543,23 @@ Five checks run, each only when it applies:
    join across a blank line, a heading, a new list item, a table row or a
    fence. Inside a fenced block each line is its own claim, except a
    command continued onto the next line with a trailing `\` or `/`.
-   An issue number (`#3143`) is not a count, and a line that says tests
-   were added to or extended an existing file (`added to`, `extended`,
-   `with N tests`) is not compared with that file's whole count. Lines it
-   with `--filter`, unrecognised "N new tests" figures, or a paired result
-   citing `./quality.sh` remain out of scope. Blocks with unknown test files,
-   mixed `tests`/`passed` figures or partial additions are reported unchecked. A paired result naming an unchanged test file,
-   several files whose runs differ, a red result with no file and no sole
-   changed test file, several counts that do not each follow the test file
-   they count, or different counts for one test file is logged by the worker
-   as not checked rather than compared.
+   An issue number (`#3143`) is not a count. Each count is decided on its own
+   (Issue #3740): a partial figure — a per-round addition such as "3 tests
+   added to `a_test.ts`", "2 to `b_test.ts`", "+N tests", or "Added to
+   `x_test.ts` (N tests" without "now has" — is not compared with that file's
+   whole count, while a whole-file count in the same unit ("the new
+   `b_test.ts` (N tests", "`b_test.ts` (N tests" with no "added" or "+" before
+   it, "now has N", "the file now has N") is. An unchanged test file leaves
+   only its own figure unchecked, not the whole unit, and a token-less count
+   in a separate sentence ("The related suites (689 tests) passed") is
+   unchecked on its own. Lines it skips with `--filter`, unrecognised "N new
+   tests" figures, or a paired result citing `./quality.sh` remain out of
+   scope. Blocks with unknown test files or mixed `tests`/`passed` figures are
+   unchecked, as is a paired result naming an unchanged test file, several
+   files whose runs differ, a red result with no file and no sole changed test
+   file, several counts that do not each follow the test file they count, or
+   different counts for one test file. Each unchecked figure is drift, not a
+   log line: it goes to the recovery turn below.
 3. **Docs sweep re-check** — when the push changes a code file and a summary
    exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
    files. That gate also requires the Docs sweep line's `siblings:` part
@@ -604,15 +611,32 @@ Five checks run, each only when it applies:
    read as "no citations"). A hit whose head citations came from the facts
    file names that facts file, not the `.md` summary, and asks for the
    entry's `line`/`endLine` to be renumbered there.
+6. **Diff-scoped mutation check (Issue #3750)** — in every review-fix run the
+   mutation check runs over the lines this run itself added: the working tree,
+   uncommitted edits and untracked files included, against the before-run head.
+   Lines that a base-branch merge brought in are excluded, and a conflict
+   resolution counts as the run's own. It uses the PR-raise gate's runner,
+   mutator, 40-mutant cap, `skip_mutation_check`,
+   `mutation_check_budget_seconds`, `quality_credentials` handling and
+   `exempt (untestable)` exemptions read from the PR summary. An unexempted
+   survivor is a hit for the recovery turn, which may add or change tests and
+   docs but no production code. A budget, cap or runner error is reported, not
+   a hit. Survivors still left are reported in the PR reply; they do not block
+   the push. Details: [Diff-scoped mutation check](../mutation-check.md#review-fix-runs-issue-3750).
 
-Any hit gets **one** recovery turn: the agent, with full tools, is asked to
-rewrite the listed sentences, recount the Test Plan, fix the Docs sweep
+Any hit gets **one** recovery turn — a Test Plan figure the recount could not
+check is a hit too (Issue #3740) — and the agent, with full tools, is asked
+to rewrite the listed sentences, recount the Test Plan, restate each unchecked
+figure as "`<file>` (N tests at head)" or remove it, fix the Docs sweep
 line, rewrite or remove each stale quoted sentence, and renumber each
 listed line citation to the head, in the file each hit names (a facts
 entry's `line`/`endLine`, or the `.md` summary's `Branch outcomes:` list) —
 re-running the flip for any entry whose
 cited code this push changed rather than carrying the old result over —
-without changing code. The checks are then re-run; a prose finding counts
+without changing code, except that a mutation survivor (item 6) is answered
+with tests or docs, never production code. The checks are then re-run, and
+the mutation check runs once more when survivors were found and the turn ran;
+a prose finding counts
 as fixed only when its quoted sentence was present before the recovery turn
 and is gone after it — a finding whose file was not one of the files the
 question was asked about is never read back, so it stays reported
@@ -627,12 +651,23 @@ head goes there too, along with any not-checked citation case the
 line-citation check reported. Whatever remains after the recovery turn —
 plus a model pass that returned no verdict and a summary that could not be
 checked — is appended to `.pr_response_message` under `### Drift check
-(Issue #3143)`, so it reaches the PR reply instead of being pushed
-silently.
+(Issue #3143)`, so it reaches the PR reply instead of being pushed silently.
+The residual lists the change-request quotes still present, the Branch-outcomes
+citations still at the previous head's numbers, the prose findings and Test
+Plan counts still standing, the Docs sweep problems, a model pass that returned
+no verdict, a named summary the quote check could not read, each citation case
+the line-citation check could not check, and — under the heading "Test Plan
+figures the drift check could not verify" (Issue #3740) — each Test Plan figure
+still unchecked after the recovery turn, with its reason. A push whose only
+drift is an unchecked figure is therefore not reported clean. Surviving mutants
+go in the same residual under their own heading,
+`#### Mutation check (Issue #3750)`, and so do any budget, cap or runner-error
+reports from the mutation check; those reports never trigger a recovery turn
+by themselves.
 
 ```mermaid
 flowchart TD
-    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check,<br/>line-citation check"]
+    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check,<br/>line-citation check,<br/>mutation check"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
     H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]
