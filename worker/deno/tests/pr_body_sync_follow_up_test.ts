@@ -20,6 +20,8 @@ import {
   type SyncFollowUpFiling,
 } from "../lib/pr_body_sync_follow_up.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { captureContentSnapshot } from "../lib/content_approval_tracker.ts";
+import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
 import type { Logger, Result, WorkerConfig } from "../types.ts";
 
 // --- parseSyncParentIssue ---------------------------------------------------
@@ -135,6 +137,43 @@ Deno.test("buildSyncFollowUpFiling - a parent issue with no approval snapshot is
   }
 });
 
+Deno.test("buildSyncFollowUpFiling - a parent issue whose content matches its approval snapshot is not blocked (Issue #3678)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "sync-follow-up-test-" });
+  // The approval baseline sits beside `workDir`, not inside it (Issue #3717).
+  const stateDir = resolveContentApprovalStateDir(workDir);
+  try {
+    const title = "Move the data";
+    const body = "## Acceptance Criteria\n\n- the export works\n";
+    const captured = await captureContentSnapshot(
+      stateDir,
+      "owner/repo",
+      42,
+      title,
+      body,
+      "owner",
+    );
+    assert(captured.ok, `snapshot not captured: ${JSON.stringify(captured)}`);
+    const config: WorkerConfig = {
+      ...buildDefaultWorkerConfig(),
+      workDir,
+      workOnLabel: "work-on",
+    };
+    const filing = buildSyncFollowUpFiling(config, "this-host");
+    const outcome = await filing.verifyIssueContent("owner/repo", 42, {
+      title,
+      body,
+      labels: ["work-on"],
+      author: "owner",
+    });
+    assertEquals(outcome, { blocked: false });
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+    await Deno.remove(stateDir, { recursive: true }).catch((err) => {
+      if (!(err instanceof Deno.errors.NotFound)) throw err;
+    });
+  }
+});
+
 // --- parseSyncParentIssue edge cases (Issue #3678) ---------------------------
 
 Deno.test("parseSyncParentIssue - throws when the output is not a JSON object (Issue #3678)", () => {
@@ -154,7 +193,7 @@ Deno.test("parseSyncParentIssue - keeps only label entries whose name is a strin
 
 Deno.test("parseSyncParentIssue - reads no labels when labels is not an array (Issue #3678)", () => {
   const parsed = parseSyncParentIssue(
-    JSON.stringify({ title: "t", body: "b", labels: "x" }),
+    JSON.stringify({ title: "t", body: "b", labels: { name: "a" } }),
   );
   assertEquals(parsed.labels, []);
 });
