@@ -1743,7 +1743,8 @@ for every PR summary — containing:
    change adds a member to, or `siblings: none — <why>`), or `no hits` (see
    [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)). The
    worker refuses to raise a PR whose diff changes code with no such line, or
-   whose line has no real `section:` or `siblings:` part. It re-runs the quoted
+   whose line has no real `section:` or `siblings:` part, or whose grep field
+   has no quoted term and no explained `grep: none — <why>` negative. It re-runs the quoted
    sibling terms as it re-runs the grep terms.
    Re-run the grep on the final head and list each hit you leave in place as
    `file:line — still true because …`, so the worker and the reviewer can

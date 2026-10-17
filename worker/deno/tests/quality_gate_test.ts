@@ -81,7 +81,8 @@ Deno.test(
   async () => {
     // The pre-existing-failure comparison reads `CheckResult.output`, so the
     // real gate — not just a fake — has to populate it for what failed, and
-    // leave it off everything else.
+    // leave it off everything else. SKIPPED checks keep their output as the
+    // skip reason (Issue #3726).
     const config = createTestConfig();
     const result = await runQualityGate(config);
 
@@ -101,7 +102,7 @@ Deno.test(
         );
       }
       for (const check of result.value.checks) {
-        if (check.status === "FAILED") continue;
+        if (check.status === "FAILED" || check.status === "SKIPPED") continue;
         assertEquals(
           check.output,
           undefined,

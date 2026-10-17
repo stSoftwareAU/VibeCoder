@@ -86,6 +86,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "issue_reviewer_agents",
   // Fleet-wide run archive repo slug for measurement issues (Issue #2930).
   "fleet_run_archive",
+  // Operator label for the subscription allocation recorded on each issue's
+  // lifecycle-ledger assignment (Issue #3718). A label only.
+  "subscription_allocation_label",
 
   // Label fields
   // Issue #1834: `work_on_label` and `low_priority_label` removed — both

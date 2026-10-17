@@ -45,9 +45,9 @@
  *
  * Known limitation: a few scanners embed a step index in the finding id, so
  * *inserting* a step above a pre-existing offender renames its finding and the
- * gate reports it as new. It over-reports rather than under-reports, and the
- * remedy the message already names (fix it, or add a `best-practice-ignore`
- * marker) clears it.
+ * gate reports it as new. It over-reports rather than under-reports; the gate
+ * honours no in-file suppression marker (Issue #3683), so such a finding is
+ * fixed in the file or reviewed by a human.
  *
  * The two families that file **one issue per workflow file** (Issue #2221 —
  * persist-credentials and artefact uploads) are expanded back to one gate
@@ -337,10 +337,11 @@ export function buildChangedWorkflowGateMessage(
       "was raised (Issue #1859).";
   const lines: string[] = [
     `${opening} Only files this run ` +
-    "touched are checked, so the fix is in the file itself: correct it, or — " +
-    "for a scanner finding that genuinely does not apply — add a " +
-    "`# best-practice-ignore: <finding-id>` comment beside the offending " +
-    "line. Prose in the PR summary does not clear this gate.",
+    "touched are checked, so the fix is in the file itself: correct it. " +
+    "A finding that genuinely does not apply cannot be cleared from the " +
+    "run — this gate honours no in-file suppression marker, and prose in " +
+    "the PR summary does not clear it either — so it needs a human to " +
+    "review it, or a fix to the scanner (Issue #3683).",
   ];
 
   if (result.findings.length > 0) {

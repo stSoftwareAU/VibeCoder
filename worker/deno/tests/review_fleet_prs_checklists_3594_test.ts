@@ -324,7 +324,10 @@ const MONEY_STATE = {
   ],
 };
 const sentBack = (raw: unknown, state: typeof MONEY_STATE) => {
-  const parsed = reviewForPost(raw, { checklistState: state });
+  const parsed = reviewForPost(raw, {
+    checklistState: state,
+    previousFindings: [],
+  });
   const outcome = decideOutcome(parsed, []);
   return { outcome, body: reviewBody(outcome, parsed, []), parsed };
 };
@@ -387,7 +390,10 @@ Deno.test("reviewForPost fails loudly on a gate entry without a valid checklistS
   ) {
     let message = "";
     try {
-      reviewForPost(CLEAN_REPLY, { checklistState: bad as never });
+      reviewForPost(CLEAN_REPLY, {
+        checklistState: bad as never,
+        previousFindings: [],
+      });
     } catch (e) {
       message = (e as Error).message;
     }
@@ -395,7 +401,10 @@ Deno.test("reviewForPost fails loudly on a gate entry without a valid checklistS
   }
   let reply = "";
   try {
-    reviewForPost("not json", { checklistState: MONEY_STATE });
+    reviewForPost("not json", {
+      checklistState: MONEY_STATE,
+      previousFindings: [],
+    });
   } catch (e) {
     reply = (e as Error).message;
   }
@@ -445,6 +454,7 @@ fi
           kind: "fleet",
           testChanges: { removed: [], edited: [] },
           checklistState: MALFORMED_STATE,
+          previousFindings: [],
         },
         review: CLEAN_REPLY,
       }),
@@ -565,4 +575,54 @@ Deno.test("post: the base-problem fix text no longer sends the author to the bas
   const r = sentBack(CLEAN_REPLY, ready[0]!.checklistState as never);
   assertStringIncludes(r.body, "in this change");
   assert(!r.body.includes("fix it on the base branch"));
+});
+
+Deno.test("fleet post - earlier findings cannot disappear from a clean reply", () => {
+  const entry = {
+    checklistState: { expected: [], problem: null },
+    previousFindings: [{
+      file: "a.ts",
+      line: 2,
+      problem: "two paths broken",
+      fix: "fix both",
+    }],
+  };
+  const reply = { summary: "clean", findings: [], testChanges: "none" };
+  assertEquals(reviewForPost(reply, entry).findings.length, 1);
+  assertEquals(
+    reviewForPost({
+      ...reply,
+      earlierFindings: [{ index: 1, verdict: "partly", note: "only one path" }],
+    }, entry).findings.length,
+    1,
+  );
+  assertEquals(
+    reviewForPost({
+      ...reply,
+      earlierFindings: [{
+        index: 1,
+        verdict: "fixed",
+        note: "both paths verified",
+      }],
+    }, entry).findings.length,
+    0,
+  );
+  assertEquals(
+    reviewForPost(reply, {
+      checklistState: entry.checklistState,
+      previousFindings: [],
+    }).findings
+      .length,
+    0,
+  );
+});
+
+Deno.test("fleet post - a missing earlier-findings inventory cannot approve", () => {
+  let message = "";
+  try {
+    reviewForPost(CLEAN_REPLY, { checklistState: MONEY_STATE } as never);
+  } catch (error) {
+    message = String(error);
+  }
+  assertStringIncludes(message, "no valid checklistState or previousFindings");
 });

@@ -64,7 +64,7 @@ export interface WriteFleetTelemetryOptions {
  * allowlist becomes `_`, so a hostname carrying a separator can never
  * escape the sidecar out of `workDir`.
  */
-function sanitiseHostname(hostname: string): string {
+export function sanitiseHostname(hostname: string): string {
   const cleaned = hostname.replace(/[^A-Za-z0-9._-]/g, "_");
   return cleaned.length > 0 ? cleaned : "unknown-host";
 }
