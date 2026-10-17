@@ -217,7 +217,9 @@ a fault must never be masked as success.
   papering over a failed fetch must not be reported as a clean outcome.
 - **Prefer loud, early failure.** Fail fast at the point of the fault rather
   than continuing in a degraded or partial state that hides the problem
-  downstream.
+  downstream. A failed bookkeeping write is reported after the safety step it
+  would otherwise block, not before it (**Every step of a multi-write
+  operation has a named finisher when it fails**).
 - **A failure reason names the cause, not just the failure.** When a recorded
   error, log or degradation reason quotes an external tool's output, quote the
   line that names the cause (or a classification of it, where the repository has
@@ -1636,6 +1638,38 @@ a healthy run, and assert the record is gone. Then delete the clear and
 confirm the test goes red. List the set/clear pairs checked in the PR summary.
 A record with no clear on a healthy path is a blocking self-review finding
 (Issue #3430).
+
+**Every step of a multi-write operation has a named finisher when it fails.**
+When a change adds or reorders an operation that makes more than one durable
+write or external side effect (a state change plus an audit or history
+record, a safety action plus the record of it, a counter plus the work it
+pays for), list the steps in order. For each one, say what happens when it
+alone fails:
+
+- **What is left behind:** which earlier steps have already landed.
+- **Who finishes the rest:** a retry of the same request, the next scheduled
+  run, or a named recovery pass. A retry counts only if it reaches the
+  missing step. A guard that answers "already done" (a conflict, "no longer
+  open", a stored-key short-circuit) must first complete or verify every step
+  the earlier attempt may have missed, for example by rebuilding the
+  identical record from stored state. A failure that is only logged has no
+  finisher.
+- **What it must never block:** a bookkeeping write (audit record, exception,
+  counter) never stops a safety step (cancel, stop, revoke) from running. Run
+  the safety step, then report the bookkeeping error: once the safety step has
+  run, the operation still fails loud, as **Prefer loud, early failure**
+  requires. Never spend a counted retry or attempt before the step it pays for
+  has passed the point where it can be refused. Recording when a refused
+  attempt ran, as **Record that an action ran** asks, is spacing, not a spent
+  attempt.
+
+Add a test for each fallible step: make it fail, run the named finisher
+(retry the same request, run the next tick), and assert the operation ends
+complete with exactly one copy of each record. Then remove the finisher and
+confirm the test goes red. A doc sentence or test message that claims a
+recovery must name the code that does it. List the steps and their finishers
+in the PR summary. A step whose failure leaves work that no path ever
+completes is a blocking self-review finding (Issue #3562).
 
 **Every changed call site needs a test that goes red without it.** This
 covers every new or changed wiring between an entry point and the code it
