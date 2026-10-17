@@ -78,6 +78,12 @@ function makeRunGit(dir: string): DriftCheckDeps["runGit"] {
   return async (args: string[]) => await git(dir, args);
 }
 
+/** Fake `runMutationCheck` for tests not about the mutation gate (Issue #3750). */
+const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
+  kind: "not_applicable",
+  reason: "not under test",
+});
+
 /** Fake `runGh` that always answers the `baseRefName` read with `main`. */
 function makeRunGh(): DriftCheckDeps["runGh"] {
   return async () => "main\n";
@@ -170,7 +176,7 @@ Closes #7.
 
 ${SENTENCE}
 
-**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
+**Docs sweep** — grep: \`subject\`; section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -234,6 +240,7 @@ Deno.test("runPrFeedbackDriftCheck - finding and mismatch trigger exactly one re
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -292,7 +299,7 @@ Closes #7.
 
 Subjectless entries are now rejected.
 
-**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
+**Docs sweep** — grep: \`subject\`; section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -308,6 +315,7 @@ Subjectless entries are now rejected.
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: fixedRunAgent,
         logger: noopLogger(),
       },
@@ -353,6 +361,7 @@ Deno.test("runPrFeedbackDriftCheck - recovery that does nothing reports, writing
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -399,6 +408,7 @@ Deno.test("runPrFeedbackDriftCheck - an existing .pr_response_message is appende
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -452,6 +462,7 @@ Deno.test("runPrFeedbackDriftCheck - a misquoted finding is reported even when t
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -507,6 +518,7 @@ Deno.test("runPrFeedbackDriftCheck - a docs-only push that edits no Markdown mak
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -542,6 +554,7 @@ No tests changed.
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -591,6 +604,7 @@ Some unrelated prose.
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -629,6 +643,7 @@ Deno.test("runPrFeedbackDriftCheck - a docs-only push that also drops .pr_respon
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -657,6 +672,7 @@ Deno.test("runPrFeedbackDriftCheck - a push whose only file is .pr_response_mess
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -686,6 +702,7 @@ Deno.test("runPrFeedbackDriftCheck - undefined beforeSha is skipped with no agen
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -709,6 +726,7 @@ Deno.test("runPrFeedbackDriftCheck - nothing changed since beforeSha is skipped 
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -732,7 +750,7 @@ Closes #7.
 
 Subjectless entries are now rejected.
 
-**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
+**Docs sweep** — grep: \`subject\`; section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -767,6 +785,7 @@ Subjectless entries are now rejected.
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -965,7 +984,7 @@ Closes #7.
 
 Subjectless entries are now rejected.
 
-**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
+**Docs sweep** — grep: \`subject\`; section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -1000,6 +1019,7 @@ Subjectless entries are now rejected.
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -1089,6 +1109,7 @@ Deno.test("runPrFeedbackDriftCheck - a finding naming a path outside the checkou
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -1128,6 +1149,7 @@ Deno.test("runPrFeedbackDriftCheck - a red run result the recount cannot check i
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent(
           [
             { ok: true, output: verdictBlock([]) },

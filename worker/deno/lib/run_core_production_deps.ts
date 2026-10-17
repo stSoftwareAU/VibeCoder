@@ -184,6 +184,7 @@ import {
 import { bindConflictTakeoverResolvers } from "./conflict_takeover_resolvers.ts";
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
+import { recordClosedLifecyclePrs } from "./lifecycle_pr_observation.ts";
 import { buildSyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
@@ -3566,6 +3567,7 @@ export async function createProductionRunCoreDeps(
         {
           cache: issueCache,
           watermarkPath: mergedSweepWatermarkPath(workDir),
+          workDir,
         },
       );
       const seconds = Math.round((Date.now() - startedAt) / 1000);
@@ -3635,6 +3637,11 @@ export async function createProductionRunCoreDeps(
           config.planningLabel,
           undefined,
           issueCache,
+        );
+        await recordClosedLifecyclePrs(
+          { workDir, repos, githubUser, cache: issueCache },
+          runGhCommand,
+          logger,
         );
         return { ok: true, value: undefined };
       } catch (err) {

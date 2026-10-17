@@ -89,6 +89,12 @@ function makeRunGh(): DriftCheckDeps["runGh"] {
   return async () => "main\n";
 }
 
+/** Fake `runMutationCheck` for tests not about the mutation gate (Issue #3750). */
+const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
+  kind: "not_applicable",
+  reason: "not under test",
+});
+
 type AgentResponse =
   | { ok: true; output: string }
   | { ok: false; error: Error };
@@ -253,6 +259,7 @@ Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure runs the reco
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -306,6 +313,7 @@ Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure that survives
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -364,6 +372,7 @@ Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure the recovery 
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -425,6 +434,7 @@ Deno.test("runPrFeedbackDriftCheck - the residual warning reports the unchecked 
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: capturingLogger(warnings),
       },
@@ -464,6 +474,7 @@ Deno.test("runPrFeedbackDriftCheck - a Test Plan with no unchecked figure stays 
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },

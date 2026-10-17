@@ -45,6 +45,59 @@ import { assertLinearGrowth } from "./support/growth.ts";
 // extractGrepTerms
 // ---------------------------------------------------------------------------
 
+Deno.test("extractGrepTerms - accepts colonless grep and grep terms (Issue #3861)", () => {
+  for (const label of ["grep", "grep terms", "grep:", "grep terms:"]) {
+    assertEquals(
+      extractGrepTerms(`${label} \`x\`, "y z". section: \`docs/x.md\``),
+      ["x", "y z"],
+    );
+  }
+});
+
+Deno.test("sweep terms - next labels end fields but quoted labels stay terms (Issue #3861)", () => {
+  for (
+    const label of [
+      "section:",
+      "sections:",
+      "siblings:",
+      "updated:",
+      "files updated:",
+    ]
+  ) {
+    assertEquals(extractGrepTerms(`grep \`x\`. ${label} \`not-a-term\``), [
+      "x",
+    ]);
+  }
+  assertEquals(extractSiblingTerms("siblings: `old`. Updated: `README.md`"), [
+    "old",
+  ]);
+  assertEquals(extractGrepTerms("grep: `x`; leftover `not-a-term`"), ["x"]);
+  assertEquals(
+    extractGrepTerms(
+      'grep: "section: still a term", `siblings: yes`; section: x',
+    ),
+    ["section: still a term", "siblings: yes"],
+  );
+  assertEquals(
+    extractGrepTerms("grep: none — no renamed `terms`; section: x"),
+    [],
+  );
+});
+
+Deno.test("sweep fields - hostile whitespace and near-labels scale linearly (Issue #3861)", () => {
+  for (
+    const build of [
+      (n: number) => "grep" + " ".repeat(n) + "!",
+      (n: number) => "grep: " + "files ".repeat(n) + "!",
+      (n: number) => "grep: none" + " ".repeat(n) + "!",
+    ]
+  ) {
+    assertLinearGrowth("sweep field parser", build, (text) => {
+      extractGrepTerms(text);
+    }, { baseChars: 10_000 });
+  }
+});
+
 Deno.test("extractGrepTerms - reads backticked and double-quoted terms after grep:", () => {
   const raw =
     '**Docs sweep** — grep: `ProposalStore::list`, "one session at a time"; ' +
@@ -621,6 +674,28 @@ Deno.test("checkDocsSweepTerms - replay of VibeCoder#3215: a stale doc comment i
     ],
     "code lines are not read; the diff's own changed comment is cleared",
   );
+});
+
+Deno.test("checkDocsSweepTerms - colonless grep finds an unchanged doc comment in a touched file (Issue #3861)", async () => {
+  const check = await checkDocsSweepTerms({
+    rawBody:
+      "grep terms `old formula`. section: `docs/report.md`. siblings: none — no new member. Updated: `src/report.rs`",
+    base: "origin/main",
+    runGit: stubGit({
+      sourceGrep: {
+        "old formula":
+          "HEAD:src/report.rs\u00005\u0000/// old formula remains here\n",
+      },
+      diff:
+        "--- a/src/report.rs\n+++ b/src/report.rs\n@@ -10 +10 @@\n-old\n+new\n",
+    }),
+  });
+  assertEquals(check.status, "checked");
+  if (check.status !== "checked") throw new Error("grep term was not re-run");
+  assertEquals(check.terms, ["old formula"]);
+  assertEquals(check.staleHits.map((hit) => `${hit.path}:${hit.line}`), [
+    "src/report.rs:5",
+  ]);
 });
 
 Deno.test("checkDocsSweepTerms - a source comment named as file:line still true is cleared", async () => {

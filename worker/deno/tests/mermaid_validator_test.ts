@@ -11,6 +11,7 @@ import {
   extractSequenceDiagramBlocks,
   validateGitgraphFile,
   validateGitgraphSyntax,
+  validateMermaidBlock,
   validateSequenceDiagramFile,
   validateSequenceDiagramSyntax,
 } from "../lib/mermaid_validator.ts";
@@ -522,5 +523,361 @@ Deno.test(
       `Expected all sequenceDiagram blocks in grill-me.md to be valid, ` +
         `but got: ${failures.map((f) => f.error).join("; ")}`,
     );
+  },
+);
+
+// --- validateMermaidBlock - flowchart mixed label (Issue #3769) ---
+// Mermaid's flowchart lexer rejects unquoted text followed by a quoted string
+// inside one node shape (TEXT then STR), so the validator must refuse it.
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: rejects unquoted text then quoted string in [] (issue case)",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n    A --> D[profit, percent, "since cost"]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(
+      result.error ?? "",
+      'D[profit, percent, "since cost"]',
+    );
+    assertStringIncludes(result.error ?? "", "quote the whole label");
+    assertStringIncludes(result.error ?? "", "#quot;");
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: rejects unquoted text then quoted string in round shape",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A(text "quoted")',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error ?? "", "quote the whole label");
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: rejects unquoted text then quoted string in diamond shape",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A{text "quoted"}',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error ?? "", "quote the whole label");
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: rejects the same mix under a graph declaration",
+  () => {
+    const result = validateMermaidBlock({
+      type: "graph",
+      content: 'graph TD\n  A[text "quoted"]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error ?? "", "quote the whole label");
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: rejects a bad node that is the second node on a line",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A["ok"] --> B[bad "x"]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error ?? "", 'B[bad "x"]');
+    assertStringIncludes(result.error ?? "", "quote the whole label");
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: rejects a nested opener holding unquoted text then quoted string",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A([foo "bar"])',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error ?? "", 'A([foo "bar"])');
+    assertStringIncludes(result.error ?? "", "quote the whole label");
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts whole label quoted with commas",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n    A --> D["profit, percent, since cost"]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted label containing brackets",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A["foo (bar)"]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts fully quoted round shape",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A("x")',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted stadium shape",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A(["x"])',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted cylinder shape",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A[("db")]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted subroutine shape",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A[["sub"]]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted hexagon shape",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A{{"hex"}}',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted parallelogram shape",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A[/"p"/]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted double-circle shape",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A(("c"))',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts #quot; escapes with unquoted text",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: "flowchart LR\n  A[profit #quot;since#quot;]",
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts plain unquoted label",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: "flowchart LR\n  A[plain text]",
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted node followed by plain node on a line",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A["quoted"] --> B[plain]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted edge label",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A -- "text" --> B',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted argument in click call",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A --> B\n  click A call fn("x")',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: ignores bad label inside a %% comment line",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  %% D[bad "x"]\n  A --> B',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: does not flag non-flowchart diagrams",
+  () => {
+    const result = validateMermaidBlock({
+      type: "stateDiagram-v2",
+      content: 'stateDiagram-v2\n  A[bad "x"]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts an opener inside a quoted label",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A["call fn(a"] --> B',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts a bracket that is not a node opener",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A -->|(see "x")| B',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: names an unclosed label to end of line",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A[text "q"\n  B]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error ?? "", 'A[text "q"');
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted callback arguments after other arguments",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A --> B\n  click A call fn(a, "x")',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: still flags a node whose id starts with click",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  clickable[text "q"]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error ?? "", 'clickable[text "q"]');
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: names a label whose quoted part holds a close bracket",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  D[profit, "a]b"] --> E',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error ?? "", '`D[profit, "a]b"]`');
   },
 );

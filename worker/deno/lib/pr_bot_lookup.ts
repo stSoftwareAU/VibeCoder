@@ -81,6 +81,7 @@ export interface ListBotPrsOptions {
 function toPrEntry(pr: OpenPRWithBody, login: string): PrEntry {
   const entry: PrEntry = {
     number: pr.number,
+    body: pr.body,
     headRefName: pr.headRefName,
     baseRefName: pr.baseRefName,
     title: pr.title,

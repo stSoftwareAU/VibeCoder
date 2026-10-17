@@ -49,6 +49,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  assignmentIdFromBody,
+  buildAssignmentIdMarker,
+  neutraliseAssignmentIdMarkers,
+} from "./pr_body.ts";
+
 import type { IssueSubAgentTier, Logger, Result } from "../types.ts";
 import type { runGitCommand as runGitCommandType } from "./git_timeout.ts";
 import {
@@ -179,6 +185,8 @@ export function assemblePrBody(input: {
    * one — every other caller must state the tier it ran with.
    */
   subAgentTier: IssueSubAgentTier | undefined;
+  /** Worker-owned issue assignment, preserved on body refresh (Issue #3720). */
+  assignmentId?: string;
   ensureReferences?: (body: string, issueNumber: number) => string;
 }): string {
   const ensureReferences = input.ensureReferences ?? ensurePrReferencesIssue;
@@ -200,6 +208,10 @@ export function assemblePrBody(input: {
   body += "\n" + buildSummaryDigestMarker(input.summaryDigest);
   if (input.subAgentTier !== undefined) {
     body += "\n" + buildSubAgentTierMarker(input.subAgentTier);
+  }
+  body = neutraliseAssignmentIdMarkers(body);
+  if (input.assignmentId !== undefined) {
+    body += "\n" + buildAssignmentIdMarker(input.assignmentId);
   }
   if (missing.length > 0) return body;
   return ensureReferences(body, input.issueNumber);
@@ -639,6 +651,7 @@ export async function syncPrBodyFromSummary(
     footer,
     summaryDigest: currentDigest,
     subAgentTier: subAgentTierFromBody(view.body ?? ""),
+    assignmentId: assignmentIdFromBody(view.body ?? ""),
   });
 
   body = await finalisePrBodyImages(

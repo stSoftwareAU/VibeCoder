@@ -133,6 +133,16 @@ match wins and the loop restarts.
 
 ### 🔴 Priority 1 — PR feedback
 
+The scan also admits a worker-authored verifier hold (Issue #3798): a
+top-level PR comment whose first line is
+`<!-- vibe-pre-pr-verifier-hold -->` and whose author is in the push-capable
+fleet set. It logs `worker-verifier-hold` as the trust reason. This is the
+exception to skipping the host's own comments; an ordinary own-login comment,
+an inline marker or a marker merely quoted in the body does not qualify.
+A fleet eyes reaction marks the hold processed, as for other comments.
+The repair pass does not release `standing-violation` or arm auto-merge;
+independent verification and release remain the follow-up in Issue #3784.
+
 1. **Discover** — Find an open PR by this user that has unprocessed feedback
    (comment with thumbs-up or from authorised commenter, or CHANGES_REQUESTED
    review). A review body goes straight into the feedback prompt, so — like a
@@ -436,10 +446,11 @@ against the branch head captured before the agent ran, plus any untracked
 files. The check is skipped when there is no before-run head, or the push
 changed nothing.
 
-Five checks run, each only when it applies:
+Six checks run, each only when it applies:
 
 1. **Model drift pass** — only when the push changes a code file, a test
-   file or a manual or prompt Markdown file (`isManualProsePath`); a push that
+   file, a recognised source file (`isProseSourcePath`, including source under
+   `docs/`), or a manual or prompt Markdown file (`isManualProsePath`); a push that
    changes only the PR summary or non-Markdown docs gets no model pass. A
    read-only question (file-writing, sub-agent, web and plan-mode tools
    denied, the same list as the closure-verdict question) is asked over the
@@ -455,12 +466,20 @@ Five checks run, each only when it applies:
    the same file corrects, supersedes or contradicts (an earlier-round
    paragraph followed by a "PR-feedback round N" correction, say) — the
    earlier one is reported. When the files the question asks about include a
-   manual or prompt file, it also asks the shared doc-prose question (Issue
-   #3347), scoped to this push's change: in each such file, check only the
-   lines the push adds or edits, and report a sentence about when the new
-   behaviour happens, what it refuses, rejects, allows or skips, or that uses
-   an absolute word or a counted list, quoting it verbatim and naming the
-   contradicting `file:line`, when the code at the head contradicts it.
+   manual, prompt or source-comment file, it also asks the shared doc-prose
+   question (Issues #3347, #3715, #3731), scoped to this push's change. The
+   shared scope includes changed comments, unchanged attached declaration
+   comments and module headers, plus heading-bounded manual sections named by
+   the Docs sweep entry or mentioning a changed source path, basename or
+   exported declaration. The extra manual sections exclude `docs/archive/`.
+   This prose scope has its own 20-file and 40-section caps before the overall
+   40-file model-pass cap; overflow and unreadable input are logged as not
+   checked, never passed. It reports contradictions about triggers, refusals,
+   allowances, skips, absolute words or counted lists, quoting the sentence
+   and naming the contradicting `file:line`. Unchanged sentences are checked
+   only for what this push makes false. Sets without one code list require a
+   grep of the whole head tree. Unconfirmed source/prose findings are logged
+   and do not trigger the write-enabled recovery turn.
 2. **Deterministic Test Plan recount** — whenever the PR diff carries a
    summary, the worker counts top-level `Deno.test(` / `it(` declarations
    at the head for every test file the PR diff adds or edits, and flags a
@@ -554,6 +573,18 @@ Five checks run, each only when it applies:
    read as "no citations"). A hit whose head citations came from the facts
    file names that facts file, not the `.md` summary, and asks for the
    entry's `line`/`endLine` to be renumbered there.
+6. **Diff-scoped mutation check (Issue #3750)** — in every review-fix run the
+   mutation check runs over the lines this run itself added: the working tree,
+   uncommitted edits and untracked files included, against the before-run head.
+   Lines that a base-branch merge brought in are excluded, and a conflict
+   resolution counts as the run's own. It uses the PR-raise gate's runner,
+   mutator, 40-mutant cap, `skip_mutation_check`,
+   `mutation_check_budget_seconds`, `quality_credentials` handling and
+   `exempt (untestable)` exemptions read from the PR summary. An unexempted
+   survivor is a hit for the recovery turn, which may add or change tests and
+   docs but no production code. A budget, cap or runner error is reported, not
+   a hit. Survivors still left are reported in the PR reply; they do not block
+   the push. Details: [Diff-scoped mutation check](../mutation-check.md#review-fix-runs-issue-3750).
 
 Any hit gets **one** recovery turn — a Test Plan figure the recount could not
 check is a hit too (Issue #3740) — and the agent, with full tools, is asked
@@ -564,7 +595,10 @@ listed line citation to the head, in the file each hit names (a facts
 entry's `line`/`endLine`, or the `.md` summary's `Branch outcomes:` list) —
 re-running the flip for any entry whose
 cited code this push changed rather than carrying the old result over —
-without changing code. The checks are then re-run; a prose finding counts
+without changing code, except that a mutation survivor (item 6) is answered
+with tests or docs, never production code. The checks are then re-run, and
+the mutation check runs once more when survivors were found and the turn ran;
+a prose finding counts
 as fixed only when its quoted sentence was present before the recovery turn
 and is gone after it — a finding whose file was not one of the files the
 question was asked about is never read back, so it stays reported
@@ -576,21 +610,25 @@ model pass that returns no verdict is not a hit and does not trigger a
 recovery turn on its own; it goes straight to the reply note, and a named
 summary the quoted-sentence or line-citation check could not read at the
 head goes there too, along with any not-checked citation case the
-line-citation check reported. Whatever remains after the recovery turn is
-appended to `.pr_response_message` under `### Drift check (Issue #3143)`, so
-it reaches the PR reply instead of being pushed silently. The residual lists
-the change-request quotes still present, the Branch-outcomes citations still
-at the previous head's numbers, the prose findings and Test Plan counts still
-standing, the Docs sweep problems, a model pass that returned no verdict, a
-named summary the quote check could not read, each citation case the
-line-citation check could not check, and — under the heading "Test Plan
-figures the drift check could not verify" (Issue #3740) — each Test Plan
-figure still unchecked after the recovery turn, with its reason. A push whose
-only drift is an unchecked figure is therefore not reported clean.
+line-citation check reported. Whatever remains after the recovery turn —
+plus a model pass that returned no verdict and a summary that could not be
+checked — is appended to `.pr_response_message` under `### Drift check
+(Issue #3143)`, so it reaches the PR reply instead of being pushed silently.
+The residual lists the change-request quotes still present, the Branch-outcomes
+citations still at the previous head's numbers, the prose findings and Test
+Plan counts still standing, the Docs sweep problems, a model pass that returned
+no verdict, a named summary the quote check could not read, each citation case
+the line-citation check could not check, and — under the heading "Test Plan
+figures the drift check could not verify" (Issue #3740) — each Test Plan figure
+still unchecked after the recovery turn, with its reason. A push whose only
+drift is an unchecked figure is therefore not reported clean. Surviving mutants
+go in the same residual under their own heading, `#### Mutation check (Issue
+#3750)`, and so do any budget, cap or runner-error reports from the mutation
+check; those reports never trigger a recovery turn by themselves.
 
 ```mermaid
 flowchart TD
-    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check,<br/>line-citation check"]
+    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check,<br/>line-citation check,<br/>mutation check"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
     H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]

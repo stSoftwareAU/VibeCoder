@@ -69,3 +69,17 @@ Deno.test("issue prompt - Standards reviewer must list removed assertions (Issue
     "a `violation` (with the `file:line` it saw) for any removed assertion that",
   );
 });
+
+Deno.test("issue prompt - Standards reviewer compares replaced assertion coverage", async () => {
+  const text = flat(
+    section(
+      await issuePrompt(),
+      "Independent Review Before the PR — Spec and Standards on Separate Axes",
+    ),
+  );
+  assertStringIncludes(text, "Compare each `Replaced by:` pair");
+  assertStringIncludes(
+    text,
+    "a value the old assertion checked is no longer checked anywhere",
+  );
+});
