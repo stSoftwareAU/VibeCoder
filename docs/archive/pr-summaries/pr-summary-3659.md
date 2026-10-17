@@ -361,4 +361,28 @@ the result `not_checked`. The existing exact-name matching and Rust
   are now deliberately retained; the new extraction regression replaces it.
   Independent read-only review found no actionable findings.
 
+### PR #3921: keep a combined not_checked record whole
+
+The stored record cut a `not_checked` `reason` to 300 characters, yet the
+runner packed every cited test's outcome and cause into it, so a retry prompt
+could lose an unrun test and its cause. A `not_checked` result for several
+cited tests now carries a short summary `reason` plus structured `runs`
+(completed base/head outcomes) and `notRun` (test and cause) entries. They are
+sanitised by the same helpers as the checked record (ten entries, 300
+characters per field), rendered by `formatDiscriminationRecord` and replayed
+by the retry prompt.
+
+- `security_fix_discrimination_test.ts`: the three combined-reason assertions
+  now check the structured `runs` and `notRun` entries.
+- `security_fix_gate_retry_test.ts`: two tests pass a `not_checked` result
+  through the real persistence and the retry prompt. One cites three
+  unsupported tests (a combined cause far over 300 characters) and asserts
+  every test and its language cause reaches the prompt; with the previous
+  packed reason it failed on the stored record. The other adds a completed run.
+- Flips (each restored): dropping `runs` or `notRun` from the sanitised
+  `not_checked` record, or the `runs` rendering, turns a retry test red.
+- Docs sweep: `docs/security-fix-gate-feedback.md` (discrimination and
+  verdict-store sections) and the `SecurityFixDiscrimination` type comment;
+  siblings grepped: `notRun`, `others`, `not_checked`.
+
 <!-- vibe-branch-outcomes -->

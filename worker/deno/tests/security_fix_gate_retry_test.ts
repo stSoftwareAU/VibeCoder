@@ -22,7 +22,11 @@ import {
   resolveSecurityGateStateDir,
   type SecurityFixGateBlock,
 } from "../lib/security_fix_gate_feedback.ts";
-import type { SecurityFixDiscrimination } from "../lib/security_fix_discrimination.ts";
+import {
+  runSecurityFixDiscrimination,
+  type SecurityFixDiscrimination,
+} from "../lib/security_fix_discrimination.ts";
+import type { MutationRunnerSeams } from "../lib/mutation_runner.ts";
 import { SECURITY_FIX_GATE_MARKER } from "../lib/failure_diagnosis.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -328,6 +332,87 @@ Deno.test("gate retry - the run's discrimination record is persisted and replaye
 
   assertEquals(stored?.discrimination, GREEN_GREEN);
   assertStringIncludes(prompt, "base production files: pass (expected fail)");
+});
+
+Deno.test("gate retry - a not_checked verdict over several cited tests persists and replays every test and its cause (PR #3921 review)", async () => {
+  // Three unsupported citations: no seam is used, and the cause texts together
+  // far exceed the 300-character cap on a single stored field.
+  const tests = [
+    { file: "worker/tests/sanitise_traversal.bats", name: "rejects dot-dot" },
+    { file: "e2e/login.spec.ts", name: "rejects an injected username" },
+    { file: "tests/test_inject.py", name: "test_rejects_injection" },
+  ];
+  const discrimination = await runSecurityFixDiscrimination(
+    {
+      repoPath: ".",
+      baseRef: "origin/main",
+      productionFiles: ["src/a.ts"],
+      tests,
+      budgetSeconds: 60,
+    },
+    { now: () => 0 } as unknown as MutationRunnerSeams,
+  );
+  assertEquals(discrimination.kind, "not_checked");
+  let stored: SecurityFixGateBlock | undefined;
+  let prompt = "";
+  await recover(false, {
+    verdicts: [{
+      missing: ["discrimination-not-checked"],
+      declarations: [],
+      discrimination,
+    }],
+    inspect: async (workDir, prompts) => {
+      stored = await readSecurityFixGateBlock(
+        resolveSecurityGateStateDir(workDir),
+        BLOCK.repo,
+        BLOCK.issueNumber,
+      );
+      prompt = prompts[0] ?? "";
+    },
+  });
+
+  assertEquals(stored?.discrimination, discrimination);
+  for (const t of tests) assertStringIncludes(prompt, `${t.file}::${t.name}`);
+  assertEquals(prompt.match(/language of the cited test/g)?.length, 3);
+});
+
+Deno.test("gate retry - a not_checked verdict persists and replays its completed runs beside the unrun test (PR #3921 review)", async () => {
+  const discrimination: SecurityFixDiscrimination = {
+    kind: "not_checked",
+    reason: "1 of 2 cited tests could not be run",
+    runs: [{
+      test: { file: "tests/a_test.ts", name: "first case" },
+      preFix: "pass",
+      postFix: "pass",
+    }],
+    notRun: [{
+      test: { file: "tests/b.bats", name: "second case" },
+      reason: "the language of the cited test cannot be executed",
+    }],
+  };
+  let stored: SecurityFixGateBlock | undefined;
+  let prompt = "";
+  await recover(false, {
+    verdicts: [{
+      missing: ["discrimination-not-checked"],
+      declarations: [],
+      discrimination,
+    }],
+    inspect: async (workDir, prompts) => {
+      stored = await readSecurityFixGateBlock(
+        resolveSecurityGateStateDir(workDir),
+        BLOCK.repo,
+        BLOCK.issueNumber,
+      );
+      prompt = prompts[0] ?? "";
+    },
+  });
+
+  assertEquals(stored?.discrimination, discrimination);
+  assertStringIncludes(prompt, "tests/a_test.ts::first case");
+  assertStringIncludes(prompt, "base production files: pass (expected fail)");
+  assertStringIncludes(prompt, "tests/b.bats::second case");
+  assertStringIncludes(prompt, "language of the cited test");
 });
 
 Deno.test("gate retry - a verdict that cannot be persisted still replays its discrimination record to the retry", async () => {
