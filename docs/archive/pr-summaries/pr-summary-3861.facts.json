@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/docs_sweep_hits.ts",
+        "line": 191,
+        "outcome": "explained negative contributes no quoted reason terms",
+        "test": "worker/deno/tests/docs_sweep_hits_test.ts",
+        "testName": "sweep terms - next labels end fields but quoted labels stay terms (Issue #3861)",
+        "flipWentRed": "Forced negative guard false; quoted reason leaked and the test failed."
+      },
+      {
+        "path": "worker/deno/lib/docs_sweep_hits.ts",
+        "line": 210,
+        "outcome": "a following field label ends terms outside quotes",
+        "test": "worker/deno/tests/docs_sweep_hits_test.ts",
+        "testName": "sweep terms - next labels end fields but quoted labels stay terms (Issue #3861)",
+        "flipWentRed": "Forced next-field check false; the next field contaminated extracted terms and the test failed."
+      },
+      {
+        "path": "worker/deno/lib/docs_sweep_gate.ts",
+        "line": 335,
+        "outcome": "unusable grep evidence blocks the code-changing PR",
+        "test": "worker/deno/tests/docs_sweep_gate_test.ts",
+        "testName": "validateDocsSweep - grep evidence grep: unquoted (Issue #3861)",
+        "flipWentRed": "Forced no-terms check false; invalid-field tests failed."
+      },
+      {
+        "path": "worker/deno/lib/docs_sweep_gate.ts",
+        "line": 334,
+        "outcome": "an explained negative is the permitted no-term exception",
+        "test": "worker/deno/tests/docs_sweep_gate_test.ts",
+        "testName": "validateDocsSweep - grep evidence grep: none — no renamed surface terms (Issue #3861)",
+        "flipWentRed": "Forced negative operand true; explained-negative positive control failed."
+      },
+      {
+        "path": "worker/deno/lib/docs_sweep_hits.ts",
+        "line": 210,
+        "outcome": "semicolon outside quotes ends the field",
+        "test": "worker/deno/tests/docs_sweep_hits_test.ts",
+        "testName": "sweep terms - next labels end fields but quoted labels stay terms (Issue #3861)",
+        "flipWentRed": "Forced semicolon operand false; the leftover term leaked and the test failed."
+      },
+      {
+        "path": "worker/deno/lib/docs_sweep_hits.ts",
+        "line": 212,
+        "outcome": "quoted spans preserve field-label text and semicolons as literal terms",
+        "test": "worker/deno/tests/docs_sweep_hits_test.ts",
+        "testName": "sweep terms - next labels end fields but quoted labels stay terms (Issue #3861)",
+        "flipWentRed": "Forced quoted-span condition false; quoted field labels cut the term short and the test failed."
+      },
+      {
+        "path": "worker/deno/lib/docs_sweep_hits.ts",
+        "line": 214,
+        "outcome": "unclosed quotes retain preceding complete terms",
+        "test": "worker/deno/tests/docs_sweep_hits_test.ts",
+        "testName": "extractGrepTerms - an unclosed quote ends the scan without a term",
+        "flipWentRed": "Returned an empty field on an unmatched quote; the earlier valid term was lost and the test failed."
+      },
+      {
+        "path": "worker/deno/lib/docs_sweep_hits.ts",
+        "line": 205,
+        "outcome": "an absent field yields no terms",
+        "test": "worker/deno/tests/docs_sweep_hits_test.ts",
+        "testName": "extractGrepTerms - no grep: field yields no terms",
+        "flipWentRed": "Returned an invented quoted term for an absent field; the test failed."
+      }
+    ]
+  }
+}

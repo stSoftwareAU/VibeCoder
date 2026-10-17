@@ -1,0 +1,10 @@
+{
+  "issue": 3710,
+  "chunk": "top-up-3710",
+  "title": "top-up: PR-summary scrub artefact refusal",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3710",
+  "definition": "pure marker check added for the summary correction write-back backstop",
+  "status": "claimed",
+  "paths": ["worker/deno/lib/summary_scrub_gate.ts"],
+  "sweptAt": "6effe8f3b2e261c89a22a2ea10e25c88c911ba00"
+}

@@ -200,7 +200,7 @@ export function validateCheckRepoAvailabilityArgs(
 export interface SuggestImprovementsArgs {
   /** Target repository in "owner/repo" format (optional) */
   repo?: string;
-  /** When true, do not create issues (just list suggestions) */
+  /** When true, no issue is created; with a repo, the router's read-only steps report what would be filed */
   dryRun: boolean;
 }
 

@@ -169,10 +169,22 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // that linear strip from a backtracking one on hostile backtick runs
   // (Issue #3295).
   "tests/admin_only_finding_test.ts",
+  // The issue-routing classifier matches worker, product and marker patterns
+  // against an untrusted issue body; only a growth measurement separates
+  // those linear patterns from a backtracking one on hostile runs (#3741).
+  "tests/issue_routing_classifier_test.ts",
+  // The title normaliser runs a pattern over an untrusted draft title; only a
+  // growth measurement separates it from a backtracking one (#3742).
+  "tests/issue_routing_github_test.ts",
   // The closure-block render scans an agent-authored summary line by line for
   // the two review headings; only a growth measurement separates that scan
   // from the ambiguous `\s*:?\s*$` tail it deliberately does not copy (#2242).
   "tests/closure_verdict_test.ts",
+  // The met-closure criterion extraction strips trailing separators from an
+  // agent-written PR-summary entry with a backwards scan; only a growth
+  // measurement (assertLinearGrowth) separates that linear strip from a
+  // backtracking trailing-run regex (Issue #3766).
+  "tests/closure_met_check_3766_test.ts",
   // The described-code-change path scan returns the right answer on a long
   // hostile line, only quadratically slowly — so only growth can pin it (#2826).
   "tests/described_code_change_test.ts",
@@ -212,6 +224,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // separates the linear `Error:(?!:)` test from a backtracking one
   // (Issue #3431).
   "tests/failure_diagnosis_bounds_3431_test.ts",
+  // The transcript tee checks every string of a model-written stream-json
+  // line against the raw redaction; only a growth measurement separates the
+  // single forward cursor from a rescan per string (Issue #3826).
+  "tests/agent_transcript_growth_3826_test.ts",
   "tests/growth_bound_test.ts",
   "tests/plan_coverage_gate_bounds_1245_test.ts",
   // The pre-commit safety gate's dotenv/config/secrets patterns scan a staged
@@ -273,6 +289,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // PR summaries; only a growth measurement separates its single linear pass
   // from a rescan per line (Issue #3356).
   "tests/markdown_logical_units_3356_test.ts",
+  // The flowchart mixed-label scan walks agent-written Markdown a character
+  // at a time; only a growth measurement separates that linear scan from a
+  // backtracking one on hostile opener runs (Issue #3769).
+  "tests/mermaid_validator_growth_3769_test.ts",
 ];
 
 /**
