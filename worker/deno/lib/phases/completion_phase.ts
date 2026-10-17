@@ -12,6 +12,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { summaryScrubProblem } from "../summary_scrub_gate.ts";
+
 import {
   PRE_PUSH_GATE_MARKER,
   PRE_PUSH_LOOKUP_FAILED_MARKER,
@@ -2847,6 +2849,8 @@ async function completionBody(
       : null,
     testDiff,
     prSummaryContent: prBody,
+    issueTitle: ctx.issueTitle,
+    issueBody: ctx.issueBody,
   });
   const removedAssertionsBlocked = removedAssertions.applicable &&
     !removedAssertions.valid;
@@ -3228,7 +3232,14 @@ async function completionBody(
         ? buildPrePrVerifierGateComment(prePrVerifier.review)
         : "",
   };
+  const scrubProblem = summaryScrubProblem(prBody);
+  const scrubVerdict: LateSummaryVerdict = {
+    blocked: scrubProblem !== undefined,
+    reason: scrubProblem ?? "",
+    comment: () => scrubProblem ?? "",
+  };
   const lateSummaryVerdicts: LateSummaryVerdict[] = [
+    scrubVerdict,
     docsSweepVerdict,
     removedAssertionsVerdict,
     placeholderVerdict,
@@ -3522,6 +3533,19 @@ async function completionBody(
   // recovers and finalises that PR, so this gate does not need to run after
   // the guard either.
   // ---------------------------------------------------------------------
+  if (scrubVerdict.blocked) {
+    return await reportSummaryRuleBlock(
+      foldInLateSummaryVerdicts(scrubVerdict.reason, scrubVerdict.comment(), [
+        scrubVerdict,
+      ]),
+      ctx,
+      state,
+      prBody,
+      deps,
+      docsSweepHitsComment,
+    );
+  }
+
   if (placeholderBlocked) {
     logger.warn("Result-placeholder gate blocked PR creation", {
       tokens: placeholderTokens,

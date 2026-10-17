@@ -28,9 +28,12 @@ const REPO = "stSoftwareAU/VibeCoder";
 const ISSUE = 3131;
 const PR_URL = `https://github.com/${REPO}/pull/4211`;
 
+const REMOVAL_REQUIREMENT = "Change the numeric score to a rating";
+
 const ISSUE_BODY = `## Problem
 
 Removed test assertions are not accounted for in the PR summary.
+${REMOVAL_REQUIREMENT}.
 `;
 
 const ISSUE_BODY_WITH_CRITERIA = `## Problem
@@ -82,7 +85,7 @@ Changed scoring to a rating. Closes #${ISSUE}.
 
 ## Test Plan
 
-- Removed from \`crates/api/tests/decisions.rs\`: \`assert_eq!(record.score.to_string(), "-0.5")\` — #2253 changes the score to a rating, so the old value is untrue
+- Removed from \`crates/api/tests/decisions.rs\`: \`assert_eq!(record.score.to_string(), "-0.5")\` — Required by: "${REMOVAL_REQUIREMENT}"
 `;
 
 /** A summary with no `## Test Plan` heading at all. */
@@ -139,6 +142,8 @@ interface Scenario {
   testDiffFails?: boolean;
   /** Issue body; defaults to one with no Acceptance Criteria. */
   issueBody?: string;
+  issueTitle?: string;
+  issueComments?: string;
 }
 
 interface Outcome {
@@ -175,10 +180,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const ctx: IssueContext = {
     repo: REPO,
     issueNumber: ISSUE,
-    issueTitle: "Check removed test assertions",
+    issueTitle: scenario.issueTitle ?? "Check removed test assertions",
     issueBody: scenario.issueBody ?? ISSUE_BODY,
     issueLabels: ["enhancement", "work-on"],
-    issueComments: "",
+    issueComments: scenario.issueComments ?? "",
     githubUser: "testbot",
     config,
   };
@@ -588,3 +593,43 @@ Deno.test(
     assertStringIncludes(outcome.comments[0]!, "does not count as moved");
   },
 );
+
+Deno.test("completion - a removed assertion with no quoted requirement blocks", async () => {
+  const outcome = await runCompletion({
+    summary: SUMMARY_WITH_ASSERTION.replace(
+      `Required by: "${REMOVAL_REQUIREMENT}"`,
+      "Dropped, not moved; no requirement makes this untrue",
+    ),
+    changedFiles: "crates/api/tests/decisions.rs",
+    testDiff: SCORE_DIFF,
+  });
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.prCreateCalls, 0);
+  assertStringIncludes(outcome.comments[0]!, "Required by:");
+});
+
+Deno.test("completion - a removal quote in the issue title qualifies", async () => {
+  const outcome = await runCompletion({
+    summary: SUMMARY_WITH_ASSERTION,
+    changedFiles: "crates/api/tests/decisions.rs",
+    testDiff: SCORE_DIFF,
+    issueTitle: REMOVAL_REQUIREMENT,
+    issueBody: "An unrelated issue body",
+  });
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertEquals(outcome.claudeCalls, 0);
+});
+
+Deno.test("completion - a removal quote in issue comments alone does not qualify", async () => {
+  const outcome = await runCompletion({
+    summary: SUMMARY_WITH_ASSERTION,
+    changedFiles: "crates/api/tests/decisions.rs",
+    testDiff: SCORE_DIFF,
+    issueBody: "An unrelated issue body",
+    issueComments: REMOVAL_REQUIREMENT,
+  });
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.prCreateCalls, 0);
+  assertStringIncludes(outcome.comments[0]!, "linked issue title or body");
+});

@@ -430,7 +430,8 @@ changed nothing.
 Five checks run, each only when it applies:
 
 1. **Model drift pass** — only when the push changes a code file, a test
-   file or a manual or prompt Markdown file (`isManualProsePath`); a push that
+   file, a recognised source file (`isProseSourcePath`, including source under
+   `docs/`), or a manual or prompt Markdown file (`isManualProsePath`); a push that
    changes only the PR summary or non-Markdown docs gets no model pass. A
    read-only question (file-writing, sub-agent, web and plan-mode tools
    denied, the same list as the closure-verdict question) is asked over the
@@ -446,12 +447,20 @@ Five checks run, each only when it applies:
    the same file corrects, supersedes or contradicts (an earlier-round
    paragraph followed by a "PR-feedback round N" correction, say) — the
    earlier one is reported. When the files the question asks about include a
-   manual or prompt file, it also asks the shared doc-prose question (Issue
-   #3347), scoped to this push's change: in each such file, check only the
-   lines the push adds or edits, and report a sentence about when the new
-   behaviour happens, what it refuses, rejects, allows or skips, or that uses
-   an absolute word or a counted list, quoting it verbatim and naming the
-   contradicting `file:line`, when the code at the head contradicts it.
+   manual, prompt or source-comment file, it also asks the shared doc-prose
+   question (Issues #3347, #3715, #3731), scoped to this push's change. The
+   shared scope includes changed comments, unchanged attached declaration
+   comments and module headers, plus heading-bounded manual sections named by
+   the Docs sweep entry or mentioning a changed source path, basename or
+   exported declaration. The extra manual sections exclude `docs/archive/`.
+   This prose scope has its own 20-file and 40-section caps before the overall
+   40-file model-pass cap; overflow and unreadable input are logged as not
+   checked, never passed. It reports contradictions about triggers, refusals,
+   allowances, skips, absolute words or counted lists, quoting the sentence
+   and naming the contradicting `file:line`. Unchanged sentences are checked
+   only for what this push makes false. Sets without one code list require a
+   grep of the whole head tree. Unconfirmed source/prose findings are logged
+   and do not trigger the write-enabled recovery turn.
 2. **Deterministic Test Plan recount** — whenever the PR diff carries a
    summary, the worker counts top-level `Deno.test(` / `it(` declarations
    at the head for every test file the PR diff adds or edits, and flags a

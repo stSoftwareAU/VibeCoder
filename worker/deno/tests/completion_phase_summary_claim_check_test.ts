@@ -15,6 +15,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { scrubUntrustedText } from "../lib/prompt_delimiter.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
@@ -173,6 +174,7 @@ interface Scenario {
   claudeTurns?: Array<{
     writes?: string;
     output?: string;
+    echoScrubbedSummary?: boolean;
     /** Rewrites another repo file (repo-relative path), e.g. a manual. */
     writesFile?: { path: string; content: string };
   }>;
@@ -318,7 +320,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             ok: true as const,
             value: {
               exitCode: 0,
-              output: turn.output ?? "done",
+              output: turn.echoScrubbedSummary
+                ? `${CORRECTED_SUMMARY_OPEN}\n${
+                  scrubUntrustedText(Deno.readTextFileSync(summaryPath))
+                }${CORRECTED_SUMMARY_CLOSE}`
+                : turn.output ?? "done",
               timedOut: false,
             },
           });
@@ -887,7 +893,7 @@ Deno.test(
     assertStringIncludes(prompt, MANUAL_PATH);
     assertStringIncludes(
       prompt,
-      "check only the lines this branch's diff adds or edits",
+      "check the lines this branch's diff adds or edits",
     );
   },
 );
@@ -1111,3 +1117,36 @@ Deno.test(
     assertEquals(questionCalls.length, 0, "no summary file — no question");
   },
 );
+
+Deno.test("completion - scrubbed summary echo never overwrites Mermaid, comments or templates", async () => {
+  const original = SUMMARY_TWO_WRONG_CLAIMS +
+    "\n```mermaid\nsequenceDiagram\nA-->>B: {{x}}\n```\n<!-- author=worker -->\n";
+  const afterRecovery = original.replace(WRONG_CLAIM_SENTENCE, "");
+  const outcome = await runCompletion({
+    summary: original,
+    changedFiles: "docs/notes.md",
+    claudeTurns: [{ writes: afterRecovery }, { echoScrubbedSummary: true }],
+    questionReplies: [
+      verdictReply([
+        findingFor(WRONG_CLAIM_SENTENCE, "the head builds no regex"),
+      ]),
+      verdictReply([findingFor(SENTENCE_B, "the head does not compare")]),
+      verdictReply([]),
+    ],
+  });
+  assertEquals(outcome.claudeCalls, 2);
+  assertEquals(outcome.finalSummary, afterRecovery);
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.prCreateCalls, 0);
+});
+
+Deno.test("completion - pre-existing scrubbed Mermaid blocks PR creation", async () => {
+  const outcome = await runCompletion({
+    summary: SUMMARY_AFTER_CORRECTION +
+      "\n```mermaid\nsequenceDiagram\nA--․>>B: hello\n```\n",
+    changedFiles: "docs/notes.md",
+  });
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.prCreateCalls, 0);
+  assert(outcome.comments.some((c) => c.includes("prompt-scrubbed")));
+});

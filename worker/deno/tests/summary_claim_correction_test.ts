@@ -31,7 +31,7 @@ const SUMMARY_PATH = "docs/archive/pr-summaries/pr-summary-7.md";
 Deno.test("parseCorrectedSummary - ok: reads the inner text and trims trailing whitespace to one newline", () => {
   const reply =
     `Some preamble the model wrote.\n\n${CORRECTED_SUMMARY_OPEN}\n## Summary\n\nDid the work.\n${CORRECTED_SUMMARY_CLOSE}\n\nTrailer text.`;
-  const result = parseCorrectedSummary(reply);
+  const result = parseCorrectedSummary(reply, "");
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value, "## Summary\n\nDid the work.\n");
@@ -41,6 +41,7 @@ Deno.test("parseCorrectedSummary - ok: reads the inner text and trims trailing w
 Deno.test("parseCorrectedSummary - missing OPEN fails loud", () => {
   const result = parseCorrectedSummary(
     `## Summary\n${CORRECTED_SUMMARY_CLOSE}`,
+    "",
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
@@ -49,7 +50,10 @@ Deno.test("parseCorrectedSummary - missing OPEN fails loud", () => {
 });
 
 Deno.test("parseCorrectedSummary - missing CLOSE fails loud", () => {
-  const result = parseCorrectedSummary(`${CORRECTED_SUMMARY_OPEN}\n## Summary`);
+  const result = parseCorrectedSummary(
+    `${CORRECTED_SUMMARY_OPEN}\n## Summary`,
+    "",
+  );
   assertEquals(result.ok, false);
   if (!result.ok) {
     assertStringIncludes(result.error.message, CORRECTED_SUMMARY_CLOSE);
@@ -59,6 +63,7 @@ Deno.test("parseCorrectedSummary - missing CLOSE fails loud", () => {
 Deno.test("parseCorrectedSummary - empty inner text fails loud", () => {
   const result = parseCorrectedSummary(
     `${CORRECTED_SUMMARY_OPEN}\n   \n${CORRECTED_SUMMARY_CLOSE}`,
+    "",
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
@@ -70,6 +75,7 @@ Deno.test("parseCorrectedSummary - oversize inner text fails loud", () => {
   const huge = "a".repeat(MAX_CORRECTED_SUMMARY_CHARS + 1);
   const result = parseCorrectedSummary(
     `${CORRECTED_SUMMARY_OPEN}\n${huge}\n${CORRECTED_SUMMARY_CLOSE}`,
+    "",
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
@@ -80,6 +86,7 @@ Deno.test("parseCorrectedSummary - oversize inner text fails loud", () => {
 Deno.test("parseCorrectedSummary - a nested OPEN marker fails loud", () => {
   const result = parseCorrectedSummary(
     `${CORRECTED_SUMMARY_OPEN}\n## Summary\n${CORRECTED_SUMMARY_OPEN}\nmore\n${CORRECTED_SUMMARY_CLOSE}`,
+    "",
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
@@ -95,7 +102,6 @@ const PROMPT_OPTS = {
   repo: "stSoftwareAU/VibeCoder",
   issueNumber: 3324,
   summaryPath: SUMMARY_PATH,
-  summaryContent: "## Summary\n\n`parseRow()` escapes the phrase.\n",
   comment: "⚠️ **PR summary describes named code wrongly.** " +
     '"`parseRow()` escapes the phrase" — the head builds no regex.',
 };
@@ -106,14 +112,17 @@ Deno.test("buildSummaryClaimCorrectionPrompt - names the summary path", () => {
   assertStringIncludes(prompt, "stSoftwareAU/VibeCoder#3324");
 });
 
-Deno.test("buildSummaryClaimCorrectionPrompt - fences both the gate comment and the current summary content", () => {
+Deno.test("buildSummaryClaimCorrectionPrompt - fences the gate comment and reads the original summary by path", () => {
   const prompt = buildSummaryClaimCorrectionPrompt({
     ...PROMPT_OPTS,
     boundaryId: "0123456789ab",
   });
   assertStringIncludes(prompt, "BOUNDARY_0123456789ab");
   assertStringIncludes(prompt, PROMPT_OPTS.comment);
-  assertStringIncludes(prompt, PROMPT_OPTS.summaryContent.trim());
+  assertStringIncludes(
+    prompt,
+    `Read the original summary from \`${SUMMARY_PATH}\``,
+  );
 
   const beginCount =
     prompt.match(/---BEGIN UNTRUSTED USER CONTENT BOUNDARY_0123456789ab---/g)
@@ -121,9 +130,9 @@ Deno.test("buildSummaryClaimCorrectionPrompt - fences both the gate comment and 
   const endCount =
     prompt.match(/---END UNTRUSTED USER CONTENT BOUNDARY_0123456789ab---/g)
       ?.length ?? 0;
-  // Two fenced blocks: the gate comment, and the summary content.
-  assertEquals(beginCount, 2);
-  assertEquals(endCount, 2);
+  // Only the notice is fenced; the editable content is read from disk.
+  assertEquals(beginCount, 1);
+  assertEquals(endCount, 1);
 });
 
 Deno.test("buildSummaryClaimCorrectionPrompt - a forged delimiter in the comment is scrubbed", () => {
@@ -267,5 +276,22 @@ Deno.test("SUMMARY_CLAIM_CORRECTION_DISALLOWED_TOOLS - denies Bash, Edit, Write,
       true,
       `expected ${tool} to be disallowed`,
     );
+  }
+});
+
+Deno.test("parseCorrectedSummary - refuses newly introduced scrub artefacts but preserves existing literals", () => {
+  for (
+    const marker of ["․", "｛", "｝", "＜", "＞", "author＝", "***REDACTED***"]
+  ) {
+    const summary = `## Summary\n\n${marker}\n`;
+    const reply =
+      `${CORRECTED_SUMMARY_OPEN}\n${summary}${CORRECTED_SUMMARY_CLOSE}`;
+    const refused = parseCorrectedSummary(reply, "## Summary\nOriginal.\n");
+    assertEquals(refused.ok, false, marker);
+    if (!refused.ok) {
+      assertStringIncludes(refused.error.message, "prompt-scrubbing artefacts");
+    }
+    const preserved = parseCorrectedSummary(reply, summary);
+    assertEquals(preserved, { ok: true, value: summary });
   }
 });
