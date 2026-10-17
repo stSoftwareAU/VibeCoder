@@ -440,7 +440,7 @@ export async function reconcilePrBodyDigests(
       return;
     }
     // The sync would skip a deleted summary anyway, so there is nothing to do.
-    if (head.kind === "no-summary" || head.digest === recordedDigest) {
+    if (head.kind === "no-summary") {
       deps.inSync.set(key, settled);
       return;
     }
