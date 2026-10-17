@@ -294,6 +294,19 @@ Deno.test("fleet-experiment-report - covariates that are not JSON are refused", 
   });
 });
 
+Deno.test("fleet-experiment-report - a covariates file that cannot be read is refused by name", async () => {
+  await withWorkDir(async (dir) => {
+    await seedTwoHosts(dir);
+    const missing = `${dir}/no_such_covariates.json`;
+    const result = await run({ covariates: missing }, configFor(dir));
+    assertEquals(result.success, false);
+    assertEquals(
+      result.message,
+      `Argument covariates could not be read from ${missing}.`,
+    );
+  });
+});
+
 Deno.test("fleet-experiment-report - a follow-on seen by two hosts is costed once", async () => {
   await withWorkDir(async (dir) => {
     // The follow-on key carries no host or run id, so the same event written

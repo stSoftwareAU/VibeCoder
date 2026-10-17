@@ -2,11 +2,12 @@
  * Randomised arm definitions and assignment for the fleet experiment
  * (Issue #3645, part of milestone #3644).
  *
- * Each issue is assigned to one experiment arm before any work starts. The
- * draw is a pure function of a seed, the repository and the issue number, so
- * the same issue always lands in the same arm. The assignment is recorded
- * before work begins and is never re-drawn, so an intention-to-treat analysis
- * survives fallbacks to another model or host.
+ * assignExperimentArm draws one experiment arm for an issue. The draw is a
+ * pure function of a seed, the repository and the issue number, so the same
+ * issue always lands in the same arm, and a rerun never re-draws it. Only the
+ * synthetic generator calls it today: the execute phase still records cohort
+ * `unassigned` until per-role host configuration (#3643) lets an arm be
+ * enacted.
  *
  * Fable models are excluded from every arm and from every fallback.
  *

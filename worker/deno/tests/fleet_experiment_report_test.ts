@@ -751,6 +751,32 @@ Deno.test("fleet experiment report - the verdict needs every active arm to have 
   assertEquals(fullReport.verdict.arm, "sonnet-haiku");
 });
 
+Deno.test("fleet experiment report - immature merges never count toward the 30-merged gate or the evidence level", () => {
+  // The candidate has 29 mature verified merges plus 5 merges from
+  // assignments younger than the horizon: 34 merged in all, 29 mature.
+  const events = gateEvents(CONTROL_GATE, { ...CANDIDATE_GATE, merged: 29 });
+  for (let id = 2000; id < 2005; id++) {
+    events.push(assignment(id, CANDIDATE_GATE.cohort, ago(3)));
+    events.push(invocation(id, { role: "manager", usd: CANDIDATE_GATE.usd }));
+    events.push(...verifiedMerge(id, ago(2)));
+  }
+  const report = buildExperimentReport(events, options({ minPerArm: 1 }));
+  const candidate = armOf(report, CANDIDATE_GATE.cohort);
+  assertEquals(candidate.merged, 34);
+  assertEquals(candidate.matureMerged, 29);
+  assertEquals(candidate.pending, 5);
+  assertEquals(candidate.evidence, "directional");
+  assertEquals(report.verdict.kind, "no-decision");
+  assertStringIncludes(
+    report.verdict.reason,
+    "arm codex-test has 29 merged assignment(s) past the horizon",
+  );
+  assertStringIncludes(
+    formatExperimentReport(report),
+    "| codex-test | 34 | 29 | 5 | 34 | 29 |",
+  );
+});
+
 Deno.test("fleet experiment report - a blocking warning stops a verdict that the data would otherwise give (gate b)", () => {
   const clean = gateEvents(CONTROL_GATE, CANDIDATE_GATE);
   assertEquals(

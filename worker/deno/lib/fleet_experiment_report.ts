@@ -20,8 +20,10 @@
  *
  * Maturity depends on assignment age only. An assignment is mature once it was
  * assigned at least horizonDays ago, whatever its status. Younger assignments
- * are excluded from every rate, so an early merge cannot bias the rates
- * towards success (survivor bias).
+ * are excluded from merged per USD, the merge rate, the per-assignment rates,
+ * the evidence level and the verdict, so an early merge cannot bias them
+ * towards success (survivor bias). Only the throughput figures count every
+ * verified merge.
  *
  * Pure functions only. The bootstrap uses a seeded mulberry32 PRNG, so the same
  * events and options always produce the same report.
@@ -64,7 +66,7 @@ const DEFAULT_BOOTSTRAP_SAMPLES = 1000;
 /** Default bootstrap PRNG seed. */
 const DEFAULT_SEED = 1;
 
-/** Merged assignments needed for "preliminary" evidence or better. */
+/** Mature merged assignments needed for "preliminary" evidence or better. */
 const PRELIMINARY_MERGED = 30;
 
 /** The z value for a 99% two-sided interval. */
@@ -162,7 +164,12 @@ export interface AssignmentRecord {
   status: AssignmentStatus;
   /** Hours from assignment to the merged outcome, or null unless merged. */
   timeToMergeHours: number | null;
-  /** Mature once assigned at least horizonDays ago, whatever the status. Only mature records count in the rates. */
+  /**
+   * Mature once assigned at least horizonDays ago, whatever the status. Only
+   * mature records count in merged per USD, the merge rate, the per-assignment
+   * rates, the evidence level and the verdict; the throughput figures
+   * (mergedPerHostDay, throughputPerDay) count every record.
+   */
   mature: boolean;
   /** True when the assignment is still pending. */
   censored: boolean;
@@ -170,7 +177,7 @@ export interface AssignmentRecord {
   covariates: Record<string, string>;
 }
 
-/** Evidence strength, judged from the merged count. */
+/** Evidence strength, judged from the mature merged count. */
 export type EvidenceLevel =
   | "insufficient"
   | "directional"
@@ -194,7 +201,10 @@ export interface ArmSummary {
   pending: number;
   /** Mature records still pending, censored at the horizon. */
   censoredAtHorizon: number;
+  /** Verified merges over every assigned record, mature or not. Feeds only the throughput figures. */
   merged: number;
+  /** Verified merges among mature records. The evidence level and the verdict count these. */
+  matureMerged: number;
   mergedUnverified: number;
   failed: number;
   /** Known estimated USD over mature assignments. */
@@ -552,7 +562,7 @@ export function buildAssignmentRecords(
   return { records, unattributedEvents };
 }
 
-/** The evidence level for a merged count. */
+/** The evidence level for a mature merged count. */
 function evidenceFor(merged: number): EvidenceLevel {
   if (merged >= 50) return "established";
   if (merged >= PRELIMINARY_MERGED) return "preliminary";
@@ -674,6 +684,7 @@ function summariseArm(
     censoredAtHorizon:
       records.filter((record) => record.censored && record.mature).length,
     merged: merged.length,
+    matureMerged,
     mergedUnverified:
       records.filter((record) => record.status === "merged_unverified").length,
     failed: records.filter((record) => record.status === "failed").length,
@@ -710,7 +721,7 @@ function summariseArm(
     hostDays,
     mergedPerHostDay: hostDays > 0 ? merged.length / hostDays : null,
     throughputPerDay: merged.length / windowDays,
-    evidence: evidenceFor(merged.length),
+    evidence: evidenceFor(matureMerged),
   };
 }
 
@@ -1005,7 +1016,7 @@ const BLOCKING_CODES: ReadonlySet<ExperimentWarningCode> = new Set([
 
 /**
  * The verdict. A leading arm is named only when every active arm has
- * preliminary evidence or better, no blocking warning is raised, and one arm's
+ * preliminary evidence or better from mature merges, no blocking warning is raised, and one arm's
  * merged-per-USD interval lies wholly above every other active arm's.
  */
 function decideVerdict(
@@ -1025,12 +1036,12 @@ function decideVerdict(
   }));
 
   for (const { id, summary } of active) {
-    const merged = summary?.merged ?? 0;
-    if (merged < PRELIMINARY_MERGED) {
+    const matureMerged = summary?.matureMerged ?? 0;
+    if (matureMerged < PRELIMINARY_MERGED) {
       return {
         kind: "no-decision",
         reason:
-          `arm ${id} has ${merged} merged assignment(s); preliminary evidence needs at least ${PRELIMINARY_MERGED}`,
+          `arm ${id} has ${matureMerged} merged assignment(s) past the horizon; preliminary evidence needs at least ${PRELIMINARY_MERGED}`,
       };
     }
   }
@@ -1188,13 +1199,13 @@ export function formatExperimentReport(report: ExperimentReport): string {
     `Window ${report.windowDays} day(s), horizon ${report.horizonDays} day(s).`,
     "Estimated API-equivalent USD only — not billing",
     "",
-    "| Arm | Assigned | Mature | Pending | Merged | Merged per USD (99%) | Merge rate (99%) | Cost per merged USD | Median hours to merge | Evidence |",
-    "| --- | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | --- |",
+    "| Arm | Assigned | Mature | Pending | Merged (all) | Mature merged | Merged per USD (99%) | Merge rate (99%) | Cost per merged USD | Median hours to merge | Evidence |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | --- |",
   ];
   for (const arm of report.arms) {
     const label = arm.known ? arm.armId : `${arm.armId} (unknown)`;
     lines.push(
-      `| ${label} | ${arm.assigned} | ${arm.mature} | ${arm.pending} | ${arm.merged} | ${
+      `| ${label} | ${arm.assigned} | ${arm.mature} | ${arm.pending} | ${arm.merged} | ${arm.matureMerged} | ${
         formatWithInterval(arm.mergedPerUsd, arm.mergedPerUsdInterval, 3)
       } | ${formatWithInterval(arm.mergeRate, arm.mergeRateInterval, 2)} | ${
         formatNumber(arm.costPerMerged, 2)
