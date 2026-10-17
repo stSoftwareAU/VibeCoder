@@ -17,7 +17,9 @@ import {
   formatCiReport,
   isCodePath,
   judgeFreshness,
+  listPrCommits,
   type PrSummaryCiResult,
+  runPrSummaryCi,
   selectSummary,
   summaryIssueOf,
 } from "../lib/pr_summary_ci.ts";
@@ -523,5 +525,193 @@ Deno.test("pr-summary-ci - a branch changing only the facts file, with no summar
       r.stdout,
       `the facts file ${FACTS_PATH} is on the branch but the summary ${SUMMARY_PATH} is not`,
     );
+  });
+});
+
+// --- Branch-outcome coverage: report escaping and counting -------------------
+
+Deno.test("formatCiReport - a DEL character in a code path is escaped, not printed raw", () => {
+  const text = formatCiReport({
+    kind: "checked",
+    issueNumber: 42,
+    summaryPath: SUMMARY_PATH,
+    freshness: {
+      kind: "stale",
+      codeCommit: "c2",
+      codeFiles: ["worker/a\x7fb"],
+      summaryCommit: null,
+    },
+    gates: [],
+  });
+  assertStringIncludes(text, "worker/a\\u007fb");
+  assert(!text.includes("\x7f"));
+});
+
+Deno.test("formatCiReport - a stale result lists five code paths and counts the rest", () => {
+  const codeFiles = ["f1", "f2", "f3", "f4", "f5", "f6", "f7"].map((n) =>
+    `worker/${n}.ts`
+  );
+  const text = formatCiReport({
+    kind: "checked",
+    issueNumber: 42,
+    summaryPath: SUMMARY_PATH,
+    freshness: {
+      kind: "stale",
+      codeCommit: "c2",
+      codeFiles,
+      summaryCommit: null,
+    },
+    gates: [],
+  });
+  assertStringIncludes(
+    text,
+    "worker/f1.ts, worker/f2.ts, worker/f3.ts, worker/f4.ts, worker/f5.ts and 2 more",
+  );
+  assert(!text.includes("worker/f6.ts"));
+});
+
+// --- Branch-outcome coverage: git runner failures ----------------------------
+
+Deno.test("listPrCommits - a runner error names the git command and its cause", async () => {
+  const runGit: GitRunner = () =>
+    Promise.resolve({ ok: false as const, error: new Error("spawn failed") });
+  const r = await listPrCommits(runGit, "origin/main", "/repo");
+  assert(!r.ok);
+  assertStringIncludes(r.error.message, "git rev-list");
+  assertStringIncludes(r.error.message, "spawn failed");
+});
+
+Deno.test("listPrCommits - a non-zero diff-tree exit names the exit code and git's stderr", async () => {
+  const runGit: GitRunner = (args) =>
+    Promise.resolve(
+      args[0] === "rev-list"
+        ? {
+          ok: true as const,
+          value: { code: 0, stdout: "deadbeef\n", stderr: "" },
+        }
+        : {
+          ok: true as const,
+          value: {
+            code: 128,
+            stdout: "",
+            stderr: "fatal: bad object deadbeef\n",
+          },
+        },
+    );
+  const r = await listPrCommits(runGit, "origin/main", "/repo");
+  assert(!r.ok);
+  assertStringIncludes(r.error.message, "exited 128");
+  assertStringIncludes(r.error.message, "fatal: bad object deadbeef");
+});
+
+// --- Branch-outcome coverage: summary read and repository root ---------------
+
+Deno.test("runPrSummaryCi - an unreadable summary, other than missing, is an error", async () => {
+  await withRepo(async (clone) => {
+    await startBranch(clone, BRANCH);
+    await commitCode(clone, "export const a = 1;\n");
+    await commitSummary(clone);
+
+    const r = await runPrSummaryCi({
+      baseBranch: "main",
+      headBranch: BRANCH,
+      runGit: runGitCommand,
+      repoRoot: clone,
+      readTextFile: () =>
+        Promise.reject(new Deno.errors.PermissionDenied("denied")),
+    });
+    assert(!r.ok);
+    assertStringIncludes(r.error.message, "Failed to read PR summary");
+    assertStringIncludes(r.error.message, "denied");
+  });
+});
+
+Deno.test("main - an unreadable repository root exits 2 and names the cause", async () => {
+  const d = captureDeps(() => Promise.reject(new Error("git must not run")));
+  d.deps.repoRoot = () =>
+    Promise.resolve({
+      ok: false as const,
+      error: new Error("not a git repository"),
+    });
+  assertEquals(
+    await main(["--base", "main", "--head-branch", BRANCH], d.deps),
+    2,
+  );
+  assertStringIncludes(d.err.join("\n"), "not a git repository");
+  assertEquals(d.out.length, 0);
+});
+
+// --- Branch-outcome coverage: git failures reached through runPrSummaryCi ----
+
+/**
+ * The real git runner, except that the `nth` call of `subcommand` fails with
+ * exit 128. Also returns a count of the calls seen for that subcommand.
+ */
+function failNthGitCall(
+  subcommand: string,
+  nth: number,
+): { runGit: GitRunner; seen: () => number } {
+  let seen = 0;
+  const runGit: GitRunner = (args, options) => {
+    if (args[0] === subcommand) {
+      seen++;
+      if (seen === nth) {
+        return Promise.resolve({
+          ok: true as const,
+          value: {
+            code: 128,
+            stdout: "",
+            stderr: "fatal: simulated diff failure\n",
+          },
+        });
+      }
+    }
+    return runGitCommand(args, options);
+  };
+  return { runGit, seen: () => seen };
+}
+
+Deno.test("runPrSummaryCi - a git failure inside the PR-summary gates is returned as an error", async () => {
+  await withRepo(async (clone) => {
+    await startBranch(clone, BRANCH);
+    await commitCode(clone, "export const a = 1;\n");
+    await commitSummary(clone);
+
+    // The first diff is runPrSummaryCi's own; the second is the gates'.
+    const git = failNthGitCall("diff", 2);
+    const r = await runPrSummaryCi({
+      baseBranch: "main",
+      headBranch: BRANCH,
+      runGit: git.runGit,
+      repoRoot: clone,
+      readTextFile: (path) => Deno.readTextFile(path),
+    });
+    assertEquals(git.seen(), 2);
+    assert(!r.ok);
+    assertStringIncludes(
+      r.error.message,
+      "git diff exited 128: fatal: simulated diff failure",
+    );
+  });
+});
+
+Deno.test("runPrSummaryCi - a git failure while listing the PR's commits is returned as an error", async () => {
+  await withRepo(async (clone) => {
+    await startBranch(clone, BRANCH);
+    await commitCode(clone, "export const a = 1;\n");
+    await commitSummary(clone);
+
+    const git = failNthGitCall("diff-tree", 1);
+    const r = await runPrSummaryCi({
+      baseBranch: "main",
+      headBranch: BRANCH,
+      runGit: git.runGit,
+      repoRoot: clone,
+      readTextFile: (path) => Deno.readTextFile(path),
+    });
+    assertEquals(git.seen(), 1);
+    assert(!r.ok);
+    assertStringIncludes(r.error.message, "git diff-tree");
+    assertStringIncludes(r.error.message, "simulated diff failure");
   });
 });
