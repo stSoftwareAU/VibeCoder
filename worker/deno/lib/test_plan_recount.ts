@@ -626,7 +626,9 @@ function scanBlockTokens(
  * (5 tests) and the new `b` (3 tests)" keeps b whole. Second, "added" is a
  * partial marker only when it is not directly followed by the test-file
  * token: "Added `file` (33 tests)" announces a new file and stays whole,
- * while "Added to `file` (8 tests)" stays partial.
+ * while "Added to `file` (8 tests)" stays partial. A partial marker before
+ * its figure applies regardless of the gap shape: "Extended `file` by 5
+ * tests" and "`file`: extended with 5 tests" are both partial.
  */
 function classifyBlockClaims(
   raw: string,
@@ -704,8 +706,9 @@ function classifyBlockClaims(
         return { start, end, claimed, role: "whole", owner: own };
       }
       if (
-        !isPassed && PARTIAL_GAP_RE.test(gap) &&
-        (MARKER_RE.test(markerSeg) || governed || /\bwith\s*$/i.test(gap))
+        !isPassed &&
+        (MARKER_RE.test(markerSeg) || governed ||
+          (PARTIAL_GAP_RE.test(gap) && /\bwith\s*$/i.test(gap)))
       ) {
         return { start, end, claimed, role: "partial", owner: own };
       }

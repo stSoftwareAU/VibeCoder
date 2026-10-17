@@ -109,6 +109,29 @@ Deno.test("a single added-to figure remains partial", () => {
   );
 });
 
+Deno.test("a single partial marker before its figure does not depend on the gap shape", () => {
+  for (
+    const bullet of [
+      "- Extended `tests/a_test.ts` by 5 tests.",
+      "- `tests/a_test.ts` extended with 5 tests.",
+      "- `tests/a_test.ts`: extended with 5 tests for the retry path.",
+      "- `tests/a_test.ts`, extended (5 tests).",
+      "- `tests/a_test.ts`: added 5 tests for the retry path.",
+    ]
+  ) {
+    const summary = plan(bullet);
+    assertEquals(mismatchesOf(summary, { "tests/a_test.ts": 6 }), [], bullet);
+    assertEquals(
+      findUncheckedRunResults({
+        summary,
+        headCounts: counts({ "tests/a_test.ts": 6 }),
+      }).map((u) => u.reason),
+      [PARTIAL],
+      bullet,
+    );
+  }
+});
+
 Deno.test("a block mixing a partial addition and a whole-file count checks only the whole-file count", () => {
   const summary = plan(
     "- 3 tests added to `tests/a_test.ts` (34 tests in all), and `tests/b_test.ts` (8 tests) passes.",

@@ -550,7 +550,9 @@ Six checks run, each only when it applies:
    whole count, while a whole-file count in the same unit ("the new
    `b_test.ts` (N tests", "`b_test.ts` (N tests" with no "added" or "+" before
    it, "now has N", "the file now has N") is. Partial markers are read only
-   before their figure, even in a unit with one figure: prose after
+   before their figure, regardless of the gap shape: "Extended `a_test.ts`
+   by N tests" and "`a_test.ts`: extended with N tests" stay partial. Even
+   in a unit with one figure, prose after
    "`a_test.ts` (N tests at head)", such as "covers the extended retry path",
    does not make that count partial. An unchanged test file leaves
    only its own figure unchecked, not the whole unit, and a token-less count
