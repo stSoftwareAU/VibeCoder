@@ -49,8 +49,12 @@ Closes #3955.
 - The Codex CLI falls back to `$HOME/.codex` when `CODEX_HOME` is unset.
   The worker does not probe that path, so an unset home is `unknown` to the
   probe, not a subscription login.
-- `resolveCodexHome` in `worker/deno/lib/codex_auth_mode.ts` is kept for the
-  budget adapter. Only the billing probe stopped using it.
+- `resolveCodexHome` in `worker/deno/lib/codex_auth_mode.ts` is kept. Its
+  remaining caller is `codexStatus` in
+  `worker/deno/lib/provider_auto_runtime.ts` (imported as `codexHome` at
+  line 31, called at line 261), which resolves the home with the agent-state
+  fallback and passes it to `CodexBudgetAdapter`. Only the billing probe
+  stopped using it.
 
 ## Evidence
 
@@ -88,12 +92,13 @@ In-scope hits, all left unchanged unless noted:
   `docs/audits/security-sweep-2757-lib-delta-12d-12f.md:124`: still true.
   They audit the child env, `codex_env.ts`, or the budget command, none of
   which changed.
-- `docs/CODEX-BUDGET-SOURCES.md`, `docs/SUBSCRIPTION-SOAK.md`,
-  `docs/CONTAINER.md:1363, 2004`, `docs/CONTAINMENT.md:76, 95`,
-  `docs/DEPLOYMENT.md:507`, `docs/QUORUM.md:231, 237`, `docs/SETUP.md:77,
-  936`, `docs/workflows/resilience-and-concurrency.md:97`: still true. They
-  describe the persistent `CODEX_HOME` in containers, quorum and soak runs,
-  and the budget path. None describes the probe's fallback.
+- `docs/SUBSCRIPTION-SOAK.md`, `docs/CONTAINER.md`, `docs/CONTAINMENT.md`,
+  `docs/DEPLOYMENT.md`, `docs/QUORUM.md`, `docs/SETUP.md` and
+  `docs/workflows/resilience-and-concurrency.md` do not contain
+  `CODEX_HOME`. They name only the Codex key variables or the
+  `codex/provider.env` file (for example `docs/SETUP.md:936`,
+  `docs/CONTAINER.md:2004`, `docs/QUORUM.md:231, 237`), so none describes
+  the probe's fallback and none needed a change.
 - Source comments, still true: `worker/deno/lib/agent_provider.ts:277`
   (interface doc on `resolveStoredBilling`, now names the explicit-home rule),
   `:794-796` (the probe reads only an explicit home, Issue #3955),
@@ -116,8 +121,10 @@ In-scope hits, all left unchanged unless noted:
 **Callers checked**: `resolveStoredBilling` is called from
 `worker/deno/lib/provider_billing.ts` (`classifyProviderBilling`), with
 `context.env` and `context.workDir`. `resolveCodexAuthMode` is also called by
-the budget adapter and `codex_auth.ts`, and its behaviour is unchanged.
-`resolveCodexHome` is still used by `codex_budget.ts`.
+the budget adapter (`worker/deno/lib/codex_budget.ts:461`), and its behaviour
+is unchanged. `resolveCodexHome` is still used by `codexStatus` in
+`worker/deno/lib/provider_auto_runtime.ts:31, 261`, which builds the
+`CodexBudgetAdapter` from the resolved home.
 
 ## Reproduction
 
