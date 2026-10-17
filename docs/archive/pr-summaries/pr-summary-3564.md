@@ -121,7 +121,8 @@ previous release break the new code.
   planning-prompt tests (38 passed); the 19 issue-prompt tests that read
   Project Guidelines, Escape Hatch or a prompt size (189 passed).
 - No existing test edited; no assertion removed.
-- `./quality.sh` result is recorded below once the run on the final head
-  finished.
+- `./quality.sh < /dev/null` on commit `02fd40a4`: `Result: PASSED (with
+  skipped checks)`. Deno tests, lint, type check, fmt, markdownlint, mermaid
+  and semgrep all passed, and only "config integration" was skipped.
 
 <!-- vibe-branch-outcomes -->
