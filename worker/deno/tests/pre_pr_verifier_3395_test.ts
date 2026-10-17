@@ -1587,3 +1587,36 @@ Deno.test("the closure gap finding's fix agrees with the gate comment's procedur
   assertStringIncludes(comment, "Marking a criterion `partial`");
   assert(!comment.includes("mark the entry `partial`"));
 });
+
+Deno.test("runPrePrVerifier: earlier findings need complete fixed verdicts even when findings is empty", async () => {
+  const f = await makeRepo();
+  try {
+    for (
+      const [verdicts, blocked] of [
+        [undefined, true],
+        [[{ index: 1, verdict: "partly", note: "docs remain" }], true],
+        [[{ index: 1, verdict: "fixed", note: "both paths checked" }], false],
+      ] as const
+    ) {
+      const result = await runPrePrVerifier(
+        inputFor(f, { previousFindings: ["Problem and every Fix ask"] }),
+        makeDeps((request) => {
+          assertStringIncludes(request.prompt, "Problem and every Fix ask");
+          assertStringIncludes(request.prompt, '"index":1');
+          return Promise.resolve(
+            okRun({
+              output: JSON.stringify({
+                ...JSON.parse(REPLY_CLEAN),
+                earlierFindings: verdicts,
+              }),
+            }),
+          );
+        }, []),
+      );
+      assertEquals(result.status, "checked");
+      assertEquals(prePrVerifierBlocked(result), blocked);
+    }
+  } finally {
+    await f.cleanup();
+  }
+});

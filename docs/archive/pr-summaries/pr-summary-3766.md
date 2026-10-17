@@ -34,7 +34,7 @@ Nothing checked a closure entry the agent marked `met` against the criterion it 
 ### Undiscoverable Facts
 
 - The issue body has no `## Acceptance Criteria` heading, so no closure block or two-axis review block is required, and none is emitted.
-- The issue scopes pr_feedback rounds out, and they still do not run the verifier. The fleet's `post.ts` does not enforce the `closure` array in code; the issue scopes code enforcement to the pre-PR verifier.
+- The original issue scoped PR-feedback rounds out. Main now runs the shared verifier on review-fix pushes too. The fleet's `post.ts` does not enforce the `closure` array in code.
 
 ## Evidence
 
@@ -60,6 +60,8 @@ flowchart LR
 
 ## Test Plan
 
+- Retain `runPrePrVerifier: earlier findings need complete fixed verdicts even when findings is empty` unchanged from the target branch. It checks that omitted and partial earlier-finding verdicts block, and a complete fixed verdict passes; the closure fixes do not replace this regression coverage.
+
 - New tests in `worker/deno/tests/closure_met_check_3766_test.ts` (23 tests) cover:
   - extraction, de-duplication, neutralising and clipping
   - each trailing separator kind
@@ -83,7 +85,7 @@ flowchart LR
 - Call site check: replacing `closureItems: metItems` with `[]` in `verifyInCheckout` turns `a met closure entry the verifier rates partial blocks, with a finding on the summary` red. Removing the `closureGapFindings` append turns both that test and `a clean reply with no closure array blocks…` red.
 - Callers checked for the now-required `ReviewReply.closure` and `buildPrePrVerifierPrompt`'s required `closureItems`: the synthetic review in `pre_pr_verifier.ts`, `createMockDeps` in `lib/issue_worker_wiring.ts`, and `tests/completion_phase_pre_pr_verifier_3395_test.ts`. All three now pass `closure: []`. `deno check` over `lib/`, `tests/` and the fleet scripts passes.
 - A dead operand (`matching.length === 0`) found by flip checks was removed.
-- Targeted run on the final head (after the PR #3890 review fixes): `deno task test:unit tests/closure_met_check_3766_test.ts tests/pre_pr_verifier_3395_test.ts tests/pr_review_brief_shared_3395_test.ts tests/completion_phase_pre_pr_verifier_3395_test.ts tests/review_fleet_prs_checklists_3594_test.ts tests/review_fleet_prs_log_2678_test.ts tests/independent_review_gate_test.ts` passed: parallel pass 147 passed, 0 failed; serial pass 23 passed, 0 failed.
-- `./quality.sh` on the final head, after the PR #3890 review fixes: Result PASSED (with skipped checks, as the gate reports them).
+- Targeted run at `3d880384` (before restoring the target branch's earlier-findings regression): `deno task test:unit tests/closure_met_check_3766_test.ts tests/pre_pr_verifier_3395_test.ts tests/pr_review_brief_shared_3395_test.ts tests/completion_phase_pre_pr_verifier_3395_test.ts tests/review_fleet_prs_checklists_3594_test.ts tests/review_fleet_prs_log_2678_test.ts tests/independent_review_gate_test.ts` passed: parallel pass 147 passed, 0 failed; serial pass 23 passed, 0 failed.
+- `./quality.sh` at `3d880384`, before restoring the target branch's earlier-findings regression: Result PASSED (with skipped checks, as the gate reports them). CI must re-run the restored test on the updated head; no new local full-gate pass is claimed.
 
 <!-- vibe-branch-outcomes -->
