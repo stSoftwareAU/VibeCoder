@@ -1226,7 +1226,10 @@ raised. The agent dispatches nothing for it.
   listed criteria are agent-written text copied from the issue, so they are
   rendered inside the prompt's untrusted fence and named in its
   boundary-integrity instruction; only the worker's instruction sentence sits
-  outside it. A summary that marks no entry `met`, or has no closure block,
+  outside it. The fleet review gate uses this same renderer for its
+  `closureEntries` field; the orchestrator copies that fenced section verbatim
+  into the shared brief rather than pasting raw PR-body criteria.
+  A summary that marks no entry `met`, or has no closure block,
   lists none and owes no verdict. The fleet reviewer shares the brief and so
   the instruction, but its `post.ts` does not check the array.
 - **Disposable checkout.** A `git clone --shared` of the issue checkout at the
