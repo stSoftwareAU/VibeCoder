@@ -392,16 +392,27 @@ budgets belong in a dedicated benchmark with reported numbers, not in
 the unit-test runner. Flag a comparison of an elapsed time against a
 constant as a finding.
 
-**Ratio assertions are not a finding — do not flag them.** A test that
+**A ratio of two readings is a timing assertion too.** A test that
 times the same work at two input sizes and asserts on how the cost grew
-(size N vs 4N, typically through a shared growth helper the suite
-provides) is guarding super-linearity by shape, not by clock: a slower
-machine inflates both readings and the test stays green, which is the
-very objection this check exists to raise. Catastrophic backtracking
-has no wrong output, only a runtime one, so these are the few tests
-that must measure. The distinguishing question is what the elapsed time
-is compared against — another reading of the same work is fine; a
-constant is the defect.
+(size N vs 4N, fail above k times) still passes or fails on the wall
+clock: a loaded host skews the two readings differently, and such a
+ratio has gone red reading 30 ms against 355 ms for work that is
+linear. Flag it like any other timing assertion. The remedy names the
+deterministic forms: assert what the code produces on the hostile input
+(a catastrophic-backtracking input of real size never returns, so it
+hangs on every host), or count deterministic work through an injected
+observer or counter and assert the count grows linearly, and move any
+timing comparison into the repository's benchmark harness.
+
+**Stay silent on a ratio only where the repository's own testing
+standard explicitly allows ratio tests** — a sentence you can point to,
+not an inference from the ratio tests the suite already has — and the
+test compares the two readings with each other. The distinguishing
+question there is what the elapsed time is compared against: another
+reading of the same work may be allowed; a constant is always the
+defect. A repository standard that keeps `Instant`, `elapsed` or
+`performance.now()` out of pass/fail, or sends timing to `benches/`,
+covers ratios too — file the ratio there.
 
 ### 4. Benchmarks living in the unit-test runner
 
@@ -710,13 +721,15 @@ Flag:
   test advances itself — no wall-clock time passes, so the shape is
   fast;
 - the test is a **ratio assertion** that times the same work at two
-  input sizes and compares the two readings. That is check 3's
-  carve-out, restated here so this check cannot be read as
-  contradicting it: such a test measures deliberately, and it compares
-  an elapsed time against another reading of the same work rather than
-  against a constant, so a slower host inflates both readings and it
-  stays green. Check 3 does not flag it and neither does this one. An
-  **absolute** wall-clock threshold remains a check 3 finding.
+  input sizes and compares the two readings. Whether that is a finding
+  is check 3's call, restated here so this check cannot be read as
+  contradicting it: check 3 reports a ratio assertion unless the
+  repository's own testing standard explicitly allows ratio tests, and
+  stays silent where it does, because the test then compares an elapsed
+  time against another reading of the same work rather than against a
+  constant. This check never reports it either way, so a ratio test is
+  never filed under both. An **absolute** wall-clock threshold remains
+  a check 3 finding.
 
 The remedy stated in the finding is one of two, and the issue names
 both: **a seam that removes the wait** — an injected clock the test
@@ -793,6 +806,20 @@ fast")` inside a `Deno.test` case.</excerpt>
 <reason>A loaded CI runner fails this and a fast laptop passes it, so the
 signal is machine speed, not correctness. The performance budget belongs
 in a benchmark with reported numbers.</reason>
+</example>
+
+<example name="ratio-assertion-where-the-standard-forbids-timing">
+<excerpt>`tests/cluster_test.rs:88` — times `assess()` at N=4000 and
+N=16000 and asserts `t_large < t_small * 10`, in a repository whose
+`CONTRIBUTING.md` says "Must not: use `Instant`/`elapsed` for
+pass/fail".</excerpt>
+<signal>check 3 — wall-clock ratio in a unit test</signal>
+<verdict>file — `severity:medium`</verdict>
+<reason>The repository's own standard keeps timing out of pass/fail, and
+a ratio of two readings is still timing: a loaded host skews the two
+readings differently. The remedy is a deterministic work count through
+an injected counter, asserted to grow linearly, with any timing
+comparison moved to `benches/`.</reason>
 </example>
 
 <example name="self-evident-hard-coded-expected-value">
@@ -903,9 +930,9 @@ no measurement or estimate is needed to know the case cannot meet the
 unit budget. The remedy is an injected clock the test advances, or
 moving the file into the integration-test manifest. Compare
 `src/growth_test.ts:40`, which times the same work at N and 4N and
-asserts on the ratio: that measures on purpose, compares one reading
-against another rather than against a constant, and is silent under
-checks 3 and 13 alike.</reason>
+asserts on the ratio: it waits on no sleep or poll, so check 13 is
+silent on it, and whether it is a check 3 finding depends on whether
+the repository's own testing standard explicitly allows ratio tests.</reason>
 </example>
 
 </examples>

@@ -1242,19 +1242,34 @@ simply no longer waits out a stopwatch to do it.
   unfixed pattern to see it hang or fail the growth check before counting it:
   Issue #3085's growth test fed dots that ran to the end of the value, which
   never backtracks, when the input that does is dots followed by `x`.
-- **If, and only if, no observable output distinguishes the two, guard by
-  shape rather than by clock** — catastrophic backtracking has no wrong output,
-  only a runtime one, so such a test must measure. Use
+- **The target repository's own testing standard wins on timing.** Fleet
+  runs work in repositories whose standards keep timing out of unit tests
+  ("no `Instant`/`elapsed` for pass/fail", "timing belongs in `benches/`");
+  there that rule covers a ratio of two readings too, because the PR #1170
+  lesson above is a ratio going red on linear work. Guard super-linear cost
+  there by the output first, then by **deterministic work** counted through
+  an injected observer or counter and asserted to grow linearly
+  (stSoftwareAU/NEAT-AI-Discovery PRs #2321 and #2345 replaced fleet-written
+  ratio tests that way), and put timing comparisons in the repository's
+  benchmark harness. Never cite this repository's helpers or issue numbers
+  (`assertLinearGrowth`, Issue #530) as a precedent in another repository,
+  and confirm a precedent file exists before naming it (Issue #3680).
+- **If, and only if, neither the output nor a work count distinguishes the
+  two, this repository allows a ratio as a last resort** — catastrophic
+  backtracking has no wrong output, only a runtime one, and a regex engine
+  exposes no step counter, so such a test must measure. It is a last resort,
+  not a safe default: by the lesson above, a ratio can still flake under
+  load, so it runs in the serial pass, where the machine is its own. Use
   [`tests/support/growth.ts`](worker/deno/tests/support/growth.ts)
   (`assertLinearGrowth`), which times the same work at size N and 4N and fails
   only when the cost grew faster than the input. A slower fleet host inflates
-  both readings and stays green; an absolute millisecond budget does not
+  both readings, where an absolute millisecond budget simply goes red
   (Issue #530). The rule in one line: **compare two readings of the same work,
-  never a reading against a constant.** A ratio assertion is permitted and is
-  not a `test-audit` finding; an absolute wall-clock threshold is forbidden and
-  is one (Issue #786). Such a test measures deliberately, so it runs in the
-  serial pass — and it is still a unit test. Prefer the behavioural form where
-  it works: PR #1170 moved twelve ReDoS guards onto asserting what the code
+  never a reading against a constant.** Because this standard explicitly
+  allows it, such a ratio assertion is not a `test-audit` finding in this
+  repository; an absolute wall-clock threshold is forbidden and is one
+  (Issue #786). It is still a unit test. Prefer the behavioural form where it
+  works: PR #1170 moved twelve ReDoS guards onto asserting what the code
   *produces* for an adversarial input, because a pattern that never returns
   hangs the case on every host. It only works when the pre-fix cost is large
   enough to hang — `plan_coverage_gate_bounds_1245_test.ts` guards a pattern
