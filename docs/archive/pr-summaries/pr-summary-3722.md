@@ -25,7 +25,7 @@ Reconcile lifecycle-ledger events into assignment and cohort estimates, with rol
 - **met** — The restart fixture's duplicated events are counted once. — evidence: `worker/deno/tests/lifecycle_reconcile_test.ts::lifecycle reconciliation fixture: restart` — reviewer: met
 - **met** — Spend from a failed attempt and a timed-out attempt is included in the cohort total and in wasted spend. — evidence: `worker/deno/tests/lifecycle_reconcile_test.ts::lifecycle reconciliation fixture: failure` and `lifecycle reconciliation fixture: retry` assert total and wasted values for both results — reviewer: met
 - **met** — Unknown usage or pricing appears as a non-zero unknown count with `partial: true`, never as 0 USD. — evidence: `worker/deno/tests/lifecycle_reconcile_test.ts::lifecycle reconciliation retains unknown usage and pricing as a partial estimate` and `lifecycle reconciliation preserves the priced part of split-model usage` — reviewer: met
-- **partial** — Tests and `./quality.sh` pass. — evidence: 220 focused integration tests passed; exact frozen lifecycle tests passed independently — reviewer: partial — reason: The complete official quality gate is pending and must pass before PR creation.
+- **met** — Tests and `./quality.sh` pass. — evidence: Hosted `./quality.sh` passed on `e842eb79adaf80084acc655af49c7d1064cd7a31` ([job evidence](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39024074189/job/117371486628)); parallel unit tests passed in 11m14s and serial unit tests passed in 3m01s. Semgrep checked 19 changed files; type checking, lint, formatting, Markdown, Mermaid and ruleset checks passed. Configuration integration was skipped because no `.config.json` exists, and the gate reported PASSED (with skipped checks) — reviewer: met
 
 ## Standards Review
 
@@ -34,7 +34,7 @@ Reconcile lifecycle-ledger events into assignment and cohort estimates, with rol
 - **clean** — KISS/DRY and the review-enforced over-engineering checks: no standard-library reinvention, unnecessary dependency, single-implementation abstraction or duplicated in-repo policy; the observer reuses the existing CI decision, ledger validation, event keys and maintenance hooks.
 - **clean** — Fail-loud handling, allowlisted ledger data, old cache compatibility, deterministic deduplication, explicit unknown cost bounds, Australian English and scope discipline checked. Reopen/reclose, stale cached OPEN, current-head and late-quality observations have regression coverage.
 - **clean** — Tests exercise public behaviour. Fifty-one unique runtime branch mutants were killed with named failing tests matching the facts file. The sole existing expected-object change adds the carried body while retaining every previous field; removing only body copying made the existing named test fail. No assertion coverage was discarded.
-- **clean** — Quality evidence is accurately limited to completed scoped checks; full `./quality.sh` remains outstanding before PR creation. No remaining production or documentation correctness finding.
+- **clean** — The complete hosted `./quality.sh` passed before PR creation; the reviewed implementation has no remaining production or documentation correctness finding. Final archive-only evidence changes are checked separately with the summary checker and Markdown rules.
 
 ## Evidence
 
@@ -44,6 +44,6 @@ Docs sweep — grep: "reconcileLifecycleEvents", "censored_at_cutoff"; updated `
 
 ## Test Plan
 
-The shared frozen-lock integration run passed 220 tests. The official quality gate must pass before PR creation. Reconciler branch mutations are the subset below; the complete milestone record remains in the shared facts file.
+The shared frozen-lock integration run passed 220 tests. The complete hosted `./quality.sh` passed before PR creation; the exact tested commit and job are recorded above. Reconciler branch mutations are the subset below; the complete milestone record remains in the shared facts file.
 
 <!-- vibe-branch-outcomes -->
