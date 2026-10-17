@@ -330,19 +330,23 @@ export interface ExecuteClaudePhaseOptions {
    */
   codegraphContextEnabled?: boolean;
   /**
-   * Whether this host splits issue work between an advisor and Sonnet
-   * executor sub-agents (Issue #2342, part of #2320, default: false).
+   * Whether this host splits issue work between an advisor and executor
+   * sub-agents on the run's sub-agent tier (Issue #2342, part of #2320). The
+   * host key defaults to on since Issue #2812; an unset option here reads as
+   * off.
    *
    * Threaded from `config.issueExecutorSplit` by this path's production
    * wiring site (`commands/execute_claude_phase.ts`); the main-loop issue
    * phase reads the same key straight off its own `config`. The repository's
-   * own `repo_config` override is layered over it here. Off, the invocation
-   * carries no `--agents` and is byte-for-byte the argv built today.
+   * own `repo_config` override is layered over it here. Off, no executor
+   * definitions are built; `--agents` is still emitted for the reviewer
+   * agents or the Haiku-tier explorer (see `buildIssueRunAgents`).
    */
   issueExecutorSplit?: boolean;
   /**
    * Whether this host dispatches the Spec and Standards reviewers as defined
-   * cheaper sub-agents (Issue #2575, default: false). Threaded from
+   * cheaper sub-agents (Issue #2575). The host key defaults to on since Issue
+   * #2812; an unset option here reads as off. Threaded from
    * `config.issueReviewerAgents`; host-wide, no per-repository override.
    */
   issueReviewerAgents?: boolean;

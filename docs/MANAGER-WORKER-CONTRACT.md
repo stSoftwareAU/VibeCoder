@@ -59,8 +59,8 @@ relative to the repository root.
 | Reviewer definitions | `worker/deno/lib/issue_executor_agents.ts:208`, `:296` | Read-only tools `Read`, `Grep`, `Glob`; `buildIssueReviewerAgents`. |
 | Explorer definition | `worker/deno/lib/issue_executor_agents.ts:337`, `:374` | Haiku, read-only. Built only on the haiku tier (see assembly below). |
 | Assembly | `worker/deno/lib/issue_executor_agents.ts:420-434` | `buildIssueRunAgents` returns `undefined` when the split is off, reviewers are off and the tier is not haiku (`:424-426`). The explorer is added only on the haiku tier (`:434`). |
-| Phase wiring | `worker/deno/lib/execute_claude_phase.ts:1266-1302` | Resolves the split (`:1278-1282`), then the tier (the `"sonnet"` fallback at `:1287` applies only when no option is passed), then calls `buildIssueRunAgents` at `:1296`. |
-| Edit guard | `worker/deno/lib/issue_executor_enforcement.ts:47`, `:58`, `:124`, `:138` | Guarded tools are `Edit` and `Write`. A call with `agent_id` present (an executor) is allowed; a call without it (the advisor) is denied. |
+| Phase wiring | `worker/deno/lib/execute_claude_phase.ts:1270-1306` | Resolves the split (`:1282-1286`), then the tier (the `"sonnet"` fallback at `:1291` applies only when no option is passed), then calls `buildIssueRunAgents` at `:1300`. |
+| Edit guard | `worker/deno/lib/issue_executor_enforcement.ts:47`, `:58`, `:124`, `:138` | Guarded tools are `Edit` and `Write`. A call with `agent_id` present (an executor) is allowed. A call without it (the advisor) is denied, unless its `file_path` is one of the advisor's own run-record files (`isAdvisorRunRecordPath`, `:98`, `:142-145`): the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` or the PR-feedback reply file `.pr_response_message`. |
 | Hook settings | `worker/deno/lib/issue_executor_enforcement.ts:205`, `:240` | `buildIssueExecutorHookSettings` and `resolveIssueExecutorHookSettings` build the `--settings` payload. |
 | Guard CLI | `worker/deno/lib/issue_edit_guard_cli.ts:46` | `runIssueEditGuard` is the hook entry point. |
 | Flag delivery | `worker/deno/lib/agent_provider.ts:595` (`buildClaudeCliArgs`), `:617-618`, `:622-623`, `:638-639` | `buildClaudeCliArgs` emits `--agents` JSON (`:617-618`), and `--settings` at two places (`:622-623`, `:638-639`). The `--settings` argument is emitted twice when `settingsJson` is set. This is recorded here and not fixed by this change. |
@@ -124,7 +124,7 @@ section exists in the worker yet.
 
 | Role | Duty | Tools | Today (Claude) |
 | --- | --- | --- | --- |
-| Manager | Plans, dispatches, verifies. Read-only for edits. | Full read, dispatch | Advisor. `Edit` and `Write` are denied when `agent_id` is absent, by the #2344 `PreToolUse` hook delivered via `--settings`. Enforced on Claude only today. |
+| Manager | Plans, dispatches, verifies. Read-only for edits. | Full read, dispatch | Advisor. `Edit` and `Write` are denied when `agent_id` is absent (except on the advisor's own run-record files), by the #2344 `PreToolUse` hook delivered via `--settings`. Enforced on Claude only today. |
 | Executor | Makes the mechanical edits in one unit of work. | Edit, Write, read tools, scoped to `workspaceDir`. No further delegation. | `buildIssueExecutorAgents`, with `Agent` disallowed. |
 | Spec reviewer | Checks the change against the issue. Read-only. | `Read`, `Grep`, `Glob` | `buildIssueReviewerAgents`. |
 | Standards reviewer | Checks the change against the standards. Read-only. | `Read`, `Grep`, `Glob` | `buildIssueReviewerAgents`. |
@@ -210,11 +210,11 @@ from the claim through the advisor and its sub-agents to the result.
 
 ```mermaid
 flowchart LR
-  A["Claim the issue<br/>claim_issue.ts:1240"] --> B["Phase options<br/>execute_claude_phase.ts:1266-1302"]
+  A["Claim the issue<br/>claim_issue.ts:1240"] --> B["Phase options<br/>execute_claude_phase.ts:1270-1306"]
   B --> C["buildIssueRunAgents<br/>issue_executor_agents.ts:420"]
   C --> D["buildClaudeCliArgs<br/>agent_provider.ts:595"]
   D --> E["claude CLI<br/>--agents and --settings"]
-  E --> F["Advisor, no agent_id<br/>Edit and Write denied"]
+  E --> F["Advisor, no agent_id<br/>Edit and Write denied<br/>except run-record files"]
   E --> G["Executor or reviewer<br/>agent_id present"]
   F --> H["Result"]
   G --> H
@@ -292,8 +292,10 @@ stateDiagram-v2
 
 - **Advisor cannot edit.** The edit guard denies `Edit` and `Write` when
   `agent_id` is absent (`worker/deno/lib/issue_executor_enforcement.ts:124`,
-  `:138`). The hook is delivered through `--settings`, which only the Claude
-  provider carries.
+  `:138`), except on the advisor's own run-record files: the PR summary and
+  the PR-feedback reply file are allowed without `agent_id` (`:142-145`). The
+  hook is delivered through `--settings`, which only the Claude provider
+  carries.
 - **Executors cannot dispatch.** `["Agent"]` is disallowed for executors
   (`worker/deno/lib/issue_executor_agents.ts:114`). The reviewers and explorer
   are read-only.
@@ -342,9 +344,9 @@ Compatibility with the split switched on. "Silent" means no warning is logged.
 block is not gated on the provider. `isIssueExecutorSplitEnabled` takes the
 phase, repo and host config only (`worker/deno/lib/issue_executor_split.ts:42-59`).
 Both phase paths call it with no provider argument
-(`worker/deno/lib/execute_claude_phase.ts:1278-1282`,
-`worker/deno/lib/phases/execute_phase.ts:662-666`) and pass the result to
-`buildPrompt` (`execute_claude_phase.ts:1338`, `phases/execute_phase.ts:726-727`).
+(`worker/deno/lib/execute_claude_phase.ts:1282-1286`,
+`worker/deno/lib/phases/execute_phase.ts:665-669`) and pass the result to
+`buildPrompt` (`execute_claude_phase.ts:1342`, `phases/execute_phase.ts:729-730`).
 `prompt_builder.ts:832-834` splices the block whenever it is true. The only
 provider check is `worker/deno/lib/claude_runner.ts:1211`, which gates the
 `--settings` hook and nothing else. The `agents` request still reaches every

@@ -4,7 +4,7 @@ Closes #3641
 
 ## Summary
 
-Documents the current manager-worker path and a provider-neutral target contract in `docs/MANAGER-WORKER-CONTRACT.md`, and adds a contract test that pins what the worker hands the Claude CLI today. No runtime behaviour or default changes. The branch also carries two WIP checkpoint commits (`80b7d4fb`, `c2b926dd`): their code hunks are comment-only, and their other hunks are cross-links to the new contract doc.
+Documents the current manager-worker path and a provider-neutral target contract in `docs/MANAGER-WORKER-CONTRACT.md`, and adds a contract test that pins what the worker hands the Claude CLI today. No runtime behaviour or default changes. The branch also carries two WIP checkpoint commits (`80b7d4fb`, `c2b926dd`): their code hunks are comment-only, and their other hunks are cross-links to the new contract doc. A later commit finishes those comment fixes in `worker/deno/lib/phases/execute_phase.ts` and `worker/deno/lib/execute_claude_phase.ts`, and corrects the same stale wording in `docs/CONFIGURATION.md` (`issue_executor_split` row).
 
 ## Spec
 
@@ -41,7 +41,7 @@ flowchart TD
 
 Step 1 is this PR. Steps 2 to 7 are not started.
 
-**Docs sweep** — section: `docs/MANAGER-WORKER-CONTRACT.md` (section 3 audit, section 7 compatibility matrix, section 8 rollout); siblings: `issueExecutorSplit`, `issueReviewerAgents`, `issueSubAgentTier` (the three existing switches the contract documents; no new switch is added). Hits under `docs/archive/pr-summaries/*` and `docs/audits/*` are historical and are left unchanged. `docs/MODEL-AND-CACHING.md:600` and `:838` also describe these switches; this PR does not edit them, and they are a follow-up.
+**Docs sweep** — grep: `issue_executor_split`, `issue_reviewer_agents`, `agent_id`, "Sonnet by default", "Off — the default", "off by default until", "default: false"; section: `docs/MANAGER-WORKER-CONTRACT.md` (section 3 audit, section 6 permissions, section 7 compatibility matrix, section 8 rollout), `docs/CONFIGURATION.md#issue_executor_split`; siblings: `issueExecutorSplit`, `issueReviewerAgents`, `issueSubAgentTier` (the three existing switches the contract documents; no new switch is added); updated: `docs/MANAGER-WORKER-CONTRACT.md` (the edit-guard sentences now name the advisor run-record exception, `issue_executor_enforcement.ts:142-145`; line citations into the two edited phase files moved with the comment fixes), `docs/CONFIGURATION.md` (`issue_executor_split` row: off still passes `--agents` for the reviewers or the Haiku-tier explorer, and the guard allows the advisor's own run-record files). Hits read and left unchanged because they hold at the head: `docs/MODEL-AND-CACHING.md:334`, `:600`, `:674-675`, `:818-820`, `:838`, `:1713`, `docs/CONFIGURATION.md:489-490`, `:4597`, `docs/CUSTOM-PROMPTS.md:271`. The "default: false" hits left in `worker/deno/lib/execute_claude_phase.ts` are other features (Graft, CodeGraph, RTK). Hits under `docs/archive/pr-summaries/*` and `docs/audits/*` are historical and are left unchanged.
 
 ## Acceptance Criteria
 
@@ -56,7 +56,8 @@ Step 1 is this PR. Steps 2 to 7 are not started.
 - **met** — Contract fixtures and compatibility tests protect the current Claude path. — evidence: `worker/deno/tests/manager_worker_contract_3641_test.ts` (10 tests, all passing) — reviewer: met
 - **met** — No default routing changes; no disruption to running hosts. — evidence: `docs/MANAGER-WORKER-CONTRACT.md` section 8, "No default change"; the code hunks are comment-only — reviewer: met
 - **unrequested** — README docs-table row and see-also lines in `docs/MODEL-AND-CACHING.md` and `docs/PROVIDER-PARITY.md`. — reviewer: unrequested — reason: justified; these link the new contract doc from the README index and the two manuals it relates to
-- **unrequested** — Comment-only stale-wording fixes in `worker/deno/lib/agent_provider.ts`, `worker/deno/lib/claude_runner.ts`, `worker/deno/lib/config_defaults.ts`, `worker/deno/lib/issue_sub_agent_tier.ts`, `worker/deno/lib/execute_claude_phase.ts`, `worker/deno/lib/phases/execute_phase.ts` and `worker/deno/commands/execute_claude_phase.ts`, carried by commits `80b7d4fb` and `c2b926dd`. — reviewer: unrequested — reason: justified; the comments described the split as opt-in, but it has been on by default since Issue #2812, and no code path changes
+- **unrequested** — Comment-only stale-wording fixes in `worker/deno/lib/agent_provider.ts`, `worker/deno/lib/claude_runner.ts`, `worker/deno/lib/config_defaults.ts`, `worker/deno/lib/issue_sub_agent_tier.ts`, `worker/deno/lib/execute_claude_phase.ts`, `worker/deno/lib/phases/execute_phase.ts` and `worker/deno/commands/execute_claude_phase.ts`, carried by commits `80b7d4fb` and `c2b926dd` and finished by the follow-up commit (the split comment over `isIssueExecutorSplitEnabled` in `phases/execute_phase.ts`, and the `issueExecutorSplit` and `issueReviewerAgents` option docs in `execute_claude_phase.ts`). — reviewer: unrequested — reason: justified; the comments described the split as opt-in, but it has been on by default since Issue #2812, and no code path changes
+- **unrequested** — `docs/CONFIGURATION.md` `issue_executor_split` row corrected: with the split off, `--agents` is still passed for the reviewers or the Haiku-tier explorer, and the edit guard lets the advisor write its own run-record files. — evidence: `worker/deno/lib/issue_executor_agents.ts:424-434`, `worker/deno/lib/issue_executor_enforcement.ts:142-145` — reviewer: unrequested — reason: justified; the row contradicted the head code and the contract doc, and correcting it is part of documenting the existing behaviour
 
 ## Standards Review
 
@@ -85,9 +86,8 @@ Step 1 is this PR. Steps 2 to 7 are not started.
 
 1. Fail loud when the split is on for a provider that cannot carry the field: Codex and Gemini (`agents`) and DeepSeek (`settingsJson`). This is the section 8 invariant.
 2. Remove the duplicate `--settings` emit in `buildClaudeCliArgs` (`worker/deno/lib/agent_provider.ts:622-623` and `:638-639`).
-3. Remove the `?? "sonnet"` fallback at `worker/deno/lib/execute_claude_phase.ts:1287`.
+3. Remove the `?? "sonnet"` fallback at `worker/deno/lib/execute_claude_phase.ts:1291`.
 4. Gate the advisor block on provider capability. `isIssueExecutorSplitEnabled` takes no provider argument, so the block renders on Codex, Gemini and DeepSeek.
-5. Review `docs/MODEL-AND-CACHING.md:600` and `:838`.
 
 **Pre-PR security self-check.** The change touches documentation, comments and one test file; the code hunks are comment-only. No secrets are added and no new dependencies are introduced (the diff has no `deno.json`, `deno.lock` or package changes).
 
