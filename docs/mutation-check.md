@@ -1,9 +1,12 @@
 # Diff-scoped mutation check
 
-The mutation check is a PR-raise gate (Issue #3393). It mutates only the lines
-a pull request adds or changes, re-runs the tests that cover them, and blocks
-the PR when a mutation survives, that is, when the suite stays green although
-the behaviour was changed on purpose.
+The mutation check runs at two call points. At PR raise it is a gate (Issue
+#3393) that blocks the PR. In every review-fix (PR feedback) run it is part of
+the post-agent drift check (Issue #3750) and reports survivors in the PR reply
+without blocking the push; see [Review-fix runs](#review-fix-runs-issue-3750).
+At both it mutates only the lines the change adds or changes, re-runs the tests
+that cover them, and treats a survivor as a mutation the suite stays green
+through although the behaviour was changed on purpose.
 
 ## Why line coverage is not enough
 
@@ -15,8 +18,8 @@ red. A survivor is concrete evidence that no test pins that behaviour.
 
 ## Flow
 
-The gate runs in the issue-run completion phase, after the PR summary is
-final and before the PR is raised. It joins the other late summary gates (docs
+At PR raise, the gate runs in the issue-run completion phase, after the PR
+summary is final and before the PR is raised. It joins the other late summary gates (docs
 sweep, removed assertions, placeholders, branch outcomes, claim check) and
 feeds the same single recovery turn.
 
@@ -47,6 +50,62 @@ the documentation gates, whose recovery prompt says the code is final, a
 blocked mutation item makes the prompt allow test changes (the quality gate and
 completion re-run afterwards); an exemption is reserved for a line no test can
 reach.
+
+## Review-fix runs (Issue #3750)
+
+Every review-fix (PR feedback) run runs the same check. It is part of the
+post-agent drift check (`runPrFeedbackDriftCheck`): after the agent's turn and
+before the worker's final commit-and-push and the PR reply. Nothing blocks the
+push on this path.
+
+**Scope.** Only lines this run itself added are mutated. The diff is the
+working tree (uncommitted edits included) plus untracked files, compared with
+the branch head captured before the agent ran (`beforeSha`). When the run
+merged another branch (for example `git merge origin/main`), the baseline is
+instead `git merge-tree --write-tree <beforeSha> <merged parent>`, the
+before-run head plus the merged branch, so lines that came in from the merge
+are not mutated. A conflict resolution counts as the run's own lines. If the
+run merged more than one unrelated history (an earlier merged parent not
+contained in the newest one), its lines cannot be separated and the check is
+reported as unable to run.
+
+The runner, mutator and mutant cap (40) are the PR-raise ones. So are
+`skip_mutation_check`, `mutation_check_budget_seconds`, the `quality_credentials`
+handling and the `exempt (untestable)` exemptions, which are read from the PR
+summary. The skip, runner, budget and credential sequence is shared with the
+PR-raise gate (`invokeMutationCheck`).
+
+**Recovery.** An unexempted survivor is a drift-check hit. It goes into the
+drift check's one recovery turn, with the same survivor wording as the PR-raise
+gate. That turn may add or change tests and docs, but no production code (the
+other drift items still say change no code). When survivors were found and the
+turn ran, the mutation check is re-run once.
+
+**Report.** Survivors still left after that are appended to
+`.pr_response_message` in the drift-check residual, under their own heading
+`#### Mutation check (Issue #3750)`. A review-fix push is not blocked by
+survivors; they are reported in the PR reply and the push still happens.
+
+A budget-exhausted or mutant-cap run is reported under that heading as such,
+as not passed, never as a pass, and does not trigger a recovery turn by itself. A runner error or an uncollectable diff is reported
+there as `mutation check failed to run (…)`. A check that is not applicable (no
+Deno project and no `Cargo.toml`, skipped, runner not wired, credentials
+unresolved, empty diff) is logged with its reason and is not reported.
+
+**CI-fix runs are out of scope.** A CI-fix run does not run the mutation check.
+
+```mermaid
+flowchart TD
+    A["Review-fix agent turn"] --> B{"Mutation check on lines this run added"}
+    B -- "not applicable, skipped or no survivor" --> D["Drift check continues"]
+    B -- "budget, cap or runner error" --> N["Reported under<br/>Mutation check heading"]
+    B -- "unexempted survivor" --> R["Drift recovery turn:<br/>tests and docs, no production code"]
+    R --> C["Re-run mutation check once"]
+    C -- "survivors left" --> N
+    C -- "none left" --> D
+    N --> D
+    D --> P["Commit and push, then PR reply"]
+```
 
 ## Languages
 
@@ -95,9 +154,11 @@ a file that escapes is skipped, and an escaping `target/` is an error.
 
 ## The diff
 
-The diff is `origin/<base>...HEAD`, falling back to `<base>...HEAD`. Only
-added or changed lines are mutated. When no diff can be computed the gate
-fails closed and blocks, rather than passing an unmeasured change.
+At PR raise the diff is `origin/<base>...HEAD`, falling back to
+`<base>...HEAD`. Only added or changed lines are mutated. When no diff can be
+computed the gate fails closed and blocks, rather than passing an unmeasured
+change. A review-fix run uses its own diff instead; see
+[Review-fix runs](#review-fix-runs-issue-3750).
 
 ## Built-in Deno mutations
 
@@ -166,11 +227,13 @@ gate). The only additions are the declared credentials described below and, for
 `cargo mutants`, `TMPDIR` (the run's `--output` directory, see above).
 
 The credentials the repository declared in `quality_credentials` (Issues #573
-and #574) are resolved once in the completion phase and added to each child's
-environment, the same way the quality gate does, so tests that need them (for
-example minted AWS credentials) pass their baseline here too. Apart from `TMPDIR` for
-`cargo mutants`, only the declared variables are added. If the mint fails, the check is reported as not applicable
-with a warning instead of running without them.
+and #574) are resolved once per run, in the completion phase at PR raise and in
+the drift check on a review-fix run, and added to each child's environment, the
+same way the quality gate does, so tests that need them (for example minted AWS
+credentials) pass their baseline here too. Apart from `TMPDIR` for
+`cargo mutants`, only the declared variables are added. If the mint fails, the
+check is not applicable with a warning instead of running without them. At PR
+raise that is reported; on a review-fix run it is logged and not reported.
 
 ## Exemptions
 
@@ -213,6 +276,11 @@ Both keys are per-repo options, set operator-side under
 | Completed, survivors   | At least one unexempted survivor                       | Yes                       |
 | Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass | Only if a survivor found  |
 | Error                  | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable | Yes, with a remedy |
+
+In a review-fix run nothing blocks the push. Survivors, budget exhaustion, the
+mutant cap and runner errors are reported in the PR reply instead, under the
+`#### Mutation check (Issue #3750)` heading (see
+[Review-fix runs](#review-fix-runs-issue-3750)).
 
 A Rust run killed at the budget before cargo-mutants finishes its baseline is
 "Budget exhausted", not "Error".

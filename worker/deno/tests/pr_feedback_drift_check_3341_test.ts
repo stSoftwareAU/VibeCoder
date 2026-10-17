@@ -86,6 +86,12 @@ function makeRunGit(dir: string): DriftCheckDeps["runGit"] {
   return async (args: string[]) => await git(dir, args);
 }
 
+/** Fake `runMutationCheck` for tests not about the mutation gate (Issue #3750). */
+const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
+  kind: "not_applicable",
+  reason: "not under test",
+});
+
 /** Fake `runGh` that always answers the `baseRefName` read with `main`. */
 function makeRunGh(): DriftCheckDeps["runGh"] {
   return async () => "main\n";
@@ -252,6 +258,7 @@ Deno.test("runPrFeedbackDriftCheck - a push that moves a cited line without renu
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -307,6 +314,7 @@ Deno.test("runPrFeedbackDriftCheck - a push that moves a cited line AND renumber
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -350,6 +358,7 @@ Deno.test("runPrFeedbackDriftCheck - a recovery turn that renumbers the stale ci
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -385,6 +394,7 @@ Deno.test("runPrFeedbackDriftCheck - a push that changes an uncited file is clea
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -418,6 +428,7 @@ Deno.test("runPrFeedbackDriftCheck - a summary new in this push is clean even th
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -455,7 +466,13 @@ Deno.test("runPrFeedbackDriftCheck - a failed ls-tree read of the before-run sum
 
     const outcome = await runPrFeedbackDriftCheck(
       { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
-      { runGit, runGh: makeRunGh(), runAgent, logger: noopLogger() },
+      {
+        runGit,
+        runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
+        runAgent,
+        logger: noopLogger(),
+      },
     );
 
     assertEquals(calls.length, 1);
@@ -503,7 +520,13 @@ Deno.test("runPrFeedbackDriftCheck - a failed diff read of the cited file is rep
 
     const outcome = await runPrFeedbackDriftCheck(
       { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
-      { runGit, runGh: makeRunGh(), runAgent, logger: noopLogger() },
+      {
+        runGit,
+        runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
+        runAgent,
+        logger: noopLogger(),
+      },
     );
 
     assertEquals(calls.length, 1);
@@ -551,7 +574,13 @@ Deno.test("runPrFeedbackDriftCheck - a failed show read of the before-run summar
 
     const outcome = await runPrFeedbackDriftCheck(
       { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
-      { runGit, runGh: makeRunGh(), runAgent, logger: noopLogger() },
+      {
+        runGit,
+        runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
+        runAgent,
+        logger: noopLogger(),
+      },
     );
 
     assertEquals(calls.length, 1);
@@ -616,6 +645,7 @@ Deno.test("runPrFeedbackDriftCheck - a cited binary file is reported unavailable
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },

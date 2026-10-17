@@ -79,6 +79,12 @@ function makeRunGit(dir: string): DriftCheckDeps["runGit"] {
   return async (args: string[]) => await git(dir, args);
 }
 
+/** Fake `runMutationCheck` for tests not about the mutation gate (Issue #3750). */
+const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
+  kind: "not_applicable",
+  reason: "not under test",
+});
+
 /** Fake `runGh` that always answers the `baseRefName` read with `main`. */
 function makeRunGh(): DriftCheckDeps["runGh"] {
   return async () => "main\n";
@@ -342,7 +348,13 @@ async function run(
   );
   const outcome = await runPrFeedbackDriftCheck(
     { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
-    { runGit, runGh: makeRunGh(), runAgent, logger: noopLogger() },
+    {
+      runGit,
+      runGh: makeRunGh(),
+      runMutationCheck: notMutationChecked,
+      runAgent,
+      logger: noopLogger(),
+    },
   );
   return { outcome, calls };
 }
@@ -414,6 +426,7 @@ Deno.test("runPrFeedbackDriftCheck - prose at the before-run head and facts at t
       {
         runGit: makeRunGit(clean.dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent([{ ok: true, output: verdictBlock([]) }], calls),
         logger: noopLogger(),
       },
@@ -572,6 +585,7 @@ Deno.test("runPrFeedbackDriftCheck - a recovery turn that renumbers the facts en
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: async (req) => {
           const result = await runAgent(req);
           if (!req.readOnly) await writeFile(dir, FACTS_PATH, factsJson(4));
