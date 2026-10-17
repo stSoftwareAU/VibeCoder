@@ -107,7 +107,7 @@ Issue numbers cited:
 
 ## Test Plan
 
-- Ran `timeout 600 deno task test:unit tests/external_orchestration_3642_config_test.ts tests/external_orchestration_3642_phase_test.ts tests/orchestration_3642_contracts_test.ts tests/orchestration_3642_gate_test.ts tests/orchestration_3642_orchestrator_test.ts tests/config_unknown_keys_test.ts tests/lib_sweep_coverage_test.ts tests/manager_worker_contract_3641_test.ts` from `worker/deno` on the final head. It passed; the result is recorded below the list.
+- Ran `timeout 600 deno task test:unit tests/external_orchestration_3642_config_test.ts tests/external_orchestration_3642_phase_test.ts tests/orchestration_3642_contracts_test.ts tests/orchestration_3642_gate_test.ts tests/orchestration_3642_orchestrator_test.ts tests/config_unknown_keys_test.ts tests/lib_sweep_coverage_test.ts tests/manager_worker_contract_3641_test.ts` from `worker/deno` on the final head: `ok | 167 passed | 0 failed`.
 - Added:
   - `worker/deno/tests/orchestration_3642_orchestrator_test.ts`
   - `worker/deno/tests/orchestration_3642_gate_test.ts`
