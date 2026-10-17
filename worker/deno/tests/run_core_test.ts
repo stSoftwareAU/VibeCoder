@@ -1914,6 +1914,7 @@ const DEFERRABLE_HANDLER_NAMES = [
   "Recover Assigned with Closed PRs",
   "Milestone Completions",
   "Failure-Detection Repair Resume",
+  "Reconcile PR Body Digests",
 ];
 
 /**

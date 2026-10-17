@@ -192,8 +192,20 @@ export function disposableHeadCheckout(deps: {
     const tmp = await Deno.makeTempDir({ prefix: "pr-body-reconcile-" });
     const dir = `${tmp}/checkout`;
     const fail = async (message: string): Promise<Result<PrBodyCheckout>> => {
-      // The failure is what the caller needs; a leftover temp dir is not fatal.
-      await Deno.remove(tmp, { recursive: true }).catch(() => undefined);
+      // The original failure stays the returned error; a removal failure is
+      // appended to its message rather than dropped.
+      try {
+        await Deno.remove(tmp, { recursive: true });
+      } catch (removeErr) {
+        return {
+          ok: false,
+          error: new Error(
+            `${message} (and the temporary directory ${tmp} could not be removed: ${
+              errorMessage(removeErr)
+            })`,
+          ),
+        };
+      }
       return { ok: false, error: new Error(message) };
     };
 

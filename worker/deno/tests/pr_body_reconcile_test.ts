@@ -1,0 +1,689 @@
+/**
+ * Tests for `pr_body_reconcile.ts` — the PR-scan pass that re-syncs a worker
+ * PR body when the summary at the PR head no longer matches the digest the
+ * body records, whoever pushed the head (Issue #3760).
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */
+
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import {
+  disposableHeadCheckout,
+  headSummaryDigest,
+  type PrepareHeadCheckout,
+  type ReconcilePrBodiesDeps,
+  type ReconcilePrBodiesOptions,
+  reconcilePrBodyDigests,
+} from "../lib/pr_body_reconcile.ts";
+import {
+  assemblePrBody,
+  buildSummaryDigestMarker,
+  prSummaryDigest,
+  syncPrBodyFromSummary,
+  type SyncPrBodyInput,
+} from "../lib/pr_body_sync.ts";
+import { buildIdempotencyMarker } from "../lib/pr_body.ts";
+import { runGitCommand } from "../lib/git_timeout.ts";
+import {
+  prSummaryDigestInput,
+  prSummaryFactsPath,
+} from "../lib/pr_summary_facts.ts";
+import type { Logger } from "../types.ts";
+
+const REPO = "owner/repo";
+const PR_NUMBER = 7;
+const ISSUE_NUMBER = 42;
+const FLEET_LOGIN = "fleet-bot";
+/** Forty lowercase hex characters, a valid commit SHA. */
+const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
+const ARCHIVE_PATH = `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`;
+const LEGACY_PATH = `docs/pr-summary-${ISSUE_NUMBER}.md`;
+const FACTS_PATH = prSummaryFactsPath(ISSUE_NUMBER);
+const NOT_FOUND = "gh command failed (exit 1): gh: Not Found (HTTP 404)";
+
+const SUMMARY_V1 = "## Summary\n\nOriginal summary text. Closes #42.\n";
+const SUMMARY_V2 = "## Summary\n\nRewritten summary text. Closes #42.\n";
+const FACTS_V1 = '{"branchOutcomes":[]}\n';
+const FACTS_V2 = '{"branchOutcomes":["changed"]}\n';
+
+const OPTS: ReconcilePrBodiesOptions = {
+  repos: [REPO],
+  maintenanceAuthors: [FLEET_LOGIN],
+  workerName: "worker-a",
+  githubUser: "ghuser",
+};
+
+/** One recorded logger call: the level and every argument it received. */
+interface LogCall {
+  level: string;
+  args: unknown[];
+}
+
+/** A logger that records every call, including the non-level methods. */
+function recordingLogger(logs: LogCall[]): Logger {
+  const note = (level: string) => (...args: unknown[]) => {
+    logs.push({ level, args });
+  };
+  return {
+    info: note("info"),
+    warn: note("warn"),
+    error: note("error"),
+    debug: note("debug"),
+    security: note("security"),
+    skipReason: note("skipReason"),
+    timing: note("timing"),
+    scanSummary: note("scanSummary"),
+    workerSummary: note("workerSummary"),
+  };
+}
+
+/** The text of every warn call, for substring assertions. */
+function warnText(logs: LogCall[]): string {
+  return logs
+    .filter((log) => log.level === "warn")
+    .map((log) => JSON.stringify(log.args))
+    .join("\n");
+}
+
+interface GhFixture {
+  /** Listing entries returned by `gh pr list`. */
+  prs?: unknown[];
+  /** Raw file content per repo path. A path absent here answers HTTP 404. */
+  files?: Record<string, string>;
+  /** Paths whose contents read throws this message instead. */
+  failing?: Record<string, string>;
+  /** Reply to `gh pr view` (the end-to-end sync). */
+  view?: string;
+}
+
+interface Harness {
+  gh: (args: string[]) => Promise<string>;
+  /** Every `gh` call, in order. */
+  calls: string[][];
+  /** The `--body-file` content of every `gh pr edit`, read before cleanup. */
+  editBodies: string[];
+  logs: LogCall[];
+  logger: Logger;
+}
+
+function harness(fixture: GhFixture): Harness {
+  const calls: string[][] = [];
+  const editBodies: string[] = [];
+  const logs: LogCall[] = [];
+  const gh = async (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "pr" && args[1] === "list") {
+      return JSON.stringify(fixture.prs ?? []);
+    }
+    if (args[0] === "pr" && args[1] === "view") {
+      return fixture.view ?? "";
+    }
+    if (args[0] === "pr" && args[1] === "edit") {
+      const idx = args.indexOf("--body-file");
+      const bodyFile = idx === -1 ? undefined : args[idx + 1];
+      if (bodyFile !== undefined) {
+        editBodies.push(await Deno.readTextFile(bodyFile));
+      }
+      return "";
+    }
+    if (args[0] === "api") {
+      const match = /\/contents\/(.+?)\?ref=/.exec(args[1] ?? "");
+      const path = match?.[1] ?? "";
+      const failure = fixture.failing?.[path];
+      if (failure !== undefined) throw new Error(failure);
+      const content = fixture.files?.[path];
+      if (content === undefined) throw new Error(NOT_FOUND);
+      return content;
+    }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  return { gh, calls, editBodies, logs, logger: recordingLogger(logs) };
+}
+
+/** A git call that must never happen in the test that uses this. */
+const REFUSE_GIT: ReconcilePrBodiesDeps["runGitCommand"] = async (args) => {
+  throw new Error(`unexpected git call: ${args.join(" ")}`);
+};
+
+/** A checkout that must never be requested in the test that uses this. */
+const REFUSE_PREPARE: PrepareHeadCheckout = async () => {
+  throw new Error("prepareCheckout should not have been called");
+};
+
+/** A sync that must never run in the test that uses this. */
+const REFUSE_SYNC: typeof syncPrBodyFromSummary = async () => {
+  throw new Error("syncFn should not have been called");
+};
+
+function passDeps(
+  h: Harness,
+  inSync: Map<string, string>,
+  extra: Partial<ReconcilePrBodiesDeps> = {},
+): ReconcilePrBodiesDeps {
+  return {
+    runGhCommand: h.gh,
+    runGitCommand: REFUSE_GIT,
+    logger: h.logger,
+    followUpFiling: undefined,
+    inSync,
+    prepareCheckout: REFUSE_PREPARE,
+    syncFn: REFUSE_SYNC,
+    ...extra,
+  };
+}
+
+/** The listing entry `gh pr list --json number,headRefOid,body,author` returns. */
+function prEntry(
+  body: string,
+  opts: { headRefOid?: string; login?: string } = {},
+): unknown {
+  return {
+    number: PR_NUMBER,
+    headRefOid: opts.headRefOid ?? HEAD_SHA,
+    body,
+    author: { login: opts.login ?? FLEET_LOGIN },
+  };
+}
+
+async function digestOf(summary: string, facts: string | null = null) {
+  return await prSummaryDigest(prSummaryDigestInput(summary, facts));
+}
+
+/** A worker PR body that records `digest` as the summary it was built from. */
+async function bodyRecording(summary: string, digest: string): Promise<string> {
+  return assemblePrBody({
+    summaryContent: summary,
+    issueNumber: ISSUE_NUMBER,
+    extraSections: "",
+    footer: "\n---\n\n🤖 Processed by: old-worker\n",
+    summaryDigest: digest,
+    subAgentTier: undefined,
+  });
+}
+
+function editCalls(h: Harness): string[][] {
+  return h.calls.filter((c) => c[0] === "pr" && c[1] === "edit");
+}
+
+function apiCalls(h: Harness): string[][] {
+  return h.calls.filter((c) => c[0] === "api");
+}
+
+// --- Steady state and the memo ---------------------------------------------
+
+Deno.test("reconcile - digest matches the head summary: silent, no edit, memo set", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body)],
+    files: { [ARCHIVE_PATH]: SUMMARY_V1 },
+  });
+  const inSync = new Map<string, string>();
+  let prepared = 0;
+  let synced = 0;
+
+  const summary = await reconcilePrBodyDigests(
+    OPTS,
+    passDeps(h, inSync, {
+      prepareCheckout: async (repo, sha) => {
+        prepared += 1;
+        return REFUSE_PREPARE(repo, sha);
+      },
+      syncFn: async (input, deps) => {
+        synced += 1;
+        return REFUSE_SYNC(input, deps);
+      },
+    }),
+  );
+
+  assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 0 });
+  assertEquals(editCalls(h).length, 0);
+  assertEquals(prepared, 0);
+  assertEquals(synced, 0);
+  assertEquals(h.logs, []);
+  assertEquals(
+    inSync.get(`${REPO}#${PR_NUMBER}`),
+    `${HEAD_SHA}:${await digestOf(SUMMARY_V1)}`,
+  );
+});
+
+Deno.test("reconcile - second pass with a memo hit makes no contents call", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body)],
+    files: { [ARCHIVE_PATH]: SUMMARY_V1 },
+  });
+  const inSync = new Map<string, string>();
+
+  await reconcilePrBodyDigests(OPTS, passDeps(h, inSync));
+  // The first pass reads the summary and the (absent) facts file.
+  const afterFirst = apiCalls(h).length;
+  assertEquals(afterFirst, 2);
+
+  const second = await reconcilePrBodyDigests(OPTS, passDeps(h, inSync));
+  assertEquals(
+    apiCalls(h).length,
+    afterFirst,
+    "second pass must not read contents",
+  );
+  assertEquals(second, { checked: 0, rebuilt: 0, readFailures: 0 });
+  assertEquals(h.logs, []);
+});
+
+// --- Mismatch --------------------------------------------------------------
+
+Deno.test("reconcile - mismatch: one checkout at the head, one sync at its path, cleaned up", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body)],
+    files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+  });
+  const inSync = new Map<string, string>();
+  const prepareCalls: Array<[string, string]> = [];
+  const syncInputs: SyncPrBodyInput[] = [];
+  let cleaned = 0;
+
+  const prepareCheckout: PrepareHeadCheckout = async (repo, headSha) => {
+    prepareCalls.push([repo, headSha]);
+    return {
+      ok: true,
+      value: {
+        path: "/tmp/fake-pr-head-checkout",
+        cleanup: async () => {
+          cleaned += 1;
+        },
+      },
+    };
+  };
+  const syncFn: typeof syncPrBodyFromSummary = async (input) => {
+    syncInputs.push(input);
+    return {
+      ok: true,
+      value: { status: "updated", issueNumber: ISSUE_NUMBER },
+    };
+  };
+
+  const summary = await reconcilePrBodyDigests(
+    OPTS,
+    passDeps(h, inSync, { prepareCheckout, syncFn }),
+  );
+
+  assertEquals(summary, { checked: 1, rebuilt: 1, readFailures: 0 });
+  assertEquals(prepareCalls, [[REPO, HEAD_SHA]]);
+  assertEquals(syncInputs.length, 1);
+  assertEquals(syncInputs[0]?.repoPath, "/tmp/fake-pr-head-checkout");
+  assertEquals(syncInputs[0]?.beforeSha, undefined);
+  assertEquals(syncInputs[0]?.prNumber, PR_NUMBER);
+  assertEquals(cleaned, 1);
+  assertEquals(inSync.size, 0, "a rebuild is not memoised");
+});
+
+Deno.test("reconcile - end to end: mismatch rebuilds through the real sync with the new digest", async () => {
+  const oldBody = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const checkoutDir = await Deno.makeTempDir({
+    prefix: "pr-body-reconcile-e2e-",
+  });
+  try {
+    const git = async (...args: string[]): Promise<string> => {
+      const out = await new Deno.Command("git", {
+        args,
+        cwd: checkoutDir,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      if (!out.success) {
+        throw new Error(
+          `git ${args.join(" ")} failed: ${
+            new TextDecoder().decode(out.stderr)
+          }`,
+        );
+      }
+      return new TextDecoder().decode(out.stdout).trim();
+    };
+    await git("init", "-q");
+    await git("config", "user.name", "Test Author");
+    await git("config", "user.email", "test@example.invalid");
+    await git("config", "commit.gpgsign", "false");
+    await Deno.mkdir(`${checkoutDir}/docs/archive/pr-summaries`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(`${checkoutDir}/${ARCHIVE_PATH}`, SUMMARY_V2);
+    await git("add", "-A");
+    await git("commit", "-q", "-m", "rewrite summary");
+    const headSha = await git("rev-parse", "HEAD");
+    assert(/^[0-9a-f]{40}$/.test(headSha), `unexpected HEAD ${headSha}`);
+
+    const h = harness({
+      prs: [prEntry(oldBody, { headRefOid: headSha })],
+      files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+      view: JSON.stringify({ body: oldBody, files: [], headRefOid: headSha }),
+    });
+    const prepareCheckout: PrepareHeadCheckout = async () => ({
+      ok: true,
+      value: { path: checkoutDir, cleanup: async () => {} },
+    });
+
+    const summary = await reconcilePrBodyDigests(
+      OPTS,
+      passDeps(h, new Map(), {
+        prepareCheckout,
+        // The real sync and the real git runner: nothing stubbed past checkout.
+        syncFn: syncPrBodyFromSummary,
+        runGitCommand,
+      }),
+    );
+
+    assertEquals(summary.rebuilt, 1);
+    const edits = editCalls(h);
+    assertEquals(edits.length, 1, "exactly one gh pr edit");
+    assertEquals(h.editBodies.length, 1);
+    const newDigest = await digestOf(SUMMARY_V2);
+    assertStringIncludes(
+      h.editBodies[0] ?? "",
+      buildSummaryDigestMarker(newDigest),
+    );
+    assertStringIncludes(h.editBodies[0] ?? "", "Rewritten summary text.");
+  } finally {
+    await Deno.remove(checkoutDir, { recursive: true });
+  }
+});
+
+// --- Skips that are quiet --------------------------------------------------
+
+Deno.test("reconcile - legacy body with no digest marker: skipped, no contents call, no log", async () => {
+  const legacy = `## Summary\n\nOld.\n\n${
+    buildIdempotencyMarker(ISSUE_NUMBER)
+  }\n`;
+  const h = harness({
+    prs: [prEntry(legacy)],
+    files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+  });
+
+  const summary = await reconcilePrBodyDigests(OPTS, passDeps(h, new Map()));
+
+  assertEquals(summary, { checked: 0, rebuilt: 0, readFailures: 0 });
+  assertEquals(apiCalls(h).length, 0);
+  assertEquals(h.logs, []);
+});
+
+Deno.test("reconcile - body with no worker marker: skipped, no contents call, no log", async () => {
+  const foreign = `## Summary\n\nNot ours.\n\n${
+    buildSummaryDigestMarker(
+      await digestOf(SUMMARY_V1),
+    )
+  }\n`;
+  const h = harness({
+    prs: [prEntry(foreign)],
+    files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+  });
+
+  const summary = await reconcilePrBodyDigests(OPTS, passDeps(h, new Map()));
+
+  assertEquals(summary, { checked: 0, rebuilt: 0, readFailures: 0 });
+  assertEquals(apiCalls(h).length, 0);
+  assertEquals(h.logs, []);
+});
+
+Deno.test("reconcile - invalid head SHA: no contents call, no log", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body, { headRefOid: "abc?x=1" })],
+    files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+  });
+
+  const summary = await reconcilePrBodyDigests(OPTS, passDeps(h, new Map()));
+
+  assertEquals(summary, { checked: 0, rebuilt: 0, readFailures: 0 });
+  assertEquals(apiCalls(h).length, 0);
+  assertEquals(h.logs, []);
+});
+
+Deno.test("reconcile - non-fleet author: skipped, no contents call, no log", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body, { login: "someone-else" })],
+    files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+  });
+
+  const summary = await reconcilePrBodyDigests(OPTS, passDeps(h, new Map()));
+
+  assertEquals(summary, { checked: 0, rebuilt: 0, readFailures: 0 });
+  assertEquals(apiCalls(h).length, 0);
+  assertEquals(h.logs, []);
+});
+
+// --- Failures --------------------------------------------------------------
+
+Deno.test("reconcile - contents read failure: warn with the cause, no checkout, no edit, not memoised", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body)],
+    failing: { [ARCHIVE_PATH]: "gh command failed (exit 1): HTTP 502" },
+  });
+  const inSync = new Map<string, string>();
+
+  const summary = await reconcilePrBodyDigests(OPTS, passDeps(h, inSync));
+
+  assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 1 });
+  assertStringIncludes(warnText(h.logs), "502");
+  assertStringIncludes(warnText(h.logs), ARCHIVE_PATH);
+  assertEquals(editCalls(h).length, 0);
+  assertEquals(inSync.size, 0, "a failed read is not memoised");
+});
+
+Deno.test("reconcile - prepareCheckout failure: warn with its message, sync not called", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body)],
+    files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+  });
+  let synced = 0;
+
+  const summary = await reconcilePrBodyDigests(
+    OPTS,
+    passDeps(h, new Map(), {
+      prepareCheckout: async () => ({
+        ok: false,
+        error: new Error("clone exploded"),
+      }),
+      syncFn: async (input, deps) => {
+        synced += 1;
+        return REFUSE_SYNC(input, deps);
+      },
+    }),
+  );
+
+  assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 0 });
+  assertEquals(synced, 0);
+  assertStringIncludes(warnText(h.logs), "clone exploded");
+  assertEquals(editCalls(h).length, 0);
+});
+
+// --- Facts file and summary candidates --------------------------------------
+
+Deno.test("reconcile - facts file absent (404): digest of the summary alone matches, quiet", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body)],
+    files: { [ARCHIVE_PATH]: SUMMARY_V1 },
+  });
+
+  const summary = await reconcilePrBodyDigests(OPTS, passDeps(h, new Map()));
+
+  assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 0 });
+  assertEquals(h.logs, []);
+  assert(
+    apiCalls(h).some((c) => c[1]?.includes(FACTS_PATH)),
+    "facts read attempted",
+  );
+});
+
+Deno.test("reconcile - facts-only change: mismatch, rebuild", async () => {
+  const body = await bodyRecording(
+    SUMMARY_V1,
+    await digestOf(SUMMARY_V1, FACTS_V1),
+  );
+  const h = harness({
+    prs: [prEntry(body)],
+    files: { [ARCHIVE_PATH]: SUMMARY_V1, [FACTS_PATH]: FACTS_V2 },
+  });
+  let prepared = 0;
+
+  const summary = await reconcilePrBodyDigests(
+    OPTS,
+    passDeps(h, new Map(), {
+      prepareCheckout: async () => {
+        prepared += 1;
+        return { ok: false, error: new Error("stop after the digest check") };
+      },
+    }),
+  );
+
+  assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 0 });
+  assertEquals(prepared, 1);
+});
+
+Deno.test("reconcile - archive 404 but legacy summary present: legacy used, quiet", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body)],
+    files: { [LEGACY_PATH]: SUMMARY_V1 },
+  });
+
+  const summary = await reconcilePrBodyDigests(OPTS, passDeps(h, new Map()));
+
+  assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 0 });
+  assertEquals(h.logs, []);
+  assert(
+    apiCalls(h).some((c) => c[1]?.includes(LEGACY_PATH)),
+    "legacy read attempted",
+  );
+});
+
+Deno.test("reconcile - no summary at either path: quiet, memoised, no checkout", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({ prs: [prEntry(body)], files: {} });
+  const inSync = new Map<string, string>();
+
+  const summary = await reconcilePrBodyDigests(OPTS, passDeps(h, inSync));
+
+  assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 0 });
+  assertEquals(h.logs, []);
+  assertEquals(editCalls(h).length, 0);
+  assertEquals(
+    inSync.get(`${REPO}#${PR_NUMBER}`),
+    `${HEAD_SHA}:${await digestOf(SUMMARY_V1)}`,
+  );
+});
+
+Deno.test("reconcile - whitespace-only archive summary falls through to the legacy path", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body)],
+    files: { [ARCHIVE_PATH]: "  \n\n\t ", [LEGACY_PATH]: SUMMARY_V1 },
+  });
+
+  const summary = await reconcilePrBodyDigests(OPTS, passDeps(h, new Map()));
+
+  assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 0 });
+  assertEquals(h.logs, []);
+});
+
+// --- Memo pruning -----------------------------------------------------------
+
+Deno.test("reconcile - memo prunes a PR of this repo that is no longer listed", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body)],
+    files: { [ARCHIVE_PATH]: SUMMARY_V1 },
+  });
+  const inSync = new Map<string, string>([
+    [`${REPO}#999`, "stale"],
+    ["other/repo#5", "kept"],
+  ]);
+
+  await reconcilePrBodyDigests(OPTS, passDeps(h, inSync));
+
+  assertEquals(inSync.has(`${REPO}#999`), false, "closed PR pruned");
+  assertEquals(inSync.get("other/repo#5"), "kept", "other repo untouched");
+  assert(inSync.has(`${REPO}#${PR_NUMBER}`), "listed PR memoised");
+});
+
+// --- headSummaryDigest ------------------------------------------------------
+
+Deno.test("headSummaryDigest - a non-404 read failure names the path and the cause", async () => {
+  const gh = async (args: string[]): Promise<string> => {
+    if (args[1]?.includes(ARCHIVE_PATH)) {
+      throw new Error("gh command failed (exit 1): HTTP 502");
+    }
+    throw new Error(NOT_FOUND);
+  };
+
+  const result = await headSummaryDigest(REPO, ISSUE_NUMBER, HEAD_SHA, gh);
+
+  assertEquals(result.kind, "error");
+  if (result.kind === "error") {
+    assertStringIncludes(result.reason, ARCHIVE_PATH);
+    assertStringIncludes(result.reason, "HTTP 502");
+  }
+});
+
+// --- disposableHeadCheckout -------------------------------------------------
+
+Deno.test("disposableHeadCheckout - rejects a non-40-hex SHA without calling gh", async () => {
+  const ghCalls: string[][] = [];
+  const prepare = disposableHeadCheckout({
+    runGhCommand: async (args) => {
+      ghCalls.push(args);
+      return "";
+    },
+    runGitCommand: REFUSE_GIT,
+  });
+
+  const result = await prepare(REPO, "not-a-sha");
+
+  assertEquals(result.ok, false);
+  assertEquals(ghCalls.length, 0);
+});
+
+Deno.test("disposableHeadCheckout - a failing git fetch quotes stderr and removes its temp dir", async () => {
+  const cloneDirs: string[] = [];
+  const gitCalls: string[][] = [];
+  const prepare = disposableHeadCheckout({
+    runGhCommand: async (args) => {
+      cloneDirs.push(args[3] ?? "");
+      return "";
+    },
+    runGitCommand: async (args) => {
+      gitCalls.push(args);
+      return {
+        ok: true,
+        value: {
+          code: 128,
+          stdout: "",
+          stderr: "fatal: couldn't find remote ref HEAD-missing\n",
+        },
+      };
+    },
+  });
+
+  const result = await prepare(REPO, HEAD_SHA);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(
+      result.error.message,
+      "fatal: couldn't find remote ref HEAD-missing",
+    );
+  }
+  assertEquals(gitCalls.length, 1, "stops at the first failed step");
+  assertEquals(gitCalls[0]?.[0], "fetch");
+  const cloneDir = cloneDirs[0] ?? "";
+  assert(cloneDir.endsWith("/checkout"), `unexpected clone dir ${cloneDir}`);
+  const tmp = cloneDir.slice(0, -"/checkout".length);
+  await assertRejects(() => Deno.stat(tmp), Deno.errors.NotFound);
+});

@@ -106,14 +106,14 @@ re-syncs under the same condition, and also when it pushed nothing and has no
 commits left unpushed, so a feedback run that only answers a finding still
 refreshes a stale body. A body raised before this digest marker existed keeps
 the older rule: rebuilt only when this run's own push changed the summary
-file or its facts file. So the description never drifts from a summary rewritten after
-creation, for as long as that run's conditions are met. Priority 1.64 also catches a push
-the worker did not make (Issue #3760), such as a review-fix commit pushed by
-hand: each cycle it re-syncs an open fleet-authored PR whose recorded digest
-differs from the summary at its head (see
-[the PR feedback workflow](workflows/pr-feedback.md)). A re-sync
-re-derives a leading `Degraded run` section from the issue's current body and
-the rebuilt summary rather than copying it, keeping only the original run's
+file or its facts file. So the description never drifts from a summary rewritten
+after creation, for as long as that run's conditions are met. Priority 1.64 also
+catches a push the worker did not make (Issue #3760), such as a review-fix
+commit pushed by hand: each cycle it re-syncs an open fleet-authored PR whose
+recorded digest differs from the summary at its head (see [the PR feedback
+workflow](workflows/pr-feedback.md)). A re-sync re-derives a leading
+`Degraded run` section from the issue's current body and the rebuilt summary
+rather than copying it, keeping only the original run's
 reason and follow-up number (Issue #3350). A leading `Partial delivery —
 follow-up filed` section is re-derived from the same inputs (Issue #3506): it is
 dropped, with no call to the follow-up, when no gap remains; kept as it is when
@@ -893,8 +893,8 @@ Five rungs are skipped for a cycle when the previous cycle's GraphQL quota
 reading put the window at or below its reserve: Priorities 1.64, 1.67, 1.68,
 1.7 and 1.81 carry `budgetTier: "deferrable"`, so what is left of the window
 goes to issue work and the sweeps run a cycle later (Issue #2449). The cycle
-logs one
-`budget-pacing: in reserve — skipped deferrable sweeps: …` line naming them. See
+logs one `budget-pacing: in reserve — skipped deferrable sweeps: …` line naming
+them. See
 [The `deferrable` tier](GH-API-OPTIMISATION.md#the-deferrable-tier--the-sweeps-that-stand-down-in-the-reserve).
 
 The ladder is otherwise serial, with one exception: when `max_concurrent_issues`

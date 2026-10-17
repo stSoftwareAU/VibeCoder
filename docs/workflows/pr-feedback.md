@@ -237,21 +237,22 @@ commit through the contents API (`gh api
 repos/{repo}/contents/<path>?ref=<head>`), with no checkout, and computes the
 same digest the body records. When the digest matches, nothing is edited and
 nothing is logged; the match is remembered for that head and recorded digest for
-the life of the worker process, so later cycles make no contents calls until the
-head or the body changes. When it differs, the pass logs one line, fetches the
-PR head into a disposable shallow clone in a temporary directory, runs the same
-`syncPrBodyFromSummary` rebuild there, and then deletes the clone. Every part of
-that rebuild applies unchanged: the milestone section, the leading degraded-run,
-partial-delivery and chain-stop sections, the bump note, the footer markers, and
-the head check against the PR's current `headRefOid`, so a head that moved since
-the listing is skipped. A body with no digest marker (raised before Issue #3315)
-is skipped, and the older before-push-SHA rule on the worker's own pushes still
-covers it. A contents read failure other than a missing file is logged at
-warning naming the cause, and the body is left as it is; a missing summary is
-skipped. The pass is a deferrable fixed-cost sweep: it stands down while the
-GraphQL budget is in its reserve (Issue #2449). It never claims an issue, and it
-does not run in the maintenance lane, so it never touches the shared clone. The
-module is `worker/deno/lib/pr_body_reconcile.ts`, and the entry point is
+the life of the worker process, so later cycles make no contents calls for that
+PR until its head or body changes. When it differs, the pass logs that it is
+rebuilding, fetches the PR head into a disposable shallow clone in a temporary
+directory, runs the same `syncPrBodyFromSummary` rebuild there, and then deletes
+the clone. Every part of that rebuild applies unchanged: the milestone section,
+the leading degraded-run, partial-delivery and chain-stop sections, the bump
+note, the footer markers, and the head check against the PR's current
+`headRefOid`, so a head that moved since the listing is skipped. A body with no
+digest marker (raised before Issue #3315) is skipped, and the older
+before-push-SHA rule on the worker's own pushes still covers it. A contents read
+failure other than a missing file is logged at warning naming the cause, and the
+body is left as it is; a missing summary is skipped. The pass is a deferrable
+fixed-cost sweep: it stands down while the GraphQL budget is in its reserve
+(Issue #2449). It never claims an issue, and because it never touches the shared
+clone it does not run in the maintenance lane. The module is
+`worker/deno/lib/pr_body_reconcile.ts`, and the entry point is
 `reconcilePrBodyDigests`.
 
 When the live body carries no leading degraded or partial-delivery section and
