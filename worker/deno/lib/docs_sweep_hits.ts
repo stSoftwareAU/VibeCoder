@@ -11,7 +11,8 @@
  * #2405 was sent back three times for the same claim).
  *
  * Once the gate accepts the line, this re-runs each term the line quotes
- * after `grep:` (backticked or double-quoted), and each term it quotes after
+ * after `grep:` or colonless `grep` / `grep terms` (backticked or
+ * double-quoted), and each term it quotes after
  * `siblings:` (Issue #3371), case-insensitively, over the
  * head's `README.md`, every `*\/README.md` and `docs/` (excluding
  * `docs/archive/`). A hit is stale unless it sits in a line the branch's
@@ -161,8 +162,12 @@ export type DocsSweepGitRunner = (
   args: string[],
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
-/** The `grep:` field label. */
-const GREP_LABEL_RE = /\bgrep\s*:/i;
+/** Accept the colonless quoted forms agents also write (Issue #3861). */
+const GREP_LABEL_RE = /\bgrep(?:\s+terms?)?\s*(?::|(?=[`"“]))/i;
+
+/** A following field ends the value even when separated by a full stop. */
+const NEXT_FIELD_RE =
+  /\b(?:sections?|siblings?|(?:files\s+)?updated|grep(?:\s+terms?)?)\s*:/iy;
 
 /** Closing quote for each opening quote a term may be wrapped in. */
 const CLOSING_QUOTE: Readonly<Record<string, string>> = {
@@ -172,8 +177,10 @@ const CLOSING_QUOTE: Readonly<Record<string, string>> = {
 };
 
 /**
- * The grep terms a Docs sweep line quotes after `grep:` — each backticked or
- * double-quoted span, up to the first `;` outside a span (the next field).
+ * The grep terms a Docs sweep line quotes after `grep:` (or colonless `grep`
+ * / `grep terms`) — each backticked or double-quoted span, up to the next
+ * field label or `;` outside a span. An explained `grep: none — <why>`
+ * negative contributes no terms, including quotes in its explanation.
  * Deduplicated case-insensitively, first spelling kept, capped at
  * `MAX_TERMS`.
  *
@@ -181,7 +188,36 @@ const CLOSING_QUOTE: Readonly<Record<string, string>> = {
  *   (`DocsSweepLine.rawBody`).
  */
 export function extractGrepTerms(rawBody: string): string[] {
+  if (isGrepNegative(rawBody)) return [];
   return quotedTermsAfter(rawBody ?? "", GREP_LABEL_RE);
+}
+
+/** Whether the grep field explicitly explains why there are no terms. */
+export function isGrepNegative(rawBody: string): boolean {
+  return /^none\s*[-–—:]\s*[`"“]?[\p{L}\p{N}]/iu.test(
+    fieldValueAfter(rawBody ?? "", GREP_LABEL_RE).trim(),
+  );
+}
+
+/** Read one field without consuming quoted text from a later field. */
+function fieldValueAfter(text: string, labelRe: RegExp): string {
+  const label = text.match(labelRe);
+  if (!label || label.index === undefined) return "";
+  const start = label.index + label[0].length;
+  let i = start;
+  while (i < text.length) {
+    NEXT_FIELD_RE.lastIndex = i;
+    if (text[i] === ";" || NEXT_FIELD_RE.test(text)) break;
+    const closing = CLOSING_QUOTE[text[i]!];
+    if (closing !== undefined) {
+      const end = text.indexOf(closing, i + 1);
+      if (end === -1) return text.slice(start);
+      i = end + 1;
+    } else {
+      i++;
+    }
+  }
+  return text.slice(start, i);
 }
 
 /** The `siblings:` field label (Issue #3371). */
@@ -205,20 +241,17 @@ export function isSiblingsNegative(value: string): boolean {
 
 /**
  * The quoted terms after a field label: each backticked or double-quoted
- * span, up to the first `;` outside a span (the next field). Deduplicated
+ * span, up to the next field label or `;` outside a span. Deduplicated
  * case-insensitively, first spelling kept, capped at `MAX_TERMS`; an empty
  * term or one longer than `MAX_TERM_CHARS` is skipped.
  */
-function quotedTermsAfter(text: string, labelRe: RegExp): string[] {
-  const label = text.match(labelRe);
-  if (!label || label.index === undefined) return [];
-
+function quotedTermsAfter(raw: string, labelRe: RegExp): string[] {
+  const text = fieldValueAfter(raw, labelRe);
   const terms: string[] = [];
   const seen = new Set<string>();
-  let i = label.index + label[0].length;
+  let i = 0;
   while (i < text.length && terms.length < MAX_TERMS) {
     const ch = text[i]!;
-    if (ch === ";") break;
     const closing = CLOSING_QUOTE[ch];
     if (closing === undefined) {
       i++;

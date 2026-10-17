@@ -16,7 +16,9 @@
  * grep was run. `section: none — <why no manual documents it>` is accepted as
  * the honest negative; a bare placeholder (`none`, `tbd`, `n/a`, …) is not.
  *
- * The line also names a `siblings:` part (Issue #3371): the existing members
+ * The grep field quotes a usable term or explains its absence with
+ * `grep: none — <why>` (Issue #3861). Colonless quoted `grep` and `grep terms`
+ * are read too. The line also names a `siblings:` part (Issue #3371): the existing members
  * of each set the change adds a member to, quoted so the worker can re-run
  * them, or `siblings: none — <why no existing set gained a member>`.
  *
@@ -33,7 +35,12 @@ import {
   splitMarkdownLines,
 } from "./markdown_code_spans.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
-import { extractSiblingTerms, isSiblingsNegative } from "./docs_sweep_hits.ts";
+import {
+  extractGrepTerms,
+  extractSiblingTerms,
+  isGrepNegative,
+  isSiblingsNegative,
+} from "./docs_sweep_hits.ts";
 
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
@@ -263,6 +270,8 @@ function describeCodeFiles(codeFiles: readonly string[]): string {
  *      negative (`none — <why>`) is accepted (Issue #3371, as rule 6).
  *   8. A `siblings:` that quotes no term, and is not the `none` negative →
  *      blocked, so the worker has a term to re-run (Issue #3371, as rule 6).
+ *   9. A grep field with no usable quoted term and no explained negative →
+ *      blocked (Issue #3861). The parser also reads colonless quoted terms.
  *
  * @param opts.changedFiles - The branch's changed files, or `null` when the
  *   diff could not be collected.
@@ -321,6 +330,14 @@ function evaluateApplicable(
   // Issue #3371: checked independently of the section, so a line missing
   // both parts reports both in one recovery turn.
   if (line.present) {
+    if (
+      !isGrepNegative(line.rawBody) &&
+      extractGrepTerms(line.rawBody).length === 0
+    ) {
+      problems.push(
+        'the `Docs sweep` line\'s grep field quotes no usable term — write ``grep: `term`, "phrase"; section: …``, or `grep: none — <why no terms apply>`',
+      );
+    }
     if (line.siblings === "") {
       problems.push(
         "the `Docs sweep` line names no `siblings:` — the existing sibling members you grepped for each set this change adds a member to, or `siblings: none — <why no existing set gained a member>`",
@@ -401,5 +418,8 @@ export function buildDocsSweepGateComment(
     "`section: none — <reason>` is the honest answer when no manual " +
     "documents the surface, and `siblings: none — <why>` when no existing " +
     "set gained a member — a bare `none` is not accepted for either part.",
+    "The grep field must quote at least one usable term, or explain its " +
+    "absence with `grep: none — <why no terms apply>`. Colonless quoted " +
+    "`grep` and `grep terms` are also read; the next field label ends the terms.",
   ].join("\n");
 }

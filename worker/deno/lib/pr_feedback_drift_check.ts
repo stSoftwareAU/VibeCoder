@@ -53,9 +53,10 @@
  * sentence was never questioned. The model pass now also runs when the push
  * edits manual or prompt Markdown (`isManualProsePath`), and the question
  * then asks the shared doc-prose question from `doc_prose_claims.ts` — the
- * same one the first-run claim check asks — about the lines this push adds or
- * edits. A push changing only the PR summary or non-Markdown docs still gets
- * no model pass.
+ * same one the first-run claim check asks. Issues #3715 and #3731 add changed
+ * source comments, attached headers and affected manual sections through the
+ * shared scope builder. A push changing only the PR summary or non-source,
+ * non-Markdown docs still gets no model pass.
  *
  * ```mermaid
  * flowchart TD
@@ -88,6 +89,12 @@
  */
 
 import {
+  collectDocProseScope,
+  type ProseRange,
+  renderProseRanges,
+} from "./doc_prose_scope.ts";
+
+import {
   changedFilesCitedBy,
   type DiffHunk,
   findStaleCitations,
@@ -111,6 +118,7 @@ import {
 import {
   docProseClaimInstruction,
   isManualProsePath,
+  isProseSourcePath,
 } from "./doc_prose_claims.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 import { prResponseMessagePath } from "./pr_branch_preparation.ts";
@@ -366,6 +374,7 @@ export function renderDriftVerdictQuestion(opts: {
  * @param opts.boundaryId - Pinned nonce for tests; production mints one.
  */
 export function buildDriftQuestionPrompt(opts: {
+  proseRanges?: readonly ProseRange[];
   repo: string;
   prNumber: number;
   beforeSha: string;
@@ -420,7 +429,7 @@ export function buildDriftQuestionPrompt(opts: {
         "appears in the file.",
     );
   }
-  if (opts.files.some((f) => isManualProsePath(f))) {
+  if (opts.files.some((f) => isManualProsePath(f) || isProseSourcePath(f))) {
     instruction.push(docProseClaimInstruction("this push's change"));
   }
   instruction.push(
@@ -434,13 +443,22 @@ export function buildDriftQuestionPrompt(opts: {
     files: opts.files,
     filesLabel: "The files to check:",
     filesBlockName: DRIFT_FILES_BLOCK,
-    extraBlocks: changeRequest
-      ? [{
-        text: changeRequest,
-        label: "The change request this push answers:",
-        name: "the change request",
-      }]
-      : [],
+    extraBlocks: [
+      ...(changeRequest
+        ? [{
+          text: changeRequest,
+          label: "The change request this push answers:",
+          name: "the change request",
+        }]
+        : []),
+      ...(opts.proseRanges?.length
+        ? [{
+          text: renderProseRanges(opts.proseRanges),
+          label: "Prose ranges (changed prose means changed lines only):",
+          name: "the prose ranges",
+        }]
+        : []),
+    ],
     instruction: instruction.join("\n\n"),
     example: {
       findings: [
@@ -1240,16 +1258,44 @@ export async function runPrFeedbackDriftCheck(
 
   // One constrained, read-only model question — when this push changed a
   // code or test file (Issue #3244) or a manual or prompt Markdown file
-  // (Issue #3347); a push changing only the PR summary or non-Markdown docs
-  // gets none.
+  // (Issue #3347), including recognised source under docs/ (Issue #3715).
+  // A push changing only the PR summary or other non-Markdown docs gets none.
   const findingsWithStatus: { finding: DriftFinding; foundBefore: boolean }[] =
     [];
   let modelPassUnavailable: string | undefined;
   let files: string[] = [];
+  let proseContents = new Map<string, string>();
   const modelPassNeeded = changesBehaviour ||
     pushFiles.some((f) => isTestFilePath(f)) ||
-    pushFiles.some((f) => isManualProsePath(f));
+    pushFiles.some((f) => isManualProsePath(f)) ||
+    pushFiles.some((f) => isProseSourcePath(f));
   if (modelPassNeeded) {
+    const trackedFiles = await runGitLines(deps, ["ls-files"]);
+    const patch = await deps.runGit([
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--unified=0",
+      beforeSha,
+      "--",
+    ]);
+    const scope = await collectDocProseScope({
+      changedFiles: pushFiles,
+      untrackedFiles: untracked,
+      trackedFiles: trackedFiles ?? [],
+      summaryContent: summaries.map((s) => s.content).join("\n"),
+      diff: patch?.code === 0 ? patch.stdout : null,
+      readFile: (file) => readIfExists(repoPath, file),
+    });
+    proseContents = scope.contents;
+    if (trackedFiles === null) {
+      scope.notChecked.push(
+        "tracked manuals could not be listed; not checked, never passed",
+      );
+    }
+    for (const message of scope.notChecked) {
+      logger.warn(`Drift check: ${message}`, { repo, prNumber });
+    }
     const docFiles = prFiles.filter(
       (p) => isDocsSweepExemptPath(p) && !isTestFilePath(p),
     );
@@ -1257,7 +1303,7 @@ export async function runPrFeedbackDriftCheck(
     // never silently drop one (Issue #3347).
     const candidates = uniq([
       ...summaries.map((s) => s.path),
-      ...pushFiles.filter((f) => isManualProsePath(f)),
+      ...scope.contents.keys(),
       ...docFiles,
     ]);
     const existing: string[] = [];
@@ -1285,6 +1331,7 @@ export async function runPrFeedbackDriftCheck(
         beforeSha,
         baseRef,
         files,
+        proseRanges: scope.ranges.filter((r) => files.includes(r.file)),
         changeRequest: input.changeRequest,
       });
       const result = await deps.runAgent({ prompt, readOnly: true });
@@ -1315,7 +1362,21 @@ export async function runPrFeedbackDriftCheck(
               ? await readIfExists(repoPath, finding.file)
               : undefined;
             const foundBefore = content !== undefined &&
-              sentenceFoundIn(finding.sentence, content);
+              sentenceFoundIn(
+                finding.sentence,
+                proseContents.get(finding.file) ?? content,
+              );
+            if (
+              !foundBefore &&
+              (proseContents.has(finding.file) ||
+                isProseSourcePath(finding.file))
+            ) {
+              logger.warn(
+                "Drift check: unconfirmed model finding outside selected prose, not acted on",
+                { repo, prNumber, file: finding.file },
+              );
+              continue;
+            }
             findingsWithStatus.push({ finding, foundBefore });
           }
         }

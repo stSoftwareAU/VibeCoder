@@ -668,6 +668,16 @@ A PR labelled `standing-violation` (Issue #3382) is **held** by the sweep
 (Issue #3517): it is skipped, never armed or branch-updated, and one already
 armed is disarmed with `gh pr merge --disable-auto`. The label comes from the
 sweep's live `gh pr view` read, and the hold is logged once per process.
+The CI-fix pass honours the label too: after pushing a fix to a labelled PR
+it skips re-arming auto-merge (the label comes from its claim-point live read)
+and logs the hold (Issue #3685). It does not disarm; the sweep does.
+The completion phase also applies this label when a pre-PR verifier finding
+survives its recovery turn on an existing PR (Issue #3796). It withholds
+auto-merge and posts the findings on that PR. A top-level hold comment whose
+first line is `<!-- vibe-pre-pr-verifier-hold -->` and whose author is a fleet
+login is actionable feedback, including when this host wrote it; a fleet
+eyes reaction prevents repeat processing (Issue #3798). The feedback pass
+does not release the label or arm auto-merge after its fix.
 
 The scan lists PRs authored by the worker only, so **human-authored PRs are
 never commented on or escalated** by this path.
