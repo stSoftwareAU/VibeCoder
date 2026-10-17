@@ -260,11 +260,11 @@ head (expect green), and records both results. **Closes #3512:** no. It removes
 a self-reported claim on the security-fix surface only. **Closes #3615:** no,
 and it does not add an instance. A run that cannot execute (runner error,
 unresolvable base ref or merge base, timeout, the 600 s budget exhausted, cited
-test not reported, no string-named Deno test cited, runner not wired) blocks
+test not reported, no Deno or Rust test cited, runner not wired) blocks
 with the evidence kind `discrimination-not-checked`, never counting as the red
-run, so the check does not fail open. Only Deno tests can be executed today, so
-a security fix in a non-Deno repo blocks as not checked unless the repo sets
-`skip_security_fix_check`.
+run, so the check does not fail open. Only Deno and Rust tests can be executed
+today, so a security fix whose cited test is in another language blocks as not
+checked unless the repo sets `skip_security_fix_check`.
 
 ## Deliberately excluded
 

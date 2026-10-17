@@ -373,18 +373,21 @@ function containsWholeToken(haystack: string, needle: string): boolean {
 export const MAX_CITED_SECURITY_TESTS = 10;
 
 /**
- * The string-named test declarations, per file, that the PR summary cites and
- * the added lines of the test diff declare (Issue #3659).
+ * The runnable test declarations, per file, that the PR summary cites and the
+ * added lines of the test diff declare (Issue #3659): string-named tests, and
+ * the `fn` name of a Rust test in a `.rs` file.
  *
  * The file sections come from the `+++ b/<path>` headers of the unified diff;
  * `+++ /dev/null` (a deletion) names no file and is skipped. The match rule is
  * the one {@link citedTestIdentifierInDiff} applies: a summary identifier must
  * be a whole token of the normalised declaration line. The name returned is the
- * first string literal on that line, as written.
+ * first string literal on that line, as written — or, in a `.rs` file, the
+ * function name after `fn`.
  *
- * Only string-named declarations are returned because those are the ones the
- * worker can run by name; a Rust `#[test] fn` or a pytest `def test_x` is a
- * valid citation for the static gate but yields nothing here. The result is
+ * Only declarations the worker can run by name are returned: a string-named
+ * Deno test and a Rust `#[test] fn`. A pytest `def test_x` or a Go
+ * `func Test…` is a valid citation for the static gate but yields nothing
+ * here. The result is
  * deduplicated by file and name, kept in diff order and capped at
  * {@link MAX_CITED_SECURITY_TESTS}. Bounded patterns over a capped slice only —
  * both inputs are untrusted.
@@ -449,7 +452,9 @@ export function citedSecurityTests(
       if (!identifiers.some((id) => containsWholeToken(normalised, id))) {
         continue;
       }
-      const name = STRING_NAME_PATTERN.exec(declaration)?.[2] ?? "";
+      const name = section.file.endsWith(".rs")
+        ? RUST_FN_NAME_PATTERN.exec(declaration)?.[1] ?? ""
+        : STRING_NAME_PATTERN.exec(declaration)?.[2] ?? "";
       if (!name.trim()) continue;
       const key = `${section.file}\u0000${name}`;
       if (seen.has(key)) continue;
@@ -463,6 +468,9 @@ export function citedSecurityTests(
 
 /** A unified-diff hunk header; groups 1 and 2 are the optional old/new line counts. */
 const HUNK_HEADER = /^@@ -\d{1,9}(?:,(\d{1,9}))? \+\d{1,9}(?:,(\d{1,9}))? @@/;
+
+/** The function name on a Rust `fn` declaration line (group 1). */
+const RUST_FN_NAME_PATTERN = /\bfn\s+([A-Za-z_][A-Za-z0-9_]*)/;
 
 /** The first string literal on a declaration line; group 2 is its content. */
 const STRING_NAME_PATTERN = /(["'`])([^"'`\n]*)\1/;
@@ -577,7 +585,7 @@ export const SECURITY_FIX_EVIDENCE_DESCRIPTIONS: Record<
   "test-discriminates":
     "The cited test must FAIL against the base branch's versions of the changed non-test files and PASS at the head. The worker ran it both ways in a disposable checkout and it did not go red then green, so it does not discriminate the fix. Make the test exercise the vulnerable code path the fix changes, so that it fails on the unfixed code.",
   "discrimination-not-checked":
-    "The worker could not run the cited test against both the base and the head (runner error, unresolvable base ref, timeout, or no runnable string-named Deno test), so whether it discriminates the fix is unchecked. An unchecked security fix is blocked, never assumed good, and never counted as the red run. Today the worker can execute only Deno tests: a `Deno.test` with a string name in a `*_test.*` or `*.test.*` file under a `deno.json`, `deno.jsonc` or `deno.lock` project.",
+    "The worker could not run the cited test against both the base and the head (runner error, unresolvable base ref, build failure, timeout, or a cited test in a language the worker cannot execute), so whether it discriminates the fix is unchecked. An unchecked security fix is blocked, never assumed good, and never counted as the red run. Today the worker can execute two kinds of test: a `Deno.test` with a string name in a `*_test.*` or `*.test.*` file under a `deno.json`, `deno.jsonc` or `deno.lock` project, and a Rust `#[test] fn` in a `.rs` file under a `Cargo.toml` package.",
   "trigger-closed":
     'Add a short statement that the ORIGINAL TRIGGER is closed with no trivial bypass (static reasoning over the changed code path — e.g. "the original attack input is now rejected by the allowlist and no equivalent bypass exists").',
 };
@@ -609,7 +617,7 @@ export function isSecurityFixEvidenceKind(
  * reason are agent-authored or tool output, so they are scrubbed and
  * code-fenced exactly as {@link formatMatchedTestDeclarations} does.
  */
-function formatDiscriminationRecord(
+export function formatDiscriminationRecord(
   discrimination: SecurityFixDiscrimination,
 ): string {
   const lines = discrimination.kind === "checked"

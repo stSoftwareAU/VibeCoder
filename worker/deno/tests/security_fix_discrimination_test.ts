@@ -11,6 +11,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CitedSecurityTest,
+  namedRustTestOutcome,
   namedTestOutcome,
   runSecurityFixDiscrimination,
   type SecurityFixDiscrimination,
@@ -84,6 +85,54 @@ Deno.test("namedTestOutcome: ignored and regex characters in names", () => {
   assertEquals(namedTestOutcome("a(b)+ ... ok\n", "a(b)+"), "pass");
 });
 
+const CARGO_PASS = `running 1 test
+test rejects_oob_index ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out
+`;
+
+Deno.test("namedRustTestOutcome: ok and FAILED lines, bare or inside a mod", () => {
+  assertEquals(namedRustTestOutcome(CARGO_PASS, "rejects_oob_index"), "pass");
+  assertEquals(
+    namedRustTestOutcome(
+      "test checks::rejects_oob_index ... FAILED\n",
+      "rejects_oob_index",
+    ),
+    "fail",
+  );
+});
+
+Deno.test("namedRustTestOutcome: absent, ignored and look-alike names are null", () => {
+  const none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed\n";
+  assertEquals(namedRustTestOutcome(none, "rejects_oob_index"), null);
+  assertEquals(
+    namedRustTestOutcome(
+      "test rejects_oob_index ... ignored\n",
+      "rejects_oob_index",
+    ),
+    null,
+  );
+  assertEquals(
+    namedRustTestOutcome(
+      "test rejects_oob_index_more ... ok\n",
+      "rejects_oob_index",
+    ),
+    null,
+  );
+  assertEquals(
+    namedRustTestOutcome(
+      "test xrejects_oob_index ... ok\n",
+      "rejects_oob_index",
+    ),
+    null,
+  );
+});
+
+Deno.test("namedRustTestOutcome: a failure beats a pass of a same-named test", () => {
+  const out = "test a::t ... ok\ntest b::t ... FAILED\n";
+  assertEquals(namedRustTestOutcome(out, "t"), "fail");
+});
+
 // ---------------------------------------------------------------------------
 // Scenario helpers
 // ---------------------------------------------------------------------------
@@ -149,6 +198,7 @@ interface Recorded {
 }
 
 type FakeDeno = (cwd: string) => Promise<ProcessResult>;
+type FakeCargo = FakeDeno;
 
 /**
  * The env the real runner filters, with the running deno's directory on PATH.
@@ -164,7 +214,10 @@ function envWithDenoOnPath(): Record<string, string> {
   };
 }
 
-function recordingSeams(fakeDeno: FakeDeno | null): Recorded {
+function recordingSeams(
+  fakeDeno: FakeDeno | null,
+  fakeCargo: FakeCargo | null = null,
+): Recorded {
   const real = defaultMutationRunnerSeams(envWithDenoOnPath());
   const calls: Recorded["calls"] = [];
   const tempDirs: string[] = [];
@@ -173,6 +226,9 @@ function recordingSeams(fakeDeno: FakeDeno | null): Recorded {
     async runProcess(cmd, args, opts) {
       calls.push({ cmd, args, cwd: opts.cwd, env: opts.env });
       if (cmd === "deno" && fakeDeno !== null) return await fakeDeno(opts.cwd);
+      if (cmd === "cargo" && fakeCargo !== null) {
+        return await fakeCargo(opts.cwd);
+      }
       return await real.runProcess(cmd, args, opts);
     },
     async makeTempDir() {
@@ -413,19 +469,28 @@ Deno.test("discrimination: unusable base ref is rejected", async () => {
   assertEquals(rec.calls.length, 0);
 });
 
-Deno.test("discrimination: no Deno test cited is not_checked", async () => {
+Deno.test("discrimination: an unrunnable cited test names its language as the cause", async () => {
   const rec = recordingSeams(markerDeno);
-  const rust = await runSecurityFixDiscrimination(
-    { ...input("/nonexistent"), tests: [{ file: "src/foo.rs", name: "x" }] },
+  const py = await runSecurityFixDiscrimination(
+    {
+      ...input("/nonexistent"),
+      tests: [{ file: "tests/test_db.py", name: "test_rejects" }],
+    },
     rec.seams,
   );
-  assertStringIncludes(reasonOf(rust), "only Deno tests");
-  assertStringIncludes(reasonOf(rust), "src/foo.rs");
+  assertStringIncludes(reasonOf(py), "language of the cited test cannot be");
+  assertStringIncludes(reasonOf(py), "tests/test_db.py");
+  // A name-less Rust citation is not runnable either.
+  const nameless = await runSecurityFixDiscrimination(
+    { ...input("/nonexistent"), tests: [{ file: "tests/a.rs", name: " " }] },
+    rec.seams,
+  );
+  assertStringIncludes(reasonOf(nameless), "language of the cited test");
   const none = await runSecurityFixDiscrimination(
     { ...input("/nonexistent"), tests: [] },
     rec.seams,
   );
-  assertStringIncludes(reasonOf(none), "cites no string-named test");
+  assertStringIncludes(reasonOf(none), "cites no test the worker can execute");
   assertEquals(rec.calls.length, 0);
 });
 
@@ -605,4 +670,218 @@ Deno.test("discrimination: real deno run is checked fail/pass", async () => {
       });
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Rust (PR #3921 review)
+// ---------------------------------------------------------------------------
+
+const RUST_CITED: CitedSecurityTest = {
+  file: "crates/idx/tests/index_test.rs",
+  name: "rejects_oob_index",
+};
+const RUST_VULN = "pub fn get(i: usize) -> usize { i } // vulnerable\n";
+const RUST_FIXED = "pub fn get(i: usize) -> usize { i.min(3) } // FIXED\n";
+const CARGO_TOML = '[package]\nname = "idx"\nversion = "0.1.0"\n';
+
+/** Fake cargo: green iff the package's src/lib.rs carries the FIXED marker. */
+const markerCargo: FakeCargo = async (cwd) => {
+  const src = await Deno.readTextFile(`${cwd}/src/lib.rs`);
+  return src.includes("FIXED")
+    ? { code: 0, stdout: CARGO_PASS, stderr: "", timedOut: false }
+    : {
+      code: 101,
+      stdout: CARGO_PASS.replace("... ok", "... FAILED"),
+      stderr: "error: test failed",
+      timedOut: false,
+    };
+};
+
+async function withRustRepo(
+  body: (root: string) => Promise<void>,
+): Promise<void> {
+  await withRepo(
+    { "crates/idx/src/lib.rs": RUST_VULN },
+    {
+      "crates/idx/Cargo.toml": CARGO_TOML,
+      "crates/idx/src/lib.rs": RUST_FIXED,
+      "crates/idx/tests/index_test.rs": "#[test]\nfn rejects_oob_index() {}\n",
+    },
+    async (root) => {
+      await run("git", ["rm", "-q", "deno.json"], root);
+      await commit(root, "no deno marker");
+      await body(root);
+    },
+  );
+}
+
+function rustInput(root: string, extra: Record<string, unknown> = {}) {
+  return {
+    ...input(root, extra),
+    productionFiles: ["crates/idx/src/lib.rs"],
+    tests: [RUST_CITED],
+  };
+}
+
+Deno.test("discrimination: a cited Rust test runs under cargo, red at base and green at head", async () => {
+  await withRustRepo(async (root) => {
+    const rec = recordingSeams(null, markerCargo);
+    const r = await runSecurityFixDiscrimination(
+      rustInput(root, { credentialEnv: { SECRET_TOKEN: "abc" } }),
+      rec.seams,
+    );
+    assertEquals(r, {
+      kind: "checked",
+      test: RUST_CITED,
+      preFix: "fail",
+      postFix: "pass",
+    });
+    const cargo = rec.calls.filter((c) => c.cmd === "cargo");
+    assertEquals(cargo.length, 2);
+    for (const c of cargo) {
+      assertEquals(c.env, { SECRET_TOKEN: "abc" });
+      assert(c.cwd.endsWith("/checkout/crates/idx"), c.cwd);
+      assertEquals(c.args, [
+        "test",
+        "--no-fail-fast",
+        "--test",
+        "index_test",
+        "rejects_oob_index",
+      ]);
+    }
+    for (const c of rec.calls.filter((c) => c.cmd === "git")) {
+      assertEquals(c.env, undefined);
+    }
+    assertEquals(rec.calls.filter((c) => c.cmd === "deno").length, 0);
+  });
+});
+
+Deno.test("discrimination: a Rust test red at head is checked fail/fail", async () => {
+  await withRustRepo(async (root) => {
+    const rec = recordingSeams(
+      null,
+      () =>
+        Promise.resolve({
+          code: 101,
+          stdout: CARGO_PASS.replace("... ok", "... FAILED"),
+          stderr: "",
+          timedOut: false,
+        }),
+    );
+    const r = await runSecurityFixDiscrimination(rustInput(root), rec.seams);
+    assertEquals(r, {
+      kind: "checked",
+      test: RUST_CITED,
+      preFix: "fail",
+      postFix: "fail",
+    });
+  });
+});
+
+Deno.test("discrimination: a Rust build failure is not_checked with rustc's cause", async () => {
+  await withRustRepo(async (root) => {
+    const rec = recordingSeams(
+      null,
+      () =>
+        Promise.resolve({
+          code: 101,
+          stdout: "",
+          stderr:
+            "   Compiling idx v0.1.0\nerror[E0432]: unresolved import `crate::gone`\nerror: could not compile `idx`\n",
+          timedOut: false,
+        }),
+    );
+    const r = await runSecurityFixDiscrimination(rustInput(root), rec.seams);
+    assertStringIncludes(reasonOf(r), "unresolved import `crate::gone`");
+    assertStringIncludes(reasonOf(r), "head");
+  });
+});
+
+Deno.test("discrimination: a Rust test with no package manifest above it is not_checked", async () => {
+  await withRustRepo(async (root) => {
+    await run("git", ["rm", "-q", "crates/idx/Cargo.toml"], root);
+    await commit(root, "drop Cargo.toml");
+    const rec = recordingSeams(null, markerCargo);
+    const r = await runSecurityFixDiscrimination(rustInput(root), rec.seams);
+    assertStringIncludes(
+      reasonOf(r),
+      "no Cargo.toml declaring a package above",
+    );
+    assertEquals(rec.calls.filter((c) => c.cmd === "cargo").length, 0);
+  });
+});
+
+Deno.test("discrimination: a Rust citation that is not a function name is refused", async () => {
+  const rec = recordingSeams(null, markerCargo);
+  const r = await runSecurityFixDiscrimination(
+    {
+      ...input("/nonexistent"),
+      tests: [{ file: "tests/a.rs", name: "--nocapture" }],
+    },
+    rec.seams,
+  );
+  assertStringIncludes(reasonOf(r), "is not a function name");
+  assertEquals(rec.calls.length, 0);
+});
+
+Deno.test("discrimination: a Rust test outside tests/ runs as a package-wide filter, with no --test target", async () => {
+  await withRustRepo(async (root) => {
+    const rec = recordingSeams(null, markerCargo);
+    const cited = {
+      file: "crates/idx/src/checks.rs",
+      name: "rejects_oob_index",
+    };
+    const r = await runSecurityFixDiscrimination(
+      { ...rustInput(root), tests: [cited] },
+      rec.seams,
+    );
+    assertEquals(r.kind, "checked");
+    const cargo = rec.calls.filter((c) => c.cmd === "cargo");
+    assertEquals(cargo.length, 2);
+    for (const c of cargo) {
+      assertEquals(c.args, ["test", "--no-fail-fast", "rejects_oob_index"]);
+    }
+  });
+});
+
+Deno.test("discrimination: a Rust test climbs past a directory with no manifest to the root package", async () => {
+  await withRustRepo(async (root) => {
+    await run("git", ["rm", "-q", "crates/idx/Cargo.toml"], root);
+    await write(root, "Cargo.toml", CARGO_TOML);
+    await write(root, "src/lib.rs", RUST_FIXED);
+    await commit(root, "package at the root");
+    const rec = recordingSeams(null, async (cwd) => {
+      assertEquals(
+        await Deno.stat(`${cwd}/Cargo.toml`).then(() => true, () => false),
+        true,
+      );
+      return { code: 0, stdout: CARGO_PASS, stderr: "", timedOut: false };
+    });
+    const r = await runSecurityFixDiscrimination(
+      { ...rustInput(root), productionFiles: [] },
+      rec.seams,
+    );
+    assertEquals(r.kind, "checked");
+    const cargo = rec.calls.filter((c) => c.cmd === "cargo");
+    assertEquals(cargo.length, 2);
+    for (const c of cargo) {
+      assert(c.cwd.endsWith("/checkout"), c.cwd);
+      assertEquals(c.args.slice(2), ["rejects_oob_index"]);
+    }
+  });
+});
+
+Deno.test("discrimination: a virtual workspace manifest is not a package to run in", async () => {
+  await withRustRepo(async (root) => {
+    await run("git", ["rm", "-q", "crates/idx/Cargo.toml"], root);
+    await write(root, "Cargo.toml", '[workspace]\nmembers = ["crates/idx"]\n');
+    await commit(root, "virtual workspace only");
+    const rec = recordingSeams(null, markerCargo);
+    const r = await runSecurityFixDiscrimination(rustInput(root), rec.seams);
+    assertStringIncludes(
+      reasonOf(r),
+      "no Cargo.toml declaring a package above",
+    );
+    assertEquals(rec.calls.filter((c) => c.cmd === "cargo").length, 0);
+  });
 });

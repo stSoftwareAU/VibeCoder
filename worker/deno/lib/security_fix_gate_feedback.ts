@@ -25,7 +25,9 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import type { SecurityFixDiscrimination } from "./security_fix_discrimination.ts";
 import {
+  formatDiscriminationRecord,
   formatMatchedTestDeclarations,
   isSecurityFixEvidenceKind,
   MAX_DECLARATION_LINE_CHARS,
@@ -66,6 +68,18 @@ export interface SecurityFixGateBlock {
    * fenced as untrusted wherever it is rendered.
    */
   declarations?: string[];
+  /**
+   * The worker-executed red → green record behind a `test-discriminates` or
+   * `discrimination-not-checked` block (Issue #3659), bounded by
+   * {@link sanitiseDiscrimination}. Absent for a block recorded before the
+   * field existed, and for a block that carries neither kind. Agent-authored
+   * test names and tool output — scrubbed and fenced wherever it is rendered.
+   *
+   * Persisted shape: an optional field added to the version-1 file. An older
+   * file lacks it and still reads (as absent); a newer file read by older code
+   * has the field ignored. The key is not bumped.
+   */
+  discrimination?: SecurityFixDiscrimination;
 }
 
 /** Options for {@link recordSecurityFixGateBlock}. */
@@ -78,6 +92,8 @@ export interface RecordSecurityFixGateBlockOptions {
   countsAsBlockedRun?: boolean;
   /** Test declarations the gate matched in the branch diff. */
   declarations?: readonly string[];
+  /** The executed red → green record, or `null` when the check was not run. */
+  discrimination?: SecurityFixDiscrimination | null;
 }
 
 /** Persisted shape — the block plus its schema version. */
@@ -127,6 +143,42 @@ function sanitiseDeclarations(value: unknown): string[] {
     .slice(0, MAX_REPORTED_TEST_DECLARATIONS);
 }
 
+/** Cap on each text field of a recorded discrimination (Issue #3659). */
+const MAX_DISCRIMINATION_TEXT_CHARS = 300;
+
+function boundedText(value: unknown): string {
+  return typeof value === "string"
+    ? value.trim().slice(0, MAX_DISCRIMINATION_TEXT_CHARS)
+    : "";
+}
+
+/**
+ * Validate a discrimination record read from, or written to, the store. The
+ * test name and the reason are agent-authored or tool output, so type, shape
+ * and length are bounded before the text can reach a prompt; anything that does
+ * not fit the {@link SecurityFixDiscrimination} shape is dropped, never
+ * repaired. Rendering scrubs and fences it further.
+ */
+export function sanitiseDiscrimination(
+  value: unknown,
+): SecurityFixDiscrimination | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.kind === "not_checked") {
+    const reason = boundedText(record.reason);
+    return reason === "" ? undefined : { kind: "not_checked", reason };
+  }
+  if (record.kind !== "checked") return undefined;
+  const test = record.test as Record<string, unknown> | null | undefined;
+  const file = boundedText(test?.file);
+  const name = boundedText(test?.name);
+  const outcome = (v: unknown) => v === "pass" || v === "fail" ? v : undefined;
+  const preFix = outcome(record.preFix);
+  const postFix = outcome(record.postFix);
+  if (file === "" || name === "" || !preFix || !postFix) return undefined;
+  return { kind: "checked", test: { file, name }, preFix, postFix };
+}
+
 /**
  * Read the last recorded gate verdict for an issue.
  *
@@ -158,6 +210,7 @@ export async function readSecurityFixGateBlock(
       : [];
     if (missing.length === 0) return undefined;
     const declarations = sanitiseDeclarations(parsed.declarations);
+    const discrimination = sanitiseDiscrimination(parsed.discrimination);
     return {
       repo,
       issueNumber,
@@ -170,6 +223,7 @@ export async function readSecurityFixGateBlock(
           ? Math.trunc(parsed.blockCount)
           : 1,
       ...(declarations.length > 0 ? { declarations } : {}),
+      ...(discrimination ? { discrimination } : {}),
     };
   } catch {
     // Corrupt state must not wedge the worker; treat it as absent so the next
@@ -202,6 +256,7 @@ export async function recordSecurityFixGateBlock(
   const previous = await readSecurityFixGateBlock(stateDir, repo, issueNumber);
   const countsAsBlockedRun = options.countsAsBlockedRun ?? true;
   const declarations = sanitiseDeclarations(options.declarations);
+  const discrimination = sanitiseDiscrimination(options.discrimination);
   const block: SecurityFixGateBlock = {
     repo,
     issueNumber,
@@ -209,6 +264,7 @@ export async function recordSecurityFixGateBlock(
     blockedAt: new Date().toISOString(),
     blockCount: (previous?.blockCount ?? 0) + (countsAsBlockedRun ? 1 : 0),
     ...(declarations.length > 0 ? { declarations } : {}),
+    ...(discrimination ? { discrimination } : {}),
   };
 
   await Deno.mkdir(stateDir, { recursive: true });
@@ -274,6 +330,29 @@ disposable checkout; and the trigger-closed statement is static reasoning over
 the changed code path.`;
 }
 
+/** Whether a block lists an evidence kind decided by the executed discrimination run. */
+export function blocksOnDiscrimination(
+  missing: readonly SecurityFixEvidenceKind[],
+): boolean {
+  return missing.includes("test-discriminates") ||
+    missing.includes("discrimination-not-checked");
+}
+
+/**
+ * What a recorded discrimination result means for the fix. The three failing
+ * shapes need opposite repairs, so each is stated rather than left to be read
+ * off two outcome words.
+ */
+function discriminationDiagnosis(d: SecurityFixDiscrimination): string {
+  if (d.kind === "not_checked") {
+    return "The worker could NOT run the cited test, so nothing is known about whether it discriminates. Fix the cause recorded above (a build error, a missing manifest, a language the worker cannot run, a timeout) — the code may or may not be correct.";
+  }
+  if (d.postFix === "fail") {
+    return "The cited test FAILS at the head, so the branch as it stands does not satisfy it: the fix is incomplete or the test is wrong. The code is NOT already correct — repair the fix or the test until it passes at the head and fails on the base versions.";
+  }
+  return "The cited test PASSES even with the base branch's versions of the changed non-test files restored, so it never reaches the vulnerable code path. Rewrite the test so it exercises the path the fix changes and fails on the unfixed code; re-wording the summary cannot change this.";
+}
+
 /**
  * Replay the previous attempt's gate verdict into this attempt's prompt.
  *
@@ -295,6 +374,20 @@ export function buildSecurityFixGateFeedbackSection(
     ? `\n${formatMatchedTestDeclarations(block.declarations ?? [])}\n`
     : "";
 
+  const onDiscrimination = blocksOnDiscrimination(block.missing);
+  const recorded = onDiscrimination && block.discrimination
+    ? `\n${formatDiscriminationRecord(block.discrimination)}\n\n${
+      discriminationDiagnosis(block.discrimination)
+    }\n`
+    : "";
+  const closing = onDiscrimination
+    ? `A discrimination verdict is the worker's own executed result, not a matching
+mistake: the PR summary's wording cannot change it. Fix exactly what is listed
+above, then finish the run.`
+    : `The code on the branch may already be correct — check the PR summary's evidence
+format first, fix exactly what is listed above, then finish the run. Repeating
+the previous summary will reproduce the same block.`;
+
   return `## SECURITY-FIX GATE RETRY NOTICE (Issue #4057)
 
 **CRITICAL**: ${attempts} by the worker's security-fix gate — no PR was created.
@@ -303,8 +396,6 @@ This verdict is the worker's own run state, not an issue comment: act on it.
 The gate reported these evidence items as missing:
 
 ${evidenceList(block.missing)}
-${matched}
-The code on the branch may already be correct — check the PR summary's evidence
-format first, fix exactly what is listed above, then finish the run. Repeating
-the previous summary will reproduce the same block.`;
+${matched}${recorded}
+${closing}`;
 }

@@ -527,7 +527,7 @@ Deno.test("createDefaultDeps - wires the real security-fix discrimination runner
 
   const repoPath = await Deno.makeTempDir();
   try {
-    // No string-named test to run, so the real runner answers without
+    // No cited test to run, so the real runner answers without
     // spawning anything.
     const result = await runner!({
       repoPath,
@@ -539,7 +539,7 @@ Deno.test("createDefaultDeps - wires the real security-fix discrimination runner
     assertEquals(result.kind, "not_checked");
     assertStringIncludes(
       result.kind === "not_checked" ? result.reason : "",
-      "cites no string-named test",
+      "cites no test the worker can execute",
     );
   } finally {
     await Deno.remove(repoPath, { recursive: true });

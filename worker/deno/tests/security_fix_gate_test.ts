@@ -641,13 +641,32 @@ Deno.test("citedSecurityTests - reads a name deno fmt wrapped onto the next line
   ]);
 });
 
-Deno.test("citedSecurityTests - a Rust test fn has no string name and yields nothing", () => {
+Deno.test("citedSecurityTests - a Rust test fn is cited by its function name", () => {
   const summary =
     "Added `tests/index_test.rs::rejects_oob_index` as the regression test.";
   const diff = `+++ b/tests/index_test.rs
 +#[test]
++#[should_panic]
 +fn rejects_oob_index() {}`;
-  assertEquals(citedSecurityTests(summary, diff), []);
+  assertEquals(citedSecurityTests(summary, diff), [
+    { file: "tests/index_test.rs", name: "rejects_oob_index" },
+  ]);
+});
+
+Deno.test("citedSecurityTests - a Rust fn without a test attribute, and a pytest def, yield nothing", () => {
+  const rust = `+++ b/tests/index_test.rs
++fn rejects_oob_index() {}`;
+  assertEquals(
+    citedSecurityTests("`tests/index_test.rs::rejects_oob_index`", rust),
+    [],
+  );
+  const py = `+++ b/tests/test_db.py
++def test_rejects_injection():
++    pass`;
+  assertEquals(
+    citedSecurityTests("`tests/test_db.py::test_rejects_injection`", py),
+    [],
+  );
 });
 
 Deno.test("citedSecurityTests - a name present only in an assertion body yields nothing", () => {
