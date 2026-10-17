@@ -68,6 +68,7 @@ import { setActiveRepoCodexModelEffortOverrides } from "./codex_executor.ts";
 import { setActiveRepoGeminiModelOverrides } from "./gemini_executor.ts";
 import { setActiveRepoDeepSeekModelOverrides } from "./deepseek_executor.ts";
 import type { AgentProviderSelector } from "./agent_provider.ts";
+import { runOrchestratedIssueRun } from "./orchestration/issue_run_gate.ts";
 import { resolveInvocationAgentProvider } from "./agent_provider.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import {
@@ -910,6 +911,8 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
   return {
     escalateContextBudget: defaultEscalateContextBudget,
     runClaudeWithRetry,
+    runExternalOrchestratedIssueRun: (input) =>
+      runOrchestratedIssueRun(input, { runClaudeWithRetry }),
     buildIssuePrompt,
     buildCachedIssuePrompt,
     buildCiFailureContext,
