@@ -1107,8 +1107,9 @@ as "no marker".
 - **Reused.** A trusted marker's id, cohort and assignment time are reused, so a
   restart, or another host picking the issue up, keeps the same assignment.
 - **Minted.** Otherwise a UUID is minted with cohort `unassigned` (no experiment
-  supplies cohorts yet; #3645 will), and the marker is posted beneath a short
-  visible sentence.
+  supplies cohorts yet: the #3645 report reads cohorts, and enacting an arm
+  awaits per-role configuration, #3643), and the marker is posted beneath a
+  short visible sentence.
 
 **The ledger.** Each run appends its `assignment` event as one JSON line to
 `WORK_DIR/lifecycle_ledger_<hostname>.jsonl`. A re-entry of the execute-phase
@@ -1207,6 +1208,99 @@ sequenceDiagram
     end
     Exec->>Ledger: append assignment event
     Exec->>Agent: invoke agent
+```
+
+### 🧪 Randomised fleet experiments — merged issues per dollar (Issue #3645)
+
+Part of #3644. The `fleet-experiment-report` command reads every host's
+lifecycle ledger on the work volume, or the ledgers named by `--ledger`, and
+reports merged issues per estimated API-equivalent dollar for each arm of a
+randomised experiment. It is read-only: it posts nothing to GitHub, writes
+nothing and changes no allocation. A ledger that cannot be read, or a work
+volume with no ledgers, fails the command; it is never reported as empty.
+
+**Cohorts.** Records are grouped by the cohort recorded on each issue's
+`assignment` event when the issue was assigned. The grouping is
+intention-to-treat: a later fallback, or another host's assignment event for
+the same issue, never moves an issue to a different arm.
+
+**Arms.** The control is the Sonnet manager with a Haiku executor
+(`sonnet-haiku`), per the 2026-10-16 owner decision. The candidates Astra/Sol
+and Astra/Haiku are listed as awaiting feasibility (#3647). The Opus-manager
+arms are dropped. Fable is excluded from every arm, and arm validation refuses
+it.
+
+**Assignment.** A seeded helper assigns each issue deterministically: the
+SHA-256 of `seed:repo#issue` selects its arm, so a rerun reproduces the same
+assignment. The execute phase still mints cohort `unassigned` and does not yet
+enact arms. Enacting an arm needs per-role host configuration (#3643, open).
+
+**Primary metric.** Merged issues per estimated API-equivalent USD. Success is
+counted only when an issue has `merged`, `quality_green` and `review_approved`
+outcomes. A merged issue without both verifications is `merged_unverified`,
+which is not a success.
+
+**Cost.** Cost includes every attempt, failed invocation, retry and follow-on.
+Unknown cost is never zero: it raises the `missing-cost` warning.
+
+**Maturity, horizon and censoring.** An issue still `pending` inside the horizon
+(`--horizon`, default 14 days) is excluded. An issue still `pending` past the
+horizon is counted as not merged and censored.
+
+**Intervals.** Merged issues per dollar uses a bootstrap interval, and the merge
+rate uses a Wilson interval. Both are 99% intervals, deliberately conservative
+against repeated looks at the data.
+
+**Evidence levels.** The report marks each arm's evidence level at 10, 30 and 50
+merged issues.
+
+**Warnings.** The report lists warnings by code, each optionally naming an arm:
+`low-sample`, `missing-cost`, `biased-assignment`, `unequal-exposure`,
+`excluded-model`, `unverified-merge`, `unattributed-events` and `unknown-arm`.
+
+**Verdict.** There is no winner unless every arm has at least 30 merged issues,
+no blocking warning is raised, and the arms' 99% intervals do not overlap.
+Otherwise the verdict is `no-decision`.
+
+**Views and breakdowns.** The report gives weekly figures and a rolling view
+over `--window` (default 30 days). It breaks results down by host, provider,
+role combination and repo.
+
+**Export.** `--format text` (the default) prints the report. `--format json`
+exports the whole report as data, and `--format csv` exports the per-issue
+assignment records. `--covariates <file>` supplies a JSON object of per-issue
+attributes keyed `repo#issue`.
+
+**Live ledgers.** Gate and outcome events have no production writer yet (see
+the lifecycle ledger section above). Until they land, every assignment in a
+live ledger reports as pending, so no verdict can be reached.
+
+**Synthetic demonstration.** `--synthetic <seed>` ignores the ledgers and
+generates a randomised history of 400 issues over 30 days, against a fixed
+clock. The same seed gives byte-identical output. It demonstrates the report,
+not evidence.
+
+```bash
+# From worker/deno: the text report over the work volume's ledgers
+deno task fleet-experiment-report
+
+# A CSV of the last 7 days' assignment records
+deno run mod.ts fleet-experiment-report --window 7 --format csv
+
+# A reproducible demonstration
+deno run mod.ts fleet-experiment-report --synthetic 42
+```
+
+```mermaid
+flowchart LR
+    L["Host ledgers<br/>lifecycle_ledger_*.jsonl"] --> R["Assignment records<br/>by cohort"]
+    R --> A["Arm summaries"]
+    R --> W["Warnings"]
+    A --> V["Verdict"]
+    W --> V
+    A --> F["Text, JSON or CSV"]
+    W --> F
+    V --> F
 ```
 
 ### 🎚️ Per-slot idle accounting — utilisation against capacity (Issue #925)
