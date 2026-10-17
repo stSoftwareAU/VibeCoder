@@ -1490,8 +1490,22 @@ The file MUST contain:
    per fallible step that makes it fail, runs the finisher, asserts exactly
    one copy of each record, and goes red when the finisher is removed; list
    the steps and their finishers in the PR summary; a step whose failure
-   leaves work that no path ever completes is a blocking self-review
-   finding. Likewise, each field, prop, parameter, type
+   leaves work that no path ever completes is a blocking self-review finding.
+   Likewise, a path the diff adds into code that mutates shared state — the
+   shared clone, a PR head or branch, a state or ledger file, a cross-host
+   budget — names its concurrent callers (see **A new caller of a shared
+   mutation names its concurrent callers** in the guidelines): list every
+   caller that can be in that code at the same time (other pool lanes on the
+   same repository, maintenance passes, other hosts), take the lock the
+   existing callers use or add one, and re-read under the lock whatever made
+   the action due or needed, standing down if it no longer is; name a
+   two-caller test that holds the first caller inside the mutation until the
+   second has started, using a barrier rather than a sleep, asserts the action
+   happens once, and goes red when the lock is dropped and again when the
+   re-read is moved before it; list the concurrent callers and the lock each
+   takes in the PR summary; a new route into a shared mutation with no lock, a
+   decision read before the lock, or no two-caller test is a blocking
+   self-review finding. Likewise, each field, prop, parameter, type
    or export the diff adds to non-test code has a production reader or
    setter (see **Nothing exists only for a test to read** in the
    guidelines): find one with `git grep -n -w <name>` outside test code, or

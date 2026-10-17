@@ -1592,6 +1592,28 @@ before its step can no longer be refused, a fail-then-finish test per
 fallible step that goes red when the finisher is removed, and the steps and
 finishers in the PR summary.
 
+**A new caller of a shared mutation names its concurrent callers
+(Issue #3714).** Two fleet PRs, twelve days apart, added a route into code
+that mutates shared state without asking who else could be in it at the same
+time. The review of VibeCoder#3065 found its conflict takeover pushing to the
+PR head on the non-gated route without the cross-host PR lock the ladder
+takes, its milestone sync taking no PR lock, and later rounds tallying
+attempts from a thread read before the lock was held, so two passes spent
+conflict attempts on one head in the same window. The review of VibeCoder#3712
+found `ensureRepoClone` handing a corrupt clone to `setupRepo` with no
+per-repository serialisation, and `recoverCorruptClone` checking its 24 h cap
+under its state lock without re-probing the clone, so a second lane that saw
+the clone corrupt before the first repaired it would be refused as a repeat
+corruption and the repository backed off fleet-wide; the merged fix serialises
+the callers per clone path and re-probes after the wait. The guidelines and
+the issue prompt's Test Plan step now require listing every caller that can be
+in that code at once (pool lanes on the same repository, maintenance passes,
+other hosts), taking the existing lock or adding one, re-reading under the
+lock what made the action due and standing down if it no longer is, a
+two-caller test that asserts the action happens once and goes red without the
+lock and again without the re-read, and the concurrent callers and their locks
+in the PR summary.
+
 **Nothing exists only for a test to read (Issue #3455).** Three private
 fleet PRs in one week added a production member that only tests used: an
 optional preset prop on a web UI component that no production caller
