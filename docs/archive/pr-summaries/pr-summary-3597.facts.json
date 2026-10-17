@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/marker_comment_pages.ts",
+        "line": 219,
+        "outcome": "a comment a non-fleet account wrote is filtered out and never deleted",
+        "test": "worker/deno/tests/marker_comment_pages_prune_test.ts",
+        "testName": "prune - never deletes a comment a non-fleet account wrote",
+        "flipWentRed": "dropping the fleet filter let a non-fleet comment be deleted; the stranger tests went red"
+      },
+      {
+        "path": "worker/deno/lib/marker_comment_pages.ts",
+        "line": 221,
+        "outcome": "no fleet-authored marker comment means nothing is kept and nothing is deleted",
+        "test": "worker/deno/tests/marker_comment_pages_prune_test.ts",
+        "testName": "prune - returns null and deletes nothing when no fleet comment carries the marker",
+        "flipWentRed": "throwing instead of returning null when no fleet comment is kept: FAILED, 30 passed, 6 failed across the two files"
+      },
+      {
+        "path": "worker/deno/lib/marker_comment_pages.ts",
+        "line": 229,
+        "outcome": "a duplicate DELETE answered with HTTP 404 counts as already removed",
+        "test": "worker/deno/tests/marker_comment_pages_prune_test.ts",
+        "testName": "prune - a DELETE answered with HTTP 404 counts as already deleted",
+        "flipWentRed": "not tolerating HTTP 404 on delete made the already-removed test go red"
+      },
+      {
+        "path": "worker/deno/lib/marker_comment_pages.ts",
+        "line": 233,
+        "outcome": "a non-404 delete failure is thrown, naming every duplicate that was not deleted",
+        "test": "worker/deno/tests/marker_comment_pages_prune_test.ts",
+        "testName": "prune - a DELETE refused with HTTP 403 throws, naming every failed comment",
+        "flipWentRed": "swallowing a non-404 delete failure made the HTTP 403 test go red"
+      },
+      {
+        "path": "worker/deno/lib/held_issue_gate_comment.ts",
+        "line": 284,
+        "endLine": 290,
+        "outcome": "after a POST the thread is re-pruned, so a racing run's duplicate is removed",
+        "test": "worker/deno/tests/held_issue_gate_comment_test.ts",
+        "testName": "upsertHeldIssueGateComment - two concurrent upserts for the same issue and key leave exactly one held-gate comment",
+        "flipWentRed": "removing the re-prune after the POST made the concurrent-upsert test go red"
+      },
+      {
+        "path": "worker/deno/lib/held_issue_gate_comment.ts",
+        "line": 294,
+        "outcome": "a kept comment whose body already carries the key is left unchanged",
+        "test": "worker/deno/tests/held_issue_gate_comment_test.ts",
+        "testName": "upsertHeldIssueGateComment - an unchanged gate writes nothing, a changed gate edits in place",
+        "flipWentRed": "the unchanged check flipped: FAILED, 26 passed, 3 failed"
+      },
+      {
+        "path": "worker/deno/lib/collect_self_diagnostic_candidates.ts",
+        "line": 566,
+        "endLine": 583,
+        "outcome": "a refused duplicate delete on the self-schedule path refuses the schedule and does not post",
+        "test": "worker/deno/tests/collect_self_diagnostic_candidates_test.ts",
+        "testName": "self-schedule - a 403 on the duplicate delete refuses the schedule (Issue #3597)",
+        "flipWentRed": "swallowing the self-schedule catch let the 403 duplicate delete go through; the refusal test went red"
+      },
+      {
+        "path": "worker/deno/lib/collect_self_diagnostic_candidates.ts",
+        "line": 557,
+        "outcome": "the self-schedule prune runs only when the fleet author list is non-empty",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "equivalent mutant: the guard only skips a call that returns null for an empty list (worker/deno/lib/marker_comment_pages.ts:211), so no observable outcome differs; forcing the guard true left all 23 tests in worker/deno/tests/collect_self_diagnostic_candidates_test.ts green, the file that calls the enclosing function"
+        }
+      }
+    ]
+  }
+}
