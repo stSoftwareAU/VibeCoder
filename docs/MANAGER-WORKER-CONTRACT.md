@@ -60,7 +60,7 @@ relative to the repository root.
 | Reviewer definitions | `worker/deno/lib/issue_executor_agents.ts:208`, `:296` | Read-only tools `Read`, `Grep`, `Glob`; `buildIssueReviewerAgents`. |
 | Explorer definition | `worker/deno/lib/issue_executor_agents.ts:337`, `:340`, `:374` | Haiku, read-only. Built only on the haiku tier (see assembly below). |
 | Assembly | `worker/deno/lib/issue_executor_agents.ts:420-436` | `buildIssueRunAgents` returns `undefined` when the split is off, reviewers are off and the tier is not haiku (`:424-426`). The explorer is added only on the haiku tier (`:434`). |
-| Phase wiring | `worker/deno/lib/execute_claude_phase.ts:1326-1348` | Resolves the split (`:1326-1331`), which is forced off when `externalOrchestration` is on (`:1326`). Then resolves the tier (the `"sonnet"` fallback applies only when no option is passed), then calls `buildIssueRunAgents` at `:1348`. The external path builds no `--agents` (`:1346-1348`). |
+| Phase wiring | `worker/deno/lib/execute_claude_phase.ts:1330-1352` | Resolves the split (`:1330-1335`), which is forced off when `externalOrchestration` is on (`:1330`). Then resolves the tier (the `"sonnet"` fallback applies only when no option is passed), then calls `buildIssueRunAgents` at `:1352`. The external path builds no `--agents` (`:1350-1352`). |
 | Edit guard | `worker/deno/lib/issue_executor_enforcement.ts:47`, `:58`, `:124`, `:138` | Guarded tools are `Edit` and `Write`. A call with `agent_id` present (an executor) is allowed. A call without it (the advisor) is denied, unless its `file_path` is one of the advisor's own run-record files (`isAdvisorRunRecordPath`, `:98`, `:142-145`): the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` or the PR-feedback reply file `.pr_response_message`. |
 | Hook settings | `worker/deno/lib/issue_executor_enforcement.ts:205`, `:240` | `buildIssueExecutorHookSettings` and `resolveIssueExecutorHookSettings` build the `--settings` payload. |
 | Guard CLI | `worker/deno/lib/issue_edit_guard_cli.ts:46` | `runIssueEditGuard` is the hook entry point. |
@@ -208,7 +208,7 @@ from the claim through the advisor and its sub-agents to the result.
 
 ```mermaid
 flowchart LR
-  A["Claim the issue<br/>claim_issue.ts:1240"] --> B["Phase options<br/>execute_claude_phase.ts:1326-1348"]
+  A["Claim the issue<br/>claim_issue.ts:1240"] --> B["Phase options<br/>execute_claude_phase.ts:1330-1352"]
   B --> C["buildIssueRunAgents<br/>issue_executor_agents.ts:420"]
   C --> D["buildClaudeCliArgs<br/>agent_provider.ts:595"]
   D --> E["claude CLI<br/>--agents and --settings"]
@@ -241,11 +241,14 @@ Supporting lifecycle code, each cited from the file it lives in:
 ### Target
 
 The orchestrator implements this state machine. Its legal moves are
-`ORCHESTRATION_TRANSITIONS` (`worker/deno/lib/orchestration/types.ts:170-207`),
-and `assertTransition` (`types.ts:213-220`) runs on every state change, so an
-illegal move cannot be recorded. Resumption enters `recovering` from every
-unreleased state, and a refusal, cancellation or budget stop may arise in any
-active state. The diagram is the transition table, so it does not add or drop
+`ORCHESTRATION_TRANSITIONS` (`worker/deno/lib/orchestration/types.ts:172-209`),
+and `assertTransition` (`types.ts:215-222`) runs on every state change, so an
+illegal move cannot be recorded. A resumed run enters `recovering` from
+`planning`, `dispatched`, `executing`, `reviewing` or `done`; a resumed
+`claimed` checkpoint goes straight to `planning`
+(`worker/deno/lib/orchestration/orchestrator.ts:435-446`). A run that ended
+`blocked`, `timed_out`, `cancelled` or `refused` is never resumed, so those
+states move only to `released`. The diagram is the transition table, so it does not add or drop
 a move. With the flag off, the Claude-native path described above is what runs.
 
 ```mermaid
@@ -280,13 +283,9 @@ stateDiagram-v2
   recovering --> refused
   recovering --> released
   blocked --> released
-  blocked --> recovering
   timed_out --> released
-  timed_out --> recovering
   cancelled --> released
-  cancelled --> recovering
   refused --> released
-  refused --> recovering
   done --> released
   done --> recovering
   note right of done
@@ -296,33 +295,39 @@ stateDiagram-v2
   released --> [*]
 ```
 
-- **Retry.** `invokeRole` (`worker/deno/lib/orchestration/orchestrator.ts:520-607`)
+- **Retry.** `invokeRole` (`worker/deno/lib/orchestration/orchestrator.ts:548-635`)
   retries an `error` or a provider-reported `timeout` call up to `maxRetries`
-  extra times (`:527`, `:584-587`). A retry does not change state, except in
+  extra times (`:555`, `:612-615`). A retry does not change state, except in
   the execute phase, where the run moves `executing` to `dispatched` before the
-  retry (`:585`). A call the timer abandons, meaning no answer within
-  `callTimeoutMs` (`:574-583`), is never retried and ends the run `timed_out`
+  retry (`:613`). A call the timer abandons, meaning no answer within
+  `callTimeoutMs` (`:602-611`), is never retried and ends the run `timed_out`
   at once, because the provider call may still be running and editing the
   checkout.
 - **Auth and quota.** An `auth` or `quota` failure is refused at once, with no
-  retry (`:554-573`), as `auth_failure` or `quota_exhausted`.
+  retry (`:582-601`), as `auth_failure` or `quota_exhausted`.
 - **Last attempt.** A final provider-reported `timeout` ends the run as
-  `timed_out` (`:588-596`). A final `error` is refused as `retries_exhausted`
-  (`:597-605`). An abandoned call never reaches this step, because it ends the
-  run `timed_out` before any retry (`:575-583`).
+  `timed_out` (`:616-624`). A final `error` is refused as `retries_exhausted`
+  (`:625-633`). An abandoned call never reaches this step, because it ends the
+  run `timed_out` before any retry (`:603-611`).
 - **Cancellation and budget.** `isCancelled` is checked before each call
-  (`stopBeforeCall`, `:421-453`), and a cancel ends the run as `cancelled`.
-  Invocation and cost limits stop the run before the call (`:436-451`).
-- **Stale lease.** A lease that has lapsed is refused as `stale_lease`
-  (`:408-413` on resume, `:430-435` before a call). That refusal does not overwrite the checkpoint (`:402`).
-- **Terminal done.** An accepted review moves the run to `done` (`:695`), saves
-  the final checkpoint (`:696-701`), then moves it to `released` (`:702`). The
+  (`stopBeforeCall`, `:449-481`), and a cancel ends the run as `cancelled`.
+  Invocation and cost limits stop the run before the call (`:464-479`).
+- **Stale lease.** A run whose lease lapses between renewing it and its next
+  provider call is refused as `stale_lease` before that call (`:458-463`).
+  That refusal still saves the checkpoint, now `refused` with `final` set, but
+  it does not renew the heartbeat (`:430-431`). A resumed run that finds its
+  own lease lapsed is not refused: the lease id is stable per issue, so the
+  holder that let it lapse cannot be a live one. The run logs the lapse and
+  takes the checkpoint over, renewing the heartbeat (`:437-447`).
+- **Terminal done.** An accepted review moves the run to `done` (`:723`), saves
+  the final checkpoint (`:724-729`), then moves it to `released` (`:730`). The
   outcome the run reports is `done`, while the checkpoint ends `released`. A
   later run on the same lease does not resume that released checkpoint; it
   starts afresh (see Leases below). The gate returns the manager's last result
-  only on `done` (`issue_run_gate.ts:287-289`).
-- **Recovering.** A resumed run enters `recovering`. The only moves out of it are
-  to `planning`, `dispatched`, `refused` or `released` (`types.ts:200`).
+  only on `done` (`issue_run_gate.ts:298-300`).
+- **Recovering.** A resumed run enters `recovering`. The table allows moves out
+  of it to `planning`, `dispatched`, `refused` or `released` (`types.ts:202`);
+  the orchestrator moves it on to `planning` or `dispatched` (`orchestrator.ts:443`).
 
 ### Orchestrated handoff (`external_orchestration`)
 
@@ -347,24 +352,30 @@ sequenceDiagram
   `maxConcurrency` 1, `maxInvocations` 6 and no `maxCostUsd`
   (`worker/deno/lib/orchestration/types.ts:119-124`). The orchestrator's default
   per-call timeout is `CALL_TIMEOUT_MS`, 10 minutes (`orchestrator.ts:46`). The
-  gate sets `callTimeoutMs` to `runnerCallBudgetMs` (`issue_run_gate.ts:281`),
-  the longest one `runClaudeWithRetry` call can legitimately take. In seconds it
-  is `(maxRetries + 1) × (timeoutSeconds + 2 × killAfterSeconds) + maxRetries × maxWaitSeconds`
+  gate sets `callTimeoutMs` to `runnerCallBudgetMs` (`issue_run_gate.ts:292`).
+  In seconds it is `(maxRetries + 1) × (timeoutSeconds + 2 × killAfterSeconds) + maxRetries × maxWaitSeconds`
   plus a 60 s grace (`RUNNER_CALL_GRACE_MS`, `issue_run_gate.ts:74`; formula at
-  `issue_run_gate.ts:86-102`). With the runner's defaults
-  (`claude_runner.ts:761-770`) that is 44,640 s, so a call the runner ends on
-  its own terms is not abandoned. The settings keys
-  `max_retries`, `max_concurrency`, `max_invocations` and `max_cost_usd` are
-  validated as non-negative or positive whole numbers at load time
-  (`worker/deno/lib/config.ts:1347`). `maxDelegationDepth` is not a settings
-  key. Below 1 it is refused as `depth_exceeded` (`orchestrator.ts:295-301`).
+  `issue_run_gate.ts:88-104`). With the runner's defaults
+  (`claude_runner.ts:761-770`) that is 44,640 s. The budget does not count
+  progress extensions. The issue run passes `progressExtension`, which is on by
+  default, and the gate spreads it into every role call
+  (`issue_run_gate.ts:158`). Each extension the runner grants moves that
+  attempt's hard deadline past `timeoutSeconds`
+  (`claude_runner.ts:1653-1656`), so a call extended past the budget is
+  abandoned and ends the run `timed_out`. The settings keys `max_retries`,
+  `max_concurrency` and `max_invocations` are validated as whole numbers at
+  load time: `max_retries` zero or more, the other two one or more
+  (`worker/deno/lib/config.ts:1388-1416`). `max_cost_usd` is validated only as
+  a positive finite number, so a fraction such as 0.5 is accepted
+  (`config.ts:1418-1430`). `maxDelegationDepth` is not a settings
+  key. Below 1 it is refused as `depth_exceeded` (`orchestrator.ts:322-327`).
   The gate uses the default of 1. The gate refuses `maxConcurrency` above 1
-  (`issue_run_gate.ts:218-227`), so an operator who sets 2 gets that refusal at
+  (`issue_run_gate.ts:228-235`), so an operator who sets 2 gets that refusal at
   run time. The orchestrator itself accepts any whole number of one or more
-  (`orchestrator.ts:133-135`). `max_cost_usd` is enforced only against
+  (`orchestrator.ts:160-162`). `max_cost_usd` is enforced only against
   invocations whose token usage the gate can price (`costOf`,
-  `issue_run_gate.ts:169-179`). An unpriced call adds nothing to the spend
-  (`orchestrator.ts:545`), so when nothing is priced the cost cap cannot
+  `issue_run_gate.ts:177-187`). An unpriced call adds nothing to the spend
+  (`orchestrator.ts:573`), so when nothing is priced the cost cap cannot
   trigger and `max_invocations` is the effective hard bound.
 - **Capabilities.** A probe builds one invocation through each provider's
   descriptor, carrying one agent, a settings payload and a denied tool, and
@@ -378,19 +389,21 @@ sequenceDiagram
   available only for `claude` and `deepseek` (`worker/deno/lib/stream_compaction.ts:67-70`).
   Codex and Gemini cannot enforce a denied tool through their argv, so any role
   that denies a tool is refused `missing_tool_support`. Both the manager and the
-  executor deny tools (`orchestrator.ts:49`, `:58`). Codex and Gemini are first
+  executor deny tools (`orchestrator.ts:56-63`, `:72`). Codex and Gemini are first
   refused `unsupported_capability` for the manager, which needs compaction.
   Whether DeepSeek passes the denied-tool check is decided by its probe at run
   time, and this contract does not pre-judge it.
 - **Billing.** A role's provider is refused as `metered_billing` only when its
-  billing mode is `metered` (`worker/deno/lib/orchestration/orchestrator.ts:312-324`;
+  billing mode is `metered` (`worker/deno/lib/orchestration/orchestrator.ts:339-351`;
   `worker/deno/lib/provider_billing.ts:115`). The `unknown` and
   `fixed-subscription` modes are not refused (`provider_billing.ts:86`, `:96`,
   `:120`).
 - **Checkpoints.** One JSON file per issue, at
   `<checkpointDir>/<encodeURIComponent(issueId)>.json`
   (`worker/deno/lib/orchestration/checkpoint.ts:48-50`). The gate uses
-  `<agent state dir>/orchestration` (`issue_run_gate.ts:234`, `:279`). The
+  `<agent state dir of workDir>/orchestration/<encodeURIComponent(repo)>`,
+  beside the work volume rather than inside it (`issue_run_gate.ts:243`,
+  `:288-290`). The
   schema key is `orchestration-checkpoint-v1` (`checkpoint.ts:22`). A
   checkpoint holds `schema`, `issueId`, `leaseId`, `leaseHeartbeatMs`, `state`,
   `invocations` and `costUsd` (both counted across resumes of the same unreleased
@@ -403,22 +416,26 @@ sequenceDiagram
   the temporary file (`checkpoint.ts:155-172`).
 - **Idempotency.** The key is `<issueId>:<role>:<attempt>:<sha256 hex of brief>`
   (`checkpoint.ts:62-76`). A call whose key already has a recorded output is not
-  sent again on resume (`orchestrator.ts:530-531`). A changed brief gives a new key.
+  sent again on resume (`orchestrator.ts:558-559`). A changed brief gives a new key.
 - **Leases.** The gate's lease id is `issue-<issueNumber>`, which is stable per
-  issue so a resumed run matches its checkpoint (`issue_run_gate.ts:269-270`).
+  issue so a resumed run matches its checkpoint (`issue_run_gate.ts:278-279`).
   Each envelope carries `leaseExpiresAt = now + leaseTtlMs`
-  (`orchestrator.ts:516`), with `leaseTtlMs` defaulting to 15 minutes
+  (`orchestrator.ts:544`), with `leaseTtlMs` defaulting to 15 minutes
   (`DEFAULT_LEASE_TTL_MS`, `:43`), and `heartbeatIntervalMs = floor(leaseTtlMs / 3)`
-  (`:517`). A stale lease is refused as described under Lifecycle above.
-- **Resume or start afresh.** Only a checkpoint that is not `released` and
-  carries the same lease id is resumed (`orchestrator.ts:345-350`, `resumed`
-  true). A checkpoint already in `released` is a completed run, so a later run
-  on the same lease starts afresh (`:351-362`): a fresh checkpoint overwrites the
-  released file, with `invocations`, `costUsd`, `steps` and `results` reset to
-  zero or empty, so the provider is called again. A checkpoint under another
-  lease also starts afresh. Both fresh starts log a warning and report
-  `resumed` false. Each retry attempt counts as one invocation
-  (`orchestrator.ts:537`); the checkpoint keeps no separate retry count.
+  (`:545`). A lapsed lease is handled as described under Stale lease above.
+- **Resume or start afresh.** Only a checkpoint that carries the same lease id
+  and is not in an ended state (`released`, `refused`, `blocked`, `timed_out` or
+  `cancelled`, `ENDED_STATES` at `orchestrator.ts:141-147`) is resumed
+  (`:372-377`, `resumed` true). That is a run interrupted mid-call, for
+  example by a worker restart. A checkpoint in an ended state is a finished
+  run, so a later run on the same lease starts afresh (`:378-392`): a fresh
+  checkpoint overwrites the file, with `invocations`, `costUsd`, `steps` and
+  `results` reset to zero or empty, so the provider is called again. Resuming
+  an ended run would replay what ended it, such as an empty plan recorded as a
+  step or the invocations it used up. A checkpoint under another lease also
+  starts afresh. Every fresh start over an existing checkpoint logs why and
+  reports `resumed` false. Each retry attempt counts as one invocation
+  (`orchestrator.ts:565`); the checkpoint keeps no separate retry count.
 
 ## 6. Permissions and credential isolation
 
@@ -431,7 +448,11 @@ sequenceDiagram
 - **Executors cannot dispatch.** `["Agent"]` is disallowed for executors
   (`worker/deno/lib/issue_executor_agents.ts:114`). The reviewers and explorer
   are read-only. Under the gate, each envelope's `deniedTools` are appended to
-  `--disallowed-tools` (`worker/deno/lib/orchestration/issue_run_gate.ts:155-158`).
+  `--disallowed-tools` (`worker/deno/lib/orchestration/issue_run_gate.ts:163-166`).
+  Every orchestrated role is denied both dispatch tools, `Task` and `Agent`,
+  and the manager is also denied `Edit`, `MultiEdit`, `Write`, `NotebookEdit`
+  and `Bash` (`orchestrator.ts:52-72`). The envelope's `allowedTools` is not
+  handed to the runner, so the denial list is what scopes each role.
 - **No recursive delegation.** Today every sub-agent definition
   disallows `Agent`: the executor
   (`worker/deno/lib/issue_executor_agents.ts:114`), the reviewers (`:214`)
@@ -439,7 +460,7 @@ sequenceDiagram
   payload. Under `external_orchestration` (Issue #3642), delegation depth is
   configurable on `OrchestrationBounds` (`worker/deno/lib/orchestration/types.ts:108-109`,
   default 1 at `:121`). The gate keeps the default of 1, and a depth below 1
-  is refused as `depth_exceeded` (`orchestrator.ts:295-301`). The contract still
+  is refused as `depth_exceeded` (`orchestrator.ts:322-327`). The contract still
   requires every provider adapter that runs a worker to enforce that a worker
   cannot dispatch further workers. An adapter that cannot enforce it is refused
   (section 8), not run with delegation open.
@@ -448,7 +469,7 @@ sequenceDiagram
   is spawned with one `cwd` (`worker/deno/lib/claude_runner.ts:1398`), and
   there is no per-executor workspace. Under `external_orchestration` (Issue
   #3642), the task envelope carries `workspaceDir` (`types.ts:39`), which the
-  gate sets to the repository directory (`issue_run_gate.ts:273`). The gate
+  gate sets to the repository directory (`issue_run_gate.ts:282`). The gate
   creates no per-executor workspace, and the manager stays read-only. The
   orchestrator runs executors at concurrency 1, one at a time, in that shared
   checkout. Branch ownership is recorded on the task envelope (`types.ts:42`),
@@ -488,10 +509,10 @@ Compatibility with the split switched on. "Silent" means no warning is logged.
 block is not gated on the provider. `isIssueExecutorSplitEnabled` takes the
 phase, repo and host config only (`worker/deno/lib/issue_executor_split.ts:42-59`).
 Both phase paths call it with no provider argument
-(`worker/deno/lib/execute_claude_phase.ts:1326-1331`,
+(`worker/deno/lib/execute_claude_phase.ts:1330-1335`,
 `worker/deno/lib/phases/execute_phase.ts:730`). The resolved flag then reaches
-the prompt builder through the phase options (`execute_claude_phase.ts:1390`,
-`:1626`) and `buildPrompt` (`phases/execute_phase.ts:760`).
+the prompt builder through the phase options (`execute_claude_phase.ts:1394`,
+`:1630`) and `buildPrompt` (`phases/execute_phase.ts:760`).
 `prompt_builder.ts:832-834` splices the block whenever it is true. The only
 provider check is `worker/deno/lib/claude_runner.ts:1240`, which gates the
 `--settings` hook and nothing else. The `agents` request is added at
@@ -510,7 +531,7 @@ is refused (section 8).
   - `issue_executor_split`: host value `worker/deno/lib/config.ts:982-983`; a
     `repo_config` boolean overrides it (`worker/deno/lib/issue_executor_split.ts:49-51`).
     Under `external_orchestration` it is never resolved on
-    (`worker/deno/lib/execute_claude_phase.ts:1326`).
+    (`worker/deno/lib/execute_claude_phase.ts:1330`).
   - `issue_sub_agent_tier` (`haiku` or `sonnet`): host value read through
     `resolveHostIssueSubAgentTier` (`worker/deno/lib/config.ts:987-989`,
     `worker/deno/lib/issue_sub_agent_tier.ts:43`); the repo override is applied

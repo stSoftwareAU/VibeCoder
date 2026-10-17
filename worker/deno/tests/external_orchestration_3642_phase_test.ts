@@ -130,6 +130,9 @@ Deno.test("external orchestration - the switch on routes the run to the orchestr
   assertEquals(input.issueNumber, 3642);
   assertEquals(input.branch, "issue-3642-external-orchestration");
   assertEquals(input.workspaceDir, "/tmp/external-orchestration-3642/repo");
+  // The gate puts its checkpoints beside this work volume, under this repo.
+  assertEquals(input.workDir, "/tmp/external-orchestration-3642");
+  assertEquals(input.repo, "owner/repo");
   assertEquals(input.claudeOptions.agents, undefined);
   assertEquals(input.claudeOptions.issueExecutorSplit, undefined);
   assertEquals(input.settings, {});

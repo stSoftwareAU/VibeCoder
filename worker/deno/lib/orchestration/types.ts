@@ -162,10 +162,12 @@ export interface OrchestrationRefusal {
 }
 
 /**
- * The legal transitions between states (contract section 5), plus the
- * extensions this orchestrator needs and the contract does not draw:
- * resumption enters `recovering` from every unreleased state, and a
- * refusal, cancellation or budget stop may arise in any active state.
+ * The legal transitions between states (contract section 5), as this
+ * orchestrator runs them. A resumed run enters `recovering` from `planning`,
+ * `dispatched`, `executing`, `reviewing` or `done`; a resumed `claimed` run
+ * goes straight to `planning`. An ended state (`blocked`, `timed_out`,
+ * `cancelled`, `refused`) moves only to `released`, because a later run
+ * starts afresh from it rather than resuming it.
  */
 export const ORCHESTRATION_TRANSITIONS: Readonly<
   Record<OrchestrationState, readonly OrchestrationState[]>
@@ -198,10 +200,10 @@ export const ORCHESTRATION_TRANSITIONS: Readonly<
     "recovering",
   ],
   recovering: ["planning", "dispatched", "refused", "released"],
-  blocked: ["released", "recovering"],
-  timed_out: ["released", "recovering"],
-  cancelled: ["released", "recovering"],
-  refused: ["released", "recovering"],
+  blocked: ["released"],
+  timed_out: ["released"],
+  cancelled: ["released"],
+  refused: ["released"],
   done: ["released", "recovering"],
   released: [],
 };

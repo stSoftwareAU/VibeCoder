@@ -65,6 +65,37 @@ async function withWorkDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
+/** Where the orchestrator keeps the checkpoint for issue 3642 under `dir`. */
+function checkpointFile(dir: string): string {
+  return `${dir}/checkpoints/3642.json`;
+}
+
+/**
+ * An invoker that answers like {@link okScript}, except that the `crashAt`
+ * call copies the checkpoint while it is in flight and then fails. Calling
+ * `restore` writes that copy back, leaving the file exactly as a worker that
+ * died during the call would have left it.
+ */
+function crashingInvoker(dir: string, crashAt: "plan" | "execute" | "review"): {
+  calls: AgentCall[];
+  invoke: InvokeAgent;
+  restore: () => Promise<void>;
+} {
+  const calls: AgentCall[] = [];
+  let snapshot: string | undefined;
+  const invoke: InvokeAgent = async (call) => {
+    calls.push(call);
+    if (phaseOf(call) !== crashAt) return okScript(call);
+    snapshot = await Deno.readTextFile(checkpointFile(dir));
+    return { ok: false, kind: "timeout", message: "worker died" };
+  };
+  const restore = async () => {
+    if (snapshot === undefined) throw new Error(`no ${crashAt} call was made`);
+    await Deno.writeTextFile(checkpointFile(dir), snapshot);
+  };
+  return { calls, invoke, restore };
+}
+
 function optionsFor(
   dir: string,
   invoke: InvokeAgent,
@@ -102,8 +133,16 @@ Deno.test("handoff: manager plans, executor carries out, manager reviews", async
     assertEquals(outcome.invocations, 3);
     assertEquals(outcome.results.length, 3);
     // The manager is denied editing tools; the executor is denied delegation.
-    assertEquals(fake.calls[0]?.envelope.deniedTools.includes("Edit"), true);
-    assertEquals(fake.calls[1]?.envelope.deniedTools, ["Task"]);
+    assertEquals(fake.calls[0]?.envelope.deniedTools, [
+      "Edit",
+      "MultiEdit",
+      "Write",
+      "NotebookEdit",
+      "Bash",
+      "Task",
+      "Agent",
+    ]);
+    assertEquals(fake.calls[1]?.envelope.deniedTools, ["Task", "Agent"]);
   });
 });
 
@@ -143,16 +182,14 @@ Deno.test("a released run starts afresh on the same lease and calls the provider
 
 Deno.test("an interrupted run resumes under the same lease without repeating the plan", async () => {
   await withWorkDir(async (dir) => {
-    const interrupted = fakeInvoker((call) =>
-      phaseOf(call) === "execute"
-        ? { ok: false, kind: "timeout", message: "interrupted" }
-        : okScript(call)
+    const crashed = crashingInvoker(dir, "execute");
+    await runExternalOrchestration(
+      optionsFor(dir, crashed.invoke, { bounds: { maxRetries: 0 } }),
     );
-    const first = await runExternalOrchestration(
-      optionsFor(dir, interrupted.invoke, { bounds: { maxRetries: 0 } }),
-    );
-    assertEquals(first.state, "timed_out");
-    assertEquals(first.invocations, 2);
+    await crashed.restore();
+    const left = await loadCheckpoint(`${dir}/checkpoints`, "3642");
+    assertEquals(left.checkpoint?.state, "executing");
+    assertEquals(left.checkpoint?.invocations, 2);
 
     const resumed = fakeInvoker();
     const second = await runExternalOrchestration(
@@ -162,6 +199,86 @@ Deno.test("an interrupted run resumes under the same lease without repeating the
     assertEquals(second.resumed, true);
     assertEquals(resumed.calls.map(phaseOf), ["execute", "review"]);
     assertEquals(second.invocations, 4);
+  });
+});
+
+Deno.test("a run that ended timed_out is not resumed: the next run on the same lease starts afresh", async () => {
+  await withWorkDir(async (dir) => {
+    const stalled = fakeInvoker((call) =>
+      phaseOf(call) === "execute"
+        ? { ok: false, kind: "timeout", message: "stalled" }
+        : okScript(call)
+    );
+    const first = await runExternalOrchestration(
+      optionsFor(dir, stalled.invoke, { bounds: { maxRetries: 0 } }),
+    );
+    assertEquals(first.state, "timed_out");
+
+    const logged: string[] = [];
+    const next = fakeInvoker();
+    const second = await runExternalOrchestration(
+      optionsFor(dir, next.invoke, {
+        bounds: { maxRetries: 0 },
+        log: (msg) => logged.push(msg),
+      }),
+    );
+    assertEquals(second.state, "done");
+    assertEquals(second.resumed, false);
+    assertEquals(next.calls.map(phaseOf), ["plan", "execute", "review"]);
+    assertEquals(second.invocations, 3);
+    assertEquals(logged, [
+      "orchestration checkpoint for 3642 ended timed_out (the prior run stopped, not interrupted); starting afresh under lease lease-1",
+    ]);
+  });
+});
+
+Deno.test("a quota refusal does not wedge the issue: a run past the lease ttl starts afresh and completes", async () => {
+  await withWorkDir(async (dir) => {
+    let clock = 1_000;
+    const exhausted = fakeInvoker(() => ({
+      ok: false,
+      kind: "quota",
+      message: "usage limit reached",
+    }));
+    const first = await runExternalOrchestration(
+      optionsFor(dir, exhausted.invoke, { now: () => clock }),
+    );
+    assertEquals(first.refusal?.kind, "quota_exhausted");
+
+    clock = 5_000;
+    const later = fakeInvoker();
+    const second = await runExternalOrchestration(
+      optionsFor(dir, later.invoke, { now: () => clock }),
+    );
+    assertEquals(second.state, "done");
+    assertEquals(second.refusal, undefined);
+    assertEquals(later.calls.map(phaseOf), ["plan", "execute", "review"]);
+
+    clock = 9_000;
+    const third = fakeInvoker();
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, third.invoke, { now: () => clock }),
+    );
+    assertEquals(outcome.state, "done");
+  });
+});
+
+Deno.test("an empty plan does not wedge the issue: the next run asks the manager again", async () => {
+  await withWorkDir(async (dir) => {
+    const empty = fakeInvoker((call) =>
+      phaseOf(call) === "plan" ? { ok: true, output: "" } : okScript(call)
+    );
+    const first = await runExternalOrchestration(
+      optionsFor(dir, empty.invoke),
+    );
+    assertEquals(first.state, "blocked");
+
+    const next = fakeInvoker();
+    const second = await runExternalOrchestration(
+      optionsFor(dir, next.invoke),
+    );
+    assertEquals(second.state, "done");
+    assertEquals(next.calls.map(phaseOf), ["plan", "execute", "review"]);
   });
 });
 
@@ -205,32 +322,61 @@ Deno.test("a checkpoint held under another lease is not resumed: the run starts 
   });
 });
 
-Deno.test("a stale lease refuses resume and leaves the heartbeat unrenewed", async () => {
+Deno.test("a lapsed checkpoint under the run's own lease is taken over and renewed, not refused", async () => {
   await withWorkDir(async (dir) => {
     let clock = 1_000;
-    const timedOut = fakeInvoker((call) =>
-      phaseOf(call) === "execute"
-        ? { ok: false, kind: "timeout", message: "stalled" }
-        : okScript(call)
-    );
+    const crashed = crashingInvoker(dir, "execute");
     await runExternalOrchestration(
-      optionsFor(dir, timedOut.invoke, {
+      optionsFor(dir, crashed.invoke, {
         now: () => clock,
         bounds: { maxRetries: 0 },
       }),
     );
+    await crashed.restore();
 
     clock = 2_500;
+    const logged: string[] = [];
     const late = fakeInvoker();
     const outcome = await runExternalOrchestration(
-      optionsFor(dir, late.invoke, { now: () => clock }),
+      optionsFor(dir, late.invoke, {
+        now: () => clock,
+        log: (msg) => logged.push(msg),
+      }),
+    );
+    assertEquals(outcome.state, "done");
+    assertEquals(outcome.refusal, undefined);
+    assertEquals(outcome.resumed, true);
+    assertEquals(late.calls.map(phaseOf), ["execute", "review"]);
+    assertEquals(logged, [
+      "lease lease-1 lapsed: last renewed at 1000, ttl 1000 ms; this run holds that lease, so it takes over",
+    ]);
+
+    const loaded = await loadCheckpoint(`${dir}/checkpoints`, "3642");
+    assertEquals(loaded.checkpoint?.leaseHeartbeatMs, 2_500);
+  });
+});
+
+Deno.test("a lease that lapses between calls refuses the next call as stale_lease and leaves the heartbeat unrenewed", async () => {
+  await withWorkDir(async (dir) => {
+    // After the plan call, every read of the clock moves it past the ttl, as
+    // if the worker were paused between renewing the lease and the next call.
+    let clock = 1_000;
+    let paused = false;
+    const now = () => paused ? (clock += 5_000) : clock;
+    const fake = fakeInvoker((call) => {
+      if (phaseOf(call) === "plan") paused = true;
+      return okScript(call);
+    });
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke, { now }),
     );
     assertEquals(outcome.state, "refused");
     assertEquals(outcome.refusal?.kind, "stale_lease");
-    assertEquals(late.calls.length, 0);
+    assertEquals(fake.calls.map(phaseOf), ["plan"]);
 
+    // A renewal at the refusal would have read the clock and stamped it.
     const loaded = await loadCheckpoint(`${dir}/checkpoints`, "3642");
-    assertEquals(loaded.checkpoint?.leaseHeartbeatMs, 1_000);
+    assertEquals((loaded.checkpoint?.leaseHeartbeatMs ?? clock) < clock, true);
   });
 });
 

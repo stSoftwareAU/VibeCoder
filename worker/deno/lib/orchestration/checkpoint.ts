@@ -147,7 +147,7 @@ export async function loadCheckpoint(
 
 /**
  * Writes the checkpoint atomically: a temporary file in the same directory,
- * renamed over the target. A failed write removes its temporary file.
+ * renamed over the target. A failed rename removes its temporary file.
  *
  * @param checkpointDir - The directory holding the checkpoint files.
  * @param checkpoint - The checkpoint to persist.

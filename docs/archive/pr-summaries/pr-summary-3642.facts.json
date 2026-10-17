@@ -5,7 +5,7 @@
   "entries": [
    {
     "path": "worker/deno/lib/execute_claude_phase.ts",
-    "line": 1326,
+    "line": 1330,
     "outcome": "switch on forces the native split off",
     "test": "worker/deno/tests/external_orchestration_3642_phase_test.ts",
     "testName": "external orchestration - the switch on builds no --agents even with the split and reviewers on (Issue #3642)",
@@ -13,7 +13,7 @@
    },
    {
     "path": "worker/deno/lib/execute_claude_phase.ts",
-    "line": 1346,
+    "line": 1350,
     "outcome": "switch on builds no --agents",
     "test": "worker/deno/tests/external_orchestration_3642_phase_test.ts",
     "testName": "external orchestration - the switch on builds no --agents even with the split and reviewers on (Issue #3642)",
@@ -21,7 +21,7 @@
    },
    {
     "path": "worker/deno/lib/execute_claude_phase.ts",
-    "line": 1641,
+    "line": 1645,
     "outcome": "switch on routes to the orchestrator",
     "test": "worker/deno/tests/external_orchestration_3642_phase_test.ts",
     "testName": "external orchestration - the switch on routes the run to the orchestrator and not the native call (Issue #3642)",
@@ -29,7 +29,7 @@
    },
    {
     "path": "worker/deno/lib/execute_claude_phase.ts",
-    "line": 1641,
+    "line": 1645,
     "outcome": "switch off keeps the native call",
     "test": "worker/deno/tests/external_orchestration_3642_phase_test.ts",
     "testName": "external orchestration - the switch off keeps the native call and its sub-agents (Issue #3642)",
@@ -37,7 +37,7 @@
    },
    {
     "path": "worker/deno/lib/execute_claude_phase.ts",
-    "line": 1645,
+    "line": 1649,
     "outcome": "switch on with no orchestrator wired fails closed",
     "test": "worker/deno/tests/external_orchestration_3642_phase_test.ts",
     "testName": "external orchestration - the switch on with no orchestrator wired fails closed (Issue #3642)",
@@ -85,7 +85,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
-    "line": 126,
+    "line": 133,
     "outcome": "unknown provider refused before any runner call",
     "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
     "testName": "orchestration gate - an unknown manager provider is refused before any runner call (Issue #3642)",
@@ -93,7 +93,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
-    "line": 178,
+    "line": 186,
     "outcome": "priced result counts toward max_cost_usd",
     "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
     "testName": "orchestration gate - a priced runner result counts toward max_cost_usd (Issue #3642)",
@@ -101,7 +101,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
-    "line": 186,
+    "line": 194,
     "outcome": "authentication failure maps to auth",
     "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
     "testName": "orchestration gate - an auth failure refuses with no fallback call (Issue #3642)",
@@ -109,7 +109,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
-    "line": 189,
+    "line": 197,
     "outcome": "rate-limit failure maps to quota with no retry",
     "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
     "testName": "orchestration gate - a rate-limit failure is a quota refusal with no retry (Issue #3642)",
@@ -117,7 +117,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
-    "line": 196,
+    "line": 204,
     "outcome": "exit 124 maps to timeout",
     "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
     "testName": "orchestration gate - a runner exit 124 is a timeout that ends the run timed_out after its retries (Issue #3642)",
@@ -125,7 +125,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
-    "line": 199,
+    "line": 207,
     "outcome": "non-zero exit maps to error",
     "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
     "testName": "orchestration gate - a non-zero runner exit is an error that exhausts its retries (Issue #3642)",
@@ -133,7 +133,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
-    "line": 220,
+    "line": 228,
     "outcome": "maxConcurrency above 1 refused",
     "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
     "testName": "orchestration gate - maxConcurrency above 1 is refused (Issue #3642)",
@@ -141,7 +141,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
-    "line": 260,
+    "line": 269,
     "outcome": "runner Result failure maps to an error call",
     "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
     "testName": "orchestration gate - a runner Result failure maps to an error call that is retried (Issue #3642)",
@@ -149,7 +149,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
-    "line": 287,
+    "line": 298,
     "outcome": "done returns the last manager result",
     "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
     "testName": "orchestration gate - a run that completes returns the last manager result (Issue #3642)",
@@ -157,7 +157,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 252,
+    "line": 279,
     "outcome": "blank issueId refused",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "a blank issueId is refused as invalid_selection before any call",
@@ -165,7 +165,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 259,
+    "line": 286,
     "outcome": "blank leaseId refused",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "a blank leaseId is refused as invalid_selection before any call",
@@ -173,7 +173,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 266,
+    "line": 293,
     "outcome": "non-positive leaseTtlMs refused",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "a non-positive leaseTtlMs is refused as invalid_selection before any call",
@@ -181,7 +181,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 273,
+    "line": 300,
     "outcome": "non-positive callTimeoutMs refused",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "a non-positive callTimeoutMs is refused as invalid_selection",
@@ -189,7 +189,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 292,
+    "line": 319,
     "outcome": "invalid bounds refused",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "invalid bounds are refused as invalid_selection before any call",
@@ -197,7 +197,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 295,
+    "line": 322,
     "outcome": "delegation depth below 1 refused",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "a delegation depth of zero refuses before any call",
@@ -205,7 +205,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 309,
+    "line": 336,
     "outcome": "unsupported executor provider refused",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "an unknown executor provider is refused as unsupported",
@@ -213,7 +213,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 317,
+    "line": 344,
     "outcome": "metered billing refused",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "metered billing refuses an orchestrated run before any call",
@@ -221,7 +221,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 346,
+    "line": 373,
     "outcome": "interrupted run resumes under the same lease",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "an interrupted run resumes under the same lease without repeating the plan",
@@ -229,7 +229,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 347,
+    "line": 374,
     "outcome": "released checkpoint starts afresh",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "a released run starts afresh on the same lease and calls the provider again",
@@ -237,7 +237,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 357,
+    "line": 386,
     "outcome": "checkpoint under another lease starts afresh with a log",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "a checkpoint held under another lease is not resumed: the run starts afresh under its own lease and logs why",
@@ -245,15 +245,15 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 408,
-    "outcome": "stale lease refused on resume",
+    "line": 437,
+    "outcome": "a lapsed checkpoint under the run's own lease is taken over, not refused",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
-    "testName": "a stale lease refuses resume and leaves the heartbeat unrenewed",
-    "flipWentRed": "Changed `if (lapsed())` to `if (false)`; the named stale-lease test failed."
+    "testName": "a lapsed checkpoint under the run's own lease is taken over and renewed, not refused",
+    "flipWentRed": "Replaced the takeover log with the former `finish(\"refused\", …, { kind: \"stale_lease\" })` return; the named test failed (state refused, expected done)."
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 424,
+    "line": 452,
     "outcome": "cancellation stops before a call",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "cancellation before the first call makes no provider call",
@@ -261,7 +261,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 436,
+    "line": 464,
     "outcome": "invocation budget stops the run",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "an invocation budget stops the run before the next call",
@@ -269,7 +269,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 444,
+    "line": 472,
     "outcome": "cost cap stops the run",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "a cost cap stops the run once spend reaches it",
@@ -277,7 +277,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 554,
+    "line": 582,
     "outcome": "auth failure refuses at once",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "an auth failure refuses the run after one call",
@@ -285,7 +285,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 564,
+    "line": 592,
     "outcome": "quota failure refuses at once",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "quota exhaustion refuses the run without retrying or switching provider",
@@ -293,7 +293,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 575,
+    "line": 603,
     "outcome": "abandoned call ends timed_out, not retried",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "an abandoned call is not retried and ends the run timed_out",
@@ -301,7 +301,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 584,
+    "line": 612,
     "outcome": "failed call retried",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "a failed call is retried and the run then succeeds",
@@ -309,7 +309,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 588,
+    "line": 616,
     "outcome": "final timeout ends timed_out",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "a timeout that exhausts its attempts ends the run timed_out",
@@ -317,7 +317,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 597,
+    "line": 625,
     "outcome": "final error refused retries_exhausted",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "retries exhausted refuses the run",
@@ -325,7 +325,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 623,
+    "line": 651,
     "outcome": "empty plan ends blocked",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "an empty manager plan ends the run blocked before any executor call",
@@ -333,7 +333,7 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
-    "line": 682,
+    "line": 710,
     "outcome": "empty review ends blocked",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
     "testName": "an empty manager review ends the run blocked",
@@ -397,12 +397,75 @@
    },
    {
     "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
-    "line": 235,
+    "line": 244,
     "outcome": "no agent state directory refuses the run",
-    "exempt": {
-     "kind": "untestable",
-     "reason": "resolveAgentStateDir returns null only with HOME and every state-dir variable unset; every gate test in worker/deno/tests/orchestration_3642_gate_test.ts passes stateDir, and clearing HOME process-wide races the parallel suite"
-    }
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - a work directory that names no directory refuses the run before any call (Issue #3642)",
+    "flipWentRed": "Changed `if (!stateRoot)` to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 374,
+    "outcome": "a checkpoint that ended timed_out starts afresh",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a run that ended timed_out is not resumed: the next run on the same lease starts afresh",
+    "flipWentRed": "Replaced `!ENDED_STATES.includes(existing.state)` with `existing.state !== \"released\"`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 374,
+    "outcome": "a checkpoint that ended refused (quota) starts afresh past the lease ttl",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a quota refusal does not wedge the issue: a run past the lease ttl starts afresh and completes",
+    "flipWentRed": "Replaced `!ENDED_STATES.includes(existing.state)` with `existing.state !== \"released\"`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 374,
+    "outcome": "a checkpoint that ended blocked starts afresh",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "an empty plan does not wedge the issue: the next run asks the manager again",
+    "flipWentRed": "Replaced `!ENDED_STATES.includes(existing.state)` with `existing.state !== \"released\"`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 431,
+    "outcome": "a stale refusal does not renew the heartbeat",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a lease that lapses between calls refuses the next call as stale_lease and leaves the heartbeat unrenewed",
+    "flipWentRed": "Changed `persist(refusal?.kind !== \"stale_lease\")` to `persist(true)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 458,
+    "outcome": "a lease that lapses between calls is refused stale_lease",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a lease that lapses between calls refuses the next call as stale_lease and leaves the heartbeat unrenewed",
+    "flipWentRed": "Changed `if (lapsed())` in stopBeforeCall to `if (false)`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 141,
+    "outcome": "a provider-only override leaves model and effort to that provider",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - a provider-only override leaves that role's model and effort to the provider (Issue #3642)",
+    "flipWentRed": "Changed `provider === fallback.provider ? fallback : undefined` to `fallback`; the named test failed (model haiku, expected undefined)."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 243,
+    "outcome": "checkpoints sit beside the work volume",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - checkpoints sit beside the work volume, scoped by repository, not inside it (Issue #3642)",
+    "flipWentRed": "Resolved the state root from `input.workspaceDir` instead of `input.workDir`; the named test failed."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "line": 243,
+    "outcome": "a quota refusal does not wedge the issue at the gate",
+    "test": "worker/deno/tests/orchestration_3642_gate_test.ts",
+    "testName": "orchestration gate - a quota refusal does not wedge the issue: a run past the lease ttl completes (Issue #3642)",
+    "flipWentRed": "Replaced `!ENDED_STATES.includes(existing.state)` in orchestrator.ts with `existing.state !== \"released\"`; the named test failed."
    }
   ]
  }

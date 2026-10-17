@@ -87,6 +87,14 @@ async function withWorkDir(fn: (dir: string) => Promise<void>): Promise<void> {
   }
 }
 
+/** The repository every gate test runs against. */
+const REPO = "stSoftwareAU/VibeCoder";
+
+/** Where {@link depsFor} puts the checkpoint for issue 3642 under `dir`. */
+function checkpointFile(dir: string): string {
+  return `${dir}/state/orchestration/${encodeURIComponent(REPO)}/3642.json`;
+}
+
 function inputFor(
   workspaceDir: string,
   settings: ExternalOrchestrationSettings = {},
@@ -94,6 +102,8 @@ function inputFor(
   return {
     claudeOptions: { prompt: "unused", cwd: workspaceDir },
     retryOptions: {},
+    workDir: workspaceDir,
+    repo: REPO,
     issueNumber: 3642,
     branch: "issue-3642-gate",
     workspaceDir,
@@ -132,6 +142,129 @@ Deno.test("orchestration gate - default selection uses the Sonnet manager and Ha
       ...new Set(fake.calls.map((o) => `${o.model}/${o.effort}`)),
     ].sort();
     assertEquals(selections, ["haiku/high", "sonnet/high"]);
+  });
+});
+
+Deno.test("orchestration gate - every role call denies sub-agent dispatch, and the manager every editing tool (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner();
+    const outcome = await runOrchestratedIssueRun(
+      {
+        ...inputFor(dir),
+        claudeOptions: {
+          prompt: "unused",
+          cwd: dir,
+          disallowedTools: ["WebFetch"],
+        },
+      },
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    const manager = fake.calls.filter((o) => o.model === "sonnet");
+    const executor = fake.calls.filter((o) => o.model === "haiku");
+    assertEquals(manager.length, 2);
+    assertEquals(executor.length, 1);
+    for (const options of manager) {
+      assertEquals(options.disallowedTools, [
+        "WebFetch",
+        "Edit",
+        "MultiEdit",
+        "Write",
+        "NotebookEdit",
+        "Bash",
+        "Task",
+        "Agent",
+      ]);
+    }
+    assertEquals(executor[0]?.disallowedTools, ["WebFetch", "Task", "Agent"]);
+  });
+});
+
+Deno.test("orchestration gate - a provider-only override leaves that role's model and effort to the provider (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner();
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { executor: { provider: "deepseek" } }),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, true);
+    const executor = fake.calls.filter((o) => o.agentProvider === "deepseek");
+    assertEquals(executor.length, 1);
+    // Not the Claude default ("haiku"): DeepSeek's own phase routing decides.
+    assertEquals(executor[0]?.model, undefined);
+    assertEquals(executor[0]?.effort, undefined);
+    // The manager keeps its default provider, so it keeps its defaults too.
+    const manager = fake.calls.filter((o) => o.agentProvider === "claude");
+    assertEquals(
+      [...new Set(manager.map((o) => `${o.model}/${o.effort}`))],
+      ["sonnet/high"],
+    );
+
+    // Positive control: a model and effort named beside the provider are kept.
+    const named = fakeRunner();
+    await withWorkDir(async (controlDir) => {
+      const control = await runOrchestratedIssueRun(
+        inputFor(controlDir, {
+          executor: {
+            provider: "deepseek",
+            model: "deepseek-chat",
+            effort: "low",
+          },
+        }),
+        depsFor(controlDir, named.runClaudeWithRetry),
+      );
+      assertEquals(control.ok, true);
+    });
+    const chosen = named.calls.find((o) => o.agentProvider === "deepseek");
+    assertEquals(chosen?.model, "deepseek-chat");
+    assertEquals(chosen?.effort, "low");
+  });
+});
+
+Deno.test("orchestration gate - checkpoints sit beside the work volume, scoped by repository, not inside it (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    const workDir = `${dir}/work`;
+    const workspaceDir = `${workDir}/VibeCoder`;
+    await Deno.mkdir(workspaceDir, { recursive: true });
+    const fake = fakeRunner();
+    const outcome = await runOrchestratedIssueRun(
+      { ...inputFor(workspaceDir), workDir },
+      {
+        runClaudeWithRetry: fake.runClaudeWithRetry,
+        env: SUBSCRIPTION_ENV,
+        now,
+      },
+    );
+    assertEquals(outcome.ok, true);
+    const file = `${dir}/work-agent-state/orchestration/${
+      encodeURIComponent(REPO)
+    }/3642.json`;
+    assertEquals((await Deno.stat(file)).isFile, true);
+    // Nothing is written into the work volume, which nukeWorkDir may wipe.
+    const inWork = [];
+    for await (const entry of Deno.readDir(workDir)) inWork.push(entry.name);
+    assertEquals(inWork, ["VibeCoder"]);
+  });
+});
+
+Deno.test("orchestration gate - a work directory that names no directory refuses the run before any call (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner();
+    const outcome = await runOrchestratedIssueRun(
+      { ...inputFor(dir), workDir: "/" },
+      {
+        runClaudeWithRetry: fake.runClaudeWithRetry,
+        env: SUBSCRIPTION_ENV,
+        now,
+      },
+    );
+    assertEquals(outcome.ok, false);
+    if (outcome.ok) return;
+    assertStringIncludes(
+      outcome.error.message,
+      "no agent state directory to checkpoint into",
+    );
+    assertEquals(fake.calls.length, 0);
   });
 });
 
@@ -241,28 +374,59 @@ Deno.test("orchestration gate - maxConcurrency above 1 is refused (Issue #3642)"
 
 Deno.test("orchestration gate - a resumed run reuses the completed manager plan (Issue #3642)", async () => {
   await withWorkDir(async (dir) => {
-    // First run: the plan succeeds, then the executor fails every attempt.
-    const broken = fakeRunner((options) =>
-      options.model === "haiku"
-        ? runResult({ exitCode: 1, output: "executor broke" })
-        : answerByPhase(options)
-    );
+    // First run: the plan succeeds, then the worker dies during the executor
+    // call. The checkpoint copied mid-call is what that worker left behind.
+    let snapshot: string | undefined;
+    const dying: IssueRunGateDeps["runClaudeWithRetry"] = async (options) => {
+      if (options.model === "haiku") {
+        snapshot = await Deno.readTextFile(checkpointFile(dir));
+        return { ok: false, error: new Error("worker died") };
+      }
+      return { ok: true, value: answerByPhase(options) };
+    };
     const first = await runOrchestratedIssueRun(
-      inputFor(dir),
-      depsFor(dir, broken.runClaudeWithRetry),
+      inputFor(dir, { maxRetries: 0 }),
+      depsFor(dir, dying),
     );
     assertEquals(first.ok, false);
-    assertEquals(broken.calls.filter(isPlanCall).length, 1);
+    await Deno.writeTextFile(checkpointFile(dir), snapshot ?? "");
 
     // Second run, same issue and state dir: the executor now succeeds.
     const healthy = fakeRunner();
     const second = await runOrchestratedIssueRun(
-      inputFor(dir),
+      inputFor(dir, { maxRetries: 0 }),
       depsFor(dir, healthy.runClaudeWithRetry),
     );
     assertEquals(second.ok, true);
     // The plan was checkpointed under the same lease, so it is not repeated.
     assertEquals(healthy.calls.filter(isPlanCall).length, 0);
+    assertEquals(healthy.calls.length, 2);
+  });
+});
+
+Deno.test("orchestration gate - a quota refusal does not wedge the issue: a run past the lease ttl completes (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    let clock = 1_000;
+    const exhausted = fakeRunner(() =>
+      runResult({ exitCode: 2, usageLimit: { waitSeconds: 3600 } })
+    );
+    const first = await runOrchestratedIssueRun(inputFor(dir), {
+      ...depsFor(dir, exhausted.runClaudeWithRetry),
+      now: () => clock,
+    });
+    assertEquals(first.ok, false);
+
+    // Past the 15-minute lease ttl, twice over: neither run is refused.
+    for (const later of [clock + 16 * 60_000, clock + 32 * 60_000]) {
+      clock = later;
+      const healthy = fakeRunner();
+      const outcome = await runOrchestratedIssueRun(inputFor(dir), {
+        ...depsFor(dir, healthy.runClaudeWithRetry),
+        now: () => clock,
+      });
+      assertEquals(outcome.ok, true);
+      assertEquals(healthy.calls.length, 3);
+    }
   });
 });
 

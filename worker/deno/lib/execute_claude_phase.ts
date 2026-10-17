@@ -417,6 +417,10 @@ export interface ExecuteClaudePhaseOptions {
 export interface ExternalIssueRunInput {
   claudeOptions: RunClaudeOptions;
   retryOptions: RetryOptions;
+  /** The work volume (`config.workDir`); checkpoints sit beside it, not in it. */
+  workDir: string;
+  /** The `owner/name` repository, which scopes the checkpoint directory. */
+  repo: string;
   issueNumber: number;
   branch: string;
   workspaceDir: string;
@@ -1646,6 +1650,8 @@ async function executeClaudePhaseBody(
         ? await deps.runExternalOrchestratedIssueRun({
           claudeOptions: claudeRunOptions,
           retryOptions: claudeRetryOptions,
+          workDir,
+          repo,
           issueNumber,
           branch: branchName,
           workspaceDir: repoDir,

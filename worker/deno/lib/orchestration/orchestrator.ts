@@ -45,8 +45,22 @@ const DEFAULT_LEASE_TTL_MS = 15 * 60_000;
 /** The longest one provider call may run before it counts as a timeout. */
 const CALL_TIMEOUT_MS = 10 * 60_000;
 
+/**
+ * Sub-agent dispatch tools. Claude Code dispatches through `Agent`, and older
+ * builds through `Task`, so both are denied to every role (contract section 6).
+ */
+const DISPATCH_TOOLS = ["Task", "Agent"];
+
 const MANAGER_ALLOWED_TOOLS = ["Read", "Grep", "Glob"];
-const MANAGER_DENIED_TOOLS = ["Edit", "Write", "Bash", "Task"];
+/** The allow-list is not handed to the runner, so every editing tool is denied. */
+const MANAGER_DENIED_TOOLS = [
+  "Edit",
+  "MultiEdit",
+  "Write",
+  "NotebookEdit",
+  "Bash",
+  ...DISPATCH_TOOLS,
+];
 const EXECUTOR_ALLOWED_TOOLS = [
   "Read",
   "Edit",
@@ -55,7 +69,7 @@ const EXECUTOR_ALLOWED_TOOLS = [
   "Grep",
   "Glob",
 ];
-const EXECUTOR_DENIED_TOOLS = ["Task"];
+const EXECUTOR_DENIED_TOOLS = [...DISPATCH_TOOLS];
 
 const DELEGATION_CONSTRAINT =
   "Do not delegate to other agents; the run is one level deep (contract section 6).";
@@ -118,6 +132,19 @@ type CallResult =
   | { ok: false; outcome: OrchestrationOutcome };
 
 type TerminalState = "refused" | "blocked" | "timed_out" | "cancelled";
+
+/**
+ * Checkpoint states a later run starts afresh from rather than resumes.
+ * Resuming an ended run would replay what ended it: an empty plan or review
+ * recorded as a step, or the invocations and spend it already used up.
+ */
+const ENDED_STATES: readonly OrchestrationState[] = [
+  "released",
+  "refused",
+  "blocked",
+  "timed_out",
+  "cancelled",
+];
 
 function isCount(value: number): boolean {
   return Number.isInteger(value) && value >= 0;
@@ -344,7 +371,7 @@ export async function runExternalOrchestration(
   let cp: OrchestrationCheckpoint;
   if (
     existing !== undefined && existing.leaseId === leaseId &&
-    existing.state !== "released"
+    !ENDED_STATES.includes(existing.state)
   ) {
     cp = existing;
     resumed = true;
@@ -352,7 +379,9 @@ export async function runExternalOrchestration(
     if (existing !== undefined && existing.leaseId === leaseId) {
       // A released checkpoint is a completed prior run, not an interrupted one.
       log(
-        `orchestration checkpoint for ${options.issueId} is released (the prior run completed); starting afresh under lease ${leaseId}`,
+        existing.state === "released"
+          ? `orchestration checkpoint for ${options.issueId} is released (the prior run completed); starting afresh under lease ${leaseId}`
+          : `orchestration checkpoint for ${options.issueId} ended ${existing.state} (the prior run stopped, not interrupted); starting afresh under lease ${leaseId}`,
       );
     } else if (existing !== undefined) {
       log(
@@ -406,10 +435,9 @@ export async function runExternalOrchestration(
   if (resumed && cp.state !== "claimed") {
     if (cp.state !== "recovering") move("recovering");
     if (lapsed()) {
-      return await finish("refused", staleMessage(), {
-        kind: "stale_lease",
-        message: staleMessage(),
-      });
+      // The checkpoint carries this run's own lease id, so the holder that let
+      // it lapse is gone. This run takes it over; the persist below renews it.
+      log(`${staleMessage()}; this run holds that lease, so it takes over`);
     }
     delete cp.final;
     move(cp.steps[marker("plan")] !== undefined ? "dispatched" : "planning");

@@ -74,10 +74,12 @@ const DEFAULT_EXECUTOR: RoleSelection = {
 const RUNNER_CALL_GRACE_MS = 60_000;
 
 /**
- * The longest one `runClaudeWithRetry` call can legitimately take. Each
- * attempt may run to its hard timeout and then through its kill grace, and
- * each retry may first wait its full budget. Unset options take the runner's
- * own defaults, so the bound tracks the runner it measures.
+ * How long one `runClaudeWithRetry` call may take before the orchestrator
+ * abandons it. Each attempt may run to its hard timeout and then through its
+ * kill grace, and each retry may first wait its full budget. Unset options
+ * take the runner's own defaults. Progress extensions are not counted: each
+ * one the runner grants moves that attempt's hard deadline past
+ * `timeoutSeconds`, so an extended call can outlast this budget.
  *
  * @param claudeOptions - The Claude options the call runs with.
  * @param retryOptions - The retry options the call runs with.
@@ -108,7 +110,7 @@ export interface IssueRunGateDeps {
     options: RunClaudeOptions,
     retryOptions?: RetryOptions,
   ) => Promise<Result<ClaudeRunResult>>;
-  /** Parent of the checkpoint directory; defaults to the workspace's agent state dir. */
+  /** Parent of the checkpoint directory; defaults to the work directory's agent state dir. */
   stateDir?: string;
   /** Child env used for credential and billing checks. */
   env?: Record<string, string | undefined>;
@@ -117,7 +119,12 @@ export interface IssueRunGateDeps {
   now?: () => number;
 }
 
-/** Applies a per-role override on top of the role's default selection. */
+/**
+ * Applies a per-role override on top of the role's default selection. The
+ * default model and effort name the default provider's own models, so a role
+ * moved to another provider keeps only the model and effort the override
+ * names; the rest is left to that provider's own phase routing.
+ */
 function selectRole(
   fallback: RoleSelection,
   override: ExternalOrchestrationRoleSettings | undefined,
@@ -131,12 +138,13 @@ function selectRole(
       ),
     };
   }
+  const inherited = provider === fallback.provider ? fallback : undefined;
   return {
     ok: true,
     value: {
       provider: provider as TargetProvider,
-      model: override?.model ?? fallback.model,
-      effort: override?.effort ?? fallback.effort,
+      model: override?.model ?? inherited?.model,
+      effort: override?.effort ?? inherited?.effort,
     },
   };
 }
@@ -231,7 +239,8 @@ export async function runOrchestratedIssueRun(
   const executor = selectRole(DEFAULT_EXECUTOR, settings.executor);
   if (!executor.ok) return executor;
 
-  const stateRoot = deps.stateDir ?? resolveAgentStateDir(input.workspaceDir);
+  // Beside the work volume, never inside it, so `nukeWorkDir` cannot wipe it.
+  const stateRoot = deps.stateDir ?? resolveAgentStateDir(input.workDir);
   if (!stateRoot) {
     return {
       ok: false,
@@ -276,7 +285,9 @@ export async function runOrchestratedIssueRun(
     manager: manager.value,
     executor: executor.value,
     bounds,
-    checkpointDir: `${stateRoot}/orchestration`,
+    checkpointDir: `${stateRoot}/orchestration/${
+      encodeURIComponent(input.repo)
+    }`,
     invoke,
     callTimeoutMs: runnerCallBudgetMs(input.claudeOptions, input.retryOptions),
     env: deps.env,
