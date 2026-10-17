@@ -774,7 +774,7 @@ reviewer its path.
   a `violation` (with the `file:line` it saw) for any removed assertion that
   has none. Identify replacements from the diff even when the summary omits
   `Replaced by:`, and return a `violation` for a missing replacement entry.
-  Compare each replacement pair and return a `violation` when a value the
+  Compare each `Replaced by:` pair and return a `violation` when a value the
   old assertion checked is no longer checked anywhere.
   Ask it too, for each expected value or behaviour the diff changes in an
   existing test, whether that test still fails without the code it is named

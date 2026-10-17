@@ -67,6 +67,12 @@ and an exported function identifier, and record capped sections. No UI change.
 - Both caller regressions failed against the previous implementation. Shared
   validation: 344 scoped tests and 687 manifest tests passed; full local gate
   networking limitations are recorded in [#3710](pr-summary-3710.md).
+- The screenshot regression's Git spy now distinguishes per-file UI patch
+  requests from the whole-branch prose diff. Its existing assertions still
+  require exactly the UI patch read, permit a version-only bump and refuse a
+  real UI edit without evidence. The initial CI failure reproduced locally;
+  after the spy correction, all 330 completion and assertion-guidance tests
+  passed, including `worker/deno/tests/completion_phase_version_bump_2300_test.ts`.
 - Removed from `worker/deno/tests/completion_phase_summary_claim_check_test.ts`: `assertStringIncludes(prompt, "check only the lines this branch's diff adds or edits",);`
   Required by: "add a second, bounded scope of **unchanged** sentences"
   Replaced by: `assertStringIncludes(prompt, "check the lines this branch's diff adds or edits",);`

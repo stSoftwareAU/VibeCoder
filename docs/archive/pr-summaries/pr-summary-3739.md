@@ -73,6 +73,11 @@ comment-only quotes. No UI change.
   The independent-added-test regression also failed against the intermediate
   blanket replacement rule. Final combined scoped run passed 344 tests.
 - An additional template-literal replacement regression failed on the single-backtick parser. The shared Markdown tokenizer now accepts longer code-span delimiters, retaining exact assertion matching.
+- `worker/deno/tests/kept_assertions_3061_docs_test.ts` retains both coverage
+  assertions. Its missing explicit `Replaced by:` comparison instruction
+  reproduced as a failure; the final brief restores that phrase while keeping
+  the instruction to detect omitted pairs. The five guidance tests and the
+  wider 330-test completion run pass.
 - Full local quality networking limitations are recorded in
   [#3710](pr-summary-3710.md); remote full validation precedes PR creation.
 - The edited completion summary fixture contains an assertion as quoted test
