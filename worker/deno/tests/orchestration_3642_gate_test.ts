@@ -18,6 +18,7 @@ import { createDefaultDeps } from "../lib/execute_claude_phase.ts";
 import type { ExternalIssueRunInput } from "../lib/execute_claude_phase.ts";
 import {
   type IssueRunGateDeps,
+  runnerCallBudgetMs,
   runOrchestratedIssueRun,
 } from "../lib/orchestration/issue_run_gate.ts";
 import type { ExternalOrchestrationSettings, Result } from "../types.ts";
@@ -309,6 +310,20 @@ Deno.test("orchestration gate - a runner failure carrying a credential is masked
     assertStringIncludes(outcome.error.message, "gh auth failed");
     assertStringIncludes(outcome.error.message, "***REDACTED***");
   });
+});
+
+Deno.test("orchestration gate - runnerCallBudgetMs sums attempts, kill grace and retry waits (Issue #3642)", () => {
+  const budget = runnerCallBudgetMs(
+    { prompt: "unused", cwd: ".", timeoutSeconds: 100, killAfterSeconds: 5 },
+    { maxRetries: 2, maxWaitSeconds: 10 },
+  );
+  assertEquals(budget, (3 * (100 + 10) + 2 * 10) * 1000 + 60_000);
+});
+
+Deno.test("orchestration gate - runnerCallBudgetMs with every option absent uses the runner defaults (Issue #3642)", () => {
+  const budget = runnerCallBudgetMs({ prompt: "unused", cwd: "." }, undefined);
+  assertEquals(budget, (3 * (14400 + 60) + 2 * 600) * 1000 + 60_000);
+  assertEquals(budget > 4 * 3600 * 1000, true);
 });
 
 Deno.test("orchestration gate - createDefaultDeps wires runExternalOrchestratedIssueRun (Issue #3642)", () => {

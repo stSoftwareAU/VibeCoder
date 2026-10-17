@@ -757,6 +757,18 @@ export interface RunClaudeOptions {
  */
 export const DEFAULT_MAX_TOTAL_INVOCATIONS = 6;
 
+/** The default `maxRetries` of `runClaudeWithRetry` (Issue #3642). */
+export const DEFAULT_RETRY_MAX_RETRIES = 2;
+
+/** The default `maxWaitSeconds` of `runClaudeWithRetry` (Issue #3642). */
+export const DEFAULT_RETRY_MAX_WAIT_SECONDS = 600;
+
+/** The default hard `timeoutSeconds` of one `claude` run (Issue #3642). */
+export const DEFAULT_CLAUDE_TIMEOUT_SECONDS = 14400;
+
+/** The default `killAfterSeconds` grace of one `claude` run (Issue #3642). */
+export const DEFAULT_CLAUDE_KILL_AFTER_SECONDS = 30;
+
 /**
  * Requested-model value used when the routing chain resolves no `--model` arg.
  *
@@ -1146,8 +1158,8 @@ async function runClaudeWithTimeoutBody(
   const {
     prompt,
     systemPrompt,
-    timeoutSeconds = 14400,
-    killAfterSeconds = 30,
+    timeoutSeconds = DEFAULT_CLAUDE_TIMEOUT_SECONDS,
+    killAfterSeconds = DEFAULT_CLAUDE_KILL_AFTER_SECONDS,
     noOutputTimeout = 0,
     model,
     phase,
@@ -2810,8 +2822,8 @@ async function runRetryLadder(
   ladderSignal: AbortSignal,
 ): Promise<Result<ClaudeRunResult>> {
   const {
-    maxRetries = 2,
-    maxWaitSeconds = 600,
+    maxRetries = DEFAULT_RETRY_MAX_RETRIES,
+    maxWaitSeconds = DEFAULT_RETRY_MAX_WAIT_SECONDS,
     initialWaitInterval = 300,
     maxTotalInvocations = DEFAULT_MAX_TOTAL_INVOCATIONS,
   } = retryOptions;

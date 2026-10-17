@@ -9,10 +9,14 @@
  * Australian English spelling throughout (behaviour, honoured, recognised).
  */
 
-import type {
-  ClaudeRunResult,
-  RetryOptions,
-  RunClaudeOptions,
+import {
+  type ClaudeRunResult,
+  DEFAULT_CLAUDE_KILL_AFTER_SECONDS,
+  DEFAULT_CLAUDE_TIMEOUT_SECONDS,
+  DEFAULT_RETRY_MAX_RETRIES,
+  DEFAULT_RETRY_MAX_WAIT_SECONDS,
+  type RetryOptions,
+  type RunClaudeOptions,
 } from "../claude_runner.ts";
 import type { ExternalIssueRunInput } from "../execute_claude_phase.ts";
 import {
@@ -62,9 +66,44 @@ const DEFAULT_EXECUTOR: RoleSelection = {
   effort: HAIKU_ISSUE_EXECUTOR_EFFORT,
 };
 
+/**
+ * Slack added to the runner's own budget, covering process start-up and the
+ * ladder's bookkeeping, so a call the runner finishes in time is never
+ * reported as abandoned.
+ */
+const RUNNER_CALL_GRACE_MS = 60_000;
+
+/**
+ * The longest one `runClaudeWithRetry` call can legitimately take. Each
+ * attempt may run to its hard timeout and then through its kill grace, and
+ * each retry may first wait its full budget. Unset options take the runner's
+ * own defaults, so the bound tracks the runner it measures.
+ *
+ * @param claudeOptions - The Claude options the call runs with.
+ * @param retryOptions - The retry options the call runs with.
+ * @returns The budget in milliseconds.
+ */
+export function runnerCallBudgetMs(
+  claudeOptions: RunClaudeOptions,
+  retryOptions: RetryOptions | undefined,
+): number {
+  const maxRetries = retryOptions?.maxRetries ?? DEFAULT_RETRY_MAX_RETRIES;
+  const maxWaitSeconds = retryOptions?.maxWaitSeconds ??
+    DEFAULT_RETRY_MAX_WAIT_SECONDS;
+  const timeoutSeconds = claudeOptions.timeoutSeconds ??
+    DEFAULT_CLAUDE_TIMEOUT_SECONDS;
+  const killAfterSeconds = claudeOptions.killAfterSeconds ??
+    DEFAULT_CLAUDE_KILL_AFTER_SECONDS;
+  const attempts = maxRetries + 1;
+  const perAttemptSeconds = timeoutSeconds + 2 * killAfterSeconds;
+  const waitSeconds = maxRetries * maxWaitSeconds;
+  return (attempts * perAttemptSeconds + waitSeconds) * 1000 +
+    RUNNER_CALL_GRACE_MS;
+}
+
 /** Injected collaborators. Tests supply fakes so no provider CLI runs. */
 export interface IssueRunGateDeps {
-  /** The Claude runner, passed in so the gate never imports it at runtime. */
+  /** The Claude runner, passed in so tests can fake it; only its default constants are imported. */
   runClaudeWithRetry: (
     options: RunClaudeOptions,
     retryOptions?: RetryOptions,
@@ -239,6 +278,7 @@ export async function runOrchestratedIssueRun(
     bounds,
     checkpointDir: `${stateRoot}/orchestration`,
     invoke,
+    callTimeoutMs: runnerCallBudgetMs(input.claudeOptions, input.retryOptions),
     env: deps.env,
     now: deps.now,
     log: deps.log,

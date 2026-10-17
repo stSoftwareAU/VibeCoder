@@ -82,6 +82,8 @@ export interface ExternalOrchestrationOptions {
   leaseId?: string;
   /** How long a lease may go unrenewed; defaults to 15 minutes. */
   leaseTtlMs?: number;
+  /** How long one provider call may run before the run ends timed_out; defaults to 10 minutes. */
+  callTimeoutMs?: number;
   /** Polled before each provider call; true cancels the run. */
   isCancelled?: () => boolean;
   log?: (msg: string) => void;
@@ -267,6 +269,13 @@ export async function runExternalOrchestration(
       message: "leaseTtlMs must be a positive number of milliseconds",
     });
   }
+  const callTimeoutMs = options.callTimeoutMs ?? CALL_TIMEOUT_MS;
+  if (!(Number.isFinite(callTimeoutMs) && callTimeoutMs > 0)) {
+    return refusedAtStart({
+      kind: "invalid_selection",
+      message: "callTimeoutMs must be a positive number of milliseconds",
+    });
+  }
 
   const bounds: OrchestrationBounds = {
     maxRetries: options.bounds?.maxRetries ??
@@ -443,25 +452,38 @@ export async function runExternalOrchestration(
     return undefined;
   };
 
-  const callProvider = async (call: AgentCall): Promise<AgentCallResult> => {
+  // `abandoned` is true when the timer won the race: the provider call may
+  // still be running, so the caller must not start another call beside it.
+  const callProvider = async (
+    call: AgentCall,
+  ): Promise<{ result: AgentCallResult; abandoned: boolean }> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timedOut = new Promise<AgentCallResult>((resolve) => {
-      timer = setTimeout(
-        () =>
-          resolve({
-            ok: false,
-            kind: "timeout",
-            message: `no answer within ${CALL_TIMEOUT_MS} ms`,
-          }),
-        CALL_TIMEOUT_MS,
-      );
-    });
+    const timedOut = new Promise<
+      { result: AgentCallResult; abandoned: boolean }
+    >(
+      (resolve) => {
+        timer = setTimeout(
+          () =>
+            resolve({
+              result: {
+                ok: false,
+                kind: "timeout",
+                message: `no answer within ${callTimeoutMs} ms`,
+              },
+              abandoned: true,
+            }),
+          callTimeoutMs,
+        );
+      },
+    );
     const answer = Promise.resolve()
       .then(() => options.invoke(call))
-      .catch((err: unknown): AgentCallResult => ({
-        ok: false,
-        kind: "error",
-        message: errorText(err),
+      .then((result) => ({ result, abandoned: false }))
+      .catch((
+        err: unknown,
+      ): { result: AgentCallResult; abandoned: boolean } => ({
+        result: { ok: false, kind: "error", message: errorText(err) },
+        abandoned: false,
       }));
     try {
       return await Promise.race([answer, timedOut]);
@@ -489,7 +511,7 @@ export async function runExternalOrchestration(
     acceptanceCriteria: [...options.acceptanceCriteria],
     stopConditions: [STOP_CONDITION],
     maxRetries: bounds.maxRetries,
-    timeoutMs: CALL_TIMEOUT_MS,
+    timeoutMs: callTimeoutMs,
     leaseId,
     leaseExpiresAt: now() + leaseTtlMs,
     heartbeatIntervalMs: Math.floor(leaseTtlMs / 3),
@@ -514,7 +536,7 @@ export async function runExternalOrchestration(
 
       cp.invocations += 1;
       await persist(true);
-      const result = await callProvider({
+      const { result, abandoned } = await callProvider({
         envelope: envelopeFor(role, selection, tools),
         prompt,
         idempotencyKey: key,
@@ -546,6 +568,16 @@ export async function runExternalOrchestration(
             "refused",
             `${selection.provider} has no quota left: ${safe}`,
             { kind: "quota_exhausted", message: safe },
+          ),
+        };
+      }
+      // An abandoned call may still be editing the checkout, so it is never retried.
+      if (abandoned) {
+        return {
+          ok: false,
+          outcome: await finish(
+            "timed_out",
+            `${role} call gave no answer within ${callTimeoutMs} ms and may still be running, so it is not retried`,
           ),
         };
       }

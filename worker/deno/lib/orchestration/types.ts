@@ -103,7 +103,7 @@ export type OrchestrationState =
 
 /** The limits one run may not exceed. Retries and depth are per the contract. */
 export interface OrchestrationBounds {
-  /** Extra attempts after a failed `error` or `timeout` call. */
+  /** Extra attempts after a failed `error` or `timeout` call. An abandoned call (no answer within the call timeout) is never retried. */
   maxRetries: number;
   /** How many delegation levels below the manager may run (contract section 6). */
   maxDelegationDepth: number;

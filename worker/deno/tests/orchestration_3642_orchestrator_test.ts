@@ -402,6 +402,47 @@ Deno.test("a timeout that exhausts its attempts ends the run timed_out", async (
   });
 });
 
+Deno.test("an abandoned call is not retried and ends the run timed_out", async () => {
+  await withWorkDir(async (dir) => {
+    let executorCalls = 0;
+    const invoke: InvokeAgent = (call) => {
+      if (phaseOf(call) !== "execute") return Promise.resolve(okScript(call));
+      executorCalls += 1;
+      return new Promise(() => {});
+    };
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, invoke, { bounds: { maxRetries: 2 }, callTimeoutMs: 20 }),
+    );
+    assertEquals(outcome.state, "timed_out");
+    assertEquals(executorCalls, 1);
+    assertStringIncludes(outcome.reason ?? "", "not retried");
+  });
+});
+
+Deno.test("a non-positive callTimeoutMs is refused as invalid_selection", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeInvoker();
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke, { callTimeoutMs: 0 }),
+    );
+    assertEquals(outcome.state, "refused");
+    assertEquals(outcome.refusal?.kind, "invalid_selection");
+    assertStringIncludes(outcome.refusal?.message ?? "", "callTimeoutMs");
+    assertEquals(fake.calls.length, 0);
+  });
+});
+
+Deno.test("positive control: a valid callTimeoutMs is not refused", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeInvoker();
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke, { callTimeoutMs: 60_000 }),
+    );
+    assertNotEquals(outcome.state, "refused");
+    assertEquals(outcome.state, "done");
+  });
+});
+
 Deno.test("an old-version checkpoint is ignored with a warning, not replayed", async () => {
   await withWorkDir(async (dir) => {
     const checkpointDir = `${dir}/checkpoints`;
