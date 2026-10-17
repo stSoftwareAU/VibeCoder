@@ -255,27 +255,24 @@ Deno.test("wrapped test counts mixed with red-run prose are reported unchecked (
   assertEquals(found[0]!.reason, "the block mixes tests and passed counts");
 });
 
-// Issue #3740: the whole-file claim for b is compared; the partial addition for a stays unchecked.
-Deno.test("a whole-file claim is compared while the wrapped partial addition stays unchecked", () => {
+// "Extended" governs every figure in its sentence, so both figures stay unchecked rather than compared (#3740).
+Deno.test("wrapped partial additions are reported unchecked instead of silently skipped", () => {
   const opts = {
     summary:
       "## Test Plan\n\nExtended `tests/a_test.ts` with 3 tests,\nplus `tests/b_test.ts` (4 tests).\n",
     headCounts: counts({ "tests/a_test.ts": 10, "tests/b_test.ts": 5 }),
   };
-  assertEquals(
-    findTestPlanMismatches(opts).map(({ files, claimed, actual }) => ({
-      files,
-      claimed,
-      actual,
-    })),
-    [{ files: ["tests/b_test.ts"], claimed: 4, actual: 5 }],
-  );
+  assertEquals(findTestPlanMismatches(opts), []);
   const found = findUncheckedRunResults(opts);
-  assertEquals(found.length, 1);
-  assertEquals(
-    found[0]!.reason,
-    "the block describes partial test additions, not whole-file counts",
-  );
+  assertEquals(found.length, 2);
+  for (const entry of found) {
+    assertEquals(
+      entry.reason,
+      "the block describes partial test additions, not whole-file counts",
+    );
+    assertEquals(entry.line.includes("tests/a_test.ts"), true);
+    assertEquals(entry.line.includes("tests/b_test.ts"), true);
+  }
 });
 
 Deno.test("a per-file breakdown is not counted again in the next run (3315 shape)", () => {
