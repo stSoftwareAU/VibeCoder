@@ -134,6 +134,12 @@ guessing — the analysis-only hand-off then routes it to a human.
      truncates, filters out, cannot parse or skips with `continue` fails
      closed or is reported as not checked, never a clean pass; and both
      sides of a comparison normalised the same way.
+     Reading the worker's own marker out of a body that also holds agent,
+     issue or comment text is such a gate: read the marker only at the
+     anchored position where the worker writes it, or after the agent text is
+     neutralised, never with `includes()` or a first-occurrence match over the
+     whole body, and test that the agent's text quoting the marker — in a code
+     span, in prose, and after the worker re-wraps the body — does not fire it.
    - **Call the existing owner — never copy it.** Before writing code that
      formats, orders, ranks, validates or decides something the product
      already does, find the helper, component or policy that owns it and
