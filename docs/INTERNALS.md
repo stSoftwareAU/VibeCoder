@@ -4638,7 +4638,13 @@ deferred and commented on again on every scan cycle. The idle-decision
 census reads the same ledger through the same `milestonePacedUntil` and counts
 a paced milestone's issues as `run_local_hold` rather than claimable
 (Issue #3464), so a persistently paced milestone no longer raises a false
-`inversion_signal`. A branch with one
+`inversion_signal`. The idle-detect audit and the idle-task filer's
+fleet-wide startable-work gate read it through the shared
+`loadIdleDetectionHold` (Issue #3587), so a paced milestone no longer fires
+`ALERT mis_classification` and no longer holds idle-task filing back across the
+fleet. The filer's per-repo busy check (`isRepoBusyForIdleTask`) does not take
+that hold, so it still counts a paced issue as unblocked and blocks filing into
+the paced repo itself as `approved_work_in_flight`. A branch with one
 charged failure and an attempt still in hand is *not* paced: its children may
 be claimed, and the next child run's own pre-cut sync is what tries again.
 
