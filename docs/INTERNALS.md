@@ -1127,8 +1127,9 @@ post-run callback context emits), and the subscription allocation label when one
 is configured.
 
 The ledger's union defines five kinds: `assignment`, `invocation`, `follow_on`,
-`gate` and `outcome`. This milestone writes the first three; gate and outcome
-writers belong to later work. Their keys are:
+`gate` and `outcome`. The worker writes the first three per run; the PR observer
+(#3721) writes the `gate` and `outcome` events for each PR it observes. Their
+keys are:
 
 - `assignment:<assignmentId>:<host>`: the first assignment event per host wins.
 - `invocation:<assignmentId>:<runId>:<invocationIndex>`: each runner attempt,
@@ -1239,9 +1240,12 @@ assignment. The execute phase still mints cohort `unassigned` and does not yet
 enact arms. Enacting an arm needs per-role host configuration (#3643, open).
 
 **Primary metric.** Merged issues per estimated API-equivalent USD. Success is
-counted only when an issue has `merged`, `quality_green` and `review_approved`
-outcomes. A merged issue without both verifications is `merged_unverified`,
-which is not a success.
+the gated success of `classifyLifecycleOutcome`
+(`worker/deno/lib/lifecycle_outcomes.ts`): a merged PR counts only when its
+merged head had passing `quality` and `review` gates recorded before the merge.
+A merge without that is `merged_unverified`, which is not a success. First-pass
+CI reads only the `quality` gate, so a closed PR's `pr_open` failure or a
+requested review change is not a CI failure.
 
 **Cost.** Cost includes every attempt, failed invocation, retry and follow-on.
 Unknown cost is never zero: it raises the `missing-cost` warning.
@@ -1278,10 +1282,11 @@ exports the whole report as data, and `--format csv` exports the per-issue
 assignment records. `--covariates <file>` supplies a JSON object of per-issue
 attributes keyed `repo#issue`.
 
-**Live ledgers.** Gate and outcome events have no production writer yet (see
-the lifecycle ledger section above). Until they land, no assignment in a live
-ledger can merge: young assignments are pending, and mature ones are censored
-as not merged. No verdict can be reached.
+**Live ledgers.** The PR observer (#3721) writes the gate and outcome events for
+each PR it observes (see the lifecycle ledger section above). An assignment
+counts as merged in a live ledger only once a merged outcome is recorded for one
+of its PRs with the gates described under the primary metric. Until then young
+assignments are pending, and mature ones are censored as not merged.
 
 **Synthetic demonstration.** `--synthetic <seed>` ignores the ledgers and
 generates a randomised history of 400 issues over 30 days, against a fixed

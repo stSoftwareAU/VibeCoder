@@ -7,6 +7,10 @@
  * per issue. The arm comparison is intention-to-treat: each record keeps the
  * arm of its earliest assignment, whatever fallback happened later.
  *
+ * A merge is a success only when classifyLifecycleOutcome, the owner of that
+ * rule, finds the quality and review gates passing on the merged head strictly
+ * before the merge. A bare merge is merged_unverified and is never a success.
+ *
  * Costs are estimated API-equivalent USD, not billing. A missing estimate is
  * UNKNOWN and never zero, and a merged-per-USD figure with unknown cost is a
  * lower bound on cost.
@@ -40,6 +44,7 @@ import {
   type ExperimentArm,
   isExcludedModel,
 } from "./fleet_experiment_arms.ts";
+import { classifyLifecycleOutcome } from "./lifecycle_outcomes.ts";
 
 /** Milliseconds in one day. */
 const DAY_MS = 86_400_000;
@@ -147,8 +152,12 @@ export interface AssignmentRecord {
   quotaLimitedInvocations: number;
   followOns: number;
   reviewRejections: number;
+  /** Quality gate events with result fail. Review and pr_open gates are not counted. */
   gateFailures: number;
-  /** Null when there are no gate events. */
+  /**
+   * Null when there are no quality gates with a pass or fail result. Otherwise
+   * true when no quality gate failed. Quality gates only.
+   */
   firstPassCi: boolean | null;
   status: AssignmentStatus;
   /** Hours from assignment to the merged outcome, or null unless merged. */
@@ -354,19 +363,24 @@ const FAILURE_OUTCOMES: readonly OutcomeEvent["outcome"][] = [
 ];
 
 /**
- * Reduce the outcome names of one assignment to its status.
+ * Reduce one assignment to its status.
  *
- * "merged" counts only with both quality_green and review_approved. A bare
- * merged outcome is merged_unverified and is never counted as success.
+ * "merged" is the gated success from classifyLifecycleOutcome: the quality and
+ * review gates pass on the merged head, strictly before the merge. Any other
+ * merged outcome, with or without a PR number, is merged_unverified and is never
+ * counted as success. Otherwise a failure outcome makes it failed, and anything
+ * else is pending.
+ *
+ * @param verified - Whether classifyLifecycleOutcome reports a gated success.
+ * @param names - The outcome names of the assignment.
+ * @returns The status.
  */
 function statusOf(
+  verified: boolean,
   names: ReadonlySet<OutcomeEvent["outcome"]>,
 ): AssignmentStatus {
-  if (names.has("merged")) {
-    return names.has("quality_green") && names.has("review_approved")
-      ? "merged"
-      : "merged_unverified";
-  }
+  if (verified) return "merged";
+  if (names.has("merged")) return "merged_unverified";
   if (FAILURE_OUTCOMES.some((outcome) => names.has(outcome))) return "failed";
   return "pending";
 }
@@ -412,11 +426,17 @@ function buildRecord(
     ).length;
   const reviewRejections =
     followOns.filter((event) => event.followOn === "pr_feedback").length;
-  const gateFailures = gates.filter((event) => event.result === "fail").length;
-  const firstPassCi = gates.length === 0 ? null : gateFailures === 0;
+  const qualityGates = gates.filter((event) => event.gate === "quality");
+  const gateFailures =
+    qualityGates.filter((event) => event.result === "fail").length;
+  const judgedQuality = qualityGates.some((event) =>
+    event.result === "pass" || event.result === "fail"
+  );
+  const firstPassCi = judgedQuality ? gateFailures === 0 : null;
 
+  const outcome = classifyLifecycleOutcome(group);
   const names = new Set(outcomes.map((event) => event.outcome));
-  const status = statusOf(names);
+  const status = statusOf(outcome.success, names);
   const assignedMs = Date.parse(intent.assignedAt);
   const mergedTimes = outcomes
     .filter((event) => event.outcome === "merged")
@@ -951,7 +971,7 @@ function buildWarnings(
     warnings.push({
       code: "unverified-merge",
       message:
-        `${unverified} assignment(s) show a merged PR without both quality_green and review_approved; these are not counted as success.`,
+        `${unverified} assignment(s) show a merged PR without passing quality and review gates on the merged head before the merge; these are not counted as success.`,
     });
   }
   if (unattributedEvents > 0) {

@@ -157,6 +157,8 @@ function iso(ms: number): string {
  * is spread over the last `days` days. The most recently assigned
  * `pendingShare` of issues stay pending with an open PR. The rest are merged
  * with the arm's merge probability, and the others fail and are retried once.
+ * A merged issue's PR has passing quality and review gates before its merge,
+ * as the production PR observer records them.
  *
  * @param opts - The generation options.
  * @returns The events and the covariates.
@@ -267,9 +269,21 @@ function eventsFor(
     repo: draft.repo,
     issueNumber: draft.issueNumber,
   };
+  // The PR is numbered after the issue, and its events share one PR run id,
+  // as the production PR observer writes them.
+  const prNumber = draft.issueNumber;
+  const prIdentity: EventIdentity = {
+    ...identity,
+    runId: `pr-${prNumber}-synthetic`,
+  };
   const assignedAt = iso(draft.assignedMs);
   const outcomeAt = (fraction: number): string =>
     iso(Math.min(nowMs, draft.assignedMs + fraction * draft.hours * HOUR_MS));
+  // A merge is clamped to now, so its PR gates are placed strictly inside the
+  // span before the merge. A recent merge then still has its gates before it.
+  const mergeMs = Math.min(nowMs, draft.assignedMs + draft.hours * HOUR_MS);
+  const beforeMerge = (fraction: number): string =>
+    iso(draft.assignedMs + fraction * (mergeMs - draft.assignedMs));
 
   const inputs: LifecycleEventInput[] = [
     {
@@ -319,13 +333,13 @@ function eventsFor(
   ];
 
   if (pending) {
-    inputs.push(outcome(identity, "pr_opened", outcomeAt(0.2)));
+    inputs.push(outcome(prIdentity, "pr_opened", outcomeAt(0.2), prNumber));
   } else if (draft.merges) {
     inputs.push(
-      outcome(identity, "pr_opened", outcomeAt(0.2)),
-      outcome(identity, "quality_green", outcomeAt(0.5)),
-      outcome(identity, "review_approved", outcomeAt(0.8)),
-      outcome(identity, "merged", outcomeAt(1)),
+      outcome(prIdentity, "pr_opened", beforeMerge(0.2), prNumber),
+      gate(prIdentity, "quality", beforeMerge(0.5), prNumber),
+      gate(prIdentity, "review", beforeMerge(0.8), prNumber),
+      outcome(prIdentity, "merged", outcomeAt(1), prNumber),
     );
   } else {
     inputs.push(outcome(identity, "failed", outcomeAt(1)));
@@ -383,16 +397,36 @@ function invocation(params: {
   };
 }
 
-/** Build one outcome input. */
+/** Build one outcome input. A PR outcome carries its PR number. */
 function outcome(
   identity: EventIdentity,
-  name:
-    | "pr_opened"
-    | "quality_green"
-    | "review_approved"
-    | "merged"
-    | "failed",
+  name: "pr_opened" | "merged" | "failed",
   recordedAt: string,
+  prNumber?: number,
 ): LifecycleEventInput {
-  return { kind: "outcome", ...identity, recordedAt, outcome: name };
+  return {
+    kind: "outcome",
+    ...identity,
+    recordedAt,
+    outcome: name,
+    ...(prNumber === undefined ? {} : { prNumber }),
+  };
+}
+
+/** Build one passing gate input for a PR's quality or review check. */
+function gate(
+  identity: EventIdentity,
+  name: "quality" | "review",
+  recordedAt: string,
+  prNumber: number,
+): LifecycleEventInput {
+  return {
+    kind: "gate",
+    ...identity,
+    recordedAt,
+    gate: name,
+    result: "pass",
+    attempt: 1,
+    prNumber,
+  };
 }

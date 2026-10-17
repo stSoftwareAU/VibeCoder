@@ -150,13 +150,64 @@ function outcome(
   });
 }
 
-/** The three outcomes that make a merge verified, then the merge itself. */
+/** The PR number for issue `id`'s PR. */
+function prNumberOf(id: number): number {
+  return 100 + id;
+}
+
+/** A PR outcome for issue `id`, with the PR number and its PR run id. */
+function prOutcome(
+  id: number,
+  name: "pr_opened" | "merged" | "closed_unmerged",
+  recordedAt: string,
+): LifecycleEvent {
+  return event({
+    kind: "outcome",
+    assignmentId: uuid(id),
+    runId: `pr-${prNumberOf(id)}-head`,
+    host: "host-a",
+    repo: "acme/alpha",
+    issueNumber: id,
+    recordedAt,
+    outcome: name,
+    prNumber: prNumberOf(id),
+  });
+}
+
+/** A gate result on issue `id`'s PR, with the PR number and its PR run id. */
+function gate(
+  id: number,
+  name: "quality" | "review" | "pr_open",
+  result: "pass" | "fail" | "skipped",
+  recordedAt: string,
+  attempt = 1,
+): LifecycleEvent {
+  return event({
+    kind: "gate",
+    assignmentId: uuid(id),
+    runId: `pr-${prNumberOf(id)}-head`,
+    host: "host-a",
+    repo: "acme/alpha",
+    issueNumber: id,
+    recordedAt,
+    gate: name,
+    result,
+    attempt,
+    prNumber: prNumberOf(id),
+  });
+}
+
+/**
+ * A verified merge shaped as the production PR observer writes it: the PR opens,
+ * its quality and review gates pass an hour before the merge, then it merges.
+ */
 function verifiedMerge(id: number, mergedAt: string): LifecycleEvent[] {
+  const gatedAt = new Date(Date.parse(mergedAt) - HOUR_MS).toISOString();
   return [
-    outcome(id, "pr_opened", mergedAt),
-    outcome(id, "quality_green", mergedAt),
-    outcome(id, "review_approved", mergedAt),
-    outcome(id, "merged", mergedAt),
+    prOutcome(id, "pr_opened", gatedAt),
+    gate(id, "quality", "pass", gatedAt),
+    gate(id, "review", "pass", gatedAt),
+    prOutcome(id, "merged", mergedAt),
   ];
 }
 
@@ -261,6 +312,13 @@ Deno.test("fleet experiment report - a merge without review approval is unverifi
   assertEquals(control.mergedUnverified, 1);
   assert(
     report.warnings.some((warning) => warning.code === "unverified-merge"),
+  );
+  const unverifiedWarning = report.warnings.find((warning) =>
+    warning.code === "unverified-merge"
+  );
+  assertStringIncludes(
+    unverifiedWarning?.message ?? "",
+    "quality and review gates",
   );
 });
 
@@ -750,4 +808,56 @@ Deno.test("fleet experiment report - one arm packed into a single host-day raise
       warning.code === "unequal-exposure" && warning.arm === "codex-test"
     ),
   );
+});
+
+Deno.test("fleet experiment report - a merge whose quality gate passed only after the merge is unverified", () => {
+  const events = [
+    assignment(1, "sonnet-haiku", ago(5)),
+    prOutcome(1, "pr_opened", ago(4)),
+    gate(1, "review", "pass", ago(3)),
+    prOutcome(1, "merged", ago(2)),
+    // The quality gate is recorded a day after the merge, so it cannot count.
+    gate(1, "quality", "pass", ago(1)),
+  ];
+  const report = buildExperimentReport(events, options());
+  assertEquals(recordFor(report.records, 1).status, "merged_unverified");
+  const control = armOf(report, "sonnet-haiku");
+  assertEquals(control.merged, 0);
+  assertEquals(control.mergedUnverified, 1);
+});
+
+Deno.test("fleet experiment report - legacy quality_green and review_approved outcomes do not verify a merge", () => {
+  const events = [
+    assignment(1, "sonnet-haiku", ago(5)),
+    outcome(1, "pr_opened", ago(4)),
+    outcome(1, "quality_green", ago(3)),
+    outcome(1, "review_approved", ago(3)),
+    outcome(1, "merged", ago(2)),
+  ];
+  const report = buildExperimentReport(events, options());
+  assertEquals(recordFor(report.records, 1).status, "merged_unverified");
+  assertEquals(armOf(report, "sonnet-haiku").merged, 0);
+});
+
+Deno.test("fleet experiment report - first-pass CI reads only the quality gate", () => {
+  const events = [
+    // Closed without a merge: its pr_open and review gates fail, quality passes.
+    assignment(1, "sonnet-haiku", ago(5)),
+    prOutcome(1, "pr_opened", ago(4)),
+    gate(1, "pr_open", "fail", ago(3)),
+    gate(1, "review", "fail", ago(3)),
+    gate(1, "quality", "pass", ago(3)),
+    prOutcome(1, "closed_unmerged", ago(3)),
+    // A quality failure, then a pass on the retry, fails the first pass.
+    assignment(2, "sonnet-haiku", ago(5)),
+    gate(2, "quality", "fail", ago(4)),
+    gate(2, "quality", "pass", ago(3), 2),
+  ];
+  const report = buildExperimentReport(events, options());
+  const closed = recordFor(report.records, 1);
+  assertEquals(closed.firstPassCi, true);
+  assertEquals(closed.gateFailures, 0);
+  const retried = recordFor(report.records, 2);
+  assertEquals(retried.firstPassCi, false);
+  assertEquals(retried.gateFailures, 1);
 });
