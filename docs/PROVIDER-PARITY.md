@@ -14,6 +14,8 @@ here automatically enables new routing on the production fleet.
 
 See also: [Manager-worker contract](MANAGER-WORKER-CONTRACT.md) for the provider-neutral advisor/executor contract.
 
+See also: [Provider feasibility](PROVIDER-FEASIBILITY.md) for the go/no-go per provider, model and role, and the read-only `provider-feasibility` smoke test.
+
 ```mermaid
 flowchart TD
     M["agent_provider_mode"] --> S["shared quota scheduler"]
