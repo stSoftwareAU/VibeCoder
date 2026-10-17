@@ -165,6 +165,46 @@ Deno.test("an interrupted run resumes under the same lease without repeating the
   });
 });
 
+Deno.test("a checkpoint held under another lease is not resumed: the run starts afresh under its own lease and logs why", async () => {
+  await withWorkDir(async (dir) => {
+    const interrupted = fakeInvoker((call) =>
+      phaseOf(call) === "execute"
+        ? { ok: false, kind: "timeout", message: "interrupted" }
+        : okScript(call)
+    );
+    const first = await runExternalOrchestration(
+      optionsFor(dir, interrupted.invoke, {
+        leaseId: "lease-a",
+        bounds: { maxRetries: 0 },
+      }),
+    );
+    assertEquals(first.state, "timed_out");
+    assertEquals(first.invocations, 2);
+
+    const logged: string[] = [];
+    const other = fakeInvoker();
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, other.invoke, {
+        leaseId: "lease-b",
+        bounds: { maxRetries: 0 },
+        log: (msg) => logged.push(msg),
+      }),
+    );
+    assertEquals(outcome.state, "done");
+    assertEquals(outcome.resumed, false);
+    // The plan runs again: nothing from the lease-a run is replayed.
+    assertEquals(other.calls.map(phaseOf), ["plan", "execute", "review"]);
+    assertEquals(outcome.invocations, 3);
+    assertEquals(logged, [
+      "orchestration checkpoint for 3642 belongs to lease lease-a; starting afresh under lease lease-b",
+    ]);
+
+    const loaded = await loadCheckpoint(`${dir}/checkpoints`, "3642");
+    assertEquals(loaded.checkpoint?.leaseId, "lease-b");
+    assertEquals(loaded.checkpoint?.state, "released");
+  });
+});
+
 Deno.test("a stale lease refuses resume and leaves the heartbeat unrenewed", async () => {
   await withWorkDir(async (dir) => {
     let clock = 1_000;

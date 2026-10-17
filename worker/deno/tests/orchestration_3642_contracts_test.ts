@@ -6,7 +6,12 @@
  * Australian English spelling throughout (behaviour, recognised).
  */
 
-import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   idempotencyKey,
   loadCheckpoint,

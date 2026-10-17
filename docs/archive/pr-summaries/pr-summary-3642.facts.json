@@ -237,6 +237,14 @@
    },
    {
     "path": "worker/deno/lib/orchestration/orchestrator.ts",
+    "line": 357,
+    "outcome": "checkpoint under another lease starts afresh with a log",
+    "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
+    "testName": "a checkpoint held under another lease is not resumed: the run starts afresh under its own lease and logs why",
+    "flipWentRed": "Changed `existing.leaseId === leaseId` in the resume condition (line 346) to `true` so a checkpoint under lease-a resumed under lease-b; the named test failed at its `resumed` assertion (true, expected false)."
+   },
+   {
+    "path": "worker/deno/lib/orchestration/orchestrator.ts",
     "line": 408,
     "outcome": "stale lease refused on resume",
     "test": "worker/deno/tests/orchestration_3642_orchestrator_test.ts",
@@ -376,8 +384,8 @@
     "line": 148,
     "outcome": "missing compaction refused",
     "test": "worker/deno/tests/orchestration_3642_contracts_test.ts",
-    "testName": "codex cannot enforce a denied tool, so a role denying one is refused",
-    "flipWentRed": "GREEN: changed the compaction guard to `if (false)` and the named codex test still passed; no test in the suite refuses a role for missing compaction."
+    "testName": "a manager on a provider without compaction is refused as unsupported_capability",
+    "flipWentRed": "Changed the compaction guard to `if (false)` so a codex or gemini manager was not refused (refusal undefined, expected unsupported_capability); the named test failed."
    },
    {
     "path": "worker/deno/lib/orchestration/capabilities.ts",
