@@ -81,7 +81,10 @@
  * issue body and summary via {@link rederiveDegradedSection}, keeping only the
  * original run's reason and follow-up number, because model routing cannot be
  * re-judged after the run. A healthy run's section is re-derived the same way
- * by {@link rederiveReportedGapSection}.
+ * by {@link rederiveReportedGapSection}. When the re-derived shortfalls differ
+ * from the ones the follow-up was filed with, the section says the follow-up
+ * may not list them rather than claiming they continue there, because a re-sync
+ * never rewrites the follow-up (Issue #3677).
  *
  * The verdict and the rendering are pure; {@link fileDegradedFollowUp} is the
  * one I/O step, with `gh` injected.
@@ -465,7 +468,8 @@ export function buildDegradedPrSection(
  * section (Issue #3350). Only the single `This run was degraded (` line is
  * read: the shortfall bullets are untrusted text and must never supply a
  * follow-up number. Reasons contain parentheses themselves, so the reason ends
- * at the earliest known suffix, not the first `)`.
+ * at the earliest known suffix, not the first `)`. The follow-up number is read
+ * from either the "continue in #N:" or the "filed #N" wording (Issue #3677).
  */
 export function parseDegradedSection(
   section: string,
@@ -480,7 +484,7 @@ export function parseDegradedSection(
   if (ends.length > 0) {
     out.reason = line.slice(prefix.length, Math.min(...ends));
   }
-  const match = line.match(/continue in #(\d{1,9}):/);
+  const match = line.match(/(?:continue in|filed) #(\d{1,9})[: ]/);
   if (match) {
     const n = Number(match[1]);
     if (Number.isSafeInteger(n) && n > 0) out.followUpNumber = n;
@@ -510,6 +514,34 @@ export function buildDegradedUnfiledGapSection(
     }) and did not show every accepted scope item as met, or reported a ` +
     `gap of its own. The worker filed no follow-up for these items when the ` +
     `PR was raised — check them against the diff before merging:`,
+    "",
+    ...shortfallLines(verdict.shortfalls),
+    "",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Build the degraded-run section for a re-sync whose rebuilt shortfalls differ
+ * from the ones the section was raised with (Issue #3677). The follow-up it
+ * names was filed from the earlier shortfalls and a re-sync never rewrites it
+ * (PR #3676 review), so the section says it may not list every item instead of
+ * claiming the items continue there.
+ */
+export function buildDegradedStaleFollowUpSection(
+  verdict: DegradedDeliveryVerdict,
+  followUpNumber: number,
+): string {
+  return [
+    "## ⚠️ Degraded run — partial delivery",
+    "",
+    `This run was degraded (${
+      verdict.reason ?? "served by a fallback model"
+    }) and did not show every accepted scope item as met, or reported a ` +
+    `gap of its own. The worker filed #${followUpNumber} for the outstanding ` +
+    `items when the PR was raised and a re-sync does not rewrite it, so it ` +
+    `may not list every item below — check them against the diff before ` +
+    `merging:`,
     "",
     ...shortfallLines(verdict.shortfalls),
     "",
@@ -754,6 +786,11 @@ export function rederiveFollowUpChainStopSection(args: {
  * summary (Issue #3350). Only the original run's reason and follow-up number
  * are kept from the live section. Returns "" when nothing is outstanding, as
  * PR creation does.
+ *
+ * Pure, and it never touches the follow-up (PR #3676 review). With a follow-up
+ * number, a section built from the same shortfalls stays as it is. Any other
+ * shortfall set is rendered by {@link buildDegradedStaleFollowUpSection}, which
+ * does not claim the follow-up holds it (Issue #3677).
  */
 export function rederiveDegradedSection(args: {
   liveSection: string;
@@ -773,7 +810,10 @@ export function rederiveDegradedSection(args: {
     shortfalls,
   };
   if (followUpNumber !== undefined) {
-    return buildDegradedPrSection(verdict, followUpNumber);
+    const held = buildDegradedPrSection(verdict, followUpNumber);
+    return args.liveSection === held
+      ? args.liveSection
+      : buildDegradedStaleFollowUpSection(verdict, followUpNumber);
   }
   return degradedNeedsFollowUp(verdict)
     ? buildDegradedUnfiledGapSection(verdict)

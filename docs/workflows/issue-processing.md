@@ -2508,8 +2508,13 @@ flowchart TD
   creation uses. It keeps only what cannot be re-judged after the run: the
   original run's degradation reason and the follow-up number the section
   named. With no shortfall left the section is dropped. If the section named
-  a follow-up, it becomes a `Degraded run — partial delivery` section linking
-  that follow-up and listing the current shortfalls. If a `partial` or
+  a follow-up, a section built from the same shortfalls stays as it is; any
+  other shortfall set is rebuilt by `buildDegradedStaleFollowUpSection`, which
+  keeps the follow-up number but says the worker filed that follow-up when the
+  PR was raised, that a re-sync does not rewrite it, and that it may not list
+  every item below (Issue #3677). The re-sync never edits the follow-up, for
+  the reason the healthy-run re-sync below gives (PR #3676 review). If a
+  `partial` or
   `missing` shortfall remains but no follow-up was filed at PR creation, it
   becomes a `Degraded run — partial delivery` section saying the worker filed
   no follow-up for these items and to check them against the diff; the

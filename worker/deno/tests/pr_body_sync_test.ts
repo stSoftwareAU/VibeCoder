@@ -22,6 +22,7 @@ import {
 } from "../lib/pr_body.ts";
 import {
   assessReportedGaps,
+  buildDegradedPrSection,
   buildReportedGapStaleFollowUpSection,
   FOLLOW_UP_CHAIN_STOP_MARKER,
   FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
@@ -1145,7 +1146,11 @@ Deno.test("sync - keeps a leading degraded-run section (Issue #2562)", async () 
     if (first.ok) assertEquals(first.value.status, "updated");
     const synced = ghCalls[0]?.bodyFileContent ?? "";
     assert(synced.startsWith("## ⚠️ Degraded run — partial delivery"));
-    assertStringIncludes(synced, "continue in #77");
+    // Issue #3677: a legacy-worded section is not byte-identical to the rebuilt one, so it takes the wording that does not claim the follow-up holds the items.
+    assertStringIncludes(
+      synced,
+      "The worker filed #77 for the outstanding items",
+    );
     assertStringIncludes(synced, "new title");
     assertStringIncludes(synced, "Rewritten summary text.");
     assertEquals(synced.includes("old title"), false);
@@ -1798,6 +1803,57 @@ Deno.test("sync - a section already marked as possibly stale is re-derived under
   );
   assertStringIncludes(synced, "- **partial** — the export works");
   assertEquals(synced.includes("the import works\n"), false);
+});
+
+Deno.test("sync - a degraded-run section whose rebuilt gaps differ never claims they continue in the follow-up (Issue #3677)", async () => {
+  const live = buildDegradedPrSection({
+    degraded: true,
+    reason: "served by a fallback model",
+    delivered: [],
+    shortfalls: [{ criterion: "the export works", status: "partial" }],
+  }, 77);
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: IMPORT_PARTIAL_SUMMARY,
+    live: `${live}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () => TWO_CRITERIA_ISSUE,
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
+    ?.bodyFileContent ?? "";
+  assert(synced.startsWith("## ⚠️ Degraded run — partial delivery"));
+  assertStringIncludes(
+    synced,
+    "The worker filed #77 for the outstanding items",
+  );
+  assertStringIncludes(synced, "- **partial** — the import works");
+  assertEquals(synced.includes("continue in #77:"), false);
+  // The follow-up is never listed, edited or created.
+  assertEquals(
+    ghCalls.filter((c) => c.args[0] === "issue" && c.args[1] !== "view").length,
+    0,
+  );
+});
+
+Deno.test("sync - a degraded-run section with the same gaps keeps naming its follow-up (Issue #3677)", async () => {
+  const live = buildDegradedPrSection({
+    degraded: true,
+    reason: "served by a fallback model",
+    delivered: [],
+    shortfalls: [{ criterion: "the export works", status: "partial" }],
+  }, 77);
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${live}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
+    ?.bodyFileContent ?? "";
+  assertStringIncludes(synced, "The outstanding items continue in #77:");
+  assertEquals(synced.includes("may not list every item"), false);
 });
 
 // --- chain-stop section on a partial-delivery follow-up (PR #3676 review) ---
