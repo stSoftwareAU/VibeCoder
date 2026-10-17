@@ -1,0 +1,15 @@
+{
+  "issue": 3718,
+  "chunk": "top-up-3718",
+  "title": "top-up: lifecycle ledger and issue assignment",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3718",
+  "definition": "Lifecycle ledger, issue assignment, invocation recording and PR follow-on attribution (milestone 105).",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/issue_assignment.ts",
+    "worker/deno/lib/lifecycle_ledger.ts",
+    "worker/deno/lib/lifecycle_recording.ts",
+    "worker/deno/lib/lifecycle_follow_on.ts"
+  ],
+  "sweptAt": "f64d2f1fa47ea018352943d33e785c3e657be81d"
+}

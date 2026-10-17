@@ -19,6 +19,7 @@ import type {
   ClaudeDeps,
   GitDeps,
   GitHubDeps,
+  InfrastructureDeps,
 } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
 import type { IssueSubAgentTier } from "../types.ts";
@@ -106,7 +107,13 @@ async function runCiFix(options: {
   gitFails?: boolean;
   /** One entry per agent invocation; two drives the post-quality retry. */
   stats: (RunStats | undefined)[];
-}): Promise<{ invocations: number }> {
+}): Promise<
+  {
+    invocations: number;
+    followOns: Parameters<InfrastructureDeps["recordPrFollowOn"]>[0][];
+  }
+> {
+  const followOns: Parameters<InfrastructureDeps["recordPrFollowOn"]>[0][] = [];
   const tmpDir = await Deno.makeTempDir({ prefix: "vibe-ci-3404-" });
   let invocations = 0;
   try {
@@ -127,6 +134,12 @@ async function runCiFix(options: {
     };
     const retry = options.stats.length > 1;
     const deps = createMockDeps({
+      infrastructure: {
+        recordPrFollowOn: (input) => {
+          followOns.push(input);
+          return Promise.resolve();
+        },
+      },
       claude: mockClaude,
       github: {
         runGhCommand: ghFor(options.body, options.prState),
@@ -187,7 +200,7 @@ async function runCiFix(options: {
       checkName: "CI / test",
       encodedAnnotations: btoa(JSON.stringify(ANNOTATIONS)),
     }, processorDeps);
-    return { invocations };
+    return { invocations, followOns };
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -276,4 +289,27 @@ Deno.test(`${NAME} - a run that fails before the agent is invoked records nothin
   assertEquals(invocations, 0, "the agent must not have been invoked");
   assertEquals(telemetryFor("haiku"), { runs: 0, usd: 0 });
   assertEquals(telemetryFor("sonnet"), { runs: 0, usd: 0 });
+});
+
+Deno.test("Issue #3720: real CI processor records check cycle and all post-quality invocations", async () => {
+  resetFleetTelemetry();
+  const first = statsWith(100_000, 10_000);
+  const second = statsWith(50_000, 5_000);
+  const { followOns } = await runCiFix({
+    body: bodyWithTier("haiku"),
+    stats: [first, second],
+  });
+  assertEquals(followOns.length, 1);
+  assert(followOns[0]);
+  assertEquals(followOns[0].followOn, "ci_fix");
+  assertEquals(followOns[0].cycle, "67890");
+  assertEquals(followOns[0].attempt, 1);
+  assertEquals(followOns[0].runStats, [first, second]);
+  assertEquals(followOns[0].prNumber, 42);
+  const closed = await runCiFix({
+    body: bodyWithTier("haiku"),
+    stats: [first],
+    prState: "CLOSED",
+  });
+  assertEquals(closed.followOns, []);
 });

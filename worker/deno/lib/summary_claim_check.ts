@@ -37,10 +37,10 @@
  *      never asked about, mirroring the review-fix drift check's own
  *      posture.
  *
- * The model question also covers the Markdown manuals and prompts the branch
- * changes (Issue #3347): `isManualProsePath` in `doc_prose_claims.ts` picks
- * them from the changed files, capped at `MAX_DOC_PROSE_FILES` with the rest
- * reported as not checked. It asks whether the head code that decides a
+ * The model question also covers changed manual/prompt prose, source comments
+ * and attached headers, and affected manual sections (Issues #3715, #3731).
+ * `collectDocProseScope` caps the selected files and extra manual sections,
+ * reporting overflow as not checked. It asks whether the head code that decides a
  * when / refuses-allows / absolute-word sentence agrees with it. Such a
  * finding is confirmed only when it names one of those files and quotes its
  * current text, and lands in `docFindings`, never in `findings`.
@@ -64,6 +64,12 @@
  */
 
 import {
+  collectDocProseScope,
+  type ProseRange,
+  renderProseRanges,
+} from "./doc_prose_scope.ts";
+
+import {
   type DriftFinding,
   parseDriftVerdict,
   renderDriftVerdictQuestion,
@@ -75,8 +81,8 @@ import { generateBoundaryId, isBoundaryId } from "./prompt_delimiter.ts";
 import {
   docProseClaimInstruction,
   isManualProsePath,
+  isProseSourcePath,
   MAX_DOC_PROSE_FILES,
-  selectManualProseFiles,
 } from "./doc_prose_claims.ts";
 import type { Logger, Result } from "../types.ts";
 
@@ -112,10 +118,9 @@ const SUMMARY_CLAIM_FILE_BLOCK = "the summary file to check";
  *   Validated as a plausible git ref — never a flag or an absolute path.
  * @param opts.summaryPath - The PR summary's repo-relative path. Must be one
  *   of the recognised PR-summary shapes.
- * @param opts.docFiles - The manual or prompt Markdown files the branch
- *   changes (Issue #3347), at most {@link MAX_DOC_PROSE_FILES}, each passing
- *   `isManualProsePath`. Empty asks the summary question alone; otherwise the
- *   question also covers the changed lines of each file.
+ * @param opts.docFiles - Selected manual, prompt or source-comment files, at
+ *   most {@link MAX_DOC_PROSE_FILES}; proseRanges bounds the extra scope.
+ *   Empty asks the summary question alone.
  * @param opts.boundaryId - Pinned nonce for tests; production mints one.
  */
 export function buildSummaryClaimQuestionPrompt(opts: {
@@ -124,6 +129,7 @@ export function buildSummaryClaimQuestionPrompt(opts: {
   baseRef: string;
   summaryPath: string;
   docFiles: readonly string[];
+  proseRanges?: readonly ProseRange[];
   boundaryId?: string;
 }): string {
   if (opts.docFiles.length > MAX_DOC_PROSE_FILES) {
@@ -132,9 +138,9 @@ export function buildSummaryClaimQuestionPrompt(opts: {
     );
   }
   for (const docFile of opts.docFiles) {
-    if (!isManualProsePath(docFile)) {
+    if (!isManualProsePath(docFile) && !isProseSourcePath(docFile)) {
       throw new Error(
-        `buildSummaryClaimQuestionPrompt requires manual or prompt Markdown paths, got '${docFile}'`,
+        `buildSummaryClaimQuestionPrompt requires manual, prompt or source paths, got '${docFile}'`,
       );
     }
   }
@@ -188,16 +194,22 @@ export function buildSummaryClaimQuestionPrompt(opts: {
       `Run \`git diff ${opts.baseRef}...HEAD\` — the whole change on this ` +
       "branch — and `git status`, then read the summary file " +
       (hasDocs
-        ? "and each manual or prompt file listed below at its current " +
+        ? "and each listed manual, prompt or source-comment file at its current " +
           "working-tree content."
         : "listed below at its current working-tree content."),
     ],
     files: hasDocs ? [opts.summaryPath, ...opts.docFiles] : [opts.summaryPath],
     filesLabel: hasDocs
-      ? "The files to check (the PR summary first, then the manuals and " +
-        "prompts this branch changes):"
+      ? "The files to check (the PR summary first, then selected prose files):"
       : "The summary file to check:",
     filesBlockName: SUMMARY_CLAIM_FILE_BLOCK,
+    extraBlocks: opts.proseRanges?.length
+      ? [{
+        text: renderProseRanges(opts.proseRanges),
+        label: "Prose ranges (changed prose means changed lines only):",
+        name: "the prose ranges",
+      }]
+      : [],
     instruction: hasDocs
       ? "For the summary file: " + summaryInstruction.replace(/^C/, "c") +
         "\n\n" + docProseClaimInstruction("this branch's diff")
@@ -743,6 +755,7 @@ export async function runSummaryClaimCheck(
   const { repo, issueNumber } = input;
   const notChecked: string[] = [];
   let testPlanProblems: TestPlanClaimProblem[] = [];
+  let trackedFiles: string[] = [];
 
   const lsFiles = await deps.runGit(["ls-files"]);
   if (!lsFiles || lsFiles.code !== 0) {
@@ -751,7 +764,7 @@ export async function runSummaryClaimCheck(
     notChecked.push(msg);
     deps.logger.error(`Summary claim check: ${msg}`, { repo, issueNumber });
   } else {
-    const trackedFiles = lsFiles.stdout
+    trackedFiles = lsFiles.stdout
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line.length > 0);
@@ -792,44 +805,53 @@ export async function runSummaryClaimCheck(
     deps.logger.error(`Summary claim check: ${msg}`, { repo, issueNumber });
   } else {
     const docContents = new Map<string, string>();
+    let proseRanges: ProseRange[] = [];
     if (input.changedFiles === null) {
       const msg = "the branch's changed files could not be listed; changed " +
         "manual and prompt prose was not checked";
       notChecked.push(msg);
       deps.logger.error(`Summary claim check: ${msg}`, { repo, issueNumber });
     } else {
-      const selected = selectManualProseFiles(
-        input.changedFiles.filter((f) => f !== input.summaryPath),
-        MAX_DOC_PROSE_FILES,
-      );
-      if (selected.overCap.length > 0) {
-        const msg =
-          `${selected.overCap.length} changed manual or prompt file(s) over ` +
-          `the ${MAX_DOC_PROSE_FILES}-file cap were not checked: ` +
-          selected.overCap.join(", ");
-        notChecked.push(msg);
-        deps.logger.error(`Summary claim check: ${msg}`, {
+      const diff = await deps.runGit([
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--unified=0",
+        `${input.baseRef}...HEAD`,
+        "--",
+      ]);
+      const scope = await collectDocProseScope({
+        changedFiles: input.changedFiles.filter((f) => f !== input.summaryPath),
+        trackedFiles,
+        summaryContent: input.summaryContent,
+        diff: diff?.code === 0 ? diff.stdout : null,
+        readFile: async (file) => {
+          try {
+            return await Deno.readTextFile(`${input.repoPath}/${file}`);
+          } catch (err) {
+            if (!(err instanceof Deno.errors.NotFound)) {
+              const message =
+                `${file} could not be read; its prose was not checked`;
+              notChecked.push(message);
+              deps.logger.error(`Summary claim check: ${message}`, {
+                repo,
+                issueNumber,
+              });
+            }
+            return undefined;
+          }
+        },
+      });
+      for (const [file, content] of scope.contents) {
+        docContents.set(file, content);
+      }
+      proseRanges = scope.ranges;
+      for (const message of scope.notChecked) {
+        notChecked.push(message);
+        deps.logger.error(`Summary claim check: ${message}`, {
           repo,
           issueNumber,
         });
-      }
-      for (const file of selected.files) {
-        try {
-          docContents.set(
-            file,
-            await Deno.readTextFile(`${input.repoPath}/${file}`),
-          );
-        } catch (err) {
-          // Deleted on the branch: no prose left to check.
-          if (err instanceof Deno.errors.NotFound) continue;
-          const msg =
-            `\`${file}\` could not be read; its prose was not checked`;
-          notChecked.push(msg);
-          deps.logger.error(`Summary claim check: ${msg}`, {
-            repo,
-            issueNumber,
-          });
-        }
       }
     }
 
@@ -841,6 +863,7 @@ export async function runSummaryClaimCheck(
         baseRef: input.baseRef,
         summaryPath: input.summaryPath,
         docFiles: [...docContents.keys()],
+        proseRanges,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
