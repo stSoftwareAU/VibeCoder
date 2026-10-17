@@ -5690,10 +5690,9 @@ export async function createProductionRunCoreDeps(
                   // does not hide it — the census draws the same line.
                   runLocalHoldFn: idleDetectionHold,
                   // Issue #3587: the filer's fleet-wide startable gate reads
-                  // through the same stub when a wiring test sets one.
-                  ...(options.idleDetectGhCommandFn
-                    ? { ghCommandFn: options.idleDetectGhCommandFn }
-                    : {}),
+                  // through the same stub when a wiring test sets one;
+                  // undefined (production) means the filer's default runner.
+                  ghCommandFn: options.idleDetectGhCommandFn,
                 },
               },
               config,

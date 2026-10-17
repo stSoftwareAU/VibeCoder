@@ -1002,18 +1002,18 @@ single GitHub-visible blocker — and filed VibeCoder#655 against a scan that wa
 right. `run_core_production_deps.ts` now resolves the hold set **once** and
 hands the same set to all three readers, and excluded issues are reported as
 `run_local_hold=<n>`. Issue #3464 adds a third source: the issues whose
-milestone the persisted pacing ledger (`milestone_sync_failures.json`, Issue
-#1780) holds, which the scan skips as `milestone-behind`. The census reads that
-ledger through the scan's own `milestonePacedUntil`, so a persistently paced
-milestone no longer raises a false `inversion_signal`. Issue #3587 applies the
-same read to the idle-detect audit (`idle_detect_diagnostics.ts`) and to the
+milestone the persisted pacing ledger (`milestone_sync_failures.json`,
+Issue #1780) holds, which the scan skips as `milestone-behind`. The census reads
+that ledger through the scan's own `milestonePacedUntil`, so a persistently
+paced milestone no longer raises a false `inversion_signal`. Issue #3587 applies
+the same read to the idle-detect audit (`idle_detect_diagnostics.ts`) and to the
 idle-task filer's fleet-wide startable-work gate (`repo_busy_for_idle_task.ts`),
 both through the shared `loadIdleDetectionHold` in
 `worker/deno/lib/run_core_production_deps.ts`. A paced issue is reported as
-`run_local_hold` there too, so a paced milestone no longer fires
-`ALERT mis_classification` or suppresses idle-task filing. The per-cycle
-adaptive-floor deferral (Issue #245) is the one source still unmodelled; it is
-rebuilt every cycle, so it cannot hold a streak open the way the registry did.
+`run_local_hold` there too, so a paced milestone no longer fires `ALERT
+mis_classification` or suppresses idle-task filing. The per-cycle adaptive-floor
+deferral (Issue #245) is the one source still unmodelled; it is rebuilt every
+cycle, so it cannot hold a streak open the way the registry did.
 
 **A refused claim is not a finished run (Issue #2405).** The hold records that
 an issue is held, and until #2405 not *why*. A claim the claim path **deferred**

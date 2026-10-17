@@ -29,6 +29,10 @@ import {
   type SyncStreaks,
 } from "../lib/milestone_sync_streak.ts";
 import { startSlotIdleAccounting } from "../lib/slot_idle_accounting.ts";
+import {
+  resetSharedProcessedIssues,
+  sharedProcessedIssues,
+} from "../lib/processed_issue_registry.ts";
 
 const REPO = "org/paced-milestone-fixture";
 const WORKER_USER = "worker-bot";
@@ -172,6 +176,25 @@ Deno.test(
   async () => {
     const line = repoLine(await auditLines(false), "[idle-detect]");
     assert(line.includes("claimable=1"), line);
+  },
+);
+
+Deno.test(
+  "idle-detect audit - a run-local hold with no ledger entry is run_local_hold, not claimable (Issue #3587)",
+  async () => {
+    // The shared registry is a module singleton: start from empty and undo
+    // the record in `finally` so no other test in this file sees it.
+    resetSharedProcessedIssues();
+    try {
+      // A non-deferral finish (not a claim refusal), so the registry operand
+      // of `loadIdleDetectionHold` is what holds the issue.
+      sharedProcessedIssues().record(REPO, 3587, "failure");
+      const line = repoLine(await auditLines(false), "[idle-detect]");
+      assert(line.includes("claimable=0"), line);
+      assert(line.includes("reason=run_local_hold"), line);
+    } finally {
+      resetSharedProcessedIssues();
+    }
   },
 );
 
