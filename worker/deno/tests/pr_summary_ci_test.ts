@@ -727,3 +727,9 @@ Deno.test("parseArgs - a --head-branch value that looks like a flag is a missing
   assert(!r.ok);
   assertStringIncludes(r.error.message, "--head-branch needs a value");
 });
+
+Deno.test("parseArgs - an unknown flag is named in the error", () => {
+  const r = parseArgs(["--base", "main", "--head-branch", BRANCH, "--foo"]);
+  assert(!r.ok);
+  assertStringIncludes(r.error.message, "unknown flag --foo");
+});
