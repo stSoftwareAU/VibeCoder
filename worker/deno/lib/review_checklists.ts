@@ -447,7 +447,7 @@ export interface ChecklistGapFinding {
 const MAX_GAPS_NAMED = 5;
 
 /** Untrusted text on one line, with mentions and HTML neutralised. */
-function gapText(text: string, max: number): string {
+export function gapText(text: string, max: number): string {
   return inlineSafe(text, max).replace(
     /[<>@]/g,
     (c) => c === "@" ? "@\u200b" : " ",
@@ -456,9 +456,14 @@ function gapText(text: string, max: number): string {
 
 /** Same item, ignoring case, spacing, backticks and a leading "1." number. */
 function verdictKey(checklist: string, item: string): string {
-  const flat = (t: string) =>
-    t.replace(/\s+/g, " ").replace(/`/g, "'").trim().toLowerCase();
-  return `${flat(checklist)}\u0000${flat(item).replace(/^\d+[.)] /, "")}`;
+  return `${normaliseVerdictText(checklist)}\u0000${
+    normaliseVerdictText(item).replace(/^\d+[.)] /, "")
+  }`;
+}
+
+/** Collapse whitespace, turn backticks into quotes, trim and lower-case. */
+export function normaliseVerdictText(text: string): string {
+  return text.replace(/\s+/g, " ").replace(/`/g, "'").trim().toLowerCase();
 }
 
 /**

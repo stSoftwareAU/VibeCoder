@@ -26,6 +26,10 @@
  *   `git status` (untracked files included, ignored files not) or HEAD shows
  *   surfaces as a finding instead of being committed silently.
  *
+ * The review brief's fields (including the closure entries the summary marks
+ * `met`, which the verifier judges independently, Issue #3766) are listed in
+ * {@link REVIEW_BRIEF_FIELDS}.
+ *
  * A pass that cannot run is "not checked", never clean.
  *
  * @module
@@ -46,6 +50,14 @@ import {
   isBoundaryId,
   TOOL_OUTPUT_IS_DATA_RULE,
 } from "./prompt_delimiter.ts";
+import {
+  type ClosureEntryVerdict,
+  closureGapFindings,
+  type MetClosureItem,
+  metClosureItems,
+  parseClosureEntryVerdicts,
+  renderClosureEntriesSection,
+} from "./closure_met_check.ts";
 import { loadPrompt } from "./prompt_manager.ts";
 import {
   checklistGapFindings,
@@ -60,6 +72,11 @@ import {
   REVIEW_CHECKLISTS_FILE,
 } from "./review_checklists.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
+import {
+  earlierFindingGaps,
+  type EarlierVerdict,
+  parseEarlierVerdicts,
+} from "./earlier_findings.ts";
 
 /** Prompt directory name of the review brief shared with the fleet reviewer. */
 export const REVIEW_BRIEF_PROMPT_NAME = "pr_review_brief";
@@ -71,6 +88,7 @@ export const REVIEW_BRIEF_FIELDS = [
   "TEST_CHANGES",
   "PREVIOUS_FINDINGS",
   "REVIEW_CHECKLISTS",
+  "CLOSURE_ENTRIES",
 ] as const;
 export type ReviewBriefField = typeof REVIEW_BRIEF_FIELDS[number];
 export type ReviewBriefFields = Record<ReviewBriefField, string>;
@@ -123,6 +141,13 @@ export interface ReviewReply {
   unrelatedIssues: ReviewUnrelatedIssue[];
   /** Per-item verdicts for the repo's review checklists; [] when none apply. */
   checklist: ChecklistVerdict[];
+  /**
+   * Per-entry verdicts on the closure entries the summary marks `met`
+   * (Issue #3766); [] when none are listed or the reply omits the array.
+   */
+  closure: ClosureEntryVerdict[];
+  /** Independent verdicts on the earlier review, when this is a feedback run. */
+  earlierFindings?: EarlierVerdict[];
 }
 
 /** At most this many unrelated issues are kept from one review. */
@@ -150,6 +175,10 @@ export function parseReviewReply(text: string): ReviewReply {
     testChangeNotes: r.testChangeNotes ?? [],
     unrelatedIssues: parseUnrelatedIssues(r.unrelatedIssues),
     checklist: parseChecklistVerdicts(r.checklist),
+    closure: parseClosureEntryVerdicts(r.closure),
+    ...(r.earlierFindings === undefined
+      ? {}
+      : { earlierFindings: parseEarlierVerdicts(r.earlierFindings) }),
   };
 }
 
@@ -208,6 +237,8 @@ export const PRE_PR_VERIFIER_DISALLOWED_TOOLS: readonly string[] = [
 ];
 
 export interface PrePrVerifierInput {
+  /** Complete earlier problem/Fix pairs, numbered from one in the prompt. */
+  previousFindings?: readonly string[];
   repo: string;
   issueNumber: number;
   issueTitle: string;
@@ -267,6 +298,7 @@ function quoteList(paths: readonly string[]): string {
 
 /** Build the verifier prompt: the shared brief plus the untrusted fences. */
 export function buildPrePrVerifierPrompt(opts: {
+  previousFindings?: readonly string[];
   template: string;
   repo: string;
   issueNumber: number;
@@ -279,6 +311,8 @@ export function buildPrePrVerifierPrompt(opts: {
   changedFiles: readonly string[] | null;
   /** Rendered checklist section; "" when none applies. */
   reviewChecklists: string;
+  /** Closure entries the summary marks `met`; [] when it marks none. */
+  closureItems: readonly MetClosureItem[];
   boundaryId?: string;
 }): string {
   if (!Number.isInteger(opts.issueNumber) || opts.issueNumber <= 0) {
@@ -292,7 +326,7 @@ export function buildPrePrVerifierPrompt(opts: {
   const context = [
     // The title is attacker-influenceable: it appears only inside the fenced
     // "Linked issue" block below, never in this worker-written paragraph.
-    `You are verifying the change for issue #${opts.issueNumber} in ${opts.repo} before its pull request is raised. You work in a disposable checkout at \`${opts.checkoutPath}\` — your working directory — detached at head commit ${opts.headSha}; the base is ${opts.baseSha}. Nothing you change there survives the review, so you may edit files to flip a line and rerun a test, run the test suite or a single test file, time a regex against a hostile input, or build. You must not push, run \`gh\`, or make any network write or GitHub change: those tools are denied, and the checkout has no remote. Read the change with \`git diff ${opts.baseSha}...HEAD\`, a file at the base ref with \`git show ${opts.baseSha}:<path>\`. There is no PR yet: \`${opts.summaryPath}\` in this checkout becomes the PR description, so read it as the PR body — each claim it makes about the code, its tests or the docs must hold at the head, and one the head contradicts is a finding. There is no open-issue search here; the worker records any unrelated issue you report rather than filing it. The linked issue is quoted below.`,
+    `You are verifying the change for issue #${opts.issueNumber} in ${opts.repo} against the supplied request and PR description. You work in a disposable checkout at \`${opts.checkoutPath}\` — your working directory — detached at head commit ${opts.headSha}; the base is ${opts.baseSha}. Nothing you change there survives the review, so you may edit files to flip a line and rerun a test, run the test suite or a single test file, time a regex against a hostile input, or build. You must not push, run \`gh\`, or make any network write or GitHub change: those tools are denied, and the checkout has no remote. Read the change with \`git diff ${opts.baseSha}...HEAD\`, a file at the base ref with \`git show ${opts.baseSha}:<path>\`. For this check, \`${opts.summaryPath}\` in this checkout contains the supplied PR description, so read it as the PR body — each claim it makes about the code, its tests or the docs must hold at the head, and one the head contradicts is a finding. There is no open-issue search here; the worker records any unrelated issue you report rather than filing it. The linked issue is quoted below.`,
     "",
     ...fenceUntrustedIssueText(
       `${opts.issueTitle}\n\n${opts.issueBody}`,
@@ -301,6 +335,8 @@ export function buildPrePrVerifierPrompt(opts: {
     ),
   ];
   const blocks = ["linked issue"];
+  if (opts.closureItems.length > 0) blocks.push("closure entries");
+  if (opts.previousFindings?.length) blocks.push("earlier findings");
   if (files !== null) {
     context.push(
       "",
@@ -336,8 +372,23 @@ export function buildPrePrVerifierPrompt(opts: {
     REVIEW_CONTEXT: context.join("\n"),
     NO_TEST_ADDED_NOTE: noTestNote,
     TEST_CHANGES: testChanges,
-    PREVIOUS_FINDINGS: "No earlier review of this change asked for fixes.",
+    PREVIOUS_FINDINGS: (opts.previousFindings?.length ?? 0) > 0
+      ? fenceUntrustedIssueText(
+        JSON.stringify(
+          opts.previousFindings!.map((finding, i) => ({
+            index: i + 1,
+            finding,
+          })),
+        ),
+        "Earlier findings (data): independently check every ask and return one earlierFindings verdict per index. A documented limitation is not a fix. A substantiated false-positive rebuttal counts as fixed only after independently checking its evidence.",
+        boundaryId,
+      ).join("\n")
+      : "No earlier review of this change asked for fixes.",
     REVIEW_CHECKLISTS: opts.reviewChecklists,
+    CLOSURE_ENTRIES: renderClosureEntriesSection(
+      opts.closureItems,
+      boundaryId,
+    ),
   });
 
   return [
@@ -535,6 +586,7 @@ export async function runPrePrVerifier(
           testChangeNotes: [],
           unrelatedIssues: [],
           checklist: [],
+          closure: [],
         },
         ...(outcome.run ? { run: outcome.run } : {}),
       };
@@ -681,6 +733,7 @@ async function verifyInCheckout(
     input.changedFiles,
   );
   const checklistExpected = checklistState(checklists, input.changedFiles);
+  const metItems = metClosureItems(input.summaryContent);
   const prompt = buildPrePrVerifierPrompt({
     template,
     repo: input.repo,
@@ -693,10 +746,13 @@ async function verifyInCheckout(
     summaryPath: input.summaryPath,
     changedFiles: input.changedFiles,
     reviewChecklists,
+    closureItems: metItems,
+    previousFindings: input.previousFindings,
   });
 
   const asked = await deps.ask({
     prompt,
+    lifecycleRole: "reviewer",
     phase: "issue",
     repo: input.repo,
     issueNumber: input.issueNumber,
@@ -721,7 +777,16 @@ async function verifyInCheckout(
     const parsed = parseReviewReply(run.output ?? "");
     // The code, not the model, owes a finding for a checklist that was not
     // applied or an item left without a verdict (Issue #3594).
-    const gaps = checklistGapFindings(checklistExpected, parsed.checklist);
+    // Likewise for a closure entry marked met that the verifier rated short
+    // or left without a verdict (Issue #3766).
+    const gaps = [
+      ...checklistGapFindings(checklistExpected, parsed.checklist),
+      ...closureGapFindings(metItems, parsed.closure, input.summaryPath),
+      ...earlierFindingGaps(
+        input.previousFindings ?? [],
+        parsed.earlierFindings ?? [],
+      ),
+    ];
     return {
       status: "checked",
       review: gaps.length === 0
@@ -806,5 +871,6 @@ export function buildPrePrVerifierGateComment(review: ReviewReply): string {
     "3. Run the tests covering what you changed.",
     "4. Make the PR summary describe the head.",
     "5. If you have evidence a finding is wrong, say so in your final message, naming the finding and the evidence — the verifier runs again on the next completion attempt.",
+    'A finding is closed only by fixing it or disputing it with evidence. Marking a criterion `partial`, listing a known gap or open limitation in the PR summary, or noting a test as "not red-checked" does not close a finding.',
   ].join("\n");
 }

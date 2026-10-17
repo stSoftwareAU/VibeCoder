@@ -1,0 +1,12 @@
+{
+  "issue": 3746,
+  "chunk": "top-up-3746",
+  "title": "top-up: issue-create routing gate",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3746",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/issue_create_routing_check.ts, the quality gate that fails on any direct `gh issue create` argv, or `gh api` REST or GraphQL issue creation, outside the reasoned routing allowlist (#3746)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/issue_create_routing_check.ts"
+  ],
+  "sweptAt": "addaa06f645c2a2ada3c45d6cb334840094fc4f9"
+}

@@ -1603,13 +1603,18 @@ export async function runChecksSequential(
 }
 
 /**
- * A FAILED check's own output, for the baseline comparison (Issue #1852).
+ * A FAILED or SKIPPED check's own output (Issues #1852, #3726).
  *
- * Only failures are kept: the comparison never reads a passing check, and
- * the combined `output` field already carries everything for display.
+ * A FAILED check's output feeds the baseline comparison (Issue #1852); the
+ * comparison never reads a passing check, and the combined `output` field
+ * already carries everything for display. A SKIPPED check's output is the
+ * reason it was skipped, which is the stage-outcome record an audit needs to
+ * match a CI-only failure to a stage that did not run locally (Issue #3726).
  */
-function failedOutput(result: CheckExecutionResult): string | undefined {
-  return result.status === "FAILED" ? result.output : undefined;
+function recordedOutput(result: CheckExecutionResult): string | undefined {
+  return result.status === "FAILED" || result.status === "SKIPPED"
+    ? result.output
+    : undefined;
 }
 
 /**
@@ -1629,7 +1634,7 @@ export async function runQualityGate(
   /** Keep a settled check's output, record it, and stream it (Issue #399). */
   const note = (result: CheckExecutionResult): void => {
     allOutput.push(result.output);
-    recordCheck(checks, result.name, result.status, failedOutput(result));
+    recordCheck(checks, result.name, result.status, recordedOutput(result));
     report(config.onProgress, result);
   };
 
@@ -1816,15 +1821,17 @@ export async function runQualityGate(
         `  ⏱  ${result.name}: ${(result.durationMs / 1000).toFixed(1)}s`,
       );
     }
-    recordCheck(checks, result.name, result.status, failedOutput(result));
+    recordCheck(checks, result.name, result.status, recordedOutput(result));
   }
 
-  // Record skipped checks for missing tools
+  // Record skipped checks for missing tools. The reason is recorded as the
+  // stage's output so the run's stage outcomes can say why (Issue #3726).
   if (!denoModuleExists) {
-    recordCheck(checks, "deno tests", "SKIPPED");
-    recordCheck(checks, "deno lint", "SKIPPED");
-    recordCheck(checks, "deno type check", "SKIPPED");
-    recordCheck(checks, "deno fmt", "SKIPPED");
+    const reason = "no Deno worker directory configured or found";
+    recordCheck(checks, "deno tests", "SKIPPED", reason);
+    recordCheck(checks, "deno lint", "SKIPPED", reason);
+    recordCheck(checks, "deno type check", "SKIPPED", reason);
+    recordCheck(checks, "deno fmt", "SKIPPED", reason);
   }
 
   const summary = formatSummary(checks, config.options.strict);
