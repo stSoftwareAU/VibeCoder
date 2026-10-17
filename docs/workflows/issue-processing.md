@@ -1220,13 +1220,22 @@ raised. The agent dispatches nothing for it.
   reply without the array counts as no verdicts, and a malformed array entry
   is dropped rather than failing the reply, so it counts as no verdict while the
   reply's other findings stay), whatever the model's own findings say. Matching
-  ignores all leading list numbers (`1.` or `1)`, followed by whitespace),
-  including a criterion's own numbering, before clipping, so displayed numbering
-  cannot turn a complete verdict into a missing one. The
+  accepts either the raw criterion or its rendered form, which applies delimiter
+  scrubbing and secret redaction to each criterion separately inside the shared
+  fence. The verifier's copy is not scrubbed again: a second pass can change it.
+  No scrub runs across the joined entries, so one criterion cannot rewrite or
+  hide a later entry. Verdicts for both forms are considered together, with
+  `missing` or `partial` still blocking even when the other form is rated `met`.
+  Matching ignores all leading list numbers (`1.` or `1)`, followed by
+  whitespace), including a criterion's own numbering, before clipping, so
+  displayed numbering cannot turn a complete verdict into a missing one. The
   listed criteria are agent-written text copied from the issue, so they are
   rendered inside the prompt's untrusted fence and named in its
   boundary-integrity instruction; only the worker's instruction sentence sits
-  outside it. A summary that marks no entry `met`, or has no closure block,
+  outside it. The fleet review gate uses this same renderer for its
+  `closureEntries` field; the orchestrator copies that fenced section verbatim
+  into the shared brief rather than pasting raw PR-body criteria.
+  A summary that marks no entry `met`, or has no closure block,
   lists none and owes no verdict. The fleet reviewer shares the brief and so
   the instruction, but its `post.ts` does not check the array.
 - **Disposable checkout.** A `git clone --shared` of the issue checkout at the

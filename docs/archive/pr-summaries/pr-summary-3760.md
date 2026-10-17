@@ -6,6 +6,11 @@ A push made outside the worker (by hand, from a laptop, or from an interactive C
 
 Backend-only change; verified by unit and wiring tests.
 
+- CI follow-up: the sweep-ledger ancestry check rejected the branch-only
+  `sweptAt` commit. The ledger now records the merged default-branch base
+  `0f8b3e56c523a521b9f54df9b4b1c0fe45b130e1`. The exact failing check was
+  reproduced before the correction and passed afterwards; 91 focused
+  reconciliation, sweep-drift and summary-CI tests also passed.
 - The contents read is `gh api repos/{repo}/contents/<path>?ref=<head> -H "Accept: application/vnd.github.raw"`. A missing file answers `gh: Not Found (HTTP 404)` (the shape `isNotFound` matches), and every other failure is reported as a read failure. `worker/deno/tests/pr_body_reconcile_test.ts::headSummaryDigest - reads the summary and facts as raw content at the ref and returns a digest result` pins the argv.
 - The rebuild runs the real `syncPrBodyFromSummary` against a real git checkout in `worker/deno/tests/pr_body_reconcile_test.ts::reconcile - end to end: mismatch rebuilds through the real sync with the new digest`, which asserts exactly one `gh pr edit` whose body carries the new digest marker.
 - The production wiring in `worker/deno/lib/run_core_production_deps.ts` is driven through the `_setGhSpawnRunner` seam by `worker/deno/tests/pr_body_reconcile_wiring_test.ts`: one test asserts the digest read goes to the configured repo at the listed head, the other that a failing `gh` listing is logged and the slot still resolves ok.
