@@ -1,0 +1,13 @@
+{
+  "issue": 3647,
+  "chunk": "top-up-3647",
+  "title": "top-up: provider feasibility smoke test",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3647",
+  "definition": "modules added for the read-only manager–worker feasibility smoke test: provider_feasibility.ts (evaluator) and commands/provider_feasibility.ts",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/commands/provider_feasibility.ts",
+    "worker/deno/lib/provider_feasibility.ts"
+  ],
+  "sweptAt": "a6d4f8b330039754b02a3211ce409f7ae00cf4b4"
+}
