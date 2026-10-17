@@ -126,10 +126,17 @@ export function parseClosureEntryVerdicts(
  * Match key for a criterion. Zero-width characters are stripped before
  * `gapText` re-adds its own after "@", so a stored criterion and a verifier's
  * copy of it (with or without the invisible character) key the same.
+ * Strip a copied list number before clipping, preserving a full-length criterion.
  */
 const keyOf = (text: string): string =>
   normaliseVerdictText(
-    gapText(text.replace(/[\u200b-\u200d\ufeff]/g, ""), CLOSURE_CRITERION_MAX),
+    gapText(
+      text.replace(/[\u200b-\u200d\ufeff]/g, "").trimStart().replace(
+        /^\d+[.)]\s+/,
+        "",
+      ),
+      CLOSURE_CRITERION_MAX,
+    ),
   );
 
 /**

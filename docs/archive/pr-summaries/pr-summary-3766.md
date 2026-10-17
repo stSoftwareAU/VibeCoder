@@ -40,6 +40,12 @@ Nothing checked a closure entry the agent marked `met` against the criterion it 
 
 Backend-only change, with no UI file touched. It is verified by unit and integration tests against real git, using a scripted model.
 
+PR #3890's numbered-copy review fix strips the displayed list prefix before
+clipping the criterion. The new regression failed against target head
+`d37fb603` with `No verdict was reported`, then passed after the change.
+The closure, verifier and shared-brief suites pass 94 tests. No existing
+test or assertion was removed. Full CI remains required on this follow-up.
+
 ```mermaid
 flowchart LR
     S[PR summary] -->|parseClosureEntries, met only| M[metClosureItems]
@@ -62,12 +68,13 @@ flowchart LR
 
 - Retain `runPrePrVerifier: earlier findings need complete fixed verdicts even when findings is empty` unchanged from the target branch. It checks that omitted and partial earlier-finding verdicts block, and a complete fixed verdict passes; the closure fixes do not replace this regression coverage.
 
-- New tests in `worker/deno/tests/closure_met_check_3766_test.ts` (23 tests) cover:
+- New tests in `worker/deno/tests/closure_met_check_3766_test.ts` (24 tests) cover:
   - extraction, de-duplication, neutralising and clipping
   - each trailing separator kind
   - linear growth on hostile separator runs (`assertLinearGrowth`)
   - rendering (criteria inside the untrusted fence, instruction outside) and reply reading (malformed entries dropped, no throw)
   - each finding branch: partial, missing, worst-wins, no verdict, more than five, singular, no note, unlisted verdicts ignored, and normalised matching
+  - numbered verdict copies (`1.` and `1)`), leading whitespace and a full-length criterion; a numbered partial verdict still blocks and an unrelated numbered criterion covers nothing
 - New tests in `worker/deno/tests/pre_pr_verifier_3395_test.ts`, run against real git:
   - `a met closure entry the verifier rates partial blocks, with a finding on the summary`
   - `a clean reply with no closure array blocks: no verdict on a met entry is never a pass`

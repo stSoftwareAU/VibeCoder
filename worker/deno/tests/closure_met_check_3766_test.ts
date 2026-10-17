@@ -211,6 +211,38 @@ Deno.test("closureGapFindings: an '@' criterion matches a verdict copied with or
   }
 });
 
+Deno.test("closureGapFindings: numbered verdict copies match without truncating the criterion", () => {
+  for (
+    const criterion of [
+      "Every run files a follow-up",
+      "x".repeat(CLOSURE_CRITERION_MAX),
+    ]
+  ) {
+    for (const prefix of ["1. ", "12) ", "  2.\t"]) {
+      assertEquals(
+        closureGapFindings(
+          [{ criterion }],
+          [v(prefix + criterion, "met")],
+          PATH,
+        ),
+        [],
+        `numbered copy ${prefix} must match`,
+      );
+    }
+  }
+  const criterion = "Every run files a follow-up";
+  const short = closureGapFindings([{ criterion }], [
+    v("1. " + criterion, "partial"),
+  ], PATH);
+  assertEquals(short.length, 1);
+  assertStringIncludes(short[0]!.problem, "was rated partial");
+  const unrelated = closureGapFindings([{ criterion }], [
+    v("1. Another criterion", "met"),
+  ], PATH);
+  assertEquals(unrelated.length, 1);
+  assertStringIncludes(unrelated[0]!.problem, "No verdict was reported");
+});
+
 Deno.test("closureGapFindings: the fix offers delivery or a dispute, never a partial downgrade", () => {
   const out = closureGapFindings(
     ITEMS,
