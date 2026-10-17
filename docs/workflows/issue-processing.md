@@ -2695,9 +2695,11 @@ run:
      filed` section (`buildReportedGapPrSection`) naming it;
   5. fails loudly if the issue cannot be read, its content fails verification,
      the human hand-off or the filing fails, or no filer is wired. The sync then
-     returns an error and the PR body is left as it was. The processor logs the
-     failed sync at warning and the run does not fail, as for any failed sync. A
-     later sync whose summary has changed again retries.
+     returns an error and the PR body is left as it was. The processor (or the
+     Priority 1.64 reconcile pass, which runs the same sync after a push the
+     worker did not make — Issue #3760) logs the failed sync at warning and the
+     run does not fail, as for any failed sync. A later sync whose summary has
+     changed again retries.
 
   Once the section exists, later syncs re-derive it as above and never write to
   the follow-up. The filer reaches the three processors through a

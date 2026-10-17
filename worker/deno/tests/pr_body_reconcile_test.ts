@@ -13,6 +13,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import {
+  checkedGit,
   disposableHeadCheckout,
   headSummaryDigest,
   type PrepareHeadCheckout,
@@ -686,4 +687,356 @@ Deno.test("disposableHeadCheckout - a failing git fetch quotes stderr and remove
   assert(cloneDir.endsWith("/checkout"), `unexpected clone dir ${cloneDir}`);
   const tmp = cloneDir.slice(0, -"/checkout".length);
   await assertRejects(() => Deno.stat(tmp), Deno.errors.NotFound);
+});
+
+// --- Coverage top-up (Issue #3760 mutation check) ---------------------------
+
+/** A recorded git call: its argv and the directory it ran in. */
+interface GitCall {
+  args: string[];
+  cwd: string | undefined;
+}
+
+/** A git runner answering every step with exit 0, and `stdout` for rev-parse. */
+function okGit(
+  calls: GitCall[],
+  revParse: string,
+): ReconcilePrBodiesDeps["runGitCommand"] {
+  return async (args, options) => {
+    calls.push({ args, cwd: options?.cwd });
+    return {
+      ok: true,
+      value: {
+        code: 0,
+        stdout: args[0] === "rev-parse" ? revParse : "",
+        stderr: "",
+      },
+    };
+  };
+}
+
+/** A `gh repo clone` stand-in that creates the clone dir with one file in it. */
+function populatingClone(cloneCalls: string[][]) {
+  return async (args: string[]): Promise<string> => {
+    cloneCalls.push(args);
+    const dir = args[3] ?? "";
+    await Deno.mkdir(dir, { recursive: true });
+    await Deno.writeTextFile(`${dir}/README.md`, "cloned\n");
+    return "";
+  };
+}
+
+/** The temp dir that owns a `<tmp>/checkout` clone dir. */
+function tempDirOf(cloneDir: string): string {
+  assert(cloneDir.endsWith("/checkout"), `unexpected clone dir ${cloneDir}`);
+  return cloneDir.slice(0, -"/checkout".length);
+}
+
+Deno.test("headSummaryDigest - reads the summary and facts as raw content at the ref and returns a digest result", async () => {
+  const calls: string[][] = [];
+  const gh = async (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[1]?.includes(ARCHIVE_PATH)) return SUMMARY_V1;
+    if (args[1]?.includes(FACTS_PATH)) return FACTS_V1;
+    throw new Error(NOT_FOUND);
+  };
+
+  const result = await headSummaryDigest(REPO, ISSUE_NUMBER, HEAD_SHA, gh);
+
+  assertEquals(result, {
+    kind: "digest",
+    digest: await digestOf(SUMMARY_V1, FACTS_V1),
+  });
+  assertEquals(calls, [
+    [
+      "api",
+      `repos/${REPO}/contents/${ARCHIVE_PATH}?ref=${HEAD_SHA}`,
+      "-H",
+      "Accept: application/vnd.github.raw",
+    ],
+    [
+      "api",
+      `repos/${REPO}/contents/${FACTS_PATH}?ref=${HEAD_SHA}`,
+      "-H",
+      "Accept: application/vnd.github.raw",
+    ],
+  ]);
+});
+
+Deno.test("headSummaryDigest - the error reason quotes the failure message, not the Error's string form", async () => {
+  const gh = async (): Promise<string> => {
+    throw new Error("gh command failed (exit 1): HTTP 502");
+  };
+
+  const result = await headSummaryDigest(REPO, ISSUE_NUMBER, HEAD_SHA, gh);
+
+  assertEquals(result, {
+    kind: "error",
+    reason:
+      `Failed to read ${ARCHIVE_PATH} at ${HEAD_SHA}: gh command failed (exit 1): HTTP 502`,
+  });
+});
+
+Deno.test("checkedGit - a git runner failure is an error naming the step", async () => {
+  const result = await checkedGit(
+    async () => ({ ok: false, error: new Error("spawn failed") }),
+    "fetch",
+    ["fetch"],
+    "/tmp/x",
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error.message, "git fetch failed: spawn failed");
+  }
+});
+
+Deno.test("checkedGit - a non-zero exit is an error quoting the exit code and stderr", async () => {
+  const result = await checkedGit(
+    async () => ({
+      ok: true,
+      value: { code: 2, stdout: "", stderr: "fatal: bad ref\n" },
+    }),
+    "checkout",
+    ["checkout"],
+    "/tmp/x",
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.error.message,
+      "git checkout failed (exit 2): fatal: bad ref",
+    );
+  }
+});
+
+Deno.test("checkedGit - exit 0 returns the stdout and runs in the given directory", async () => {
+  const calls: GitCall[] = [];
+
+  const result = await checkedGit(
+    okGit(calls, `${HEAD_SHA}\n`),
+    "rev-parse",
+    ["rev-parse", "HEAD"],
+    "/tmp/x",
+  );
+
+  assertEquals(result, { ok: true, value: `${HEAD_SHA}\n` });
+  assertEquals(calls, [{ args: ["rev-parse", "HEAD"], cwd: "/tmp/x" }]);
+});
+
+Deno.test("disposableHeadCheckout - success: shallow blobless clone, detached checkout at the SHA, cleanup removes it", async () => {
+  const cloneCalls: string[][] = [];
+  const gitCalls: GitCall[] = [];
+  const prepare = disposableHeadCheckout({
+    runGhCommand: populatingClone(cloneCalls),
+    runGitCommand: okGit(gitCalls, `${HEAD_SHA}\n`),
+  });
+
+  const result = await prepare(REPO, HEAD_SHA);
+
+  assert(result.ok, "checkout should succeed");
+  const dir = cloneCalls[0]?.[3] ?? "";
+  const tmp = tempDirOf(dir);
+  assertEquals(cloneCalls, [[
+    "repo",
+    "clone",
+    REPO,
+    dir,
+    "--",
+    "--depth=1",
+    "--no-checkout",
+    "--filter=blob:none",
+  ]]);
+  assertEquals(gitCalls, [
+    { args: ["fetch", "--depth=1", "origin", HEAD_SHA], cwd: dir },
+    {
+      args: [
+        "-c",
+        "advice.detachedHead=false",
+        "checkout",
+        "--detach",
+        "FETCH_HEAD",
+      ],
+      cwd: dir,
+    },
+    { args: ["rev-parse", "HEAD"], cwd: dir },
+  ]);
+  assertEquals(result.value.path, dir);
+  await result.value.cleanup();
+  await assertRejects(() => Deno.stat(tmp), Deno.errors.NotFound);
+});
+
+Deno.test("disposableHeadCheckout - a failing clone quotes the message and removes its temp dir", async () => {
+  const cloneDirs: string[] = [];
+  const prepare = disposableHeadCheckout({
+    runGhCommand: async (args) => {
+      cloneDirs.push(args[3] ?? "");
+      await populatingClone([])(args);
+      throw new Error("clone refused");
+    },
+    runGitCommand: REFUSE_GIT,
+  });
+
+  const result = await prepare(REPO, HEAD_SHA);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.error.message,
+      `Failed to clone ${REPO}: clone refused`,
+    );
+  }
+  // The clone dir holds a file, so only a recursive removal clears it.
+  await assertRejects(
+    () => Deno.stat(tempDirOf(cloneDirs[0] ?? "")),
+    Deno.errors.NotFound,
+  );
+});
+
+Deno.test("disposableHeadCheckout - a temp dir that cannot be removed is appended to the original failure", async () => {
+  const prepare = disposableHeadCheckout({
+    runGhCommand: async (args) => {
+      // Remove the temp dir out from under the cleanup so its removal fails.
+      await Deno.remove(tempDirOf(args[3] ?? ""), { recursive: true });
+      throw new Error("clone refused");
+    },
+    runGitCommand: REFUSE_GIT,
+  });
+
+  const result = await prepare(REPO, HEAD_SHA);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(
+      result.error.message,
+      `Failed to clone ${REPO}: clone refused (and the temporary directory `,
+    );
+    assertStringIncludes(result.error.message, "could not be removed");
+  }
+});
+
+Deno.test("disposableHeadCheckout - a failing rev-parse fails the checkout and removes its temp dir", async () => {
+  const cloneCalls: string[][] = [];
+  const prepare = disposableHeadCheckout({
+    runGhCommand: populatingClone(cloneCalls),
+    runGitCommand: async (args) => ({
+      ok: true,
+      value: {
+        code: args[0] === "rev-parse" ? 1 : 0,
+        stdout: "",
+        stderr: args[0] === "rev-parse" ? "fatal: no HEAD\n" : "",
+      },
+    }),
+  });
+
+  const result = await prepare(REPO, HEAD_SHA);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.error.message,
+      "git rev-parse failed (exit 1): fatal: no HEAD",
+    );
+  }
+  await assertRejects(
+    () => Deno.stat(tempDirOf(cloneCalls[0]?.[3] ?? "")),
+    Deno.errors.NotFound,
+  );
+});
+
+Deno.test("disposableHeadCheckout - a checkout resolving to another SHA fails and removes its temp dir", async () => {
+  const other = "f".repeat(40);
+  const cloneCalls: string[][] = [];
+  const prepare = disposableHeadCheckout({
+    runGhCommand: populatingClone(cloneCalls),
+    runGitCommand: okGit([], `${other}\n`),
+  });
+
+  const result = await prepare(REPO, HEAD_SHA);
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.error.message,
+      `Checkout of ${REPO} resolved to ${other}, not ${HEAD_SHA}`,
+    );
+  }
+  await assertRejects(
+    () => Deno.stat(tempDirOf(cloneCalls[0]?.[3] ?? "")),
+    Deno.errors.NotFound,
+  );
+});
+
+Deno.test("reconcile - a listing entry with no author is still reconciled", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [{ number: PR_NUMBER, headRefOid: HEAD_SHA, body }],
+    files: { [ARCHIVE_PATH]: SUMMARY_V1 },
+  });
+
+  const summary = await reconcilePrBodyDigests(OPTS, passDeps(h, new Map()));
+
+  assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 0 });
+});
+
+Deno.test("reconcile - a cleanup failure after the rebuild is logged, not thrown", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const h = harness({
+    prs: [prEntry(body)],
+    files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+  });
+
+  const summary = await reconcilePrBodyDigests(
+    OPTS,
+    passDeps(h, new Map(), {
+      prepareCheckout: async () => ({
+        ok: true,
+        value: {
+          path: "/tmp/fake-pr-head-checkout",
+          cleanup: async () => {
+            throw new Error("rm refused");
+          },
+        },
+      }),
+      syncFn: async () => ({
+        ok: true,
+        value: { status: "updated", issueNumber: ISSUE_NUMBER },
+      }),
+    }),
+  );
+
+  assertEquals(summary, { checked: 1, rebuilt: 1, readFailures: 0 });
+  const warns = warnText(h.logs);
+  assertStringIncludes(
+    warns,
+    "Could not remove the disposable PR head checkout",
+  );
+  assertStringIncludes(warns, "rm refused");
+});
+
+Deno.test("reconcile - an unexpected throw for one PR is logged and the pass moves on to the next", async () => {
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const second = { ...(prEntry(body) as Record<string, unknown>), number: 8 };
+  const h = harness({
+    prs: [prEntry(body), second],
+    files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+  });
+  const prepared: string[] = [];
+
+  const summary = await reconcilePrBodyDigests(
+    OPTS,
+    passDeps(h, new Map(), {
+      prepareCheckout: async () => {
+        prepared.push("called");
+        throw new Error("checkout blew up");
+      },
+    }),
+  );
+
+  assertEquals(prepared.length, 2, "the second PR is still reached");
+  assertEquals(summary, { checked: 2, rebuilt: 0, readFailures: 0 });
+  const warns = warnText(h.logs);
+  assertStringIncludes(warns, "PR body digest check failed unexpectedly");
+  assertStringIncludes(warns, "checkout blew up");
 });

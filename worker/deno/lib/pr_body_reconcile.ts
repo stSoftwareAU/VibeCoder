@@ -146,7 +146,7 @@ export type PrepareHeadCheckout = (
 ) => Promise<Result<PrBodyCheckout>>;
 
 /** Why a git step failed, or the stdout of the step when it succeeded. */
-async function checkedGit(
+export async function checkedGit(
   runGit: typeof runGitCommandType,
   name: string,
   args: string[],
