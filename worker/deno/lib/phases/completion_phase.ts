@@ -226,11 +226,13 @@ import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
   findOwnLineStandingViolations,
+  PRE_PR_VERIFIER_HOLD_MARKER,
   STANDING_VIOLATION_LABEL,
   type StandingViolation,
 } from "../standing_violation_routing.ts";
 import {
   carryForwardCorrectedClaims,
+  carryForwardManualClaims,
   correctSummaryClaimsInRun,
   shouldOfferClaimCorrection,
 } from "../summary_claim_correction.ts";
@@ -571,6 +573,10 @@ interface SummaryRuleBlock {
    * the PR is labelled and auto-merge withheld.
    */
   standingViolations: readonly StandingViolation[];
+  /** Surviving verifier findings; empty when the verifier did not block. */
+  verifierHoldComment: string;
+  /** Confirmed manual/prompt claims that must not ship armed. */
+  docHoldComment: string;
   /**
    * True when a blocked gate in `sections` is fixed by changing tests (the
    * mutation gate, Issue #3393), so the recovery prompt allows test changes.
@@ -807,7 +813,10 @@ async function reportSummaryRuleBlock(
     deps,
     {
       docsSweepHitsComment,
-      holdAutoMerge: block.standingViolations.length > 0,
+      holdAutoMerge: block.standingViolations.length > 0 ||
+        block.verifierHoldComment.length > 0 || block.docHoldComment.length > 0,
+      verifierHoldComment: [block.verifierHoldComment, block.docHoldComment]
+        .filter(Boolean).join("\n\n"),
     },
   );
   if (recovered.status !== "continue") return recovered;
@@ -1040,7 +1049,8 @@ async function postDocsSweepHitsComment(
  * the recovered PR once — advisory, best-effort, never affects the result.
  *
  * Issue #3382: `finalise.holdAutoMerge` is set when a Standards violation is
- * still standing on the branch's own lines after the recovery turn. Auto-merge
+ * still standing on the branch's own lines, or a pre-PR verifier block survives
+ * the recovery turn. Auto-merge
  * is then NOT armed and the PR is labelled `standing-violation` for the next
  * run to fix. The flag has no default: every caller states it.
  *
@@ -1053,7 +1063,11 @@ export async function recoverAndFinaliseExistingPr(
   state: PhaseState,
   prBody: string,
   deps: WorkerDeps,
-  finalise: { docsSweepHitsComment: string; holdAutoMerge: boolean },
+  finalise: {
+    docsSweepHitsComment: string;
+    holdAutoMerge: boolean;
+    verifierHoldComment?: string;
+  },
 ): Promise<PhaseResult> {
   const { docsSweepHitsComment, holdAutoMerge } = finalise;
   const { repo, issueNumber, githubUser, milestoneTitle, issueLabels } = ctx;
@@ -1110,14 +1124,19 @@ export async function recoverAndFinaliseExistingPr(
     // Issue #1136: arm auto-merge here, on the recovery path too — see the
     // note on the creation path below.
     if (prNumber > 0 && holdAutoMerge) {
-      // Issue #3382: a standing violation on this branch's own lines — hold
+      // Issues #3382, #3796: a standing violation or verifier block — hold
       // the merge and make the hold visible on the PR. The label is also what
       // the Priority 1.65 sweep reads to keep it held (Issue #3517).
       logger.warn(
-        "Auto-merge NOT armed: a Standards violation is still standing on " +
-          "this branch's own lines — PR labelled standing-violation for the " +
-          "next run to fix (Issue #3382)",
-        { repo, prNumber },
+        "Auto-merge NOT armed: unresolved blocking findings — PR labelled " +
+          "standing-violation for the next run to fix",
+        {
+          repo,
+          prNumber,
+          reason: finalise.verifierHoldComment
+            ? "pre-PR verifier block (and any standing Standards violations)"
+            : "standing Standards violation",
+        },
       );
       const ensured = await deps.github.ensureLabelExists(
         repo,
@@ -1137,6 +1156,25 @@ export async function recoverAndFinaliseExistingPr(
             "is not visible on the PR (Issue #3382)",
           { repo, prNumber, error: held.error.message },
         );
+      }
+      if (finalise.verifierHoldComment) {
+        try {
+          await deps.github.createClient(logger).postComment(
+            repo,
+            prNumber,
+            `${PRE_PR_VERIFIER_HOLD_MARKER}\n\n` +
+              "Auto-merge withheld: blocking pre-PR findings " +
+              "survived the recovery turn. Fix or dispute each finding with " +
+              "evidence before the hold is released.\n\n" +
+              finalise.verifierHoldComment,
+          );
+        } catch (error) {
+          logger.error("Could not post the pre-PR verifier hold comment", {
+            repo,
+            prNumber,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     } else if (prNumber > 0) {
       await armAutoMergeAtCreation(ctx, state, prNumber, deps);
@@ -1225,7 +1263,7 @@ export async function workOnIssueCompletion(
   // documentation shortfall on a pushed, quality-gated branch used to cost the
   // whole run. Entered once per run — a block on the re-run is the second. A
   // second block the standalone claim-check gate alone raised instead defers
-  // to the one summary-only correction turn below (Issue #3324); any other
+  // to the one narrow claim correction turn below (Issue #3324); any other
   // second block fails as before.
   if (
     result.status === "failure" && (state.summaryRuleBlocks?.length ?? 0) === 1
@@ -1239,7 +1277,7 @@ export async function workOnIssueCompletion(
     );
   }
 
-  // Summary-only claim correction turn (Issue #3324): the recovery turn above
+  // Claim-sentence correction turn (Issue #3324): the recovery turn above
   // has already been spent, and the completion attempt deferred a
   // claim-check-only later block here rather than failing or finalising the
   // PR immediately — see `shouldOfferClaimCorrection`.
@@ -1411,6 +1449,10 @@ export async function postWorkOnRunStats(
     // renders no line at all.
     ...(state.qualityGateOutcome
       ? { qualityGate: state.qualityGateOutcome }
+      : {}),
+    // Each gate stage's outcome, so a skipped stage is visible (Issue #3726).
+    ...(state.qualityGateStages
+      ? { qualityGateStages: state.qualityGateStages }
       : {}),
     // …and so does its RTK status, `off` included (Issue #2385).
     ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
@@ -2386,6 +2428,7 @@ async function completionBody(
       prSummaryDigestInput(rawSummaryContent, factsContent),
     ),
     subAgentTier: prSubAgentTier,
+    assignmentId: state.assignmentId,
     ensureReferences: deps.pr.ensurePrReferencesIssue,
   });
   // Issue #3177: `assemblePrBody` withholds the closing keyword when the
@@ -2992,10 +3035,14 @@ async function completionBody(
   // misses it — the gate is never loosened by a flaky re-run.
   const claimCheck = rawClaimCheck === null
     ? null
-    : carryForwardCorrectedClaims(
-      rawClaimCheck,
+    : await carryForwardManualClaims(
+      carryForwardCorrectedClaims(
+        rawClaimCheck,
+        state.summaryClaimCorrection,
+        summaryContent,
+      ),
       state.summaryClaimCorrection,
-      summaryContent,
+      state.repoPath,
     );
   if (claimCheck === null) {
     logger.info(
@@ -3302,6 +3349,12 @@ async function completionBody(
       comment: foldedComment,
       sections,
       standingViolations,
+      docHoldComment: (claimCheck?.docFindings.length ?? 0) > 0
+        ? claimCheckVerdict.comment()
+        : "",
+      verifierHoldComment: prePrVerifierVerdict.blocked
+        ? prePrVerifierVerdict.comment()
+        : "",
       ...(allowsTestChanges ? { allowsTestChanges } : {}),
     };
   }
@@ -3350,7 +3403,8 @@ async function completionBody(
   // verdict, with any departure from that verdict recorded out loud. The
   // Standards axis is reported under its own heading: a change can pass one
   // axis and fail the other, and merging them lets one mask the other.
-  // Issues with no criteria are unaffected.
+  // An issue with no criteria skips the Spec axis, but a `## Standards Review`
+  // the summary carries is still held to the violation rules (Issue #3761).
   // ---------------------------------------------------------------------
   const review = validateIndependentReview({
     issueBody: ctx.issueBody,
@@ -3629,20 +3683,17 @@ async function completionBody(
     // passed, so the claim check and (Issue #3395) the pre-PR verifier are
     // the only verdicts that can block here; the verifier folds into this
     // gate's block below. A later block of this same gate (the recovery turn
-    // already spent) gets one summary-only correction turn
+    // already spent) gets one narrow claim correction turn
     // (`summary_claim_correction.ts`, Issue #3324) instead of failing the run
     // immediately: the state is recorded as `pending` and no comment is
     // posted yet, because the correction turn may yet clear the finding
     // before anything reaches the thread. The re-run posts the comment via
     // this same gate if the sentence survives.
     //
-    // Issue #3347: the correction turn rewrites only the PR summary, so a
-    // block that carries a finding in a changed manual or prompt
-    // (`docFindings`) can never be cleared by it — that goes to
-    // `reportSummaryRuleBlock` like any other later block.
+    // Issue #3865: manual findings get the same bounded turn, using indexed
+    // sentence replacements written by the worker rather than full-file edits.
     if (
-      summarySource !== null && shouldOfferClaimCorrection(state) &&
-      claimCheck.docFindings.length === 0
+      summarySource !== null && shouldOfferClaimCorrection(state)
     ) {
       state.summaryClaimCorrection = {
         status: "pending",
@@ -3650,10 +3701,11 @@ async function completionBody(
         comment: claimCheckVerdict.comment(),
         summaryPath: summarySource,
         findings: claimCheck.findings,
+        docFindings: claimCheck.docFindings,
       };
       logger.warn(
         "PR-summary claim check blocked a later attempt — deferring to the " +
-          "one summary-only correction turn (Issue #3324)",
+          "one narrow claim correction turn (Issues #3324, #3865)",
         { repo, issueNumber, reason: claimCheckVerdict.reason },
       );
       return { status: "failure", reason: claimCheckVerdict.reason };
@@ -3701,6 +3753,8 @@ async function completionBody(
         comment,
         sections: [comment],
         standingViolations,
+        verifierHoldComment: comment,
+        docHoldComment: "",
       },
       ctx,
       state,

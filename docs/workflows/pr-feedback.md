@@ -133,6 +133,16 @@ match wins and the loop restarts.
 
 ### 🔴 Priority 1 — PR feedback
 
+The scan also admits a worker-authored verifier hold (Issue #3798): a
+top-level PR comment whose first line is
+`<!-- vibe-pre-pr-verifier-hold -->` and whose author is in the push-capable
+fleet set. It logs `worker-verifier-hold` as the trust reason. This is the
+exception to skipping the host's own comments; an ordinary own-login comment,
+an inline marker or a marker merely quoted in the body does not qualify.
+A fleet eyes reaction marks the hold processed, as for other comments.
+The repair pass does not release `standing-violation` or arm auto-merge;
+independent verification and release remain the follow-up in Issue #3784.
+
 1. **Discover** — Find an open PR by this user that has unprocessed feedback
    (comment with thumbs-up or from authorised commenter, or CHANGES_REQUESTED
    review). A review body goes straight into the feedback prompt, so — like a

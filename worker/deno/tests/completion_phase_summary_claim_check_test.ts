@@ -173,6 +173,7 @@ interface Scenario {
   claudeTurns?: Array<{
     writes?: string;
     output?: string;
+    timedOut?: boolean;
     /** Rewrites another repo file (repo-relative path), e.g. a manual. */
     writesFile?: { path: string; content: string };
   }>;
@@ -206,6 +207,9 @@ interface Outcome {
   comments: string[];
   /** The summary file's content when the run ended, before cleanup. */
   finalSummary: string | undefined;
+  heldLabels: string[];
+  commitCalls: number;
+  finalRepoFiles: Record<string, string | undefined>;
 }
 
 /** Drive the live completion phase over a (possibly) blocked claim check. */
@@ -226,6 +230,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   }
 
   const comments: string[] = [];
+  const heldLabels: string[] = [];
+  let commitCalls = 0;
+  const finalRepoFiles: Record<string, string | undefined> = {};
   let prCreateCalls = 0;
   let finalisePrCalls = 0;
   let claudeCallIndex = 0;
@@ -270,6 +277,18 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       },
     },
     git: {
+      commitAndPushPending: () => {
+        commitCalls++;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 0,
+            finalUnpushedCount: 0,
+            finalUnpushedSource: "remote-head" as const,
+          },
+        });
+      },
       runGitCommand: (
         cmdArgs: string[],
       ): Promise<Result<{ code: number; stdout: string; stderr: string }>> => {
@@ -319,7 +338,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             value: {
               exitCode: 0,
               output: turn.output ?? "done",
-              timedOut: false,
+              timedOut: turn.timedOut ?? false,
             },
           });
         }
@@ -370,6 +389,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         }),
     },
     pr: {
+      updatePrLabels: (_repo, _number, labels) => {
+        heldLabels.push(...labels);
+        return Promise.resolve({ ok: true, value: undefined });
+      },
       findExistingPrForIssue: () =>
         scenario.existingPr
           ? Promise.resolve({ ok: true as const, value: PR_URL })
@@ -394,6 +417,13 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let finalSummary: string | undefined;
   try {
     result = await workOnIssueCompletion(ctx, state, deps);
+    for (const file of Object.keys(scenario.repoFiles ?? {})) {
+      try {
+        finalRepoFiles[file] = await Deno.readTextFile(`${repoPath}/${file}`);
+      } catch {
+        finalRepoFiles[file] = undefined;
+      }
+    }
     try {
       finalSummary = await Deno.readTextFile(summaryPath);
     } catch {
@@ -419,6 +449,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     questionCalls,
     comments,
     finalSummary,
+    heldLabels,
+    commitCalls,
+    finalRepoFiles,
   };
 }
 
@@ -925,13 +958,20 @@ Deno.test(
 
 // (3347 c)
 Deno.test(
-  "completion - a later block from a doc finding gets no summary-only correction turn",
+  "completion - a later doc finding gets a narrow sentence correction turn",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WRONG_CLAIM,
       changedFiles: DOC_CHANGED_FILES,
       repoFiles: { [MANUAL_PATH]: MANUAL_WITH_CLAIM },
-      claudeTurns: [{ writes: SUMMARY_WRONG_CLAIM_FIXED }],
+      claudeTurns: [{ writes: SUMMARY_WRONG_CLAIM_FIXED }, {
+        output: JSON.stringify({
+          replacements: [{
+            index: 1,
+            text: "The phrase helper is documented elsewhere.",
+          }],
+        }),
+      }],
       questionReplies: [
         verdictReply([
           findingFor(
@@ -948,9 +988,15 @@ Deno.test(
       ],
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0);
-    assertEquals(outcome.claudeCalls, 1, "the recovery turn only");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.claudeCalls, 2, "recovery then one narrow correction");
+    assertEquals(outcome.finalRepoFiles[MANUAL_PATH], MANUAL_FIXED);
+    assertEquals(
+      outcome.commitCalls,
+      2,
+      "commit the general recovery and the manual correction",
+    );
     for (const call of outcome.claudeCallDetails) {
       assertEquals(call.prompt.includes(CORRECTED_SUMMARY_OPEN), false);
     }
@@ -959,7 +1005,7 @@ Deno.test(
 
 // (3347 d)
 Deno.test(
-  "completion - a later doc-finding block on an existing PR is finalised as summary_incomplete with no correction turn",
+  "completion - a surviving doc finding is held after its one correction turn",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WRONG_CLAIM,
@@ -985,7 +1031,16 @@ Deno.test(
 
     assertEquals(outcome.status, "early_exit");
     assertEquals(outcome.outcomeKind, "summary_incomplete");
-    assertEquals(outcome.claudeCalls, 1, "the recovery turn only");
+    assertEquals(outcome.claudeCalls, 2, "recovery then one narrow correction");
+    assertEquals(outcome.finalisePrCalls, 0, "must not arm auto-merge");
+    assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+    assertEquals(
+      outcome.comments.some((c) =>
+        c.startsWith("<!-- vibe-pre-pr-verifier-hold -->") &&
+        c.includes(DOC_SENTENCE)
+      ),
+      true,
+    );
     for (const call of outcome.claudeCallDetails) {
       assertEquals(call.prompt.includes(CORRECTED_SUMMARY_OPEN), false);
     }
@@ -1111,3 +1166,87 @@ Deno.test(
     assertEquals(questionCalls.length, 0, "no summary file — no question");
   },
 );
+
+Deno.test("completion - a manual finding beside another gate is held without an extra correction turn", async () => {
+  const outcome = await runCompletion({
+    summary: SUMMARY_FOLD,
+    changedFiles: `${DOC_CHANGED_FILES}\nworker/deno/lib/widget.ts`,
+    repoFiles: { [MANUAL_PATH]: MANUAL_WITH_CLAIM },
+    existingPr: true,
+    questionReplies: [
+      verdictReply([docFindingFor(DOC_SENTENCE, "head differs")]),
+    ],
+  });
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.outcomeKind, "summary_incomplete");
+  assertEquals(
+    outcome.claudeCalls,
+    1,
+    "only the general recovery turn, because another gate still blocks",
+  );
+  assertEquals(
+    outcome.finalisePrCalls,
+    0,
+    "manual findings must hold even in a mixed block",
+  );
+  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assertEquals(
+    outcome.comments.some((c) =>
+      c.startsWith("<!-- vibe-pre-pr-verifier-hold -->") &&
+      c.includes(DOC_SENTENCE)
+    ),
+    true,
+  );
+});
+
+Deno.test("completion - an unchanged manual finding cannot disappear in a flaky correction recheck", async () => {
+  const outcome = await runCompletion({
+    summary: SUMMARY_WRONG_CLAIM,
+    changedFiles: DOC_CHANGED_FILES,
+    repoFiles: { [MANUAL_PATH]: MANUAL_WITH_CLAIM },
+    existingPr: true,
+    claudeTurns: [{ writes: SUMMARY_WRONG_CLAIM_FIXED }, {
+      output: JSON.stringify({
+        replacements: [{ index: 1, text: DOC_SENTENCE }],
+      }),
+    }],
+    questionReplies: [
+      verdictReply([findingFor(WRONG_CLAIM_SENTENCE, "head differs")]),
+      verdictReply([docFindingFor(DOC_SENTENCE, "head differs")]),
+      verdictReply([]),
+    ],
+  });
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.finalRepoFiles[MANUAL_PATH], MANUAL_WITH_CLAIM);
+  assertEquals(outcome.finalisePrCalls, 0);
+  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assertEquals(
+    outcome.comments.some((c) =>
+      c.startsWith("<!-- vibe-pre-pr-verifier-hold -->") &&
+      c.includes(DOC_SENTENCE)
+    ),
+    true,
+  );
+});
+
+Deno.test("completion - a timed-out correction reply cannot write manual text", async () => {
+  const outcome = await runCompletion({
+    summary: SUMMARY_WRONG_CLAIM,
+    changedFiles: DOC_CHANGED_FILES,
+    repoFiles: { [MANUAL_PATH]: MANUAL_WITH_CLAIM },
+    existingPr: true,
+    claudeTurns: [{ writes: SUMMARY_WRONG_CLAIM_FIXED }, {
+      output: JSON.stringify({
+        replacements: [{ index: 1, text: "Accurate claim." }],
+      }),
+      timedOut: true,
+    }],
+    questionReplies: [
+      verdictReply([findingFor(WRONG_CLAIM_SENTENCE, "head differs")]),
+      verdictReply([docFindingFor(DOC_SENTENCE, "head differs")]),
+    ],
+  });
+  assertEquals(outcome.finalRepoFiles[MANUAL_PATH], MANUAL_WITH_CLAIM);
+  assertEquals(outcome.finalisePrCalls, 0);
+  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+});

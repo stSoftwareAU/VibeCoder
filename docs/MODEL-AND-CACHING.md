@@ -763,7 +763,9 @@ Issue #3395 adds a worker step, the pre-PR verifier
 called from
 [`worker/deno/lib/phases/completion_phase.ts`](../worker/deno/lib/phases/completion_phase.ts)).
 It is not a sub-agent the issue prompt dispatches: it is one extra model pass
-the worker makes itself.
+the worker makes itself. It also judges each closure entry the
+summary marks `met` (Issue #3766); see
+[issue-processing.md](workflows/issue-processing.md#pre-pr-verifier-issue-3395).
 
 - **Model.** The `issue` phase's model, resolved by the same
   [precedence chain](#%EF%B8%8F-modeleffort-precedence-chain) as the main
@@ -1703,6 +1705,15 @@ flowchart TD
   advisor/executor pilot (#2320) counts its first-attempt pass rate off these
   exact strings, so re-casing or bolding the line empties the metric. A phase
   that runs no quality gate renders no such line, so its comment is unchanged.
+- **The run's quality-gate stages.** Directly after the attempt line, an
+  implementation run appends `- quality gate stages: …` (Issue #3726): each
+  stage of the latest gate run grouped as `passed`, `skipped` and `failed`, for
+  example ``passed: `deno lint`; skipped: `semgrep` (`semgrep: SKIPPED (offline)`)``.
+  A SKIPPED stage carries its reason, taken from the stage's output, redacted
+  and cut to one line, or `(no reason recorded)` when it left none. The line is
+  absent for a phase with no gate, and the `quality gate:` line above is
+  unchanged. The same text is logged as "Quality gate stage outcomes", so an
+  audit can match a CI-only failure to a stage that was skipped locally.
 - **The run's advisor/executor split.** Every implementation run appends a
   `- split: on` or `- split: off` bullet (Issue #2346), so pilot and control
   runs are separable when the numbers are read. A `split: on` run appends three

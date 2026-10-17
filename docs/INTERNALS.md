@@ -1080,6 +1080,135 @@ This sidecar only ever describes one host; an operator who wants an `issue`-phas
 run to measure or compare behaviour across the whole fleet configures
 `fleet_run_archive` (see [Fleet Run Archive](CONFIGURATION.md#-fleet-run-archive)).
 
+### 🧾 Lifecycle ledger and issue assignment (Issue #3718)
+
+Part of #3644. Before the first agent invocation of an `issue`-phase run, the
+execute phase attaches the run to its issue's stable assignment and appends one
+`assignment` event to this host's lifecycle ledger. A run that exits before the
+agent is invoked records nothing. A failure to read, mint, post or append is
+logged at error level by the execute phase, and the run continues.
+
+**The marker.** The assignment is a hidden comment on the issue:
+`<!-- vibe-assignment id="<uuid>" cohort="<label>" -->`. Assignment time comes
+from the trusted comment’s creation time.
+The run reads the issue's comments through the bounded comment-page helper
+(`fetchIssueCommentPages` in `lib/issue_comment_pages.ts`), so a long thread is
+never read without a cap. Only a marker posted by a fleet author is trusted: the
+author is checked with `isFleetAuthor` against the set `resolveFleetMaintenanceAuthorSet`
+returns (the host login, `fleet_pr_authors` and `service_accounts`). A marker
+anyone else posted is ignored. The earliest trusted marker wins: a run that
+minted re-reads the comments after posting and adopts the earliest trusted
+marker, so two hosts that race converge on one assignment — provided GitHub
+lists a just-posted comment on the next read. A re-read that fails is logged at
+error level like any other failure, and nothing is appended. If the comments
+cannot be read, the run mints nothing, since an unreadable thread is never taken
+as "no marker".
+
+- **Reused.** A trusted marker's id, cohort and assignment time are reused, so a
+  restart, or another host picking the issue up, keeps the same assignment.
+- **Minted.** Otherwise a UUID is minted with cohort `unassigned` (no experiment
+  supplies cohorts yet; #3645 will), and the marker is posted beneath a short
+  visible sentence.
+
+**The ledger.** Each run appends its `assignment` event as one JSON line to
+`WORK_DIR/lifecycle_ledger_<hostname>.jsonl`. A re-entry of the execute-phase
+body, or a later run on the same host, appends the same `eventKey` again,
+which the reader collapses to one assignment event per host. The hostname is sanitised as the
+fleet-telemetry sidecar's is, so workers on a shared work volume keep separate
+ledgers. The `assignment` event records the host, run id, repo, issue number,
+recorded time, assignment time, cohort, whether the assignment was reused, and
+the treatment: each role's provider, model and effort. The manager is the
+`issue` phase's resolved routing; the executor and reviewer are the `--agents`
+definitions the run carries, on the Claude provider only. The Haiku-tier
+read-only explorer is not one of the three roles and is not recorded. The
+treatment also carries the worker version and commit (the build facts the
+post-run callback context emits), and the subscription allocation label when one
+is configured.
+
+The ledger's union defines five kinds: `assignment`, `invocation`, `follow_on`,
+`gate` and `outcome`. This milestone writes the first three; gate and outcome
+writers belong to later work. Their keys are:
+
+- `assignment:<assignmentId>:<host>`: the first assignment event per host wins.
+- `invocation:<assignmentId>:<runId>:<invocationIndex>`: each runner attempt,
+  including failed and timed-out attempts, has its own index.
+- `follow_on:<assignmentId>:<repo>:<prNumber>:<kind>:<cycle>:<attempt>`:
+  PR maintenance dedupes across run IDs. CI uses the check-run ID and durable
+  retry number; feedback uses comment type and ID as its cycle, with attempt 1.
+- `gate` is run-scoped; `outcome` uses the PR number when one is present,
+  otherwise the run ID.
+
+**Invocation usage (Issue #3719).** The issue run carries its assignment in
+async-local storage, so concurrent slots cannot overwrite each other's IDs.
+Recording begins after execute-phase assignment resolution. If that fails,
+subsequent usage records `assignmentId: unknown`. Each claim gets a separate
+run ID so a later claim in the same worker process cannot dedupe away new work. The single-spawn
+runner records each subsequent invocation, below the retry ladder, including
+pre-PR verification (role `reviewer`). Other calls default to `manager` unless
+an explicit role is supplied. In-process sub-agent roles are not observable:
+additional model entries carry `sub-agent (unattributed)`, rather than guessing
+an executor or reviewer from its model. Setup maintenance before assignment is
+not attributed to the issue.
+
+Each invocation records the requested model, observed served model when present,
+effort, attempt/index, duration, result and quota status. `limited` means the
+provider classified a quota or rate refusal; otherwise quota is `unknown`, not
+an assertion that capacity remained. `models` holds each model's token buckets
+and API-equivalent estimate, using the existing attribution and pricing table.
+`usage: unknown` carries the callback telemetry absence reason. Unknown pricing
+or usage omits `estimatedApiEquivalentUsd`; it never means zero spend. These
+estimates do not allocate subscription fees or change the daily credit ceiling.
+
+**PR follow-ons (Issue #3720).** PR creation adds the worker-owned
+`<!-- vibe-assignment-id id="<uuid>" -->` marker, and body refresh preserves it.
+Quoted markers in summaries and extra sections are neutralised before the real
+marker is appended. CI-fix and feedback runs that invoked an agent append a
+`follow_on` event, priced from their captured attempts. A marker-less or
+ambiguous PR records `assignmentId: unknown`; an unreadable PR body is an error,
+not a missing marker. The existing fleet counters retain their previous inputs.
+
+**Dedupe on read.** The writer is a plain append. The reader keeps the first
+line for each `eventKey`, so a replay after a restart is harmless.
+
+**Fail loud.** A missing ledger reads as empty. An unreadable file, or any line
+that is not JSON, fails validation, or carries a newer schema, raises
+`LifecycleLedgerReadError` naming the path and line; its message never echoes
+the raw line. A failed append raises `LifecycleLedgerAppendError`. Nothing is
+skipped silently.
+
+**The allowlist.** Every event is validated before it is written and again when
+it is read. A key the event kind does not name is refused, so a prompt, an issue
+body or any other field outside the schema has no key to be written under. A
+value of the wrong shape is refused too. Identifiers (host, run id, provider,
+model, effort, agent, gate, version and commit) must match a bounded token
+pattern with no `@` or whitespace, which refuses an e-mail address and
+multi-word prose. Labels (cohort and subscription allocation) are lowercase
+`[a-z0-9._-]`, at most 64 characters, which also refuses an e-mail address. The
+patterns do not recognise a single-token secret, such as a `ghp_…` GitHub token
+or an `sk-…` API key, or a bare GitHub login: such a value placed in an
+identifier field would be validated and written. What keeps them out of the
+`assignment` event is where its identifiers come from — the host name, the run
+id, the provider's model routing, the run's `--agents` definitions and the
+worker's build facts. A refusal names the field and the rule, never the value.
+
+```mermaid
+sequenceDiagram
+    participant Exec as Execute phase
+    participant Issue as Issue comments
+    participant Ledger as Lifecycle ledger
+    participant Agent as Agent
+    Exec->>Issue: read comments through the bounded page helper
+    alt trusted marker found
+        Issue-->>Exec: reuse id, cohort and assigned time
+    else no trusted marker
+        Exec->>Exec: mint UUID with cohort unassigned
+        Exec->>Issue: post marker comment
+        Exec->>Issue: re-read comments and adopt the earliest trusted marker
+    end
+    Exec->>Ledger: append assignment event
+    Exec->>Agent: invoke agent
+```
+
 ### 🎚️ Per-slot idle accounting — utilisation against capacity (Issue #925)
 
 `fleet-summary:` answers "was the **fleet** occupied?" — occupancy there is
@@ -1903,8 +2032,8 @@ passes — **CI fix**, **review feedback**, **merge conflict** and **auto-merge*
 — therefore reach `readPrLiveState(repo, prNumber, gh)` at their claim point,
 before the first write: one `gh pr view --json` call, no cache, for the six
 fields `state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels`
-(the last is what the auto-merge sweep reads for the `standing-violation` hold,
-Issue #3517; still one round trip). The
+(the last is what the auto-merge sweep and the CI-fix pass read for the
+`standing-violation` hold, Issues #3517, #3685; still one round trip). The
 two processors call it directly through `guardPrStillOpen`; the drain and the
 sweep take it as a **required** injected seam, wired to the same function in
 `run_core_production_deps.ts`, so neither can be left unguarded by omission. A `CLOSED` or
@@ -2083,6 +2212,18 @@ When a comment is found:
    reply and dismiss it only once the run retires it (Issue #3383) — a review
    claimed but not yet retired stays undismissed, guarded by its claim
    comment's lease instead.
+
+For an authorised `CHANGES_REQUESTED` review (`pr_review`), the worker also
+runs the disposable verifier after committing and formatting, before pushing
+(Issue #3784). It supplies the complete earlier problem/Fix pairs and requires
+one evidenced `fixed` verdict per numbered finding. Missing, duplicate,
+`partly` or `not fixed` verdicts become blocking findings. An unavailable
+verifier also blocks this path. One correction turn is allowed; a remaining
+block keeps the review outstanding, charges a failed attempt, labels the PR
+`standing-violation` and disables auto-merge. A push-recovery merge gets a
+fresh verdict before its retry push. Ordinary inline and issue comments retain
+their existing flow. The fleet reviewer applies the same verdict check before
+posting its review.
 
 ### 📏 How "did we push?" is answered (Issue #211)
 
@@ -3581,8 +3722,14 @@ label, the globally oldest issue is selected.
 ### 📐 Mermaid diagram validation
 
 [mermaid_validator.ts](../worker/deno/lib/mermaid_validator.ts) (migrated to
-Deno TypeScript) validates Mermaid gitGraph syntax in documentation files,
-ensuring diagrams are well-formed before they are committed.
+Deno TypeScript) validates Mermaid blocks in documentation files, ensuring
+diagrams are well-formed before they are committed. gitGraph and
+sequenceDiagram blocks get dedicated checks. Other known diagram types get
+generic checks: a known declaration line, a non-empty body, and balanced
+`{}`, `[]` and `()` outside double-quoted labels and `%%` comments. In
+flowchart and graph blocks, a node label that mixes unquoted text with a
+quoted string (for example `D[a, "b"]`) is refused (Issue #3769). The fix is
+to quote the whole label, or to write the inner quotes as `#quot;`.
 
 ### 🔬 Benchmark audit
 
@@ -5409,7 +5556,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [pr_summary_facts.ts](../worker/deno/lib/pr_summary_facts.ts)                                                     | Loads and validates `pr-summary-<N>.facts.json` and renders its Branch outcomes list into the PR summary (Issue #3535)                                                                                                          |
 |                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts)                                       | Post-agent drift check on review-fix runs: model pass, Test Plan recount and docs-sweep re-check, one recovery turn (Issue #3143); given the change request, flags quoted summary sentences still present (Issue #3244); maps Branch-outcomes `path:line` citations through the push's diff and flags stale ones (Issue #3341); also runs the model pass on a push that edits manual or prompt Markdown, asking the shared doc-prose question (Issue #3347); reads the citations from `pr-summary-<N>.facts.json` when present at either ref, reporting a malformed one as not checked (Issue #3536) |
 |                             | [summary_claim_check.ts](../worker/deno/lib/summary_claim_check.ts)                                               | First-run PR-summary claim check: model pass and Test Plan backstop, one recovery turn (Issue #3257); also questions the manual and prompt Markdown the branch changes (Issue #3347)                                                |
-|                             | [summary_claim_correction.ts](../worker/deno/lib/summary_claim_correction.ts)                                     | Summary-only correction turn when the claim check alone blocks a later block on the summary's own sentences: file-writing tools and Bash denied, carries corrected claims forward on the re-run (Issue #3324)                                       |
+|                             | [summary_claim_correction.ts](../worker/deno/lib/summary_claim_correction.ts)                                     | Narrow correction when claim checks alone block a later attempt; worker-owned indexed sentence replacements for manual/prompt findings, file-writing tools and Bash denied, unchanged findings carried forward (Issues #3324, #3865)                                       |
 |                             | [doc_prose_claims.ts](../worker/deno/lib/doc_prose_claims.ts)                                                     | Which changed Markdown files are manual or prompt prose, and the shared question both prose-against-code checks ask of the lines a change adds or edits (Issue #3347)                                                                               |
 |                             | [change_request_quotes.ts](../worker/deno/lib/change_request_quotes.ts)                                           | Parses a change request's findings and quoted spans; flags quoted PR-summary sentences still present in a summary; called by the drift check (Issue #3244)                                                                      |
 |                             | [branch_outcome_citations.ts](../worker/deno/lib/branch_outcome_citations.ts)                                     | Parses Branch-outcomes `path:line` citations and maps them through a `git diff -U0` to flag ones left at the previous head's numbers; called by the drift check (Issue #3341); reads citations from the facts file when present (Issue #3536)                                               |

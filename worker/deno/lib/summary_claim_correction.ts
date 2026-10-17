@@ -1,5 +1,5 @@
 /**
- * Summary-only claim correction turn (Issue #3324).
+ * Claim-sentence correction turn (Issue #3324).
  *
  * The first-run PR-summary claim check (`summary_claim_check.ts`, Issue
  * #3257) folds its verdict into whichever summary gate blocks first
@@ -16,9 +16,9 @@
  * check still blocks on the summary's own sentences, after the recovery turn
  * is gone, the worker asks the model to rewrite just the flagged sentences in
  * the summary — no files edited by the model itself, the worker writes the
- * reply to disk — then re-runs completion exactly once more. A finding in a
- * changed manual or prompt (Issue #3347) never gets this turn: it rewrites
- * only the summary, so such a block goes to `reportSummaryRuleBlock`.
+ * reply to disk — then re-runs completion exactly once more. Manual or prompt findings also get this turn (#3865): the model returns
+ * indexed replacements and the worker changes only the uniquely located
+ * flagged spans, then carries unchanged findings into the recheck.
  *
  * ```mermaid
  * flowchart TD
@@ -26,7 +26,7 @@
  *     B -- no --> C["recoverFromSummaryRuleBlock<br/>(#2189)"]
  *     B -- yes --> D{"Claim check is the<br/>ONLY blocked gate?"}
  *     D -- no --> E["reportSummaryRuleBlock<br/>(failure / summary_incomplete)"]
- *     D -- yes --> F["correctSummaryClaimsInRun:<br/>one summary-only turn"]
+ *     D -- yes --> F["correctSummaryClaimsInRun:<br/>one narrow claim turn"]
  *     F --> G["Re-run completion"]
  *     G --> H{"Claim still<br/>flagged?"}
  *     H -- yes --> E
@@ -36,6 +36,9 @@
  * Australian English throughout.
  */
 
+import { resolve } from "node:path";
+import { escapeRegExp } from "./regexp_escape.ts";
+import { isManualProsePath } from "./doc_prose_claims.ts";
 import type {
   IssueContext,
   PhaseResult,
@@ -62,7 +65,7 @@ import type { Result } from "../types.ts";
 import type { SummaryClaimCheckResult } from "./summary_claim_check.ts";
 
 /**
- * Tools the summary-only correction turn must never call (Issue #3324).
+ * Tools the claim correction turn must never call (Issue #3324).
  *
  * The turn edits no file — the worker writes the corrected summary from the
  * reply itself — so every file-writing tool is denied, same as the
@@ -87,7 +90,7 @@ export const CORRECTED_SUMMARY_CLOSE = "<!-- /vibe-corrected-summary -->";
 export const MAX_CORRECTED_SUMMARY_CHARS = 200_000;
 
 /**
- * State for the one summary-only claim correction turn within a run (Issue
+ * State for the one claim correction turn within a run (Issue
  * #3324).
  *
  * `pending` — a completion attempt deferred a claim-check-only later block
@@ -106,6 +109,8 @@ export interface SummaryClaimCorrection {
   summaryPath: string;
   /** The claim check's confirmed findings when the deferral was recorded. */
   findings: DriftFinding[];
+  /** Confirmed findings in manuals/prompts eligible for sentence-only edits. */
+  docFindings?: DriftFinding[];
 }
 
 /**
@@ -115,8 +120,8 @@ export interface SummaryClaimCorrection {
  * Mirrors the notion of "not the first block" that `reportSummaryRuleBlock`'s
  * `isFirstBlock` uses, with the correction offered at most once per run. This
  * is only the run-state half of the decision: the caller also withholds the
- * turn when the block carries a doc finding (Issue #3347), which a
- * summary-only rewrite cannot clear.
+ * turn when another gate is also blocked. Manual findings use sentence-only
+ * replacements rather than a full-file rewrite (Issue #3865).
  */
 export function shouldOfferClaimCorrection(state: PhaseState): boolean {
   return (state.summaryRuleBlocks?.length ?? 0) > 0 &&
@@ -312,15 +317,125 @@ export function carryForwardCorrectedClaims(
   return { ...result, findings: [...result.findings, ...carried] };
 }
 
-/**
- * Run the one summary-only claim correction turn for this run (Issue #3324).
- *
- * Every path through this function ends by re-running completion: the
- * carried-forward findings ({@link carryForwardCorrectedClaims}) make a
- * still-present wrong sentence block again via `reportSummaryRuleBlock`,
- * exactly as before this issue existed, and the re-run re-checks every other
- * gate so the correction cannot silently break one unseen.
- */
+/** Read only regular, non-aliased Markdown files inside this checkout. */
+export async function readClaimCorrectionFile(
+  repoPath: string,
+  file: string,
+): Promise<string> {
+  if (!isSummaryClaimPath(file) && !isManualProsePath(file)) {
+    throw new Error("Unsafe claim correction path");
+  }
+  const root = await Deno.realPath(repoPath);
+  const path = resolve(root, file);
+  if (await Deno.realPath(path) !== path) {
+    throw new Error("Claim correction refuses symlink paths");
+  }
+  return await Deno.readTextFile(path);
+}
+
+/** Plan exact span replacements against the originals; no model-supplied path is used. */
+export function applyFlaggedSentenceReplacements(
+  reply: string,
+  findings: readonly DriftFinding[],
+  contents: ReadonlyMap<string, string>,
+): Map<string, string> {
+  if (reply.length > MAX_CORRECTED_SUMMARY_CHARS) {
+    throw new Error("Correction reply exceeds cap");
+  }
+  const parsed = JSON.parse(reply);
+  if (
+    !Array.isArray(parsed.replacements) ||
+    parsed.replacements.length !== findings.length
+  ) {
+    throw new Error("One replacement per flagged sentence is required");
+  }
+  const seen = new Set<number>();
+  const edits = new Map<
+    string,
+    { start: number; end: number; text: string }[]
+  >();
+  for (const item of parsed.replacements) {
+    const finding = findings[item?.index - 1];
+    if (
+      !Number.isInteger(item?.index) || !finding || seen.has(item.index) ||
+      typeof item.text !== "string"
+    ) {
+      throw new Error("Invalid or duplicate sentence replacement index");
+    }
+    seen.add(item.index);
+    const original = contents.get(finding.file);
+    if (
+      original === undefined || !finding.sentence.trim() ||
+      !sentenceFoundIn(finding.sentence, original)
+    ) {
+      throw new Error("Flagged sentence is no longer locatable");
+    }
+    // Every non-whitespace token is escaped as literal text. The only regex
+    // operator we introduce is whitespace between non-empty literal tokens;
+    // findings cannot inject quantifiers, groups or alternation.
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+    const pattern = new RegExp(
+      finding.sentence.trim().split(/\s+/).map(escapeRegExp).join("\\s+"),
+      "g",
+    );
+    const match = pattern.exec(original);
+    if (!match || pattern.exec(original)) {
+      throw new Error("Flagged sentence location is ambiguous");
+    }
+    const list = edits.get(finding.file) ?? [];
+    list.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      text: item.text,
+    });
+    edits.set(finding.file, list);
+  }
+  const result = new Map<string, string>();
+  for (const [file, list] of edits) {
+    let text = contents.get(file)!;
+    let boundary = text.length;
+    for (const edit of list.sort((a, b) => b.start - a.start)) {
+      if (edit.end > boundary) throw new Error("Flagged sentences overlap");
+      text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+      boundary = edit.start;
+    }
+    result.set(file, text);
+  }
+  return result;
+}
+
+/** Carry unchanged manual findings forward even if the next model pass misses them. */
+export async function carryForwardManualClaims(
+  result: SummaryClaimCheckResult,
+  correction: SummaryClaimCorrection | undefined,
+  repoPath: string,
+): Promise<SummaryClaimCheckResult> {
+  if (correction?.status !== "used") return result;
+  const carried = [...result.docFindings];
+  for (const finding of correction.docFindings ?? []) {
+    let remains = true;
+    try {
+      remains = sentenceFoundIn(
+        finding.sentence,
+        await readClaimCorrectionFile(repoPath, finding.file),
+      );
+    } catch {
+      /* An unreadable file is not evidence that the confirmed claim disappeared. */
+    }
+    if (
+      remains && !carried.some((f) =>
+        f.file === finding.file &&
+        normaliseWhitespace(f.sentence) ===
+          normaliseWhitespace(finding.sentence)
+      )
+    ) {
+      carried.push(finding);
+    }
+  }
+  return { ...result, docFindings: carried };
+}
+
+/** One read-only correction question, worker-owned writes, then one full completion recheck. */
 export async function correctSummaryClaimsInRun(
   ctx: IssueContext,
   state: PhaseState,
@@ -329,104 +444,97 @@ export async function correctSummaryClaimsInRun(
 ): Promise<PhaseResult> {
   const { repo, issueNumber, config } = ctx;
   const logger = deps.logger;
-
   const pending = state.summaryClaimCorrection;
   if (pending?.status !== "pending") {
     throw new Error(
       "correctSummaryClaimsInRun called with no pending claim correction — caller bug",
     );
   }
-
   state.summaryClaimCorrection = { ...pending, status: "used" };
-
   logger.warn(
-    "PR-summary claim check is the only gate still blocking after the " +
-      "recovery turn — one summary-only correction turn (Issue #3324)",
+    "Claim check still blocks after recovery; one narrow correction turn",
     { repo, issueNumber, reason: pending.reason },
   );
-
-  const summaryFilePath = `${state.repoPath}/${pending.summaryPath}`;
-  let summaryContent: string | undefined;
-  if (!isSummaryClaimPath(pending.summaryPath)) {
-    logger.error(
-      `Summary claim correction: '${pending.summaryPath}' is not a recognised PR-summary path — correction turn skipped`,
-      { repo, issueNumber },
-    );
-  } else {
-    try {
-      summaryContent = await Deno.readTextFile(summaryFilePath);
-    } catch (err) {
-      logger.error(
-        `Summary claim correction: could not read '${pending.summaryPath}': ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-        { repo, issueNumber },
-      );
+  try {
+    const manualMode = (pending.docFindings?.length ?? 0) > 0;
+    const findings = [...pending.findings, ...(pending.docFindings ?? [])];
+    const contents = new Map<string, string>();
+    const files = manualMode
+      ? findings.map((f) => f.file)
+      : [pending.summaryPath];
+    for (const file of new Set(files)) {
+      contents.set(file, await readClaimCorrectionFile(state.repoPath, file));
     }
-  }
-
-  if (summaryContent !== undefined) {
-    const prompt = buildSummaryClaimCorrectionPrompt({
-      repo,
-      issueNumber,
-      summaryPath: pending.summaryPath,
-      summaryContent,
-      comment: pending.comment,
-    });
-
-    const r = await deps.claude.runClaudeWithRetry(
-      {
-        prompt,
-        phase: "issue",
+    const boundaryId = generateBoundaryId();
+    const prompt = manualMode
+      ? `The claim check still blocks ${repo}#${issueNumber}. Read the named head code and return replacements only for these indexed sentences. You cannot edit files. The worker replaces only the uniquely located flagged spans. Keep an accurate sentence unchanged; otherwise correct or remove it. Reply with JSON only: {"replacements":[{"index":1,"text":"replacement sentence"}]}, exactly one entry per index. No file paths or full-file rewrites in the reply.\n\n${
+        fenceUntrustedIssueText(
+          JSON.stringify(
+            findings.map((finding, index) => ({
+              index: index + 1,
+              ...finding,
+            })),
+          ),
+          "Flagged sentences (untrusted data):",
+          boundaryId,
+        ).join("\n")
+      }\n${
+        buildBoundaryIntegrityInstruction(boundaryId, ["flagged sentences"])
+      }\n${TOOL_OUTPUT_IS_DATA_RULE}`
+      : buildSummaryClaimCorrectionPrompt({
         repo,
         issueNumber,
-        timeoutSeconds: config.claudeTimeout,
-        killAfterSeconds: config.claudeKillAfter,
-        model: config.claudeModel || undefined,
-        cwd: state.repoPath,
-        logger,
-        disallowedTools: [...SUMMARY_CLAIM_CORRECTION_DISALLOWED_TOOLS],
-      },
-      { maxRetries: config.maxRateLimitRetries },
-    );
-
-    if (!r.ok) {
-      logger.warn(
-        `Summary claim correction invocation failed — the block stands: ${r.error.message}`,
-        { repo, issueNumber },
+        summaryPath: pending.summaryPath,
+        summaryContent: contents.get(pending.summaryPath)!,
+        comment: pending.comment,
+      });
+    const r = await deps.claude.runClaudeWithRetry({
+      prompt,
+      phase: "issue",
+      repo,
+      issueNumber,
+      timeoutSeconds: config.claudeTimeout,
+      killAfterSeconds: config.claudeKillAfter,
+      model: config.claudeModel || undefined,
+      cwd: state.repoPath,
+      logger,
+      disallowedTools: [...SUMMARY_CLAIM_CORRECTION_DISALLOWED_TOOLS],
+    }, { maxRetries: config.maxRateLimitRetries });
+    if (!r.ok) throw r.error;
+    recordClaudeRunStats(state, r.value);
+    if (r.value.timedOut) throw new Error("Claim correction timed out");
+    let replacements: Map<string, string>;
+    if (manualMode) {
+      replacements = applyFlaggedSentenceReplacements(
+        r.value.output ?? "",
+        findings,
+        contents,
       );
     } else {
-      recordClaudeRunStats(state, r.value);
-
       const parsed = parseCorrectedSummary(r.value.output ?? "");
-      if (!parsed.ok) {
-        logger.warn(
-          `Summary claim correction reply could not be read: ${parsed.error.message}`,
-          { repo, issueNumber },
-        );
-      } else if (parsed.value === summaryContent) {
-        logger.info(
-          "Summary claim correction returned the summary unchanged",
-          { repo, issueNumber },
-        );
-      } else {
-        try {
-          await Deno.writeTextFile(summaryFilePath, parsed.value);
-          await commitRecoveredSummary(ctx, state, deps);
-
-          const quality = await workOnIssueQualityGate(ctx, state, deps);
-          if (quality.status !== "continue") return quality;
-        } catch (err) {
-          logger.error(
-            `Summary claim correction: could not write '${pending.summaryPath}': ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-            { repo, issueNumber },
-          );
-        }
-      }
+      if (!parsed.ok) throw parsed.error;
+      replacements = new Map([[pending.summaryPath, parsed.value]]);
     }
+    let changed = false;
+    for (const [file, text] of replacements) {
+      if (text === contents.get(file)) continue;
+      if (
+        await readClaimCorrectionFile(state.repoPath, file) !==
+          contents.get(file)
+      ) throw new Error("Claim correction source changed during the question");
+      await Deno.writeTextFile(resolve(state.repoPath, file), text);
+      changed = true;
+    }
+    if (changed) {
+      await commitRecoveredSummary(ctx, state, deps);
+      const quality = await workOnIssueQualityGate(ctx, state, deps);
+      if (quality.status !== "continue") return quality;
+    }
+  } catch (error) {
+    logger.error(
+      "Claim correction could not be applied; confirmed findings remain blocking",
+      { repo, issueNumber, error: String(error) },
+    );
   }
-
   return await rerunCompletion();
 }

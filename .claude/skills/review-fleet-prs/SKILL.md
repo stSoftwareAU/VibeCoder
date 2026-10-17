@@ -214,7 +214,7 @@ at `xhigh` effort (Issue #2976) — and the brief in
 [`prompts/pr_review_brief/prompt.md`](../../../prompts/pr_review_brief/prompt.md),
 shared with the worker's pre-PR verifier
 (`worker/deno/lib/pre_pr_verifier.ts`, Issue #3395), so change the review
-rules there, never in a copy here. Drop its HTML comment and fill in its five
+rules there, never in a copy here. Drop its HTML comment and fill in its six
 fields as follows:
 
 - `{{REVIEW_CONTEXT}}` — this paragraph, with the gate entry's fields filled
@@ -235,8 +235,7 @@ fields as follows:
 - `{{TEST_CHANGES}}` — the entry's `testChanges` (the removed and edited test
   files).
 - `{{PREVIOUS_FINDINGS}}` — when the entry's `previousFindings` is not empty:
-  "An earlier review of this PR asked for these fixes: {previousFindings}.
-  Check each one is fixed; one that is not is still a finding."; otherwise
+  "An earlier review asked for these fixes: {previousFindings}, numbered from 1 in array order. Independently check every problem and Fix ask; return exactly one `earlierFindings` verdict per index with evidence. A partial fix is still a finding."; otherwise
   "No earlier review of this PR asked for fixes."
 - `{{REVIEW_CHECKLISTS}}` — the entry's `reviewChecklists` value, verbatim
   (the repo's `review-checklists.json` at the base ref, matched against the
@@ -248,6 +247,13 @@ fields as follows:
   verdict) lets `post.ts` add a blocking finding itself for a file that could
   not be applied or an item the reply left without a verdict, and `post.ts`
   refuses an entry without it.
+- `{{CLOSURE_ENTRIES}}` — the criteria the PR body's `## Acceptance Criteria`
+  block marks `met`: read them from the PR body (`gh pr view {number} -R
+  {repo}`); there are none when the body has no such block (Issue #3766). The
+  reviewer's reply then carries a `closure` array with a verdict per entry,
+  and the brief asks for a blocking finding for each `partial` or `missing`
+  one; `post.ts` does not check the `closure` array itself — the pre-PR
+  verifier is where the code owes that verdict.
 
 If an agent fails or returns something that isn't the JSON the brief asks
 for, post nothing for that PR; the next gate run reports it again.
