@@ -772,18 +772,25 @@ Failure Detection names.
 change adds a parameter, value or behaviour that the linked issue needs on
 every path (every caller of a shared function, every sibling outcome a router
 dispatches, every entry point that builds the value), list every caller and
-sibling first: grep for the function's name, and read the router's other
-arms. Then either pass the new value on each one or state in the PR summary
-why that caller does not need it. Do not give a behaviour-carrying parameter
-a default that silently turns the behaviour off (`= ""`, `= false`, `None`);
-make it required, so the compiler or type checker names each caller you
-missed. A caller that hard-codes the old value (`Scheduled`, `""`, `false`)
-where the new one belongs is a blocking self-review finding, and so is a test
-that hands the new value straight to the helper while no production caller
-passes it. **Every changed call site needs a test that goes red without it**
-above cannot find this caller, because the diff never changed it and there
-is nothing to revert. List the callers and siblings checked in the PR summary
-(Issue #3253).
+sibling first: grep for the function's name, read the router's other arms,
+and, when the input is a field on a row or struct or state an object is built
+with, find every place that builds it (row mappings, constructors), because a
+grep for the guard's name finds only the guard. Then either pass the new value
+on each one or state in the PR summary why that caller does not need it. Do
+not give a behaviour-carrying input a default that silently turns the
+behaviour off, or let its absence turn it off (`= ""`, `= false`, `None`,
+`field?`). That covers a parameter, a field on a row or struct, and state an
+object is built with. Make it required, so the compiler or type checker names
+each caller you missed and each row mapping or constructor that leaves it out.
+When absence must stay legal, list every place that builds the value (callers,
+row mappings, constructors) in the PR summary, and say for each one why the
+guard may be off there. A caller that hard-codes the old value (`Scheduled`,
+`""`, `false`) where the new one belongs is a blocking self-review finding,
+and so is a test that hands the new value straight to the helper while no
+production caller passes it. **Every changed call site needs a test that goes
+red without it** above cannot find this caller, because the diff never changed
+it and there is nothing to revert. List the callers and siblings checked in
+the PR summary (Issues #3253 and #3771).
 
 **A new state on an existing screen re-reads that screen's existing text.**
 When a change adds a state or mode to a screen that already exists (an

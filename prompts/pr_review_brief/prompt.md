@@ -31,6 +31,13 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    and on each read), confirm that each new test named for a later step has a
    fixture that gets past every earlier step giving the same outcome; a test
    an earlier step stops leaves its own step untested, which is a finding.
+   When a change adds a guard or limit whose input can be absent (an `Option`,
+   an optional field, a value only some constructors set) and treats the absent
+   case as "allow" or "does not apply", find every place that builds that input
+   (row mappings, constructors, other callers of the shared function). Confirm
+   each production path either supplies it or is meant to skip the guard. A path
+   where the guard is silently off although the linked issue needs it there is a
+   finding.
 5. Judge every change to an existing test: {{TEST_CHANGES}}, plus any
    inline test module (e.g. Rust `#[cfg(test)]`) the diff touches. A change
    is **meaningful** if it removes a test case, weakens or deletes an
