@@ -22,6 +22,7 @@ import { browserGranted } from "./browser_grant.ts";
 import type {
   CiProviderConfig,
   CustomLabelPromptMapping,
+  ExternalOrchestrationSettings,
   IssueSubAgentTier,
   Logger,
   RepoConfig,
@@ -361,6 +362,20 @@ export interface ExecuteClaudePhaseOptions {
    */
   issueSubAgentTier?: IssueSubAgentTier;
   /**
+   * Whether this host routes the issue run through the external orchestrator
+   * (Issue #3642). Off by default. On, no `--agents` definitions are built and
+   * the run goes through the orchestration gate in place of the single Claude
+   * call; there is no fallback to the native path. Threaded from
+   * `config.externalOrchestration`.
+   */
+  externalOrchestration?: boolean;
+  /**
+   * Validated `external_orchestration_settings` (Issue #3642), threaded from
+   * `config.externalOrchestrationSettings`. Read only when
+   * {@link externalOrchestration} is on.
+   */
+  externalOrchestrationSettings?: ExternalOrchestrationSettings;
+  /**
    * Whether to filter this run's shell output through RTK (Issue #2383, part
    * of #2328, default: false).
    *
@@ -393,12 +408,35 @@ export interface ExecuteClaudePhaseOptions {
   agentProvider?: AgentProviderSelector;
 }
 
+/**
+ * What the external orchestration gate receives for one issue run (Issue
+ * #3642). `claudeOptions` and `retryOptions` are the exact values the native
+ * path would have passed to `runClaudeWithRetry`, minus any `--agents`.
+ */
+export interface ExternalIssueRunInput {
+  claudeOptions: RunClaudeOptions;
+  retryOptions: RetryOptions;
+  issueNumber: number;
+  branch: string;
+  workspaceDir: string;
+  brief: string;
+  settings: ExternalOrchestrationSettings;
+}
+
 /** Injectable dependencies for testing. */
 export interface ExecuteClaudePhaseDeps {
   /** Run Claude with retry and timeout. */
   runClaudeWithRetry: (
     options: RunClaudeOptions,
     retryOptions?: RetryOptions,
+  ) => Promise<Result<ClaudeRunResult>>;
+  /**
+   * Run the issue through the external orchestrator (Issue #3642). Consulted
+   * only when `externalOrchestration` is on. Absent, that path fails closed
+   * with an `execution_error`; it never falls back to `--agents`.
+   */
+  runExternalOrchestratedIssueRun?: (
+    input: ExternalIssueRunInput,
   ) => Promise<Result<ClaudeRunResult>>;
   /** Build the issue prompt (returns PromptParts for caching, Issue #1262). */
   buildIssuePrompt: (
@@ -1279,11 +1317,15 @@ async function executeClaudePhaseBody(
   // Haiku sub-agent tier adds the explorer definition (see
   // `buildIssueRunAgents` in `issue_executor_agents.ts`). Resolved
   // before the prompt is built so the prompt and the argv cannot disagree.
-  const issueExecutorSplit = isIssueExecutorSplitEnabled(
-    "issue",
-    repoConfig,
-    { issueExecutorSplit: options.issueExecutorSplit === true },
-  );
+  // Issue #3642: with external orchestration on, the native split is never
+  // resolved, so no executor definition reaches the prompt or the argv.
+  const externalOrchestration = options.externalOrchestration === true;
+  const issueExecutorSplit = !externalOrchestration &&
+    isIssueExecutorSplitEnabled(
+      "issue",
+      repoConfig,
+      { issueExecutorSplit: options.issueExecutorSplit === true },
+    );
   // The sub-agent tier (Issue #3402): host-wide `issueSubAgentTier`, with the
   // repository's own `repo_config` override layered over it here. Resolved
   // and logged unconditionally, every issue run, before the prompt is built.
@@ -1297,11 +1339,14 @@ async function executeClaudePhaseBody(
   );
   // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
   // #2812); `issue_reviewer_agents: false` opts out.
-  const issueRunAgents = buildIssueRunAgents({
-    executorSplit: issueExecutorSplit,
-    reviewerAgents: options.issueReviewerAgents === true,
-    subAgentTier: issueSubAgentTier,
-  });
+  // Issue #3642: no `--agents` is built on the external path (fail closed).
+  const issueRunAgents = externalOrchestration
+    ? undefined
+    : buildIssueRunAgents({
+      executorSplit: issueExecutorSplit,
+      reviewerAgents: options.issueReviewerAgents === true,
+      subAgentTier: issueSubAgentTier,
+    });
   if (issueExecutorSplit) {
     const executorModel = issueSubAgentTier === "haiku"
       ? HAIKU_ISSUE_EXECUTOR_MODEL
@@ -1524,74 +1569,98 @@ async function executeClaudePhaseBody(
   deps.log("Starting Claude Code to work on the issue...");
   let claudeResult: Result<ClaudeRunResult>;
   try {
-    claudeResult = await deps.runClaudeWithRetry(
-      {
-        prompt: userPrompt,
-        systemPrompt,
-        // Route the coding run through the documented `issue` phase (Issue
-        // #2709) so model/effort resolve via the phase precedence chain
-        // (CLAUDE_MODEL_ISSUE / phase_model_overrides.issue → PHASE_MODEL_DEFAULTS.issue,
-        // CLAUDE_EFFORT_ISSUE / phase_effort_overrides.issue → PHASE_EFFORT_DEFAULTS.issue)
-        // rather than silently landing on the CLI default.
-        phase: "issue",
-        timeoutSeconds: claudeTimeout,
-        killAfterSeconds: claudeKillAfter,
-        logger,
-        creditLogDir,
-        workerName,
-        repo,
-        promptSha,
-        promptCacheHit,
-        sessionResumeState,
-        // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
-        issueNumber: options.issueNumber,
-        // Per-invocation provider selection (Issue #4109) with the repo pin
-        // layered in (Issue #2048); undefined keeps the active provider,
-        // exactly as before.
-        agentProvider: invocationAgentProvider,
-        // The checkout the agent works in (Issue #2159). Without it the
-        // runner's `mcpRequest && cwd` gate writes no MCP configuration at
-        // all, so this path would append the CodeGraph prompt line and
-        // silently drop the server that line tells the agent to call — and
-        // Issue #192's browser grant below was inert here for the same
-        // reason. Naming it states what the phase already assumes: every git
-        // call it makes runs against the process working directory, which is
-        // this checkout.
-        cwd: repoDir,
-        // The rate/usage-limit signal belongs on the work volume, never in
-        // the per-issue clone the `cwd` above now names (Issue #4315).
-        workDir,
-        // The Playwright MCP browser is granted on every run unless the repo
-        // sets `skip_screenshot_check` (Issue #2925): the screenshot gate
-        // judges "UI change" from the diff afterwards, so the tool must be
-        // there up front. Issue #2159 layers the `codegraph` server beside
-        // that grant on an enabled run whose index built.
-        mcpConfig: graft.mcpConfig(
-          codegraph.mcpConfig(browserGranted(repoConfigs, repo)),
-        ),
-        // Issue #2342: only a split run carries the executor definition, and
-        // only a split run carries the guard that keeps every `Edit`/`Write`
-        // inside one of them (Issue #2344). `claude_runner.ts` merges that
-        // guard's hooks with the ones below rather than one replacing the
-        // other. Issue #2575: a host with `issue_reviewer_agents` on adds the
-        // Spec and Standards reviewer definitions. Both off, no `agents`.
-        ...(issueRunAgents ? { agents: issueRunAgents } : {}),
-        ...(issueExecutorSplit ? { issueExecutorSplit: true } : {}),
-        // This spawn's hooks (Issue #2383), carried on the command line. A run
-        // that installs none leaves the key absent, so the argv is the one it
-        // always spawned; when the split-executor guard lands on this path its
-        // entry merges into the same object rather than replacing this one.
-        ...settingsJsonOption(undefined, rtk.hookSettings()),
-        // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
-        ...(options.progressExtension
-          ? { progressExtension: options.progressExtension }
-          : {}),
-      },
-      {
-        maxRetries: maxRateLimitRetries,
-        maxWaitSeconds: maxRateLimitWait,
-      },
-    );
+    const claudeRunOptions: RunClaudeOptions = {
+      prompt: userPrompt,
+      systemPrompt,
+      // Route the coding run through the documented `issue` phase (Issue
+      // #2709) so model/effort resolve via the phase precedence chain
+      // (CLAUDE_MODEL_ISSUE / phase_model_overrides.issue → PHASE_MODEL_DEFAULTS.issue,
+      // CLAUDE_EFFORT_ISSUE / phase_effort_overrides.issue → PHASE_EFFORT_DEFAULTS.issue)
+      // rather than silently landing on the CLI default.
+      phase: "issue",
+      timeoutSeconds: claudeTimeout,
+      killAfterSeconds: claudeKillAfter,
+      logger,
+      creditLogDir,
+      workerName,
+      repo,
+      promptSha,
+      promptCacheHit,
+      sessionResumeState,
+      // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
+      issueNumber: options.issueNumber,
+      // Per-invocation provider selection (Issue #4109) with the repo pin
+      // layered in (Issue #2048); undefined keeps the active provider,
+      // exactly as before.
+      agentProvider: invocationAgentProvider,
+      // The checkout the agent works in (Issue #2159). Without it the
+      // runner's `mcpRequest && cwd` gate writes no MCP configuration at
+      // all, so this path would append the CodeGraph prompt line and
+      // silently drop the server that line tells the agent to call — and
+      // Issue #192's browser grant below was inert here for the same
+      // reason. Naming it states what the phase already assumes: every git
+      // call it makes runs against the process working directory, which is
+      // this checkout.
+      cwd: repoDir,
+      // The rate/usage-limit signal belongs on the work volume, never in
+      // the per-issue clone the `cwd` above now names (Issue #4315).
+      workDir,
+      // The Playwright MCP browser is granted on every run unless the repo
+      // sets `skip_screenshot_check` (Issue #2925): the screenshot gate
+      // judges "UI change" from the diff afterwards, so the tool must be
+      // there up front. Issue #2159 layers the `codegraph` server beside
+      // that grant on an enabled run whose index built.
+      mcpConfig: graft.mcpConfig(
+        codegraph.mcpConfig(browserGranted(repoConfigs, repo)),
+      ),
+      // Issue #2342: only a split run carries the executor definition, and
+      // only a split run carries the guard that keeps every `Edit`/`Write`
+      // inside one of them (Issue #2344). `claude_runner.ts` merges that
+      // guard's hooks with the ones below rather than one replacing the
+      // other. Issue #2575: a host with `issue_reviewer_agents` on adds the
+      // Spec and Standards reviewer definitions. Both off, no `agents`.
+      ...(issueRunAgents ? { agents: issueRunAgents } : {}),
+      ...(issueExecutorSplit ? { issueExecutorSplit: true } : {}),
+      // This spawn's hooks (Issue #2383), carried on the command line. A run
+      // that installs none leaves the key absent, so the argv is the one it
+      // always spawned; when the split-executor guard lands on this path its
+      // entry merges into the same object rather than replacing this one.
+      ...settingsJsonOption(undefined, rtk.hookSettings()),
+      // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
+      ...(options.progressExtension
+        ? { progressExtension: options.progressExtension }
+        : {}),
+    };
+    const claudeRetryOptions: RetryOptions = {
+      maxRetries: maxRateLimitRetries,
+      maxWaitSeconds: maxRateLimitWait,
+    };
+    if (externalOrchestration) {
+      // Issue #3642: the gate replaces the single Claude call. It fails closed:
+      // with no orchestrator wired, the run fails rather than falling back to
+      // the native `--agents` path.
+      claudeResult = deps.runExternalOrchestratedIssueRun
+        ? await deps.runExternalOrchestratedIssueRun({
+          claudeOptions: claudeRunOptions,
+          retryOptions: claudeRetryOptions,
+          issueNumber,
+          branch: branchName,
+          workspaceDir: repoDir,
+          brief: userPrompt,
+          settings: options.externalOrchestrationSettings ?? {},
+        })
+        : {
+          ok: false,
+          error: new Error(
+            "External orchestration is enabled but no orchestrator is wired (Issue #3642)",
+          ),
+        };
+    } else {
+      claudeResult = await deps.runClaudeWithRetry(
+        claudeRunOptions,
+        claudeRetryOptions,
+      );
+    }
   } finally {
     // Always stop heartbeat
     if (heartbeatHandle) {

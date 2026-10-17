@@ -10,7 +10,13 @@
  */
 
 import { registerAgentPreFlightConfigs } from "./agent_pre_flight.ts";
-import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
+import type {
+  ConfigFile,
+  ExternalOrchestrationRoleSettings,
+  ExternalOrchestrationSettings,
+  RepoConfig,
+  WorkerConfig,
+} from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import {
   EXCLUSION_TEAM_PATTERN,
@@ -986,6 +992,20 @@ export async function loadConfig(
   const issueReviewerAgents = file.issue_reviewer_agents ??
     OPERATIONAL_DEFAULTS.issueReviewerAgents;
 
+  // External orchestrator, host-wide only (Issue #3642). Off by default, so
+  // an unconfigured host keeps the Claude-native `--agents` path.
+  const externalOrchestration = file.external_orchestration ??
+    OPERATIONAL_DEFAULTS.externalOrchestration;
+  if (typeof externalOrchestration !== "boolean") {
+    throw new Error(
+      `external_orchestration must be true or false, got ` +
+        `${JSON.stringify(file.external_orchestration)}`,
+    );
+  }
+  const externalOrchestrationSettings = resolveExternalOrchestrationSettings(
+    file.external_orchestration_settings,
+  );
+
   // Fleet-wide run archive repo slug for measurement issues (Issue #2930).
   // Unset (or blank) leaves the feature off.
   const fleetRunArchiveTrimmed = file.fleet_run_archive?.trim();
@@ -1249,6 +1269,8 @@ export async function loadConfig(
     issueExecutorSplit,
     issueSubAgentTier,
     issueReviewerAgents,
+    externalOrchestration,
+    externalOrchestrationSettings,
     fleetRunArchive,
     subscriptionAllocationLabel,
     includeRecentActivity,
@@ -1304,6 +1326,170 @@ export async function loadConfig(
   }
 
   return config;
+}
+
+/** Providers the external orchestrator can dispatch to (Issue #3642). */
+const EXTERNAL_ORCHESTRATION_PROVIDERS: readonly string[] = [
+  "claude",
+  "codex",
+  "gemini",
+  "deepseek",
+];
+
+/** Reasoning efforts accepted per role (Issue #3642). */
+const EXTERNAL_ORCHESTRATION_EFFORTS: readonly string[] = [
+  "low",
+  "medium",
+  "high",
+];
+
+/**
+ * Validate `external_orchestration_settings` at load time (Issue #3642).
+ *
+ * An absent value yields `{}`, so the role defaults apply. Any unknown key,
+ * wrong type or out-of-range bound throws with the offending key named, so a
+ * typo fails loudly instead of silently changing which provider runs.
+ */
+function resolveExternalOrchestrationSettings(
+  raw: unknown,
+): ExternalOrchestrationSettings {
+  if (raw === undefined) return {};
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error(
+      `external_orchestration_settings must be an object, got ` +
+        `${JSON.stringify(raw)}`,
+    );
+  }
+  const input = raw as Record<string, unknown>;
+  const allowedKeys = [
+    "manager",
+    "executor",
+    "max_retries",
+    "max_concurrency",
+    "max_invocations",
+    "max_cost_usd",
+  ];
+  for (const key of Object.keys(input)) {
+    if (!allowedKeys.includes(key)) {
+      throw new Error(
+        `external_orchestration_settings.${key} is not a recognised key. ` +
+          `Allowed keys: ${allowedKeys.join(", ")}.`,
+      );
+    }
+  }
+
+  const settings: ExternalOrchestrationSettings = {};
+  for (const role of ["manager", "executor"] as const) {
+    const value = input[role];
+    if (value === undefined) continue;
+    settings[role] = resolveExternalOrchestrationRole(role, value);
+  }
+
+  const maxRetries = input.max_retries;
+  if (maxRetries !== undefined) {
+    if (!Number.isInteger(maxRetries) || (maxRetries as number) < 0) {
+      throw new Error(
+        `external_orchestration_settings.max_retries must be a non-negative ` +
+          `integer, got ${JSON.stringify(maxRetries)}`,
+      );
+    }
+    settings.maxRetries = maxRetries as number;
+  }
+  const maxConcurrency = input.max_concurrency;
+  if (maxConcurrency !== undefined) {
+    if (!Number.isInteger(maxConcurrency) || (maxConcurrency as number) < 1) {
+      throw new Error(
+        `external_orchestration_settings.max_concurrency must be a positive ` +
+          `integer, got ${JSON.stringify(maxConcurrency)}`,
+      );
+    }
+    settings.maxConcurrency = maxConcurrency as number;
+  }
+  const maxInvocations = input.max_invocations;
+  if (maxInvocations !== undefined) {
+    if (!Number.isInteger(maxInvocations) || (maxInvocations as number) < 1) {
+      throw new Error(
+        `external_orchestration_settings.max_invocations must be a positive ` +
+          `integer, got ${JSON.stringify(maxInvocations)}`,
+      );
+    }
+    settings.maxInvocations = maxInvocations as number;
+  }
+  const maxCostUsd = input.max_cost_usd;
+  if (maxCostUsd !== undefined) {
+    if (
+      typeof maxCostUsd !== "number" ||
+      !Number.isFinite(maxCostUsd) ||
+      maxCostUsd <= 0
+    ) {
+      throw new Error(
+        `external_orchestration_settings.max_cost_usd must be a positive ` +
+          `finite number, got ${JSON.stringify(maxCostUsd)}`,
+      );
+    }
+    settings.maxCostUsd = maxCostUsd;
+  }
+  return settings;
+}
+
+/** Validate one `manager` or `executor` entry (Issue #3642). */
+function resolveExternalOrchestrationRole(
+  role: "manager" | "executor",
+  raw: unknown,
+): ExternalOrchestrationRoleSettings {
+  const prefix = `external_orchestration_settings.${role}`;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error(
+      `${prefix} must be an object with provider, model and effort keys, ` +
+        `got ${JSON.stringify(raw)}`,
+    );
+  }
+  const input = raw as Record<string, unknown>;
+  for (const key of Object.keys(input)) {
+    if (!["provider", "model", "effort"].includes(key)) {
+      throw new Error(
+        `${prefix}.${key} is not a recognised key. Allowed keys: ` +
+          `provider, model, effort.`,
+      );
+    }
+  }
+  const entry: ExternalOrchestrationRoleSettings = {};
+  if (input.provider !== undefined) {
+    if (
+      typeof input.provider !== "string" ||
+      !EXTERNAL_ORCHESTRATION_PROVIDERS.includes(input.provider)
+    ) {
+      throw new Error(
+        `${prefix}.provider must be one of ` +
+          `${EXTERNAL_ORCHESTRATION_PROVIDERS.join(", ")}, got ` +
+          `${JSON.stringify(input.provider)}`,
+      );
+    }
+    entry.provider = input.provider;
+  }
+  if (input.model !== undefined) {
+    if (typeof input.model !== "string" || !/^[^\s]+$/.test(input.model)) {
+      throw new Error(
+        `${prefix}.model must be a non-empty model id without whitespace, ` +
+          `got ${JSON.stringify(input.model)}`,
+      );
+    }
+    entry.model = input.model;
+  }
+  if (input.effort !== undefined) {
+    if (
+      typeof input.effort !== "string" ||
+      !EXTERNAL_ORCHESTRATION_EFFORTS.includes(input.effort)
+    ) {
+      throw new Error(
+        `${prefix}.effort must be one of ` +
+          `${EXTERNAL_ORCHESTRATION_EFFORTS.join(", ")}, got ` +
+          `${JSON.stringify(input.effort)}`,
+      );
+    }
+    entry.effort = input.effort;
+  }
+  return entry;
 }
 
 /**

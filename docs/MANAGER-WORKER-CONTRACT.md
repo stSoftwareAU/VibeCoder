@@ -6,8 +6,9 @@ This page is the design contract for how a manager (the advisor that plans an
 `issue`-phase run) hands work to executor and reviewer sub-agents, and how that
 hand-off must stay the same whichever provider CLI runs the phase. It records
 what the worker does today with citations, names the target contract, and sets
-the order in which the pieces should land. It changes no runtime behaviour and
-no default.
+the order in which the pieces should land. Issue #3642 implements the
+orchestrator behind the opt-in `external_orchestration` key, which defaults to
+`false`. The default path is unchanged, and no other default changes.
 
 ## 1. Purpose and scope
 
@@ -117,8 +118,10 @@ records the intent.
 ## 4. Target contract
 
 The target is a provider-neutral contract between the manager and each
-sub-agent. It is described below and sketched in TypeScript. Nothing in this
-section exists in the worker yet.
+sub-agent. It is described below and sketched in TypeScript. Issue #3642
+implements the orchestrator behind `external_orchestration`, which runs parts of
+this contract for the flagged path (sections 5 and 6). The type sketch is not in
+the code, and the default path does not use it.
 
 ### Role contracts
 
@@ -244,8 +247,10 @@ Supporting lifecycle code, each cited from the file it lives in:
 
 The target adds an explicit state for the provider check, so an unsupported
 provider is refused before any sub-agent starts. It also adds retries,
-cancellation, timeouts, leases with heartbeats, and recovery. These are target
-behaviour, not code that exists today.
+cancellation, timeouts, leases with heartbeats, and recovery. Issue #3642
+implements the orchestrator behind `external_orchestration`, and the flagged
+path follows this lifecycle. With the flag off, the Claude-native path described
+above is what runs.
 
 ```mermaid
 stateDiagram-v2
@@ -288,6 +293,25 @@ stateDiagram-v2
 - **TimedOut or Cancelled to Released.** Terminal paths. The reason is recorded
   on release.
 
+### Orchestrated handoff (`external_orchestration`)
+
+The flagged path hands work from the manager's plan to an executor and then to
+the manager's review. The orchestrator relays each step (Issue #3642).
+
+```mermaid
+sequenceDiagram
+  participant MP as Manager plan
+  participant O as Orchestrator
+  participant X as Executor
+  participant MR as Manager review
+  MP->>O: Plan for one unit of work
+  O->>X: Dispatch with scoped workspaceDir and scoped tools
+  X-->>O: Result with filesChanged and evidence
+  O->>MR: Result for review
+  MR-->>O: Accept or reject
+  O-->>MP: Done, or blocked for retry or refusal
+```
+
 ## 6. Permissions and credential isolation
 
 - **Advisor cannot edit.** The edit guard denies `Edit` and `Write` when
@@ -299,19 +323,21 @@ stateDiagram-v2
 - **Executors cannot dispatch.** `["Agent"]` is disallowed for executors
   (`worker/deno/lib/issue_executor_agents.ts:114`). The reviewers and explorer
   are read-only.
-- **Target: no recursive delegation.** Today every sub-agent definition
+- **No recursive delegation.** Today every sub-agent definition
   disallows `Agent`: the executor
   (`worker/deno/lib/issue_executor_agents.ts:114`), the reviewers (`:214`)
   and the explorer (`:349`). This is enforced only by the Claude `--agents`
-  payload. In the target, every provider adapter that runs a worker must
-  enforce that a worker cannot dispatch further workers. An adapter that
-  cannot enforce it is refused (section 8), not run with delegation open.
-- **Target: executor workspace is scoped.** Today sub-agents run inside the
-  advisor's single CLI process, so they share its working directory. The CLI
+  payload. Under `external_orchestration` (Issue #3642), delegation depth is
+  fixed at 1. The contract still requires every provider adapter that runs a
+  worker to enforce that a worker cannot dispatch further workers. An adapter
+  that cannot enforce it is refused (section 8), not run with delegation open.
+- **Executor workspace is scoped under the flag.** Today sub-agents run inside
+  the advisor's single CLI process, so they share its working directory. The CLI
   is spawned with one `cwd` (`worker/deno/lib/claude_runner.ts:1369`), and
-  there is no per-executor workspace. In the target, the manager hands each
-  executor a `workspaceDir` in the task envelope (section 4). The executor's
-  edits and commands are confined to it, and the manager stays read-only.
+  there is no per-executor workspace. Under `external_orchestration` (Issue
+  #3642), the manager hands each executor a `workspaceDir` in the task envelope
+  sketched in section 4. The executor's edits and commands are confined to it,
+  and the manager stays read-only.
 - **Credentials are scrubbed per provider.** Each provider builds its own child
   environment.
   - Claude: `withholdNonSubscriptionCredentials` (`worker/deno/lib/claude_env.ts:177`)
@@ -326,8 +352,9 @@ stateDiagram-v2
 - **The gap today.** The edit guard exists only for Claude. Codex and Gemini
   drop `agents` and `settingsJson` silently, and DeepSeek drops `settingsJson`
   silently. An executor split on those providers therefore has no edit guard
-  and no executor definitions, with no error raised. The target closes this
-  with a refusal (section 8).
+  and no executor definitions, with no error raised. Under
+  `external_orchestration` (Issue #3642), the orchestrator refuses a provider
+  that cannot carry the contract (section 8). With the flag off, the gap stands.
 
 ## 7. Compatibility matrix
 
@@ -340,7 +367,7 @@ Compatibility with the split switched on. "Silent" means no warning is logged.
 | `gemini` | argv (`:973`) | Not carried, silent | Not carried, silent | No | Prompt block renders; no executor definitions; no edit guard. |
 | `deepseek` | stdin (`:1067`) | Stripped, warned (`:1120-1121`) | Stripped, silent (`:1120`, `:1132`) | Yes | Prompt block renders; no executor definitions; warning for `agents` only. No edit guard. |
 
-**The prompt block renders on every provider (confirmed).** The advisor/executor
+**The prompt block renders on every provider on the Claude-native path (confirmed).** The advisor/executor
 block is not gated on the provider. `isIssueExecutorSplitEnabled` takes the
 phase, repo and host config only (`worker/deno/lib/issue_executor_split.ts:42-59`).
 Both phase paths call it with no provider argument
@@ -354,7 +381,8 @@ provider's `buildInvocation` (`worker/deno/lib/claude_runner.ts:1217`), where th
 Codex, Gemini and DeepSeek rows above drop it. On those three providers the
 advisor is therefore told to dispatch `executor` sub-agents that the CLI never
 defines. This is a known gap, recorded beside the silent-drop gap in section 6.
-No code change in this PR.
+No code change in this PR. Under `external_orchestration` (Issue #3642), a
+provider that cannot carry the contract is refused (section 8).
 
 ## 8. Rollout and safeguards
 
@@ -367,18 +395,29 @@ No code change in this PR.
     `worker/deno/lib/issue_sub_agent_tier.ts:43`); the repo override is applied
     by `resolveIssueSubAgentTier` (`worker/deno/lib/issue_sub_agent_tier.ts:72`).
   - `issue_reviewer_agents`: host only (`worker/deno/lib/config.ts:986-987`).
+  - `external_orchestration` (`true` or `false`, default `false`): host only
+    (`worker/deno/lib/config_defaults.ts:528`). Issue #3642 implements the
+    orchestrator behind it. `external_orchestration_settings` sets the provider,
+    model, effort and bounds for that path.
 
   See [Configuration Reference](CONFIGURATION.md), rows for these keys.
-- **Invariant (target).** A provider that cannot carry the contract fails loud
-  when the split is on. It is refused before any sub-agent starts, and the run
-  reports why. This is a behaviour change and is not part of this document's
-  implementation.
+- **Invariant.** A provider that cannot carry the contract fails loud when the
+  split is on. It is refused before any sub-agent starts, and the run reports
+  why. Under `external_orchestration` (Issue #3642) the orchestrator enforces
+  this refusal. The default path does not change.
 - **Current state.** Codex and Gemini drop agents silently, and DeepSeek drops
-  `settingsJson` silently (section 3). The invariant is not yet true.
+  `settingsJson` silently (section 3). On the default Claude-native path the
+  invariant is not yet true. Under `external_orchestration` (Issue #3642), a
+  provider that cannot carry the contract is refused.
 - **No default change.** `issue_executor_split` stays `true`,
   `issue_sub_agent_tier` stays `"haiku"` and `issue_reviewer_agents` stays
-  `true`. Nothing in the rollout changes them.
-- **Rollback.** Setting `issue_executor_split: false` and
+  `true`. `external_orchestration` defaults to `false`, and
+  `external_orchestration_settings` defaults to `{}`, so the orchestrator is
+  opt-in (Issue #3642). Nothing in the rollout changes these defaults.
+- **Rollback of the orchestrated path.** Configuration-only: set
+  `external_orchestration: false`, or remove the key (Issue #3642). The run then
+  returns to the Claude-native `--agents` path. No code revert is needed.
+- **Rollback of the Claude-native split.** Setting `issue_executor_split: false` and
   `issue_reviewer_agents: false` alone does not remove `--agents` on the default
   `haiku` tier. `buildIssueRunAgents` (`worker/deno/lib/issue_executor_agents.ts:420-434`)
   still adds the explorer definition from `buildIssueExplorerAgents()`
@@ -415,10 +454,15 @@ flowchart TD
 
 ## 10. Tests protecting the current path
 
-These tests cover the behaviour this document describes. Each file was
+These tests cover the behaviour this document describes. Each named file was
 confirmed to exist under `worker/deno/tests/`.
 
-- `worker/deno/tests/manager_worker_contract_3641_test.ts` (added for this issue)
+- `worker/deno/tests/manager_worker_contract_3641_test.ts` (added for #3641)
+- `worker/deno/tests/external_orchestration_3642_*_test.ts`: the tests for the
+  orchestrated path behind `external_orchestration` (Issue #3642), named by
+  pattern.
+- `worker/deno/tests/orchestration_3642_*_test.ts`: the orchestrator-side tests
+  added by Issue #3642, named by pattern.
 - `worker/deno/tests/issue_executor_split_test.ts`
 - `worker/deno/tests/readme_docs_reachability_test.ts`
 - `worker/deno/tests/agent_provider_readme_docs_test.ts`
@@ -447,3 +491,5 @@ confirmed to exist under `worker/deno/tests/`.
 - [#3801](https://github.com/stSoftwareAU/VibeCoder/issues/3801): defaults the
   `issue` phase to a Sonnet manager (high effort) over Haiku executors (merged;
   decision recorded under #3473).
+- [#3642](https://github.com/stSoftwareAU/VibeCoder/issues/3642): the external
+  provider-neutral orchestrator behind `external_orchestration`.
