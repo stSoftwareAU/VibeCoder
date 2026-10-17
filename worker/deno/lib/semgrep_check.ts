@@ -24,12 +24,19 @@
  *     with the reason spelled out; `./quality.sh --strict` promotes every
  *     SKIPPED to FAILED. A tool error that is *not* one of those is FAILED —
  *     absence of findings is never read as success.
+ *   - **Inside the fleet container image, no semgrep is FAILED** (Issue
+ *     #3726). The image bakes semgrep in, so its absence is an image fault.
+ *     A registry outage or an over-deadline scan stays SKIPPED even there: a
+ *     third-party outage or an oversized scan must not fail every fleet run,
+ *     and CI's blocking `semgrep.yml` remains the backstop.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
 import { SEMGREP_IMAGE, SEMGREP_IMAGE_TAG } from "./pinned_actions.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { runningInContainerImage } from "./container_stamp.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
 /** Status of the semgrep check. */
 export type SemgrepStatus = "PASSED" | "SKIPPED" | "FAILED";
@@ -494,6 +501,11 @@ export interface SemgrepCheckOptions {
   detectInvocation?: DetectSemgrepInvocation;
   /** Inject a git runner. */
   git?: GitRunner;
+  /**
+   * Environment lookup used to decide whether this run is inside the fleet
+   * container image; defaults to the process environment.
+   */
+  env?: EnvLookup;
 }
 
 /** Build the SKIPPED result, with the reason spelled out. */
@@ -537,7 +549,9 @@ function formatFindings(
  * Pipeline:
  *   1. Collect changed files. Not a git repository → SKIPPED; nothing
  *      scannable → PASSED.
- *   2. Detect an invocation. None → SKIPPED.
+ *   2. Detect an invocation. None → SKIPPED on a host, but FAILED inside the
+ *      fleet container image, which bakes semgrep in (Issue #3726). Registry
+ *      and deadline outcomes below stay SKIPPED in both places.
  *   3. Scan, bounded by {@link SEMGREP_DEADLINE_MS}. Over deadline, or an
  *      unreachable rule registry → SKIPPED.
  *   4. Findings → FAILED (with the `detect-non-literal-regexp` remedy when
@@ -567,6 +581,17 @@ export async function runSemgrepCheck(
   const detect = options.detectInvocation ?? detectSemgrepInvocation;
   const invocation = await detect(scriptDir);
   if (invocation === null) {
+    if (runningInContainerImage(options.env ?? processEnvLookup)) {
+      return {
+        status: "FAILED",
+        output: "semgrep: FAILED (semgrep is not installed or not in PATH " +
+          "inside the fleet container image, which bakes it in — the image " +
+          "is broken, not the change; rebuild it per " +
+          "docs/CONTAINER-IMAGE.md#semgrep)",
+        findings: [],
+        filesScanned: 0,
+      };
+    }
     return skipped(
       "semgrep is not installed and no container runtime holds " +
         `${SEMGREP_IMAGE} — install semgrep (\`pipx install semgrep\`) or ` +

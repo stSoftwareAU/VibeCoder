@@ -104,6 +104,7 @@ function checked(findings: ReviewFinding[]): PrePrVerifierResult {
       testChangeNotes: [],
       unrelatedIssues: [],
       checklist: [],
+      closure: [],
     },
   };
 }
@@ -113,7 +114,11 @@ const NOT_CHECKED: PrePrVerifierResult = {
   reason: "the verifier timed out",
 };
 
-function stubClient(comments: string[]): GitHubClient {
+function stubClient(
+  comments: string[],
+  posted: { number: number; body: string }[],
+  failPrComment: boolean,
+): GitHubClient {
   return {
     getIssue: () => {
       throw new Error("stub");
@@ -122,7 +127,11 @@ function stubClient(comments: string[]): GitHubClient {
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
     postComment: (_repo: string, _issue: number, body: string) => {
+      if (_issue === 4412 && failPrComment) {
+        return Promise.reject(new Error("hold comment unavailable"));
+      }
       comments.push(body);
+      posted.push({ number: _issue, body });
       return Promise.resolve(undefined);
     },
     editIssue: () => Promise.resolve(),
@@ -141,6 +150,7 @@ interface Scenario {
   verifier: PrePrVerifierResult[];
   /** When true, an open PR already exists for this run's branch. */
   existingPr?: boolean;
+  failPrComment?: boolean;
   /** When true, no summary file is written. */
   noSummaryFile?: boolean;
   /** When true, no base ref resolves (rev-parse and fetch fail). */
@@ -162,6 +172,10 @@ interface Outcome {
   summaryText: string;
   claudeRunStats: PhaseState["claudeRunStats"];
   config: ReturnType<typeof buildDefaultWorkerConfig>;
+  armed: number;
+  labels: string[];
+  posted: { number: number; body: string }[];
+  errors: string[];
 }
 
 async function runCompletion(scenario: Scenario): Promise<Outcome> {
@@ -179,6 +193,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let prCreateCalls = 0;
   const claudePrompts: string[] = [];
   const verifierInputs: PrePrVerifierInput[] = [];
+  let armed = 0;
+  const labels: string[] = [];
+  const posted: { number: number; body: string }[] = [];
+  const errors: string[] = [];
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -210,7 +228,8 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 
   const deps = createMockDeps({
     github: {
-      createClient: () => stubClient(comments),
+      createClient: () =>
+        stubClient(comments, posted, !!scenario.failPrComment),
       runGhCommand: (args: string[]) => {
         if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
         if (args[0] === "pr" && args[1] === "view") {
@@ -294,13 +313,20 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           : Promise.resolve({ ok: false as const, error: new Error("none") }),
       recoverExistingPr: () =>
         Promise.resolve({ ok: true, value: "recovered" }),
-      finalisePr: () =>
-        Promise.resolve({
+      updatePrLabels: (_repo, _number, added) => {
+        labels.push(...added);
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+      finalisePr: () => {
+        armed++;
+        return Promise.resolve({
           ok: true,
           value: { result: AutoMergeResult.Enabled, message: "armed" },
-        }),
+        });
+      },
     },
   });
+  deps.logger.error = (message) => errors.push(message);
 
   let result;
   let summaryText = "";
@@ -331,8 +357,57 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     summaryText,
     claudeRunStats: state.claudeRunStats,
     config,
+    armed,
+    labels,
+    posted,
+    errors,
   };
 }
+
+for (const summary of [SUMMARY_CLEAN, SUMMARY_PLACEHOLDER]) {
+  Deno.test(`completion - surviving verifier holds ${summary === SUMMARY_CLEAN ? "standalone" : "folded"} existing PR (Issue #3796)`, async () => {
+    const outcome = await runCompletion({
+      summary,
+      verifier: [checked([FINDING])],
+      existingPr: true,
+    });
+    assertEquals(outcome.verifierInputs.length, 2);
+    assertEquals(outcome.claudePrompts.length, 1);
+    assertEquals(outcome.armed, 0);
+    assert(outcome.labels.includes("standing-violation"));
+    const holds = outcome.posted.filter((c) => c.number === 4412);
+    assertEquals(holds.length, 1);
+    assertStringIncludes(holds[0]!.body, "<!-- vibe-pre-pr-verifier-hold -->");
+    assertStringIncludes(holds[0]!.body, FINDING.problem);
+    assert(
+      outcome.posted.some((c) =>
+        c.number === ISSUE && c.body.includes(FINDING.problem)
+      ),
+    );
+  });
+}
+
+Deno.test("completion - clean verifier does not hold another gate's existing PR (Issue #3796)", async () => {
+  const outcome = await runCompletion({
+    summary: SUMMARY_PLACEHOLDER,
+    verifier: [checked([])],
+    existingPr: true,
+  });
+  assertEquals(outcome.armed, 1);
+  assertEquals(outcome.labels.includes("standing-violation"), false);
+});
+
+Deno.test("completion - failed verifier hold comment is an error and never arms merge (Issue #3796)", async () => {
+  const outcome = await runCompletion({
+    summary: SUMMARY_CLEAN,
+    verifier: [checked([FINDING])],
+    existingPr: true,
+    failPrComment: true,
+  });
+  assertEquals(outcome.armed, 0);
+  assert(outcome.labels.includes("standing-violation"));
+  assert(outcome.errors.some((message) => message.includes("verifier hold")));
+});
 
 const VERIFIER_WORDS = "The pre-PR verifier found blocking problems";
 

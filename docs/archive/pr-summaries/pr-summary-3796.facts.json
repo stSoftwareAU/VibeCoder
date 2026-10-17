@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 814,
+        "outcome": "a surviving standalone verifier block withholds auto-merge",
+        "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
+        "testName": "completion - surviving verifier holds standalone existing PR (Issue #3796)",
+        "flipWentRed": "Replaced verifier term with false; standalone and folded tests failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 3343,
+        "outcome": "a verifier block folded into another gate still holds the PR",
+        "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
+        "testName": "completion - surviving verifier holds folded existing PR (Issue #3796)",
+        "flipWentRed": "Forced folded verdict condition false; folded hold test failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 1156,
+        "outcome": "surviving verifier findings are posted to the PR",
+        "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
+        "testName": "completion - surviving verifier holds standalone existing PR (Issue #3796)",
+        "flipWentRed": "Forced comment condition false; PR comment assertion failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 1168,
+        "outcome": "a failed hold-comment post is reported as an error",
+        "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
+        "testName": "completion - failed verifier hold comment is an error and never arms merge (Issue #3796)",
+        "flipWentRed": "Changed error logging to warn; error assertion failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_maintenance.ts",
+        "line": 1168,
+        "outcome": "only top-level hold comments enter the own-comment lane",
+        "test": "worker/deno/tests/pr_maintenance_test.ts",
+        "testName": "findPrCommentsToFix - inline own marker (Issue #3798)",
+        "flipWentRed": "Forced the comment-type operand true; inline own marker test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_maintenance.ts",
+        "line": 1169,
+        "outcome": "a non-fleet marker grants no trust",
+        "test": "worker/deno/tests/pr_maintenance_test.ts",
+        "testName": "findPrCommentsToFix - forged hold (Issue #3798)",
+        "flipWentRed": "Removed fleet-author operand; forged hold test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_maintenance.ts",
+        "line": 1170,
+        "outcome": "only a leading complete marker counts as a hold",
+        "test": "worker/deno/tests/pr_maintenance_test.ts",
+        "testName": "findPrCommentsToFix - quoted marker (Issue #3798)",
+        "flipWentRed": "Replaced first-line equality with includes; quoted marker test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_maintenance.ts",
+        "line": 1171,
+        "outcome": "the own-comment loop guard admits a genuine hold",
+        "test": "worker/deno/tests/pr_maintenance_test.ts",
+        "testName": "findPrCommentsToFix - own hold (Issue #3798)",
+        "flipWentRed": "Restored blanket own-login skip; own hold test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_maintenance.ts",
+        "line": 1200,
+        "outcome": "a genuine hold reaches the existing actionable feedback path",
+        "test": "worker/deno/tests/pr_maintenance_test.ts",
+        "testName": "findPrCommentsToFix - sibling hold (Issue #3798)",
+        "flipWentRed": "Removed isVerifierHold from the actionable condition; sibling hold test failed."
+      }
+    ]
+  }
+}

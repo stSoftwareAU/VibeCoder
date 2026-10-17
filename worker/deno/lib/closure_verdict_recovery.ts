@@ -109,7 +109,11 @@ function canonicalSummaryPath(issueNumber: number): string {
 
 /** What the render attempt did, for the caller's log. */
 export type ClosureRenderKind =
-  /** The issue states no criteria — neither gate applies. */
+  /**
+   * The issue states no criteria — nothing to render: the closure gate does
+   * not apply, and the review gate checks only a Standards Review's
+   * `violation` reasons (Issue #3761).
+   */
   | "not-applicable"
   /** The summary already satisfies both gates; nothing was asked or written. */
   | "already-valid"

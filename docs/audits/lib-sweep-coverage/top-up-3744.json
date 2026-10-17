@@ -1,0 +1,12 @@
+{
+  "issue": 3744,
+  "chunk": "top-up-3744",
+  "title": "top-up: route-issue command",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3744",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/commands/route_issue.ts, the route-issue CLI command: create and dry-run modes, --resolve-duplicate and --part (#3744)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/commands/route_issue.ts"
+  ],
+  "sweptAt": "74f42527483bfd363955ceb25b2ebe92765d9e03"
+}

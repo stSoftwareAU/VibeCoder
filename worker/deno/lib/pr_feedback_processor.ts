@@ -13,7 +13,15 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { redactSecrets } from "./secret_redaction.ts";
+
 import type { Logger, RepoConfig, Result } from "../types.ts";
+import {
+  fenceUntrustedIssueText,
+  generateBoundaryId,
+} from "./prompt_delimiter.ts";
+import { verifyFeedbackFix } from "./pr_feedback_verifier.ts";
+import { STANDING_VIOLATION_LABEL } from "./standing_violation_routing.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
@@ -331,6 +339,7 @@ export interface PrFeedbackProcessorDeps {
    * production leaves it undefined and gets {@link runPrFeedbackDriftCheck}.
    */
   driftCheckFn?: typeof runPrFeedbackDriftCheck;
+  feedbackVerifierFn?: typeof verifyFeedbackFix;
   /**
    * Lease renewal interval for a claimed `pr_review` (Issue #3383). Defaults
    * to {@link PR_REVIEW_CLAIM_RENEW_MS}. A test seam — production never
@@ -759,6 +768,23 @@ async function recordFeedbackTierRun(
 ): Promise<void> {
   if (!carrier.agentRan) return;
   const { deps, logger } = processorDeps;
+  try {
+    await deps.infrastructure.recordPrFollowOn({
+      workDir: processorDeps.workRoot,
+      repo: input.repo,
+      prNumber: input.prNumber,
+      followOn: "pr_feedback",
+      cycle: `${input.commentType}-${input.commentId}`,
+      attempt: 1,
+      runStats: carrier.lifecycleStats ?? [],
+    });
+  } catch (error) {
+    logger.error(
+      `Lifecycle follow-on recording failed for ${input.repo}#${input.prNumber}: ${
+        redactSecrets(error instanceof Error ? error.message : String(error))
+      }`,
+    );
+  }
   const tier = await fetchPrSubAgentTier(
     input.repo,
     input.prNumber,
@@ -777,6 +803,8 @@ async function recordFeedbackTierRun(
 
 /** What the body hands back to every one of its successful return paths. */
 interface FeedbackRunCarrier {
+  /** Every retry's usage, separate from the existing fleet counters (Issue #3720). */
+  lifecycleStats?: (RunStats | undefined)[];
   /**
    * Issue #3404: set once the coding agent is about to be invoked; a run that
    * exits earlier never sets it and so records no fleet-telemetry run.
@@ -1194,12 +1222,33 @@ async function _processFeedbackWithHeartbeat(
   ) => {
     carrier.agentRan = true;
     const invocation = await deps.claude.runClaudeWithRetry(
-      { repo, ...request },
+      {
+        repo,
+        ...request,
+        captureInvocationStats: true,
+        ...(commentType === "pr_review"
+          ? {
+            systemPrompt: `${
+              request.systemPrompt ?? ""
+            }\nDo not push or dismiss the review. Commit fixes locally; the worker independently verifies each earlier finding before pushing.`,
+            disallowedTools: [
+              ...(request.disallowedTools ?? []),
+              "Bash(git push:*)",
+              "Bash(gh pr merge:*)",
+              "Bash(gh api:*)",
+            ],
+          }
+          : {}),
+      },
       options,
     );
     if (invocation.ok) {
       (carrier.runStats ??= []).push(invocation.value.runStats);
+      (carrier.lifecycleStats ??= []).push(
+        ...(invocation.value.invocationStats ?? [invocation.value.runStats]),
+      );
     }
+    if (!invocation.ok) (carrier.lifecycleStats ??= []).push(undefined);
     return invocation;
   };
   const agentRequest = {
@@ -1494,15 +1543,98 @@ async function _processFeedbackWithHeartbeat(
   // (the unpushed commits), never Markdown; never fatal.
   const formatRound = () =>
     formatBeforeGate(deps, processorDeps.workDir, undefined);
-  const finaliseResult = await deps.git.commitAndPushPending(
-    pushBranch,
-    `Address PR #${prNumber} feedback\n\nAutomated final-mile commit (Issue #1643).`,
-    { cwd: processorDeps.workDir },
-    false,
-    preFlight,
-    undefined,
-    formatRound,
-  );
+  let verifierFailure: Error | undefined;
+  const verifyBeforePush = commentType === "pr_review"
+    ? async () => {
+      const checked =
+        await (processorDeps.feedbackVerifierFn ?? verifyFeedbackFix)({
+          repo,
+          prNumber,
+          repoPath: processorDeps.workDir,
+          commentBody,
+          timeoutSeconds: claudeTimeout,
+          logger,
+        }, {
+          runGh: (args) => deps.github.runGhCommand(args),
+          ask: runAgentTracked,
+        });
+      verifierFailure = checked.ok ? undefined : checked.error;
+      return checked;
+    }
+    : undefined;
+  const finalise = () =>
+    deps.git.commitAndPushPending(
+      pushBranch,
+      `Address PR #${prNumber} feedback\n\nAutomated final-mile commit (Issue #1643).`,
+      { cwd: processorDeps.workDir },
+      false,
+      preFlight,
+      undefined,
+      formatRound,
+      verifyBeforePush,
+    );
+  let finaliseResult = await finalise();
+  if (verifierFailure) {
+    // One code-capable correction only. The next finalise commits and checks
+    // the new head from scratch, including a head changed by push recovery.
+    const recovery = await runAgentTracked({
+      ...agentRequest,
+      prompt:
+        `${agentRequest.prompt}\n\nThe independent review-fix verifier blocked this round. Resolve all remaining asks, then commit locally without pushing.\n${
+          fenceUntrustedIssueText(
+            verifierFailure.message,
+            "Verifier findings (untrusted data):",
+            generateBoundaryId(),
+          ).join("\n")
+        }`,
+    }, { maxRetries: maxRateLimitRetries });
+    if (recovery.ok && !recovery.value.timedOut) {
+      finaliseResult = await finalise();
+    }
+  }
+  const holdUnverifiedReview = async (failure: Error) => {
+    const message =
+      `Review-fix verification did not clear. The review remains outstanding.\n\n${failure.message}`;
+    await chargeReviewFailure(message);
+    // Attempt both holds even if one GitHub operation is unavailable.
+    const holds = await Promise.allSettled([
+      (async () => {
+        await deps.github.ensureLabelExists(repo, STANDING_VIOLATION_LABEL);
+        await deps.github.runGhCommand([
+          "pr",
+          "edit",
+          String(prNumber),
+          "--repo",
+          repo,
+          "--add-label",
+          STANDING_VIOLATION_LABEL,
+        ]);
+      })(),
+      deps.github.runGhCommand([
+        "pr",
+        "merge",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--disable-auto",
+      ]),
+    ]);
+    for (const hold of holds) {
+      if (hold.status === "rejected") {
+        logger.error("Could not apply review-fix merge hold", {
+          error: String(hold.reason),
+        });
+      }
+    }
+    return {
+      ok: true as const,
+      value: { processed: false, changesPushed: false, summary: message },
+    };
+  };
+  if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
+  if (commentType === "pr_review" && !finaliseResult.ok) {
+    return await holdUnverifiedReview(finaliseResult.error);
+  }
 
   let pushSucceeded = false;
   let hasChanges = false;
@@ -1528,7 +1660,10 @@ async function _processFeedbackWithHeartbeat(
       const recoveryResult = await deps.git.recoverFromPushRejection(
         pushBranch,
         { cwd: processorDeps.workDir },
+        undefined,
+        verifyBeforePush,
       );
+      if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
       // Issue #211: keep the reason the recovery failed — it names the step
       // (fetch, merge conflict, rejected retry push, unconfirmed push)
       // and carries git's stderr. Without it the log said only "push failed"
@@ -1545,7 +1680,9 @@ async function _processFeedbackWithHeartbeat(
           preFlight,
           undefined,
           formatRound,
+          verifyBeforePush,
         );
+        if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
         if (retryFinalise.ok) {
           finalUnpushedCount = retryFinalise.value.finalUnpushedCount;
           if (retryFinalise.value.finalUnpushedCount === 0) {
