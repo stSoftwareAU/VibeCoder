@@ -232,6 +232,7 @@ import {
 } from "../standing_violation_routing.ts";
 import {
   carryForwardCorrectedClaims,
+  carryForwardManualClaims,
   correctSummaryClaimsInRun,
   shouldOfferClaimCorrection,
 } from "../summary_claim_correction.ts";
@@ -574,6 +575,8 @@ interface SummaryRuleBlock {
   standingViolations: readonly StandingViolation[];
   /** Surviving verifier findings; empty when the verifier did not block. */
   verifierHoldComment: string;
+  /** Confirmed manual/prompt claims that must not ship armed. */
+  docHoldComment: string;
   /**
    * True when a blocked gate in `sections` is fixed by changing tests (the
    * mutation gate, Issue #3393), so the recovery prompt allows test changes.
@@ -811,8 +814,9 @@ async function reportSummaryRuleBlock(
     {
       docsSweepHitsComment,
       holdAutoMerge: block.standingViolations.length > 0 ||
-        block.verifierHoldComment.length > 0,
-      verifierHoldComment: block.verifierHoldComment,
+        block.verifierHoldComment.length > 0 || block.docHoldComment.length > 0,
+      verifierHoldComment: [block.verifierHoldComment, block.docHoldComment]
+        .filter(Boolean).join("\n\n"),
     },
   );
   if (recovered.status !== "continue") return recovered;
@@ -1159,7 +1163,7 @@ export async function recoverAndFinaliseExistingPr(
             repo,
             prNumber,
             `${PRE_PR_VERIFIER_HOLD_MARKER}\n\n` +
-              "Auto-merge withheld: the pre-PR verifier's blocking findings " +
+              "Auto-merge withheld: blocking pre-PR findings " +
               "survived the recovery turn. Fix or dispute each finding with " +
               "evidence before the hold is released.\n\n" +
               finalise.verifierHoldComment,
@@ -1259,7 +1263,7 @@ export async function workOnIssueCompletion(
   // documentation shortfall on a pushed, quality-gated branch used to cost the
   // whole run. Entered once per run — a block on the re-run is the second. A
   // second block the standalone claim-check gate alone raised instead defers
-  // to the one summary-only correction turn below (Issue #3324); any other
+  // to the one narrow claim correction turn below (Issue #3324); any other
   // second block fails as before.
   if (
     result.status === "failure" && (state.summaryRuleBlocks?.length ?? 0) === 1
@@ -1273,7 +1277,7 @@ export async function workOnIssueCompletion(
     );
   }
 
-  // Summary-only claim correction turn (Issue #3324): the recovery turn above
+  // Claim-sentence correction turn (Issue #3324): the recovery turn above
   // has already been spent, and the completion attempt deferred a
   // claim-check-only later block here rather than failing or finalising the
   // PR immediately — see `shouldOfferClaimCorrection`.
@@ -3030,10 +3034,14 @@ async function completionBody(
   // misses it — the gate is never loosened by a flaky re-run.
   const claimCheck = rawClaimCheck === null
     ? null
-    : carryForwardCorrectedClaims(
-      rawClaimCheck,
+    : await carryForwardManualClaims(
+      carryForwardCorrectedClaims(
+        rawClaimCheck,
+        state.summaryClaimCorrection,
+        summaryContent,
+      ),
       state.summaryClaimCorrection,
-      summaryContent,
+      state.repoPath,
     );
   if (claimCheck === null) {
     logger.info(
@@ -3340,6 +3348,9 @@ async function completionBody(
       comment: foldedComment,
       sections,
       standingViolations,
+      docHoldComment: (claimCheck?.docFindings.length ?? 0) > 0
+        ? claimCheckVerdict.comment()
+        : "",
       verifierHoldComment: prePrVerifierVerdict.blocked
         ? prePrVerifierVerdict.comment()
         : "",
@@ -3671,20 +3682,17 @@ async function completionBody(
     // passed, so the claim check and (Issue #3395) the pre-PR verifier are
     // the only verdicts that can block here; the verifier folds into this
     // gate's block below. A later block of this same gate (the recovery turn
-    // already spent) gets one summary-only correction turn
+    // already spent) gets one narrow claim correction turn
     // (`summary_claim_correction.ts`, Issue #3324) instead of failing the run
     // immediately: the state is recorded as `pending` and no comment is
     // posted yet, because the correction turn may yet clear the finding
     // before anything reaches the thread. The re-run posts the comment via
     // this same gate if the sentence survives.
     //
-    // Issue #3347: the correction turn rewrites only the PR summary, so a
-    // block that carries a finding in a changed manual or prompt
-    // (`docFindings`) can never be cleared by it — that goes to
-    // `reportSummaryRuleBlock` like any other later block.
+    // Issue #3865: manual findings get the same bounded turn, using indexed
+    // sentence replacements written by the worker rather than full-file edits.
     if (
-      summarySource !== null && shouldOfferClaimCorrection(state) &&
-      claimCheck.docFindings.length === 0
+      summarySource !== null && shouldOfferClaimCorrection(state)
     ) {
       state.summaryClaimCorrection = {
         status: "pending",
@@ -3692,10 +3700,11 @@ async function completionBody(
         comment: claimCheckVerdict.comment(),
         summaryPath: summarySource,
         findings: claimCheck.findings,
+        docFindings: claimCheck.docFindings,
       };
       logger.warn(
         "PR-summary claim check blocked a later attempt — deferring to the " +
-          "one summary-only correction turn (Issue #3324)",
+          "one narrow claim correction turn (Issues #3324, #3865)",
         { repo, issueNumber, reason: claimCheckVerdict.reason },
       );
       return { status: "failure", reason: claimCheckVerdict.reason };
@@ -3744,6 +3753,7 @@ async function completionBody(
         sections: [comment],
         standingViolations,
         verifierHoldComment: comment,
+        docHoldComment: "",
       },
       ctx,
       state,

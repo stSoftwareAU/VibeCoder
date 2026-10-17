@@ -2282,33 +2282,33 @@ GRQ-AutoTrader#2609, #2685 and #2699 and VibeCoder#3308 each shipped a manual or
 prompt sentence about the PR's own new behaviour that the head code
 contradicted, after #3120 and #3232 had asked for this care in prose only.
 
-**Issue #3324.** A later block where the claim check is the only gate still
-failing — reached only once every earlier summary gate has passed, and every
-finding it confirmed is in the summary itself — instead gets one summary-only
-correction turn before the ordinary recovery path even
-applies: the claim gate's comment and the current summary, fenced as
-untrusted data, go to a fresh agent invocation with file-writing tools and
-`Bash` denied (`Read`/`Grep`/`Glob` stay), which must reply with the complete
-corrected summary between `<!-- vibe-corrected-summary -->` markers. The
-worker writes only the summary file from that reply, commits it, re-runs the
-quality gate, then re-runs completion; every sentence the claim check had
-confirmed wrong that is still in the summary is carried forward as a finding,
-so a re-run model pass that misses it, or cannot run at all, does not wave it
-through — it blocks exactly as before. A launch failure, an unreadable reply
-or an unchanged summary writes nothing and re-runs completion, which then
-blocks on the carried-forward finding. Two incidents motivated it:
-VibeCoder#3310, where the one in-run recovery turn received several
-`---`-separated gate notices folded together and fixed only one of them, and
-VibeCoder#3322, where the claim check found its wrong sentence only on the re-run
-after recovery — the run's second block, spent with no correction turn left.
-A claim-check block folded with another gate on a later attempt is not this
-case and gets no correction turn — the ordinary recovery (or its absence)
-applies. Neither does a block carrying a doc finding (Issue #3347): the turn can
-only rewrite the summary file, so that block takes the ordinary path (fails the
-run, or finalises an existing PR as `summary_incomplete`).
-A pre-PR verifier block on that same attempt is not folded into the
-correction turn: the claim gate returns first, so the verifier is gated again
-on the re-run that follows.
+**Issues #3324 and #3865.** A later block where the claim check is the only
+earlier summary gate still failing gets one narrow correction turn. This
+covers summary sentences and confirmed `docFindings` in changed manuals or
+prompts. File-writing tools and `Bash` are denied; `Read`/`Grep`/`Glob` remain
+available to inspect the head code.
+
+When the findings are summary-only, the model returns the corrected summary
+between `<!-- vibe-corrected-summary -->` markers. When manual or prompt
+findings are present, it returns an indexed replacement string for each
+flagged sentence, including any summary findings in that same block. The
+worker locates each flagged span with the claim check's whitespace-normalised
+matching rules and changes only that span in its own file. Missing or duplicate
+indices, ambiguous or overlapping spans, unsafe paths and symlink aliases are
+refused. Text outside those spans is preserved byte for byte.
+
+The worker commits changed files, runs the quality gate, then re-runs
+completion once. Confirmed sentences still present are carried forward even
+if the next model check misses them; an unreadable manual does not clear its
+confirmed finding. A failed invocation, malformed reply or unchanged sentence
+therefore cannot silently clear the block. A later block folded with another
+gate does not get this extra turn. A surviving manual finding holds an existing
+PR whether the block is claim-check-only or mixed: auto-merge is withheld,
+`standing-violation` is applied, and the findings are posted with the existing
+worker repair marker so PR feedback can act on them. With no PR, the run fails.
+
+A pre-PR verifier block on that same attempt is checked again after the claim
+correction: the claim gate returns first and completion rechecks the gates.
 
 ```mermaid
 flowchart TD
@@ -2324,9 +2324,9 @@ flowchart TD
     G -- no --> I["PR raised"]
     H -- yes --> RT["One recovery turn<br/>(all folded gates, one per item)"]
     RT --> A
-    H -- no --> J{"Claim check the only gate,<br/>summary findings only?"}
+    H -- no --> J{"Claim check the only gate,<br/>summary or manual findings?"}
     J -- no --> K["Fail / finalise<br/>summary_incomplete"]
-    J -- yes --> L["One summary-only<br/>correction turn (Issue #3324)"]
+    J -- yes --> L["One narrow claim<br/>correction turn (#3324, #3865)"]
     L --> M["Re-run: wrong sentences<br/>still present carried forward"]
     M --> N{"Gate satisfied?"}
     N -- yes --> I
@@ -2660,7 +2660,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on the summary's own sentences, after the one summary-only correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on summary or manual/prompt sentences, after the one claim correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised; auto-merge withheld for surviving standing violations, verifier findings or manual findings, otherwise armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -2670,9 +2670,9 @@ whether or not the run's branch already carries a PR (Issue #3163) — see
 An existing PR is not finalised, labelled or auto-merged across that turn;
 only a block that survives the recovery (the run's second such block) on an
 existing-PR branch finalises as `summary_incomplete` — except that when the
-claim check alone is still blocking on that second attempt, on the summary's
-own sentences, it first gets
-one summary-only correction turn (Issue #3324), and only a block that
+claim check alone is still blocking on that second attempt, on summary or
+manual/prompt sentences, it first gets
+one claim correction turn (Issue #3324), and only a block that
 survives *that* turn finalises the PR. Either way the gate's
 remediation comment is posted, so the shortfall is on the issue thread rather
 than only in one host's log.
@@ -2772,7 +2772,7 @@ flowchart TD
     R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
     RT --> G
     R -->|no| CC{"Claim check the only gate<br/>still blocking, correction<br/>turn unused this run?"}
-    CC -->|yes| CT["One summary-only correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
+    CC -->|yes| CT["One claim correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
     CT --> G
     CC -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
@@ -2833,9 +2833,9 @@ A run that satisfies the gate on the re-run raises its PR, or, when the run's
 branch already carried a PR from the execute phase, updates and finalises that
 same PR — no second PR is opened. A **second** block in the same run is not
 recovered again, with one exception: when the claim check alone is still
-blocking on the summary's own sentences — every earlier summary gate having
+blocking on summary or manual/prompt sentences — every earlier summary gate having
 passed — the run instead gets
-one summary-only correction turn before it is treated as a second block
+one claim correction turn before it is treated as a second block
 (Issue #3324, [above](#-a-summary-that-describes-named-code-wrongly-blocks-the-pr-issue-3257)).
 Any other second block fails exactly as a block did before, with the
 comment already on the thread; on an existing-PR branch that PR is finalised
@@ -2858,8 +2858,8 @@ the old no-changes deferral in this manual. The run's first block now always
 takes the one recovery turn, whichever kind of branch it is on; a block that
 survives that turn is handled as before — finalised as `summary_incomplete`
 when a PR exists, failed when none does — unless it is the claim check
-alone still blocking on the summary's own sentences, in which case it gets the
-one summary-only correction turn first (Issue #3324).
+alone still blocking on summary or manual/prompt sentences, in which case it gets the
+one claim correction turn first (Issue #3324).
 
 **Issue #3382.** The recovery turn used to be told the code had already
 passed the quality gate and must not change, while the Issue #3196 gate
