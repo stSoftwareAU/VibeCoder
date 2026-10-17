@@ -19,7 +19,7 @@ Deno.test("CODING-STANDARDS.md Never Fail Silently carries the registered-marker
       "A failure reason that quotes text the worker did not write opens with a registered worker marker",
       "registered with its own category in `WORKER_GATE_MARKERS`",
       "the label-release sweeps skip any worker gate record (`isWorkerGateFailureRecord`)",
-      "A classifier never wires one marker by hand.",
+      "A new gate is one registry entry; no classifier names a gate marker of its own.",
       "`worker/deno/tests/worker_gate_markers_3735_test.ts`",
     ],
   );
@@ -46,6 +46,6 @@ Deno.test("rule 5 of Writing a gate over text points at the marker registry (Iss
       await readRepoDoc("CODING-STANDARDS.md"),
       "Writing a gate over text",
     ),
-    ["every such prefix is registered in `WORKER_GATE_MARKERS`"],
+    ["every worker gate prefix is an entry of `WORKER_GATE_MARKERS`"],
   );
 });

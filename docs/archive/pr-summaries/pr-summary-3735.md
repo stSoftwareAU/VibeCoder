@@ -57,10 +57,18 @@ Backend-only change, with no UI files. Verified by:
     `ladder` disposition with `non_transient` cooldown, no host fault, and no
     infrastructure retry.
   - **Posted comment:** the comment built by the real `markIssueAsFailedOnce` /
-    `markIssueAsFailed` is a worker gate record, and both release sweeps
-    leave it alone.
+    `markIssueAsFailed` is a worker gate record (`isWorkerGateFailureRecord`),
+    and both release sweeps leave it alone. The posted body's category and
+    disposition are not asserted separately.
 
-  Positive controls show each quote is hostile when the marker is missing.
+  The positive control (`the quotations are hostile when unmarked`) shows five
+  quotes picking another verdict with the marker missing: the rate-limit quote
+  is a `transient` disposition, `SIGKILL` is `killed`, `ENOSPC` is a
+  `disk-full` host fault, `ignoring broken ref` is a `clone-corrupt` host fault
+  whose unmarked record the sweep releases, and the `GH013` refusal is
+  `repo_config`, its unmarked record counting as the most recent refusal
+  (`refusalIsMostRecentFailure`). For every quote it asserts only that the
+  quote alone is not a gate category.
 - `worker/deno/tests/worker_gate_marker_rule_3735_test.ts`: a
   documentation-drift test for the new rule in `CODING-STANDARDS.md`, its
   coding-guidelines restatement, and the rule 5 pointer.

@@ -91,12 +91,16 @@ the fault immediately rather than swallowing it into a green result.
   diffs, linter context, cspell words, test output), agent text (the PR summary,
   test declarations) or issue or comment text opens with a worker-written
   constant from `worker/deno/lib/failure_diagnosis.ts`, registered with its own
-  category in `WORKER_GATE_MARKERS`. `detectFailureCategory`,
-  `classifyRunFailure`, `classifyCodingFailure` and `detectHostFault` read that
-  registry with `startsWith` before their free-text rules, and
-  `shouldRetryInfrastructureFailure` follows through `detectFailureCategory`;
+  category in `WORKER_GATE_MARKERS`. `detectFailureCategory` and
+  `detectHostFault` read that registry with `startsWith` on the message
+  (`workerGateCategoryOf`) before their free-text rules; `classifyRunFailure`
+  and `classifyCodingFailure` first test the category they classify with
+  `isWorkerGateCategory`, a comparison with the registry's categories
+  (`classifyCodingFailure` takes it from `detectFailureCategory`, and
+  `shouldRetryInfrastructureFailure` follows through `detectFailureCategory`);
   the label-release sweeps skip any worker gate record
-  (`isWorkerGateFailureRecord`). A classifier never wires one marker by hand.
+  (`isWorkerGateFailureRecord`). A new gate is one registry entry; no
+  classifier names a gate marker of its own.
   Without such a marker, the quoted cause line that the bullet above asks for
   lets a quoted `rate limit`, `timeout`, `SIGKILL`, `command not found`,
   `ENOSPC` or `Error:` turn a gate block into a transient, killed,
@@ -105,8 +109,10 @@ the fault immediately rather than swallowing it into a green result.
   marker back is a gate over text (rule 5 of **Writing a gate over text**).
   Each new entry's hostile quotes go in
   `worker/deno/tests/worker_gate_markers_3735_test.ts`, which asserts the gate's
-  own category, a `ladder` disposition and no host fault for the raw reason and
-  the posted failure comment (Issue #3735).
+  own category, a `ladder` disposition and no host fault for the raw reason,
+  and for the posted failure comment that it is a worker gate record
+  (`isWorkerGateFailureRecord`) that neither label-release sweep releases
+  (Issue #3735).
 
 ## Changing the Shape of Persisted Data
 
@@ -1085,8 +1091,9 @@ stale. Before calling a gate done (Issue #3149):
    the next line (`hasFollowUpChainStop` in
    `worker/deno/lib/missing_criterion_close_guard.ts`), or a `startsWith` on
    the worker-written prefix (`SUMMARY_RULE_GATE_MARKER` in
-   `worker/deno/lib/failure_diagnosis.ts`, and every such prefix is registered in
-   `WORKER_GATE_MARKERS`) — or after the agent part has been
+   `worker/deno/lib/failure_diagnosis.ts`; every worker gate prefix is an
+   entry of `WORKER_GATE_MARKERS`, read by `workerGateCategoryOf`) — or after
+   the agent part has been
    neutralised before the worker appends its own marker
    (`neutraliseAgentMarkers` in
    `worker/deno/lib/agent_marker_neutralisation.ts`,

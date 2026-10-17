@@ -5090,11 +5090,14 @@ for the sweep-then-re-clone repair ladder that produces this category.
 Each failure reason that opens with a worker-written marker (the
 `summary_incomplete`, `security_fix_gate` and `pre_push_gate` markers below) is
 one entry in `WORKER_GATE_MARKERS` in `failure_diagnosis.ts`: the marker mapped
-to its `FailureCategory`. `detectFailureCategory`, `classifyRunFailure`
-(`run_outcome_classifier.ts`), `classifyCodingFailure`
-(`coding_failure_ladder.ts`) and `detectHostFault` (`host_fault.ts`) each read
-the registry with `startsWith` before their free-text rules, and
-`shouldRetryInfrastructureFailure` follows through `detectFailureCategory`. The
+to its `FailureCategory`. `detectFailureCategory` and `detectHostFault`
+(`host_fault.ts`) read the registry with `startsWith` on the message
+(`workerGateCategoryOf`) before their free-text rules. `classifyRunFailure`
+(`run_outcome_classifier.ts`) and `classifyCodingFailure`
+(`coding_failure_ladder.ts`) instead first test the category they are given
+with `isWorkerGateCategory`, which compares it with the registry's categories;
+`classifyCodingFailure` takes that category from `detectFailureCategory`, and
+so does `shouldRetryInfrastructureFailure`. The
 host-fault and milestone-refusal label-release sweeps skip any posted failure
 comment that `isWorkerGateFailureRecord` recognises: one whose head
 `**Category:**` line names a registered gate category's display
@@ -5103,7 +5106,8 @@ comment that `isWorkerGateFailureRecord` recognises: one whose head
 remote lookup stays `push_failure`, an infrastructure category. A new gate is one
 registry entry with its own category, plus its hostile quotes in
 `worker/deno/tests/worker_gate_markers_3735_test.ts`, which runs every entry
-through every classifier for the raw reason and for the posted comment.
+through every classifier for the raw reason, and checks the posted comment is a
+worker gate record that neither label-release sweep releases.
 
 #### `summary_incomplete` is its own failure category (Issue #3431)
 
