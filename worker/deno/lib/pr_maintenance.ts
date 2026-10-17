@@ -21,6 +21,7 @@ import type { Logger, Result } from "../types.ts";
 import { recordLifecyclePrFromGithub } from "./lifecycle_pr_observation.ts";
 import type { PrRollup } from "./check_runs_batch.ts";
 import { recordPrRejection } from "./fleet_telemetry.ts";
+import { PRE_PR_VERIFIER_HOLD_MARKER } from "./standing_violation_routing.ts";
 import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { ensureIssueClosedIfPrMerged } from "./issue_lifecycle.ts";
@@ -1148,9 +1149,12 @@ export async function findPrCommentsToFix(
  *   login is resolved and checked against `authorisedCommenters`
  * - the comment is a `review`-type comment **and** the author is in
  *   `trustedReviewBots` (Issue #1857). This third path applies only to
- *   line-level review comments — top-level issue comments still require
- *   an authorised thumbs-up or authorisation, because top-level comments
- *   are the higher-injection-risk surface.
+ *   line-level review comments.
+ * - a top-level comment begins with the worker's verifier-hold marker and
+ *   its author is in the push-capable fleet set (Issue #3798). This is the
+ *   only exception to skipping this host's own comments; a fleet eyes
+ *   reaction still marks it processed. Other top-level comments require
+ *   an authorised thumbs-up or authorisation.
  */
 async function findActionableComment(
   repo: string,
@@ -1176,8 +1180,12 @@ async function findActionableComment(
   );
 
   for (const comment of comments) {
-    // Skip own comments to avoid infinite loops
-    if (comment.login === githubUser) continue;
+    // Only a fleet-authored, leading hold marker opens this own-comment lane.
+    // A quoted marker in agent text is not worker provenance (Issue #3696).
+    const isVerifierHold = commentType === "issue" &&
+      isFleetAuthor(comment.login, [...fleetAuthors]) &&
+      comment.body.split(/\r?\n/, 1)[0] === PRE_PR_VERIFIER_HOLD_MARKER;
+    if (comment.login === githubUser && !isVerifierHold) continue;
 
     const isAuthorised = isAuthorisedCommenter(comment.login);
     const isTrustedReviewBot = commentType === "review" &&
@@ -1189,7 +1197,10 @@ async function findActionableComment(
     // when there is a count to check and the comment is not already
     // trusted by another path, to avoid a needless reactions API call.
     let hasAuthorisedThumbsUp = false;
-    if (!isAuthorised && !isTrustedReviewBot && (comment.thumbs_up ?? 0) > 0) {
+    if (
+      !isAuthorised && !isTrustedReviewBot && !isVerifierHold &&
+      (comment.thumbs_up ?? 0) > 0
+    ) {
       const reactors = await fetchCommentThumbsUpReactors(
         repo,
         comment.id,
@@ -1201,7 +1212,10 @@ async function findActionableComment(
       );
     }
 
-    if (isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot) {
+    if (
+      isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot ||
+      isVerifierHold
+    ) {
       // The comment is actionable — unless the fleet has already processed
       // it. The `eyes` marker is the worker's own, so a count is not the
       // test: any account can add 👀 and would otherwise have removed this
@@ -1242,7 +1256,9 @@ async function findActionableComment(
         });
       }
 
-      const trustReason = isAuthorised
+      const trustReason = isVerifierHold
+        ? "worker-verifier-hold"
+        : isAuthorised
         ? "authorised"
         : hasAuthorisedThumbsUp
         ? "thumbs-up"
