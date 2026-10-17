@@ -74,6 +74,9 @@ const REPLAY_FILES = {
   sync: "worker/deno/tests/pr_body_sync_test.ts",
 };
 
+const PARTIAL =
+  "the block describes partial test additions, not whole-file counts";
+
 Deno.test("a block mixing a partial addition and a whole-file count checks only the whole-file count", () => {
   const summary = plan(
     "- 3 tests added to `tests/a_test.ts` (34 tests in all), and `tests/b_test.ts` (8 tests) passes.",
@@ -235,6 +238,91 @@ Deno.test("hostile runs of the new partial, total and bare-figure regexes grow l
         plan(
           "- " + "added ".repeat(Math.floor(chars / 6)) +
             "to `tests/c_test.ts` (8 tests).",
+        ),
+    ],
+  ];
+  for (const [label, build] of cases) {
+    assertLinearGrowth(
+      label,
+      build,
+      (summary) => findTestPlanMismatches({ summary, headCounts }),
+      { baseChars: 5_000 },
+    );
+  }
+});
+
+Deno.test("the 1823 shape: 'Extended' governs the later figure, so both figures are unchecked (Issue #3740)", () => {
+  const summary = plan(
+    '- Extended `worker/deno/tests/tool_release_age_test.ts` (5 tests) for the now-exported `resolveGitHubReleaseHistory` — happy path, an empty-but-`ok` listing, a non-zero exit, a spawn failure and a malformed repo that never reaches the API — and `worker/deno/tests/pinned_actions_test.ts` (3 tests) for the `resolution` field, including that both branch-HEAD entries are `"catalogue"`.',
+  );
+  const heads = {
+    "worker/deno/tests/tool_release_age_test.ts": 12,
+    "worker/deno/tests/pinned_actions_test.ts": 7,
+  };
+  assertEquals(mismatchesOf(summary, heads), []);
+  assertEquals(
+    findUncheckedRunResults({ summary, headCounts: counts(heads) }).map(
+      (u) => u.reason,
+    ),
+    [PARTIAL, PARTIAL],
+  );
+});
+
+Deno.test("'Extended `a` (5 tests) and the new `b` (3 tests)': the new file's figure is compared, the extended one is not (Issue #3740)", () => {
+  const summary = plan(
+    "- Extended `tests/a_test.ts` (5 tests) and the new `tests/b_test.ts` (3 tests).",
+  );
+  const heads = { "tests/a_test.ts": 9, "tests/b_test.ts": 4 };
+  assertEquals(mismatchesOf(summary, heads), [[["tests/b_test.ts"], 3, 4]]);
+  assertEquals(
+    findUncheckedRunResults({ summary, headCounts: counts(heads) }).map(
+      (u) => u.reason,
+    ),
+    [PARTIAL],
+  );
+});
+
+Deno.test("'Added `file` (N tests)' announces a new file, so the figure is compared whole (Issue #3740)", () => {
+  const summary = plan(
+    "- Added `worker/deno/tests/pre_pr_verifier_3395_test.ts` (33 tests), `worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts` (10 tests), `worker/deno/tests/pr_review_brief_shared_3395_test.ts` (5 tests).",
+  );
+  const heads = {
+    "worker/deno/tests/pre_pr_verifier_3395_test.ts": 55,
+    "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts": 10,
+    "worker/deno/tests/pr_review_brief_shared_3395_test.ts": 5,
+  };
+  assertEquals(mismatchesOf(summary, heads), [
+    [["worker/deno/tests/pre_pr_verifier_3395_test.ts"], 33, 55],
+  ]);
+  assertEquals(uncheckedLines(summary, heads), []);
+});
+
+Deno.test("hostile runs of the sentence-scope and added-tail checks grow linearly (Issue #3740)", () => {
+  const headCounts = counts({
+    "tests/c_test.ts": 47,
+    "tests/d_test.ts": 5,
+  });
+  const cases: [string, (chars: number) => string][] = [
+    [
+      "added tail before a rejected character",
+      (chars) =>
+        plan("- added" + " ".repeat(chars) + "! `tests/c_test.ts` (8 tests)."),
+    ],
+    [
+      "extended sentence scope",
+      (chars) =>
+        plan(
+          "- " + "extended ".repeat(Math.floor(chars / 9)) +
+            "`tests/c_test.ts` (8 tests).",
+        ),
+    ],
+    [
+      "new override",
+      (chars) =>
+        plan(
+          "- Extended `tests/d_test.ts` (5 tests) and " +
+            "new ".repeat(Math.floor(chars / 4)) +
+            "`tests/c_test.ts` (8 tests).",
         ),
     ],
   ];

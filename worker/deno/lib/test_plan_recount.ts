@@ -595,6 +595,15 @@ const ADDED_TO_FOLLOW_RE = /^\s+(?:tests?\s+)?added\s+to[\s`*_]*$/i;
 const WHOLE_GAP_RE = /^[`*_\s]*\(\s*$/;
 const PARTIAL_GAP_RE = /^[`*_\s]*(?:\(|with)?[`*_\s]*$/i;
 const MARKER_RE = /\b(?:added|extended)\b/i;
+/** "extended" governs every later figure in its sentence (Issue #3740). */
+const EXTENDED_RE = /\bextended\b/i;
+/** A figure's own segment that names a new file, which "extended" does not govern (Issue #3740). */
+const NEW_RE = /\bnew\b/i;
+/**
+ * An "added" directly before a test-file token, after optional markdown and
+ * whitespace, announces a new file rather than a partial addition (Issue #3740).
+ */
+const ADDED_FILE_TAIL_RE = /\badded[`*_\s]{0,40}$/i;
 const PLUS_RE = /\+\s*$/;
 const BARE_TO_RE = /(?<![\w.#])\d{1,5}\s+to[\s`*_]*$/;
 
@@ -616,6 +625,15 @@ function scanBlockTokens(
  * name. "N tests added to `file`", "N to `file`", "+N tests", "Added to `file`
  * (N tests" and "extended `file` with N tests" are partial. "now has N" is
  * the file's total and takes precedence over a partial figure for it.
+ *
+ * Two scope rules refine this (Issue #3740). First, "extended" governs every
+ * figure later in its sentence (back to the nearest ". " or the block start),
+ * so "Extended `a` (5 tests) and `b` (3 tests)" makes both figures partial;
+ * a figure whose own segment contains "new" is not governed, so "Extended `a`
+ * (5 tests) and the new `b` (3 tests)" keeps b whole. Second, "added" is a
+ * partial marker only when it is not directly followed by the test-file
+ * token: "Added `file` (33 tests)" announces a new file and stays whole,
+ * while "Added to `file` (8 tests)" stays partial.
  */
 function classifyBlockClaims(
   raw: string,
@@ -678,14 +696,24 @@ function classifyBlockClaims(
     if (own !== undefined) {
       const t = tokens[own]!;
       const gap = raw.slice(t.end, start);
-      const seg = raw.slice(
-        Math.max(boundaryBefore(t.start), start - 200),
-        start,
-      );
-      if (WHOLE_GAP_RE.test(gap) && !MARKER_RE.test(seg)) {
+      const segStart = Math.max(boundaryBefore(t.start), start - 200);
+      const seg = raw.slice(segStart, start);
+      // The segment with a trailing "added" before the file token removed.
+      const head = raw.slice(segStart, t.start);
+      const markerSeg = head.replace(ADDED_FILE_TAIL_RE, "") +
+        seg.slice(head.length);
+      const breakAt = raw.lastIndexOf(". ", start - 2);
+      const sentence = raw.slice(breakAt === -1 ? 0 : breakAt + 2, start);
+      const governed = EXTENDED_RE.test(sentence) && !NEW_RE.test(seg);
+      if (
+        WHOLE_GAP_RE.test(gap) && !MARKER_RE.test(markerSeg) && !governed
+      ) {
         return { start, end, claimed, role: "whole", owner: own };
       }
-      if (!isPassed && PARTIAL_GAP_RE.test(gap) && MARKER_RE.test(seg)) {
+      if (
+        !isPassed && PARTIAL_GAP_RE.test(gap) &&
+        (MARKER_RE.test(markerSeg) || governed)
+      ) {
         return { start, end, claimed, role: "partial", owner: own };
       }
     }
