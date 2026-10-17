@@ -654,6 +654,116 @@ Deno.test("reconcile - a bodyless cached entry whose fetched body digest matches
   }
 });
 
+Deno.test("reconcile - a gh pr view reply that is not JSON is a read failure: warn with the cause, no contents read, no rebuild", async () => {
+  const { cache, cleanup } = await seededCache(bodylessCacheEntry(HEAD_SHA));
+  try {
+    const h = harness({
+      files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+      view: "this is not JSON",
+    });
+    let prepared = 0;
+    let synced = 0;
+
+    const summary = await reconcilePrBodyDigests(
+      OPTS,
+      passDeps(h, new Map(), {
+        cache,
+        prepareCheckout: async (repo, sha) => {
+          prepared += 1;
+          return REFUSE_PREPARE(repo, sha);
+        },
+        syncFn: async (input, deps) => {
+          synced += 1;
+          return REFUSE_SYNC(input, deps);
+        },
+      }),
+    );
+
+    assertEquals(summary, { checked: 0, rebuilt: 0, readFailures: 1 });
+    assertStringIncludes(warnText(h.logs), "Failed to read PR");
+    assertEquals(prepared, 0, "no checkout");
+    assertEquals(synced, 0, "no rebuild");
+    assertEquals(editCalls(h).length, 0);
+    assertEquals(apiCalls(h).length, 0, "no contents read");
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("reconcile - a gh pr view reply with no string body is a read failure: warn, no contents read, no rebuild", async () => {
+  const { cache, cleanup } = await seededCache(bodylessCacheEntry(HEAD_SHA));
+  try {
+    const h = harness({
+      files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+      view: JSON.stringify({ headRefOid: HEAD_SHA }),
+    });
+    let prepared = 0;
+    let synced = 0;
+
+    const summary = await reconcilePrBodyDigests(
+      OPTS,
+      passDeps(h, new Map(), {
+        cache,
+        prepareCheckout: async (repo, sha) => {
+          prepared += 1;
+          return REFUSE_PREPARE(repo, sha);
+        },
+        syncFn: async (input, deps) => {
+          synced += 1;
+          return REFUSE_SYNC(input, deps);
+        },
+      }),
+    );
+
+    assertEquals(summary, { checked: 0, rebuilt: 0, readFailures: 1 });
+    assertStringIncludes(warnText(h.logs), "returned no body");
+    assertEquals(prepared, 0, "no checkout");
+    assertEquals(synced, 0, "no rebuild");
+    assertEquals(editCalls(h).length, 0);
+    assertEquals(apiCalls(h).length, 0, "no contents read");
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("reconcile - a gh pr view reply whose headRefOid is not a string is skipped silently, no contents read", async () => {
+  // The body's digest mismatches the contents, so a reached digest check would log or rebuild.
+  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
+  const { cache, cleanup } = await seededCache(bodylessCacheEntry(HEAD_SHA));
+  try {
+    const h = harness({
+      files: { [ARCHIVE_PATH]: SUMMARY_V2 },
+      view: JSON.stringify({ body, headRefOid: 12345 }),
+    });
+    let prepared = 0;
+    let synced = 0;
+
+    const summary = await reconcilePrBodyDigests(
+      OPTS,
+      passDeps(h, new Map(), {
+        cache,
+        prepareCheckout: async (repo, sha) => {
+          prepared += 1;
+          return REFUSE_PREPARE(repo, sha);
+        },
+        syncFn: async (input, deps) => {
+          synced += 1;
+          return REFUSE_SYNC(input, deps);
+        },
+      }),
+    );
+
+    assertEquals(summary, { checked: 0, rebuilt: 0, readFailures: 0 });
+    assertEquals(h.logs, []);
+    assertEquals(apiCalls(h).length, 0, "no contents read");
+    assertEquals(prepared, 0, "no checkout");
+    assertEquals(synced, 0, "no rebuild");
+    assertEquals(editCalls(h).length, 0);
+  } finally {
+    await cleanup();
+  }
+});
+
 // --- Facts file and summary candidates --------------------------------------
 
 Deno.test("reconcile - facts file absent (404): digest of the summary alone matches, quiet", async () => {
