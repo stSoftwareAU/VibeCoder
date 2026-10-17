@@ -331,3 +331,80 @@ Deno.test("fleet-experiment-report - a follow-on seen by two hosts is costed onc
     assertEquals(parsed.records[0]?.costUsd, 0.5);
   });
 });
+
+Deno.test("fleet-experiment-report - ledger must be text", async () => {
+  await withWorkDir(async (dir) => {
+    await seedTwoHosts(dir);
+    const config = configFor(dir);
+    const refused = await run({ ledger: 5 }, config);
+    assertEquals(refused.success, false);
+    assertStringIncludes(refused.message, "Argument ledger");
+    const legal = await run(
+      { ledger: `${dir}/lifecycle_ledger_host-1.jsonl` },
+      config,
+    );
+    assertEquals(legal.success, true);
+  });
+});
+
+Deno.test("fleet-experiment-report - ledger of only commas and blanks is refused as empty", async () => {
+  await withWorkDir(async (dir) => {
+    await seedTwoHosts(dir);
+    const config = configFor(dir);
+    const refused = await run({ ledger: ",  ," }, config);
+    assertEquals(refused.success, false);
+    assertStringIncludes(refused.message, "Argument ledger");
+    assertStringIncludes(refused.message, "non-empty paths");
+    const legal = await run(
+      { ledger: `${dir}/lifecycle_ledger_host-1.jsonl` },
+      config,
+    );
+    assertEquals(legal.success, true);
+  });
+});
+
+Deno.test("fleet-experiment-report - covariates must be text naming a file", async () => {
+  await withWorkDir(async (dir) => {
+    await seedTwoHosts(dir);
+    const config = configFor(dir);
+    for (const covariates of [true, "   "]) {
+      const refused = await run({ covariates }, config);
+      assertEquals(refused.success, false, `covariates ${String(covariates)}`);
+      assertStringIncludes(refused.message, "Argument covariates");
+      assertStringIncludes(refused.message, "must name a JSON file");
+    }
+    const good = `${dir}/good_covariates.json`;
+    await Deno.writeTextFile(
+      good,
+      JSON.stringify({ "org/a#101": { size: "small" } }),
+    );
+    const legal = await run({ covariates: good }, config);
+    assertEquals(legal.success, true);
+  });
+});
+
+Deno.test("fleet-experiment-report - days text is read only in plain decimal form", async () => {
+  await withWorkDir(async (dir) => {
+    await seedTwoHosts(dir);
+    const config = configFor(dir);
+    // Number() would read "0x5" as 5; only the plain-decimal guard refuses it.
+    const refused = await run({ window: "0x5" }, config);
+    assertEquals(refused.success, false);
+    assertStringIncludes(refused.message, "Argument window");
+    // Surrounding blanks are trimmed, so " 5" is a legal five days.
+    const legal = await run({ window: " 5" }, config);
+    assertEquals(legal.success, true);
+  });
+});
+
+Deno.test("fleet-experiment-report - synthetic text is read only as plain digits", async () => {
+  const config = buildDefaultWorkerConfig();
+  // Number() would read these as integers; only the digits-only guard refuses them.
+  for (const synthetic of ["0x10", "1e3"]) {
+    const refused = await run({ synthetic }, config);
+    assertEquals(refused.success, false, `synthetic ${synthetic}`);
+    assertStringIncludes(refused.message, "Argument synthetic");
+  }
+  const legal = await run({ synthetic: "1000" }, config);
+  assertEquals(legal.success, true);
+});

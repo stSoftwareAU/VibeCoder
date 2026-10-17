@@ -90,16 +90,13 @@ function parseDays(
   fallback: number,
 ): Parsed<number> {
   if (raw === undefined) return { ok: true, value: fallback };
-  let value: number;
+  // Text is read only in plain decimal form, so "0x5" is refused although
+  // Number() would read it as 5. Anything else stays NaN and is refused below.
+  let value = Number.NaN;
   if (typeof raw === "number") {
     value = raw;
   } else if (typeof raw === "string" && /^\d+(\.\d+)?$/.test(raw.trim())) {
     value = Number(raw.trim());
-  } else {
-    return refuse(
-      name,
-      `must be a number of days above 0 and at most ${MAX_DAYS}`,
-    );
   }
   if (!Number.isFinite(value) || value <= 0 || value > MAX_DAYS) {
     return refuse(
@@ -123,13 +120,13 @@ function parseFormat(raw: unknown): Parsed<(typeof FORMATS)[number]> {
 /** Parse `--synthetic`: a non-negative integer seed, if given. */
 function parseSynthetic(raw: unknown): Parsed<number | undefined> {
   if (raw === undefined) return { ok: true, value: undefined };
-  let seed: number;
+  // Text is read only as plain digits, so "1e3" and "0x10" are refused although
+  // Number() would read them as integers. Anything else stays NaN.
+  let seed = Number.NaN;
   if (typeof raw === "number") {
     seed = raw;
   } else if (typeof raw === "string" && /^\d+$/.test(raw)) {
     seed = Number(raw);
-  } else {
-    return refuse("synthetic", "must be a non-negative integer seed");
   }
   if (!Number.isSafeInteger(seed) || seed < 0) {
     return refuse("synthetic", "must be a non-negative integer seed");

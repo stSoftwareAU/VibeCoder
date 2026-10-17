@@ -624,3 +624,130 @@ Deno.test("fleet experiment report - the formatted text lists weekly and breakdo
     "| host | host-a | sonnet-haiku | 1 | 1 | 1 | 0.50 | 0 |",
   );
 });
+
+/** Arm data for the verdict-gate tests: `merged` verified merges, then `unmerged` failures. */
+interface GateArm {
+  cohort: string;
+  firstId: number;
+  merged: number;
+  unmerged?: number;
+  usd: number;
+}
+
+/**
+ * Mature events for one arm: each assignment is 20 days old, its manager
+ * invocation costs `usd`, and the first `merged` assignments are verified merges.
+ */
+function gateArmEvents(arm: GateArm): LifecycleEvent[] {
+  const total = arm.merged + (arm.unmerged ?? 0);
+  const events: LifecycleEvent[] = [];
+  for (let index = 0; index < total; index++) {
+    const id = arm.firstId + index;
+    events.push(assignment(id, arm.cohort, ago(20)));
+    events.push(invocation(id, { role: "manager", usd: arm.usd }));
+    if (index < arm.merged) {
+      events.push(...verifiedMerge(id, ago(18)));
+    } else {
+      events.push(outcome(id, "failed", ago(18)));
+    }
+  }
+  return events;
+}
+
+/** Control and candidate, with the candidate ids placed well clear of the control's. */
+function gateEvents(control: GateArm, candidate: GateArm): LifecycleEvent[] {
+  return [...gateArmEvents(control), ...gateArmEvents(candidate)];
+}
+
+/** A control at 0.1 USD per merge and a candidate at 1.0 USD per merge: separated intervals. */
+const CONTROL_GATE: GateArm = {
+  cohort: "sonnet-haiku",
+  firstId: 1,
+  merged: 30,
+  usd: 0.1,
+};
+const CANDIDATE_GATE: GateArm = {
+  cohort: "codex-test",
+  firstId: 1000,
+  merged: 30,
+  usd: 1,
+};
+
+Deno.test("fleet experiment report - the verdict needs every active arm to have 30 merged (gate a)", () => {
+  const short = gateEvents(CONTROL_GATE, {
+    ...CANDIDATE_GATE,
+    merged: 29,
+    unmerged: 1,
+  });
+  const shortReport = buildExperimentReport(short, options({ minPerArm: 1 }));
+  assertEquals(shortReport.verdict.kind, "no-decision");
+  assertStringIncludes(
+    shortReport.verdict.reason,
+    "arm codex-test has 29 merged",
+  );
+  assertEquals(shortReport.warnings, []);
+
+  const full = gateEvents(CONTROL_GATE, CANDIDATE_GATE);
+  const fullReport = buildExperimentReport(full, options({ minPerArm: 1 }));
+  assertEquals(fullReport.verdict.kind, "leading-arm");
+  assertEquals(fullReport.verdict.arm, "sonnet-haiku");
+});
+
+Deno.test("fleet experiment report - a blocking warning stops a verdict that the data would otherwise give (gate b)", () => {
+  const clean = gateEvents(CONTROL_GATE, CANDIDATE_GATE);
+  assertEquals(
+    buildExperimentReport(clean, options({ minPerArm: 1 })).verdict.kind,
+    "leading-arm",
+  );
+
+  // One control invocation with no estimated USD raises missing-cost, and nothing else.
+  const withUnknown = [
+    ...clean,
+    invocation(1, { role: "executor" }),
+  ];
+  const report = buildExperimentReport(withUnknown, options({ minPerArm: 1 }));
+  assertEquals(report.warnings.map((warning) => warning.code), [
+    "missing-cost",
+  ]);
+  assertEquals(report.verdict.kind, "no-decision");
+  assertStringIncludes(report.verdict.reason, "missing-cost");
+});
+
+Deno.test("fleet experiment report - overlapping merged-per-USD intervals give no decision (gate c)", () => {
+  const events = gateEvents(
+    { ...CONTROL_GATE, usd: 0.5 },
+    { ...CANDIDATE_GATE, usd: 0.5 },
+  );
+  const report = buildExperimentReport(events, options({ minPerArm: 1 }));
+  assertEquals(report.warnings, []);
+  assertEquals(report.verdict, {
+    kind: "no-decision",
+    reason: "the 99% merged-per-USD intervals of the active arms overlap",
+  });
+});
+
+Deno.test("fleet experiment report - one arm packed into a single host-day raises unequal-exposure (gate d)", () => {
+  const events: LifecycleEvent[] = [];
+  // Control: ten assignments, all on host-a on the same day.
+  for (let id = 1; id <= 10; id++) {
+    events.push(assignment(id, "sonnet-haiku", ago(5), "host-a"));
+    events.push(...verifiedMerge(id, ago(4)));
+  }
+  // Candidate: ten assignments on host-a, each on a different day.
+  for (let id = 1001; id <= 1010; id++) {
+    const day = id - 1000;
+    events.push(assignment(id, "codex-test", ago(day), "host-a"));
+    events.push(...verifiedMerge(id, ago(day)));
+  }
+  const report = buildExperimentReport(events, options({ minPerArm: 1 }));
+  const exposure = report.warnings.find((warning) =>
+    warning.code === "unequal-exposure" && warning.arm === "sonnet-haiku"
+  );
+  assert(exposure !== undefined, "expected an unequal-exposure warning");
+  assertStringIncludes(exposure.message, "host-day");
+  assert(
+    !report.warnings.some((warning) =>
+      warning.code === "unequal-exposure" && warning.arm === "codex-test"
+    ),
+  );
+});

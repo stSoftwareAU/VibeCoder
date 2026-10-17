@@ -230,10 +230,8 @@ export async function assignExperimentArm(
     cumulative += arm.weight;
     if (target < cumulative) return arm.id;
   }
-  // Floating-point slack can leave the target a whisker past the total.
-  const last = active[active.length - 1];
-  if (last === undefined) {
-    throw new ExperimentArmError("empty", "no arm is active");
-  }
-  return last.id;
+  // Floating-point slack can leave the target a whisker past the total, so the
+  // last active arm takes it. Validation makes the control active, so the
+  // fallback to the control id can only apply if the list were somehow empty.
+  return active[active.length - 1]?.id ?? CONTROL_ARM_ID;
 }

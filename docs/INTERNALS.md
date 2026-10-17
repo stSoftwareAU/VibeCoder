@@ -1212,12 +1212,13 @@ sequenceDiagram
 
 ### 🧪 Randomised fleet experiments — merged issues per dollar (Issue #3645)
 
-Part of #3644. The `fleet-experiment-report` command reads every host's
-lifecycle ledger on the work volume, or the ledgers named by `--ledger`, and
-reports merged issues per estimated API-equivalent dollar for each arm of a
-randomised experiment. It is read-only: it posts nothing to GitHub, writes
-nothing and changes no allocation. A ledger that cannot be read, or a work
-volume with no ledgers, fails the command; it is never reported as empty.
+Builds on the #3644 lifecycle ledger above. The `fleet-experiment-report`
+command reads every host's lifecycle ledger on the work volume, or the ledgers
+named by `--ledger`, and reports merged issues per estimated API-equivalent
+dollar for each arm of a randomised experiment. It is read-only: it posts
+nothing to GitHub, writes nothing and changes no allocation. A ledger that
+cannot be read, or a work volume with no ledgers, fails the command; it is never
+reported as empty.
 
 **Cohorts.** Records are grouped by the cohort recorded on each issue's
 `assignment` event when the issue was assigned. The grouping is
