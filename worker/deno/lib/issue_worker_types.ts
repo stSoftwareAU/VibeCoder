@@ -297,6 +297,8 @@ export interface PhaseState {
    * the aggregate. Absent when Claude never ran.
    */
   claudeRunStats?: PhaseClaudeResult[];
+  /** Stable assignment carried to every PR this issue raises (Issue #3720). */
+  assignmentId?: string;
   /**
    * What the Graft repo-context collection did for this run (Issue #2102,
    * part of #2060).
