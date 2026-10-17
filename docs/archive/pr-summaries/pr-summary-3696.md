@@ -49,7 +49,7 @@ This change is documentation and prompt text only, with drift tests. No producti
 - Per-pin red check: `deno task drift-pins-on-base origin/milestone/failure-classification-worker-markers-and-declared <doc> <section> <pins…>` reported `absent on base` for all six CODING-STANDARDS pins (section "Writing a gate over text") and all four issue-prompt pins (section "Instructions").
 - `deno task test:unit tests/claude_token_budget_test.ts tests/text_gate_matcher_3149_test.ts tests/own_restatements_agree_3554_docs_test.ts`: 37 passed, 0 failed.
 - No existing assertion was removed or edited.
-- `./quality.sh` result: see the line below.
+- `./quality.sh` on the head commit: `Result: PASSED (with skipped checks)` — every stage passed (deno tests, lint, type check, fmt, markdownlint, mermaid, semgrep); only "config integration" was skipped.
 
 <!-- vibe-branch-outcomes -->
 
