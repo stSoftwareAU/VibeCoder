@@ -116,8 +116,12 @@ siblings: `SUMMARY_RULE_GATE_MARKER`, `SECURITY_FIX_GATE_MARKER`,
   test red.
 - `deno task test:unit` over the 43 test files that import the changed
   modules: 703 passed, 0 failed.
-- `./quality.sh < /dev/null` on the final head: `Result: PASSED (with skipped
-  checks)`. Only `config integration` was skipped, as is usual on this host.
+- `./quality.sh < /dev/null` on commit `9f6ccc1c`, which holds all of the
+  production code: `Result: PASSED (with skipped checks)`. Only
+  `config integration` was skipped. The later commit added only the no-heading
+  test, this summary and the facts file. Re-run on the head, the two new test
+  files give 19 passed, 0 failed, and `deno task pr-summary-check` reports
+  0 gates blocked.
 
 <!-- vibe-branch-outcomes -->
 
