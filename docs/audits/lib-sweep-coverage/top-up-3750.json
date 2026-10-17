@@ -1,0 +1,13 @@
+{
+  "issue": 3750,
+  "chunk": "top-up-3750",
+  "title": "top-up: review-fix mutation check",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3750",
+  "definition": "modules added for the review-fix mutation check: mutation_check_invocation.ts and pr_feedback_mutation_check.ts",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/mutation_check_invocation.ts",
+    "worker/deno/lib/pr_feedback_mutation_check.ts"
+  ],
+  "sweptAt": "e3b473067bc4e07eb775300205c66ff42d175a5e"
+}

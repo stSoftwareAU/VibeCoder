@@ -1,12 +1,13 @@
 # Diff-scoped mutation check
 
-The mutation check runs at two call points. At PR raise it is a gate (Issue
-#3393) that blocks the PR. In every review-fix (PR feedback) run it is part of
-the post-agent drift check (Issue #3750) and reports survivors in the PR reply
-without blocking the push; see [Review-fix runs](#review-fix-runs-issue-3750).
-At both it mutates only the lines the change adds or changes, re-runs the tests
-that cover them, and treats a survivor as a mutation the suite stays green
-through although the behaviour was changed on purpose.
+The mutation check runs at two call points. At PR raise it is a gate
+(Issue #3393) that blocks the PR. In every review-fix (PR feedback) run it is
+part of the post-agent drift check (Issue #3750) and reports survivors in the
+PR reply without blocking the push; see
+[Review-fix runs](#review-fix-runs-issue-3750). At both it mutates only the
+lines the change adds or changes, re-runs the tests that cover them, and
+treats a survivor as a mutation the suite stays green through although the
+behaviour was changed on purpose.
 
 ## Why line coverage is not enough
 
