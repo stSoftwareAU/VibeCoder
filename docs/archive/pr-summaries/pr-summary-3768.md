@@ -65,7 +65,7 @@ each in a detached temporary worktree with its real base and head branch:
 | #3676 `6aecdbf9` (earlier out-of-worker push) | stale | `[BLOCKED] Summary freshness`, names `6aecdbf9…`, exit 1 |
 | #3716 `440f28cd` | summary changed in the same commit | freshness passed, exit 0 (see Undiscoverable Facts) |
 | Final heads of #3957, #3956, #3951, #3948, #3947, #3931, #3918, #3914, #3913, #3911, #3907, #3904, #3716, #3676 | fresh | all `[PASSED] Summary freshness`, exit 0 |
-| Final head of #3915 | fresh | freshness passed; `[BLOCKED] Prompt-scrubbed Markdown`, a true positive (its summary holds U+2024 `--․>` Mermaid arrows at lines 36-40, merged before the #3710 gate landed) |
+| Final head of #3915 | fresh | freshness passed; `[BLOCKED] Prompt-scrubbed Markdown`, a true positive (its summary's Mermaid arrows at lines 36-40 carry the U+2024 dot leader the scrub gate flags; it merged before the #3710 gate landed) |
 | #3926 (milestone roll-up), #3935 (sync), #3953 (milestone-fix) | not this PR's summary | `[NOT CHECKED]` / `[NO SUMMARY]`, exit 0 |
 
 Freshness: 2 of 2 known stale heads caught (0 false negatives), 0 of 14 fresh
