@@ -2166,6 +2166,8 @@ interface GapRunOptions {
   createError?: string;
   /** The PR's remote head; defaults to the checkout's HEAD. */
   headRefOid?: string;
+  /** The fix run's id; defaults to none. */
+  runId?: string;
 }
 
 /** Runs one sync against `opts.live` with a fake follow-up filer. */
@@ -2212,6 +2214,7 @@ async function runGapSync(opts: GapRunOptions) {
       beforeSha: BEFORE_SHA,
       workerName: "worker-a",
       githubUser: "ghuser",
+      ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
     }, deps);
     return { result, ghCalls };
   } finally {
@@ -2263,6 +2266,36 @@ Deno.test("sync - a fix run's newly reported partial criterion files a follow-up
     "## Acceptance Criteria\n\n- the export works\n- the import works\n",
   );
   assertEquals(fake.labels, [{ repo: REPO, label: "idle-task" }]);
+});
+
+Deno.test("sync - the parent issue is read from the PR's repo and the follow-up names the fix run (Issue #3678)", async () => {
+  const { result, ghCalls } = await runGapSync({
+    summary: IMPORT_PARTIAL_SUMMARY,
+    live: OLD_SUMMARY_WITH_FOOTER,
+    filing: fakeFiling().filing,
+    runId: "run-3678",
+  });
+  assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+  const view = ghCalls.find((c) =>
+    c.args[0] === "issue" && c.args[1] === "view"
+  );
+  assertEquals(view?.args, [
+    "issue",
+    "view",
+    String(ISSUE_NUMBER),
+    "--repo",
+    REPO,
+    "--json",
+    "title,body,labels,author,milestone",
+  ]);
+  const create = ghCalls.find((c) =>
+    c.args[0] === "issue" && c.args[1] === "create"
+  );
+  assert(create, "gh issue create must run");
+  assertStringIncludes(
+    create.args[create.args.indexOf("--body") + 1] ?? "",
+    "_Run id: `run-3678`_",
+  );
 });
 
 Deno.test("sync - a fix run reuses the open follow-up for the parent rather than filing another (Issue #3678)", async () => {
