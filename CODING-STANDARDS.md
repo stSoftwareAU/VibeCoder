@@ -1050,6 +1050,32 @@ stale. Before calling a gate done (Issue #3149):
    way — escapes, whitespace, comments — and use equality on the normalised
    forms rather than substring containment, unless containment is the
    contract.
+5. **Reading the worker's own marker is a gate over text.** Code that asks
+   "does this body carry my marker?" — an HTML-comment marker or a reason
+   prefix the worker writes — is a gate over text whenever the body also
+   holds agent-written, issue or comment text: a PR body that opens with the
+   agent's PR summary, a failure reason that quotes the agent's summary or
+   test lines, or a failure comment that embeds that reason. Summaries
+   routinely quote a feature's own marker in a code span, so the control path
+   trips with no attacker involved (VibeCoder#3353, #3440, #3676). Read the
+   marker only where the worker writes it: at the anchored position — the
+   block that opens the body (`extractLeadingSection` in
+   `worker/deno/lib/pr_body_sync.ts`), the opening heading with the marker on
+   the next line (`hasFollowUpChainStop` in
+   `worker/deno/lib/missing_criterion_close_guard.ts`), or a `startsWith` on
+   the worker-written prefix (`SUMMARY_RULE_GATE_MARKER` in
+   `worker/deno/lib/failure_diagnosis.ts`) — or after the agent part has been
+   neutralised before the worker appends its own marker
+   (`neutraliseAgentMarkers` in
+   `worker/deno/lib/agent_marker_neutralisation.ts`,
+   `neutraliseSubAgentTierMarkers` in `worker/deno/lib/pr_body.ts`). Never
+   use `includes()` or a first-occurrence match over such a mixed body.
+   Reuse the anchoring a sibling marker already uses rather than writing a
+   new helper, widening its export where it is private. Rule 1's look-alike
+   tests include the agent's text quoting the marker in a code span and in
+   plain prose after the summary heading, each asserting the control path
+   does **not** fire, plus one for the body after any later re-wrapping the
+   worker does, such as a reason embedded in a failure comment (Issue #3696).
 
 A gate's matcher must also stay cheap on hostile input — see the ReDoS
 guidance under **Unit tests** below.
