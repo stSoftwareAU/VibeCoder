@@ -446,7 +446,7 @@ against the branch head captured before the agent ran, plus any untracked
 files. The check is skipped when there is no before-run head, or the push
 changed nothing.
 
-Five checks run, each only when it applies:
+Six checks run, each only when it applies:
 
 1. **Model drift pass** — only when the push changes a code file, a test
    file, a recognised source file (`isProseSourcePath`, including source under
@@ -566,6 +566,18 @@ Five checks run, each only when it applies:
    read as "no citations"). A hit whose head citations came from the facts
    file names that facts file, not the `.md` summary, and asks for the
    entry's `line`/`endLine` to be renumbered there.
+6. **Diff-scoped mutation check (Issue #3750)** — in every review-fix run the
+   mutation check runs over the lines this run itself added: the working tree,
+   uncommitted edits and untracked files included, against the before-run head.
+   Lines that a base-branch merge brought in are excluded, and a conflict
+   resolution counts as the run's own. It uses the PR-raise gate's runner,
+   mutator, 40-mutant cap, `skip_mutation_check`,
+   `mutation_check_budget_seconds`, `quality_credentials` handling and
+   `exempt (untestable)` exemptions read from the PR summary. An unexempted
+   survivor is a hit for the recovery turn, which may add or change tests and
+   docs but no production code. A budget, cap or runner error is reported, not
+   a hit. Survivors still left are reported in the PR reply; they do not block
+   the push. Details: [Diff-scoped mutation check](../mutation-check.md#review-fix-runs-issue-3750).
 
 Any hit gets **one** recovery turn: the agent, with full tools, is asked to
 rewrite the listed sentences, recount the Test Plan, fix the Docs sweep
@@ -574,7 +586,10 @@ listed line citation to the head, in the file each hit names (a facts
 entry's `line`/`endLine`, or the `.md` summary's `Branch outcomes:` list) —
 re-running the flip for any entry whose
 cited code this push changed rather than carrying the old result over —
-without changing code. The checks are then re-run; a prose finding counts
+without changing code, except that a mutation survivor (item 6) is answered
+with tests or docs, never production code. The checks are then re-run, and
+the mutation check runs once more when survivors were found and the turn ran;
+a prose finding counts
 as fixed only when its quoted sentence was present before the recovery turn
 and is gone after it — a finding whose file was not one of the files the
 question was asked about is never read back, so it stays reported
@@ -590,11 +605,14 @@ line-citation check reported. Whatever remains after the recovery turn —
 plus a model pass that returned no verdict and a summary that could not be
 checked — is appended to `.pr_response_message` under `### Drift check
 (Issue #3143)`, so it reaches the PR reply instead of being pushed
-silently.
+silently. Surviving mutants go in the same residual under their own heading,
+`#### Mutation check (Issue #3750)`, and so do any budget, cap or runner-error
+reports from the mutation check; those reports never trigger a recovery turn by
+themselves.
 
 ```mermaid
 flowchart TD
-    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check,<br/>line-citation check"]
+    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check,<br/>line-citation check,<br/>mutation check"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
     H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]

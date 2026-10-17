@@ -70,6 +70,7 @@ import {
   DRIFT_CHECK_DISALLOWED_TOOLS,
   runPrFeedbackDriftCheck,
 } from "./pr_feedback_drift_check.ts";
+import { runReviewFixMutationCheck } from "./pr_feedback_mutation_check.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
 import {
   milestoneFixBranchFor,
@@ -287,7 +288,9 @@ export interface PrFeedbackProcessorDeps {
   fetchOwnerDirectionFn?: typeof fetchPrOwnerDirection;
   /**
    * Per-repo configuration map, used to resolve the pre-flight enforcement
-   * gate (Issue #3577). Omitted → no gate.
+   * gate (Issue #3577) and the review-fix mutation check's
+   * `skip_mutation_check`, `mutation_check_budget_seconds` and
+   * `quality_credentials` (Issue #3750). Omitted → no gate.
    */
   repoConfigs?: Record<string, RepoConfig>;
   /**
@@ -1448,13 +1451,21 @@ async function _processFeedbackWithHeartbeat(
   // #3120) go unchecked on this path. Run it here, before the commit-and-
   // push below, so a recovery-turn edit rides the same push and a residual
   // hit reaches the reply through `.pr_response_message`, read later by
-  // `readPrResponseMessage`. Wrapped so an unexpected throw never aborts an
-  // otherwise-successful run — the check is a backstop, not a gate. The
-  // change request body is passed through so the check can confirm a
+  // `readPrResponseMessage`. The drift check also runs the diff-scoped
+  // mutation check over this run's own lines (Issue #3750), so survivors ride
+  // the same recovery turn and reply. Wrapped so an unexpected throw never
+  // aborts an otherwise-successful run — the check is a backstop, not a gate.
+  // The change request body is passed through so the check can confirm a
   // sentence the reviewer quoted was rewritten or removed rather than left
   // sitting under an appended correction (Issue #3244).
   try {
     const driftCheck = processorDeps.driftCheckFn ?? runPrFeedbackDriftCheck;
+    const runGit = async (args: string[]) => {
+      const r = await deps.git.runGitCommand(args, {
+        cwd: processorDeps.workDir,
+      });
+      return r.ok ? r.value : null;
+    };
     const driftOutcome = await driftCheck(
       {
         repo,
@@ -1464,13 +1475,18 @@ async function _processFeedbackWithHeartbeat(
         changeRequest: processedBody,
       },
       {
-        runGit: async (args: string[]) => {
-          const r = await deps.git.runGitCommand(args, {
-            cwd: processorDeps.workDir,
-          });
-          return r.ok ? r.value : null;
-        },
+        runGit,
         runGh: (args: string[]) => deps.github.runGhCommand(args),
+        runMutationCheck: (sha: string) =>
+          runReviewFixMutationCheck(
+            {
+              repo,
+              repoPath: processorDeps.workDir,
+              beforeSha: sha,
+              repoConfigs: processorDeps.repoConfigs,
+            },
+            { runGit, runner: deps.quality.runMutationCheck, logger },
+          ),
         runAgent: async (req: { prompt: string; readOnly: boolean }) => {
           const r = await runAgentTracked(
             {
