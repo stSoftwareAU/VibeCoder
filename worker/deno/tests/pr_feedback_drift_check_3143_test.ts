@@ -758,7 +758,7 @@ Subjectless entries are now rejected.
 `;
   const dir = await initRepo();
   await writeFile(dir, "lib/rule.ts", RULE_TS_V1);
-  await writeFile(dir, "tests/rule_test.ts", RULE_TEST_V2); // already 4 tests
+  await writeFile(dir, "tests/rule_test.ts", RULE_TEST_V1); // 2 tests; the push brings it to 4
   await commitAll(dir, "base");
   assertEquals(
     (await git(dir, ["update-ref", "refs/remotes/origin/main", "HEAD"])).code,
@@ -772,6 +772,7 @@ Subjectless entries are now rejected.
 
   try {
     await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_V2);
 
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent(
@@ -991,7 +992,7 @@ Subjectless entries are now rejected.
 `;
   const dir = await initRepo();
   await writeFile(dir, "lib/rule.ts", RULE_TS_V1);
-  await writeFile(dir, "tests/rule_test.ts", RULE_TEST_V2); // already 4 tests
+  await writeFile(dir, "tests/rule_test.ts", RULE_TEST_V1); // 2 tests; the push brings it to 4
   await commitAll(dir, "base");
   assertEquals(
     (await git(dir, ["update-ref", "refs/remotes/origin/main", "HEAD"])).code,
@@ -1005,6 +1006,7 @@ Subjectless entries are now rejected.
 
   try {
     await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_V2);
 
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent(
@@ -1148,7 +1150,13 @@ Deno.test("runPrFeedbackDriftCheck - a red run result the recount cannot check i
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
         runMutationCheck: notMutationChecked,
-        runAgent: makeRunAgent([{ ok: true, output: verdictBlock([]) }], calls),
+        runAgent: makeRunAgent(
+          [
+            { ok: true, output: verdictBlock([]) },
+            { ok: true, output: "did nothing" },
+          ],
+          calls,
+        ),
         logger: {
           ...noopLogger(),
           warn: (message: string) => {

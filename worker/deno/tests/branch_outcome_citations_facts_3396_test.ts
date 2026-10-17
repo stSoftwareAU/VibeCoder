@@ -195,7 +195,7 @@ function proseCiting(citation: string): string {
 
 ## Test Plan
 
-- Added \`tests/rule_test.ts\` (1 test).
+- Added \`tests/rule_test.ts\`.
 `;
 }
 

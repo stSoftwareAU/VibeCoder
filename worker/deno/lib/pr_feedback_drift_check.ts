@@ -66,12 +66,19 @@
  * that could not run, or whose budget or mutant cap left candidates untried,
  * is reported but never drives recovery on its own.
  *
+ * Issue #3740 found that a Test Plan figure the recount cannot check
+ * (`findUncheckedRunResults`) was only logged, so a review-fix push could leave
+ * an unverifiable figure in the summary and nothing would report it. Such a
+ * figure is now a hit like the others: it is fenced into the one recovery turn,
+ * which is asked to re-run the tests and restate the figure in a checkable form
+ * or remove it, and it is reported in the residual if it survives.
+ *
  * ```mermaid
  * flowchart TD
  *     A["Agent's review-fix turn"] --> B{"beforeSha known<br/>and this push<br/>changed something?"}
  *     B -- no --> S["skipped"]
  *     B -- yes --> C["Collect this push's files,<br/>the PR's full file list,<br/>PR summaries, head test counts"]
- *     C --> D["Deterministic checks:<br/>Test Plan recount,<br/>Docs sweep gate,<br/>stale change-request quotes,<br/>line-citation check"]
+ *     C --> D["Deterministic checks:<br/>Test Plan recount (mismatches<br/>and unchecked figures),<br/>Docs sweep gate,<br/>stale change-request quotes,<br/>line-citation check"]
  *     C --> MC["Mutation check over this run's own lines"]
  *     C --> E{"Code, test or manual/prompt<br/>Markdown changed?"}
  *     E -- yes --> F["One constrained,<br/>read-only model question:<br/>quote the drifted sentences"]
@@ -506,6 +513,8 @@ export function buildDriftRecoveryPrompt(opts: {
   docsSweepProblems: readonly string[];
   staleQuotes?: readonly string[];
   staleCitations?: readonly string[];
+  /** Test Plan figures the recount could not check (Issue #3740). */
+  uncheckedFigures?: readonly string[];
   /**
    * The mutation gate's feedback comment, present only when it has survivors
    * (Issue #3750). Its presence switches the closing "Change no code" step to
@@ -549,6 +558,20 @@ export function buildDriftRecoveryPrompt(opts: {
     );
     lines.push("");
     blocks.push("the Test Plan mismatches");
+  }
+
+  const uncheckedFigures = opts.uncheckedFigures ?? [];
+  if (uncheckedFigures.length > 0) {
+    const body = uncheckedFigures.map((u) => `- ${u}`).join("\n");
+    lines.push(
+      ...fenceUntrustedIssueText(
+        body,
+        "Test Plan figures the recount could not check:",
+        boundaryId,
+      ),
+    );
+    lines.push("");
+    blocks.push("the Test Plan figures the recount could not check");
   }
 
   if (opts.docsSweepProblems.length > 0) {
@@ -615,6 +638,14 @@ export function buildDriftRecoveryPrompt(opts: {
     steps.push(
       "Recount the Test Plan from the head: re-derive the counts the " +
         "summary quotes and fix any that disagree.",
+    );
+  }
+  if (uncheckedFigures.length > 0) {
+    steps.push(
+      "For each listed Test Plan figure the recount could not check, re-run " +
+        "the tests it names on the head and restate the figure in a " +
+        "checkable form, such as `<file>` (N tests at head) for a single " +
+        "test file, or remove it.",
     );
   }
   if (opts.docsSweepProblems.length > 0) {
@@ -693,6 +724,12 @@ export interface DriftResidual {
    * (Issue #3341).
    */
   staleCitations?: string[];
+  /**
+   * Test Plan figures the recount could not check, each as
+   * `${path}: ${reason} — "${line}"` (Issue #3740). Reported as its own group,
+   * not as a drift hit in the "found text…" intro.
+   */
+  testPlanUnchecked?: string[];
   /** Set when the model pass returned no usable verdict at all. */
   modelPassUnavailable?: string;
   /**
@@ -793,6 +830,11 @@ export function formatDriftResidual(residual: DriftResidual): string {
   }
   if (residual.staleCitations && residual.staleCitations.length > 0) {
     for (const c of residual.staleCitations) lines.push(`- ${flatten(c)}`);
+    lines.push("");
+  }
+  if (residual.testPlanUnchecked && residual.testPlanUnchecked.length > 0) {
+    lines.push("Test Plan figures the drift check could not verify:");
+    for (const u of residual.testPlanUnchecked) lines.push(`- ${flatten(u)}`);
     lines.push("");
   }
   if (residual.modelPassUnavailable) {
@@ -959,16 +1001,30 @@ async function computeHeadCounts(
   return map;
 }
 
-/** The deterministic checks' problems, given the current summaries and head counts. */
+/**
+ * The deterministic checks' problems, given the current summaries and head
+ * counts. `testPlanUnchecked` lists the Test Plan figures the recount could not
+ * check (Issue #3740), each as `${path}: ${reason} — "${line}"`; the recount
+ * already bounds `line` to 300 characters.
+ */
 function collect(
   summaries: readonly LoadedSummary[],
   headCounts: ReadonlyMap<string, TestDeclarationCounts>,
   prFiles: readonly string[],
   changesBehaviour: boolean,
-): { mismatches: string[]; docsSweepProblems: string[] } {
+): {
+  mismatches: string[];
+  docsSweepProblems: string[];
+  testPlanUnchecked: string[];
+} {
   const mismatches = summaries.flatMap((s) =>
     findTestPlanMismatches({ summary: s.content, headCounts }).map(
       describeTestPlanMismatch,
+    )
+  );
+  const testPlanUnchecked = summaries.flatMap((s) =>
+    findUncheckedRunResults({ summary: s.content, headCounts }).map(
+      (u) => `${s.path}: ${u.reason} — "${u.line}"`,
     )
   );
   const docsSweepProblems = changesBehaviour
@@ -979,7 +1035,7 @@ function collect(
       }).problems.map((problem) => `${s.path}: ${problem}`)
     )
     : [];
-  return { mismatches, docsSweepProblems };
+  return { mismatches, docsSweepProblems, testPlanUnchecked };
 }
 
 /** Whitespace-normalised form used to compare a quoted sentence to file text. */
@@ -1378,7 +1434,8 @@ export async function runPrFeedbackDriftCheck(
     changesBehaviour,
   );
   // A figure the recount cannot check is reported, not passed silently
-  // (Issue #3381).
+  // (Issue #3381), and is a drift hit that drives the recovery turn and the
+  // residual (Issue #3740, `collect`). The warning is kept as it was.
   for (const s of summaries) {
     const unchecked = findUncheckedRunResults({
       summary: s.content,
@@ -1562,6 +1619,7 @@ export async function runPrFeedbackDriftCheck(
     findingsWithStatus.length === 0 &&
     initialChecks.mismatches.length === 0 &&
     initialChecks.docsSweepProblems.length === 0 &&
+    initialChecks.testPlanUnchecked.length === 0 &&
     initialStaleQuotes.stale.length === 0 &&
     initialStaleQuotes.unchecked.length === 0 &&
     initialCitations.stale.length === 0 &&
@@ -1584,6 +1642,7 @@ export async function runPrFeedbackDriftCheck(
     findingsWithStatus.length > 0 ||
     initialChecks.mismatches.length > 0 ||
     initialChecks.docsSweepProblems.length > 0 ||
+    initialChecks.testPlanUnchecked.length > 0 ||
     initialStaleQuotes.stale.length > 0 ||
     initialCitations.stale.length > 0 ||
     initialMutation.survivors.length > 0
@@ -1596,6 +1655,7 @@ export async function runPrFeedbackDriftCheck(
         findings: findingsWithStatus.length,
         mismatches: initialChecks.mismatches.length,
         docsSweepProblems: initialChecks.docsSweepProblems.length,
+        testPlanUnchecked: initialChecks.testPlanUnchecked.length,
         staleQuotes: initialStaleQuotes.stale.length,
         staleCitations: initialCitations.stale.length,
         mutationSurvivors: initialMutation.survivors.length,
@@ -1608,6 +1668,7 @@ export async function runPrFeedbackDriftCheck(
         findings: findingsWithStatus.map((f) => f.finding),
         mismatches: initialChecks.mismatches,
         docsSweepProblems: initialChecks.docsSweepProblems,
+        uncheckedFigures: initialChecks.testPlanUnchecked,
         staleQuotes: initialStaleQuotes.stale,
         staleCitations: initialCitations.stale,
         ...(initialMutation.survivors.length > 0
@@ -1673,6 +1734,9 @@ export async function runPrFeedbackDriftCheck(
     findings: remainingFindings,
     mismatches: freshChecks.mismatches,
     docsSweepProblems: freshChecks.docsSweepProblems,
+    ...(freshChecks.testPlanUnchecked.length > 0
+      ? { testPlanUnchecked: freshChecks.testPlanUnchecked }
+      : {}),
     ...(freshStaleQuotes.stale.length > 0
       ? { staleQuotes: freshStaleQuotes.stale }
       : {}),
@@ -1714,6 +1778,7 @@ export async function runPrFeedbackDriftCheck(
     residual.findings.length === 0 &&
     residual.mismatches.length === 0 &&
     residual.docsSweepProblems.length === 0 &&
+    (residual.testPlanUnchecked?.length ?? 0) === 0 &&
     (residual.staleQuotes?.length ?? 0) === 0 &&
     (residual.staleCitations?.length ?? 0) === 0 &&
     residual.modelPassUnavailable === undefined &&
@@ -1738,6 +1803,7 @@ export async function runPrFeedbackDriftCheck(
       findings: residual.findings.length,
       mismatches: residual.mismatches.length,
       docsSweepProblems: residual.docsSweepProblems.length,
+      testPlanUnchecked: residual.testPlanUnchecked?.length ?? 0,
       staleQuotes: residual.staleQuotes?.length ?? 0,
       staleCitations: residual.staleCitations?.length ?? 0,
       modelPassUnavailable: residual.modelPassUnavailable,
