@@ -809,7 +809,7 @@ in a benchmark with reported numbers.</reason>
 </example>
 
 <example name="ratio-assertion-where-the-standard-forbids-timing">
-<excerpt>`tests/cluster_test.rs:88` — times `assess()` at N=4000 and
+<excerpt>A Rust unit test that times `assess()` at N=4000 and
 N=16000 and asserts `t_large < t_small * 10`, in a repository whose
 `CONTRIBUTING.md` says "Must not: use `Instant`/`elapsed` for
 pass/fail".</excerpt>
@@ -928,11 +928,11 @@ integration-test manifest does not list.</excerpt>
 <reason>Ten seconds of real waiting is read directly from the source, so
 no measurement or estimate is needed to know the case cannot meet the
 unit budget. The remedy is an injected clock the test advances, or
-moving the file into the integration-test manifest. Compare
-`src/growth_test.ts:40`, which times the same work at N and 4N and
-asserts on the ratio: it waits on no sleep or poll, so check 13 is
-silent on it, and whether it is a check 3 finding depends on whether
-the repository's own testing standard explicitly allows ratio tests.</reason>
+moving the file into the integration-test manifest. Compare a test
+that times the same work at N and 4N and asserts on the ratio: it
+waits on no sleep or poll, so check 13 is silent on it, and whether
+it is a check 3 finding depends on whether the repository's own
+testing standard explicitly allows ratio tests.</reason>
 </example>
 
 </examples>

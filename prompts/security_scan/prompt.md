@@ -1794,6 +1794,9 @@ reconcile pass has nothing to repaint.
    and asserts the count grows linearly — never a wall-clock ratio test
    (time the work at N and 4N, fail above k times), which flakes on a
    loaded host and which many repositories' testing standards forbid.
+   Even where the scanned repository's own standard explicitly allows
+   ratio tests, a ratio stays that repository's last resort for the
+   implementer to reach for, not a fix for this scan to prescribe.
    Name a precedent test file or helper only after confirming it exists
    in the scanned repository, and never cite another repository's
    helper or issue number as the pattern to follow.
