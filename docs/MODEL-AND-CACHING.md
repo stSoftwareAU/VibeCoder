@@ -677,6 +677,7 @@ reported, not gated.**
 | --- | --- | --- |
 | Advisor and executor split | `issue` | `issue_executor_split: false` |
 | Reviewer sub-agents | `issue` | `issue_reviewer_agents: false` |
+| External orchestration (manager and executor invoked by the orchestrator through the provider adapters, Issue #3642) | `issue` | `external_orchestration: false`, configuration-only; off by default, and Claude-native `--agents` stays the default path |
 | `ci_fix` → Sonnet at `high` | `ci_fix` | `CLAUDE_MODEL_CI_FIX=opus` and `CLAUDE_EFFORT_CI_FIX=medium`, or `phase_model_overrides.ci_fix` and `phase_effort_overrides.ci_fix` |
 | `pr_feedback` → Sonnet at `high` | `pr_feedback` | `CLAUDE_MODEL_PR_FEEDBACK=opus` and `CLAUDE_EFFORT_PR_FEEDBACK=medium`, or the matching `phase_*_overrides` entries |
 | `quality_fix` → Sonnet at `high` | `quality_fix` | `CLAUDE_MODEL_QUALITY_FIX=opus` and `CLAUDE_EFFORT_QUALITY_FIX=medium`, or the matching `phase_*_overrides` entries |
