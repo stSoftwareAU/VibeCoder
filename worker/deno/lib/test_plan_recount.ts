@@ -550,7 +550,8 @@ const PARTIAL_REASON =
   "the block describes partial test additions, not whole-file counts";
 const UNKNOWN_CLAIM_REASON =
   "the figure names a test file the PR did not change";
-const UNKNOWN_BLOCK_REASON = "the block names a test file the PR did not change";
+const UNKNOWN_BLOCK_REASON =
+  "the block names a test file the PR did not change";
 const LOOSE_REASON = "the count names no test file in its own sentence";
 const SUPERSEDED_REASON = "the block also gives this file's current total";
 const AMBIGUOUS_REASON =
@@ -595,7 +596,7 @@ const WHOLE_GAP_RE = /^[`*_\s]*\(\s*$/;
 const PARTIAL_GAP_RE = /^[`*_\s]*(?:\(|with)?[`*_\s]*$/i;
 const MARKER_RE = /\b(?:added|extended)\b/i;
 const PLUS_RE = /\+\s*$/;
-const BARE_TO_RE = /(?<![\w.#])\d{1,5}\s+to\s+$/;
+const BARE_TO_RE = /(?<![\w.#])\d{1,5}\s+to[\s`*_]*$/;
 
 function scanBlockTokens(
   raw: string,
@@ -718,7 +719,7 @@ function classifyBlockClaims(
   });
   return [...roled, ...totals].sort((a, b) => a.start - b.start).map((c) =>
     c.owner !== undefined && c.role !== "loose" &&
-        tokens[c.owner]!.key === undefined
+      tokens[c.owner]!.key === undefined
       ? { ...c, role: "unknown" }
       : c
   );
@@ -930,7 +931,9 @@ function scanTestPlan(
     );
     const excluded = new Set<number>(bareTo);
     for (const c of roled) {
-      if ((c.role === "partial" || c.role === "unknown") && c.owner !== undefined) {
+      if (
+        (c.role === "partial" || c.role === "unknown") && c.owner !== undefined
+      ) {
         excluded.add(c.owner);
       }
     }
@@ -964,7 +967,8 @@ function scanTestPlan(
         const keys = new Set<string>();
         blockTokens.forEach((t, i) => {
           if (
-            t.key !== undefined && t.start >= segmentStart && t.end <= c.start &&
+            t.key !== undefined && t.start >= segmentStart &&
+            t.end <= c.start &&
             !excluded.has(i) && !matchedKeys.has(t.key)
           ) {
             keys.add(t.key);
