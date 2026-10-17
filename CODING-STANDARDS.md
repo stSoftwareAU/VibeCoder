@@ -186,10 +186,17 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    untrue, recorded in the PR summary. An assertion removed without one is a
    blocking self-review finding: restore it, or move it to a test that still
    covers the behaviour and say where. The worker enforces this at PR
-   creation (`removed_assertion_gate.ts`, Issue #3131): the removed
-   assertion must be named in the summary's Test Plan, and the Standards
-   reviewer is asked to judge each one. The requirement shows the new value
-   is right, not that the edited test still checks anything: each edited
+   creation (`removed_assertion_gate.ts`, Issues #3131, #3739): each removed
+   assertion has its own Test Plan list entry, with `Required by: "<quote>"`
+   quoting at least 5 words verbatim from the linked issue's title or body
+   (not comments), or `Moved to: <path>` naming the file where the same
+   assertion is added with its guards and coverage preserved. A replacement
+   also carries `Replaced by:` naming the new assertions in inline code;
+   each must be added in the same test file. The Standards reviewer identifies replacements from the diff, rejects
+   omitted `Replaced by:` entries, compares each pair and rejects lost
+   checks that still hold. The requirement
+   shows the new value is right, not that the edited test still checks
+   anything: each edited
    expectation also owes the red-check in **An edited expectation must
    still go red without its guard** under **Test coverage expectations**
    below.
@@ -1743,7 +1750,8 @@ for every PR summary — containing:
    change adds a member to, or `siblings: none — <why>`), or `no hits` (see
    [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)). The
    worker refuses to raise a PR whose diff changes code with no such line, or
-   whose line has no real `section:` or `siblings:` part. It re-runs the quoted
+   whose line has no real `section:` or `siblings:` part, or whose grep field
+   has no quoted term and no explained `grep: none — <why>` negative. It re-runs the quoted
    sibling terms as it re-runs the grep terms.
    Re-run the grep on the final head and list each hit you leave in place as
    `file:line — still true because …`, so the worker and the reviewer can
@@ -1858,18 +1866,23 @@ script's header comments listed "three things" that are deliberately not
 faults when the script skips and allows several more (GRQ-AutoTrader#2479)
 (Issue #3232).
 
-The worker checks this mechanically too (Issue #3347). Whenever a PR summary
-was loaded, the first-run claim check asks a read-only model, before the PR is
-raised, whether the head code agrees with such sentences on the lines the
-branch adds or edits in its manual and prompt Markdown (outside
-`docs/archive/pr-summaries/`), for up to 20 files; files past that cap are
-logged as not checked. A confirmed contradiction is a summary-rule block: on
-the run's first summary-rule block the run gets one recovery turn to rewrite
-the sentence, and a block that survives it fails the run or, when a PR already
-exists, finalises it as `summary_incomplete`. On a review-fix push that edits
-such a file, the drift check asks the same question and gives one recovery turn
-before reporting what remains. This enforces the rule above; it does not
-replace it.
+The worker checks this mechanically too (Issues #3347, #3715, #3731).
+Whenever a PR summary was loaded, the first-run claim check asks a read-only
+model, before the PR is raised, about added or edited manual/prompt Markdown,
+changed source comments, and unchanged module headers or doc comments attached
+to changed declarations. It also checks heading-bounded manual sections named
+by the Docs sweep entry or mentioning a changed source path, basename or
+exported declaration; this extra manual scope excludes `docs/archive/`.
+The prose scope is capped at 20 files and 40 affected manual sections; anything
+past a cap is logged as not checked, never passed. For unchanged prose the
+question is whether this change makes it false, and sets without one code list
+require a grep of the whole head tree for other members. A confirmed
+contradiction is a summary-rule block: on the run's first summary-rule block
+the run gets one recovery turn to rewrite the sentence, and a block that
+survives it fails the run or, when a PR already exists, finalises it as
+`summary_incomplete`. On a review-fix push the drift check builds the same
+prose scope and gives one recovery turn before reporting what remains. This
+enforces the rule above; it does not replace it.
 
 **Behaviour another issue delivers is not described as present.** A doc,
 prompt or code comment may name work that another issue owns — a sibling

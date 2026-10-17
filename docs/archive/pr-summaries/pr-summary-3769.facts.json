@@ -1,0 +1,136 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 626,
+        "outcome": "flowchart operand: a flowchart block is checked",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: rejects unquoted text then quoted string in [] (issue case)",
+        "flipWentRed": "drop the flowchart operand -> 8 tests red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 626,
+        "outcome": "graph operand: a graph block is checked",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: rejects the same mix under a graph declaration",
+        "flipWentRed": "drop the graph operand -> 1 test red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 626,
+        "outcome": "other diagram types skip the check",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: does not flag non-flowchart diagrams",
+        "flipWentRed": "gate forced true -> 1 test red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 628,
+        "outcome": "mixed label found: block refused with label and both fixes named",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: rejects unquoted text then quoted string in [] (issue case)",
+        "flipWentRed": "condition forced false -> 9 tests red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 628,
+        "outcome": "no mixed label: block passes",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: accepts whole label quoted with commas",
+        "flipWentRed": "blank-prefix operand dropped (helper over-reports) -> 12 accept tests red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 658,
+        "outcome": "%% comment line skipped",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: ignores bad label inside a %% comment line",
+        "flipWentRed": "skip removed -> 1 test red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 660,
+        "outcome": "click operand: only a click line is skipped",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: rejects unquoted text then quoted string in [] (issue case)",
+        "flipWentRed": "drop the click operand -> 1 test red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 660,
+        "outcome": "whitespace operand: an id merely starting with click is not skipped",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: still flags a node whose id starts with click",
+        "flipWentRed": "drop the whitespace operand -> 1 test red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 670,
+        "outcome": "inString operand: an opener inside a quoted label is not a node",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: accepts an opener inside a quoted label",
+        "flipWentRed": "drop the inString operand -> 1 test red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 670,
+        "outcome": "opener operand: only [ ( { open a label",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: accepts whole label quoted with commas",
+        "flipWentRed": "drop the opener operand -> 3 tests red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 670,
+        "outcome": "word-char operand: a bracket not after an id is not a node opener",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: accepts a bracket that is not a node opener",
+        "flipWentRed": "drop the word-char operand -> 1 test red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 685,
+        "outcome": "quote operand: refusal needs a double quote",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: accepts #quot; escapes with unquoted text",
+        "flipWentRed": "drop the quote operand -> 3 tests red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 685,
+        "outcome": "blank-prefix operand: a quote after only whitespace is a quoted label",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: accepts whole label quoted with commas",
+        "flipWentRed": "drop the blank-prefix operand -> 12 tests red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 703,
+        "outcome": "snippet scan starts outside a quoted string",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: names a label whose quoted part holds a close bracket",
+        "flipWentRed": "start inString as true -> 1 test red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 706,
+        "outcome": "a close bracket inside quotes does not end the snippet",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: names a label whose quoted part holds a close bracket",
+        "flipWentRed": "negate the quote test -> 1 test red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 717,
+        "outcome": "unclosed label named to end of line (fail closed)",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: names an unclosed label to end of line",
+        "flipWentRed": "fallback returns empty string -> 1 test red"
+      }
+    ]
+  }
+}

@@ -17,6 +17,8 @@ import {
   syncPrBodyFromSummary,
 } from "../lib/pr_body_sync.ts";
 import {
+  assignmentIdFromBody,
+  buildAssignmentIdMarker,
   buildSubAgentTierMarker,
   WORKER_PR_MARKER_PREFIX,
 } from "../lib/pr_body.ts";
@@ -2021,6 +2023,43 @@ Deno.test("sync - a legacy body's before-push diff includes the facts file path 
       `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`,
       prSummaryFactsPath(ISSUE_NUMBER),
     ]);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("Issue #3720: summary refresh preserves the originating assignment", async () => {
+  const repoPath = await makeRepo();
+  const assignmentId = "3f2c9a1e-4b5d-4c6e-8f70-1a2b3c4d5e6f";
+  try {
+    const ghCalls: GhCall[] = [];
+    const result = await syncPrBodyFromSummary({
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      repoPath,
+      beforeSha: BEFORE_SHA,
+      workerName: "worker-a",
+      githubUser: "ghuser",
+    }, {
+      runGhCommand: (args) =>
+        args[0] === "pr" && args[1] === "view"
+          ? Promise.resolve(
+            viewJson(
+              baseBody(ISSUE_NUMBER) + "\n" +
+                buildAssignmentIdMarker(assignmentId),
+              ["src/a.ts"],
+            ),
+          )
+          : stubGh(ghCalls)(args),
+      runGitCommand: stubGit([], { diffChanged: true }),
+      logger,
+    });
+    assert(result.ok);
+    assertEquals(ghCalls.length, 1);
+    assertEquals(
+      assignmentIdFromBody(ghCalls[0]?.bodyFileContent ?? ""),
+      assignmentId,
+    );
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }
