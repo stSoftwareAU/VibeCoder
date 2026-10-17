@@ -42,9 +42,9 @@ manual-claim change, not a second implementation of those routing fixes.
 
 ## Evidence
 
-- After integrating main's lifecycle telemetry and the milestone's reviewed
-  closure fixes, focused correction, completion and verifier suites:
-  198 passed, zero failed.
+- After integrating main through `65bdd763` and the milestone's reviewed
+  closure fixes (including already-numbered criterion copies), focused
+  correction, completion, verifier and closure suites: 223 passed, zero failed.
 - CI follow-up: the dynamic-regex audit finding is annotated at the escaped
   constructor. A hostile regex-syntax regression confirms literal matching;
   the correction suite passes all 24 tests.

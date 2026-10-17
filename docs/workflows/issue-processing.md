@@ -1220,9 +1220,9 @@ raised. The agent dispatches nothing for it.
   reply without the array counts as no verdicts, and a malformed array entry
   is dropped rather than failing the reply, so it counts as no verdict while the
   reply's other findings stay), whatever the model's own findings say. Matching
-  ignores a copied leading list number (`1.` or `1)`, followed by whitespace)
-  before clipping the criterion, so the displayed numbering cannot turn a
-  complete verdict into a missing one. The
+  ignores all leading list numbers (`1.` or `1)`, followed by whitespace),
+  including a criterion's own numbering, before clipping, so displayed numbering
+  cannot turn a complete verdict into a missing one. The
   listed criteria are agent-written text copied from the issue, so they are
   rendered inside the prompt's untrusted fence and named in its
   boundary-integrity instruction; only the worker's instruction sentence sits
