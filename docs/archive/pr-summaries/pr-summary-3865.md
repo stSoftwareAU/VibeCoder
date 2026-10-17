@@ -42,7 +42,9 @@ manual-claim change, not a second implementation of those routing fixes.
 
 ## Evidence
 
-- Focused correction and completion caller suites: 134 passed, zero failed.
+- After integrating main's review-fix verifier with the milestone's closure
+  checks, focused correction and completion caller suites: 135 passed,
+  zero failed.
 - CI follow-up: the dynamic-regex audit finding is annotated at the escaped
   constructor. A hostile regex-syntax regression confirms literal matching;
   the correction suite passes all 24 tests.

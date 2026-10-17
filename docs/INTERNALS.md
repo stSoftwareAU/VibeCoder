@@ -2084,6 +2084,18 @@ When a comment is found:
    claimed but not yet retired stays undismissed, guarded by its claim
    comment's lease instead.
 
+For an authorised `CHANGES_REQUESTED` review (`pr_review`), the worker also
+runs the disposable verifier after committing and formatting, before pushing
+(Issue #3784). It supplies the complete earlier problem/Fix pairs and requires
+one evidenced `fixed` verdict per numbered finding. Missing, duplicate,
+`partly` or `not fixed` verdicts become blocking findings. An unavailable
+verifier also blocks this path. One correction turn is allowed; a remaining
+block keeps the review outstanding, charges a failed attempt, labels the PR
+`standing-violation` and disables auto-merge. A push-recovery merge gets a
+fresh verdict before its retry push. Ordinary inline and issue comments retain
+their existing flow. The fleet reviewer applies the same verdict check before
+posting its review.
+
 ### 📏 How "did we push?" is answered (Issue #211)
 
 `commitAndPushPending` reports `finalUnpushedCount`, and every processor treats
