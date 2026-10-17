@@ -1619,6 +1619,21 @@ version or reading and converting the old shape, a test that seeds an
 old-shape entry, updating every doc that names the key, and saying in the PR
 summary which of the two was chosen.
 
+**A cached API response is persisted data, and a standard outranks the spec line
+that breaches it (Issue #3564).** After #3328 landed, a planner-written
+sub-issue in a private fleet repository told the coder that a newly served
+response field's "missing or malformed value throws", and the sub-PR implemented
+and tested exactly that; every installed client's service-worker cache still
+held the previous release's body without the field, so the affected views stayed
+unavailable until a manual reload. `CODING-STANDARDS.md` and the guidelines now
+say a client that reads API responses through a cache that outlives a deployment
+holds persisted data, and that unless the cache key is bumped a newly served
+field's absence is read as unknown (null), never as an error. The planning
+prompt makes a sub-issue that adds, renames or removes a field a client parses
+say which half of the rule applies, and the issue prompt's Project Guidelines
+say a coding standard outranks an implementation detail in the issue: the run
+follows the standard and records the deviation in the PR summary.
+
 **A new test must go red without its change (Issue #3093).** Fleet PRs
 added the regression test a fix or a review asked for, and the test passed
 whether or not the change was there: VibeCoder#3091, #3085 and #3079, and

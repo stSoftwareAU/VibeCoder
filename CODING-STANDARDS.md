@@ -104,9 +104,20 @@ PR summary which of the two the change chose. A persisted shape changed with
 neither a bumped key nor an old-shape test is a blocking self-review finding
 (Issue #3328).
 
-This covers data the code writes and later reads back itself. An interface a
-deployed extension reads from outside this repository follows
-[A Contract a Deployed Extension Reads Is Additive-Only](#a-contract-a-deployed-extension-reads-is-additive-only)
+**A cached API response is persisted data.** A client that reads an API response
+through a cache that outlives a deployment — a service worker, an HTTP cache, an
+offline store — still holds the previous release's bodies after the update, so
+its parser is held to the rule above. Making a newly served field required, or
+renaming one, is a shape change. Unless the cache key is bumped, read the old
+shape: a renamed field under its old name too, and a newly served field's
+absence as unknown (null) — never as an error, and never as a made-up default.
+The old-shape test seeds a body the previous release served. An issue or plan
+that says a missing value throws does not override this (Issue #3564).
+
+This covers data the code writes and later reads back itself, a client's cached
+copy of its own API's responses included. An interface a deployed extension
+reads from outside this repository follows [A Contract a Deployed Extension
+Reads Is Additive-Only](#a-contract-a-deployed-extension-reads-is-additive-only)
 instead, where a version bump is a release decision.
 
 Past regressions: VibeCoder#3325 moved `getSubIssues` from `number[]` to
@@ -117,7 +128,11 @@ parent/child gate; GRQ-AutoTrader#2481 made `cashChange` read only
 `row.interest_charged` while the service worker's `grq-api-v1:` partitions
 still served rows with the old `interest` key. The precedent for the fix is
 Issue #2173, which bumped `issue_state_v1_` to `issue_state_v2_` when that
-payload gained `milestone`.
+payload gained `milestone`. Issue #3564 records the same fault after this rule
+landed: a planner-written sub-issue told the coder that a newly served response
+field's missing value throws, the sub-PR did exactly that, and every installed
+client's service-worker cache still held the previous release's body without
+the field.
 
 ## Automation and Shared GitHub State
 

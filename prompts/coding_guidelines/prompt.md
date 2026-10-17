@@ -236,6 +236,16 @@ PR summary which of the two the change chose. A persisted shape changed with
 neither a bumped key nor an old-shape test is a blocking self-review finding
 (Issue #3328).
 
+**A cached API response is persisted data.** A client that reads an API response
+through a cache that outlives a deployment — a service worker, an HTTP cache, an
+offline store — still holds the previous release's bodies after the update, so
+its parser is held to the rule above. Making a newly served field required, or
+renaming one, is a shape change. Unless the cache key is bumped, read the old
+shape: a renamed field under its old name too, and a newly served field's
+absence as unknown (null) — never as an error, and never as a made-up default.
+The old-shape test seeds a body the previous release served. An issue or plan
+that says a missing value throws does not override this (Issue #3564).
+
 ## Don't regress Deno repos to Node.js
 
 A repo is a **Deno repo** if any of `deno.json`, `deno.jsonc`, or `deno.lock`

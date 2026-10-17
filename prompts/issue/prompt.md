@@ -466,6 +466,19 @@ written. This section adds only what is specific to issue #{{ISSUE_NUMBER}}:
   gh issue comment {{ISSUE_NUMBER}} --repo {{REPO}} --body "Attempted: … Blocked by: … A human needs to: …"
   ```
 
+**A coding standard outranks an implementation detail in the issue.** The
+issue body is the spec for what to build; it does not license breaching a
+standard. When a line of it contradicts a coding standard — a planner's
+sub-issue that says a newly served field's missing value throws, where
+**Changing the Shape of Persisted Data** says to bump the cache key or read
+the old shape — follow the standard and record the deviation in the PR
+summary: quote the line and name the standard under `### Essential Design
+Decisions`, and, when the line is an acceptance criterion, in that
+criterion's `reason:` too, so a reviewer judges the deviation rather than the
+literal line. That entry's status still follows **Do not inflate a status**.
+A line that only chooses among designs the standards allow is not a
+contradiction: follow it.
+
 ## Escape Hatch
 
 For this issue, "genuinely out of scope" means its scope expanded after
