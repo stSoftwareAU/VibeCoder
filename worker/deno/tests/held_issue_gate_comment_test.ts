@@ -10,7 +10,12 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   buildHeldIssueGateComment,
   HELD_ISSUE_GATE_MARKER,
@@ -33,9 +38,17 @@ function bodyArg(args: string[]): string {
  * A `gh` stub backed by a mutable comment thread, so a sequence of upserts
  * sees the effect of the previous one — the only way to prove the second
  * upsert writes nothing and the third edits rather than posts.
+ *
+ * A read snapshots the thread at call time and only then yields, so two
+ * upserts started together both read before either posts — the interleaving
+ * that Issue #3597's duplicate comments came from.
+ *
+ * `failDeletes` makes every DELETE reject with that message, for the
+ * fail-loud cases; a DELETE of an absent id rejects the way `gh` does.
  */
 function fakeThread(
   initial: Array<{ id: number; body: string; author: string | null }> = [],
+  opts: { failDeletes?: string } = {},
 ) {
   const rows = initial.map((r) => ({ ...r }));
   const calls: string[][] = [];
@@ -43,6 +56,18 @@ function fakeThread(
 
   const ghFn = (args: string[]): Promise<string> => {
     calls.push([...args]);
+    if (args.includes("DELETE")) {
+      if (opts.failDeletes !== undefined) {
+        return Promise.reject(new Error(opts.failDeletes));
+      }
+      const id = Number((args[3] ?? "").split("/").pop());
+      const index = rows.findIndex((r) => r.id === id);
+      if (index === -1) {
+        return Promise.reject(new Error("gh: Not Found (HTTP 404)"));
+      }
+      rows.splice(index, 1);
+      return Promise.resolve("");
+    }
     if (args.includes("POST")) {
       rows.push({ id: nextId++, body: bodyArg(args), author: "vibe-bot" });
       return Promise.resolve("{}");
@@ -56,14 +81,15 @@ function fakeThread(
       row.body = bodyArg(args);
       return Promise.resolve("{}");
     }
-    return Promise.resolve(JSON.stringify(
+    const snapshot = JSON.stringify(
       rows.map((r) => ({
         id: r.id,
         body: r.body,
         created_at: "2026-09-22T12:00:00Z",
         author: r.author,
       })),
-    ));
+    );
+    return Promise.resolve().then(() => snapshot);
   };
 
   return { rows, calls, ghFn };
@@ -73,6 +99,8 @@ const writes = (calls: string[][]) =>
   calls.filter((a) => a.includes("POST") || a.includes("PATCH"));
 const posts = (calls: string[][]) => calls.filter((a) => a.includes("POST"));
 const patches = (calls: string[][]) => calls.filter((a) => a.includes("PATCH"));
+const deletes = (calls: string[][]) =>
+  calls.filter((a) => a.includes("DELETE"));
 
 // =============================================================================
 // buildHeldIssueGateComment — one sentence and one stable key per gate kind
@@ -377,7 +405,7 @@ Deno.test("upsertHeldIssueGateComment - an unchanged gate writes nothing, a chan
   assertStringIncludes(row.body, "waits on dependency owner/repo-b#42");
 });
 
-Deno.test("upsertHeldIssueGateComment - edits the newest fleet marker when several exist", async () => {
+Deno.test("upsertHeldIssueGateComment - edits the oldest fleet marker and deletes newer duplicates", async () => {
   const stale = buildHeldIssueGateComment({ kind: "pr-open", prNumber: 1 });
   const { calls, ghFn } = fakeThread([
     { id: 11, body: stale.body, author: "vibe-bot" },
@@ -395,7 +423,14 @@ Deno.test("upsertHeldIssueGateComment - edits the newest fleet marker when sever
   assertEquals(outcome, "edited");
   const patch = patches(calls)[0];
   assert(patch !== undefined, "expected one PATCH call");
-  assertEquals(patch[3], "repos/owner/repo-a/issues/comments/22");
+  // Originally asserted: patch[3] === "repos/owner/repo-a/issues/comments/22"
+  // (the newest). Changed for Issue #3597: the oldest fleet marker is kept
+  // and edited, and the newer duplicate is deleted.
+  assertEquals(patch[3], "repos/owner/repo-a/issues/comments/11");
+  assertEquals(
+    deletes(calls).map((c) => c[3]),
+    ["repos/owner/repo-a/issues/comments/22"],
+  );
 });
 
 Deno.test("upsertHeldIssueGateComment - a marker from outside the fleet is neither trusted nor edited", async () => {
@@ -566,4 +601,125 @@ Deno.test("upsertHeldIssueGateComment - a failed edit fails loud", async () => {
 
   assert(thrown instanceof Error, "expected the edit failure to surface");
   assertStringIncludes(thrown.message, "403");
+});
+
+Deno.test("upsertHeldIssueGateComment - two concurrent upserts for the same issue and key leave exactly one held-gate comment", async () => {
+  const gate = { kind: "pr-open", prNumber: 77 } as const;
+  const { rows, ghFn } = fakeThread();
+  const upsert = () =>
+    upsertHeldIssueGateComment({
+      repo: "owner/repo-a",
+      issueNumber: 100,
+      gate,
+      ghFn,
+      fleetAuthors: FLEET,
+    });
+
+  // Both reads happen before either POST lands, as they do across two hosts.
+  await Promise.all([upsert(), upsert()]);
+
+  const held = rows.filter((r) =>
+    r.author === "vibe-bot" && r.body.includes(HELD_ISSUE_GATE_MARKER)
+  );
+  assertEquals(
+    held.length,
+    1,
+    `expected one held-gate comment, got ${JSON.stringify(rows)}`,
+  );
+  // 900 is the id of the first POST, so the oldest comment is the survivor.
+  assertEquals(held[0]?.id, 900);
+});
+
+Deno.test("upsertHeldIssueGateComment - an issue already carrying duplicate fleet held-gate comments is reduced to the oldest", async () => {
+  const gate = { kind: "pr-open", prNumber: 77 } as const;
+  const current = buildHeldIssueGateComment(gate);
+  const { rows, calls, ghFn } = fakeThread([
+    { id: 11, body: current.body, author: "vibe-bot" },
+    { id: 22, body: current.body, author: "vibe-bot" },
+  ]);
+
+  await upsertHeldIssueGateComment({
+    repo: "owner/repo-a",
+    issueNumber: 100,
+    gate,
+    ghFn,
+    fleetAuthors: FLEET,
+  });
+
+  assertEquals(rows.map((r) => r.id), [11]);
+  assertEquals(
+    deletes(calls).map((c) => c[3]),
+    ["repos/owner/repo-a/issues/comments/22"],
+  );
+});
+
+Deno.test("upsertHeldIssueGateComment - a stranger's held-gate marker is never deleted", async () => {
+  const gate = { kind: "pr-open", prNumber: 77 } as const;
+  const current = buildHeldIssueGateComment(gate);
+  const { rows, calls, ghFn } = fakeThread([
+    { id: 5, body: current.body, author: "someone-else" },
+    { id: 11, body: current.body, author: "vibe-bot" },
+    { id: 22, body: current.body, author: "vibe-bot" },
+  ]);
+
+  await upsertHeldIssueGateComment({
+    repo: "owner/repo-a",
+    issueNumber: 100,
+    gate,
+    ghFn,
+    fleetAuthors: FLEET,
+  });
+
+  assertEquals(rows.map((r) => r.id), [5, 11]);
+  assertEquals(
+    deletes(calls).map((c) => c[3]),
+    ["repos/owner/repo-a/issues/comments/22"],
+  );
+});
+
+Deno.test("upsertHeldIssueGateComment - a failed duplicate delete fails loud", async () => {
+  const gate = { kind: "pr-open", prNumber: 77 } as const;
+  const current = buildHeldIssueGateComment(gate);
+  const { ghFn } = fakeThread(
+    [
+      { id: 11, body: current.body, author: "vibe-bot" },
+      { id: 22, body: current.body, author: "vibe-bot" },
+    ],
+    { failDeletes: "gh: HTTP 403: forbidden" },
+  );
+
+  const failure = await assertRejects(
+    () =>
+      upsertHeldIssueGateComment({
+        repo: "owner/repo-a",
+        issueNumber: 100,
+        gate,
+        ghFn,
+        fleetAuthors: FLEET,
+      }),
+    Error,
+    "HTTP 403",
+  );
+  assert(failure instanceof Error, "expected the delete failure to surface");
+  assertStringIncludes(failure.message, "22");
+});
+
+Deno.test("upsertHeldIssueGateComment - an empty fleet-author list deletes nothing", async () => {
+  const gate = { kind: "pr-open", prNumber: 77 } as const;
+  const existing = buildHeldIssueGateComment(gate);
+  const { calls, ghFn } = fakeThread([
+    { id: 11, body: existing.body, author: "vibe-bot" },
+    { id: 22, body: existing.body, author: "vibe-bot" },
+  ]);
+
+  const outcome = await upsertHeldIssueGateComment({
+    repo: "owner/repo-a",
+    issueNumber: 100,
+    gate,
+    ghFn,
+    fleetAuthors: [],
+  });
+
+  assertEquals(outcome, "posted");
+  assertEquals(deletes(calls), []);
 });

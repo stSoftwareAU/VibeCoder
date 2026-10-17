@@ -102,6 +102,97 @@ function makeGh(calls: GhCall[], overrides: {
   };
 }
 
+/** One comment on the stateful announcement thread. */
+interface ThreadRow {
+  id: number;
+  body: string;
+  login: string;
+  createdAt: string;
+}
+
+/**
+ * A stateful `gh` stub for the announcement thread (Issue #3597). An
+ * announcement post appends a row, a DELETE removes one (rejecting an absent
+ * id the way `gh` does), and a read returns the rows as they stand at call
+ * time.
+ *
+ * A read answers both shapes production requests: the raw REST page that
+ * `issueCommentsContainMarker` reads, and the `--jq` projection that
+ * `fetchMarkerComments` requests, which `parseMarkerCommentPages` takes as one
+ * JSON array per page. `racingHost`, when given, is a second fleet host whose
+ * announcement lands just before ours on our post.
+ */
+function makeThreadGh(calls: GhCall[], options: {
+  seed?: Array<Pick<ThreadRow, "id" | "body" | "login">>;
+  racingHost?: { id: number; login: string };
+} = {}): { rows: ThreadRow[]; ghFn: (args: string[]) => Promise<string> } {
+  const rows: ThreadRow[] = [];
+  let tick = 0;
+  // Each row is stamped a second after the last, so created_at order matches
+  // insertion order.
+  const stamp = () =>
+    new Date(Date.UTC(2026, 9, 17, 12, 0, 0) + tick++ * 1000).toISOString();
+  for (const seed of options.seed ?? []) {
+    rows.push({ ...seed, createdAt: stamp() });
+  }
+  let nextId = 1000;
+
+  const ghFn = (args: string[]): Promise<string> => {
+    calls.push({ args: [...args] });
+    if (args[0] === "issue" && args[1] === "comment") {
+      const body = args[args.indexOf("--body") + 1] ?? "";
+      if (options.racingHost !== undefined) {
+        rows.push({
+          id: options.racingHost.id,
+          body,
+          login: options.racingHost.login,
+          createdAt: stamp(),
+        });
+      }
+      rows.push({ id: nextId++, body, login: FLEET_LOGIN, createdAt: stamp() });
+      return Promise.resolve("");
+    }
+    if (args.includes("DELETE")) {
+      const id = Number((args[3] ?? "").split("/").pop());
+      const index = rows.findIndex((r) => r.id === id);
+      if (index === -1) {
+        return Promise.reject(new Error("gh: Not Found (HTTP 404)"));
+      }
+      rows.splice(index, 1);
+      return Promise.resolve("");
+    }
+    if (args[0] === "api" && (args[1] ?? "").includes("/comments")) {
+      const page = Number(/[?&]page=(\d+)/.exec(args[1] ?? "")?.[1] ?? "1");
+      if (page > 1) return Promise.resolve("[]");
+      const snapshot = args.includes("--jq")
+        ? rows.map((r) => ({
+          id: r.id,
+          body: r.body,
+          created_at: r.createdAt,
+          updated_at: null,
+          author: r.login,
+        }))
+        : rows.map((r) => ({
+          id: r.id,
+          body: r.body,
+          created_at: r.createdAt,
+          user: { login: r.login },
+        }));
+      return Promise.resolve(JSON.stringify(snapshot));
+    }
+    return Promise.resolve("[]");
+  };
+
+  return { rows, ghFn };
+}
+
+/** The paths the recorded calls DELETEd, in call order. */
+function deleteTargets(calls: GhCall[]): string[] {
+  return calls.filter((c) => c.args.includes("DELETE")).map((c) =>
+    c.args[3] ?? ""
+  );
+}
+
 function buildOptions(
   ghCommandFn: (args: string[]) => Promise<string>,
 ): FindIssuesOptions {
@@ -476,5 +567,85 @@ Deno.test("self-schedule - a merged PR blocks permanently and escalates to a hum
       c.includes("cannot be self-scheduled")
     ),
     "escalation must come with an explanatory comment",
+  );
+});
+
+Deno.test("self-schedule - duplicate fleet announcements are reduced to the oldest (Issue #3597)", async () => {
+  const calls: GhCall[] = [];
+  const audited: string[] = [];
+  const thread = makeThreadGh(calls, {
+    seed: [
+      {
+        id: 100,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        login: FLEET_LOGIN,
+      },
+      {
+        id: 200,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        login: FLEET_LOGIN,
+      },
+    ],
+  });
+  const { result } = await collect({
+    issues: [makeIssue()],
+    gh: thread.ghFn,
+    deps: captureDeps(audited, []),
+  });
+
+  assertEquals(result.candidates.length, 1);
+  assertEquals(thread.rows.map((r) => r.id), [100]);
+  assertEquals(deleteTargets(calls), [
+    `repos/${SELF_DIAGNOSTIC_REPO}/issues/comments/200`,
+  ]);
+});
+
+Deno.test("self-schedule - a racing fleet announcement leaves exactly one (Issue #3597)", async () => {
+  const calls: GhCall[] = [];
+  const audited: string[] = [];
+  // A second fleet host posts its announcement just before ours lands, so
+  // both upserts see an empty thread and both post.
+  const thread = makeThreadGh(calls, {
+    racingHost: { id: 100, login: FLEET_LOGIN },
+  });
+  const { result } = await collect({
+    issues: [makeIssue()],
+    gh: thread.ghFn,
+    deps: captureDeps(audited, []),
+  });
+
+  assertEquals(result.candidates.length, 1);
+  assertEquals(thread.rows.map((r) => r.id), [100]);
+  assertEquals(deleteTargets(calls), [
+    `repos/${SELF_DIAGNOSTIC_REPO}/issues/comments/1000`,
+  ]);
+});
+
+Deno.test("self-schedule - a stranger's announcement marker is never deleted (Issue #3597)", async () => {
+  const calls: GhCall[] = [];
+  const audited: string[] = [];
+  const thread = makeThreadGh(calls, {
+    seed: [
+      {
+        id: 50,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        login: "drive-by-attacker",
+      },
+    ],
+  });
+  const { result } = await collect({
+    issues: [makeIssue()],
+    gh: thread.ghFn,
+    deps: captureDeps(audited, []),
+  });
+
+  assertEquals(result.candidates.length, 1);
+  assert(
+    thread.rows.some((r) => r.id === 50),
+    "the stranger's comment is kept",
+  );
+  assert(
+    !deleteTargets(calls).some((target) => target.endsWith("/50")),
+    "no DELETE is issued against the stranger's comment",
   );
 });
