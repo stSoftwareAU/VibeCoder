@@ -88,7 +88,7 @@ something a PR summary can be written to satisfy. The required kinds are
 
 When the gate is active, the diff was collected, a test file changed and the
 summary names a test declared in the diff's added lines, the completion phase
-(the worker, not the agent) runs that named test twice in a disposable checkout
+(the worker, not the agent) runs each named test twice in a disposable checkout
 (`runSecurityFixDiscrimination` in `security_fix_discrimination.ts`): a
 `git clone --shared` of the issue checkout, detached at the head commit, with no
 remote and deleted afterwards. The issue checkout itself is untouched.
@@ -110,9 +110,22 @@ cited test's file:
   nearest `Cargo.toml` that declares a `[package]`. A file directly under
   `tests/` is its own `--test <stem>` target. An outcome counts only when cargo
   reports a `test <path> ... ok` or `... FAILED` line whose path is the name or
-  ends in `::<name>`; a failure beats a pass when several tests share the name,
+  ends in `::<name>` (libtest's `- should panic` suffix on a `#[should_panic]`
+  test is ignored); a failure beats a pass when several tests share the name,
   and an `ignored` test is not a pass. A compile failure prints no such line, so
   it is `not_checked`, quoting rustc's first `error[…]` line.
+
+A test is chosen by its full name: the declared name, normalised, must equal a
+name the summary cites (`path::the whole name`, read to its closing backtick or
+the end of the line, or a quoted name), so a declaration that only shares a word
+with the cited name is not run in its place. The first word of a `::` citation
+is consulted only when no full name matches, for a name written in prose without
+backticks. When several cited tests match (at most ten), each is run in turn
+under the one 600 s budget and every outcome is recorded. The fix passes when
+any one goes red then green; otherwise a cited test that could not be run makes
+the result `not_checked`, because it may be the one that discriminates. The
+static `test-identifier-in-diff` check is unchanged and still accepts any whole
+token of a declaration line.
 
 The base ref comes from the completion phase's `resolveComparableBaseRef`, which
 fetches `origin/<base>` when the shallow checkout lacks it (Issue #3494).

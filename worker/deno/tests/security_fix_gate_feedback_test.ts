@@ -511,6 +511,34 @@ Deno.test("gate feedback - sanitiseDiscrimination accepts both live shapes and r
   }
 });
 
+Deno.test("gate feedback - sanitiseDiscrimination keeps valid other-test runs and drops invalid ones individually", () => {
+  const other = {
+    test: { file: " tests/other_test.ts ", name: " other case " },
+    preFix: "pass",
+    postFix: "pass",
+  };
+  assertEquals(
+    sanitiseDiscrimination({
+      ...RECORD,
+      others: [other, { test: { file: "f", name: "" }, preFix: "fail" }, null],
+    }),
+    {
+      ...RECORD,
+      others: [{
+        test: { file: "tests/other_test.ts", name: "other case" },
+        preFix: "pass",
+        postFix: "pass",
+      }],
+    },
+  );
+  // Only invalid entries leaves the deciding run, with no `others` key.
+  assertEquals(
+    sanitiseDiscrimination({ ...RECORD, others: [{ kind: "x" }] }),
+    RECORD,
+  );
+  assertEquals(sanitiseDiscrimination({ ...RECORD, others: "nope" }), RECORD);
+});
+
 Deno.test("gate feedback - a block without a discrimination kind never renders the record", () => {
   // The fixture carries a record, so only the missing kinds keep it out.
   const section = buildSecurityFixGateFeedbackSection({

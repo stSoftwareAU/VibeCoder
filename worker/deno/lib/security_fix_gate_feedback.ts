@@ -25,7 +25,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import type { SecurityFixDiscrimination } from "./security_fix_discrimination.ts";
+import type {
+  DiscriminationRun,
+  SecurityFixDiscrimination,
+} from "./security_fix_discrimination.ts";
 import {
   formatDiscriminationRecord,
   formatMatchedTestDeclarations,
@@ -169,6 +172,25 @@ export function sanitiseDiscrimination(
     return reason === "" ? undefined : { kind: "not_checked", reason };
   }
   if (record.kind !== "checked") return undefined;
+  const run = sanitiseRun(record);
+  if (!run) return undefined;
+  // Other cited tests' runs (PR #3921 review): each is validated on its own and
+  // an invalid one is dropped, so a bad entry cannot discard the deciding run.
+  const others = Array.isArray(record.others)
+    ? record.others.slice(0, MAX_REPORTED_OTHER_RUNS).map((o) => sanitiseRun(o))
+      .filter((o): o is DiscriminationRun => o !== undefined)
+    : [];
+  return others.length > 0
+    ? { kind: "checked", ...run, others }
+    : { kind: "checked", ...run };
+}
+
+/** Cap on the other cited tests' runs kept in a recorded discrimination. */
+const MAX_REPORTED_OTHER_RUNS = 10;
+
+function sanitiseRun(value: unknown): DiscriminationRun | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const record = value as Record<string, unknown>;
   const test = record.test as Record<string, unknown> | null | undefined;
   const file = boundedText(test?.file);
   const name = boundedText(test?.name);
@@ -176,7 +198,7 @@ export function sanitiseDiscrimination(
   const preFix = outcome(record.preFix);
   const postFix = outcome(record.postFix);
   if (file === "" || name === "" || !preFix || !postFix) return undefined;
-  return { kind: "checked", test: { file, name }, preFix, postFix };
+  return { test: { file, name }, preFix, postFix };
 }
 
 /**

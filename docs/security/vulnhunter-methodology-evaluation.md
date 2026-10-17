@@ -232,9 +232,9 @@ Record Discrimination Evidence"; `vulnhunter-fix/references/remediation-rigor.md
 statically that a test file changed and that the summary names a test declared
 in the added lines. It then executes that test: when the gate is active, the
 diff was collected, a test file changed and the cited test is declared in the
-diff's added lines, the completion phase (the worker, not the agent) runs the
-named test twice in a disposable checkout (`runSecurityFixDiscrimination` in
-`security_fix_discrimination.ts`; a `git clone --shared` of the issue checkout,
+diff's added lines, the completion phase (the worker, not the agent) runs each
+named test (up to ten, in turn under one budget) twice in a disposable checkout
+(`runSecurityFixDiscrimination` in `security_fix_discrimination.ts`; a `git clone --shared` of the issue checkout,
 detached at the head commit, no remote, deleted afterwards). It runs once at
 the head (expect pass) and once with the merge-base versions of the branch's
 changed non-test files restored (expect fail); files the branch added stay at

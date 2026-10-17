@@ -885,3 +885,244 @@ Deno.test("discrimination: a virtual workspace manifest is not a package to run 
     assertEquals(rec.calls.filter((c) => c.cmd === "cargo").length, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #[should_panic] tests (PR #3921 review)
+// ---------------------------------------------------------------------------
+
+Deno.test("namedRustTestOutcome: libtest's ' - should panic' line is the named test, bare or in a mod", () => {
+  const out = (path: string, status: string) =>
+    `running 1 test\ntest ${path} - should panic ... ${status}\n`;
+  assertEquals(
+    namedRustTestOutcome(out("rejects_x", "ok"), "rejects_x"),
+    "pass",
+  );
+  assertEquals(
+    namedRustTestOutcome(out("rejects_x", "FAILED"), "rejects_x"),
+    "fail",
+  );
+  assertEquals(
+    namedRustTestOutcome(out("checks::rejects_x", "ok"), "rejects_x"),
+    "pass",
+  );
+  assertEquals(
+    namedRustTestOutcome(out("checks::rejects_x", "FAILED"), "rejects_x"),
+    "fail",
+  );
+});
+
+Deno.test("namedRustTestOutcome: a should_panic line stays fail-closed for another name or an ignored test", () => {
+  assertEquals(
+    namedRustTestOutcome("test rejects_x - should panic ... ok\n", "rejects"),
+    null,
+  );
+  assertEquals(
+    namedRustTestOutcome(
+      "test other::rejects_x_more - should panic ... ok\n",
+      "rejects_x",
+    ),
+    null,
+  );
+  assertEquals(
+    namedRustTestOutcome(
+      "test rejects_x - should panic ... ignored\n",
+      "rejects_x",
+    ),
+    null,
+  );
+});
+
+Deno.test("discrimination: a cited #[should_panic] Rust test is checked fail/pass, not not_checked", async () => {
+  await withRustRepo(async (root) => {
+    const panicOut = (status: string) =>
+      `running 1 test\ntest rejects_oob_index - should panic ... ${status}\n`;
+    const rec = recordingSeams(null, async (cwd) => {
+      const fixed = (await Deno.readTextFile(`${cwd}/src/lib.rs`)).includes(
+        "FIXED",
+      );
+      return {
+        code: fixed ? 0 : 101,
+        stdout: panicOut(fixed ? "ok" : "FAILED"),
+        stderr: "",
+        timedOut: false,
+      };
+    });
+    const r = await runSecurityFixDiscrimination(rustInput(root), rec.seams);
+    assertEquals(r, {
+      kind: "checked",
+      test: RUST_CITED,
+      preFix: "fail",
+      postFix: "pass",
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Several cited tests (PR #3921 review)
+// ---------------------------------------------------------------------------
+
+const FIRST: CitedSecurityTest = {
+  file: "tests/sanitise_test.ts",
+  name: "first case",
+};
+const SECOND: CitedSecurityTest = {
+  file: "tests/sanitise_test.ts",
+  name: "second case",
+};
+const MULTI_FILES = {
+  "src/sanitise.ts": FIXED,
+  "tests/sanitise_test.ts":
+    `Deno.test("first case", () => {});\nDeno.test("second case", () => {});\n`,
+};
+
+/** What a faked `deno test --filter <name>` reports at the base and the head. */
+type Reported = "ok" | "FAILED" | "nothing";
+type Plan = Record<string, { base: Reported; head: Reported }>;
+
+/** Fake deno that answers per `--filter` name, by whether the FIXED marker is present. */
+function planSeams(plan: Plan, filters: string[], tick = 0): Recorded & {
+  clock: { elapsed: number };
+} {
+  const rec = recordingSeams(null);
+  const clock = { elapsed: 0 };
+  const seams: MutationRunnerSeams = {
+    ...rec.seams,
+    now: () => clock.elapsed,
+    async runProcess(cmd, args, opts) {
+      clock.elapsed += tick;
+      if (cmd !== "deno") return await rec.seams.runProcess(cmd, args, opts);
+      rec.calls.push({ cmd, args, cwd: opts.cwd, env: opts.env });
+      const name = args[args.indexOf("--filter") + 1] as string;
+      filters.push(name);
+      const fixed = (await Deno.readTextFile(`${opts.cwd}/src/sanitise.ts`))
+        .includes("FIXED");
+      const reported = plan[name]?.[fixed ? "head" : "base"] ?? "nothing";
+      return {
+        code: reported === "FAILED" ? 1 : 0,
+        stdout: reported === "nothing" ? "" : `${name} ... ${reported} (1ms)\n`,
+        stderr: "",
+        timedOut: false,
+      };
+    },
+  };
+  return { ...rec, seams, clock };
+}
+
+Deno.test("discrimination: of several cited tests, the red-to-green one decides and every run is recorded", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, MULTI_FILES, async (root) => {
+    const filters: string[] = [];
+    const rec = planSeams(
+      {
+        "first case": { base: "ok", head: "ok" },
+        "second case": { base: "FAILED", head: "ok" },
+      },
+      filters,
+    );
+    const r = await runSecurityFixDiscrimination(
+      input(root, { tests: [FIRST, SECOND] }),
+      rec.seams,
+    );
+    assertEquals(r, {
+      kind: "checked",
+      test: SECOND,
+      preFix: "fail",
+      postFix: "pass",
+      others: [{ test: FIRST, preFix: "pass", postFix: "pass" }],
+    });
+    // Both cited tests were executed, not only the first.
+    assertEquals(filters, [
+      "first case",
+      "first case",
+      "second case",
+      "second case",
+    ]);
+  });
+});
+
+Deno.test("discrimination: when no cited test goes red to green, the first run decides and the rest are recorded", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, MULTI_FILES, async (root) => {
+    const rec = planSeams(
+      {
+        "first case": { base: "ok", head: "ok" },
+        "second case": { base: "ok", head: "FAILED" },
+      },
+      [],
+    );
+    const r = await runSecurityFixDiscrimination(
+      input(root, { tests: [FIRST, SECOND] }),
+      rec.seams,
+    );
+    assertEquals(r, {
+      kind: "checked",
+      test: FIRST,
+      preFix: "pass",
+      postFix: "pass",
+      others: [{ test: SECOND, preFix: "pass", postFix: "fail" }],
+    });
+  });
+});
+
+Deno.test("discrimination: a cited test that could not be run makes an otherwise undiscriminating result not_checked", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, MULTI_FILES, async (root) => {
+    const rec = planSeams(
+      {
+        "first case": { base: "nothing", head: "nothing" },
+        "second case": { base: "ok", head: "ok" },
+      },
+      [],
+    );
+    const r = await runSecurityFixDiscrimination(
+      input(root, { tests: [FIRST, SECOND] }),
+      rec.seams,
+    );
+    const reason = reasonOf(r);
+    assertStringIncludes(reason, "1 of 2 cited tests could not be run");
+    assertStringIncludes(reason, "tests/sanitise_test.ts::first case");
+    assertStringIncludes(reason, "did not run at the head");
+    assertStringIncludes(reason, "second case base pass, head pass");
+  });
+});
+
+Deno.test("discrimination: a red-to-green cited test decides even when another cited test could not be run", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, MULTI_FILES, async (root) => {
+    const rec = planSeams(
+      {
+        "first case": { base: "nothing", head: "nothing" },
+        "second case": { base: "FAILED", head: "ok" },
+      },
+      [],
+    );
+    const r = await runSecurityFixDiscrimination(
+      input(root, { tests: [FIRST, SECOND] }),
+      rec.seams,
+    );
+    assertEquals(r, {
+      kind: "checked",
+      test: SECOND,
+      preFix: "fail",
+      postFix: "pass",
+    });
+  });
+});
+
+Deno.test("discrimination: the cited tests share one budget, so a later test starves rather than overrunning it", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, MULTI_FILES, async (root) => {
+    const rec = planSeams(
+      {
+        "first case": { base: "ok", head: "ok" },
+        "second case": { base: "FAILED", head: "ok" },
+      },
+      [],
+      1000,
+    );
+    // One second per process; the first test spends 9 of the 10 seconds.
+    const r = await runSecurityFixDiscrimination(
+      input(root, { tests: [FIRST, SECOND], budgetSeconds: 10 }),
+      rec.seams,
+    );
+    const reason = reasonOf(r);
+    assertStringIncludes(reason, "1 of 2 cited tests could not be run");
+    assertStringIncludes(reason, "budget of 10s ran out");
+    assertStringIncludes(reason, "first case base pass, head pass");
+  });
+});

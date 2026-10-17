@@ -232,7 +232,7 @@ test.
 
 ## Test Plan
 
-- New `worker/deno/tests/security_fix_discrimination_test.ts` (37 tests):
+- New `worker/deno/tests/security_fix_discrimination_test.ts` (45 tests):
   - `namedTestOutcome` cases built from observed deno output, and
     `namedRustTestOutcome` cases in the shape `cargo test` prints
     (`test <path> ... ok|FAILED`).
@@ -298,7 +298,7 @@ test.
   - Every runner branch listed in the facts file.
 - PR #3921 review: every branch the fix adds was flipped on its own and the
   named test went red, including each operand of the compound conditions (the
-  runnable-test `find`, the cargo name match, `sanitiseDiscrimination`'s checked
+  runnable-test `filter`, the cargo name match, `sanitiseDiscrimination`'s checked
   guard and `blocksOnDiscrimination`); the entries are in the facts file.
 - Edited expectations: the gate-block `missing` list in
   `completion_phase_security_gate_test.ts` still goes red when the identifier
