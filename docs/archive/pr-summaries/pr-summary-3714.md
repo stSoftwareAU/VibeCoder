@@ -139,6 +139,14 @@ Issue numbers cited:
   `CODING-STANDARDS.md` § Test coverage expectations, and all 5 in
   `prompts/issue/prompt.md` § PR Summary File.
 - No existing test is edited and no assertion is removed.
-- `./quality.sh < /dev/null` on the final head: see the gate result below.
+- `./quality.sh < /dev/null` on `89278f1e` (all the rule, doc and test
+  changes): `Result: PASSED (with skipped checks)`. Only the `config
+  integration` stage was skipped. The deno tests, lint, type check and fmt
+  all passed.
+- `./quality.sh` again after the summary commit: every stage up to and
+  including markdownlint, mermaid, semgrep and the release-tag ruleset passed
+  on this summary. The run then hit my 580 s timeout inside the deno-tests
+  stage. That commit adds only the two `docs/archive/pr-summaries/` files and
+  changes nothing under `worker/deno`.
 
 <!-- vibe-branch-outcomes -->
