@@ -13,7 +13,10 @@ import {
   assertEquals,
   assertStringIncludes,
 } from "@std/assert";
-import { type ExperimentArm } from "../lib/fleet_experiment_arms.ts";
+import {
+  DEFAULT_EXPERIMENT_ARMS,
+  type ExperimentArm,
+} from "../lib/fleet_experiment_arms.ts";
 import {
   type ArmSummary,
   type AssignmentRecord,
@@ -282,8 +285,8 @@ Deno.test("fleet experiment report - a pending assignment past the horizon is ma
   const events = [
     assignment(1, "sonnet-haiku", ago(20)),
     outcome(1, "pr_opened", ago(20)),
-    assignment(2, "sonnet-haiku", ago(5)),
-    ...verifiedMerge(2, ago(3)),
+    assignment(2, "sonnet-haiku", ago(20)),
+    ...verifiedMerge(2, ago(18)),
   ];
   const report = buildExperimentReport(events, options({ horizonDays: 14 }));
   const control = armOf(report, "sonnet-haiku");
@@ -296,7 +299,7 @@ Deno.test("fleet experiment report - a pending assignment past the horizon is ma
 
 Deno.test("fleet experiment report - failed retries' cost is included", () => {
   const events = [
-    assignment(1, "sonnet-haiku", ago(6)),
+    assignment(1, "sonnet-haiku", ago(20)),
     invocation(1, { role: "manager", attempt: 1, result: "failure", usd: 0.4 }),
     invocation(1, {
       role: "executor",
@@ -305,7 +308,7 @@ Deno.test("fleet experiment report - failed retries' cost is included", () => {
       usd: 0.6,
     }),
     followOn(1, "retry", 2, 0.1),
-    outcome(1, "failed", ago(5)),
+    outcome(1, "failed", ago(18)),
   ];
   const report = buildExperimentReport(events, options());
   const record = recordFor(report.records, 1);
@@ -319,10 +322,10 @@ Deno.test("fleet experiment report - failed retries' cost is included", () => {
 
 Deno.test("fleet experiment report - an unknown cost is counted, not zero, and raises missing-cost", () => {
   const events = [
-    assignment(1, "sonnet-haiku", ago(5)),
+    assignment(1, "sonnet-haiku", ago(20)),
     invocation(1, { role: "manager", usd: 0.5 }),
     invocation(1, { role: "executor" }),
-    ...verifiedMerge(1, ago(2)),
+    ...verifiedMerge(1, ago(18)),
   ];
   const report = buildExperimentReport(events, options());
   const record = recordFor(report.records, 1);
@@ -561,4 +564,63 @@ Deno.test("fleet experiment report - the formatted text carries the USD-only hea
   assertStringIncludes(text, "Estimated API-equivalent USD only — not billing");
   assertStringIncludes(text, "| sonnet-haiku |");
   assertStringIncludes(text, "Verdict: no-decision");
+});
+
+Deno.test("fleet experiment report - an early merge younger than the horizon is immature and excluded from rates", () => {
+  const events = [
+    // Merged a day after assignment, but assigned only two days ago.
+    assignment(1, "sonnet-haiku", ago(2)),
+    ...verifiedMerge(1, ago(1)),
+    // Pending past the horizon: mature, censored and in the denominator.
+    assignment(2, "sonnet-haiku", ago(20)),
+    outcome(2, "pr_opened", ago(20)),
+  ];
+  const report = buildExperimentReport(events, options({ horizonDays: 14 }));
+  assertEquals(recordFor(report.records, 1).mature, false);
+  assertEquals(recordFor(report.records, 2).mature, true);
+  const control = armOf(report, "sonnet-haiku");
+  assertEquals(control.merged, 1);
+  assertEquals(control.mature, 1);
+  assertEquals(control.pending, 1);
+  assertEquals(control.censoredAtHorizon, 1);
+  assertEquals(control.mergeRate, 0);
+});
+
+Deno.test("fleet experiment report - a single active arm gives no decision, even with merged data", () => {
+  const events: LifecycleEvent[] = [];
+  for (let id = 1; id <= 40; id++) {
+    events.push(assignment(id, "sonnet-haiku", ago(20)));
+    events.push(...verifiedMerge(id, ago(18)));
+  }
+  const report = buildExperimentReport(
+    events,
+    options({ arms: DEFAULT_EXPERIMENT_ARMS }),
+  );
+  assertEquals(report.verdict, {
+    kind: "no-decision",
+    reason: "fewer than two active arms to compare",
+  });
+});
+
+Deno.test("fleet experiment report - the formatted text lists weekly and breakdown rows", () => {
+  const events = [
+    assignment(1, "sonnet-haiku", ago(20), "host-a"),
+    invocation(1, { role: "manager", usd: 0.5 }),
+    ...verifiedMerge(1, ago(18)),
+  ];
+  const text = formatExperimentReport(
+    buildExperimentReport(events, options()),
+  );
+  assertStringIncludes(
+    text,
+    "| Week starting | Arm | Assigned | Merged | Cost (USD) |",
+  );
+  assert(
+    /\| \d{4}-\d{2}-\d{2} \| sonnet-haiku \| 1 \| 1 \| 0\.50 \|/.test(text),
+    "weekly row missing",
+  );
+  assertStringIncludes(
+    text,
+    "| host | host-a | sonnet-haiku | 1 | 1 | 1 | 0.50 | 0 |",
+  );
 });

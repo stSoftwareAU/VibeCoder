@@ -1,0 +1,15 @@
+{
+  "issue": 3645,
+  "chunk": "top-up-3645",
+  "title": "top-up: randomised fleet experiment report",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3645",
+  "definition": "Randomised fleet experiment arms, the merged-issues-per-dollar report, and its synthetic history generator (milestone 105).",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/commands/fleet_experiment_report.ts",
+    "worker/deno/lib/fleet_experiment_arms.ts",
+    "worker/deno/lib/fleet_experiment_report.ts",
+    "worker/deno/lib/fleet_experiment_synthetic.ts"
+  ],
+  "sweptAt": "a7a8452f3c6a86d14541b328e9bbdb5a4b3edde0"
+}

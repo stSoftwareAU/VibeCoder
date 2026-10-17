@@ -1245,9 +1245,12 @@ which is not a success.
 **Cost.** Cost includes every attempt, failed invocation, retry and follow-on.
 Unknown cost is never zero: it raises the `missing-cost` warning.
 
-**Maturity, horizon and censoring.** An issue still `pending` inside the horizon
-(`--horizon`, default 14 days) is excluded. An issue still `pending` past the
-horizon is counted as not merged and censored.
+**Maturity, horizon and censoring.** Maturity is decided by assignment age
+alone. An assignment is mature once it is at least the horizon (`--horizon`,
+default 14 days) old, whatever its status, so early resolvers are not favoured
+and the rates carry no survivor bias. Younger assignments are excluded from the
+rates and shown as pending. A mature assignment still pending is counted as not
+merged and censored at the horizon.
 
 **Intervals.** Merged issues per dollar uses a bootstrap interval, and the merge
 rate uses a Wilson interval. Both are 99% intervals, deliberately conservative
@@ -1262,11 +1265,12 @@ merged issues.
 
 **Verdict.** There is no winner unless every arm has at least 30 merged issues,
 no blocking warning is raised, and the arms' 99% intervals do not overlap.
-Otherwise the verdict is `no-decision`.
+Fewer than two active arms also gives `no-decision`; today only the control is
+active. Otherwise the verdict is `no-decision`.
 
-**Views and breakdowns.** The report gives weekly figures and a rolling view
-over `--window` (default 30 days). It breaks results down by host, provider,
-role combination and repo.
+**Views and breakdowns.** The default text output prints weekly rows, a rolling
+view over `--window` (default 30 days), and breakdowns by host, provider, role
+combination and repo.
 
 **Export.** `--format text` (the default) prints the report. `--format json`
 exports the whole report as data, and `--format csv` exports the per-issue
@@ -1274,8 +1278,9 @@ assignment records. `--covariates <file>` supplies a JSON object of per-issue
 attributes keyed `repo#issue`.
 
 **Live ledgers.** Gate and outcome events have no production writer yet (see
-the lifecycle ledger section above). Until they land, every assignment in a
-live ledger reports as pending, so no verdict can be reached.
+the lifecycle ledger section above). Until they land, no assignment in a live
+ledger can merge: young assignments are pending, and mature ones are censored
+as not merged. No verdict can be reached.
 
 **Synthetic demonstration.** `--synthetic <seed>` ignores the ledgers and
 generates a randomised history of 400 issues over 30 days, against a fixed

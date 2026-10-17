@@ -14,6 +14,11 @@
  * The verdict only names a leading arm when the evidence is strong and clean,
  * so an experiment never declares a winner from noise.
  *
+ * Maturity depends on assignment age only. An assignment is mature once it was
+ * assigned at least horizonDays ago, whatever its status. Younger assignments
+ * are excluded from every rate, so an early merge cannot bias the rates
+ * towards success (survivor bias).
+ *
  * Pure functions only. The bootstrap uses a seeded mulberry32 PRNG, so the same
  * events and options always produce the same report.
  *
@@ -99,7 +104,7 @@ export interface ExperimentOptions {
   now: Date;
   /** Only assignments in the last `windowDays` days are reported. */
   windowDays: number;
-  /** An assignment still pending after this many days is censored. */
+  /** An assignment at least this many days old is mature. Older pending ones are censored. */
   horizonDays: number;
   /** The configured arms. Defaults to DEFAULT_EXPERIMENT_ARMS. */
   arms?: readonly ExperimentArm[];
@@ -148,7 +153,7 @@ export interface AssignmentRecord {
   status: AssignmentStatus;
   /** Hours from assignment to the merged outcome, or null unless merged. */
   timeToMergeHours: number | null;
-  /** Mature assignments count in the rates. Immature ones are excluded. */
+  /** Mature once assigned at least horizonDays ago, whatever the status. Only mature records count in the rates. */
   mature: boolean;
   /** True when the assignment is still pending. */
   censored: boolean;
@@ -176,9 +181,9 @@ export interface ArmSummary {
   known: boolean;
   assigned: number;
   mature: number;
-  /** Immature pending assignments. */
+  /** Immature records: assigned less than horizonDays ago, whatever their status. */
   pending: number;
-  /** Mature assignments censored at the horizon. */
+  /** Mature records still pending, censored at the horizon. */
   censoredAtHorizon: number;
   merged: number;
   mergedUnverified: number;
@@ -422,7 +427,7 @@ function buildRecord(
 
   const nowMs = opts.now.getTime();
   const horizonMs = opts.horizonDays * DAY_MS;
-  const mature = status !== "pending" || assignedMs + horizonMs <= nowMs;
+  const mature = assignedMs + horizonMs <= nowMs;
 
   const manager = intent.treatment.roles.find((role) =>
     role.role === "manager"
@@ -645,9 +650,7 @@ function summariseArm(
     known: arms.some((arm) => arm.id === armId),
     assigned: records.length,
     mature: mature.length,
-    pending:
-      records.filter((record) => record.status === "pending" && !record.mature)
-        .length,
+    pending: records.filter((record) => !record.mature).length,
     censoredAtHorizon:
       records.filter((record) => record.censored && record.mature).length,
     merged: merged.length,
@@ -990,8 +993,11 @@ function decideVerdict(
   warnings: readonly ExperimentWarning[],
   activeArms: readonly ExperimentArm[],
 ): ExperimentVerdict {
-  if (activeArms.length === 0) {
-    return { kind: "no-decision", reason: "no active arms are configured" };
+  if (activeArms.length < 2) {
+    return {
+      kind: "no-decision",
+      reason: "fewer than two active arms to compare",
+    };
   }
   const active = activeArms.map((arm) => ({
     id: arm.id,
@@ -1129,6 +1135,28 @@ function formatWithInterval(
 }
 
 /**
+ * Render a Markdown table. A cell's pipes are escaped so they cannot split a row.
+ *
+ * @param headers - The header cells.
+ * @param alignment - The alignment row cells, one per header.
+ * @param rows - The body rows.
+ * @returns The table lines, with no trailing blank line.
+ */
+function markdownTable(
+  headers: readonly string[],
+  alignment: readonly string[],
+  rows: readonly (readonly string[])[],
+): string[] {
+  const cell = (value: string): string => value.replaceAll("|", "\\|");
+  const line = (cells: readonly string[]): string =>
+    `| ${cells.map(cell).join(" | ")} |`;
+  const body = rows.length === 0
+    ? [line(["None", ...headers.slice(1).map(() => "")])]
+    : rows.map(line);
+  return [line(headers), line(alignment), ...body];
+}
+
+/**
  * Format a report as compact Markdown, for a log or a comment.
  *
  * @param report - The report to format.
@@ -1153,6 +1181,50 @@ export function formatExperimentReport(report: ExperimentReport): string {
       } | ${formatNumber(arm.medianTimeToMergeHours, 1)} | ${arm.evidence} |`,
     );
   }
+  lines.push("");
+  lines.push("Weekly (by Monday, UTC; cost over all assigned records):");
+  lines.push(
+    ...markdownTable(
+      ["Week starting", "Arm", "Assigned", "Merged", "Cost (USD)"],
+      ["---", "---", "---:", "---:", "---:"],
+      report.weekly.map((row) => [
+        row.weekStart,
+        row.arm,
+        String(row.assigned),
+        String(row.merged),
+        row.costUsd.toFixed(2),
+      ]),
+    ),
+  );
+  lines.push("");
+  lines.push(
+    "Breakdowns (mature cost; unknown-cost counts mature assignments):",
+  );
+  lines.push(
+    ...markdownTable(
+      [
+        "Dimension",
+        "Key",
+        "Arm",
+        "Assigned",
+        "Mature",
+        "Merged",
+        "Cost (USD)",
+        "Unknown-cost assignments",
+      ],
+      ["---", "---", "---", "---:", "---:", "---:", "---:", "---:"],
+      report.breakdowns.map((row) => [
+        row.dimension,
+        row.key,
+        row.arm,
+        String(row.assigned),
+        String(row.mature),
+        String(row.merged),
+        row.costUsd.toFixed(2),
+        String(row.costUnknownAssignments),
+      ]),
+    ),
+  );
   lines.push("");
   if (report.warnings.length === 0) {
     lines.push("Warnings: none.");
