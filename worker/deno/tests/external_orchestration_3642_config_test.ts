@@ -224,3 +224,122 @@ Deno.test("external orchestration config - a zero invocation cap fails the load 
     },
   );
 });
+
+Deno.test("external orchestration config - a negative max_retries fails the load and zero loads (Issue #3642)", async () => {
+  await withTempConfig(
+    minimalConfig({
+      external_orchestration_settings: { max_retries: -1 },
+    }),
+    async (configPath) => {
+      const error = await assertRejects(
+        () => loadConfig(configPath),
+        Error,
+      );
+      assertStringIncludes(
+        error.message,
+        "external_orchestration_settings.max_retries",
+      );
+    },
+  );
+  // Positive control: the same config with max_retries made legal loads.
+  await withTempConfig(
+    minimalConfig({
+      external_orchestration_settings: { max_retries: 0 },
+    }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assertEquals(config.externalOrchestrationSettings.maxRetries, 0);
+    },
+  );
+});
+
+Deno.test("external orchestration config - a zero max_concurrency fails the load and one loads (Issue #3642)", async () => {
+  await withTempConfig(
+    minimalConfig({
+      external_orchestration_settings: { max_concurrency: 0 },
+    }),
+    async (configPath) => {
+      const error = await assertRejects(
+        () => loadConfig(configPath),
+        Error,
+      );
+      assertStringIncludes(
+        error.message,
+        "external_orchestration_settings.max_concurrency",
+      );
+    },
+  );
+  // Positive control: the same config with max_concurrency made legal loads.
+  await withTempConfig(
+    minimalConfig({
+      external_orchestration_settings: { max_concurrency: 1 },
+    }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assertEquals(config.externalOrchestrationSettings.maxConcurrency, 1);
+    },
+  );
+});
+
+Deno.test("external orchestration config - settings that are an array or a string fail the load (Issue #3642)", async () => {
+  for (const probe of [["max_retries"], "max_retries=1"]) {
+    await withTempConfig(
+      minimalConfig({
+        external_orchestration_settings: probe as unknown as Record<
+          string,
+          unknown
+        >,
+      }),
+      async (configPath) => {
+        const error = await assertRejects(
+          () => loadConfig(configPath),
+          Error,
+        );
+        assertStringIncludes(
+          error.message,
+          "external_orchestration_settings must be an object",
+        );
+      },
+    );
+  }
+  // Positive control: the same config with an object loads.
+  await withTempConfig(
+    minimalConfig({
+      external_orchestration_settings: { max_retries: 1 },
+    }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assertEquals(config.externalOrchestrationSettings.maxRetries, 1);
+    },
+  );
+});
+
+Deno.test("external orchestration config - a role that is not an object fails the load and an object loads (Issue #3642)", async () => {
+  await withTempConfig(
+    minimalConfig({
+      external_orchestration_settings: { manager: "claude" },
+    }),
+    async (configPath) => {
+      const error = await assertRejects(
+        () => loadConfig(configPath),
+        Error,
+      );
+      assertStringIncludes(
+        error.message,
+        "external_orchestration_settings.manager must be an object with provider, model and effort keys",
+      );
+    },
+  );
+  // Positive control: the same config with the role as an object loads.
+  await withTempConfig(
+    minimalConfig({
+      external_orchestration_settings: { manager: { provider: "claude" } },
+    }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assertEquals(config.externalOrchestrationSettings, {
+        manager: { provider: "claude" },
+      });
+    },
+  );
+});

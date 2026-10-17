@@ -580,3 +580,69 @@ Deno.test("an empty manager review ends the run blocked", async () => {
     assertEquals(fake.calls.map(phaseOf), ["plan", "execute", "review"]);
   });
 });
+
+Deno.test("a blank issueId is refused as invalid_selection before any call", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeInvoker();
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke, { issueId: "  " }),
+    );
+    assertEquals(outcome.state, "refused");
+    assertEquals(outcome.refusal?.kind, "invalid_selection");
+    assertStringIncludes(
+      outcome.refusal?.message ?? "",
+      "issueId must not be blank",
+    );
+    assertEquals(fake.calls.length, 0);
+
+    // Positive control: the same options with a real issue id run to completion.
+    const control = fakeInvoker();
+    const accepted = await runExternalOrchestration(
+      optionsFor(dir, control.invoke),
+    );
+    assertEquals(accepted.state, "done");
+  });
+});
+
+Deno.test("a blank leaseId is refused as invalid_selection before any call", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeInvoker();
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke, { leaseId: "" }),
+    );
+    assertEquals(outcome.state, "refused");
+    assertEquals(outcome.refusal?.kind, "invalid_selection");
+    assertStringIncludes(
+      outcome.refusal?.message ?? "",
+      "leaseId must not be blank",
+    );
+    assertEquals(fake.calls.length, 0);
+
+    // Positive control: the same options with a real lease id run to completion.
+    const control = fakeInvoker();
+    const accepted = await runExternalOrchestration(
+      optionsFor(dir, control.invoke),
+    );
+    assertEquals(accepted.state, "done");
+  });
+});
+
+Deno.test("a non-positive leaseTtlMs is refused as invalid_selection before any call", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeInvoker();
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke, { leaseTtlMs: 0 }),
+    );
+    assertEquals(outcome.state, "refused");
+    assertEquals(outcome.refusal?.kind, "invalid_selection");
+    assertStringIncludes(outcome.refusal?.message ?? "", "leaseTtlMs");
+    assertEquals(fake.calls.length, 0);
+
+    // Positive control: the same options with a positive lease TTL run to completion.
+    const control = fakeInvoker();
+    const accepted = await runExternalOrchestration(
+      optionsFor(dir, control.invoke, { leaseTtlMs: 60_000 }),
+    );
+    assertEquals(accepted.state, "done");
+  });
+});

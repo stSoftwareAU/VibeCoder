@@ -13,6 +13,7 @@ import type {
   ClaudeRunResult,
   RetryOptions,
   RunClaudeOptions,
+  RunStats,
 } from "../lib/claude_runner.ts";
 import { createDefaultDeps } from "../lib/execute_claude_phase.ts";
 import type { ExternalIssueRunInput } from "../lib/execute_claude_phase.ts";
@@ -423,5 +424,46 @@ Deno.test("orchestration gate - a rate-limit failure is a quota refusal with no 
     if (outcome.ok) return;
     assertStringIncludes(outcome.error.message, "rate limit reached");
     assertEquals(fake.calls.length, 1);
+  });
+});
+
+Deno.test("orchestration gate - a priced runner result counts toward max_cost_usd (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    // A realistic Sonnet invocation: about 1.2k tokens in and 400 out.
+    const pricedStats: RunStats[] = [{
+      servedModels: ["claude-sonnet-4-5"],
+      requestedModel: "sonnet",
+      wallClockMs: 1_000,
+      tokenUsage: {
+        inputTokens: 1_200,
+        outputTokens: 400,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+    }];
+    const priced = fakeRunner((options) => ({
+      ...answerByPhase(options),
+      invocationStats: pricedStats,
+    }));
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { maxCostUsd: 0.000001 }),
+      depsFor(dir, priced.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, false);
+    if (outcome.ok) return;
+    assertStringIncludes(outcome.error.message, "of the 0.000001 USD allowed");
+    // The plan is priced over the cap, so no second call is made.
+    assertEquals(priced.calls.length, 1);
+
+    // Positive control: the same settings with no invocation stats (unpriced)
+    // run to completion. A fresh state dir keeps the refused checkpoint out.
+    await withWorkDir(async (controlDir) => {
+      const unpriced = fakeRunner();
+      const control = await runOrchestratedIssueRun(
+        inputFor(controlDir, { maxCostUsd: 0.000001 }),
+        depsFor(controlDir, unpriced.runClaudeWithRetry),
+      );
+      assertEquals(control.ok, true);
+    });
   });
 });
