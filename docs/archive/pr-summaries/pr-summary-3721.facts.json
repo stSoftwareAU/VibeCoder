@@ -1,0 +1,416 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 37,
+        "outcome": "cutoff inclusion",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome requires both gates on the merged PR strictly before merge",
+        "flipWentRed": "Flipped cutoff inclusion in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 35,
+        "outcome": "replay dedupe",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation keeps distinct follow-on cycles sharing a process run ID",
+        "flipWentRed": "Flipped replay dedupe in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 32,
+        "outcome": "invalid cutoff",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome ignores duplicate events and gates after cutoff",
+        "flipWentRed": "Flipped invalid cutoff in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 47,
+        "outcome": "gate identity",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome requires both gates on the merged PR strictly before merge",
+        "flipWentRed": "Flipped gate identity in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 47,
+        "outcome": "strict pre-merge gate ordering",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome requires both gates on the merged PR strictly before merge",
+        "flipWentRed": "Flipped strict pre-merge gate ordering in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 49,
+        "outcome": "latest gate wins",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome latest gate failure revokes an earlier pass",
+        "flipWentRed": "Flipped latest gate wins in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 50,
+        "outcome": "failed gate wins tied timestamp",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome latest gate failure revokes an earlier pass",
+        "flipWentRed": "Flipped failed gate wins tied timestamp in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 77,
+        "outcome": "merged-head binding",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations bind CI and approvals to the merged head",
+        "flipWentRed": "Flipped merged-head binding in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 81,
+        "outcome": "quality required for success",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome requires both gates on the merged PR strictly before merge",
+        "flipWentRed": "Flipped quality required for success in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 81,
+        "outcome": "review required for success",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome requires both gates on the merged PR strictly before merge",
+        "flipWentRed": "Flipped review required for success in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 96,
+        "outcome": "open work censoring",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome ignores duplicate events and gates after cutoff",
+        "flipWentRed": "Flipped open work censoring in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 85,
+        "outcome": "closed-unmerged outcome",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome keeps each PR and chooses the gated merge",
+        "flipWentRed": "Flipped closed-unmerged outcome in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 98,
+        "outcome": "review progress state",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "CI maintenance skips markerless bots and refreshes missing review metadata",
+        "flipWentRed": "Flipped review progress state in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 98,
+        "outcome": "quality progress state",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations classify reopen and reclose at each cutoff",
+        "flipWentRed": "Flipped quality progress state in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 139,
+        "outcome": "best gated sibling",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome prefers a gated merge over an ungated merged sibling",
+        "flipWentRed": "Flipped best gated sibling in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 76,
+        "outcome": "unknown-only subtotal is null",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped unknown-only subtotal is null in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 80,
+        "outcome": "unknown-only wasted subtotal is null",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped unknown-only wasted subtotal is null in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 66,
+        "outcome": "unknown usage count",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped unknown usage count in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 67,
+        "outcome": "unknown pricing count",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped unknown pricing count in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 68,
+        "outcome": "wasted-spend attribution",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped wasted-spend attribution in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 136,
+        "outcome": "follow-on breakdown",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation keeps distinct follow-on cycles sharing a process run ID",
+        "flipWentRed": "Flipped follow-on breakdown in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 155,
+        "outcome": "split-model subtotal",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation preserves the priced part of split-model usage",
+        "flipWentRed": "Flipped split-model subtotal in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 162,
+        "outcome": "missing model USD",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation preserves the priced part of split-model usage",
+        "flipWentRed": "Flipped missing model USD in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 123,
+        "outcome": "legacy pricing absence",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains missing aggregate pricing with priced role detail",
+        "flipWentRed": "Flipped legacy pricing absence in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 239,
+        "outcome": "failed and timed-out spend",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped failed and timed-out spend in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 240,
+        "outcome": "abandoned assignment spend",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation accounts for closed work and excludes costs beyond cutoff",
+        "flipWentRed": "Flipped abandoned assignment spend in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 226,
+        "outcome": "cohort gated success count",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation groups original cohorts across assignments and rejects conflicts",
+        "flipWentRed": "Flipped cohort gated success count in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 217,
+        "outcome": "conflicting cohorts",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation groups original cohorts across assignments and rejects conflicts",
+        "flipWentRed": "Flipped conflicting cohorts in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 51,
+        "outcome": "marked versus markerless PR",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations record gates before merge and replay without double counting",
+        "flipWentRed": "Flipped marked versus markerless PR in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 91,
+        "outcome": "merged observation",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations record gates before merge and replay without double counting",
+        "flipWentRed": "Flipped merged observation in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 104,
+        "outcome": "closed observation",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations skip markerless PRs and retain closed-unmerged outcomes",
+        "flipWentRed": "Flipped closed observation in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 124,
+        "outcome": "unknown PR state refuses",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations reject missing identity and terminal timestamps",
+        "flipWentRed": "Flipped unknown PR state refuses in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 129,
+        "outcome": "quality SHA binding",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations bind CI and approvals to the merged head",
+        "flipWentRed": "Flipped quality SHA binding in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 139,
+        "outcome": "green quality gate",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations record gates before merge and replay without double counting",
+        "flipWentRed": "Flipped green quality gate in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 141,
+        "outcome": "failed quality gate",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations record failed, pending, absent CI and unapproved review gates",
+        "flipWentRed": "Flipped failed quality gate in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 150,
+        "outcome": "approved review gate",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations record gates before merge and replay without double counting",
+        "flipWentRed": "Flipped approved review gate in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 152,
+        "outcome": "rejected review gate",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations record failed, pending, absent CI and unapproved review gates",
+        "flipWentRed": "Flipped rejected review gate in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 173,
+        "outcome": "reuse listing snapshot",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observation adapter reuses a maintenance listing snapshot",
+        "flipWentRed": "Flipped reuse listing snapshot in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/check_runs_batch.ts",
+        "line": 427,
+        "outcome": "rollup observation hook",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "maintenance check lookup exposes the same rollup it uses for CI decisions",
+        "flipWentRed": "Flipped rollup observation hook in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 92,
+        "outcome": "reopen chronology",
+        "test": "worker/deno/tests/lifecycle_outcomes_test.ts",
+        "testName": "lifecycle outcome keeps each PR and chooses the gated merge",
+        "flipWentRed": "Flipped reopen chronology in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 87,
+        "outcome": "reclose evidence",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations classify reopen and reclose at each cutoff",
+        "flipWentRed": "Flipped reclose evidence in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 250,
+        "outcome": "reclose cache invalidation",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "terminal maintenance records PR events once before missing-branch skips",
+        "flipWentRed": "Flipped reclose cache invalidation in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/pr_maintenance.ts",
+        "line": 1531,
+        "outcome": "cached observations do not revive closed work",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "CI maintenance never revives a closed PR from a cached OPEN listing",
+        "flipWentRed": "Flipped cached observations do not revive closed work in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/pr_maintenance.ts",
+        "line": 1533,
+        "outcome": "markerless listing no read",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "CI maintenance skips markerless bots and refreshes missing review metadata",
+        "flipWentRed": "Flipped markerless listing no read in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/pr_maintenance.ts",
+        "line": 1539,
+        "outcome": "missing review snapshot refresh",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "CI maintenance skips markerless bots and refreshes missing review metadata",
+        "flipWentRed": "Flipped missing review snapshot refresh in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/pr_bot_lookup.ts",
+        "line": 84,
+        "outcome": "bot markerless body preservation",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "CI maintenance skips markerless bots and refreshes missing review metadata",
+        "flipWentRed": "Flipped bot markerless body preservation in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 66,
+        "outcome": "explicit state takes precedence over late quality",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "quality uses its own observation time and cannot reopen an explicitly closed PR",
+        "flipWentRed": "Flipped explicit state takes precedence over late quality in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_pr_observation.ts",
+        "line": 138,
+        "outcome": "quality own observation timestamp",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "quality uses its own observation time and cannot reopen an explicitly closed PR",
+        "flipWentRed": "Flipped quality own observation timestamp in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_outcomes.ts",
+        "line": 75,
+        "outcome": "live head binding",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "PR observations invalidate live gates when the current head changes",
+        "flipWentRed": "Flipped live head binding in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 241,
+        "outcome": "abandoned sibling follow-on spend",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation assigns only abandoned sibling follow-on costs as wasted",
+        "flipWentRed": "Flipped abandoned sibling follow-on spend in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/pr_maintenance.ts",
+        "line": 1540,
+        "outcome": "fresh mismatched head refresh",
+        "test": "worker/deno/tests/lifecycle_pr_observation_test.ts",
+        "testName": "CI maintenance skips markerless bots and refreshes missing review metadata",
+        "flipWentRed": "Flipped fresh mismatched head refresh in an isolated copy; this named test failed, then the original was restored."
+      }
+    ]
+  }
+}
