@@ -1,0 +1,13 @@
+{
+  "issue": 3768,
+  "chunk": "top-up-3768",
+  "title": "top-up: PR-summary freshness CI gate",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3768",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pr_summary_ci.ts, pr_summary_ci_cli.ts (#3768)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/pr_summary_ci.ts",
+    "worker/deno/lib/pr_summary_ci_cli.ts"
+  ],
+  "sweptAt": "952dd7355af87dbffc0f7576b97bd16ded565eb4"
+}

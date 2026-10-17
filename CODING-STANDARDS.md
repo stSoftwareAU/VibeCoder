@@ -1763,13 +1763,27 @@ for every PR summary — containing:
 
 In this repository, `deno task pr-summary-check --base <base-branch>
 <summary-file>` from `worker/deno` runs most of the PR-summary gates against a
-draft summary before the PR is raised. A gate it reports as not checked is not
-a pass. For a summary named `pr-summary-<N>.md` it also reads
+summary at either stage: a draft before the PR is raised, or the archived
+summary once it is open. A gate it reports as not checked is not a pass. For a
+summary named `pr-summary-<N>.md` it also reads
 `docs/archive/pr-summaries/pr-summary-<N>.facts.json` under the repository
 root, as the worker does (it takes only `<N>` from the summary's file name):
 the Branch outcomes gate sees the list rendered at the
 `<!-- vibe-branch-outcomes -->` marker, and blocks on an invalid facts file or
 on a facts file beside a hand-written list.
+
+CI runs it on every push to a PR that carries a summary: the `PR summary
+freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
+`deno task pr-summary-ci --base <base-branch> --head-branch <head-branch>`
+(Issue #3768). It finds the PR's `pr-summary-<N>.md` from an `issue-<N>-…`
+head branch, and fails when the PR's newest non-merge commit changing `worker/`,
+`prompts/` or `.claude/` is newer than the newest commit changing that summary
+or its facts file. Rewrite the summary for the head in that push, whoever makes
+it. The step then runs the `pr-summary-check` gates and fails on a blocked one;
+gates needing the issue body or labels are reported as not checked. A PR
+carrying no summary passes with a log line. On a head branch that is not an
+`issue-<N>` branch (milestone roll-ups, sync PRs) the summary is reported as not
+checked.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
