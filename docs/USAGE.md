@@ -107,7 +107,11 @@ commits left unpushed, so a feedback run that only answers a finding still
 refreshes a stale body. A body raised before this digest marker existed keeps
 the older rule: rebuilt only when this run's own push changed the summary
 file or its facts file. So the description never drifts from a summary rewritten after
-creation, for as long as that run's conditions are met. A re-sync
+creation, for as long as that run's conditions are met. Priority 1.64 also catches a push
+the worker did not make (Issue #3760), such as a review-fix commit pushed by
+hand: each cycle it re-syncs an open fleet-authored PR whose recorded digest
+differs from the summary at its head (see
+[the PR feedback workflow](workflows/pr-feedback.md)). A re-sync
 re-derives a leading `Degraded run` section from the issue's current body and
 the rebuilt summary rather than copying it, keeping only the original run's
 reason and follow-up number (Issue #3350). A leading `Partial delivery —
@@ -833,6 +837,7 @@ flowchart TD
     P161["🟡 Priority 1.61 — Resolve PR Merge Conflicts"]
     P162["🟡 Priority 1.62 — Nudge Stalled CI"]
     P163["🟡 Priority 1.63 — Blocking-PR Stall Repair"]
+    P164["🟡 Priority 1.64 — Reconcile PR Body Digests"]
     P165["🟡 Priority 1.65 — Auto-merge Catch-up"]
     P166["🟡 Priority 1.66 — Branch Cleanup (merged PRs, once at start-up)"]
     P167["🟡 Priority 1.67 — Issue Closure (merged PRs)"]
@@ -854,7 +859,7 @@ flowchart TD
     P25["🟤 Priority 2.5 — `low-priority` label (fallback when no eligible higher-tier candidate exists in any repo)"]
     P29["⚪ Priority 2.9 — `idle-task` label (worker-filed busywork; only self-appliable label)"]
 
-    P09 --> P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P165 --> P166 --> P167 --> P168 --> P17 --> P171 --> P172 --> P173 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P187 --> P19 --> P2 --> P25 --> P29
+    P09 --> P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P164 --> P165 --> P166 --> P167 --> P168 --> P17 --> P171 --> P172 --> P173 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P187 --> P19 --> P2 --> P25 --> P29
 
     style P09 fill:#d00000,stroke:#9d0208,color:#fff
     style P1 fill:#d00000,stroke:#9d0208,color:#fff
@@ -864,6 +869,7 @@ flowchart TD
     style P161 fill:#f48c06,stroke:#e85d04,color:#000
     style P162 fill:#f48c06,stroke:#e85d04,color:#000
     style P163 fill:#f48c06,stroke:#e85d04,color:#000
+    style P164 fill:#f48c06,stroke:#e85d04,color:#000
     style P165 fill:#faa307,stroke:#f48c06,color:#000
     style P166 fill:#ffba08,stroke:#faa307,color:#000
     style P167 fill:#ffdd00,stroke:#ffba08,color:#000
@@ -883,10 +889,11 @@ flowchart TD
     style P29 fill:#909090,stroke:,color:#fff
 ```
 
-Four rungs are skipped for a cycle when the previous cycle's GraphQL quota
-reading put the window at or below its reserve: Priorities 1.67, 1.68, 1.7 and
-1.81 carry `budgetTier: "deferrable"`, so what is left of the window goes to
-issue work and the sweeps run a cycle later (Issue #2449). The cycle logs one
+Five rungs are skipped for a cycle when the previous cycle's GraphQL quota
+reading put the window at or below its reserve: Priorities 1.64, 1.67, 1.68,
+1.7 and 1.81 carry `budgetTier: "deferrable"`, so what is left of the window
+goes to issue work and the sweeps run a cycle later (Issue #2449). The cycle
+logs one
 `budget-pacing: in reserve — skipped deferrable sweeps: …` line naming them. See
 [The `deferrable` tier](GH-API-OPTIMISATION.md#the-deferrable-tier--the-sweeps-that-stand-down-in-the-reserve).
 
