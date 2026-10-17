@@ -10,6 +10,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { recordPrFollowOnFromGithub } from "./lifecycle_follow_on.ts";
+
 import {
   createMissingScopeWarner,
   type MissingScopeWarner,
@@ -68,6 +70,12 @@ import {
 } from "./git_pull.ts";
 import { recoverFromPushRejection } from "./git_push_recovery.ts";
 import { validateRepoState } from "./git_repo_validation.ts";
+import {
+  type IssueAssignmentInput,
+  type IssueAssignmentRecord,
+  productionIssueAssignmentSeams,
+  recordIssueAssignment,
+} from "./issue_assignment.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { setupRepo as setupRepoCommand } from "../commands/git_operations.ts";
 import { repairSharedObjectStore } from "./object_store_repair.ts";
@@ -450,6 +458,10 @@ export interface CrashHandlingDeps {
 
 /** Infrastructure — file I/O, temp files, disk, logs, prompts, misc. */
 export interface InfrastructureDeps {
+  /** Record a PR follow-on cycle without changing the existing tier counters (Issue #3720). */
+  recordPrFollowOn: (
+    input: Parameters<typeof recordPrFollowOnFromGithub>[0],
+  ) => Promise<void>;
   atomicWrite: typeof atomicWrite;
   safeReadFile: typeof safeReadFile;
   safeMktemp: typeof safeMktemp;
@@ -463,6 +475,13 @@ export interface InfrastructureDeps {
   collectGraftContext: GraftContextCollector;
   /** Generate (or reuse) the per-repo codebase map (Issue #4281). */
   getCodebaseMap: typeof getOrGenerateCodebaseMap;
+  /**
+   * Read or mint the issue's stable lifecycle assignment and append its
+   * assignment event to this host's ledger (Issue #3718), before the agent runs.
+   */
+  recordIssueAssignment: (
+    request: IssueAssignmentInput & { workDir: string },
+  ) => Promise<IssueAssignmentRecord>;
   loadPrompt: typeof loadPrompt;
   shuffleArray: typeof shuffleArray;
   evaluateRunGuard: typeof evaluateRunGuard;
@@ -777,6 +796,13 @@ export function createDefaultDeps(
       buildPrompt: buildIssuePrompt,
       collectGraftContext,
       getCodebaseMap: getOrGenerateCodebaseMap,
+      recordPrFollowOn: (input) =>
+        recordPrFollowOnFromGithub(input, runGhCommand),
+      recordIssueAssignment: ({ workDir, ...input }) =>
+        recordIssueAssignment(
+          input,
+          productionIssueAssignmentSeams(workDir, runGhCommand),
+        ),
       loadPrompt,
       shuffleArray,
       evaluateRunGuard,
@@ -1243,6 +1269,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
           testChangeNotes: [],
           unrelatedIssues: [],
           checklist: [],
+          closure: [],
         },
       })
     ),
@@ -1437,6 +1464,18 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
           cacheHit: true,
         },
       })
+    ),
+    recordPrFollowOn: mockFn<InfrastructureDeps["recordPrFollowOn"]>(() =>
+      Promise.resolve()
+    ),
+    // Issue #3718: a mocked run posts no assignment marker and writes no ledger.
+    recordIssueAssignment: mockFn<InfrastructureDeps["recordIssueAssignment"]>(
+      () =>
+        Promise.resolve({
+          assignmentId: "00000000-0000-4000-8000-000000000000",
+          cohort: "unassigned",
+          reused: false,
+        }),
     ),
     shuffleArray: mockFn<InfrastructureDeps["shuffleArray"]>(<T>(
       items: readonly T[],

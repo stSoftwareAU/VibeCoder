@@ -10,6 +10,7 @@
  */
 
 import {
+  assignmentIdFromBody,
   extractClosingIssueNumbers,
   extractIssueNumberFromPrTitle,
 } from "./pr_body.ts";
@@ -127,6 +128,8 @@ export interface OpenPRWithBody extends OpenPR {
  * Merged PR with head branch info (Issue #1787).
  */
 export interface MergedPR {
+  /** Null means no marker; absent on older cache rows, which callers re-read. */
+  lifecycleAssignmentId?: string | null;
   number: number;
   title: string;
   headRefName: string;
@@ -199,6 +202,8 @@ export interface ClosedPR {
  * closed-not-merged from merged PRs without an extra `gh pr view`.
  */
 export interface ClosedPRWithMerge {
+  /** Null means no marker; absent on older cache rows, which callers re-read. */
+  lifecycleAssignmentId?: string | null;
   number: number;
   title: string;
   mergedAt: string | null;
@@ -2122,6 +2127,7 @@ function parseMergedPrListing(output: string): MergedPR[] {
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : "",
       closingRefs: extractClosingIssueNumbers(body),
       subAgentTier: subAgentTierFromBody(body) ?? "sonnet",
+      lifecycleAssignmentId: assignmentIdFromBody(body) ?? null,
       ...(missingCriteria.length > 0 ? { missingCriteria } : {}),
       ...(hasFollowUpChainStop(body) ? { followUpChainStop: true } : {}),
     });
@@ -3132,6 +3138,9 @@ export async function fetchClosedPRsByUser(
       title: typeof item.title === "string" ? item.title : "",
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : null,
       closedAt: typeof item.closedAt === "string" ? item.closedAt : null,
+      lifecycleAssignmentId:
+        assignmentIdFromBody(typeof item.body === "string" ? item.body : "") ??
+          null,
       // Issue #1528: what the body's closing keywords name, not the body.
       closingRefs: extractClosingIssueNumbers(
         typeof item.body === "string" ? item.body : "",

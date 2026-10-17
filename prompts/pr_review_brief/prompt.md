@@ -3,7 +3,7 @@ The review brief shared by the fleet reviewer (.claude/skills/review-fleet-prs,
 "Reviewing the ready PRs") and the worker's pre-PR verifier
 (worker/deno/lib/pre_pr_verifier.ts), Issue #3395. One source, so the two
 cannot drift: change the review rules here, never in a copy. Each caller fills
-the five {{FIELDS}}; the fleet's values are listed in SKILL.md and the
+the six {{FIELDS}}; the fleet's values are listed in SKILL.md and the
 verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
 -->
 ## Review Mode — one change against its linked issue
@@ -64,10 +64,23 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    blocking **finding**. If the section says the checklist file is
    malformed, unreadable or was not checked, report that as a blocking
    **finding** as it instructs; never treat it as "no checklist".
-8. For Dependabot: check the changelog or release notes for breaking
+8. Closure entries marked `met`: {{CLOSURE_ENTRIES}}
+   When that is empty, no closure entry is owed a verdict; do nothing more
+   for this step. Otherwise judge each listed entry on its own against the
+   change at the head, not against the entry's own evidence. `met` means
+   the change delivers every case, path and test the criterion names:
+   wording such as "every", "each", "all" or "the whole" names cases the
+   change must cover, and a case the change, its tests or its own new docs
+   leave out (an exclusion a new test pins, a path its docs say does
+   nothing) makes it `partial`. A criterion the change does not deliver at
+   all is `missing`. Report every listed entry in the reply `closure` array
+   as `met`, `partial` or `missing`, copying the criterion text as listed,
+   with a note naming what is left out. Every `partial` or `missing` entry
+   is also a blocking **finding** on the PR description.
+9. For Dependabot: check the changelog or release notes for breaking
    changes that affect how this repo uses the dependency, and that a major
    bump is reflected in the code where needed.
-9. If, while reading, you notice an important **pre-existing** problem the
+10. If, while reading, you notice an important **pre-existing** problem the
    change did not cause and is not meant to fix (a bug, a security gap,
    data loss, a broken workflow in code it passes by), report it under
    `unrelatedIssues`, not as a finding: it is recorded separately and does
@@ -97,7 +110,7 @@ diff and a concrete failure scenario. A problem the change introduces,
 widens or newly exposes is always a finding, never an unrelated issue.
 
 Reply with only this JSON:
-`{"summary": "<one or two sentences>", "earlierFindings": [{"index": 1, "verdict": "fixed" | "partly" | "not fixed", "note": "<evidence covering every ask in this earlier finding>"}], "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
-Use `[]` for `checklist` when there is no checklist section.
+`{"summary": "<one or two sentences>", "earlierFindings": [{"index": 1, "verdict": "fixed" | "partly" | "not fixed", "note": "<evidence covering every ask in this earlier finding>"}], "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}], "closure": [{"criterion": "<text as listed>", "verdict": "met" | "partial" | "missing", "note": "<what is left out, or why every case is delivered>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
+Use `[]` for `checklist` when there is no checklist section, and for `closure` when no closure entry is listed.
 
 For each numbered earlier finding, return exactly one `earlierFindings` verdict. Check every problem and Fix ask against the current code and tests. Partial fixes, narrower wording and documented limitations are not fixed. A false-positive rebuttal counts as fixed only when you independently verify its evidence. Use `[]` when there are no earlier findings.

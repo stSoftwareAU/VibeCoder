@@ -43,6 +43,8 @@ the worker.
   - [Why it was rejected](#why-it-was-rejected)
   - [What remains in the code](#what-remains-in-the-code)
 - [Token Usage & Cost Tracking](#token-usage--cost-tracking)
+  - [Estimated API-equivalent cost and lifecycle ledger](#estimated-api-equivalent-cost-and-lifecycle-ledger)
+  - [Lifecycle outcomes and gated success](#lifecycle-outcomes-and-gated-success)
   - [Token Extraction](#token-extraction)
   - [Model Pricing](#model-pricing)
   - [Credit Logging](#credit-logging)
@@ -135,6 +137,8 @@ a section without a marker, fails `deno test`.
 | [Why it was rejected](#why-it-was-rejected) | ➖ | ➖ | ➖ | ➖ | The async/bounded-run mismatch is the worker's, not a vendor's |
 | [What remains in the code](#what-remains-in-the-code) | ➖ | ➖ | ➖ | ➖ | Offline estimation helpers only; nothing calls them at run time |
 | **[Token Usage & Cost Tracking](#token-usage--cost-tracking)** | ✅ | ✅ | ✅ | ✅ | Logged with a `provider` id. Codex and DeepSeek usage parses and is priced from the id's own row at the vendor's API-equivalent list price. Gemini's usage now decodes too ([#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938)), and its ids carry the same API-equivalent rows |
+| [Estimated API-equivalent cost and lifecycle ledger](#estimated-api-equivalent-cost-and-lifecycle-ledger) | ✅ | ✅ | ✅ | ✅ | Shared schema and token-pricing estimate; missing usage or pricing remains explicitly unknown for every provider |
+| [Lifecycle outcomes and gated success](#lifecycle-outcomes-and-gated-success) | ✅ | ✅ | ✅ | ✅ | Shared PR observations and classifier; success requires the same pre-merge quality and review evidence regardless of provider |
 | [Token Extraction](#token-extraction) | ✅ | ✅ | ✅ | ✅ | Codex usage is decoded from `turn.completed` / `token_count` (#1701). Gemini usage is decoded from its terminal `result` event's `stats.models` (#1938); a run that reports none is still warned about once, flagged `usageUnknown`, never zero (#366). DeepSeek emits the Claude CLI's `stream-json`, which the shared extractor reads |
 | [Model Pricing](#model-pricing) | ✅ | ✅ | ✅ | ✅ | Claude rows are the rate Anthropic bills. The eight routable Codex/Gemini/DeepSeek ids carry **API-equivalent** rows — the vendor's API list price for the same tokens — never a bill, because those providers run on a fixed-price subscription — and the run-stats sub-bullet says `(API-equivalent)` so the basis travels with the figure. An id outside the table is still charged at the upper bound and named in `unpricedModels` |
 | [Credit Logging](#credit-logging) | ✅ | ⚠️ | ⚠️ | ⚠️ | The entry is written and names the provider; Codex token fields are measured when the CLI reports them, else `usageUnknown`; cost comes from the model id's own row — API-equivalent for a non-Claude id — and is an upper bound only when the id has no row at all |
@@ -763,7 +767,9 @@ Issue #3395 adds a worker step, the pre-PR verifier
 called from
 [`worker/deno/lib/phases/completion_phase.ts`](../worker/deno/lib/phases/completion_phase.ts)).
 It is not a sub-agent the issue prompt dispatches: it is one extra model pass
-the worker makes itself.
+the worker makes itself. It also judges each closure entry the
+summary marks `met` (Issue #3766); see
+[issue-processing.md](workflows/issue-processing.md#pre-pr-verifier-issue-3395).
 
 - **Model.** The `issue` phase's model, resolved by the same
   [precedence chain](#%EF%B8%8F-modeleffort-precedence-chain) as the main
@@ -2700,6 +2706,156 @@ which only *reports* what a hypothetical discount would be. No
 
 > **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — every invocation is credit-logged with its provider id. Codex usage is measured when the CLI reports it and priced from its API-equivalent row. DeepSeek's counts do parse — same CLI, same `stream-json` — and price the same way. Gemini's own `stream-json` stats are decoded since [#1938](https://github.com/stSoftwareAU/VibeCoder/issues/1938) and price the same API-equivalent way; a Gemini run that reports no stats is still recorded UNKNOWN, never zero.
 
+### Estimated API-equivalent cost and lifecycle ledger
+
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — the ledger and reconciliation share one schema and estimate definition; incomplete telemetry remains explicit.
+
+**Estimated API-equivalent USD** means observed input, output, cache-creation
+and cache-read tokens multiplied by the published per-model pricing rows used by
+`cost_estimate.ts`, divided by one million. It is always an estimate of the API
+price for that usage. It is **not subscription spend** and excludes subscription
+fees, subscription fee allocation, seat amortisation and billing. The lifecycle
+writer reuses `attributeUsageByModel` and `estimateRunCost`; it introduces no
+second pricing table. Missing usage and unknown pricing are flagged, never
+represented as a known zero-dollar invocation.
+
+The append-only schema-1 ledger lives at
+`{workDir}/lifecycle_ledger_{host}.jsonl`. `readLifecycleLedger` validates each
+line and keeps the first event with each deterministic `eventKey`.
+`reconcileLifecycleFiles(paths, cutoff?)` reads an explicit list of host files
+and deduplicates across them; `reconcileLifecycleEvents(events, cutoff?)` is its
+pure analysis API. File collection is the caller's responsibility. An unreadable
+or corrupt file raises `LifecycleLedgerReadError` with the path and line;
+recording faults are logged at ERROR.
+
+The ledger allowlist in `lifecycle_ledger.ts` permits these fields:
+
+| Record                     | Fields beyond the shared identity                                                                                                                                                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Shared identity            | `schema`, `kind`, `eventKey`, `assignmentId`, `runId`, `host`, `repo`, `issueNumber`, `recordedAt`                                                                                                                                   |
+| `assignment`               | `assignedAt`, `cohort`, `reused`, `treatment` (`roles`, `workerVersion`, `workerCommit`, `subscriptionAllocation`); each role has `role`, `agent`, `provider`, `model`, `effort`                                                     |
+| `invocation`               | `invocationIndex`, `role`, `agent`, `provider`, `requestedModel`, `servedModel`, `effort`, `attempt`, `durationSeconds`, `quotaStatus`, `result`, `usage`, `telemetryAbsentReason`, `pricing`, `estimatedApiEquivalentUsd`, `models` |
+| Per-model invocation entry | `model`, `role`, `tokens` (`inputTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`), `pricing`, `estimatedApiEquivalentUsd`                                                                                          |
+| `follow_on`                | `followOn`, `prNumber`, `cycle`, `attempt`, `usage`, `pricing`, `estimatedApiEquivalentUsd`                                                                                                                                          |
+| `gate`                     | `gate`, `result`, `attempt`, `prNumber`                                                                                                                                                                                              |
+| `outcome`                  | `outcome`, `prNumber`                                                                                                                                                                                                                |
+
+The reader also accepts the schema's earlier invocation fields `model`,
+`servedModels`, `inputTokens`, `outputTokens`, `cacheReadTokens`,
+`cacheCreationTokens` and `estimatedApiCostUsd`. Reconciliation treats records
+without the current `usage`/`pricing` evidence as unknown. `issueNumber` is
+optional for invocation and follow-on records; those two kinds can carry
+`assignmentId: "unknown"` when attribution is unavailable.
+
+There are no fields for prompt text, issue bodies, credentials or user
+identities. Extra keys are refused; bounded identifier patterns reject email
+addresses and prose. Identifier patterns alone cannot recognise a token-shaped
+secret or login, so producers supply worker-owned identifiers. The
+`subscriptionAllocation` value is an operator label, never an account identity
+or fee. The ledger contains token **counts**, not authentication tokens.
+
+An issue marker preserves its assignment ID and cohort across hosts and
+restarts. The PR body carries `vibe-assignment-id`. Invocation records retain
+failed and timed-out work; in-process model usage whose agent role is unknown
+uses `sub-agent (unattributed)`. CI-fix and PR-feedback records use `ci_fix` and
+`pr_feedback`; their aggregate cost has no observable role breakdown and is
+reported as `follow-on (unattributed)`. Their `runId` can be shared by several
+cycles in one worker process: reconciliation uses the deterministic event key,
+not the run ID alone, to deduplicate them.
+
+Reconciliation returns assignments and cohorts with `totals`, `byRole`,
+`byAttempt` and `byFollowOn`. Each spend bucket carries
+`estimatedApiEquivalentUsd`, `wastedEstimatedApiEquivalentUsd`, `partial`,
+`wastedPartial`, `unknownUsageCount` and `unknownPricingCount`. Unknown counts
+count contributing records, rather than models. A partially priced invocation
+keeps its priced model subtotal; its overall bucket is partial, while a fully
+priced role bucket within it can remain complete. A positive partial subtotal is
+a lower bound; an unknown-only or zero lower bound is `null`, never a complete
+zero. A known zero remains zero.
+
+Wasted spend includes non-successful invocation attempts, follow-on work on a PR
+observed closed unmerged, and an assignment's costs when its best PR outcome is
+closed unmerged. With both a merged and an abandoned PR, the ledger cannot
+assign initial issue-run costs to either PR: only the abandoned PR's explicitly
+attributed follow-on costs are counted as wasted. Missing assignment records
+produce an `unknown` cohort; conflicting recorded cohorts are refused.
+
+### Lifecycle outcomes and gated success
+
+> **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — outcomes depend on the PR's observed state and gates, independently of its coding provider.
+
+`classifyLifecycleOutcome(events, cutoff?)` returns one assignment state and
+retains each PR's own state. The live view omits the cutoff; a supplied cutoff
+includes records timestamped at or before it and censors nonterminal work.
+
+| State                | Meaning                                                               |
+| -------------------- | --------------------------------------------------------------------- |
+| `pending`            | Live assignment has no observed PR                                    |
+| `pr_opened`          | Live PR exists without a current passing quality or review gate       |
+| `quality_green`      | Latest observed quality gate passes                                   |
+| `review_approved`    | Latest observed review gate passes                                    |
+| `merged`             | A merge was observed; success is evaluated separately                 |
+| `closed_unmerged`    | PR closed without merging                                             |
+| `censored_at_cutoff` | No terminal outcome was observed by the cutoff; this is not a failure |
+
+`success` requires `merged` and passing `quality` **and** `review` gate records
+on that PR and merged head, strictly before the merge timestamp. A later failed
+or skipped gate supersedes a pass; a merge missing either gate remains `merged`
+with `success: false`. A successful merged sibling wins over an abandoned
+sibling; each PR remains visible in `prs`. Cohorts report `assignmentCount` and
+`successCount`. Live gates are bound to the latest observed head too. `pr_open`
+gate observations record OPEN as `pass` and CLOSED as `fail`; their timestamped
+attempt keys preserve reopen/reclose cycles without changing the schema-1
+outcome keys. A later open observation supersedes an earlier close, and a later
+close supersedes that reopening. Historical cutoffs keep the state observed by
+that time. Older ledgers without explicit `pr_open` facts use quality/review
+observations as OPEN evidence. Quality keeps its later rollup observation time;
+OPEN and review facts use the listing observation time.
+
+The CI-maintenance pass records gates from its existing batched check rollup and
+PR listing. It uses the same `determineCiStatus` as merge safety, requires the
+check SHA to match the listed head, and records approval when GitHub's
+`reviewDecision` is `APPROVED`. A failed check-batch read falls back to the
+existing CI-failure scan without inventing a quality gate. An older cached
+maintenance listing is reused for scan decisions but does not create new
+lifecycle facts: the next fresh listing supplies current evidence. A fresh
+listing missing fields, or whose head differs from the fresh check rollup,
+causes a PR snapshot read; a complete matching listing needs no per-PR call.
+Known markerless bodies, including dependency-bot listings, require no observation read.
+
+Merged-branch cleanup records merges beside the fleet merge counter; the
+closed-PR recovery pass records closed-unmerged PRs. Those passes use their
+existing bounded listings (30 merged, 100 closed for the worker account), skip
+fresh rows without assignment markers, and skip terminal states already recorded
+for that PR in this host's ledger (close states include the close timestamp, so
+a reclosed PR is observed again). A previously unseen marked terminal PR costs a
+snapshot read. Old cached rows without marker metadata are also re-read. A
+post-merge snapshot records the merge, never retroactive passing gates: a PR
+that merged between observations can therefore remain unsuccessful in the
+analysis. No lifecycle recorder changes a quality/review gate or authorises a
+merge.
+
+```mermaid
+flowchart LR
+    A["Assignment and invocation records"] --> L["Per-host lifecycle ledger"]
+    P["Open PR checks and review observations"] --> G["Head-bound gate records"]
+    G --> L
+    T["Merged or closed PR observation"] --> L
+    L --> R["Dedupe and reconcile at optional cutoff"]
+    R --> O["Per-PR outcomes and assignment outcome"]
+    R --> C["Estimated API-equivalent totals and unknowns"]
+    O --> S["Success requires merge plus both prior gates"]
+```
+
+This ledger complements the credit log and daily ceiling corrected by #3616; it
+does not replace their accounting or limits. Independent role configuration is
+separate work in #3643. Cohort randomisation, cross-host collection,
+experimentation and allocation analysis remain planned in #3645; this API
+provides observations and reconciliation without choosing an experiment arm. The
+[callback telemetry contract](CALLBACKS.md#lifecycle-ledger-cross-reference)
+remains unchanged.
+
+
 ### Token Extraction
 
 > **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — Codex usage is decoded from `turn.completed` / `token_count` by `CODEX_OUTPUT_ADAPTER`, and Gemini's from its terminal `result` event by `decodeGeminiTokenUsage()`. A run of either that reports nothing is warned about once and flagged `usageUnknown` by `extractProviderTokenUsage()` rather than recorded as a silent zero. DeepSeek emits the Claude CLI's `stream-json`, so the shared extractor parses it and no `usageUnknown` flag is raised.
@@ -2779,6 +2935,13 @@ flowchart LR
 ```
 
 ### Model Pricing
+
+For the lifecycle ledger, these published rows define **estimated
+API-equivalent** cost, excluding subscription fees, seat amortisation and
+billing. The daily credit ceiling's conservative unpriced-model fallback is not
+a measured lifecycle price: lifecycle records mark unknown pricing and omit the
+invocation's USD field, preserving any priced model subtotal only in a partial
+reconciliation.
 
 > **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — `MODEL_PRICING` carries the Claude rows Anthropic bills **and** an **API-equivalent** row for each of the eight routable Codex, Gemini and DeepSeek ids (`gpt-5-codex`, `gpt-5-mini`, `gpt-5`, `gemini-2.5-pro`, `gemini-2.5-flash-lite`, `gemini-2.5-flash`, `deepseek-v4-pro`, `deepseek-flash`). An API-equivalent figure is the vendor's API list price for the same tokens, labelled `(API-equivalent)` on its run-stats sub-bullet — never a bill, because each provider runs on a fixed-price subscription. An id outside the table is still charged at the dearest known rate and named in `unpricedModels`.
 
