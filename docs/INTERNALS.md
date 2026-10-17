@@ -5169,11 +5169,7 @@ returns a `ladder` decision with cooldown `non_transient` for it,
 quotes the marker later keeps its own category. A retry that could not be
 launched at all (a rate limit, a failed spawn) is deliberately not marked: that
 is a real launch fault and its own error text must still be classified. The
-posted issue comment is unchanged. The host-fault and milestone-refusal
-label-release sweeps also skip that comment, because its head
-`**Category:** \`security-fix-gate\`` line is a registered gate record
-(`isWorkerGateFailureRecord`), so a quoted test declaration cannot strip
-`failed-once` or `failed`.
+posted issue comment is unchanged. The host-fault and milestone-refusal label-release sweeps also skip the separate failure record that `markIssueAsFailedOnce` or `markIssueAsFailed` posts for the marked reason, because its head `**Category:** \`security-fix-gate\`` line names a registered gate category (`isWorkerGateFailureRecord`), so a quoted test declaration cannot strip `failed-once` or `failed`.
 
 #### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
 
