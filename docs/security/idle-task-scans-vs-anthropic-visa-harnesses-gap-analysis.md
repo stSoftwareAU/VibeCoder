@@ -177,10 +177,11 @@ identifier named in the summary actually names a test declared** in the added
 lines of that test diff (`security_fix_diff.ts` runs `git diff` only). That identifier match is on whole tokens of a test-*declaration*
 line, and generic tokens (`test`, `spec`, `case`, …) are rejected outright, so
 citing `foo_test.ts::test` against any added test line no longer satisfies it
-(Issue #1279). Since Issue #3659 the worker then executes the cited test twice in a
-disposable checkout (`security_fix_discrimination.ts`): at the head it must
-pass, and with the merge-base versions of the branch's changed non-test files
-restored it must fail. The prose fail-before/pass-after evidence was removed;
+(Issue #1279). Since Issue #3659 the worker then executes each test the summary cites by full name (up to ten)
+twice in a disposable checkout (`security_fix_discrimination.ts`): at the head
+it must pass, and with the merge-base versions of the branch's changed non-test
+files restored it must fail; the gate is satisfied when any one cited test does
+both. The prose fail-before/pass-after evidence was removed;
 only the self-reported trigger-closed statement remains prose. If the diff
 cannot be computed, or the discrimination run cannot execute, the PR is blocked
 rather than assumed good.
