@@ -33,22 +33,22 @@ Backend-only change; verified by unit tests.
 
 ```mermaid
 flowchart TD
-    S["Fix run pushes; summary digest changed"] --> L{"Live body has a leading<br/>degraded / partial-delivery /<br/>chain-stop section?"}
-    L -- yes --> R["Re-derive it (unchanged behaviour,<br/>never writes to the follow-up)"]
-    L -- no --> G{"Rebuilt summary marks a<br/>criterion partial or missing?"}
-    G -- no --> P["Rebuild body as before"]
-    G -- yes --> V{"Parent issue passes the pickup<br/>content-integrity check?"}
-    V -- no --> F["Sync fails loudly; body unchanged"]
-    V -- yes --> C{"Parent is a partial-delivery<br/>follow-up?"}
-    C -- yes --> H["needs-human + comment;<br/>chain-stop section; Part of #N"]
-    C -- no --> U["File or reuse the follow-up;<br/>Partial delivery section"]
+    S["Fix run pushes; summary digest changed"] --․> L{"Live body has a leading<br/>degraded / partial-delivery /<br/>chain-stop section?"}
+    L -- yes --․> R["Re-derive it (unchanged behaviour,<br/>never writes to the follow-up)"]
+    L -- no --․> G{"Rebuilt summary marks a<br/>criterion partial or missing?"}
+    G -- no --․> P["Rebuild body as before"]
+    G -- yes --․> V{"Parent issue passes the pickup<br/>content-integrity check?"}
+    V -- no --․> F["Sync fails loudly; body unchanged"]
+    V -- yes --․> C{"Parent is a partial-delivery<br/>follow-up?"}
+    C -- yes --․> H["needs-human + comment;<br/>chain-stop section; Part of #N"]
+    C -- no --․> U["File or reuse the follow-up;<br/>Partial delivery section"]
 ```
 
 **Docs sweep** — grep: "re-sync", "only reads the issue", "never files", "never edits or files", `syncPrBodyFromSummary`, `SyncPrBodyDeps`; section: `docs/workflows/issue-processing.md#a-healthy-runs-own-gaps-get-a-follow-up-too-issue-3506`; siblings: `syncPrBodyFn`, `runGitCommand`; updated: `docs/USAGE.md`, `docs/workflows/issue-processing.md`, `docs/workflows/pr-feedback.md`, `docs/INTERNALS.md`, `worker/deno/lib/degraded_delivery.ts` (module doc), `worker/deno/lib/pr_body_sync.ts` (module doc); `docs/workflows/ci-fix.md:78` — still true because it says only that the description is re-synced; `docs/workflows/issue-processing.md:1054` — still true because the `Part of` assembly is unchanged
 
 ## Test Plan
 
-- `worker/deno/tests/pr_body_sync_test.ts` — ten new sync tests (Issue #3678 section) covering filing, reuse, blocked content, filing failure, no filer, the chain stop, an unreadable issue, no gap, a stale checkout and a label failure; `followUpFiling: undefined` added to every existing `SyncPrBodyDeps` literal, no assertion removed or changed.
+- `worker/deno/tests/pr_body_sync_test.ts` — eleven new sync tests (Issue #3678 section) covering filing, the parent-issue read and fix-run id, reuse, blocked content, filing failure, no filer, the chain stop, an unreadable issue, no gap, a stale checkout and a label failure; `followUpFiling: undefined` added to every existing `SyncPrBodyDeps` literal, no assertion removed or changed.
 - `worker/deno/tests/pr_body_sync_test.ts::sync - the parent issue is read from the PR's repo and the follow-up names the fix run (Issue #3678)` — pins the exact `gh issue view <n> --repo <repo> --json title,body,labels,author,milestone` argv and that the fix run's id reaches the filed follow-up's body. Red-check: deleting each of `"--repo"`, `input.repo`, `"--json"`, `SYNC_PARENT_ISSUE_FIELDS` (`pr_body_sync.ts:748`–`751`) and `runId: input.runId ?? ""` (`pr_body_sync.ts:772`) in turn turned this test red.
 - `worker/deno/tests/pr_body_sync_follow_up_test.ts` — new: `parseSyncParentIssue`, `summaryReportsGap`, `buildSyncFollowUpFiling` and the `addReportedGapSectionOnSync` failure and milestone outcomes.
 - `worker/deno/tests/pr_feedback_processor_test.ts`, `worker/deno/tests/pr_ci_processor_test.ts`, `worker/deno/tests/pr_merge_conflict_processor_test.ts` — one forwarding test each; replacing that processor's `followUpFiling: processorDeps.syncFollowUpFiling` with `undefined` turned only that test red.
@@ -59,4 +59,4 @@ flowchart TD
   - `worker/deno/lib/pr_body_sync_follow_up.ts:138`, `worker/deno/lib/pr_body_sync_follow_up.ts:139`, `worker/deno/lib/pr_body_sync_follow_up.ts:141` — exempt (untestable): labels, author and login only change which approval label and editor trust a changed-content verdict uses, which needs a live GitHub timeline (`resolveLastIssueEditor`); `worker/deno/tests/pickup_content_integrity_test.ts` is the harness for that and calls `verifyPickupContentIntegrity` directly, not through this builder.
   - `worker/deno/lib/pr_body_sync_follow_up.ts:143` — exempt (untestable): the production `ensureLabelExists` calls the GitHub API; the sync tests inject the filer.
 
-<!-- vibe-branch-outcomes -->
+<․!-- vibe-branch-outcomes --․>
