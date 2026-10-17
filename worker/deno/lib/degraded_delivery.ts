@@ -46,10 +46,11 @@
  * `partial` or `missing` match, or no match at all, is a shortfall. A
  * degraded run on an issue that states no scope names the issue itself as
  * unverified, since there is nothing narrower to name, and still files a
- * follow-up for each `partial` or `missing` entry its summary reports, named
+ * follow-up for each actionable `partial` or `missing` entry, named
  * by that entry's subject (PR #3676 review).
  *
- * Only a `partial` or `missing` shortfall files a follow-up (Issue #2695). An
+ * Only an actionable `partial` or `missing` shortfall files a follow-up.
+ * Pending-only merge checks remain in the summary (Issue #3961). An
  * `unassessed` item carries no evidence of a gap — the run said nothing about
  * it — and a follow-up built only from those just restated the whole issue as
  * a `Finish #N` ticket no later run could act on. When every shortfall
@@ -57,7 +58,7 @@
  * served model and reason and saying why nothing was filed.
  *
  * A healthy run is not exempt from its own report (Issue #3506): when its PR
- * summary closes an acceptance criterion out as `partial` or `missing`,
+ * summary closes an implementation criterion out as `partial` or `missing`,
  * {@link assessReportedGaps} yields those entries and the same follow-up is
  * filed (or reused, keyed on the parent) with a body for a healthy run, and the
  * PR body gains a section from {@link buildReportedGapPrSection}. `unassessed`
@@ -90,10 +91,15 @@
  */
 
 import {
+  type ClosureEntry,
   extractAcceptedScope,
   parseClosureEntries,
 } from "./acceptance_criteria_gate.ts";
-import { gapSubject, matchClosureEntries } from "./closure_criterion_match.ts";
+import {
+  gapSubject,
+  matchClosureEntries,
+  subjectOf,
+} from "./closure_criterion_match.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { IMPLEMENTATION_RUN_STATS_PHASE } from "./issue_run_stats_comment.ts";
 import {
@@ -143,6 +149,42 @@ export const UNSTATED_SCOPE_ITEM =
   "The issue as written — it states no acceptance criteria or accepted scope, " +
   "so the whole body needs checking against what this PR delivered";
 
+// Deliberately narrow: unknown words keep a gap actionable. In particular,
+// unknown implementation or tooling details remain actionable in legacy entries.
+const MERGE_CHECK_WORDS = new Set(
+  "ci quality sh gate gates check checks required clean code review independent routine pass passes passing green and the all must be is are before merge merging verified verification execution not yet pending awaiting run runs ran executed complete completed only still on pr a this will locally has been"
+    .split(" "),
+);
+
+function mergeCheckWords(text: string): string[] {
+  return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+function isMergeCheckOnly(text: string): boolean {
+  const words = mergeCheckWords(text);
+  return words.some((word) => ["ci", "quality", "review"].includes(word)) &&
+    words.every((word) => MERGE_CHECK_WORDS.has(word));
+}
+
+/** Pending merge checks are visible in the summary, not unfinished work. */
+function isPendingMergeCheck(entry: ClosureEntry): boolean {
+  if (entry.status !== "partial" && entry.status !== "missing") return false;
+  // A mixed criterion can have completed product work and only verification
+  // left. The generator states that explicitly while retaining its partial
+  // closure status; CI/review/acceptance gates still judge the original entry.
+  if (
+    /\breason:\s*(?:CI not yet verified|awaiting code review|quality gate not yet run)\s*[—-]\s*remaining:\s*merge-verification-only\s*$/i
+      .test(entry.text)
+  ) return true;
+  const subject = subjectOf(entry);
+  const reason = entry.text.match(/\breason\s*[:\-—]\s*([\s\S]+)$/i)?.[1] ?? "";
+  const text = `${subject} ${reason}`;
+  return isMergeCheckOnly(subject) &&
+    mergeCheckWords(reason).every((word) => MERGE_CHECK_WORDS.has(word)) &&
+    /\b(?:pending|awaiting|not yet (?:run|verified|executed|complete|completed))\b/i
+      .test(text);
+}
+
 /**
  * Match the issue's accepted scope against the PR body's closure block: which
  * items are delivered (`met`) and which are shortfalls. Pure, and independent
@@ -153,7 +195,9 @@ export function assessScopeShortfalls(
   prBody: string,
 ): { delivered: string[]; shortfalls: DegradedShortfall[] } {
   const stated = extractAcceptedScope(issueBody);
-  const entries = parseClosureEntries(prBody);
+  const parsed = parseClosureEntries(prBody);
+  const pending = parsed.filter(isPendingMergeCheck);
+  const entries = parsed.filter((entry) => !isPendingMergeCheck(entry));
 
   if (stated.length === 0) {
     // An issue that states no scope has no criterion to match, so every entry
@@ -192,6 +236,10 @@ export function assessScopeShortfalls(
     } else if (status === "partial" || status === "missing") {
       shortfalls.push({ criterion, status });
     } else {
+      if (
+        isMergeCheckOnly(criterion) &&
+        matchClosureEntries([criterion], pending).statuses[0] !== undefined
+      ) return;
       shortfalls.push({ criterion, status: "unassessed" });
     }
   });
@@ -417,7 +465,7 @@ export function buildDegradedNoFollowUpSection(
     verdict.shortfalls[0]?.criterion === UNSTATED_SCOPE_ITEM;
   const why = unstated
     ? "the issue states no acceptance criteria"
-    : "no acceptance criterion was assessed `partial` or `missing`";
+    : "no acceptance criterion was assessed `partial` or `missing` as an actionable implementation gap";
   const lines = [
     "## ⚠️ Degraded run — no follow-up filed",
     "",
@@ -772,7 +820,11 @@ export function rederiveDegradedSection(args: {
     delivered,
     shortfalls,
   };
-  if (followUpNumber !== undefined) {
+  const gaps = parseClosureEntries(args.prBody).filter((entry) =>
+    entry.status === "partial" || entry.status === "missing"
+  );
+  const pendingOnly = gaps.length > 0 && gaps.every(isPendingMergeCheck);
+  if (followUpNumber !== undefined && !pendingOnly) {
     return buildDegradedPrSection(verdict, followUpNumber);
   }
   return degradedNeedsFollowUp(verdict)

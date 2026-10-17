@@ -2635,6 +2635,28 @@ flowchart TD
   `completionBody` cases. See "An exception still has to report the PR it
   blocked" below.
 
+### Pending merge verification remains on the originating PR
+
+The shared shortfall assessment excludes narrowly recognised pending required
+CI/quality checks and routine clean code review from follow-up creation. The
+summary retains the original pending entry; it is never counted as delivered.
+This applies to healthy and degraded runs, issues without stated criteria, and
+runs on an existing partial-delivery follow-up. It prevents pending checks alone
+from filing a follow-up or invoking the nested-follow-up human hand-off.
+
+Generation guidance puts pending checks under `## Merge verification`. Legacy
+closure entries with reasons such as `CI not yet verified` or `awaiting code
+review` use the same assessment. A mixed criterion whose product work is
+complete can explicitly state its remainder as
+`reason: CI not yet verified — remaining: merge-verification-only` (also accepts
+`awaiting code review` or `quality gate not yet run`); it retains its closure
+status and is not counted as delivered. Unknown wording stays actionable; failed
+checks, unavailable tools, missing tests and mixed criteria with unfinished
+implementation are not excluded by the legacy wording check. PR-body refresh uses this assessment too: pending-only gap
+banners are removed, while an unassessed scope item in a degraded run can retain
+a no-follow-up banner. Refresh does not close or edit an existing follow-up.
+Required CI, clean review, acceptance checks and merge gates remain enforced.
+
 ### A healthy run's own gaps get a follow-up too (Issue #3506)
 
 A run on its primary model used to be left alone whatever its summary said, so
@@ -2643,8 +2665,8 @@ issue with the residue recorded only in a PR line nobody tracked. The same
 `applyDegradedDeliveryGuard`, at the same two call sites, now handles a healthy
 run:
 
-- **Trigger.** Any `partial` or `missing` entry in the PR summary's closure
-  block. Entries are matched to criteria by words exactly as on the degraded
+- **Trigger.** A `partial` or `missing` implementation gap in the PR's closure
+  block, excluding pending-only merge verification as described above. Entries are matched to criteria by words exactly as on the degraded
   path (`assessReportedGaps` calls `assessScopeShortfalls`); an unmatched
   `partial` or `missing` entry is named by its own subject. `unassessed` items
   file nothing and add nothing to the PR body. An issue that states no criteria

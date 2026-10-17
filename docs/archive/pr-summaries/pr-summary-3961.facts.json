@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 165,
+        "outcome": "legacy subject must identify a merge check",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "pending CI cannot hide real or mixed implementation gaps (Issue #3961)",
+        "flipWentRed": "allowed a subject without CI/quality/review; the real-gap test went red"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 166,
+        "outcome": "unknown words keep a mixed legacy criterion actionable",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "pending CI cannot hide real or mixed implementation gaps (Issue #3961)",
+        "flipWentRed": "accepted unknown subject words; the mixed-gap test went red"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 171,
+        "outcome": "observed met status remains delivered",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "observed CI remains delivered while the separate code review is pending (Issue #3961)",
+        "flipWentRed": "removed the status guard; the delivered-CI test went red"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 175,
+        "outcome": "an explicit verification-only remainder is excluded without claiming delivery",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "an explicit verification-only remainder preserves mixed criteria without inventing a product gap (Issue #3961)",
+        "flipWentRed": "removed explicit-remainder handling; the mixed-criterion regression went red"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 183,
+        "outcome": "unknown reason details remain actionable",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "pending CI cannot hide real or mixed implementation gaps (Issue #3961)",
+        "flipWentRed": "accepted unknown reason words; the missing-tests case went red"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 184,
+        "outcome": "legacy check requires an explicit pending state",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "pending CI cannot hide real or mixed implementation gaps (Issue #3961)",
+        "flipWentRed": "removed pending-state matching; the already-run check case went red"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 199,
+        "outcome": "pending assessments remain available for criterion matching",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "pending merge checks alone do not request follow-ups for healthy or degraded runs (Issue #3961)",
+        "flipWentRed": "emptied the pending collection; the stated-scope regression went red"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 200,
+        "outcome": "pending-only entries do not become implementation gaps",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "pending merge checks alone do not request follow-ups for healthy or degraded runs (Issue #3961)",
+        "flipWentRed": "disabled entry filtering; the pending-only regression went red"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 240,
+        "outcome": "only matching verification-only criteria are omitted from unassessed scope",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "pending merge checks alone do not request follow-ups for healthy or degraded runs (Issue #3961)",
+        "flipWentRed": "disabled criterion handling; the stated-scope regression went red"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 241,
+        "outcome": "an unreported verification criterion stays unassessed",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "unreported required checks remain unassessed rather than implicitly pending (Issue #3961)",
+        "flipWentRed": "forced a pending match; the unreported-check test went red"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 826,
+        "outcome": "an absent closure block does not erase follow-up provenance",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "refresh without a closure assessment preserves the existing follow-up provenance (Issue #3961)",
+        "flipWentRed": "dropped the nonempty-gap guard; the provenance test went red"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 827,
+        "outcome": "pending-only refresh does not preserve the false follow-up link",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "re-synchronisation removes pending-only follow-up and chain-stop sections (Issue #3961)",
+        "flipWentRed": "disabled pending-only refresh handling; the refresh regression went red"
+      }
+    ]
+  }
+}

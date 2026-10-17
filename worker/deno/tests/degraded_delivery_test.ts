@@ -36,6 +36,7 @@ import {
   fileDegradedFollowUp,
   parseDegradedSection,
   rederiveDegradedSection,
+  rederiveFollowUpChainStopSection,
   rederiveReportedGapSection,
   REPORTED_GAP_SECTION_HEADING,
   UNSTATED_SCOPE_ITEM,
@@ -1360,4 +1361,165 @@ Deno.test("rederiveReportedGapSection - a long run of digits is not read as a nu
     }),
     live,
   );
+});
+
+// Pending merge checks remain in the PR's closure block, without inventing
+// implementation work or claiming that the checks passed (Issue #3961).
+const PENDING_MERGE_CHECKS = `## Acceptance Criteria
+
+- **partial** — required CI — evidence: pending PR checks — reviewer: partial — reason: CI not yet verified
+- **missing** — clean code review — reviewer: missing — reason: awaiting code review
+`;
+
+Deno.test("pending merge checks alone do not request follow-ups for healthy or degraded runs (Issue #3961)", () => {
+  for (
+    const issueBody of [
+      "Fix the parser.",
+      "## Acceptance Criteria\n\n- required CI\n- clean code review\n",
+    ]
+  ) {
+    const healthy = assessReportedGaps(issueBody, PENDING_MERGE_CHECKS);
+    const degraded = assessDegradedDelivery({
+      claudeResults: HAIKU_FALLBACK,
+      issueBody,
+      prBody: PENDING_MERGE_CHECKS,
+    });
+    assertEquals(degradedNeedsFollowUp(healthy), false);
+    assertEquals(degradedNeedsFollowUp(degraded), false);
+    assertEquals(healthy.delivered, []);
+    assertEquals(degraded.delivered, []);
+    if (issueBody.startsWith("## Acceptance Criteria")) {
+      assertEquals(degraded.shortfalls, []);
+    }
+  }
+});
+
+Deno.test("pending CI cannot hide real or mixed implementation gaps (Issue #3961)", () => {
+  for (
+    const gap of [
+      "missing — parser tests — reason: tests not implemented",
+      "partial — parser works and CI passes — evidence: parser_test.ts — reason: CI pending",
+      "missing — required CI — reason: CI failed",
+      "partial — required CI — evidence: local gate — reason: CI pending and parser tests are absent",
+      "missing — quality gate — reason: formatter unavailable",
+      "partial — code complete — evidence: diff — reason: CI not yet verified",
+      "partial — required CI — evidence: local run — reason: CI has been run",
+    ]
+  ) {
+    const verdict = assessReportedGaps(
+      "Fix the parser.",
+      `${PENDING_MERGE_CHECKS}\n- **${gap.replace(" —", "** —")}`,
+    );
+    assertEquals(verdict.shortfalls.length, 1, gap);
+    assertStringIncludes(
+      verdict.shortfalls[0]!.criterion,
+      gap.split(" — ")[1]!,
+    );
+    assertEquals(degradedNeedsFollowUp(verdict), true, gap);
+  }
+});
+
+Deno.test("re-synchronisation removes pending-only follow-up and chain-stop sections (Issue #3961)", () => {
+  const issueBody = "Fix the parser.";
+  const oldVerdict = {
+    degraded: false,
+    delivered: [],
+    shortfalls: [{ criterion: "required CI", status: "partial" as const }],
+  };
+  assertEquals(
+    rederiveReportedGapSection({
+      liveSection: buildReportedGapPrSection(oldVerdict, 77),
+      issueBody,
+      prBody: PENDING_MERGE_CHECKS,
+    }),
+    "",
+  );
+  assertEquals(
+    rederiveFollowUpChainStopSection({
+      issueNumber: 77,
+      issueBody,
+      prBody: PENDING_MERGE_CHECKS,
+    }),
+    "",
+  );
+  const degradedSection = rederiveDegradedSection({
+    liveSection: buildDegradedPrSection({ ...oldVerdict, degraded: true }, 77),
+    issueBody,
+    prBody: PENDING_MERGE_CHECKS,
+  });
+  assert(!degradedSection.includes("#77"));
+  assertStringIncludes(degradedSection, "no follow-up filed");
+});
+
+Deno.test("an explicit verification-only remainder preserves mixed criteria without inventing a product gap (Issue #3961)", () => {
+  const subject =
+    "Existing tests and quality CI pass; accessibility/focus checked.";
+  const summary =
+    `## Acceptance Criteria\n\n- **partial** — ${subject} — evidence: accessibility/focus checked; local tooling details in Evidence — reviewer: partial — reason: CI not yet verified — remaining: merge-verification-only`;
+  const issueBody = `## Acceptance Criteria\n\n- ${subject}`;
+  assertEquals(
+    degradedNeedsFollowUp(assessReportedGaps(issueBody, summary)),
+    false,
+  );
+  for (
+    const reason of [
+      "CI not yet verified",
+      "awaiting code review",
+      "quality gate not yet run",
+    ]
+  ) {
+    const pendingSummary = summary.replace("CI not yet verified", reason);
+    assertEquals(
+      degradedNeedsFollowUp(assessReportedGaps(issueBody, pendingSummary)),
+      false,
+      reason,
+    );
+  }
+  const realGap =
+    "\n- **missing** — accessibility/focus checked — reviewer: missing — reason: focus not implemented";
+  assertEquals(
+    degradedNeedsFollowUp(assessReportedGaps(issueBody, summary + realGap)),
+    true,
+  );
+  assertEquals(assessReportedGaps(issueBody, summary).delivered, []);
+  const failed = summary.replace("CI not yet verified", "CI failed");
+  assertEquals(
+    degradedNeedsFollowUp(assessReportedGaps(issueBody, failed)),
+    true,
+  );
+});
+
+Deno.test("observed CI remains delivered while the separate code review is pending (Issue #3961)", () => {
+  const verdict = assessReportedGaps(
+    "## Acceptance Criteria\n\n- required CI\n",
+    "## Acceptance Criteria\n\n- **met** — required CI — evidence: required CI passed — reviewer: met — reason: awaiting code review\n",
+  );
+  assertEquals(verdict.delivered, ["required CI"]);
+  assertEquals(verdict.shortfalls, []);
+});
+
+Deno.test("unreported required checks remain unassessed rather than implicitly pending (Issue #3961)", () => {
+  const verdict = assessScopeShortfalls(
+    "## Acceptance Criteria\n\n- required CI\n",
+    "## Summary\n\nImplemented the parser.",
+  );
+  assertEquals(verdict, {
+    delivered: [],
+    shortfalls: [{ criterion: "required CI", status: "unassessed" }],
+  });
+});
+
+Deno.test("refresh without a closure assessment preserves the existing follow-up provenance (Issue #3961)", () => {
+  const liveSection = buildDegradedPrSection({
+    degraded: true,
+    delivered: [],
+    shortfalls: [...PARTIAL_SHORTFALL],
+  }, 77);
+  const result = rederiveDegradedSection({
+    liveSection,
+    issueBody: EXPORT_ISSUE,
+    prBody: "## Summary\n\nNeeds assessment.",
+  });
+  assertStringIncludes(result, "continue in #77:");
+  assertStringIncludes(result, "**unassessed** — the export works");
 });

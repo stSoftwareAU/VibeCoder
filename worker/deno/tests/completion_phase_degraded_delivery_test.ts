@@ -1210,3 +1210,43 @@ Deno.test("completion - a docs-sweep block on a branch with no PR files no follo
   );
   assertEquals(outcome.prBodies.length, 0, "gh pr create must not run");
 });
+
+Deno.test("completion - pending CI and review do not file follow-ups or escalate a follow-up issue (Issue #3961)", async () => {
+  const summary = `## Summary
+
+Closes #${ISSUE}.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — required CI — evidence: PR checks pending — reviewer: partial — reason: CI not yet verified
+- **missing** — clean code review — reviewer: missing — reason: awaiting code review
+
+` + SUMMARY_COMPLETE.slice(SUMMARY_COMPLETE.indexOf("## Standards Review"));
+  for (const claudeRunStats of [HEALTHY, DEGRADED]) {
+    for (
+      const issueBody of [
+        "Fix the parser.",
+        "## Acceptance Criteria\n\n- required CI\n- clean code review\n",
+        "Fix the parser.\n\n<!-- finding-id: degraded-follow-up-517 -->",
+      ]
+    ) {
+      const outcome = await runCompletion({
+        issueBody,
+        summary,
+        claudeRunStats,
+      });
+      assertEquals(outcome.status, "continue");
+      assertEquals(outcome.prCreateCalls, 1);
+      assertEquals(outcome.issueCreates, []);
+      assertEquals(
+        outcome.issueEdits.filter((args) => args.includes("needs-human")),
+        [],
+      );
+      assertEquals(outcome.issueComments, []);
+      assertStringIncludes(outcome.prBodies[0]!, "CI not yet verified");
+      assert(!outcome.prBodies[0]!.includes(FOLLOW_UP_CHAIN_STOP_MARKER));
+    }
+  }
+});

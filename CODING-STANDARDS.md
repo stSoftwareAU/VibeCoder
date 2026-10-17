@@ -1771,6 +1771,21 @@ the Branch outcomes gate sees the list rendered at the
 `<!-- vibe-branch-outcomes -->` marker, and blocks on an invalid facts file or
 on a facts file beside a hand-written list.
 
+Pending required CI/quality execution and routine clean code review belong in
+`## Merge verification` on the originating PR, with an honest pending status.
+Waiting for these checks alone is not unfinished implementation and does not
+warrant a partial-delivery follow-up or nested escalation. When the issue
+explicitly states a merge-check criterion, retain its truthful closure entry;
+use a clear pending reason such as `CI not yet verified` or `awaiting code
+review`, without claiming it passed. A mixed criterion whose implementation
+is complete can state its only remainder explicitly:
+`reason: CI not yet verified — remaining: merge-verification-only` (also accepts
+`awaiting code review` or `quality gate not yet run`). Record unavailable local
+tooling and observed results in Evidence. This annotation is not for unfinished
+implementation, absent tests or known failing checks. Failed checks, absent tests,
+known defects and mixed criteria with unfinished product work remain gaps.
+Required CI, review and acceptance gates still apply.
+
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
 it names, and rewrite — never append to — the summary so every claim
