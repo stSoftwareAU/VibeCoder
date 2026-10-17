@@ -146,6 +146,7 @@ import {
 import { escalateToHuman } from "./needs_human_escalation.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
+import { STANDING_VIOLATION_LABEL } from "./standing_violation_routing.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip.ts";
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
@@ -688,6 +689,11 @@ export async function processCiFailure(
     };
   }
 
+  // Issue #3685: the claim-point read already carries the labels, so a
+  // standing-violation PR is held here without an extra gh call.
+  const standingViolationHold =
+    liveState.labels?.includes(STANDING_VIOLATION_LABEL) === true;
+
   // Filled once the run reaches the collection (Issue #2103); a lost lock, an
   // exhausted retry budget or an escalation returns before a prompt is built
   // and leaves it unset.
@@ -699,7 +705,12 @@ export async function processCiFailure(
       { repo, prNumber, checkName },
     );
     return withGraftContext(
-      await _processCiFailureLocked(input, processorDeps, graftSlot),
+      await _processCiFailureLocked(
+        input,
+        processorDeps,
+        graftSlot,
+        standingViolationHold,
+      ),
       graftSlot,
     );
   }
@@ -775,7 +786,12 @@ export async function processCiFailure(
 
   try {
     return withGraftContext(
-      await _processCiFailureLocked(input, processorDeps, graftSlot),
+      await _processCiFailureLocked(
+        input,
+        processorDeps,
+        graftSlot,
+        standingViolationHold,
+      ),
       graftSlot,
     );
   } finally {
@@ -792,11 +808,19 @@ export async function processCiFailure(
  *
  * Everything from the retry-count check onwards lives here so the caller
  * can wrap it in acquire/release without duplicating the early returns.
+ *
+ * @param input - CI fix input data
+ * @param processorDeps - Processor dependencies
+ * @param graftSlot - Filled once the run reaches the graft collection
+ * @param standingViolationHold - True when the PR carries the
+ *   `standing-violation` label (Issue #3685); auto-merge is not re-armed
+ * @returns Result containing the processing outcome
  */
 async function _processCiFailureLocked(
   input: CiFixInput,
   processorDeps: CiProcessorDeps,
   graftSlot: GraftContextSlot,
+  standingViolationHold: boolean,
 ): Promise<Result<CiFixResult>> {
   const { repo, prNumber, checkRunId, checkName } = input;
   const {
@@ -972,7 +996,7 @@ async function _processCiFailureLocked(
   // The body returns from a dozen places; the CodeGraph outcome is attached
   // here instead, so every successful one carries it (Issue #2160).
   // The RTK outcome rides the same carrier (Issue #2384).
-  const carrier: CiRunCarrier = {};
+  const carrier: CiRunCarrier = { lifecycleAttempt: currentRetries + 1 };
   try {
     const result = await _processCiWithHeartbeat(
       input,
@@ -980,6 +1004,7 @@ async function _processCiFailureLocked(
       newRetryCount,
       graftSlot,
       carrier,
+      standingViolationHold,
       fixBranch,
     );
     await recordCiMilestone(
@@ -1057,6 +1082,23 @@ async function recordCiFixTierRun(
 ): Promise<void> {
   if (!carrier.agentRan) return;
   const { deps, logger } = processorDeps;
+  try {
+    await deps.infrastructure.recordPrFollowOn({
+      workDir: processorDeps.workRoot,
+      repo: input.repo,
+      prNumber: input.prNumber,
+      followOn: "ci_fix",
+      cycle: String(input.checkRunId),
+      attempt: carrier.lifecycleAttempt ?? 1,
+      runStats: carrier.lifecycleStats ?? [],
+    });
+  } catch (error) {
+    logger.error(
+      `Lifecycle follow-on recording failed for ${input.repo}#${input.prNumber}: ${
+        redactSecrets(error instanceof Error ? error.message : String(error))
+      }`,
+    );
+  }
   const tier = await fetchPrSubAgentTier(
     input.repo,
     input.prNumber,
@@ -1146,6 +1188,10 @@ async function _isDownstreamAggregator(
 
 /** What the body hands back to every one of its successful return paths. */
 interface CiRunCarrier {
+  /** Every retry's usage, separate from the existing fleet counters (Issue #3720). */
+  lifecycleStats?: (RunStats | undefined)[];
+  /** Durable retry number for this check or review cycle (Issue #3720). */
+  lifecycleAttempt?: number;
   codegraphContext?: CodegraphContextResult;
   /** Issue #2384: `record()` writes `savedTokens` into this same object. */
   rtkOutput?: RtkOutputResult;
@@ -1169,6 +1215,9 @@ async function _processCiWithHeartbeat(
   newRetryCount: number,
   graftSlot: GraftContextSlot,
   carrier: CiRunCarrier,
+  /** True when the PR carries `standing-violation` (Issue #3685): the re-arm
+   * of auto-merge is skipped. */
+  standingViolationHold: boolean,
   /** Set only when the PR head is gated (Issue #2907) — the local branch the
    * fix is checked out and pushed to, delivered via `raiseMilestoneFixPr`. */
   fixBranch?: string,
@@ -1826,6 +1875,7 @@ async function _processCiWithHeartbeat(
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
       phase: "ci_fix",
+      captureInvocationStats: true,
       repo,
       cwd: processorDeps.workDir,
       logger,
@@ -1843,6 +1893,12 @@ async function _processCiWithHeartbeat(
     },
   );
   if (claudeResult.ok) runStatsSink.push(claudeResult.value.runStats);
+  const lifecycleStatsSink = carrier.lifecycleStats ??= [];
+  lifecycleStatsSink.push(
+    ...(claudeResult.ok
+      ? claudeResult.value.invocationStats ?? [claudeResult.value.runStats]
+      : [undefined]),
+  );
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
   if (claudeResult.ok) graft.record(claudeResult.value.runStats);
   // Issue #2384: the saved-token figure, read whether or not the invocation
@@ -1882,6 +1938,7 @@ async function _processCiWithHeartbeat(
     graft,
     rtk,
     runStatsSink,
+    lifecycleStatsSink,
   );
 
   // Always commit and push any pending work (Issue #1643).
@@ -2153,7 +2210,9 @@ async function _processCiWithHeartbeat(
   // landed on the milestone PR's own head (Issue #2907): a fix branch push
   // never touches `input.branchName`, so re-arming auto-merge here would be
   // arming it against a head that did not change. The fix PR's own
-  // auto-merge is armed separately, inside `raiseMilestoneFixPr`.
+  // auto-merge is armed separately, inside `raiseMilestoneFixPr`. A
+  // standing-violation PR is held and not re-armed (Issue #3685); the
+  // auto-merge sweep disarms one already armed.
   if (hasChanges && pushSucceeded && fixBranch === undefined) {
     // Refresh the PR body from a rewritten summary file (Issue #3089),
     // before auto-merge is re-armed — a failed sync must never block it.
@@ -2177,16 +2236,23 @@ async function _processCiWithHeartbeat(
       syncFn,
     );
 
-    try {
-      // Issue #3909: pass the head branch so the milestone open-children
-      // gate needs no extra lookup.
-      await deps.pr.enableAutoMerge({
-        repo,
-        prNumber,
-        headRefName: input.branchName,
-      });
-    } catch {
-      logger.warn("Could not re-enable auto-merge", { repo, prNumber });
+    if (standingViolationHold) {
+      logger.info(
+        `CI fix: ${repo}#${prNumber} carries the '${STANDING_VIOLATION_LABEL}' label — not re-arming auto-merge (Issue #3685, #3382)`,
+        { repo, prNumber },
+      );
+    } else {
+      try {
+        // Issue #3909: pass the head branch so the milestone open-children
+        // gate needs no extra lookup.
+        await deps.pr.enableAutoMerge({
+          repo,
+          prNumber,
+          headRefName: input.branchName,
+        });
+      } catch {
+        logger.warn("Could not re-enable auto-merge", { repo, prNumber });
+      }
     }
   }
 
@@ -2748,6 +2814,7 @@ async function _runPostClaudeQualityCheck(
   rtk: RtkRun,
   /** Issue #3404: collects the retry's stats for the run's USD figure. */
   runStatsSink: (RunStats | undefined)[],
+  lifecycleStatsSink: (RunStats | undefined)[],
 ): Promise<PostClaudeQualityResult> {
   const {
     logger,
@@ -2830,6 +2897,7 @@ async function _runPostClaudeQualityCheck(
         timeoutSeconds: claudeTimeout,
         noOutputTimeout: claudeNoOutputTimeout,
         phase: "ci_fix",
+        captureInvocationStats: true,
         repo: input.repo,
         cwd,
         logger,
@@ -2841,6 +2909,11 @@ async function _runPostClaudeQualityCheck(
       { maxRetries: maxRateLimitRetries },
     );
     if (retryResult.ok) runStatsSink.push(retryResult.value.runStats);
+    lifecycleStatsSink.push(
+      ...(retryResult.ok
+        ? retryResult.value.invocationStats ?? [retryResult.value.runStats]
+        : [undefined]),
+    );
     if (retryResult.ok) codegraph.record(retryResult.value.runStats);
     if (retryResult.ok) graft.record(retryResult.value.runStats);
     // Re-read against the first baseline, so the figure covers both spawns.

@@ -994,6 +994,9 @@ export async function loadConfig(
     ? undefined
     : fleetRunArchiveTrimmed;
 
+  // Validated verbatim; whitespace is refused (Issue #3752).
+  const subscriptionAllocationLabel = file.subscription_allocation_label;
+
   // Session resume for multi-phase issue processing (Issue #1324)
   const enableSessionResume = file.enable_session_resume ??
     OPERATIONAL_DEFAULTS.enableSessionResume;
@@ -1247,6 +1250,7 @@ export async function loadConfig(
     issueSubAgentTier,
     issueReviewerAgents,
     fleetRunArchive,
+    subscriptionAllocationLabel,
     includeRecentActivity,
     includeCodebaseMap,
     codegraphContext,

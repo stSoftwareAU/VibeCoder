@@ -315,6 +315,7 @@ export async function pushUnpushedCommits(
   branchName: string,
   options: GitCommandOptions = {},
   allowDefaultBranch = false,
+  beforePush?: () => Promise<Result<void>>,
 ): Promise<Result<number>> {
   // Read-only default-branch guard (Issue #2584) — refuse before doing any
   // work when the target is the repo's default branch.
@@ -388,6 +389,8 @@ export async function pushUnpushedCommits(
       const recoveryResult = await recoverFromPushRejection(
         branchName,
         options,
+        undefined,
+        beforePush,
       );
       if (recoveryResult.ok) {
         return { ok: true, value: unpushedCount };
@@ -731,6 +734,7 @@ export async function commitAndPushPending(
   preFlight?: PreFlightGateSpec,
   runId?: string,
   formatBeforeGate?: () => Promise<void>,
+  beforePush?: () => Promise<Result<void>>,
 ): Promise<Result<CommitAndPushPendingResult>> {
   // Read-only default-branch guard (Issue #2584) — refuse up front, before
   // staging or committing anything, when the target is the default branch.
@@ -896,11 +900,23 @@ export async function commitAndPushPending(
     }
   }
 
+  // Issue #3784: inspect the committed, formatted head before it leaves the host.
+  // Unlike formatting, this callback is a gate: an error prevents the push.
+  if (beforePush) {
+    const verified = await beforePush();
+    if (!verified.ok) return verified;
+  }
+
   // Step 2 — push any unpushed commits. pushUnpushedCommits handles
   // first-time push and non-fast-forward recovery internally. The
   // default-branch guard already ran above, so skip the redundant re-check
   // (Issue #2584).
-  const pushResult = await pushUnpushedCommits(branchName, options, true);
+  const pushResult = await pushUnpushedCommits(
+    branchName,
+    options,
+    true,
+    beforePush,
+  );
   if (!pushResult.ok) {
     return { ok: false, error: pushResult.error };
   }

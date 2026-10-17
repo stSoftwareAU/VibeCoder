@@ -21,6 +21,25 @@ const VERDICT = {
     "Criteria` block with one entry per criterion.",
 };
 
+Deno.test("summary-rule retry - verifier findings need a fix or evidence-backed dispute (Issue #3797)", () => {
+  const prompt = buildSummaryRuleRetryPrompt(VERDICT, "org/repo", 7);
+  const exception = prompt.slice(
+    prompt.indexOf("One exception (Issue #3395)"),
+    prompt.indexOf("\n3."),
+  );
+  assertStringIncludes(
+    exception,
+    "closed only by fixing it or disputing it with evidence",
+  );
+  assertStringIncludes(exception, "Marking a criterion `partial`");
+  assertStringIncludes(exception, "listing a known gap or open limitation");
+  assertStringIncludes(exception, '"not red-checked" does not close a finding');
+  assertStringIncludes(
+    prompt.slice(0, prompt.indexOf("One exception (Issue #3395)")),
+    "the code on the branch has already passed the quality gate, so do not change it",
+  );
+});
+
 Deno.test("summary-rule retry - the prompt replays the gate's own comment", () => {
   const prompt = buildSummaryRuleRetryPrompt(
     VERDICT,
