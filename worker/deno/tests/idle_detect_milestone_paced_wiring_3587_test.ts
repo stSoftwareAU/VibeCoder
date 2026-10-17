@@ -33,6 +33,8 @@ import {
   resetSharedProcessedIssues,
   sharedProcessedIssues,
 } from "../lib/processed_issue_registry.ts";
+import { IDLE_TASK_WRAPPER_TITLES } from "../lib/idle_task_backfill.ts";
+import { TITLE_MARKER_DEDUP_JSON_FIELDS } from "../lib/idle_task_wrapper_dedup.ts";
 
 const REPO = "org/paced-milestone-fixture";
 const WORKER_USER = "worker-bot";
@@ -53,12 +55,16 @@ const FIXTURE_FIELDS: Record<string, unknown> = {
 /** Set when the filer reaches `gh issue create`; the test asserts it stayed false. */
 let createAttempts = 0;
 
+/** Every argv the stub answered, in order, so a test can see who reached it. */
+const ghCalls: string[][] = [];
+
 /**
  * Mirrors real `gh` for the calls the filer makes: `issue list` returns only
  * the requested `--json` fields, a `--label` filter the fixture does not carry
  * returns no rows, `issue create` is never reached (it throws and is counted).
  */
 function stubGh(args: string[]): Promise<string> {
+  ghCalls.push([...args]);
   if (args[0] === "issue" && args[1] === "create") {
     createAttempts++;
     return Promise.reject(new Error("issue create must not be reached"));
@@ -295,5 +301,32 @@ Deno.test(
       createAttempts === 0,
       "the filer must not reach gh issue create in this test",
     );
+  },
+);
+
+Deno.test(
+  "idle-task filer - the back-fill sweep runs through the injected gh stub, not the real runner (Issue #3587)",
+  async () => {
+    ghCalls.length = 0;
+    await withTempDir((dir) => filerLines(false, sharedLayout(dir)));
+    // The sweep's per-title search: `--json <dedup fields>,labels --limit 50`,
+    // a shape no other filer query uses.
+    const sweepSearches = new Set(
+      ghCalls.filter((args) =>
+        args[0] === "issue" && args[1] === "list" &&
+        args[args.indexOf("--repo") + 1] === REPO &&
+        args[args.indexOf("--json") + 1] ===
+          `${TITLE_MARKER_DEDUP_JSON_FIELDS},labels` &&
+        args[args.indexOf("--limit") + 1] === "50"
+      ).map((args) => args[args.indexOf("--search") + 1]),
+    );
+    for (const title of IDLE_TASK_WRAPPER_TITLES) {
+      assert(
+        sweepSearches.has(`"${title}" in:title`),
+        `back-fill search for "${title}" did not reach the stub; calls:\n${
+          ghCalls.map((a) => a.join(" ")).join("\n")
+        }`,
+      );
+    }
   },
 );

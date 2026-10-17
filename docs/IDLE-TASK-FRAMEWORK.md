@@ -1010,8 +1010,12 @@ the same read to the idle-detect audit (`idle_detect_diagnostics.ts`) and to the
 idle-task filer's fleet-wide startable-work gate (`repo_busy_for_idle_task.ts`),
 both through the shared `loadIdleDetectionHold` in
 `worker/deno/lib/run_core_production_deps.ts`. A paced issue is reported as
-`run_local_hold` there too, so a paced milestone no longer fires `ALERT
-mis_classification` or suppresses idle-task filing. The per-cycle adaptive-floor
+`run_local_hold` in the audit, so a paced milestone no longer fires `ALERT
+mis_classification`, and is not startable work at the fleet-wide gate, so it
+no longer holds idle-task filing back across the fleet. The filer's per-repo
+busy check (`isRepoBusyForIdleTask`) does not take the hold: it still counts a
+paced issue as unblocked, so filing into the paced repo itself is still blocked
+as `approved_work_in_flight`. The per-cycle adaptive-floor
 deferral (Issue #245) is the one source still unmodelled; it is rebuilt every
 cycle, so it cannot hold a streak open the way the registry did.
 
