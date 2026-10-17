@@ -12,8 +12,8 @@
 ### Essential Design Decisions
 
 - Each pin is scoped to the section holding the sentence it was written for. `git log -S` traces the carve-out pins to 67bae84c, whose `v2.md` carve-out subsection held the "before", "higher", "source code" and total-order sentences.
-- Every string the old tests pinned is still inside some new pin. The bare "Never side-pick" in the contradiction test now pins the judgement section's "a side-pick is mechanical … still forbidden" sentence, the rule that test's comment describes. "Never side-pick" is still pinned in the contract test.
-- Kept unchanged: the whole-file checks (the `{{CONFLICTED_FILES}}` count, the absent `{{QUALITY_INSTRUCTIONS}}` placeholder), the rendered-prompt tests, and the tests already sliced to the timeout example and the intent section.
+- Most strings the old tests pinned are still inside a new pin. Two exceptions: the bare word "only" is in no new pin (p10's "bounded to dependency-version hunks" sentence now guards the bound it stood for), and the contract test's lowercase "carve-out" and "dependency-version" are now pinned as the capitalised heading p9 (`assertPins()` matches case-sensitively; the lowercase forms are in p10 of the bounded-carve-out test). The bare "Never side-pick" in the contradiction test now pins the judgement section's "a side-pick is mechanical … still forbidden" sentence, the rule that test's comment describes. "Never side-pick" is still pinned in the contract test.
+- Kept: the whole-file checks — the `{{CONFLICTED_FILES}}` count (now run on `doc` from `readRepoDoc()` instead of `body` from `loadMergeConflict()`) and, unchanged, the absent `{{QUALITY_INSTRUCTIONS}}` placeholder; also unchanged: the rendered-prompt tests, and the tests already sliced to the timeout example and the intent section.
 
 ### Undiscoverable Facts
 
@@ -28,16 +28,20 @@ Test-only change. No production code, prompt or doc changes.
 ## Test Plan
 
 - `deno test --frozen --lock=deno.lock --allow-read --allow-env tests/merge_conflict_prompt_v2_test.ts` (from `worker/deno`) on the final head: 24 passed, 0 failed. `deno fmt`, `deno lint` and `deno check` on the file: clean.
-- Assertions removed from existing tests. Each removed string still appears inside a pin of the same test (or, for "Never side-pick", the contract test), now scoped to its section. No issue requirement made any of them untrue. The issue asked for the bare words to be replaced:
-  - `assertStringIncludes(body, "only");`, `assertStringIncludes(body, manifest);`, `assertStringIncludes(body, "source code");` → pins p10–p13
+- Assertions removed from existing tests. No issue requirement made any of them untrue; the issue asked for the bare words to be replaced by section-scoped sentence pins. Where the removed string survives, it is inside the pin named, with the exceptions stated on each line:
+  - `assertStringIncludes(body, "only");` — dropped, not moved: no new pin contains "only". The bound it stood for is pinned by p10 ("The carve-out is bounded to dependency-version hunks in those manifest files.") in the same test
+  - `assertStringIncludes(body, manifest);`, `assertStringIncludes(body, "source code");` → p12 (the four manifest names), p13 ("source code")
   - `assertStringIncludes(body, "before");`, `assertStringIncludes(body, "higher");`, `assertStringIncludes(body, "semver");` → p14, p15
   - `assertStringIncludes(body, "regenerate");`, `assertStringIncludes(body, lock);` → p16, p17
   - `assertStringIncludes(body, "total order");`, `assertStringIncludes(body, "rule");`, `assertStringIncludes(body, "judgement");` → p19, p20
-  - `assertStringIncludes(contract, "carve-out");`, `assertStringIncludes(contract, "dependency-version");` → p9
+  - `assertStringIncludes(contract, "carve-out");`, `assertStringIncludes(contract, "dependency-version");` → replaced by p9, the heading "### The Dependency-Version Carve-Out — Settled Before You Ran" in the same test. p9 carries the words capitalised, so the lowercase strings are no longer pinned in this test; they appear lowercase in p10 of `merge_conflict - the carve-out is bounded to dependency-version hunks in known manifests`
   - `assertStringIncludes(contract, "conflicted-file list");`, `assertStringIncludes(contract, "not listed");` → p18
   - `assertStringIncludes(body, "both intents are best served by");`, `assertStringIncludes(body, "Originating Issues");`, `assertStringIncludes(body, "Never side-pick");` → p3–p5, plus p6 in the contract test
   - `assertStringIncludes(body, "git merge -X ours");`, `assertStringIncludes(body, "git checkout --ours");`, `assertStringIncludes(body, "duplicate");` → p6–p8
-  - `assertStringIncludes(body, ".pr_response_message");`, `assertStringIncludes(body, "one line per conflicted file");`, and the `Judgement: <path> — <kept …; dropped …; because …>` assertion → p1, p2
+  - `assertStringIncludes(body, ".pr_response_message");`, `assertStringIncludes(body, "one line per conflicted file");` → p1
+  - Removed from `worker/deno/tests/merge_conflict_prompt_v2_test.ts`: `assertStringIncludes( body, "Judgement: <path> — <kept …; dropped …; because …>", );` — #3557 replaces whole-file `assertStringIncludes` calls with section-scoped `assertPins()`; the same string is now inside pin p2 "`Judgement: <path> — <kept …; dropped …; because …>`", scoped to Where Both Sides Cannot Stand, in the same test `merge_conflict - asks for one judgement line per conflicted file`
+  - Removed from `worker/deno/tests/merge_conflict_prompt_v2_test.ts`: `assert(start >= 0 && end > start, "contract section missing");` — #3557 replaces the hand-rolled `indexOf` slice with `section()`, so there is no `start`/`end` left to check; `section()` itself asserts `no heading containing "<title>"` when the heading is missing, which keeps the missing-section failure in `merge_conflict - names the carve-out in the contract section`
+  - Removed from `worker/deno/tests/merge_conflict_prompt_v2_test.ts`: `assertEquals(body.split("{{CONFLICTED_FILES}}").length - 1, 1);` — #3557 replaces the `body` variable (from `loadMergeConflict()`) with `doc` (from `readRepoDoc()`), so the same check is now `assertEquals(doc.split("{{CONFLICTED_FILES}}").length - 1, 1);` in the same test, `merge_conflict - tells the agent rule-resolved files are not in the conflicted list`, read straight from `prompts/merge_conflict/prompt.md`
 - Moved checks. Each pin was deleted from its own section only, the single test was run with `--filter`, and the template was restored. Every run failed with `section is missing pin "<pin>"`:
   - p1 "Write into `.pr_response_message`, one line per conflicted file, in exactly this shape:" — Where Both Sides Cannot Stand — red
   - p2 "`Judgement: <path> — <kept …; dropped …; because …>`" — Where Both Sides Cannot Stand — red
