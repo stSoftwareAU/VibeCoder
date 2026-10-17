@@ -29,6 +29,7 @@ jobs:
           deno --version
           sudo apt-get update -qq
           sudo apt-get install -y strace
+          cd worker/deno
           strace -f -e trace=unlink,unlinkat,rename,renameat,renameat2,execve -o /tmp/entrypoint.trace deno task test tests/run_entrypoint_test.ts < /dev/null
       - name: Inspect tool state and trace
         if: always()
