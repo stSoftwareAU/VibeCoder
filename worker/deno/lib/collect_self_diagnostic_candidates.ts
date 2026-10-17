@@ -36,9 +36,14 @@
  *     gates the other collectors run.
  *   - **Audit + announcement** — the decision is written to the audit chain
  *     under {@link SELF_SCHEDULE_AUDIT_VERB} and announced on the issue
- *     before the candidate is emitted. If either fails the diagnostic is
- *     **not** scheduled this scan: a privilege-bearing decision nobody can
- *     trace is worse than a diagnostic that waits one more cycle.
+ *     before the candidate is emitted. The announcement is read and pruned to
+ *     the oldest fleet-authored one, so a racing duplicate is deleted. If the
+ *     audit write, the read, the post, or a duplicate delete fails, the
+ *     diagnostic is **not** scheduled this scan: a privilege-bearing decision
+ *     nobody can trace is worse than a diagnostic that waits one more cycle.
+ *     When the fleet identity cannot be resolved no announcement counts and
+ *     none is deleted, so the announcement is posted again and the diagnostic
+ *     is still scheduled.
  *   - **Escalation** — a diagnostic blocked permanently (a merged fleet PR
  *     names it) is handed to a human with `needs-human` and one comment,
  *     rather than sitting open as an alarm nobody is obliged to read.
@@ -80,7 +85,6 @@ import {
   type AlertDedupAuthorOptions,
   resolveAlertDedupAuthors,
 } from "./alert_dedup_authors.ts";
-import { issueCommentsContainMarker } from "./issue_comment_pages.ts";
 import { pruneDuplicateFleetMarkerComments } from "./marker_comment_pages.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { escalateUnworkableWorkOn } from "./escalate_unworkable_work_on.ts";
@@ -344,6 +348,11 @@ export async function collectSelfDiagnosticCandidates(
     fleetPrAuthors: config.fleetPrAuthors,
   });
 
+  // Issue #3597: the fleet identity is resolved once per scan, and only when an
+  // announcement is first checked, so a scan that never reaches that step does
+  // not load config.
+  let fleet: string[] | undefined;
+
   const candidates: IssueCandidate[] = [];
   for (const issue of filtered) {
     if (remaining <= 0) break;
@@ -453,22 +462,23 @@ export async function collectSelfDiagnosticCandidates(
     }
 
     // Visible and traceable before it is actionable: the audit entry and the
-    // announcement are both written before the candidate is emitted, and the
-    // announcement is posted once per scan; a racing duplicate is pruned to the
-    // oldest fleet-authored one.
+    // announcement are both written before the candidate is emitted. The
+    // announcement is pruned to the oldest fleet-authored marker before and
+    // after posting, so a racing duplicate does not survive on the thread.
     const marker = formatSelfScheduleMarker(family.id);
     let announced: boolean;
     try {
-      announced = await issueCommentsContainMarker(
+      fleet ??= await resolveAlertDedupAuthors(deps.dedupAuthors ?? {}, log);
+      const kept = await pruneDuplicateFleetMarkerComments(
         repo,
         issue.number,
         marker,
         ghFn,
-        deps.dedupAuthors,
-        log,
+        fleet,
       );
+      announced = kept !== null;
     } catch (err) {
-      const detail = `could not read comments: ${errorText(err)}`;
+      const detail = `could not read or prune announcements: ${errorText(err)}`;
       refusals.push({
         issueNumber: issue.number,
         cause: "announce-failed",
@@ -544,17 +554,8 @@ export async function collectSelfDiagnosticCandidates(
         continue;
       }
 
-      log(
-        `[self-schedule] scheduled ${repo}#${issue.number} ` +
-          `(family=${family.id}, cap=${maxInFlight})`,
-      );
-    }
-
-    // Issue #3597: two scans can both see no announcement and both post one.
-    // Prune after the post, and also when the marker was already seen, so an
-    // existing duplicate is healed rather than left on the thread.
-    const fleet = await resolveAlertDedupAuthors(deps.dedupAuthors ?? {}, log);
-    if (fleet.length > 0) {
+      // Issue #3597: two scans can both see no announcement and both post one.
+      // Prune again after our post so they converge on the oldest.
       try {
         await pruneDuplicateFleetMarkerComments(
           repo,
@@ -564,7 +565,7 @@ export async function collectSelfDiagnosticCandidates(
           fleet,
         );
       } catch (err) {
-        const detail = `duplicate announcements could not be pruned: ${
+        const detail = `could not read or prune announcements: ${
           errorText(err)
         }`;
         refusals.push({
@@ -581,6 +582,11 @@ export async function collectSelfDiagnosticCandidates(
         );
         continue;
       }
+
+      log(
+        `[self-schedule] scheduled ${repo}#${issue.number} ` +
+          `(family=${family.id}, cap=${maxInFlight})`,
+      );
     }
 
     diag?.logIssueEligible(repo, issue.number);

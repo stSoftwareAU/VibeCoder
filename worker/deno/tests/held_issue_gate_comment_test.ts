@@ -20,8 +20,10 @@ import {
   buildHeldIssueGateComment,
   HELD_ISSUE_GATE_MARKER,
   heldIssueGateFor,
+  reportHeldIssueGate,
   upsertHeldIssueGateComment,
 } from "../lib/held_issue_gate_comment.ts";
+import { IssueCache } from "../lib/issue_cache.ts";
 import type { BlockedCandidateInfo } from "../lib/issue_finder_logger.ts";
 
 const DEP = { repo: "owner/repo-b", number: 42 };
@@ -722,4 +724,47 @@ Deno.test("upsertHeldIssueGateComment - an empty fleet-author list deletes nothi
 
   assertEquals(outcome, "posted");
   assertEquals(deletes(calls), []);
+});
+
+// =============================================================================
+// reportHeldIssueGate — a warm cache entry never hides existing duplicates
+// =============================================================================
+
+Deno.test("reportHeldIssueGate - a warm pre-#3597 cache entry does not hide existing duplicates (Issue #3597)", async () => {
+  const gate = { kind: "pr-open", prNumber: 77 } as const;
+  const current = buildHeldIssueGateComment(gate);
+  const { rows, calls, ghFn } = fakeThread([
+    { id: 10, body: current.body, author: "vibe-bot" },
+    { id: 11, body: current.body, author: "vibe-bot" },
+  ]);
+  const dir = await Deno.makeTempDir();
+  try {
+    const cache = new IssueCache(dir, 600);
+    // A v1 entry, written before #3597's prune existed.
+    await cache.write("owner/repo", "held_issue_gate_7", { key: current.key });
+
+    const report = () =>
+      reportHeldIssueGate({
+        repo: "owner/repo",
+        issueNumber: 7,
+        gate,
+        ghFn,
+        fleetAuthors: FLEET,
+        cache,
+      });
+
+    const first = await report();
+    assertEquals(first.outcome, "unchanged");
+    assertEquals(rows.map((r) => r.id), [10]);
+    assertEquals(
+      deletes(calls).map((c) => c[3]),
+      ["repos/owner/repo/issues/comments/11"],
+    );
+
+    // The v2 entry written by the first pass is honoured.
+    const second = await report();
+    assertEquals(second.outcome, "cached");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

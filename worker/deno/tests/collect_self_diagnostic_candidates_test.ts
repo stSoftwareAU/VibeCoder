@@ -317,18 +317,18 @@ Deno.test("self-schedule - the decision is audited and announced on the issue", 
 Deno.test("self-schedule - the announcement is posted once, not once per scan", async () => {
   const calls: GhCall[] = [];
   const audited: string[] = [];
-  const gh = makeGh(calls, {
-    comments: JSON.stringify([
+  const thread = makeThreadGh(calls, {
+    seed: [
       {
         id: 1,
         body: formatSelfScheduleMarker("idle-inversion"),
-        user: { login: FLEET_LOGIN },
+        login: FLEET_LOGIN,
       },
-    ]),
+    ],
   });
   const { result } = await collect({
     issues: [makeIssue()],
-    gh,
+    gh: thread.ghFn,
     deps: captureDeps(audited, []),
   });
 
@@ -346,18 +346,18 @@ Deno.test("self-schedule - an announcement marker planted by an outsider does no
   // account erase that record by posting the marker itself.
   const calls: GhCall[] = [];
   const audited: string[] = [];
-  const gh = makeGh(calls, {
-    comments: JSON.stringify([
+  const thread = makeThreadGh(calls, {
+    seed: [
       {
         id: 1,
         body: formatSelfScheduleMarker("idle-inversion"),
-        user: { login: "drive-by-attacker" },
+        login: "drive-by-attacker",
       },
-    ]),
+    ],
   });
   const { result } = await collect({
     issues: [makeIssue()],
-    gh,
+    gh: thread.ghFn,
     deps: captureDeps(audited, []),
   });
 
@@ -735,4 +735,71 @@ Deno.test("self-schedule - a 403 on the duplicate delete refuses the schedule (I
     logs.some((l) => l.includes("[self-schedule] refused")),
     "the refusal is logged",
   );
+});
+
+Deno.test("self-schedule - fleet authors are resolved once per scan, not once per issue (Issue #3597)", async () => {
+  const audited: string[] = [];
+  let loads = 0;
+  const dedupAuthors = {
+    loadConfigFn: () => {
+      loads++;
+      return Promise.resolve(makeConfig({ fleetPrAuthors: [FLEET_LOGIN] }));
+    },
+    env: (name: string) =>
+      name === "CONFIG_PATH" ? "/nonexistent/x.json" : undefined,
+  };
+  // Two diagnostics, both reaching the announcement step in the same scan.
+  const { result } = await collect({
+    config: makeConfig({ selfScheduleDiagnosticsMaxInFlight: 2 }),
+    issues: [
+      makeIssue({ number: 39 }),
+      makeIssue({
+        number: 40,
+        body: diagnosticBody("stSoftwareAU/other"),
+        url: `https://github.com/${SELF_DIAGNOSTIC_REPO}/issues/40`,
+      }),
+    ],
+    deps: { ...captureDeps(audited, []), dedupAuthors },
+  });
+
+  assertEquals(result.candidates.map((c) => c.number), [39, 40]);
+  assertEquals(loads, 1, "the fleet identity is resolved once per scan");
+});
+
+Deno.test("self-schedule - an unresolved fleet posts the announcement and deletes nothing (Issue #3597)", async () => {
+  const calls: GhCall[] = [];
+  const audited: string[] = [];
+  // Two fleet-login markers are already on the thread, but with no resolved
+  // fleet neither counts as an announcement, so nothing may be deleted.
+  const thread = makeThreadGh(calls, {
+    seed: [
+      {
+        id: 100,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        login: FLEET_LOGIN,
+      },
+      {
+        id: 200,
+        body: formatSelfScheduleMarker("idle-inversion"),
+        login: FLEET_LOGIN,
+      },
+    ],
+  });
+  const { result } = await collect({
+    issues: [makeIssue()],
+    gh: thread.ghFn,
+    deps: {
+      ...captureDeps(audited, []),
+      dedupAuthors: { fleetAuthors: [] },
+    },
+  });
+
+  assertEquals(result.candidates.length, 1);
+  assertEquals(deleteTargets(calls), [], "no DELETE is issued");
+  assertEquals(
+    calls.filter((c) => c.args.join(" ").includes("issue comment")).length,
+    1,
+    "the announcement is posted",
+  );
+  assertEquals(thread.rows.map((r) => r.id), [100, 200, 1000]);
 });

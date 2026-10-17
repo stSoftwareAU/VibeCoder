@@ -369,9 +369,13 @@ export function heldIssueGateFor(
 /** How long a confirmed gate is trusted before the thread is read again. */
 export const HELD_ISSUE_GATE_RECHECK_SECONDS = 24 * 60 * 60;
 
-/** The cache key under which a confirmed gate is remembered. */
+/**
+ * The cache key under which a confirmed gate is remembered. v1 entries were
+ * confirmed before #3597's prune existed, so they are ignored once and every
+ * held thread is re-read and pruned.
+ */
 function recheckCacheKey(issueNumber: number): string {
-  return `held_issue_gate_${issueNumber}`;
+  return `held_issue_gate_v2_${issueNumber}`;
 }
 
 /** What {@link reportHeldIssueGate} did on one issue. */
@@ -389,7 +393,9 @@ export type HeldIssueGateReport =
  * rarely change. A gate confirmed on GitHub is remembered in `cache` for
  * {@link HELD_ISSUE_GATE_RECHECK_SECONDS}; an unchanged gate inside that window
  * reads nothing. A changed gate always reads, and so does an expired one — the
- * comment may have been deleted by hand.
+ * comment may have been deleted by hand. The upsert prunes duplicate fleet
+ * comments before it decides, so a gate is remembered only after a read that
+ * left no fleet duplicates.
  *
  * Once the comment is posted or edited, fleet-authored
  * `vibe-chain-root-unworkable` comments on the thread are deleted: they were

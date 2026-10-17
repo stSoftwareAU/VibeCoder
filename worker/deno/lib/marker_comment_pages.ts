@@ -24,6 +24,7 @@
 
 import type { AlertDedupCommentRow } from "./alert_dedup_authors.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
+import { isDefinitiveNotFound } from "./github_not_found.ts";
 
 /** Page size requested per call — the GitHub REST maximum. */
 export const MARKER_COMMENTS_PER_PAGE = 100;
@@ -224,9 +225,8 @@ export async function pruneDuplicateFleetMarkerComments(
   for (const duplicate of duplicates) {
     const err = await deleteIssueComment(repo, duplicate.id, ghCommandFn);
     if (err === null) continue;
-    // gh reports an already-removed comment as HTTP 404 (observed:
-    // `{"message":"Not Found",...,"status":"404"}` then `gh: Not Found (HTTP 404)`).
-    if (/HTTP 404\b|"status":\s*"404"/.test(err.message)) continue;
+    // A DELETE GitHub answers as not found means the comment is already gone.
+    if (isDefinitiveNotFound(err.message)) continue;
     failures.push(`comment ${duplicate.id}: ${err.message}`);
   }
 

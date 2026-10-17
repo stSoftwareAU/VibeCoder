@@ -321,7 +321,7 @@ schedules it exactly as before.
 | Property | How |
 |---|---|
 | Bounded | At most `self_schedule_diagnostics_max_in_flight` (default `1`) in flight, counting assigned diagnostics — the assignee is the fleet's claim lock. The surplus is refused and logged, never dropped silently. |
-| Visible | The decision is written to the audit chain under the distinct `self-schedule-diagnostic` verb **and** announced in a comment on the issue (posted once per scan, deduped by marker; a racing duplicate is pruned to the oldest fleet-authored one). If either fails, or a duplicate announcement cannot be deleted, the diagnostic is **not** scheduled that scan — an untraceable privilege-bearing decision is worse than one more cycle of waiting. |
+| Visible | The decision is written to the audit chain under the distinct `self-schedule-diagnostic` verb **and** announced in a comment on the issue (deduped by a fleet-authored marker; duplicates are pruned to the oldest fleet-authored one before and after posting). If the audit write, the comment read, the post or a duplicate delete fails, the diagnostic is **not** scheduled that scan — an untraceable privilege-bearing decision is worse than one more cycle of waiting. When the fleet identity cannot be resolved, no marker counts and none is deleted, so the announcement is posted again and the diagnostic is still scheduled. |
 | Escalating | A diagnostic blocked **permanently** (a merged fleet PR names it, which never self-clears) gets `needs-human` plus one explanatory comment instead of sitting open as an alarm nobody is obliged to read. |
 | Reversible | `self_schedule_diagnostics_enabled: false` restores the previous behaviour exactly — the diagnostic waits for a human `work-on`. |
 

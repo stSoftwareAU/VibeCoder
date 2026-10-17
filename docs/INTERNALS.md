@@ -3363,15 +3363,16 @@ left out; the issue is still told which dependency it waits on.
 - **No label is applied or removed.** A wait that clears by itself is never a
   human's task.
 - **One comment, edited in place.** The hidden `vibe-held-issue-gate` marker
-  carries a key over the gate; an unchanged key writes nothing, a changed one
-  edits the oldest fleet-authored marker comment and deletes any later fleet
-  duplicates a race left behind. Only a fleet-authored marker is trusted,
-  edited or deleted; a non-fleet comment is never touched.
+  carries a key over the gate; an unchanged key edits nothing, a changed one
+  edits the oldest fleet-authored marker comment. Either way, any later fleet
+  duplicates a race left behind are deleted. Only a fleet-authored marker is
+  trusted, edited or deleted; a non-fleet comment is never touched.
 - **Bounded reads.** A gate confirmed on GitHub is remembered in the issue
-  cache for 24 hours (`held_issue_gate_<n>`); an unchanged gate inside that
-  window reads no thread at all. Every slot on every host scans, so without
-  this a repository with a dozen held issues would read a dozen threads per
-  scan.
+  cache for 24 hours (`held_issue_gate_v2_<n>`); an unchanged gate inside that
+  window reads no thread at all. Entries from before #3597
+  (`held_issue_gate_<n>`) are ignored, so existing duplicates are pruned on the
+  next pass. Every slot on every host scans, so without this a repository with
+  a dozen held issues would read a dozen threads per scan.
 - **The retired chain-root comment is deleted.** Issue #2496 posted a
   stand-alone, never-edited comment (`vibe-chain-root-unworkable`) that went
   stale when the chain moved. Once the gate comment is posted or edited, the
