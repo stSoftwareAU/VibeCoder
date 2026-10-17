@@ -1345,9 +1345,12 @@ The file MUST contain:
    argument or behaviour reaches every caller that needs it** in the
    guidelines): list the callers and siblings checked, each passing the new
    value or with the reason it does not need it; a behaviour-carrying
-   parameter is required rather than defaulted to a value that turns the
-   behaviour off, and a caller left on the old hard-coded value is a
-   blocking self-review finding. Likewise, a state or mode the diff adds
+   input (a parameter, a field on a row or struct, or state an object is built
+   with) is required rather than defaulted or left absent in a way that turns
+   the behaviour off, and when absence must stay legal every place that builds
+   it (callers, row mappings, constructors) is listed with why the guard may be
+   off there; a caller left on the old hard-coded value is a blocking
+   self-review finding. Likewise, a state or mode the diff adds
    to a screen that already exists re-reads that screen's existing text
    (see **A new state on an existing screen re-reads that screen's
    existing text** under Instructions): the Test Plan lists every note,

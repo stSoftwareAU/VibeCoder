@@ -1468,6 +1468,20 @@ not need it, making a behaviour-carrying parameter required rather than
 defaulting it to a value that turns the behaviour off, and treating a caller
 left on the old hard-coded value as a blocking self-review finding.
 
+**An absent input must not switch a guard off unnoticed (Issue #3771).** The
+rule above was still missed when the guard's input was not a new parameter but
+an optional field on an input row, or state only some constructors set.
+VibeCoder#3318 gave `classifyIssues` sub-issue blocking through an optional
+`subIssuesSummary?` field, and a third production caller, `repoHasStartableWork`,
+built its rows without it; a private fleet PR's retry check read a deadline that
+only one of two session constructors supplied. Grepping the guard's name finds
+only the guard. The rule now names a parameter, a field on a row or struct and
+state an object is built with alike, asks for every row mapping and constructor
+that builds the input, and, where absence must stay legal, for a PR-summary list
+of each builder with why the guard may be off there. The shared review brief
+(`prompts/pr_review_brief/prompt.md`, step 4) asks the same question, so the
+pre-PR verifier and the fleet reviewer both check it.
+
 **A new state on an existing screen re-reads that screen's existing text
 (Issue #3259).** Fleet UI PRs added a state or mode to an existing screen
 and left the screen's existing messages describing the old state; tests
