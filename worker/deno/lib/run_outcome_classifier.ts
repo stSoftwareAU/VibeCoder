@@ -82,8 +82,14 @@ export const RUN_FAILURE_CLASSES = [
 /**
  * Memory-pressure evidence beside a kill (Issue #4202).
  *
- * Whole-message, for the same reason as {@link DISK_FULL_RE} — and gated on
- * the `killed` category besides, so agent prose alone cannot reach it.
+ * Read from the worker's own words only (Issue #3694): gated on the `killed`
+ * category and scanned over `splitAgentNarration(...).worker`. The agent's
+ * quoted output carries tool results such as `Error: Exit code 137` from a
+ * command the agent ran, which is not evidence that the agent itself was
+ * OOM-killed. The worker-authored kill-diagnostics block (kernel OOM lines)
+ * and the kill headline stay in scope. The CLI's own V8 heap abort is caught
+ * earlier by the runner's `detectOutOfMemory` (claude_runner.ts) and reaches
+ * the classifier as `buildOutOfMemoryMessage`'s worker-worded headline.
  */
 const OOM_EVIDENCE_RE =
   /(?<![\w/-])out[- ]of[- ]memory(?![\w/-])|(?<![\w/-])oom[- ]?kill|killed process|\bexit(?: code)? 137\b|\(exit 137|heap out of memory|allocation failed|cannot allocate memory/i;
@@ -349,7 +355,7 @@ export function classifyRunFailure(
             "The run was killed (SIGKILL) while the memory-pressure probe read high at the kill.",
         };
       }
-      if (OOM_EVIDENCE_RE.test(message)) {
+      if (OOM_EVIDENCE_RE.test(splitAgentNarration(message).worker)) {
         return {
           fixability: "code_fixable",
           failureClass: "oom",
