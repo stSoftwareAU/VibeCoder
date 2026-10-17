@@ -46,9 +46,12 @@ run. The prose `regression-test` requirement is removed. Closes #3659.
   `[package]` directory and read from the named `test <path> ... ok|FAILED` line
   (PR #3921 review). A cited test in another language is retained with its
   cause in `notRun` when another cited test discriminates the fix. Without a
-  red-to-green result it blocks as `discrimination-not-checked`, with a reason
-  naming the unsupported language and the cited file, unless the repository
-  sets `skip_security_fix_check`. A test that could not run never counts as
+  red-to-green result it blocks as `discrimination-not-checked`. For one cited
+  test the reason names the unsupported language and the cited file; for
+  several it is a summary ("N of M cited tests could not be run") and each
+  test's cause is in the `notRun` entries (PR #3921: keep a combined
+  not_checked record whole). The block is lifted only when the repository sets
+  `skip_security_fix_check`. A test that could not run never counts as
   red-to-green evidence.
 - The record travels on the block verdict in run state
   (`SecurityGateRunVerdict.discrimination` in `state.securityGateBlocks`) and is
@@ -232,7 +235,7 @@ test.
 
 ## Test Plan
 
-- New `worker/deno/tests/security_fix_discrimination_test.ts` (45 tests):
+- New `worker/deno/tests/security_fix_discrimination_test.ts` (47 tests):
   - `namedTestOutcome` cases built from observed deno output, and
     `namedRustTestOutcome` cases in the shape `cargo test` prints
     (`test <path> ... ok|FAILED`).
@@ -310,8 +313,9 @@ test.
 
 The published tree still discarded unsupported citations before running tests
 and omitted unrun attempts when another test passed red-to-green. The runner
-now keeps those citations in a checked record's optional `notRun` field, with
-the test and reason. Without a red-to-green result, any unrun citation makes
+now keeps those citations in the optional `notRun` field of a checked record,
+with the test and reason; a `not_checked` record keeps them too, beside its
+completed `runs` (see the next section). Without a red-to-green result, any unrun citation makes
 the result `not_checked`. The existing exact-name matching and Rust
 `should_panic` handling remain intact.
 

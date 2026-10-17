@@ -147,9 +147,12 @@ unrun, and blocks as not checked when no other cited test discriminates the fix,
 unless the repo sets `skip_security_fix_check`. Function-named pytest, Go and
 Java citations remain in that record; their names are read only in their own
 language's files, so JS/TS callback text cannot replace a Deno test's string name.
-The reason says which: "the language of the cited test cannot be executed" when
-a test is cited but cannot be run, and "cites no test the worker can execute"
-when the summary cites none the worker can run.
+For a single cited test that cannot be run, the reason says why: "the language
+of the cited test cannot be executed". When the summary cites none the worker
+can run, it says "cites no test the worker can execute". With several cited
+tests the reason is a summary ("N of M cited tests could not be run"); each
+unrun test and its cause, such as its unsupported language, sit in the record's
+`notRun` entries.
 
 Both outcomes are recorded on the block verdict in run state
 (`SecurityGateRunVerdict.discrimination` in `state.securityGateBlocks`),
