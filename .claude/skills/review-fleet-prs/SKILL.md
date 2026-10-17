@@ -235,8 +235,7 @@ fields as follows:
 - `{{TEST_CHANGES}}` — the entry's `testChanges` (the removed and edited test
   files).
 - `{{PREVIOUS_FINDINGS}}` — when the entry's `previousFindings` is not empty:
-  "An earlier review of this PR asked for these fixes: {previousFindings}.
-  Check each one is fixed; one that is not is still a finding."; otherwise
+  "An earlier review asked for these fixes: {previousFindings}, numbered from 1 in array order. Independently check every problem and Fix ask; return exactly one `earlierFindings` verdict per index with evidence. A partial fix is still a finding."; otherwise
   "No earlier review of this PR asked for fixes."
 - `{{REVIEW_CHECKLISTS}}` — the entry's `reviewChecklists` value, verbatim
   (the repo's `review-checklists.json` at the base ref, matched against the

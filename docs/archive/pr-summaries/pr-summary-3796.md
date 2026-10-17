@@ -32,8 +32,9 @@ to date; the changes described above are the issue-specific edits.
 - The marker must occupy the first line, and the author must be in the
   existing push-capable fleet set. The rest of the comment remains untrusted
   input to the repair agent.
-- Feedback repairs do not release the hold or arm auto-merge. Independent
-  re-verification and release remain work for #3784.
+- Feedback repairs do not release the hold or arm auto-merge. Main now
+  includes independent review-fix verification from #3784; this integration
+  preserves it alongside the milestone's closure-entry verification.
 - A failed findings-comment post logs an error and does not arm auto-merge.
   Already-armed PRs are disarmed by the existing sweep.
 
@@ -46,6 +47,9 @@ to date; the changes described above are the issue-specific edits.
 
 ## Evidence
 
+- Main integration after #3891: 192 focused verifier, closure, completion
+  and feedback tests passed. Both closure and earlier-finding verdicts are
+  retained in the shared prompt, parser and enforcement path.
 - Five focused suites: 186 passed, 0 failed.
 - The new tests against the unfixed production files: 166 passed, 8 failed.
   Failures included both completion hold paths, failed-comment handling,

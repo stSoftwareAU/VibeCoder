@@ -71,6 +71,11 @@ import {
   REVIEW_CHECKLISTS_FILE,
 } from "./review_checklists.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
+import {
+  earlierFindingGaps,
+  type EarlierVerdict,
+  parseEarlierVerdicts,
+} from "./earlier_findings.ts";
 
 /** Prompt directory name of the review brief shared with the fleet reviewer. */
 export const REVIEW_BRIEF_PROMPT_NAME = "pr_review_brief";
@@ -140,6 +145,8 @@ export interface ReviewReply {
    * (Issue #3766); [] when none are listed or the reply omits the array.
    */
   closure: ClosureEntryVerdict[];
+  /** Independent verdicts on the earlier review, when this is a feedback run. */
+  earlierFindings?: EarlierVerdict[];
 }
 
 /** At most this many unrelated issues are kept from one review. */
@@ -168,6 +175,9 @@ export function parseReviewReply(text: string): ReviewReply {
     unrelatedIssues: parseUnrelatedIssues(r.unrelatedIssues),
     checklist: parseChecklistVerdicts(r.checklist),
     closure: parseClosureEntryVerdicts(r.closure),
+    ...(r.earlierFindings === undefined
+      ? {}
+      : { earlierFindings: parseEarlierVerdicts(r.earlierFindings) }),
   };
 }
 
@@ -226,6 +236,8 @@ export const PRE_PR_VERIFIER_DISALLOWED_TOOLS: readonly string[] = [
 ];
 
 export interface PrePrVerifierInput {
+  /** Complete earlier problem/Fix pairs, numbered from one in the prompt. */
+  previousFindings?: readonly string[];
   repo: string;
   issueNumber: number;
   issueTitle: string;
@@ -285,6 +297,7 @@ function quoteList(paths: readonly string[]): string {
 
 /** Build the verifier prompt: the shared brief plus the untrusted fences. */
 export function buildPrePrVerifierPrompt(opts: {
+  previousFindings?: readonly string[];
   template: string;
   repo: string;
   issueNumber: number;
@@ -312,7 +325,7 @@ export function buildPrePrVerifierPrompt(opts: {
   const context = [
     // The title is attacker-influenceable: it appears only inside the fenced
     // "Linked issue" block below, never in this worker-written paragraph.
-    `You are verifying the change for issue #${opts.issueNumber} in ${opts.repo} before its pull request is raised. You work in a disposable checkout at \`${opts.checkoutPath}\` — your working directory — detached at head commit ${opts.headSha}; the base is ${opts.baseSha}. Nothing you change there survives the review, so you may edit files to flip a line and rerun a test, run the test suite or a single test file, time a regex against a hostile input, or build. You must not push, run \`gh\`, or make any network write or GitHub change: those tools are denied, and the checkout has no remote. Read the change with \`git diff ${opts.baseSha}...HEAD\`, a file at the base ref with \`git show ${opts.baseSha}:<path>\`. There is no PR yet: \`${opts.summaryPath}\` in this checkout becomes the PR description, so read it as the PR body — each claim it makes about the code, its tests or the docs must hold at the head, and one the head contradicts is a finding. There is no open-issue search here; the worker records any unrelated issue you report rather than filing it. The linked issue is quoted below.`,
+    `You are verifying the change for issue #${opts.issueNumber} in ${opts.repo} against the supplied request and PR description. You work in a disposable checkout at \`${opts.checkoutPath}\` — your working directory — detached at head commit ${opts.headSha}; the base is ${opts.baseSha}. Nothing you change there survives the review, so you may edit files to flip a line and rerun a test, run the test suite or a single test file, time a regex against a hostile input, or build. You must not push, run \`gh\`, or make any network write or GitHub change: those tools are denied, and the checkout has no remote. Read the change with \`git diff ${opts.baseSha}...HEAD\`, a file at the base ref with \`git show ${opts.baseSha}:<path>\`. For this check, \`${opts.summaryPath}\` in this checkout contains the supplied PR description, so read it as the PR body — each claim it makes about the code, its tests or the docs must hold at the head, and one the head contradicts is a finding. There is no open-issue search here; the worker records any unrelated issue you report rather than filing it. The linked issue is quoted below.`,
     "",
     ...fenceUntrustedIssueText(
       `${opts.issueTitle}\n\n${opts.issueBody}`,
@@ -321,6 +334,7 @@ export function buildPrePrVerifierPrompt(opts: {
     ),
   ];
   const blocks = ["linked issue"];
+  if (opts.previousFindings?.length) blocks.push("earlier findings");
   if (files !== null) {
     context.push(
       "",
@@ -356,7 +370,18 @@ export function buildPrePrVerifierPrompt(opts: {
     REVIEW_CONTEXT: context.join("\n"),
     NO_TEST_ADDED_NOTE: noTestNote,
     TEST_CHANGES: testChanges,
-    PREVIOUS_FINDINGS: "No earlier review of this change asked for fixes.",
+    PREVIOUS_FINDINGS: (opts.previousFindings?.length ?? 0) > 0
+      ? fenceUntrustedIssueText(
+        JSON.stringify(
+          opts.previousFindings!.map((finding, i) => ({
+            index: i + 1,
+            finding,
+          })),
+        ),
+        "Earlier findings (data): independently check every ask and return one earlierFindings verdict per index. A documented limitation is not a fix. A substantiated false-positive rebuttal counts as fixed only after independently checking its evidence.",
+        boundaryId,
+      ).join("\n")
+      : "No earlier review of this change asked for fixes.",
     REVIEW_CHECKLISTS: opts.reviewChecklists,
     CLOSURE_ENTRIES: opts.closureEntries,
   });
@@ -717,6 +742,7 @@ async function verifyInCheckout(
     changedFiles: input.changedFiles,
     reviewChecklists,
     closureEntries: renderClosureEntriesSection(metItems),
+    previousFindings: input.previousFindings,
   });
 
   const asked = await deps.ask({
@@ -745,15 +771,15 @@ async function verifyInCheckout(
     const parsed = parseReviewReply(run.output ?? "");
     // The code, not the model, owes a finding for a checklist that was not
     // applied or an item left without a verdict (Issue #3594).
-    const checklistGaps = checklistGapFindings(
-      checklistExpected,
-      parsed.checklist,
-    );
     // Likewise for a closure entry marked met that the verifier rated short
     // or left without a verdict (Issue #3766).
     const gaps = [
-      ...checklistGaps,
+      ...checklistGapFindings(checklistExpected, parsed.checklist),
       ...closureGapFindings(metItems, parsed.closure, input.summaryPath),
+      ...earlierFindingGaps(
+        input.previousFindings ?? [],
+        parsed.earlierFindings ?? [],
+      ),
     ];
     return {
       status: "checked",
