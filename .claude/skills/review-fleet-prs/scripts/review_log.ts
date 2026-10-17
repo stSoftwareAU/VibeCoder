@@ -16,6 +16,7 @@ import {
   type ChecklistState,
   type ChecklistVerdict,
 } from "../../../../worker/deno/lib/review_checklists.ts";
+import type { EarlierVerdict } from "../../../../worker/deno/lib/earlier_findings.ts";
 import {
   MAX_UNRELATED_ISSUES,
   parseReviewReply,
@@ -80,6 +81,7 @@ export { MAX_UNRELATED_ISSUES };
 
 // Structurally the same shape as the pre-PR verifier's ReviewReply (Issue #3395).
 export interface FableReview {
+  earlierFindings?: EarlierVerdict[];
   summary: string;
   findings: Finding[];
   // "tightened": an existing test's expectation changed only to make it

@@ -11,6 +11,7 @@ import {
   buildIssueCostTotalLine,
   buildIssueRunStatsComment,
   buildIssueRunStatsMarker,
+  buildQualityGateStagesStatsLine,
   buildQualityGateStatsLine,
   buildRtkStatsLine,
   ghIssueCommentLister,
@@ -1981,4 +1982,38 @@ Deno.test("buildIssueRunStatsComment - renders the safety-refusal line after the
   );
   assert(!plain.includes("Safety refusal"));
   assertEquals(buildIssueRunStatsComment({ ...base }), plain);
+});
+
+// ============================================================================
+// Quality-gate stages line (Issue #3726)
+// ============================================================================
+
+Deno.test("quality-gate stages line - renders nothing without stages (Issue #3726)", () => {
+  assertEquals(buildQualityGateStagesStatsLine(undefined), "");
+  assertEquals(buildQualityGateStagesStatsLine(), "");
+});
+
+Deno.test("quality-gate stages line - follows the quality gate line and leaves it unchanged (Issue #3726)", () => {
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-gate-stages-run",
+    qualityGate: { status: "passed", attempt: 1 },
+    qualityGateStages: [
+      { name: "deno lint", status: "PASSED" },
+      { name: "semgrep", status: "SKIPPED", reason: "semgrep: SKIPPED" },
+    ],
+  });
+  const lines = body.split("\n");
+  const gateIndex = lines.indexOf("- quality gate: passed on attempt 1");
+  assert(gateIndex >= 0, "the existing gate line must be unchanged");
+  assertEquals(
+    lines[gateIndex + 1],
+    "- quality gate stages: passed: `deno lint`; skipped: `semgrep` (`semgrep: SKIPPED`)",
+  );
+});
+
+Deno.test("quality-gate stages line - a comment without stages is unchanged (Issue #3726)", () => {
+  const without = commentWithQualityGate({ status: "failed" });
+  assert(!without.includes("quality gate stages"));
 });
