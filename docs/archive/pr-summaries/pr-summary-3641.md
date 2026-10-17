@@ -47,9 +47,9 @@ Step 1 is this PR. Steps 2 to 7 are not started.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Audit current provider adapters, prompts, tools, hooks, session persistence, review gates and per-host configuration. — evidence: `docs/MANAGER-WORKER-CONTRACT.md` section 3 (adapters, tools, hooks, prompt templates), section 5 (session persistence), section 6 (credentials), section 8 (per-host flags) — reviewer: met (after follow-up: prompt-template audit, session persistence and per-host config added)
+- **partial** — Audit current provider adapters, prompts, tools, hooks, session persistence, review gates and per-host configuration. — evidence: `docs/MANAGER-WORKER-CONTRACT.md` section 3 (adapters, tools, hooks, prompt templates, per-host flags) and section 5 (session persistence); review gates are covered only as the reviewer sub-agents and the `issue_reviewer_agents` flag; the PR-level review gate (`worker/deno/lib/pr_review_claim_lease.ts`) has one bullet in section 5 and is not audited — reviewer: partial
 - **met** — Specify role contracts (manager, executor, reviewer), the task envelope and structured result, with retries, cancellation, timeouts, leases and recovery. — evidence: `docs/MANAGER-WORKER-CONTRACT.md` section 4, "Role contracts" and "Task envelope and structured result" — reviewer: met
-- **partial** — Define permissions: manager read-only, executor scoped workspace, no recursive delegation, no credential leakage between providers. — evidence: `docs/MANAGER-WORKER-CONTRACT.md` section 6 (manager read-only; credentials scrubbed per provider) — reason: section 6 does not state the no-recursive-delegation rule as a target; the current sub-agent denial is pinned only by `manager_worker_contract_3641_test.ts` — reviewer: partial
+- **met** — Define permissions: manager read-only, executor scoped workspace, no recursive delegation, no credential leakage between providers. — evidence: `docs/MANAGER-WORKER-CONTRACT.md` section 6 (manager read-only; no recursive delegation, with `Agent` disallowed at `worker/deno/lib/issue_executor_agents.ts:114`, `:214` and `:349`; executor `workspaceDir` scoping; per-provider credential isolation) — note: met as documentation; workspace scoping and non-Claude delegation enforcement remain targets, not implemented — reviewer: met
 - **partial** — Define feature-flagged rollout, compatibility matrix and rollback; no unsupported provider silently gets Claude `--agents`. — evidence: `docs/MANAGER-WORKER-CONTRACT.md` sections 7 and 8 — reason: the matrix and rollback are documented, but Codex, Gemini and DeepSeek drop `agents` or `settingsJson` silently, and the fail-loud invariant is a target, not implemented (section 8) — reviewer: partial
 - **met** — Explicitly distinguish vendor, provider CLI, model and subscription entitlement; Astra and Sol availability is a prerequisite to validate, not an assumption. — evidence: `docs/MANAGER-WORKER-CONTRACT.md` section 2, "Host-validated prerequisite" — reviewer: met
 - **met** — Document existing vs target behaviour and incremental implementation order. — evidence: `docs/MANAGER-WORKER-CONTRACT.md` section 3 (existing), sections 4 and 5 (target), section 9 (order) — reviewer: met
@@ -67,7 +67,17 @@ Step 1 is this PR. Steps 2 to 7 are not started.
 ## Test Plan
 
 - `worker/deno/tests/manager_worker_contract_3641_test.ts`: 10 `Deno.test` cases, all named `#3641 contract — ...`. They call the real `resolveAgentProvider`, `buildIssueRunAgents` and `OPERATIONAL_DEFAULTS`, and cover the Claude `--agents` and `--settings` argv, the DeepSeek strip with one warning, the silent Codex and Gemini drop (the known gap), the provider registry and the issue-phase defaults. Run with `deno test --allow-all tests/manager_worker_contract_3641_test.ts`: 10 passed, 0 failed.
-- Not red-checked in this run: no break was applied to the guarded code, so the tests have not been shown to go red against a regression.
+- Red checks (each break applied alone, test run, then restored with `git checkout`):
+  - haiku-tier payload pins the agent names, models and efforts: `worker/deno/lib/issue_executor_agents.ts:62` executor effort `high` → `medium` → red
+  - every agent on both tiers denies recursive delegation (Agent): `worker/deno/lib/issue_executor_agents.ts:114` `["Agent"]` → `[]` → red
+  - reviewers and explorer are read-only; the executor keeps Edit, Write and Bash: `worker/deno/lib/issue_executor_agents.ts:208` `Edit` added to reviewer tools → red
+  - issue-phase switch defaults are split on, tier haiku, reviewers on: `worker/deno/lib/config_defaults.ts:515` `issueSubAgentTier` `"haiku"` → `"sonnet"` → red
+  - manager issue-phase defaults are sonnet at high effort: `worker/deno/lib/config_defaults.ts:849` `DEFAULT_CLAUDE_EFFORT_ISSUE` `"high"` → `"medium"` → red
+  - all switches off: undefined on sonnet, explorer-only on haiku: `worker/deno/lib/issue_executor_agents.ts:425` `return undefined;` → `return {};` → red
+  - Claude emits --agents (parseable, carries executor) and --settings: `worker/deno/lib/agent_provider.ts:618` `--agents` push removed → red
+  - DeepSeek strips --agents and --settings and warns once per invocation: `worker/deno/lib/agent_provider.ts:1121` agents warning removed → red
+  - Codex and Gemini drop agents and settings silently (known gap): `worker/deno/lib/agent_provider.ts:990` Gemini argv appends `--agents` → red
+  - the provider registry holds exactly claude, codex, gemini and deepseek: `worker/deno/lib/agent_provider.ts:1158` DeepSeek registry entry removed → red
 - `markdownlint-cli2` on `docs/MANAGER-WORKER-CONTRACT.md`: 0 issues.
 - <!-- vibe-branch-outcomes -->
 

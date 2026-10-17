@@ -125,7 +125,7 @@ section exists in the worker yet.
 | Role | Duty | Tools | Today (Claude) |
 | --- | --- | --- | --- |
 | Manager | Plans, dispatches, verifies. Read-only for edits. | Full read, dispatch | Advisor. `Edit` and `Write` are denied when `agent_id` is absent, by the #2344 `PreToolUse` hook delivered via `--settings`. Enforced on Claude only today. |
-| Executor | Makes the mechanical edits in one unit of work. | Edit, Write, read tools. No dispatch. | `buildIssueExecutorAgents`, with `Agent` disallowed. |
+| Executor | Makes the mechanical edits in one unit of work. | Edit, Write, read tools, scoped to `workspaceDir`. No further delegation. | `buildIssueExecutorAgents`, with `Agent` disallowed. |
 | Spec reviewer | Checks the change against the issue. Read-only. | `Read`, `Grep`, `Glob` | `buildIssueReviewerAgents`. |
 | Standards reviewer | Checks the change against the standards. Read-only. | `Read`, `Grep`, `Glob` | `buildIssueReviewerAgents`. |
 | Explorer | Answers a narrow question about the repository. Read-only. | `Read`, `Grep`, `Glob` | `buildIssueExplorerAgents`, haiku tier only. |
@@ -297,6 +297,19 @@ stateDiagram-v2
 - **Executors cannot dispatch.** `["Agent"]` is disallowed for executors
   (`worker/deno/lib/issue_executor_agents.ts:114`). The reviewers and explorer
   are read-only.
+- **Target: no recursive delegation.** Today every sub-agent definition
+  disallows `Agent`: the executor
+  (`worker/deno/lib/issue_executor_agents.ts:114`), the reviewers (`:214`)
+  and the explorer (`:349`). This is enforced only by the Claude `--agents`
+  payload. In the target, every provider adapter that runs a worker must
+  enforce that a worker cannot dispatch further workers. An adapter that
+  cannot enforce it is refused (section 8), not run with delegation open.
+- **Target: executor workspace is scoped.** Today sub-agents run inside the
+  advisor's single CLI process, so they share its working directory. The CLI
+  is spawned with one `cwd` (`worker/deno/lib/claude_runner.ts:1369`), and
+  there is no per-executor workspace. In the target, the manager hands each
+  executor a `workspaceDir` in the task envelope (section 4). The executor's
+  edits and commands are confined to it, and the manager stays read-only.
 - **Credentials are scrubbed per provider.** Each provider builds its own child
   environment.
   - Claude: `withholdNonSubscriptionCredentials` (`worker/deno/lib/claude_env.ts:177`)
