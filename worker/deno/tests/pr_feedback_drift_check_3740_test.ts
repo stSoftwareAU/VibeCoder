@@ -184,7 +184,7 @@ function summaryWith(testPlanLine: string): string {
 
 Closes #7.
 
-**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
+**Docs sweep** — grep: \`subject\`; section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
