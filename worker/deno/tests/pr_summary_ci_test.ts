@@ -715,3 +715,15 @@ Deno.test("runPrSummaryCi - a git failure while listing the PR's commits is retu
     assertStringIncludes(r.error.message, "simulated diff failure");
   });
 });
+
+Deno.test("parseArgs - an empty --base value is a missing value", () => {
+  const r = parseArgs(["--base", "", "--head-branch", BRANCH]);
+  assert(!r.ok);
+  assertStringIncludes(r.error.message, "--base needs a value");
+});
+
+Deno.test("parseArgs - a --head-branch value that looks like a flag is a missing value", () => {
+  const r = parseArgs(["--base", "main", "--head-branch", "-x"]);
+  assert(!r.ok);
+  assertStringIncludes(r.error.message, "--head-branch needs a value");
+});
