@@ -42,6 +42,11 @@ a model call or broaden the file search.
   reject an explained negative by dropping its exception; ignore a semicolon;
   stop skipping quoted spans; discard earlier terms at an unmatched quote;
   invent a term when the field is absent.
+- CI exposed 17 feedback/citation test failures because their previously
+  valid summary fixtures omitted the grep field. Added a quoted `subject`
+  term to all ten matching fixtures across four suites; no assertions changed.
+  Reproduced 17 failures before the correction; all 75 related feedback and
+  citation tests pass afterwards. This follow-up adds no production branches.
 - Completeness checks: 687 passed, 0 failed, 1 ignored.
 - Full local quality check: blocked locally, not a pass. The unit stage
   stalled with `DENO_JOBS=4`; the unchanged clean-kill test in

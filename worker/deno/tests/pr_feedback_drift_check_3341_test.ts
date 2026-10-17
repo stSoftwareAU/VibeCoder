@@ -173,7 +173,7 @@ Closes #7.
 
 - A missing subject is accepted — \`${citation}\` — tested by \`tests/rule_test.ts::checkRule - accepts a subject\`.
 
-**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
+**Docs sweep** — grep: \`subject\`; section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
