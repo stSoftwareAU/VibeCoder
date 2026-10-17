@@ -65,8 +65,9 @@ and an exported function identifier, and record capped sections. No UI change.
   claims reach the model and existing gates; an agreeing sentence is not
   reported by the fake semantic reviewer.
 - Both caller regressions failed against the previous implementation. Shared
-  validation: 344 scoped tests and 687 manifest tests passed; full local gate
-  networking limitations are recorded in [#3710](pr-summary-3710.md).
+  validation: 344 scoped tests and 687 manifest tests passed. The full hosted
+  quality gate also passed; [#3710](pr-summary-3710.md) records the tested
+  commit, run and sole configuration integration skip.
 - The screenshot regression's Git spy now distinguishes per-file UI patch
   requests from the whole-branch prose diff. Its existing assertions still
   require exactly the UI patch read, permit a version-only bump and refuse a

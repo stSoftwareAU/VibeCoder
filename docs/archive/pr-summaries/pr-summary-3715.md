@@ -66,7 +66,9 @@ unreadable source and both production callers. No UI change.
   generator under docs whose executable string is never recovered as prose.
 - The first-run and review-fix regression tests failed against the previous
   implementation. Shared final validation: 344 scoped tests and 687 manifest
-  tests passed; see [#3710](pr-summary-3710.md) for local full-gate limitations.
+  tests passed. The full hosted quality gate also passed; see
+  [#3710](pr-summary-3710.md) for the tested commit, run and sole configuration
+  integration skip.
 - In the invalid-path fixture, `lib/x.ts` becomes `lib/x.bin`: TypeScript is
   now valid input. The same `assertThrows` and error-message check remain for
   unsupported and unsafe paths; the new caller tests exercise accepted source.

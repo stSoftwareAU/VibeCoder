@@ -70,10 +70,15 @@ This backend change has no UI screenshot.
   and the local checker failed against the previous implementation. The final
   integrated scoped run passed 344 tests with the frozen lock. The manifest
   gate passed 687 tests, with one existing ignored test.
-- The local full `./quality.sh < /dev/null` invocation could not complete:
-  JSR package metadata and the GitHub release-ruleset check require networking.
-  Its formatting, lint, Markdown, Mermaid and structural checks passed.
-  A remote full gate is required before opening the PR.
+- The full `./quality.sh < /dev/null` gate passed on implementation commit
+  `93f03976833f2dffaa4effd39d344b6b2a3f3bc4` in the
+  [hosted validation run](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39024074189/job/117371486836).
+  Parallel tests passed in 11m36s and serial tests in 3m06s. Type checking,
+  lint, formatting, Markdown, Mermaid, release ruleset and structural stages
+  passed. Semgrep 1.173.0 scanned 23 changed files with `p/default` and passed.
+  Only configuration integration was skipped because no `.config.json` was
+  supplied; the gate reported `PASSED (with skipped checks)`. The subsequent
+  archive update changes validation evidence only.
 
 - Removed from `worker/deno/tests/summary_claim_correction_test.ts`: `assertStringIncludes(prompt, PROMPT_OPTS.summaryContent.trim());`
   Required by: "Give the turn the summary by path"

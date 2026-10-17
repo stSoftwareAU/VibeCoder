@@ -78,8 +78,8 @@ comment-only quotes. No UI change.
   reproduced as a failure; the final brief restores that phrase while keeping
   the instruction to detect omitted pairs. The five guidance tests and the
   wider 330-test completion run pass.
-- Full local quality networking limitations are recorded in
-  [#3710](pr-summary-3710.md); remote full validation precedes PR creation.
+- The full hosted quality gate passed; [#3710](pr-summary-3710.md) records the
+  tested commit, run and sole configuration integration skip.
 - The edited completion summary fixture contains an assertion as quoted test
   data. It gains a real `Required by:` field and matching issue-body fixture;
   the assertion being tested and every actual completion expectation remain.
