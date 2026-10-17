@@ -5,7 +5,7 @@
     "entries": [
       {
         "path": "worker/deno/lib/failure_diagnosis.ts",
-        "line": 305,
+        "line": 307,
         "outcome": "marker matched: the message opens with a registered marker, so its gate category is returned",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "workerGateCategoryOf - each registered marker maps to its category and a non-gate message maps to null (Issue #3735)",
@@ -13,7 +13,7 @@
       },
       {
         "path": "worker/deno/lib/failure_diagnosis.ts",
-        "line": 307,
+        "line": 309,
         "outcome": "no marker matched: workerGateCategoryOf returns null, so no gate category",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "workerGateCategoryOf - each registered marker maps to its category and a non-gate message maps to null (Issue #3735)",
@@ -21,7 +21,7 @@
       },
       {
         "path": "worker/deno/lib/failure_diagnosis.ts",
-        "line": 353,
+        "line": 355,
         "outcome": "no head (no ## heading and Category line) so the body is not a posted worker gate record (false)",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "isWorkerGateFailureRecord - a raw marked reason with no posted heading and Category head is not a gate record (Issue #3735)",
@@ -29,7 +29,7 @@
       },
       {
         "path": "worker/deno/lib/failure_diagnosis.ts",
-        "line": 356,
+        "line": 358,
         "outcome": "head names a registered gate display, so the body is a worker gate record (true)",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "isWorkerGateFailureRecord - a registered gate category in the head line is a gate record (Issue #3735)",
@@ -37,7 +37,7 @@
       },
       {
         "path": "worker/deno/lib/failure_diagnosis.ts",
-        "line": 356,
+        "line": 358,
         "outcome": "head names a non-gate display, so the body is not a worker gate record (false)",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "isWorkerGateFailureRecord - a record whose head Category line is timeout is not a gate record (Issue #3735)",
