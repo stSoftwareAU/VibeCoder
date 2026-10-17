@@ -65,7 +65,7 @@
         "outcome": "production wiring: the untrusted set is computed from the trusted-author rule and passed to the census",
         "test": "worker/deno/tests/idle_census_label_author_wiring_3571_test.ts",
         "testName": "production deps - a top-priority add by an untrusted bot is claim_refused, not claimable (Issue #3571)",
-        "flipWentRed": "earlier red-check: removing the untrusted set from production deps turned it red (not re-run in this pass)"
+        "flipWentRed": "re-run in this pass: replacing the censusUntrustedLabelIssues call at :5967 with an empty set turned it red (FAILED | 1 passed | 1 failed)"
       }
     ]
   }
