@@ -12,6 +12,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { summaryScrubProblem } from "../summary_scrub_gate.ts";
+
 import {
   PRE_PUSH_GATE_MARKER,
   PRE_PUSH_LOOKUP_FAILED_MARKER,
@@ -50,6 +52,7 @@ import {
   summaryClaimCheckBlocked,
 } from "../summary_claim_check.ts";
 import { DRIFT_CHECK_DISALLOWED_TOOLS } from "../pr_feedback_drift_check.ts";
+import { isManualProsePath } from "../doc_prose_claims.ts";
 import {
   buildPrePrVerifierGateComment,
   prePrVerifierBlocked,
@@ -2885,6 +2888,8 @@ async function completionBody(
       : null,
     testDiff,
     prSummaryContent: prBody,
+    issueTitle: ctx.issueTitle,
+    issueBody: ctx.issueBody,
   });
   const removedAssertionsBlocked = removedAssertions.applicable &&
     !removedAssertions.valid;
@@ -3270,7 +3275,14 @@ async function completionBody(
         ? buildPrePrVerifierGateComment(prePrVerifier.review)
         : "",
   };
+  const scrubProblem = summaryScrubProblem(prBody);
+  const scrubVerdict: LateSummaryVerdict = {
+    blocked: scrubProblem !== undefined,
+    reason: scrubProblem ?? "",
+    comment: () => scrubProblem ?? "",
+  };
   const lateSummaryVerdicts: LateSummaryVerdict[] = [
+    scrubVerdict,
     docsSweepVerdict,
     removedAssertionsVerdict,
     placeholderVerdict,
@@ -3571,6 +3583,19 @@ async function completionBody(
   // recovers and finalises that PR, so this gate does not need to run after
   // the guard either.
   // ---------------------------------------------------------------------
+  if (scrubVerdict.blocked) {
+    return await reportSummaryRuleBlock(
+      foldInLateSummaryVerdicts(scrubVerdict.reason, scrubVerdict.comment(), [
+        scrubVerdict,
+      ]),
+      ctx,
+      state,
+      prBody,
+      deps,
+      docsSweepHitsComment,
+    );
+  }
+
   if (placeholderBlocked) {
     logger.warn("Result-placeholder gate blocked PR creation", {
       tokens: placeholderTokens,
@@ -3692,8 +3717,10 @@ async function completionBody(
     //
     // Issue #3865: manual findings get the same bounded turn, using indexed
     // sentence replacements written by the worker rather than full-file edits.
+    // Source comments need normal recovery; the narrow writer accepts Markdown only.
     if (
-      summarySource !== null && shouldOfferClaimCorrection(state)
+      summarySource !== null && shouldOfferClaimCorrection(state) &&
+      claimCheck.docFindings.every((finding) => isManualProsePath(finding.file))
     ) {
       state.summaryClaimCorrection = {
         status: "pending",
