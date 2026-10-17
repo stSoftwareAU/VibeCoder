@@ -166,7 +166,16 @@ export async function saveCheckpoint(
   try {
     await Deno.rename(temporary, path);
   } catch (err) {
-    await Deno.remove(temporary).catch(() => undefined);
+    try {
+      await Deno.remove(temporary);
+    } catch (cleanup) {
+      // A missing temporary file is the expected outcome; anything else is worth reporting.
+      if (!(cleanup instanceof Deno.errors.NotFound)) {
+        console.warn(
+          `orchestration checkpoint: could not remove ${temporary}: ${cleanup}`,
+        );
+      }
+    }
     throw err;
   }
 }

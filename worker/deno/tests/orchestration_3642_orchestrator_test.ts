@@ -7,12 +7,21 @@
  * Australian English spelling throughout (behaviour, recognised, honour).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { loadCheckpoint } from "../lib/orchestration/checkpoint.ts";
 import {
   type ExternalOrchestrationOptions,
+  type OrchestrationOutcome,
   runExternalOrchestration,
 } from "../lib/orchestration/orchestrator.ts";
+import {
+  REDACTION_PLACEHOLDER,
+  redactSecrets,
+} from "../lib/secret_redaction.ts";
 import type {
   AgentCall,
   AgentCallResult,
@@ -420,5 +429,81 @@ Deno.test("an old-version checkpoint is ignored with a warning, not replayed", a
     assertEquals(outcome.resumed, false);
     assertEquals(fake.calls.map(phaseOf), ["plan", "execute", "review"]);
     assertStringIncludes(logged.join("\n"), "schema");
+  });
+});
+
+/** A GitHub classic token shape (ghp_ plus 36 base62) that redactSecrets masks. */
+const LEAKED_TOKEN = `ghp_${"x7Q".repeat(12)}`;
+
+/**
+ * Asserts the secret is gone from the outcome and the persisted checkpoint file,
+ * and that the non-secret wording of the provider message survives.
+ */
+async function assertRedacted(
+  outcome: OrchestrationOutcome,
+  dir: string,
+  survivor: string,
+): Promise<void> {
+  const checkpointText = await Deno.readTextFile(
+    `${dir}/checkpoints/3642.json`,
+  );
+  const reason = outcome.reason ?? "";
+  const refusalMessage = outcome.refusal?.message ?? "";
+  assertEquals(reason.includes(LEAKED_TOKEN), false);
+  assertEquals(refusalMessage.includes(LEAKED_TOKEN), false);
+  assertEquals(checkpointText.includes(LEAKED_TOKEN), false);
+  assertStringIncludes(reason, survivor);
+  assertStringIncludes(refusalMessage, survivor);
+  assertStringIncludes(reason, REDACTION_PLACEHOLDER);
+  assertStringIncludes(checkpointText, survivor);
+}
+
+Deno.test("an auth failure message is redacted in the reason, refusal and checkpoint", async () => {
+  await withWorkDir(async (dir) => {
+    const raw = `bad token ${LEAKED_TOKEN} for the account`;
+    // The fixture must be one redactSecrets really changes, or the test proves nothing.
+    assertNotEquals(redactSecrets(raw), raw);
+    const fake = fakeInvoker(() => ({ ok: false, kind: "auth", message: raw }));
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke, { bounds: { maxRetries: 0 } }),
+    );
+    assertEquals(outcome.state, "refused");
+    assertEquals(outcome.refusal?.kind, "auth_failure");
+    await assertRedacted(outcome, dir, "bad token");
+  });
+});
+
+Deno.test("a generic provider error message is redacted in the reason, refusal and checkpoint", async () => {
+  await withWorkDir(async (dir) => {
+    const raw = `request failed with ${LEAKED_TOKEN} in the response`;
+    assertNotEquals(redactSecrets(raw), raw);
+    const fake = fakeInvoker((call) =>
+      phaseOf(call) === "execute"
+        ? { ok: false, kind: "error", message: raw }
+        : okScript(call)
+    );
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke, { bounds: { maxRetries: 0 } }),
+    );
+    assertEquals(outcome.state, "refused");
+    assertEquals(outcome.refusal?.kind, "retries_exhausted");
+    await assertRedacted(outcome, dir, "request failed");
+  });
+});
+
+Deno.test("a completed cross-provider handoff runs the executor on deepseek and the manager on claude", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeInvoker();
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke, { executor: { provider: "deepseek" } }),
+    );
+    assertEquals(outcome.state, "done");
+    assertEquals(fake.calls.map(phaseOf), ["plan", "execute", "review"]);
+    // Index 0 and 2 are manager calls; index 1 is the executor call.
+    assertEquals(
+      fake.calls.map((call) => call.envelope.provider),
+      ["claude", "deepseek", "claude"],
+    );
+    assertEquals(fake.calls[1]?.envelope.role, "executor");
   });
 });

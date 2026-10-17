@@ -15,6 +15,7 @@
  */
 
 import { classifyProviderBilling } from "../provider_billing.ts";
+import { redactSecrets } from "../secret_redaction.ts";
 import { assertRoleSupported } from "./capabilities.ts";
 import {
   idempotencyKey,
@@ -100,9 +101,9 @@ export interface OrchestrationOutcome {
   results: StructuredResult[];
   /** True when the run continued from a checkpoint written under the same lease. */
   resumed: boolean;
-  /** Provider invocations made across every resume of the run. */
+  /** Provider invocations made across resumes of the same unreleased lease; reset after a released checkpoint. */
   invocations: number;
-  /** Spend across every resume of the run. */
+  /** Spend across resumes of the same unreleased lease; reset after a released checkpoint. */
   costUsd: number;
   /** The manager's final review output when state is "done". */
   managerOutput?: string;
@@ -525,14 +526,16 @@ export async function runExternalOrchestration(
         return { ok: true, output: result.output };
       }
       await persist(true);
+      // Provider text may carry a credential, so it is masked before it reaches the checkpoint.
+      const safe = redactSecrets(result.message);
 
       if (result.kind === "auth") {
         return {
           ok: false,
           outcome: await finish(
             "refused",
-            `${selection.provider} rejected its credentials: ${result.message}`,
-            { kind: "auth_failure", message: result.message },
+            `${selection.provider} rejected its credentials: ${safe}`,
+            { kind: "auth_failure", message: safe },
           ),
         };
       }
@@ -541,8 +544,8 @@ export async function runExternalOrchestration(
           ok: false,
           outcome: await finish(
             "refused",
-            `${selection.provider} has no quota left: ${result.message}`,
-            { kind: "quota_exhausted", message: result.message },
+            `${selection.provider} has no quota left: ${safe}`,
+            { kind: "quota_exhausted", message: safe },
           ),
         };
       }
@@ -555,12 +558,12 @@ export async function runExternalOrchestration(
           ok: false,
           outcome: await finish(
             "timed_out",
-            `${role} call timed out after ${attempts} attempt(s): ${result.message}`,
+            `${role} call timed out after ${attempts} attempt(s): ${safe}`,
           ),
         };
       }
       const message =
-        `${role} call failed after ${attempts} attempt(s): ${result.message}`;
+        `${role} call failed after ${attempts} attempt(s): ${safe}`;
       return {
         ok: false,
         outcome: await finish("refused", message, {

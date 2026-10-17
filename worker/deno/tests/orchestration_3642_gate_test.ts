@@ -289,6 +289,28 @@ Deno.test("orchestration gate - a later run for the same issue starts afresh aft
   });
 });
 
+Deno.test("orchestration gate - a runner failure carrying a credential is masked in the returned error (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    // A GitHub token inside the runner's failure text; the gate must not return it.
+    const secret = "ghp_Qx7Lm2Vb9Nc4Zd8Rf1Tg6Hy3Jk5Wp0Sa2Eu4Io";
+    const failing: IssueRunGateDeps["runClaudeWithRetry"] = () =>
+      Promise.resolve({
+        ok: false,
+        error: new Error(`gh auth failed for token ${secret}`),
+      });
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir),
+      depsFor(dir, failing),
+    );
+    assertEquals(outcome.ok, false);
+    if (outcome.ok) return;
+    assertEquals(outcome.error.message.includes(secret), false);
+    // The non-secret part of the provider text survives the mask.
+    assertStringIncludes(outcome.error.message, "gh auth failed");
+    assertStringIncludes(outcome.error.message, "***REDACTED***");
+  });
+});
+
 Deno.test("orchestration gate - createDefaultDeps wires runExternalOrchestratedIssueRun (Issue #3642)", () => {
   const deps = createDefaultDeps();
   assertEquals(typeof deps.runExternalOrchestratedIssueRun, "function");

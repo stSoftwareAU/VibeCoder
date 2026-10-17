@@ -330,7 +330,7 @@ sequenceDiagram
   participant X as Executor
   participant MR as Manager review
   MP->>O: Plan for one unit of work
-  O->>X: Dispatch with scoped workspaceDir and scoped tools
+  O->>X: Dispatch to the shared workspaceDir with scoped tools
   X-->>O: Result with filesChanged and evidence
   O->>MR: Result for review
   MR-->>O: Accept or reject
@@ -348,7 +348,11 @@ sequenceDiagram
   The gate uses the default of 1. The gate refuses `maxConcurrency` above 1
   (`issue_run_gate.ts:179-188`), so an operator who sets 2 gets that refusal at
   run time. The orchestrator itself accepts any whole number of one or more
-  (`orchestrator.ts:130-131`).
+  (`orchestrator.ts:130-131`). `max_cost_usd` is enforced only against
+  invocations whose token usage the gate can price (`costOf`,
+  `issue_run_gate.ts:131-141`). An unpriced call adds nothing to the spend
+  (`orchestrator.ts:523`), so when nothing is priced the cost cap cannot
+  trigger and `max_invocations` is the effective hard bound.
 - **Capabilities.** A probe builds one invocation through each provider's
   descriptor, carrying one agent, a settings payload and a denied tool, and
   reads back what the argv keeps (`worker/deno/lib/orchestration/capabilities.ts:70-97`).
@@ -376,7 +380,8 @@ sequenceDiagram
   `<agent state dir>/orchestration` (`issue_run_gate.ts:195`, `:240`). The
   schema key is `orchestration-checkpoint-v1` (`checkpoint.ts:22`). A
   checkpoint holds `schema`, `issueId`, `leaseId`, `leaseHeartbeatMs`, `state`,
-  `invocations` and `costUsd` (both counted across resumes), `steps` (the output
+  `invocations` and `costUsd` (both counted across resumes of the same unreleased
+  lease, see Resume or start afresh below), `steps` (the output
   of each successful call, by idempotency key), `results`, and `final` once
   terminal (`checkpoint.ts:25-46`). A file that is not JSON, is not an object,
   has another schema, is malformed or names another issue is ignored with a
@@ -399,7 +404,8 @@ sequenceDiagram
   released file, with `invocations`, `costUsd`, `steps` and `results` reset to
   zero or empty, so the provider is called again. A checkpoint under another
   lease also starts afresh. Both fresh starts log a warning and report
-  `resumed` false.
+  `resumed` false. Each retry attempt counts as one invocation
+  (`orchestrator.ts:515`); the checkpoint keeps no separate retry count.
 
 ## 6. Permissions and credential isolation
 
@@ -424,13 +430,17 @@ sequenceDiagram
   requires every provider adapter that runs a worker to enforce that a worker
   cannot dispatch further workers. An adapter that cannot enforce it is refused
   (section 8), not run with delegation open.
-- **Executor workspace is scoped under the flag.** Today sub-agents run inside
+- **Executor workspace is shared under the flag.** Today sub-agents run inside
   the advisor's single CLI process, so they share its working directory. The CLI
   is spawned with one `cwd` (`worker/deno/lib/claude_runner.ts:1386`), and
   there is no per-executor workspace. Under `external_orchestration` (Issue
   #3642), the task envelope carries `workspaceDir` (`types.ts:39`), which the
   gate sets to the repository directory (`issue_run_gate.ts:234`). The gate
-  creates no per-executor workspace, and the manager stays read-only.
+  creates no per-executor workspace, and the manager stays read-only. The
+  orchestrator runs executors at concurrency 1, one at a time, in that shared
+  checkout. Branch ownership is recorded on the task envelope (`types.ts:42`),
+  but no per-executor git worktree enforces it. Per-executor worktrees are
+  future work.
 - **Credentials are scrubbed per provider.** Each provider builds its own child
   environment.
   - Claude: `withholdNonSubscriptionCredentials` (`worker/deno/lib/claude_env.ts:177`)

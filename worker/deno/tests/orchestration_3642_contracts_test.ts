@@ -123,3 +123,57 @@ Deno.test("codex cannot enforce a denied tool, so a role denying one is refused"
     undefined,
   );
 });
+
+/**
+ * Runs saveCheckpoint with Deno.rename failing and Deno.remove throwing
+ * `removeError`, capturing console.warn. Every replaced API is restored in
+ * finally, so no stub outlives the call.
+ */
+async function saveWithFailingRename(
+  dir: string,
+  removeError: Error,
+): Promise<{ error: unknown; warnings: string[] }> {
+  const originalRename = Deno.rename;
+  const originalRemove = Deno.remove;
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  try {
+    Deno.rename = () => Promise.reject(new Error("rename refused"));
+    Deno.remove = () => Promise.reject(removeError);
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(" "));
+    };
+    await saveCheckpoint(dir, checkpointFor("3642"));
+    return { error: undefined, warnings };
+  } catch (error) {
+    return { error, warnings };
+  } finally {
+    Deno.rename = originalRename;
+    Deno.remove = originalRemove;
+    console.warn = originalWarn;
+  }
+}
+
+Deno.test("a failed cleanup that is not NotFound warns with the temporary path and rethrows the rename error", async () => {
+  await withDir(async (dir) => {
+    const { error, warnings } = await saveWithFailingRename(
+      dir,
+      new Deno.errors.PermissionDenied("denied"),
+    );
+    assertEquals((error as Error).message, "rename refused");
+    assertEquals(warnings.length, 1);
+    assertEquals(warnings[0]?.includes(`${dir}/3642.json.`), true);
+    assertEquals(warnings[0]?.includes("could not remove"), true);
+  });
+});
+
+Deno.test("a cleanup that finds the temporary file missing is silent and rethrows the rename error", async () => {
+  await withDir(async (dir) => {
+    const { error, warnings } = await saveWithFailingRename(
+      dir,
+      new Deno.errors.NotFound("gone"),
+    );
+    assertEquals((error as Error).message, "rename refused");
+    assertEquals(warnings, []);
+  });
+});
