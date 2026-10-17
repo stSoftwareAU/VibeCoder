@@ -56,6 +56,9 @@ Deno.test("removedAssertionDiffArgs omits the pathspec when no test files are gi
   ]);
 });
 
+const REMOVAL_REQUIREMENT =
+  "The old assertion no longer describes supported behaviour";
+
 // --- Issue's verification case -------------------------------------------
 
 const SCORE_DIFF = [
@@ -80,6 +83,7 @@ Deno.test("findRemovedAssertions finds the removed assert_eq! statement", () => 
 
 Deno.test("validateRemovedAssertions blocks when the Test Plan does not name the removed assertion", () => {
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["crates/api/tests/decisions.rs"],
     testDiff: SCORE_DIFF,
     prSummaryContent: "## Summary\n\nChanged scoring to a rating.\n",
@@ -98,11 +102,12 @@ Deno.test("validateRemovedAssertions passes when the Test Plan names the removed
     "## Test Plan",
     "",
     "- Removed from `crates/api/tests/decisions.rs`: " +
-    '`assert_eq!(record.score.to_string(), "-0.5")` — #2253 changes the ' +
-    "score to a rating, so the old value is untrue",
+    '`assert_eq!(record.score.to_string(), "-0.5")` — ' +
+    `Required by: "${REMOVAL_REQUIREMENT}"`,
     "",
   ].join("\n");
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["crates/api/tests/decisions.rs"],
     testDiff: SCORE_DIFF,
     prSummaryContent: summary,
@@ -126,6 +131,7 @@ const NOOP_TEST_DIFF = [
 
 Deno.test("validateRemovedAssertions blocks when no Test Plan heading exists even with no removed assertions", () => {
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["worker/deno/tests/foo_test.ts"],
     testDiff: NOOP_TEST_DIFF,
     prSummaryContent: "## Summary\n\nTidy a log line.\n",
@@ -137,6 +143,7 @@ Deno.test("validateRemovedAssertions blocks when no Test Plan heading exists eve
 
 Deno.test("validateRemovedAssertions passes when a Test Plan heading exists with no removed assertions", () => {
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["worker/deno/tests/foo_test.ts"],
     testDiff: NOOP_TEST_DIFF,
     prSummaryContent: "## Test Plan\n\nNo assertions were removed.\n",
@@ -148,6 +155,7 @@ Deno.test("validateRemovedAssertions passes when a Test Plan heading exists with
 
 Deno.test("validateRemovedAssertions is not applicable when no changed file is a test file", () => {
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["src/lib.rs", "README.md"],
     testDiff: null,
     prSummaryContent: "",
@@ -159,6 +167,7 @@ Deno.test("validateRemovedAssertions is not applicable when no changed file is a
 
 Deno.test("validateRemovedAssertions applies (fails closed) when changedFiles is null", () => {
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: null,
     testDiff: null,
     prSummaryContent: "## Summary\n\nNo Test Plan here.\n",
@@ -171,6 +180,7 @@ Deno.test("validateRemovedAssertions applies (fails closed) when changedFiles is
 
 Deno.test("validateRemovedAssertions passes with testDiff null when a Test Plan is present", () => {
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["worker/deno/tests/foo_test.ts"],
     testDiff: null,
     prSummaryContent: "## Test Plan\n\nSomething.\n",
@@ -203,10 +213,11 @@ Deno.test("findRemovedAssertions joins a multi-line removed assertEquals into on
 
 Deno.test("validateRemovedAssertions accounts for a multi-line removed assertion named compactly in the Test Plan", () => {
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["worker/deno/tests/foo_test.ts"],
     testDiff: MULTILINE_DIFF,
     prSummaryContent:
-      "## Test Plan\n\n- Removed `assertEquals(a, b)` — no longer applicable.\n",
+      `## Test Plan\n\n- Removed \`assertEquals(a, b)\` — Required by: "${REMOVAL_REQUIREMENT}"\n`,
   });
   assert(result.valid);
   assertEquals(result.unaccounted, []);
@@ -231,11 +242,12 @@ Deno.test("validateRemovedAssertions matches a regex-escaped assertion named ver
   const summary = [
     "## Test Plan",
     "",
-    "- Removed `assertMatch(version, /^v\\d+\\.\\d+$/);` — version format " +
-    "check no longer applies",
+    "- Removed `assertMatch(version, /^v\\d+\\.\\d+$/);` — " +
+    `Required by: "${REMOVAL_REQUIREMENT}"`,
     "",
   ].join("\n");
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["worker/deno/tests/version_test.ts"],
     testDiff: REGEX_ESCAPE_DIFF,
     prSummaryContent: summary,
@@ -269,11 +281,12 @@ Deno.test("validateRemovedAssertions accounts for an assertion named after 2,000
     "",
     ...longTestPlanFiller(),
     "- Removed from `crates/api/tests/decisions.rs`: " +
-    '`assert_eq!(record.score.to_string(), "-0.5")` — #2253 changes the ' +
-    "score to a rating, so the old value is untrue",
+    '`assert_eq!(record.score.to_string(), "-0.5")` — ' +
+    `Required by: "${REMOVAL_REQUIREMENT}"`,
     "",
   ].join("\n");
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["crates/api/tests/decisions.rs"],
     testDiff: SCORE_DIFF,
     prSummaryContent: summary,
@@ -288,11 +301,12 @@ Deno.test("validateRemovedAssertions matches a regex-escaped assertion named ver
     "## Test Plan",
     "",
     ...longTestPlanFiller(),
-    "- Removed `assertMatch(version, /^v\\d+\\.\\d+$/);` — version format " +
-    "check no longer applies",
+    "- Removed `assertMatch(version, /^v\\d+\\.\\d+$/);` — " +
+    `Required by: "${REMOVAL_REQUIREMENT}"`,
     "",
   ].join("\n");
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["worker/deno/tests/version_test.ts"],
     testDiff: REGEX_ESCAPE_DIFF,
     prSummaryContent: summary,
@@ -311,6 +325,7 @@ Deno.test("validateRemovedAssertions still blocks a long Test Plan that does not
     "",
   ].join("\n");
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["crates/api/tests/decisions.rs"],
     testDiff: SCORE_DIFF,
     prSummaryContent: summary,
@@ -598,6 +613,7 @@ Deno.test("findTestPlanSection is absent when no Test Plan heading exists", () =
 
 Deno.test("buildRemovedAssertionGateComment names the headline and the unaccounted assertion text", () => {
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["crates/api/tests/decisions.rs"],
     testDiff: SCORE_DIFF,
     prSummaryContent: "## Summary\n\nNo plan.\n",
@@ -618,6 +634,7 @@ Deno.test("buildRemovedAssertionGateComment uses a longer fence when the content
     "",
   ].join("\n");
   const result = validateRemovedAssertions({
+    issueBody: REMOVAL_REQUIREMENT,
     changedFiles: ["worker/deno/tests/foo_test.ts"],
     testDiff: trickyDiff,
     prSummaryContent: "## Summary\n\nNo plan.\n",
@@ -722,6 +739,7 @@ Deno.test("a renamed test file that drops an assertion is still reported", async
 
     const diff = await run(removedAssertionDiffArgs("main", files));
     const result = validateRemovedAssertions({
+      issueBody: REMOVAL_REQUIREMENT,
       changedFiles: ["tests/new_test.rs"],
       testDiff: diff,
       prSummaryContent:

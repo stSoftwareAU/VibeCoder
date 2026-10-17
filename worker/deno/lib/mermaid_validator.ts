@@ -463,6 +463,9 @@ export function extractMermaidBlocks(content: string): MermaidBlock[] {
  *   - Unmatched `{` `}`, `[` `]`, or `(` `)`. Characters inside
  *     double-quoted node labels and `%%` comment lines are excluded so
  *     legitimate constructs like `A["foo (bar)"]` are accepted.
+ *   - Flowchart/graph node labels that mix unquoted text with a quoted string
+ *     in one node shape (e.g. `D[a, "b"]`), which Mermaid's lexer rejects.
+ *     `%%` comment lines are excluded.
  *
  * Note: this is not a full Mermaid parser. It is a fast, low-false-positive
  * gate that catches the regression class described in Issue #1683 — broken
@@ -618,7 +621,100 @@ export function validateGenericMermaidBlock(
     };
   }
 
+  // Mermaid's flowchart lexer rejects unquoted text followed by a quoted
+  // string inside one node shape (TEXT then STR), e.g. `D[a, "b"]`.
+  if (block.type === "flowchart" || block.type === "graph") {
+    const mixed = findMixedQuotedFlowchartLabel(block.content);
+    if (mixed !== null) {
+      return {
+        valid: false,
+        error:
+          `Flowchart node label mixes unquoted text with a quoted string: \`${mixed}\` — ` +
+          `quote the whole label (e.g. D["text"]) or write the inner quotes as #quot;`,
+      };
+    }
+  }
+
   return { valid: true };
+}
+
+/** Characters that may form a node id, so `A[` is a node opener. */
+function isWordChar(ch: string): boolean {
+  return (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") ||
+    (ch >= "0" && ch <= "9") || ch === "_";
+}
+
+// SIMPLE-ON-PURPOSE: line-local TEXT-then-STR scan, not a full Mermaid parse — upgrade when a multi-line label or another lexer rule needs refusing.
+/**
+ * Find a flowchart node whose label mixes unquoted text with a quoted string.
+ *
+ * Scans each line once, so the cost stays linear. Lines that start with `%%`,
+ * or with `click` followed by whitespace, are skipped. Returns the offending
+ * node snippet, or null.
+ */
+function findMixedQuotedFlowchartLabel(content: string): string | null {
+  for (const line of content.split("\n")) {
+    const head = line.trim();
+    if (head.startsWith("%%")) continue;
+    // Mermaid lexes a `click … call fn(args)` callback's arguments as one token, so they are not a node label.
+    if (head.startsWith("click") && /\s/.test(head.charAt(5))) continue;
+    let inString = false;
+    let i = 0;
+    while (i < line.length) {
+      const ch = line.charAt(i);
+      if (ch === '"') {
+        inString = !inString;
+        i++;
+        continue;
+      }
+      if (inString || !"[({".includes(ch) || !isWordChar(line.charAt(i - 1))) {
+        i++;
+        continue;
+      }
+      // Skip the shape's opener run (e.g. `[[`, `((`, `[/`) to the label start.
+      let j = i + 1;
+      while (j < line.length && "[({/\\".includes(line.charAt(j))) j++;
+      // Find the label's first quote or close character.
+      let k = j;
+      while (
+        k < line.length && line.charAt(k) !== '"' &&
+        !"])}".includes(line.charAt(k))
+      ) {
+        k++;
+      }
+      if (line.charAt(k) === '"' && line.slice(j, k).trim() !== "") {
+        return nodeSnippet(line, i);
+      }
+      // Resume at the stop character so the main loop still toggles quotes.
+      i = k;
+    }
+  }
+  return null;
+}
+
+/**
+ * The node text from its id through its closing bracket run, for the error.
+ * Close characters inside quotes are ignored; the whole line is used if the
+ * node never closes.
+ */
+function nodeSnippet(line: string, opener: number): string {
+  let start = opener;
+  while (start > 0 && isWordChar(line.charAt(start - 1))) start--;
+  let inString = false;
+  for (let m = opener + 1; m < line.length; m++) {
+    const c = line.charAt(m);
+    if (c === '"') {
+      inString = !inString;
+    } else if (!inString && "])}".includes(c)) {
+      // Include the whole closing run, e.g. `])` for a stadium shape.
+      let end = m;
+      while (end + 1 < line.length && "])}/\\".includes(line.charAt(end + 1))) {
+        end++;
+      }
+      return line.slice(start, end + 1);
+    }
+  }
+  return line.slice(start);
 }
 
 /**

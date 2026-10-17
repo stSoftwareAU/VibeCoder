@@ -22,10 +22,10 @@
  * spelling the test itself (Issue #1493): `service_account_env.ts`,
  * `stuck_issue_detector.ts`, `agent_provider.ts`, `run_housekeeping.ts`,
  * `claude_env.ts`, `crash_notification.ts`, `disk_space.ts`,
- * `software_updates.ts`, `prompt_immutability.ts`, `unit_test_passes.ts`
- * and `commands/benchmark.ts`. The two modules that had their own name for
- * the variable — `IN_IMAGE_ENV` and `CONTAINER_MARKER_VAR` — alias
- * {@linkcode CONTAINER_IMAGE_STAMP_ENV} so they cannot drift from it.
+ * `software_updates.ts`, `prompt_immutability.ts`, `unit_test_passes.ts`,
+ * `semgrep_check.ts` and `commands/benchmark.ts`. The two modules that had
+ * their own name for the variable — `IN_IMAGE_ENV` and `CONTAINER_MARKER_VAR`
+ * — alias {@linkcode CONTAINER_IMAGE_STAMP_ENV} so they cannot drift from it.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.).
  */
