@@ -53,6 +53,14 @@
       },
       {
         "path": "worker/deno/lib/census_untrusted_label_issues.ts",
+        "line": 82,
+        "outcome": "read-failure warning: an Error's own message is quoted, not String(err)",
+        "test": "worker/deno/tests/census_untrusted_label_issues_3571_test.ts",
+        "testName": "census untrusted label issues - a read failure is trusted and warned, naming the issue (Issue #3571 e)",
+        "flipWentRed": "negating the ternary to `!(err instanceof Error) ? err.message : String(err)` turned it red"
+      },
+      {
+        "path": "worker/deno/lib/census_untrusted_label_issues.ts",
         "line": 90,
         "outcome": "a priority label added by a bot or fleet login with no trusted add marks the issue untrusted",
         "test": "worker/deno/tests/census_untrusted_label_issues_3571_test.ts",

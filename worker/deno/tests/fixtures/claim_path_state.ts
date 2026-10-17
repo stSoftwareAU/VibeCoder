@@ -259,6 +259,10 @@ export function toCensusInput(
     openPRs: renderOpenPRs(state),
     mergedPRs: renderMergedPRs(state),
     runLocalHolds: renderRunLocalHolds(state),
+    // Issue #3571: the issues `toMockGh` answers with an untrusted label adder.
+    untrustedLabelIssues: new Set(
+      state.issues.filter((i) => i.untrustedLabel).map((i) => i.number),
+    ),
     ...overrides,
   };
 }

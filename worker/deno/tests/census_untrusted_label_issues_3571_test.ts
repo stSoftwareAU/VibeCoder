@@ -146,7 +146,8 @@ Deno.test(
     const warning = logged[0] ?? "";
     assert(warning.includes("WARNING"), warning);
     assert(warning.includes(`${REPO}#7`), warning);
-    assert(warning.includes("HTTP 503"), warning);
+    // The error's own message, not `String(err)` ("Error: HTTP 503 …").
+    assert(warning.includes("(HTTP 503: service unavailable);"), warning);
   },
 );
 
