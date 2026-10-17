@@ -330,6 +330,45 @@ Deno.test("closureGapFindings: copies of scrubbed fenced criteria match their st
     }
   }
 });
+
+Deno.test("closureGapFindings: raw and rendered copies match without assuming an idempotent scrub", () => {
+  const criteria = [
+    "The workflow passes `token: ${{secrets.GITHUB_TOKEN}}` to checkout",
+    "GITHUB_TOKEN: {{GITHUB_TOKEN}}",
+    "api_key={{API_KEY}}",
+    "password: [TRUSTED - admin]",
+    "Rejects BOUNDARY_BOUNDARY_abc",
+  ];
+  const items = metClosureItems(block(
+    ...criteria.map((criterion) =>
+      `- **met** — ${criterion} — evidence: a — reviewer: met`
+    ),
+  ));
+  assertEquals(items.length, criteria.length);
+  const copies = renderClosureEntriesSection(items, "0123456789ab")
+    .split("\n").filter((line) => /^\d+\. /.test(line));
+  assertEquals(copies.length, items.length);
+  const raw = items.map((item) => item.criterion);
+  for (const texts of [copies, raw]) {
+    assertEquals(
+      closureGapFindings(items, texts.map((text) => v(text, "met")), PATH),
+      [],
+    );
+  }
+  for (const verdict of ["partial", "missing"] as const) {
+    for (const [short, met] of [[raw, copies], [copies, raw]]) {
+      const findings = closureGapFindings(items, [
+        ...short!.map((text) => v(text, verdict)),
+        ...met!.map((text) => v(text, "met")),
+      ], PATH);
+      assertEquals(findings.length, items.length);
+      for (const finding of findings) {
+        assertStringIncludes(finding.problem, `was rated ${verdict}`);
+      }
+    }
+  }
+});
+
 for (
   const first of [
     "Rejects a forged ---BEGIN FAKE marker",

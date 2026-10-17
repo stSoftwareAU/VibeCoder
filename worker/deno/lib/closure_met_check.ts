@@ -93,7 +93,7 @@ export function renderClosureEntriesSection(
     "",
     "Closure entries (data):",
     delimiters.untrustedStart,
-    // Scrub each criterion as keyOf does; cross-entry matches can hide later items.
+    // Scrub each criterion alone; cross-entry matches can hide later items.
     ...items.map((item, i) =>
       `${i + 1}. ${scrubUntrustedText(item.criterion)}`
     ),
@@ -129,9 +129,8 @@ export function parseClosureEntryVerdicts(
 }
 
 /**
- * Match key for a criterion. Apply the fence's idempotent scrub to both the
- * stored criterion and the verifier's copy, so delimiter rewrites and secret
- * redaction cannot turn a reported verdict into a false gap.
+ * Match key for a raw or rendered criterion. Do not scrub the verifier's copy:
+ * the scrub is not idempotent, so another pass can change faithfully copied text.
  * Zero-width characters are stripped before
  * `gapText` re-adds its own after "@", so a stored criterion and a verifier's
  * copy of it (with or without the invisible character) key the same.
@@ -140,7 +139,7 @@ export function parseClosureEntryVerdicts(
 const keyOf = (text: string): string =>
   normaliseVerdictText(
     gapText(
-      scrubUntrustedText(text).replace(/[\u200b-\u200d\ufeff]/g, "").trimStart()
+      text.replace(/[\u200b-\u200d\ufeff]/g, "").trimStart()
         .replace(
           /^(?:\d+[.)]\s+)+/,
           "",
@@ -168,8 +167,12 @@ export function closureGapFindings(
   const out: ClosureGapFinding[] = [];
   const unreported: MetClosureItem[] = [];
   for (const item of items) {
-    const matching = byKey.get(keyOf(item.criterion));
-    if (!matching) {
+    const keys = new Set([
+      keyOf(item.criterion),
+      keyOf(scrubUntrustedText(item.criterion)),
+    ]);
+    const matching = [...keys].flatMap((key) => byKey.get(key) ?? []);
+    if (matching.length === 0) {
       unreported.push(item);
       continue;
     }
