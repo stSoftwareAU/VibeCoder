@@ -463,9 +463,11 @@ Deno.test("multi-line: a `deno fmt`-wrapped assertEquals whose expected-value li
   const result = validateRemovedAssertions({
     changedFiles: ["worker/deno/tests/completion_test.ts"],
     testDiff: patch,
+    issueBody: "The run must continue after the summary recovers",
     prSummaryContent:
       '## Test Plan\n\n- Removed `assertEquals(outcome.status, "failure")` — ' +
-      "#3131 makes the run continue\n",
+      'Required by: "The run must continue after the summary recovers"\n' +
+      '  Replaced by: `assertEquals(outcome.status, "continue")`\n',
   });
   assert(result.valid, result.problems.join("; "));
 });

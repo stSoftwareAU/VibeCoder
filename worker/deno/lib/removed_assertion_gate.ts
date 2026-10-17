@@ -15,7 +15,10 @@
  * read at all, which fails closed), and in that case requires the PR
  * summary to carry a `## Test Plan` heading. On top of that, every
  * assertion a diff removes from a test file must be named in that Test
- * Plan — unless it was simply moved: re-wrapped, re-indented or relocated
+ * Plan with a verified Required by quote from the issue title/body or a
+ * verified Moved to destination (Issue #3739). Replaced by assertions must
+ * occur on added lines in the same file. An unchanged assertion is exempt
+ * when it was simply moved: re-wrapped, re-indented or relocated
  * with the same text and the same guards, skips and early exits around it
  * (see {@link findRemovedAssertions}). An edit to any line of a multi-line
  * assertion, or a copy re-added under a new `if`, into a skipped test or
@@ -33,6 +36,7 @@
 
 import { isTestFilePath } from "./security_fix_gate.ts";
 import { codeFenceFor, scrubUntrustedText } from "./prompt_delimiter.ts";
+import { splitMarkdownCode } from "./markdown_code_spans.ts";
 
 /**
  * Cap on the diff text scanned (defence in depth; untrusted input). Exported
@@ -500,7 +504,7 @@ function parseTestFilePatches(diffText: string): FilePatch[] {
 // ---------------------------------------------------------------------------
 
 /** Comment and string rules a test file is lexed with. */
-type Lang = "rust" | "python" | "shell" | "c";
+type Lang = "rust" | "python" | "shell" | "sql" | "c";
 
 /** File extensions whose comments start with `#`, by language. */
 const PYTHON_EXT_RE = /\.pyi?$/i;
@@ -510,6 +514,7 @@ const RUST_EXT_RE = /\.rs$/i;
 /** The lexing rules for a test file, chosen by its extension. */
 function langFor(path: string): Lang {
   if (RUST_EXT_RE.test(path)) return "rust";
+  if (/\.sql$/i.test(path)) return "sql";
   if (PYTHON_EXT_RE.test(path)) return "python";
   if (SHELL_EXT_RE.test(path)) return "shell";
   return "c";
@@ -517,6 +522,8 @@ function langFor(path: string): Lang {
 
 /** One lexed line of a side. */
 interface LexedLine {
+  /** Original comment text, excluding code and string literals. */
+  comment: string;
   /** The line with comments and string contents replaced by spaces. */
   code: string;
   /** The line with comments removed and strings kept. */
@@ -591,6 +598,7 @@ function lexLines(lines: readonly SideLine[], lang: Lang): LexedSide {
     const raw = lines[lineIndex]!.raw;
     let code = "";
     let stripped = "";
+    let comment = "";
     const startsInside = inBlockComment || open !== null;
     let sawComment = inBlockComment;
     let sawCode = false;
@@ -598,7 +606,9 @@ function lexLines(lines: readonly SideLine[], lang: Lang): LexedSide {
     while (i < raw.length) {
       const ch = raw[i]!;
       if (inBlockComment) {
+        comment += ch;
         if (ch === "*" && raw[i + 1] === "/") {
+          comment += "/";
           inBlockComment = false;
           code += "  ";
           i += 2;
@@ -641,9 +651,13 @@ function lexLines(lines: readonly SideLine[], lang: Lang): LexedSide {
       }
       if (slashComments && ch === "/" && raw[i + 1] === "/") {
         sawComment = true;
+        comment += raw.slice(i);
         break;
       }
-      if (slashComments && ch === "/" && raw[i + 1] === "*") {
+      if (
+        (slashComments || lang === "sql") && ch === "/" && raw[i + 1] === "*"
+      ) {
+        comment += "/*";
         sawComment = true;
         inBlockComment = true;
         openLine = lineIndex;
@@ -656,6 +670,12 @@ function lexLines(lines: readonly SideLine[], lang: Lang): LexedSide {
           (lang === "shell" && (i === 0 || /\s/.test(raw[i - 1]!))))
       ) {
         sawComment = true;
+        comment += raw.slice(i);
+        break;
+      }
+      if (lang === "sql" && ch === "-" && raw[i + 1] === "-") {
+        sawComment = true;
+        comment += raw.slice(i);
         break;
       }
       if (lang === "c" && ch === "/" && regexCanStart(prev)) {
@@ -716,6 +736,7 @@ function lexLines(lines: readonly SideLine[], lang: Lang): LexedSide {
     }
     if (open && !open.multiline) open = null;
     out.push({
+      comment,
       code,
       stripped,
       commentOnly: sawComment && !sawCode,
@@ -730,6 +751,17 @@ function lexLines(lines: readonly SideLine[], lang: Lang): LexedSide {
       : Math.min(unterminatedFrom, outer.line);
   }
   return { lines: out, unterminatedFrom };
+}
+
+/** Reuse the assertion scanner's language-aware lexer for prose selection. */
+export function sourceProseLines(source: string, path: string): {
+  lines: Array<{ code: string; comment: string }>;
+  unterminatedFrom: number;
+} {
+  return lexLines(
+    source.split("\n").map((raw, seq) => ({ raw, changed: false, seq })),
+    langFor(path),
+  );
 }
 
 /** The last significant code character, and the identifier it ends. */
@@ -1718,6 +1750,35 @@ function extractAssertionsFromBlock(
   return results;
 }
 
+/** Analyse both sides once using the same lexer and assertion context rules. */
+function analyseTestPatches(diffText: string) {
+  const patches = parseTestFilePatches(diffText);
+  return patches.map((patch) => {
+    const oldSide = analyseSide(patch.oldLines, patch.lang);
+    const newSide = analyseSide(patch.newLines, patch.lang);
+    // Where either side's lexer ended still inside a string, template or
+    // block comment, by patch position (Infinity when neither did).
+    let lostSeq = Infinity;
+    if (oldSide.unterminatedFrom !== -1) {
+      lostSeq = patch.oldLines[oldSide.unterminatedFrom]!.seq;
+    }
+    if (newSide.unterminatedFrom !== -1) {
+      lostSeq = Math.min(
+        lostSeq,
+        patch.newLines[newSide.unterminatedFrom]!.seq,
+      );
+    }
+    return {
+      patch,
+      oldStatements: oldSide.statements,
+      oldLexed: oldSide.lexed,
+      newStatements: newSide.statements,
+      newUnterminatedFrom: newSide.unterminatedFrom,
+      lostSeq,
+    };
+  });
+}
+
 /**
  * Removed assertion statements from existing test files in a unified diff.
  *
@@ -1753,31 +1814,7 @@ function extractAssertionsFromBlock(
  * moves therefore has to be named in the Test Plan too.
  */
 export function findRemovedAssertions(diffText: string): RemovedAssertion[] {
-  const patches = parseTestFilePatches(diffText);
-  const analysed = patches.map((patch) => {
-    const oldSide = analyseSide(patch.oldLines, patch.lang);
-    const newSide = analyseSide(patch.newLines, patch.lang);
-    // Where either side's lexer ended still inside a string, template or
-    // block comment, by patch position (Infinity when neither did).
-    let lostSeq = Infinity;
-    if (oldSide.unterminatedFrom !== -1) {
-      lostSeq = patch.oldLines[oldSide.unterminatedFrom]!.seq;
-    }
-    if (newSide.unterminatedFrom !== -1) {
-      lostSeq = Math.min(
-        lostSeq,
-        patch.newLines[newSide.unterminatedFrom]!.seq,
-      );
-    }
-    return {
-      patch,
-      oldStatements: oldSide.statements,
-      oldLexed: oldSide.lexed,
-      newStatements: newSide.statements,
-      newUnterminatedFrom: newSide.unterminatedFrom,
-      lostSeq,
-    };
-  });
+  const analysed = analyseTestPatches(diffText);
 
   const newCounts = new Map<string, number>();
   for (const { newStatements, newUnterminatedFrom } of analysed) {
@@ -1937,6 +1974,153 @@ function canonicaliseTestPlanBody(body: string): string {
   return canonicaliseUncapped(unescaped);
 }
 
+/** One list entry, with its named assertion separate from its reasons. */
+interface AssertionEntry {
+  canonical: string;
+  rawCanonical: string;
+  source?: string;
+  fields: Map<string, string>;
+  duplicateField: boolean;
+}
+
+/** Keep each reason with its own list entry, including indented continuations. */
+function assertionEntries(body: string): AssertionEntry[] {
+  const blocks: string[] = [];
+  let lines: string[] = [];
+  let indent = Infinity;
+  let afterBlank = false;
+  for (const line of body.split(/\r?\n/)) {
+    const bullet = line.match(/^(\s*)(?:[-*+]|\d+[.)])\s+/);
+    if (
+      (bullet && bullet[1]!.length <= indent) ||
+      (afterBlank && line.trim() !== "" && indentOf(line) <= indent)
+    ) {
+      if (lines.length > 0) blocks.push(lines.join("\n"));
+      lines = [];
+      indent = bullet?.[1]?.length ?? Infinity;
+    } else if (HEADING_LINE_RE.test(line)) {
+      if (lines.length > 0) blocks.push(lines.join("\n"));
+      lines = [];
+      indent = Infinity;
+    }
+    lines.push(line);
+    afterBlank = line.trim() === "";
+  }
+  if (lines.length > 0) blocks.push(lines.join("\n"));
+  return blocks.map((block) => {
+    const markers = [
+      ...block.matchAll(/(?:^|\s)(Required by|Moved to|Replaced by):\s*/g),
+    ];
+    const fields = new Map<string, string>();
+    let duplicateField = false;
+    for (let i = 0; i < markers.length; i++) {
+      const marker = markers[i]!;
+      const field = marker[1]!;
+      if (fields.has(field)) duplicateField = true;
+      fields.set(
+        field,
+        block.slice(marker.index + marker[0].length, markers[i + 1]?.index)
+          .trim(),
+      );
+    }
+    const name = block.slice(0, markers[0]?.index);
+    return {
+      canonical: canonicaliseTestPlanBody(name),
+      rawCanonical: canonicaliseUncapped(name),
+      source: name.match(/Removed from\s+`([^`]+)`/)?.[1],
+      fields,
+      duplicateField,
+    };
+  });
+}
+
+/** Preserve literal code escapes as well as Markdown-escaped copies. */
+function entryNames(
+  entry: AssertionEntry,
+  assertion: RemovedAssertion,
+): boolean {
+  if (entry.source && entry.source !== assertion.file) return false;
+  return entry.rawCanonical.includes(assertion.canonical) ||
+    entry.canonical.includes(assertion.canonical);
+}
+
+/** A requirement is a verbatim quote from title or body; comments never qualify. */
+function requirementMatches(
+  value: string,
+  issueTitle: string,
+  issueBody: string,
+): boolean {
+  const quoted = value.match(/^["“]([\s\S]+)["”][.;]?$/);
+  if (!quoted) return false;
+  const quote = quoted[1]!.replace(/\s+/g, " ").trim();
+  if (quote.split(" ").length < 5) return false;
+  return [issueTitle, issueBody].some((text) =>
+    text.replace(/\s+/g, " ").includes(quote)
+  );
+}
+
+/** Assertions on changed new-side lines, with complete readable contexts. */
+function assertionEvidence(diff: string) {
+  const old: (RemovedAssertion & { key: string })[] = [];
+  const added = new Map<string, Set<string>>();
+  const addedKeys = new Map<string, Set<string>>();
+  for (
+    const { patch, oldStatements, newStatements, newUnterminatedFrom }
+      of analyseTestPatches(diff)
+  ) {
+    for (const statement of oldStatements) {
+      if (!statement.unclosed && !statement.chainCut) {
+        old.push({
+          file: patch.file,
+          text: statement.text,
+          canonical: statement.canonical,
+          key: statement.key,
+        });
+      }
+    }
+    const canonical = new Set<string>();
+    const keys = new Set<string>();
+    for (const statement of newStatements) {
+      if (
+        statement.unclosed || statement.chainCut ||
+        (newUnterminatedFrom !== -1 && statement.start >= newUnterminatedFrom)
+      ) continue;
+      if (
+        !patch.newLines.slice(statement.start, statement.end + 1).some((line) =>
+          line.changed
+        )
+      ) continue;
+      canonical.add(statement.key.split("\u0001", 1)[0]!);
+      keys.add(statement.key);
+    }
+    added.set(patch.file, canonical);
+    addedKeys.set(patch.file, keys);
+  }
+  return { old, added, addedKeys };
+}
+
+/** Inline-code assertions in Replaced by are checked individually and exactly. */
+function replacementsMatch(
+  value: string,
+  added: Set<string> | undefined,
+): boolean {
+  // Markdown permits longer delimiters around assertions containing backticks,
+  // such as TypeScript template literals. Use the shared CommonMark scanner.
+  const assertions = splitMarkdownCode(`Replaced by: ${value}`)
+    .filter((segment) => segment.inCode)
+    .map((segment) => {
+      const delimiter = /^`+/.exec(segment.value)?.[0];
+      return delimiter && segment.value.endsWith(delimiter)
+        ? segment.value.slice(delimiter.length, -delimiter.length).trim()
+        : "";
+    });
+  if (assertions.length === 0 || !added) return false;
+  return assertions.every((text) => {
+    return added.has(canonicaliseUncapped(text)) ||
+      added.has(canonicaliseTestPlanBody(text));
+  });
+}
+
 /** Verdict of the removed-assertion gate. */
 export interface RemovedAssertionGateResult {
   /** True when the changed files include a test file, or could not be read. */
@@ -1988,6 +2172,8 @@ function evaluateApplicable(
   testFiles: string[],
   changedFilesKnown: boolean,
   testDiff: string | null,
+  issueTitle: string,
+  issueBody: string,
 ): RemovedAssertionGateResult {
   const problems: string[] = [];
 
@@ -2006,20 +2192,9 @@ function evaluateApplicable(
 
   if (testDiffKnown) {
     removed = findRemovedAssertions(testDiff!);
-    // Matched against both the unescaped-markdown canonical and the raw
-    // (un-unescaped) canonical of the Test Plan body. A removed assertion's
-    // canonical form keeps its own backslashes verbatim (it is code, not
-    // markdown), so `\.` inside a copied-verbatim regex or escaped string
-    // must still match once the markdown-escape pass turns the Test Plan's
-    // own `\.` into `.` — checking the raw body too is what lets the
-    // verbatim copy the prompt asks for actually match. Both forms are
-    // uncapped, so a name anywhere in the Test Plan counts (Issue #3438).
-    const planCanonical = canonicaliseTestPlanBody(testPlan.body);
-    const planCanonicalRaw = canonicaliseUncapped(testPlan.body);
-    unaccounted = removed.filter(
-      (assertion) =>
-        !planCanonical.includes(assertion.canonical) &&
-        !planCanonicalRaw.includes(assertion.canonical),
+    const entries = assertionEntries(testPlan.body);
+    unaccounted = removed.filter((assertion) =>
+      !entries.some((entry) => entryNames(entry, assertion))
     );
     if (unaccounted.length > 0) {
       problems.push(
@@ -2027,11 +2202,62 @@ function evaluateApplicable(
           describeUnaccounted(unaccounted)
         }`,
       );
-      // SIMPLE-ON-PURPOSE: this gate checks only that each removed assertion
-      // is named somewhere in the Test Plan, not that the stated issue
-      // requirement really makes it untrue — upgrade to check the
-      // requirement itself when a reviewed false entry reaches a milestone
-      // (the Standards reviewer judges whether the stated reason is sound).
+    }
+    const evidence = assertionEvidence(testDiff!);
+    for (const entry of entries) {
+      const named = removed.filter((assertion) => entryNames(entry, assertion));
+      const moved = entry.fields.get("Moved to");
+      if (named.length === 0 && moved === undefined) continue;
+      const required = entry.fields.get("Required by");
+      if (
+        entry.duplicateField ||
+        (required === undefined) === (moved === undefined)
+      ) {
+        problems.push(
+          "Each removed assertion entry needs exactly one Required by: quote or Moved to: path.",
+        );
+        continue;
+      }
+      if (
+        required !== undefined &&
+        !requirementMatches(required, issueTitle, issueBody)
+      ) {
+        problems.push(
+          `Required by: must quote at least 5 words verbatim from the linked issue title or body: ${
+            describeUnaccounted(named)
+          }`,
+        );
+      }
+      if (moved !== undefined) {
+        const destination = moved.replace(/^`([^`]+)`$/, "$1");
+        const original = evidence.old.filter((assertion) =>
+          entryNames(entry, assertion)
+        );
+        // The removal scan already counts copies and compares contexts. A
+        // reported removal cannot be excused by reusing a surviving copy.
+        if (
+          named.length > 0 || original.length === 0 ||
+          !original.every((assertion) =>
+            evidence.addedKeys.get(destination)?.has(assertion.key)
+          )
+        ) {
+          problems.push(
+            `Moved to: ${destination} has no matching added assertion with preserved guards, skips, early exits and copy count.`,
+          );
+        }
+      }
+      const replacements = entry.fields.get("Replaced by");
+      for (const assertion of named) {
+        const additions = evidence.added.get(assertion.file);
+        if (
+          replacements !== undefined &&
+          !replacementsMatch(replacements, additions)
+        ) {
+          problems.push(
+            `Replaced by: must name assertions added in ${assertion.file}, in inline code.`,
+          );
+        }
+      }
     }
   }
 
@@ -2057,9 +2283,11 @@ function evaluateApplicable(
  *      APPLIES (fail closed).
  *   2. A known changed-files list with no test file → not applicable, valid.
  *   3. Applicable with no `## Test Plan` section → blocked.
- *   4. When the test diff is known, every removed (not-moved) assertion must
- *      be named (as its canonical form) somewhere in the Test Plan body, or
- *      the PR is blocked.
+ *   4. When the test diff is known, every removed assertion must be named
+ *      in its own Test Plan list entry with a Required by quote of at least
+ *      5 words from the issue title or body. Explicit Moved to entries must
+ *      name an added copy with preserved context and copy count. Replaced
+ *      by assertions must be added in the original test file.
  *   5. `testDiff === null` → no assertion-naming problem is raised (the
  *      caller logs the gap); rule 3 still applies.
  *
@@ -2068,16 +2296,27 @@ function evaluateApplicable(
  * @param opts.testDiff - Output of `removedAssertionDiffArgs`, or `null`
  *   when it could not be read / was not collected.
  * @param opts.prSummaryContent - The PR summary content (or assembled body).
+ * @param opts.issueTitle - Linked issue title, without comments.
+ * @param opts.issueBody - Linked issue body, without comments.
  */
 export function validateRemovedAssertions(opts: {
   changedFiles: readonly string[] | null;
   testDiff: string | null;
   prSummaryContent: string;
+  issueTitle?: string;
+  issueBody?: string;
 }): RemovedAssertionGateResult {
   const testPlan = findTestPlanSection(opts.prSummaryContent ?? "");
 
   if (opts.changedFiles === null) {
-    return evaluateApplicable(testPlan, [], false, opts.testDiff);
+    return evaluateApplicable(
+      testPlan,
+      [],
+      false,
+      opts.testDiff,
+      opts.issueTitle ?? "",
+      opts.issueBody ?? "",
+    );
   }
 
   const testFiles = opts.changedFiles.filter((path) => isTestFilePath(path));
@@ -2095,7 +2334,14 @@ export function validateRemovedAssertions(opts: {
     };
   }
 
-  return evaluateApplicable(testPlan, testFiles, true, opts.testDiff);
+  return evaluateApplicable(
+    testPlan,
+    testFiles,
+    true,
+    opts.testDiff,
+    opts.issueTitle ?? "",
+    opts.issueBody ?? "",
+  );
 }
 
 /** Cap on how many unaccounted assertions are listed in the gate comment. */
@@ -2120,7 +2366,8 @@ export function buildRemovedAssertionGateComment(
     "⚠️ **Removed test assertions not accounted for.** This diff edits an " +
     "existing test, so the PR summary must carry a `## Test Plan` that " +
     "names every assertion removed from an existing test — with the issue " +
-    "requirement that makes it untrue — or says where it moved:",
+    "requirement that makes it untrue in a verified Required by: quote — " +
+    "or a verified Moved to: destination:",
     "",
     problems,
   ];
@@ -2176,16 +2423,21 @@ export function buildRemovedAssertionGateComment(
     "3. Add each remaining removed assertion to the Test Plan in " +
       "`docs/archive/pr-summaries/pr-summary-<issue>.md`, copied as it " +
       "appears in the diff (whitespace differences are ignored), in this " +
-      "shape:",
+      "shape. Required by: quotes at least 5 words verbatim from the linked " +
+      "issue title or body (not comments). Moved to: names a file with a " +
+      "matching added assertion. A replacement also needs Replaced by: " +
+      "naming every replacement assertion in inline code, added in the same file:",
     "",
     "```markdown",
     "## Test Plan",
     "",
     "- Removed from `crates/api/tests/decisions.rs`: " +
-      '`assert_eq!(record.score.to_string(), "-0.5")` — #2253 changes the ' +
-      "score to a rating, so the old value is untrue",
-    "- Moved `assertEquals(result.code, 0)` to " +
-      "`worker/deno/tests/foo_test.ts::exits cleanly`",
+      '`assert_eq!(record.score.to_string(), "-0.5")`',
+    '  Required by: "Change the numeric score to a rating"',
+    '  Replaced by: `assert_eq!(record.rating, "low")`',
+    "- Removed from `worker/deno/tests/old_test.ts`: " +
+      "`assertEquals(result.code, 0)`",
+    "  Moved to: `worker/deno/tests/foo_test.ts`",
     "```",
   );
 

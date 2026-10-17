@@ -1049,7 +1049,7 @@ export function getFailureDiagnosis(
     case "workflow_gate":
       return `- A workflow file this run added or changed carries a GitHub Actions finding the base commit did not, so the changed-workflow gate refused the run (Issue #1859)
 - The finding is a defect in the change, not a documentation shortfall: it stops the run whether or not a pull request already exists
-- Fix the named file \u2014 or, for a scanner finding that genuinely does not apply, add a \`# best-practice-ignore: <finding-id>\` comment beside the offending line
+- Fix the named file \u2014 a finding that genuinely does not apply cannot be cleared by the run (the gate honours no in-file suppression marker), so it needs a human to review it, or a fix to the scanner
 - When the run had already raised its pull request, that PR stays open and carries the outstanding finding \u2014 the work is delivered, the finding is not`;
 
     case "repo_config":

@@ -189,6 +189,30 @@ Deno.test("validateDocsSweep - code diff with a line but no section is rejected"
   assertStringIncludes(result.problems[0]!, "section");
 });
 
+for (
+  const [field, valid] of [
+    ["grep `x`", true],
+    ["grep terms `x`", true],
+    ["grep: none — no renamed surface terms", true],
+    ["grep: unquoted", false],
+    ["grep: none", false],
+    ["grep: none —", false],
+    ["grep: none — .", false],
+    ["no grep field", false],
+    ["grep: . updated: `README.md`", false],
+  ] as const
+) {
+  Deno.test(`validateDocsSweep - grep evidence ${field} (Issue #3861)`, () => {
+    const result = validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent:
+        `Docs sweep: ${field}; section: \`docs/x.md\`; siblings: none — no existing set gained a member`,
+    });
+    assertEquals(result.valid, valid);
+    if (!valid) assertStringIncludes(result.problems.join("; "), "grep");
+  });
+}
+
 Deno.test("validateDocsSweep - a wrapped plain entry with section on the next line is accepted", () => {
   const result = validateDocsSweep({
     changedFiles: ["worker/deno/lib/x.ts"],
