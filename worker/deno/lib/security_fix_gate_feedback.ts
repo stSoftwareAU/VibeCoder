@@ -170,29 +170,23 @@ export function sanitiseDiscrimination(
   const record = value as Record<string, unknown>;
   if (record.kind === "not_checked") {
     const reason = boundedText(record.reason);
-    return reason === "" ? undefined : { kind: "not_checked", reason };
+    if (reason === "") return undefined;
+    const runs = sanitiseRuns(record.runs);
+    const notRun = sanitiseNotRun(record.notRun);
+    return {
+      kind: "not_checked",
+      reason,
+      ...(runs.length > 0 ? { runs } : {}),
+      ...(notRun.length > 0 ? { notRun } : {}),
+    };
   }
   if (record.kind !== "checked") return undefined;
   const run = sanitiseRun(record);
   if (!run) return undefined;
   // Other cited tests' runs (PR #3921 review): each is validated on its own and
   // an invalid one is dropped, so a bad entry cannot discard the deciding run.
-  const others = Array.isArray(record.others)
-    ? record.others.slice(0, MAX_REPORTED_OTHER_RUNS).map((o) => sanitiseRun(o))
-      .filter((o): o is DiscriminationRun => o !== undefined)
-    : [];
-  const notRun = Array.isArray(record.notRun)
-    ? record.notRun.slice(0, MAX_REPORTED_OTHER_RUNS).map((value) => {
-      if (typeof value !== "object" || value === null) return undefined;
-      const entry = value as Record<string, unknown>;
-      const test = entry.test as Record<string, unknown> | null | undefined;
-      const file = boundedText(test?.file);
-      const name = boundedText(test?.name);
-      const reason = boundedText(entry.reason);
-      if (file === "" || name === "" || reason === "") return undefined;
-      return { test: { file, name }, reason };
-    }).filter((entry): entry is DiscriminationNotRun => entry !== undefined)
-    : [];
+  const others = sanitiseRuns(record.others);
+  const notRun = sanitiseNotRun(record.notRun);
   return {
     kind: "checked",
     ...run,
@@ -203,6 +197,29 @@ export function sanitiseDiscrimination(
 
 /** Cap on the other cited tests' runs kept in a recorded discrimination. */
 const MAX_REPORTED_OTHER_RUNS = 10;
+
+/** Validate a list of completed runs; an invalid entry is dropped alone. */
+function sanitiseRuns(value: unknown): DiscriminationRun[] {
+  return Array.isArray(value)
+    ? value.slice(0, MAX_REPORTED_OTHER_RUNS).map((o) => sanitiseRun(o))
+      .filter((o): o is DiscriminationRun => o !== undefined)
+    : [];
+}
+
+/** Validate a list of unrun cited tests; an invalid entry is dropped alone. */
+function sanitiseNotRun(value: unknown): DiscriminationNotRun[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, MAX_REPORTED_OTHER_RUNS).map((entry) => {
+    if (typeof entry !== "object" || entry === null) return undefined;
+    const e = entry as Record<string, unknown>;
+    const test = e.test as Record<string, unknown> | null | undefined;
+    const file = boundedText(test?.file);
+    const name = boundedText(test?.name);
+    const reason = boundedText(e.reason);
+    if (file === "" || name === "" || reason === "") return undefined;
+    return { test: { file, name }, reason };
+  }).filter((entry): entry is DiscriminationNotRun => entry !== undefined);
+}
 
 function sanitiseRun(value: unknown): DiscriminationRun | undefined {
   if (typeof value !== "object" || value === null) return undefined;

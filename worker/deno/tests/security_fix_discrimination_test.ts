@@ -1075,11 +1075,17 @@ Deno.test("discrimination: a cited test that could not be run makes an otherwise
       input(root, { tests: [FIRST, SECOND] }),
       rec.seams,
     );
-    const reason = reasonOf(r);
-    assertStringIncludes(reason, "1 of 2 cited tests could not be run");
-    assertStringIncludes(reason, "tests/sanitise_test.ts::first case");
-    assertStringIncludes(reason, "did not run at the head");
-    assertStringIncludes(reason, "second case base pass, head pass");
+    assertEquals(reasonOf(r), "1 of 2 cited tests could not be run");
+    assertEquals(r, {
+      kind: "not_checked",
+      reason: "1 of 2 cited tests could not be run",
+      runs: [{ test: SECOND, preFix: "pass", postFix: "pass" }],
+      notRun: [{
+        test: FIRST,
+        reason:
+          'the cited test did not run at the head: no test named "first case" was reported',
+      }],
+    });
   });
 });
 
@@ -1125,10 +1131,14 @@ Deno.test("discrimination: the cited tests share one budget, so a later test sta
       input(root, { tests: [FIRST, SECOND], budgetSeconds: 10 }),
       rec.seams,
     );
-    const reason = reasonOf(r);
-    assertStringIncludes(reason, "1 of 2 cited tests could not be run");
-    assertStringIncludes(reason, "budget of 10s ran out");
-    assertStringIncludes(reason, "first case base pass, head pass");
+    assertEquals(reasonOf(r), "1 of 2 cited tests could not be run");
+    assertEquals(
+      r.kind === "not_checked" ? r.runs : undefined,
+      [{ test: FIRST, preFix: "pass", postFix: "pass" }],
+    );
+    const notRun = r.kind === "not_checked" ? r.notRun ?? [] : [];
+    assertEquals(notRun.map((n) => n.test), [SECOND]);
+    assertStringIncludes(notRun[0]?.reason ?? "", "budget of 10s ran out");
   });
 });
 
@@ -1143,14 +1153,14 @@ Deno.test("discrimination: an unsupported citation makes a green-green result no
       input(root, { tests: [unsupported, FIRST] }),
       rec.seams,
     );
-    const reason = reasonOf(r);
-    assertStringIncludes(
-      reason,
-      "tests/sanitise.bats::rejects dot-dot traversal",
-    );
-    assertStringIncludes(reason, "language");
-    assertStringIncludes(reason, "only Deno and Rust");
-    assertStringIncludes(reason, "first case base pass, head pass");
+    assertEquals(reasonOf(r), "1 of 2 cited tests could not be run");
+    const notRun = r.kind === "not_checked" ? r.notRun ?? [] : [];
+    assertEquals(notRun.map((n) => n.test), [unsupported]);
+    assertStringIncludes(notRun[0]?.reason ?? "", "language");
+    assertStringIncludes(notRun[0]?.reason ?? "", "only Deno and Rust");
+    assertEquals(r.kind === "not_checked" ? r.runs : undefined, [
+      { test: FIRST, preFix: "pass", postFix: "pass" },
+    ]);
   });
 });
 

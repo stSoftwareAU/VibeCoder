@@ -126,7 +126,10 @@ kept in the deciding record and `others`; unsupported citations and failed
 attempts are kept in `notRun`, each with its test and cause. The fix passes when
 any one goes red then green, retaining those unrun citations in the pass log;
 otherwise a cited test that could not be run makes the result `not_checked`,
-because it may be the one that discriminates. The
+because it may be the one that discriminates. A `not_checked` result for several
+cited tests keeps a short summary `reason` and, per test, the completed outcomes
+in `runs` and each unrun test with its cause in `notRun`, so the stored record
+does not cut the combined text. The
 static `test-identifier-in-diff` check is unchanged and still accepts any whole
 token of a declaration line.
 
@@ -144,9 +147,12 @@ unrun, and blocks as not checked when no other cited test discriminates the fix,
 unless the repo sets `skip_security_fix_check`. Function-named pytest, Go and
 Java citations remain in that record; their names are read only in their own
 language's files, so JS/TS callback text cannot replace a Deno test's string name.
-The reason says which: "the language of the cited test cannot be executed" when
-a test is cited but cannot be run, and "cites no test the worker can execute"
-when the summary cites none the worker can run.
+For a single cited test that cannot be run, the reason says why: "the language
+of the cited test cannot be executed". When the summary cites none the worker
+can run, it says "cites no test the worker can execute". With several cited
+tests the reason is a summary ("N of M cited tests could not be run"); each
+unrun test and its cause, such as its unsupported language, sit in the record's
+`notRun` entries.
 
 Both outcomes are recorded on the block verdict in run state
 (`SecurityGateRunVerdict.discrimination` in `state.securityGateBlocks`),
@@ -175,9 +181,10 @@ The sibling placement is the same reasoning as the content-approval baseline —
 erase the record. Each file holds the missing evidence kinds, the ISO timestamp
 of the last block, the test declarations the gate matched, the bounded
 discrimination record, and a running `blockCount` so a repeat loop is visible
-in the retry prompt and the worker log. Optional `notRun` entries are capped at
-ten with 300-character file, test-name and reason fields. Older records without
-`notRun` still read. The discrimination record itself is an optional field in
+in the retry prompt and the worker log. Optional `notRun` entries (on a `checked` or a
+`not_checked` record) and `runs` (on a `not_checked` record) are capped at ten
+with 300-character file, test-name and reason fields. Older records without
+them still read. The discrimination record itself is an optional field in
 the version-1 file: a file written before it existed reads as having none, so
 the key is not bumped.
 

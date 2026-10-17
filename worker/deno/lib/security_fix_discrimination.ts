@@ -75,7 +75,9 @@ export interface DiscriminationNotRun {
  * `checked` carries the deciding run (a red-to-green test if the summary cited
  * one, else the first) and, when the summary cited several tests, every other
  * completed run in `others` and each unrun test with its cause in `notRun`.
- * The gate decides on the deciding run alone.
+ * The gate decides on the deciding run alone. A `not_checked` result for
+ * several cited tests keeps each test's outcome or cause in structured entries
+ * rather than one long `reason`, so the bounded stored record loses none.
  */
 export type SecurityFixDiscrimination =
   | ({
@@ -83,7 +85,15 @@ export type SecurityFixDiscrimination =
     others?: DiscriminationRun[];
     notRun?: DiscriminationNotRun[];
   } & DiscriminationRun)
-  | { kind: "not_checked"; reason: string };
+  | {
+    kind: "not_checked";
+    /** A short summary line; per-test detail lives in `runs` and `notRun`. */
+    reason: string;
+    /** Completed base/head outcomes, when several tests were cited. */
+    runs?: DiscriminationRun[];
+    /** Each cited test that could not run, with its own cause. */
+    notRun?: DiscriminationNotRun[];
+  };
 
 export interface DiscriminationRunInput {
   /** The issue checkout. */
@@ -288,34 +298,26 @@ function combineRuns(
       });
     }
   }
+  const notRun: DiscriminationNotRun[] = runs.flatMap(({ test, result }) =>
+    result.kind === "not_checked"
+      ? [{
+        test: { file: clip(test.file), name: clip(test.name) },
+        reason: clip(result.reason),
+      }]
+      : []
+  );
   const winner = checked.find((c) =>
     c.preFix === "fail" && c.postFix === "pass"
   );
-  if (winner !== undefined) {
-    const notRun: DiscriminationNotRun[] = runs.flatMap(({ test, result }) =>
-      result.kind === "not_checked"
-        ? [{
-          test: { file: clip(test.file), name: clip(test.name) },
-          reason: clip(result.reason),
-        }]
-        : []
-    );
-    return withOthers(winner, checked, notRun);
-  }
-  if (checked.length < runs.length) {
+  if (winner !== undefined) return withOthers(winner, checked, notRun);
+  if (notRun.length > 0) {
     // A test that did not run may be the one that discriminates.
-    return notChecked(
-      `${runs.length - checked.length} of ${runs.length} cited tests could ` +
-        `not be run: ${
-          runs.map(({ test, result }) =>
-            `${test.file}::${clip(test.name)} ${
-              result.kind === "checked"
-                ? `base ${result.preFix}, head ${result.postFix}`
-                : clip(result.reason)
-            }`
-          ).join("; ")
-        }`,
-    );
+    return {
+      kind: "not_checked",
+      reason: `${notRun.length} of ${runs.length} cited tests could not be run`,
+      ...(checked.length > 0 ? { runs: checked } : {}),
+      notRun,
+    };
   }
   return withOthers(checked[0] as DiscriminationRun, checked);
 }

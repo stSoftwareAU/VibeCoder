@@ -696,17 +696,20 @@ export function formatDiscriminationRecord(
     `base production files: ${run.preFix} (expected fail)`,
     `head: ${run.postFix} (expected pass)`,
   ];
-  const lines = discrimination.kind === "checked"
-    ? [
-      ...runLines(discrimination),
-      ...(discrimination.others ?? []).flatMap((o) => ["", ...runLines(o)]),
-      ...(discrimination.notRun ?? []).flatMap((run) => [
-        "",
-        `${run.test.file}::${run.test.name}`,
-        `not run: ${run.reason}`,
-      ]),
-    ]
-    : [discrimination.reason];
+  const others = discrimination.kind === "checked"
+    ? discrimination.others
+    : discrimination.runs;
+  const lines = [
+    ...(discrimination.kind === "checked"
+      ? runLines(discrimination)
+      : [discrimination.reason]),
+    ...(others ?? []).flatMap((o) => ["", ...runLines(o)]),
+    ...(discrimination.notRun ?? []).flatMap((run) => [
+      "",
+      `${run.test.file}::${run.test.name}`,
+      `not run: ${run.reason}`,
+    ]),
+  ];
   const body = scrubUntrustedText(lines.join("\n"));
   const fence = codeFenceFor(body);
   return `Recorded discrimination runs:
