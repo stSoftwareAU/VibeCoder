@@ -18,6 +18,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  lifecycleRecordingContext,
+  withLifecycleRecording,
+} from "./lifecycle_recording.ts";
+
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { stopHeartbeat } from "./heartbeat.ts";
 import { detachLaneWorktreeHead } from "./lane_worktree.ts";
@@ -133,6 +138,16 @@ export {
  * and records timing for each phase.
  */
 export async function workOnIssue(
+  ctx: IssueContext,
+  deps: WorkerDeps,
+): Promise<WorkOnIssueResult> {
+  return await withLifecycleRecording(
+    lifecycleRecordingContext(ctx.config.workDir, ctx.repo, ctx.issueNumber),
+    () => workOnIssueRecorded(ctx, deps),
+  );
+}
+
+async function workOnIssueRecorded(
   ctx: IssueContext,
   deps: WorkerDeps,
 ): Promise<WorkOnIssueResult> {

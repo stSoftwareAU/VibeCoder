@@ -1,0 +1,12 @@
+{
+  "issue": 3743,
+  "chunk": "top-up-3743",
+  "title": "top-up: routed issue filing",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3743",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/issue_routing_filing.ts, the single routed filing entry point that classifies, deduplicates, checks permission and creates the issue (#3743)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/issue_routing_filing.ts"
+  ],
+  "sweptAt": "74f42527483bfd363955ceb25b2ebe92765d9e03"
+}
