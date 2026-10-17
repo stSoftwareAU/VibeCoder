@@ -333,3 +333,12 @@ Deno.test("isWorkerGateFailureRecord - a registered gate category in the head li
     assertEquals(isWorkerGateFailureRecord(body), true, entry.category);
   }
 });
+
+Deno.test("isWorkerGateFailureRecord - a raw marked reason with no posted heading and Category head is not a gate record (Issue #3735)", () => {
+  // The marker opens the raw reason, but nothing posts it as a failure record:
+  // there is no `## …` heading and no `**Category:**` head line.
+  const first = WORKER_GATE_MARKERS[0];
+  assert(first !== undefined, "the registry has at least one gate");
+  assertEquals(isWorkerGateFailureRecord(`${first.marker}: x`), false);
+  assertEquals(isWorkerGateFailureRecord(""), false);
+});
