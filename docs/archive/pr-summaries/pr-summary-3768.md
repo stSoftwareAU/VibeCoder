@@ -137,9 +137,9 @@ still misses the manual for the changed surface (the existing gate's
 - `deno task test tests/pr_summary_ci_test.ts tests/pr_summary_check_test.ts`:
   passed. `deno task test tests/pr_summary_ci_workflow_3768_test.ts tests/workflow_definitions_test.ts tests/workflow_hardening_test.ts tests/issue_3333_validate_scripts_pr_only_test.ts tests/pr_check_contexts_test.ts`:
   passed. `actionlint .github/workflows/validate-scripts.yml`: clean.
-- `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`. The only
-  skip is `config integration`. This run was before the last three test-only
-  commits, which were then run on their own: 38 passed.
+- `./quality.sh < /dev/null` on the final head: `Result: PASSED (with skipped
+  checks)`. The only skip is `config integration` (`deno or .config.json not
+  available`).
 - No existing test was edited or had an assertion removed.
 - Callers checked: the one new call site is the CI step; reverting it
   (deleting the step) turns the workflow test red. `runPrSummaryCheck` gains
