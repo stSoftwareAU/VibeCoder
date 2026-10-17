@@ -21,9 +21,10 @@
  * Maturity depends on assignment age only. An assignment is mature once it was
  * assigned at least horizonDays ago, whatever its status. Younger assignments
  * are excluded from merged per USD, the merge rate, the per-assignment rates,
- * the evidence level and the verdict, so an early merge cannot bias them
- * towards success (survivor bias). Only the throughput figures count every
- * verified merge.
+ * the evidence level and the verdict's 30-merged gate, so an early merge cannot
+ * bias them towards success (survivor bias). The all-record counts (merged,
+ * the throughput figures, weekly rows and breakdowns) and the exposure, bias
+ * and unverified-merge warnings read every record.
  *
  * Pure functions only. The bootstrap uses a seeded mulberry32 PRNG, so the same
  * events and options always produce the same report.
@@ -167,8 +168,7 @@ export interface AssignmentRecord {
   /**
    * Mature once assigned at least horizonDays ago, whatever the status. Only
    * mature records count in merged per USD, the merge rate, the per-assignment
-   * rates, the evidence level and the verdict; the throughput figures
-   * (mergedPerHostDay, throughputPerDay) count every record.
+   * rates, the evidence level and the verdict's 30-merged gate.
    */
   mature: boolean;
   /** True when the assignment is still pending. */
@@ -201,9 +201,9 @@ export interface ArmSummary {
   pending: number;
   /** Mature records still pending, censored at the horizon. */
   censoredAtHorizon: number;
-  /** Verified merges over every assigned record, mature or not. Feeds only the throughput figures. */
+  /** Verified merges over every assigned record, mature or not. Feeds the throughput figures and the "Merged (all)" column. */
   merged: number;
-  /** Verified merges among mature records. The evidence level and the verdict count these. */
+  /** Verified merges among mature records. The evidence level and the verdict's 30-merged gate count these. */
   matureMerged: number;
   mergedUnverified: number;
   failed: number;

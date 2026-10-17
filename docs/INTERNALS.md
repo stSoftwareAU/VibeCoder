@@ -1248,19 +1248,23 @@ CI reads only the `quality` gate, so a closed PR's `pr_open` failure or a
 requested review change is not a CI failure.
 
 **Cost.** Cost includes every attempt, failed invocation, retry and follow-on.
-An unknown cost is counted, never treated as zero. A mature assignment with
-any unknown cost raises the `missing-cost` warning; an immature one raises it
-only once it matures.
+An unknown cost adds nothing to an arm's known USD, so it is never silently
+taken as a real zero: each mature assignment with any unknown cost is counted,
+and any such assignment raises the blocking `missing-cost` warning, which says
+that arm's merged per USD is overstated. An immature assignment raises it only
+once it matures.
 
 **Maturity, horizon and censoring.** Maturity is decided by assignment age
 alone. An assignment is mature once it is at least the horizon (`--horizon`,
 default 14 days) old, whatever its status, so early resolvers are not favoured
 and the rates carry no survivor bias. Younger assignments are shown as pending
 and are excluded from merged per USD, the merge rate, the per-assignment rates,
-the evidence level and the verdict. Only the throughput figures (merged per
-host-day and throughput per day) count verified merges from every assignment,
-mature or not. A mature assignment still pending is counted as not merged and
-censored at the horizon.
+the evidence level and the verdict's 30-merged gate. The all-record counts (the
+"Merged (all)" column, merged per host-day, throughput per day, the weekly rows
+and the breakdowns) include verified merges from every assignment, mature or
+not, and the `biased-assignment`, `unequal-exposure` and `unverified-merge`
+warnings read every assignment. A mature assignment still pending is counted as
+not merged and censored at the horizon.
 
 **Intervals.** Merged issues per dollar uses a bootstrap interval, and the merge
 rate uses a Wilson interval. Both are 99% intervals, deliberately conservative
@@ -1273,13 +1277,15 @@ mature merged issues.
 `low-sample`, `missing-cost`, `biased-assignment`, `unequal-exposure`,
 `excluded-model`, `unverified-merge`, `unattributed-events` and `unknown-arm`.
 
-**Verdict.** The verdict considers active arms only: arms awaiting feasibility
-and unconfigured cohorts such as `unassigned` are not checked. Fewer than two
-active arms gives `no-decision`; today only the control is active. Otherwise
-there is no winner unless every active arm has at least 30 mature merged issues,
-no blocking warning is raised, and one active arm's 99% merged-per-USD interval
-lies wholly above every other active arm's. Otherwise the verdict is
-`no-decision`.
+**Verdict.** Fewer than two active arms gives `no-decision`; today only the
+control is active. Otherwise there is no winner unless every active arm has at
+least 30 mature merged issues, no blocking warning (`low-sample`,
+`missing-cost`, `biased-assignment`, `unequal-exposure` or `unverified-merge`)
+is raised for any cohort, and one active arm's 99% merged-per-USD interval lies
+wholly above every other active arm's. The 30-merged gate and the interval
+comparison look at active arms only; arms awaiting feasibility and unconfigured
+cohorts such as `unassigned` can still block a verdict through a warning.
+Otherwise the verdict is `no-decision`.
 
 **Views and breakdowns.** The default text output prints weekly rows, a rolling
 view over `--window` (default 30 days), and breakdowns by host, provider, role

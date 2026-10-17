@@ -49,15 +49,18 @@ allocation and the pre-PR-verification on/off comparison.
 - The intervals are 99% (bootstrap for merged per USD, Wilson for merge
   rate), deliberately conservative against repeated looks. No arm is named
   the leader unless at least two arms are active, every active arm has 30 or
-  more mature merged issues, no blocking warning is raised, and the leader's
-  interval clears every other active arm's. Arms awaiting feasibility and
-  unconfigured cohorts such as `unassigned` are not checked by the verdict.
+  more mature merged issues, no blocking warning is raised for any cohort, and
+  the leader's interval clears every other active arm's. The 30-merged gate and
+  the interval comparison look at active arms only; arms awaiting feasibility
+  and unconfigured cohorts such as `unassigned` can still block a verdict
+  through a warning.
 - Immature merges never count as evidence. `ArmSummary.matureMerged` counts
   verified merges from mature assignments only, and the evidence level and the
   verdict's 30-merged gate read it. `ArmSummary.merged` counts verified merges
-  from every assignment and feeds only the throughput figures (merged per
-  host-day, throughput per day). The text table shows both, as "Merged (all)"
-  and "Mature merged".
+  from every assignment and feeds the throughput figures (merged per host-day,
+  throughput per day); the weekly and breakdown rows also count every
+  assignment. The text table shows both arm counts, as "Merged (all)" and
+  "Mature merged".
 
 ### Undiscoverable Facts
 
@@ -123,6 +126,9 @@ Evidence for #N citations: #3643: Configure manager, executor and reviewer indep
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
+- **violation** — A Code Change Owes a Docs Change: the INTERNALS verdict paragraph said arms awaiting feasibility and `unassigned` are not checked, but their `low-sample`, `missing-cost` and `biased-assignment` warnings block a verdict — evidence: `docs/INTERNALS.md` (Verdict paragraph) — reason: fixed in this diff
+- **violation** — A Code Change Owes a Docs Change: INTERNALS, the module doc and the `AssignmentRecord.mature` comment said immature records are excluded from the verdict and only the throughput figures count every merge, but weekly rows, breakdowns and the exposure, bias and unverified-merge warnings read every record — evidence: `docs/INTERNALS.md` (maturity paragraph), `worker/deno/lib/fleet_experiment_report.ts` — reason: fixed in this diff
+- **violation** — A Code Change Owes a Docs Change: "An unknown cost is counted, never treated as zero" hid that unknown cost adds nothing to known USD, so merged per USD is overstated — evidence: `docs/INTERNALS.md` (Cost paragraph) — reason: fixed in this diff
 - **clean** — no violation found. Checked: Australian English; fail loud (every catch in the command surfaces its error); ledger paths (each `--ledger` path is used as given once `Deno.stat` finds it, and without `--ledger` only `readDir` names on the work volume matching the ledger pattern are read); covariate refusals never echo file content; nothing exists only for a test to read; no named-but-absent tests; `@std/assert` imports; INTERNALS claim about the PR observer holds; persisted shape unchanged; review-enforced rules checked: removed and edited test assertions (`worker/deno/tests/mod_test.ts` 153 → 154, still red without the registration). Optional notes not chased: `Parsed<T>` uses `message` rather than `error`; arm validation throws rather than returning a Result; `readAllLedgers` loads every event into memory.
 
 ## Test Plan
