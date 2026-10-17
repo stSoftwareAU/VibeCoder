@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   full-quality:
-    name: Full quality (milestone 111)
+    name: Full quality (milestone 106)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -17,7 +17,7 @@ jobs:
         # actions/checkout@v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: b9fbc19cc8fb2b7dcbacf78c993b4aeb0f4a15e1
+          ref: fd73ab22322f982c2e0ce8c29973b445c6f978ce
           fetch-depth: 0
           persist-credentials: false
       - name: Install repository Deno version
