@@ -803,3 +803,42 @@ Deno.test("self-schedule - an unresolved fleet posts the announcement and delete
   );
   assertEquals(thread.rows.map((r) => r.id), [100, 200, 1000]);
 });
+
+Deno.test("self-schedule - a failed prune after the post refuses the schedule (Issue #3597)", async () => {
+  const calls: GhCall[] = [];
+  const logs: string[] = [];
+  // A second fleet host lands its announcement just before ours, so the
+  // pre-post prune sees an empty thread and we post. The post-post prune then
+  // keeps the older racing comment and gh refuses the DELETE of ours.
+  const thread = makeThreadGh(calls, {
+    racingHost: { id: 100, login: FLEET_LOGIN },
+    failDeletes: {
+      ids: [1000],
+      message: "gh: Must have admin rights to Repository. (HTTP 403)",
+    },
+  });
+  const { result } = await collect({
+    issues: [makeIssue()],
+    gh: thread.ghFn,
+    deps: captureDeps([], logs),
+  });
+
+  assertEquals(result.candidates, []);
+  assertEquals(result.refusals.length, 1);
+  assertEquals(result.refusals[0]!.issueNumber, 39);
+  assertEquals(result.refusals[0]!.cause, "announce-failed");
+  assertStringIncludes(result.refusals[0]!.detail, "HTTP 403");
+  assertStringIncludes(result.refusals[0]!.detail, "comment 1000");
+  assertEquals(
+    calls.filter((c) => c.args.join(" ").includes("issue comment")).length,
+    1,
+    "exactly one announcement is posted",
+  );
+  assertEquals(deleteTargets(calls), [
+    `repos/${SELF_DIAGNOSTIC_REPO}/issues/comments/1000`,
+  ]);
+  assert(
+    logs.some((l) => l.includes("[self-schedule] refused")),
+    "the refusal is logged",
+  );
+});
