@@ -8,7 +8,7 @@
  * The two model passes that read prose against head code, the first-run claim
  * check (`summary_claim_check.ts`, Issue #3257) and the review-fix drift check
  * (`pr_feedback_drift_check.ts`, Issue #3143), share this module's scope and
- * question so both ask the same thing about a changed Markdown line.
+ * question so both ask the same thing about prose affected by the change.
  *
  * Uses Australian English throughout.
  */
@@ -40,7 +40,7 @@ function hasUnsafeCharacter(path: string): boolean {
  * matters because the path is interpolated into a model prompt and read from
  * disk.
  */
-export function isManualProsePath(path: string): boolean {
+function isSafeProsePath(path: string): boolean {
   if (typeof path !== "string" || path === "" || path !== path.trim()) {
     return false;
   }
@@ -50,11 +50,22 @@ export function isManualProsePath(path: string): boolean {
   if (path.split("/").some((s) => s === "" || s === "." || s === "..")) {
     return false;
   }
-  if (!path.toLowerCase().endsWith(".md")) return false;
   if (path.startsWith("docs/archive/pr-summaries/")) return false;
   if (LEGACY_SUMMARY_PATH.test(path)) return false;
   if (isTestFilePath(path)) return false;
   return true;
+}
+
+/** Manual or prompt Markdown, excluding summaries and tests. */
+export function isManualProsePath(path: string): boolean {
+  return isSafeProsePath(path) && path.toLowerCase().endsWith(".md");
+}
+
+/** Source languages whose comments the shared source lexer recognises. */
+export function isProseSourcePath(path: string): boolean {
+  return isSafeProsePath(path) &&
+    /\.(?:[cm]?[jt]sx?|rs|sh|bash|zsh|pyi?|rb|c|cc|cpp|h|hpp|java|go|cs|sql)$/i
+      .test(path);
 }
 
 /**
@@ -83,8 +94,11 @@ export function docProseClaimInstruction(
   change: "this branch's diff" | "this push's change",
 ): string {
   return "For each listed Markdown manual or prompt (a `.md` file that is " +
-    "not a PR summary), check only the lines " + change +
-    " adds or edits, and only sentences that say when the change's new " +
+    "not a PR summary), check the lines " + change +
+    " adds or edits and the explicitly listed affected manual sections, including unchanged sentences. " +
+    "For source files check only the listed comments, including unchanged module headers and doc comments attached to changed declarations; never treat executable code as prose. " +
+    "In unchanged prose ask whether this change makes the sentence false, not whether it was always right: this is not a whole-manual audit. " +
+    "Check only sentences that say when the change's new " +
     "behaviour happens, what it refuses, rejects, allows or skips, or that " +
     'use an absolute word ("only", "never", "always", "any", "every", ' +
     '"all", "each", "automatically") or a counted or closed list ' +
@@ -94,7 +108,7 @@ export function docProseClaimInstruction(
     "contradicts it: a condition the code never tests, a refusal the code " +
     "catches and carries on past, an entry the list does not hold, a path " +
     "the absolute word misses. Quote it verbatim, one per entry, with " +
-    "`file` = that manual or prompt's path, and name the contradicting " +
+    "`file` = that manual, prompt or source file's path, and name the contradicting " +
     "`file:line` in `reason`. Do not report a sentence the head code agrees " +
-    "with, or one you could not check.";
+    "with, or one you could not check. When a sentence names a set without a single list in code (signal senders, callers or result readers, or files a command reads), Grep the whole head tree for other members, including files outside the diff.";
 }

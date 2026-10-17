@@ -127,8 +127,8 @@ interface PerFileScannerFinding {
  * keyed by `(finding id, file)`, so collapsing a file's steps into one
  * entry here would let a step the run **added** hide behind a
  * pre-existing one. The id reported per step is the one an in-source
- * `best-practice-ignore` marker suppresses, so the remedy the gate
- * message names still works.
+ * `best-practice-ignore` marker suppresses in the audit; the gate itself
+ * honours no such marker (Issue #3683).
  */
 function fromPerFileScanner(
   findings: readonly PerFileScannerFinding[],

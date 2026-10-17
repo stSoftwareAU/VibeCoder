@@ -1,0 +1,192 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/earlier_findings.ts",
+        "line": 13,
+        "outcome": "separates complete problem/Fix pairs",
+        "test": "worker/deno/tests/earlier_findings_3784_test.ts",
+        "testName": "earlier findings - preserves every fleet problem and fix, with a whole-comment fallback",
+        "flipWentRed": "Replaced if (/^\\*\\*`[^`]+`\\*\\*:/.test(line) && lines.length > 0) with if (false); the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/earlier_findings.ts",
+        "line": 15,
+        "outcome": "retains earlier non-empty findings",
+        "test": "worker/deno/tests/earlier_findings_3784_test.ts",
+        "testName": "earlier findings - preserves every fleet problem and fix, with a whole-comment fallback",
+        "flipWentRed": "Replaced if (text) findings.push(text); with if (false) findings.push(text);; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/earlier_findings.ts",
+        "line": 27,
+        "outcome": "absent verdict list parses as empty",
+        "test": "worker/deno/tests/earlier_findings_3784_test.ts",
+        "testName": "earlier findings - malformed verdicts never become a clean result",
+        "flipWentRed": "Replaced if (raw === undefined) return []; with if (raw === undefined) throw new Error(\"mutant\");; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/earlier_findings.ts",
+        "line": 28,
+        "outcome": "rejects a non-array verdict list",
+        "test": "worker/deno/tests/earlier_findings_3784_test.ts",
+        "testName": "earlier findings - malformed verdicts never become a clean result",
+        "flipWentRed": "Replaced if (!Array.isArray(raw)) throw new Error(\"earlierFindings must be an array\"); with if (!Array.isArray(raw)) return [];; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/earlier_findings.ts",
+        "line": 31,
+        "outcome": "rejects fractional indices",
+        "test": "worker/deno/tests/earlier_findings_3784_test.ts",
+        "testName": "earlier findings - malformed verdicts never become a clean result",
+        "flipWentRed": "Replaced !Number.isInteger(v.index) || with false ||; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/earlier_findings.ts",
+        "line": 31,
+        "outcome": "rejects non-positive indices",
+        "test": "worker/deno/tests/earlier_findings_3784_test.ts",
+        "testName": "earlier findings - malformed verdicts never become a clean result",
+        "flipWentRed": "Replaced v.index < 1 || with false ||; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/earlier_findings.ts",
+        "line": 32,
+        "outcome": "rejects unknown verdict values",
+        "test": "worker/deno/tests/earlier_findings_3784_test.ts",
+        "testName": "earlier findings - malformed verdicts never become a clean result",
+        "flipWentRed": "Replaced ![\"fixed\", \"partly\", \"not fixed\"].includes(v.verdict) || with false ||; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/earlier_findings.ts",
+        "line": 33,
+        "outcome": "rejects empty evidence",
+        "test": "worker/deno/tests/earlier_findings_3784_test.ts",
+        "testName": "earlier findings - malformed verdicts never become a clean result",
+        "flipWentRed": "Replaced v.note.trim() === \"\" with false; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/earlier_findings.ts",
+        "line": 47,
+        "outcome": "duplicate verdicts do not clear an earlier finding",
+        "test": "worker/deno/tests/earlier_findings_3784_test.ts",
+        "testName": "earlier findings - only one evidenced fixed verdict per expected index clears it",
+        "flipWentRed": "Replaced matches.length === 1 && with matches.length > 0 &&; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/earlier_findings.ts",
+        "line": 47,
+        "outcome": "partial and unresolved verdicts remain blocking",
+        "test": "worker/deno/tests/earlier_findings_3784_test.ts",
+        "testName": "earlier findings - only one evidenced fixed verdict per expected index clears it",
+        "flipWentRed": "Replaced matches[0]!.verdict === \"fixed\" with true; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/earlier_findings.ts",
+        "line": 46,
+        "outcome": "matches verdicts to the correct finding index",
+        "test": "worker/deno/tests/earlier_findings_3784_test.ts",
+        "testName": "earlier findings - only one evidenced fixed verdict per expected index clears it",
+        "flipWentRed": "Replaced verdicts.filter((v) => v.index === index) with verdicts.filter((v) => v.index !== index); the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 752,
+        "outcome": "synthesises blockers even when model findings are empty",
+        "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
+        "testName": "runPrePrVerifier: earlier findings need complete fixed verdicts even when findings is empty",
+        "flipWentRed": "Replaced ...earlierFindingGaps(         input.previousFindings ?? [], with ...earlierFindingGaps(         [],; the named test failed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/post.ts",
+        "line": 113,
+        "outcome": "fleet posting enforces each earlier finding",
+        "test": "worker/deno/tests/review_fleet_prs_checklists_3594_test.ts",
+        "testName": "fleet post - earlier findings cannot disappear from a clean reply",
+        "flipWentRed": "Replaced pr.previousFindings.map((f) => JSON.stringify(f)) with []; the named test failed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/post.ts",
+        "line": 97,
+        "outcome": "missing gate inventory cannot approve",
+        "test": "worker/deno/tests/review_fleet_prs_checklists_3594_test.ts",
+        "testName": "fleet post - a missing earlier-findings inventory cannot approve",
+        "flipWentRed": "Replaced !Array.isArray(pr.previousFindings) || with false ||; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/git_push.ts",
+        "line": 907,
+        "outcome": "a failed committed-head check prevents push",
+        "test": "worker/deno/tests/git_push_preflight_test.ts",
+        "testName": "commitAndPushPending - review verifier inspects committed head and blocks the remote",
+        "flipWentRed": "Replaced if (!verified.ok) return verified; with if (false) return verified;; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/git_push_recovery.ts",
+        "line": 193,
+        "outcome": "a rejected merged-head verdict prevents retry push",
+        "test": "worker/deno/tests/git_push_preflight_test.ts",
+        "testName": "commitAndPushPending - a push recovery merge needs a fresh verdict",
+        "flipWentRed": "Replaced if (!verified.ok) return verified; with if (false) return verified;; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_verifier.ts",
+        "line": 71,
+        "outcome": "unavailable verifier fails closed",
+        "test": "worker/deno/tests/pr_feedback_verifier_3784_test.ts",
+        "testName": "feedback verifier - unavailable, malformed and blocking results fail closed",
+        "flipWentRed": "Replaced if (result.status === \"not_checked\") with if (false); the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_verifier.ts",
+        "line": 80,
+        "outcome": "blocking reviewer findings fail closed",
+        "test": "worker/deno/tests/pr_feedback_verifier_3784_test.ts",
+        "testName": "feedback verifier - unavailable, malformed and blocking results fail closed",
+        "flipWentRed": "Replaced if (prePrVerifierBlocked(result)) with if (false); the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_verifier.ts",
+        "line": 67,
+        "outcome": "passes complete earlier review asks",
+        "test": "worker/deno/tests/pr_feedback_verifier_3784_test.ts",
+        "testName": "feedback verifier - full review and rebuttal reach the disposable verifier without consuming the reply",
+        "flipWentRed": "Replaced previousFindings: extractEarlierFindings(input.commentBody) with previousFindings: []; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1512,
+        "outcome": "only checked review fixes reach push and dismissal",
+        "test": "worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts",
+        "testName": "review-fix verifier - persistent findings hold without push or dismissal after one recovery",
+        "flipWentRed": "Replaced const verifyBeforePush = commentType === \"pr_review\" with const verifyBeforePush = false; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1556,
+        "outcome": "successful recovery must be independently checked again",
+        "test": "worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts",
+        "testName": "review-fix verifier - recovery must clear before pushing",
+        "flipWentRed": "Replaced if (recovery.ok && !recovery.value.timedOut) with if (false); the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1599,
+        "outcome": "remaining findings keep the review outstanding",
+        "test": "worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts",
+        "testName": "review-fix verifier - persistent findings hold without push or dismissal after one recovery",
+        "flipWentRed": "Replaced if (verifierFailure) return await holdUnverifiedReview(verifierFailure); with if (false) return await holdUnverifiedReview(verifierFailure!);; the named test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1600,
+        "outcome": "a pre-flight failure cannot dismiss an unverified review as rebutted",
+        "test": "worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts",
+        "testName": "review-fix verifier - a pre-flight failure cannot turn a rebuttal into a resolved review",
+        "flipWentRed": "Disabled the failed-finalise guard; the review was processed and dismissed, failing the named test."
+      }
+    ]
+  }
+}

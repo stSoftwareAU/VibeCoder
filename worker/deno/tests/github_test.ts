@@ -28,6 +28,16 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import { RESERVED_LABELS } from "../lib/config_defaults.ts";
 import type { Logger } from "../types.ts";
+import { fakeStore, routingFakeGh } from "./support/routing_fake_gh.ts";
+
+const VIBE = "stSoftwareAU/VibeCoder";
+const GRQ = "stSoftwareAU/GRQ";
+/** A worker change: the router files it in VibeCoder (Issue #3745). */
+const WORKER_NOTE = "`worker/deno/lib/foo.ts` needs work.";
+const ROUTING = {
+  routingContext: { vibeCoderRepo: VIBE, productRepos: [GRQ] },
+  dryRun: false,
+};
 
 // Mock logger for tests
 function createMockLogger(): Logger {
@@ -419,26 +429,31 @@ Deno.test("github - createGitHubIssuesWithPartialFailures handles output without
   const improvements = [
     {
       title: "Test",
-      description: "Test desc",
+      description: WORKER_NOTE,
       category: "testing" as const,
       labels: ["enhancement"],
     },
   ];
 
-  // Return output that doesn't contain an issue number URL
-  const mockGh = async (_args: string[]): Promise<string> => {
-    return "Created issue successfully";
+  // The create prints no issue URL; every other call is answered by the fake.
+  const fake = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
+  const mockGh = async (args: string[]): Promise<string> => {
+    if (args[0] === "issue" && args[1] === "create") {
+      return "Created issue successfully";
+    }
+    return fake.ghCommandFn(args);
   };
 
   const result = await createGitHubIssuesWithPartialFailures(
     improvements,
-    "org/repo",
-    mockGh,
+    VIBE,
+    { ...ROUTING, ghCommandFn: mockGh },
   );
 
-  // Should not crash, but also not capture an issue number
+  // Fails loud: a create with no issue number is a create-step failure (Issue #3745).
   assertEquals(result.createdIssues.length, 0);
-  assertEquals(result.failures.length, 0);
+  assertEquals(result.failures.length, 1);
+  assertStringIncludes(result.failures[0]!.error, 'step "create"');
 });
 
 Deno.test("github - createGitHubIssuesWithPartialFailures passes non-reserved labels as args", async () => {
@@ -449,22 +464,23 @@ Deno.test("github - createGitHubIssuesWithPartialFailures passes non-reserved la
   const improvements = [
     {
       title: "Multi-label",
-      description: "Test desc",
+      description: WORKER_NOTE,
       category: "testing" as const,
       labels: ["bug", "enhancement"],
     },
   ];
 
   let capturedArgs: string[] = [];
+  const fake = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
   const mockGh = async (args: string[]): Promise<string> => {
-    capturedArgs = args;
-    return "https://github.com/org/repo/issues/1";
+    if (args[0] === "issue" && args[1] === "create") capturedArgs = args;
+    return fake.ghCommandFn(args);
   };
 
   await createGitHubIssuesWithPartialFailures(
     improvements,
-    "org/repo",
-    mockGh,
+    VIBE,
+    { ...ROUTING, ghCommandFn: mockGh },
   );
 
   // Verify label args are passed correctly (2 non-reserved labels)
@@ -483,7 +499,7 @@ Deno.test("github - createGitHubIssuesWithPartialFailures handles non-Error thro
   const improvements = [
     {
       title: "String throw",
-      description: "desc",
+      description: WORKER_NOTE,
       category: "testing" as const,
       labels: [],
     },
@@ -495,12 +511,12 @@ Deno.test("github - createGitHubIssuesWithPartialFailures handles non-Error thro
 
   const result = await createGitHubIssuesWithPartialFailures(
     improvements,
-    "org/repo",
-    mockGh,
+    VIBE,
+    { ...ROUTING, ghCommandFn: mockGh },
   );
 
   assertEquals(result.failures.length, 1);
-  assertEquals(result.failures[0]!.error, "string error message");
+  assertStringIncludes(result.failures[0]!.error, "string error message");
 });
 
 // --- Reserved label filtering (Issue #297) ---
@@ -581,22 +597,23 @@ Deno.test("github - createGitHubIssuesWithPartialFailures strips reserved labels
   const improvements = [
     {
       title: "Test reserved",
-      description: "Test desc",
+      description: WORKER_NOTE,
       category: "testing" as const,
       labels: ["enhancement", "help wanted", "work-on", "claude"],
     },
   ];
 
   let capturedArgs: string[] = [];
+  const fake = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
   const mockGh = async (args: string[]): Promise<string> => {
-    capturedArgs = args;
-    return "https://github.com/org/repo/issues/42";
+    if (args[0] === "issue" && args[1] === "create") capturedArgs = args;
+    return fake.ghCommandFn(args);
   };
 
   await createGitHubIssuesWithPartialFailures(
     improvements,
-    "org/repo",
-    mockGh,
+    VIBE,
+    { ...ROUTING, ghCommandFn: mockGh },
   );
 
   // Only "enhancement" should remain — reserved labels stripped
@@ -618,7 +635,7 @@ Deno.test("github - createGitHubIssuesWithPartialFailures warns once per strippe
   const improvements = [
     {
       title: "Test reserved",
-      description: "Test desc",
+      description: WORKER_NOTE,
       category: "testing" as const,
       labels: ["enhancement", "work-on", "claude"],
     },
@@ -627,14 +644,12 @@ Deno.test("github - createGitHubIssuesWithPartialFailures warns once per strippe
   const lines: string[] = [];
   const logger = createLogger({ write: (msg) => lines.push(msg) });
 
-  const mockGh = (_args: string[]): Promise<string> =>
-    Promise.resolve("https://github.com/org/repo/issues/42");
+  const fake = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
 
   await createGitHubIssuesWithPartialFailures(
     improvements,
-    "org/repo",
-    mockGh,
-    logger,
+    VIBE,
+    { ...ROUTING, ghCommandFn: fake.ghCommandFn, logger },
   );
 
   // One WARNING per stripped reserved label, naming the label + context.
@@ -679,7 +694,7 @@ Deno.test("github - createGitHubIssuesWithPartialFailures strips a configured cu
   const improvements = [
     {
       title: "Test custom label",
-      description: "Test desc",
+      description: WORKER_NOTE,
       category: "testing" as const,
       labels: ["enhancement", "deploy-review"],
     },
@@ -688,19 +703,25 @@ Deno.test("github - createGitHubIssuesWithPartialFailures strips a configured cu
   const lines: string[] = [];
   const logger = createLogger({ write: (msg) => lines.push(msg) });
   const labelArgs: string[] = [];
+  const fake = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
   const mockGh = (args: string[]): Promise<string> => {
-    for (let i = 0; i < args.length; i++) {
-      if (args[i] === "--label") labelArgs.push(args[i + 1]!);
+    if (args[0] === "issue" && args[1] === "create") {
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--label") labelArgs.push(args[i + 1]!);
+      }
     }
-    return Promise.resolve("https://github.com/org/repo/issues/43");
+    return fake.ghCommandFn(args);
   };
 
   await createGitHubIssuesWithPartialFailures(
     improvements,
-    "org/repo",
-    mockGh,
-    logger,
-    ["deploy-review"],
+    VIBE,
+    {
+      ...ROUTING,
+      ghCommandFn: mockGh,
+      logger,
+      extraReservedLabels: ["deploy-review"],
+    },
   );
 
   // The custom label never reaches `gh issue create` …
