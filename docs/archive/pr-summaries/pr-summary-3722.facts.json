@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 76,
+        "outcome": "unknown-only subtotal is null",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped unknown-only subtotal is null in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 80,
+        "outcome": "unknown-only wasted subtotal is null",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped unknown-only wasted subtotal is null in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 66,
+        "outcome": "unknown usage count",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped unknown usage count in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 67,
+        "outcome": "unknown pricing count",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped unknown pricing count in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 68,
+        "outcome": "wasted-spend attribution",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped wasted-spend attribution in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 136,
+        "outcome": "follow-on breakdown",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation keeps distinct follow-on cycles sharing a process run ID",
+        "flipWentRed": "Flipped follow-on breakdown in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 155,
+        "outcome": "split-model subtotal",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation preserves the priced part of split-model usage",
+        "flipWentRed": "Flipped split-model subtotal in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 162,
+        "outcome": "missing model USD",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation preserves the priced part of split-model usage",
+        "flipWentRed": "Flipped missing model USD in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 123,
+        "outcome": "legacy pricing absence",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains missing aggregate pricing with priced role detail",
+        "flipWentRed": "Flipped legacy pricing absence in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 239,
+        "outcome": "failed and timed-out spend",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation retains unknown usage and pricing as a partial estimate",
+        "flipWentRed": "Flipped failed and timed-out spend in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 240,
+        "outcome": "abandoned assignment spend",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation accounts for closed work and excludes costs beyond cutoff",
+        "flipWentRed": "Flipped abandoned assignment spend in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 226,
+        "outcome": "cohort gated success count",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation groups original cohorts across assignments and rejects conflicts",
+        "flipWentRed": "Flipped cohort gated success count in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 217,
+        "outcome": "conflicting cohorts",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation groups original cohorts across assignments and rejects conflicts",
+        "flipWentRed": "Flipped conflicting cohorts in an isolated copy; this named test failed, then the original was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_reconcile.ts",
+        "line": 241,
+        "outcome": "abandoned sibling follow-on spend",
+        "test": "worker/deno/tests/lifecycle_reconcile_test.ts",
+        "testName": "lifecycle reconciliation assigns only abandoned sibling follow-on costs as wasted",
+        "flipWentRed": "Flipped abandoned sibling follow-on spend in an isolated copy; this named test failed, then the original was restored."
+      }
+    ]
+  }
+}

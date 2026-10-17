@@ -550,10 +550,10 @@ export interface RunClaudeOptions {
    * Sub-agent definitions for this run (Issue #2342), handed to the Claude
    * CLI as `--agents`.
    *
-   * Absent — every run that has not opted into the issue-executor split —
-   * emits no argument, so each sub-agent inherits the phase's model exactly
-   * as it does today. No fallback: a CLI that rejects the flag fails the run
-   * with its own error rather than being re-invoked without it.
+   * Absent (no sub-agent definitions were built — see `buildIssueRunAgents`
+   * in `issue_executor_agents.ts`) — emits no argument, so each sub-agent
+   * inherits the phase's model. No fallback: a CLI that rejects the flag fails
+   * the run with its own error rather than being re-invoked without it.
    */
   agents?: Readonly<Record<string, AgentDefinition>>;
   /**
@@ -562,9 +562,9 @@ export interface RunClaudeOptions {
    *
    * Set `true` and the Claude invocation carries the `PreToolUse` guard that
    * denies the advisor's own edits and allows an executor's, and the run's
-   * stream is summarised into {@link RunStats.executorSplit}. Absent — every
-   * run that has not opted into the split — configures no hook, parses
-   * nothing, and carries no such field.
+   * stream is summarised into {@link RunStats.executorSplit}. Absent — the
+   * split is off (`issue_executor_split: false`) or the run is not an `issue`
+   * run — configures no hook, parses nothing, and carries no such field.
    */
   issueExecutorSplit?: boolean;
   /**

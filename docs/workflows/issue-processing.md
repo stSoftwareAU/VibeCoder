@@ -2035,12 +2035,31 @@ place. If the file changes at or after the line where that literal opened,
 every assertion-shaped line of the old side from that line on is reported.
 A copy on such a new side from that line on cannot vouch for a move.
 
-Each remaining removed assertion must appear, ignoring whitespace, in the
-Test Plan section; otherwise PR creation is blocked and the notice lists
-every unaccounted assertion. The gate checks only that the assertion is
-named — whether the stated requirement truly makes it untrue is left to the
-Standards reviewer, whose brief now asks it to list every assertion the diff
-removes from an existing test and return a `violation` for any that has none.
+Each remaining removed assertion must appear, ignoring whitespace, in its
+own Test Plan list entry. The entry carries exactly one structured reason:
+
+- `Required by: "<quote>"` quotes at least 5 words verbatim from the linked
+  issue's title or body (not comments), ignoring whitespace wrapping. The
+  quote must occur within one of those fields, not across their boundary.
+- `Moved to: <path>` names a file where the same canonical assertion occurs
+  on added lines, with its guards, skips and early exits preserved. The
+  existing scanner still exempts safe moves; any explicit move claim is
+  checked, and a surviving copy cannot account for multiple removals.
+
+A replacement also carries `Replaced by:` with each new assertion in inline
+code. Every named replacement must be added in the same test file as the
+removed assertion. Whether an added assertion replaces a removed one is
+reviewed semantically; an unrelated new test in that file does not establish
+a replacement. A missing or fabricated reason, a wrong destination, or a
+named replacement absent from the added lines blocks PR creation
+(Issue #3739). Reasons on another
+list entry cannot justify a removal. The Standards reviewer still judges
+whether a quoted requirement actually makes the old assertion untrue, and
+identifies replacements from the diff even when `Replaced by:` is omitted.
+A missing replacement entry is a `violation`; comparing each pair also
+returns a `violation` when a value the old assertion checked is no longer
+checked anywhere.
+
 When the test-file patch itself cannot be read, or it reaches the
 8,000,000-character read cap, only the heading rule applies and a warning
 is logged. The patch is not scanned after a silent cut.
@@ -2061,7 +2080,7 @@ flowchart TD
   B -->|No| X["Block PR"]
   B -->|Yes| C["Any assertion edited, deleted, or re-added under a new guard, skip or exit?"]
   C -->|No| Z
-  C -->|Yes| D["Each named in the Test Plan?"]
+  C -->|Yes| D["Each named with a verified reason and replacement evidence?"]
   D -->|Yes| Z
   D -->|No| X
   style Z fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
@@ -2262,56 +2281,79 @@ takes the one recovery turn, then a further block fails the run (or
 finalises an existing PR as `summary_incomplete`). The claim check runs again
 on the re-run after that turn either way.
 
-**Changed manuals and prompts (Issue #3347).** The one read-only model question
-also covers the manual and prompt files among the branch's changed files (the
-completion phase's `git diff --name-only <base>...HEAD` list, so committed
-changes), up to 20 of them. A file qualifies when
-[`isManualProsePath`](../../worker/deno/lib/doc_prose_claims.ts) accepts it: a
-Markdown path outside `docs/archive/pr-summaries/` that is not a PR summary, a
-test file or a worker state file, and has a safe relative shape. For each, the
-shared question (`docProseClaimInstruction`) asks the model to check only the
-lines the change adds or edits, and only the sentences that say when the new
-behaviour happens, what it refuses, rejects, allows or skips, or that use an
-absolute word ("only", "never", "always", "any", "every", "all", "each",
-"automatically") or a counted or closed list. It opens the head code that
-decides each one (the branch condition, the callers, the list the sentence
-names) and reports the sentence, quoted verbatim, when that code contradicts
-it, naming the contradicting `file:line`. Files past the cap are logged at error
-level and recorded as not checked; a changed file deleted on the branch is
-skipped; one that cannot be read is recorded as not checked. If the
-changed-files list itself could not be read, the doc part is recorded as not
-checked (an error log) and the summary is still questioned. A doc finding is
-confirmed only when it names one of those files and its sentence is found in
-that file's current text; it goes into a separate `docFindings` list and blocks
-like any other claim-check finding, through the same summary-rule block. The
-gate comment names the file and asks for that sentence to be rewritten in that
-file to say what the head code does, or removed — "not the code".
-GRQ-AutoTrader#2609, #2685 and #2699 and VibeCoder#3308 each shipped a manual or
-prompt sentence about the PR's own new behaviour that the head code
-contradicted, after #3120 and #3232 had asked for this care in prose only.
+**Prose affected by the change (Issues #3347, #3715, #3731).** The one
+read-only model question also covers added or edited lines in manual/prompt
+Markdown outside `docs/archive/pr-summaries/`, excluding summaries and tests.
+For changed source files recognised by `isProseSourcePath`, the shared lexer
+selects comment text, excluding executable code and string literals: changed
+comments, module headers, and doc comments attached to changed declarations.
+The recognised extensions cover JavaScript/TypeScript, Rust, shell, Python,
+Ruby, C/C++, Java, Go, C# and SQL; other source formats are outside this scope.
+The question explicitly asks for a grep of the whole head tree when a claim
+names a set without one authoritative list, such as signal senders, result
+readers or files a command reads.
+
+The same scope builder, `doc_prose_scope.ts`, adds unchanged manual sections:
+the heading-bounded section named by the summary's Docs sweep `section:` field,
+and sections mentioning a changed source path, basename or exported
+declaration. These extra sections can be in untouched manuals, but never
+under `docs/archive/`. A named parent heading includes its subsections; a
+source-reference match ends at the next heading. The model asks whether
+**this change** makes the sentence false, not whether it was always right.
+Sentences the head still agrees with are not findings.
+
+The combined prose scope is capped at 20 files and the extra manual scope at
+40 sections. The prompt lists selected paths and line ranges inside its
+untrusted-data boundary. Files/sections past a cap, unreadable tracked files,
+unavailable diffs and unterminated source literals/comments are recorded as
+not checked, never passed. The first-run check logs these at error level; the
+review-fix check logs them at warning level. A deleted file has no prose to
+check. If the changed-file list itself is unavailable, the summary is still
+questioned and its prose extension is recorded as not checked.
+
+`docProseClaimInstruction` retains the trigger classes: when behaviour
+happens, what it refuses, rejects, allows or skips, absolute words, and counted
+or closed lists. A reported contradiction quotes the sentence verbatim and
+names the contradicting head `file:line`. Confirmed findings go through the
+existing summary-rule recovery path. First-run `docFindings` carry the
+manual/comment findings separately from summary findings. Markdown findings
+can use the sentence correction below; source comments stay on the ordinary
+recovery and hold path, without granting the narrow turn source-code writes.
+The review-fix check uses the same scope and does not send an unconfirmed
+source/prose finding to its recovery turn. Neither check becomes a general
+manual audit.
 
 **Issues #3324 and #3865.** A later block where the claim check is the only
 earlier summary gate still failing gets one narrow correction turn. This
-covers summary sentences and confirmed `docFindings` in changed manuals or
-prompts. File-writing tools and `Bash` are denied; `Read`/`Grep`/`Glob` remain
-available to inspect the head code.
+covers summary sentences and confirmed `docFindings` in selected manuals or
+prompts, including the affected unchanged sections. A block containing a source
+comment finding follows the ordinary recovery and hold path. File-writing
+tools and `Bash` are denied; `Read`/`Grep`/`Glob` remain available to inspect
+the head code.
 
-When the findings are summary-only, the model returns the corrected summary
-between `<!-- vibe-corrected-summary -->` markers. When manual or prompt
-findings are present, it returns an indexed replacement string for each
+The model reads the original files by path; fenced findings are scrubbed
+evidence, never the editable source. When findings are summary-only, the model
+returns the corrected summary between `<!-- vibe-corrected-summary -->`
+markers. When manual or prompt findings are present, it returns an indexed
+replacement string for each
 flagged sentence, including any summary findings in that same block. The
 worker locates each flagged span with the claim check's whitespace-normalised
 matching rules and changes only that span in its own file. Missing or duplicate
 indices, ambiguous or overlapping spans, unsafe paths and symlink aliases are
-refused. Text outside those spans is preserved byte for byte.
+refused. Text outside those spans is preserved byte for byte. Both reply
+formats refuse newly introduced prompt-scrubbing artefacts (U+2024, fullwidth
+braces/angle brackets, `author＝` or a redaction placeholder) before writing.
+Completion and the local summary checker also reject scrubbed HTML-comment
+markers, including inside Mermaid or code spans (Issue #3710).
 
 The worker commits changed files, runs the quality gate, then re-runs
 completion once. Confirmed sentences still present are carried forward even
 if the next model check misses them; an unreadable manual does not clear its
 confirmed finding. A failed invocation, malformed reply or unchanged sentence
 therefore cannot silently clear the block. A later block folded with another
-gate does not get this extra turn. A surviving manual finding holds an existing
-PR whether the block is claim-check-only or mixed: auto-merge is withheld,
+gate does not get this extra turn. A surviving manual or source-comment finding
+holds an existing PR whether the block is claim-check-only or mixed:
+auto-merge is withheld,
 `standing-violation` is applied, and the findings are posted with the existing
 worker repair marker so PR feedback can act on them. With no PR, the run fails.
 
@@ -2323,7 +2365,7 @@ flowchart TD
     A["Completion phase, summary loaded,<br/>before raising the PR"] --> B["Test Plan backstop:<br/>quoted behaviour vs. named test file"]
     A --> C{"Base ref known?"}
     C -- no --> D["Not checked"]
-    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code,<br/>and changed manual and prompt prose"]
+    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code,<br/>selected comments and manual prose"]
     E --> F["Confirm each finding against<br/>the summary's or the doc's own text"]
     B --> G{"Any confirmed finding<br/>or Test Plan problem?"}
     F --> G
@@ -2332,7 +2374,7 @@ flowchart TD
     G -- no --> I["PR raised"]
     H -- yes --> RT["One recovery turn<br/>(all folded gates, one per item)"]
     RT --> A
-    H -- no --> J{"Claim check the only gate,<br/>summary or manual findings?"}
+    H -- no --> J{"Claim check the only gate,<br/>summary/manual findings only,<br/>correction turn unused?"}
     J -- no --> K["Fail / finalise<br/>summary_incomplete"]
     J -- yes --> L["One narrow claim<br/>correction turn (#3324, #3865)"]
     L --> M["Re-run: wrong sentences<br/>still present carried forward"]

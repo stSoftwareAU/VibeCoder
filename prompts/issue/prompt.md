@@ -231,7 +231,9 @@ guessing — the analysis-only hand-off then routes it to a human.
    that still covers the behaviour and say where. The worker checks this: a
    summary with no `## Test Plan` heading when the diff touches a test, or a
    Test Plan that does not name each removed assertion as it appears in the
-   diff, blocks the PR.
+   diff with a verified `Required by:` quote or `Moved to:` path, blocks the
+   PR. Use the structured entry under **Test Plan** below; replacements also
+   need `Replaced by:` assertions added in that test file.
    An issue requirement shows a new expected value is right, not that the
    edited test still guards anything: break the code the test's name says
    it guards, confirm the edited test goes red, then restore it (see **An
@@ -773,7 +775,10 @@ reviewer its path.
   Ask it also to list every assertion the diff removes from an existing test
   and say, for each, whether an issue requirement makes it untrue — returning
   a `violation` (with the `file:line` it saw) for any removed assertion that
-  has none.
+  has none. Identify replacements from the diff even when the summary omits
+  `Replaced by:`, and return a `violation` for a missing replacement entry.
+  Compare each `Replaced by:` pair and return a `violation` when a value the
+  old assertion checked is no longer checked anywhere.
   Ask it too, for each expected value or behaviour the diff changes in an
   existing test, whether that test still fails without the code it is named
   for — returning a `violation` (with the `file:line` it saw) when the new
@@ -1300,8 +1305,16 @@ The file MUST contain:
    assertion it removes with the issue requirement that makes it untrue; an
    assertion removed with no such requirement is a blocking self-review
    finding — restore it, or move it to a test that still covers the behaviour
-   and name that test. Copy each removed assertion as it appears in the diff —
-   the worker matches it there — and include a `## Test Plan` heading whenever
+   and name that test. Give each removal its own list entry: `Removed from
+   <path>: <assertion>`, copying the assertion as it appears in the diff, then
+   an indented `Required by: "<quote>"` or `Moved to: <path>`. The quote must
+   contain at least 5 words verbatim from the linked issue's title or body,
+   not comments; the move must name a file where the same assertion is added
+   with its original guards and coverage preserved. For a replacement, also
+   add `Replaced by:` and name each new assertion in inline code; each must
+   be added in the same test file. The Standards reviewer
+   compares the old and new checks for lost coverage. Include a `## Test Plan`
+   heading whenever
    the diff touches a test; it is required. The worker counts as removed a
    multi-line assertion with any line changed, and an assertion re-added under
    a new condition, loop or callback, into a skipped or ignored test, or after

@@ -330,19 +330,23 @@ export interface ExecuteClaudePhaseOptions {
    */
   codegraphContextEnabled?: boolean;
   /**
-   * Whether this host splits issue work between an advisor and Sonnet
-   * executor sub-agents (Issue #2342, part of #2320, default: false).
+   * Whether this host splits issue work between an advisor and executor
+   * sub-agents on the run's sub-agent tier (Issue #2342, part of #2320). The
+   * host key defaults to on since Issue #2812; an unset option here reads as
+   * off.
    *
    * Threaded from `config.issueExecutorSplit` by this path's production
    * wiring site (`commands/execute_claude_phase.ts`); the main-loop issue
    * phase reads the same key straight off its own `config`. The repository's
-   * own `repo_config` override is layered over it here. Off, the invocation
-   * carries no `--agents` and is byte-for-byte the argv built today.
+   * own `repo_config` override is layered over it here. Off, no executor
+   * definitions are built; `--agents` is still emitted for the reviewer
+   * agents or the Haiku-tier explorer (see `buildIssueRunAgents`).
    */
   issueExecutorSplit?: boolean;
   /**
    * Whether this host dispatches the Spec and Standards reviewers as defined
-   * cheaper sub-agents (Issue #2575, default: false). Threaded from
+   * cheaper sub-agents (Issue #2575). The host key defaults to on since Issue
+   * #2812; an unset option here reads as off. Threaded from
    * `config.issueReviewerAgents`; host-wide, no per-repository override.
    */
   issueReviewerAgents?: boolean;
@@ -350,9 +354,10 @@ export interface ExecuteClaudePhaseOptions {
    * Host-wide `issue_sub_agent_tier` (Issue #3402), threaded from
    * `config.issueSubAgentTier` by `commands/execute_claude_phase.ts`. The
    * repository's own `repo_config` override is layered over it here by
-   * `resolveIssueSubAgentTier`. Unset — the default — resolves to `"sonnet"`,
-   * whose `--agents` JSON is byte-identical to a run from before this key
-   * existed.
+   * `resolveIssueSubAgentTier`. Unset resolves to `"sonnet"` only when no
+   * options are passed; production always passes the host value, which
+   * defaults to `"haiku"` (Issue #3402). `"sonnet"` yields a `--agents` JSON
+   * byte-identical to a run from before this key existed.
    */
   issueSubAgentTier?: IssueSubAgentTier;
   /**
@@ -1265,12 +1270,14 @@ async function executeClaudePhaseBody(
 
   // The issue-executor split (Issue #2342): with the key on, the invocation
   // carries `--agents` definitions so the advisor delegates mechanical edit
-  // work to executors on the run's sub-agent tier — Sonnet by default, Haiku
-  // under `issue_sub_agent_tier: "haiku"` (Issue #3402) — and the prompt
-  // carries the advisor/executor block that tells it to (Issue #2343). Off —
-  // the default — `agents` stays
-  // absent, no argument is emitted, the block renders as nothing, and every
-  // sub-agent inherits the phase's model exactly as it does today. Resolved
+  // work to executors on the run's sub-agent tier — Haiku by default, Sonnet
+  // under `issue_sub_agent_tier: "sonnet"` (Issue #3402) — and the prompt
+  // carries the advisor/executor block that tells it to (Issue #2343). Off
+  // (`issue_executor_split: false`), no executor definitions are built and the
+  // advisor/executor block renders nothing. `--agents` is still emitted when
+  // reviewer agents are on (`issue_reviewer_agents`, default on), or when the
+  // Haiku sub-agent tier adds the explorer definition (see
+  // `buildIssueRunAgents` in `issue_executor_agents.ts`). Resolved
   // before the prompt is built so the prompt and the argv cannot disagree.
   const issueExecutorSplit = isIssueExecutorSplitEnabled(
     "issue",
@@ -1288,8 +1295,8 @@ async function executeClaudePhaseBody(
   deps.log(
     `Issue sub-agent tier resolved to '${issueSubAgentTier}' (Issue #3402)`,
   );
-  // The reviewer sub-agents (Issue #2575): host-wide, off by default until
-  // the pilot in docs/MODEL-AND-CACHING.md clears it.
+  // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
+  // #2812); `issue_reviewer_agents: false` opts out.
   const issueRunAgents = buildIssueRunAgents({
     executorSplit: issueExecutorSplit,
     reviewerAgents: options.issueReviewerAgents === true,

@@ -8,6 +8,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { summaryScrubProblem } from "./summary_scrub_gate.ts";
+
 import type { Result } from "../types.ts";
 import { resolveComparableBaseRef } from "./git_base_ref.ts";
 import type { GitRunner } from "./git_base_ref.ts";
@@ -135,7 +137,13 @@ export async function runPrSummaryCheck(
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 
-  const reports: GateReport[] = [];
+  const scrubProblem = summaryScrubProblem(summaryContent);
+  const reports: GateReport[] = [{
+    gate: "Prompt-scrubbed Markdown",
+    issueRef: "#3710",
+    status: scrubProblem === undefined ? "passed" : "blocked",
+    problems: scrubProblem === undefined ? [] : [scrubProblem],
+  }];
 
   reports.push(
     issueBody === null

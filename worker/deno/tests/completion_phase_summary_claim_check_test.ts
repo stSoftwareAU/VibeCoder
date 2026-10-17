@@ -15,6 +15,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { scrubUntrustedText } from "../lib/prompt_delimiter.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
@@ -173,12 +174,15 @@ interface Scenario {
   claudeTurns?: Array<{
     writes?: string;
     output?: string;
+    echoScrubbedSummary?: boolean;
     timedOut?: boolean;
     /** Rewrites another repo file (repo-relative path), e.g. a manual. */
     writesFile?: { path: string; content: string };
   }>;
   /** The branch's changed files, as `git diff --name-only` reports them. */
   changedFiles: string;
+  /** Unified prose-scope diff, including changed source line positions. */
+  proseDiff?: string;
   /** Tracked files `ls-files` reports. */
   trackedFiles?: string[];
   /** Files readable in the temp repoPath, path -> content. */
@@ -305,6 +309,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           if (cmdArgs.includes("--diff-filter=ACMR")) return ok("");
           return ok(scenario.changedFiles);
         }
+        if (cmdArgs[0] === "diff" && cmdArgs.includes("--unified=0")) {
+          return ok(scenario.proseDiff ?? "");
+        }
         if (cmdArgs[0] === "--literal-pathspecs" && cmdArgs[1] === "ls-tree") {
           return ok("");
         }
@@ -337,7 +344,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             ok: true as const,
             value: {
               exitCode: 0,
-              output: turn.output ?? "done",
+              output: turn.echoScrubbedSummary
+                ? `${CORRECTED_SUMMARY_OPEN}\n${
+                  scrubUntrustedText(Deno.readTextFileSync(summaryPath))
+                }${CORRECTED_SUMMARY_CLOSE}`
+                : turn.output ?? "done",
               timedOut: turn.timedOut ?? false,
             },
           });
@@ -920,7 +931,7 @@ Deno.test(
     assertStringIncludes(prompt, MANUAL_PATH);
     assertStringIncludes(
       prompt,
-      "check only the lines this branch's diff adds or edits",
+      "check the lines this branch's diff adds or edits",
     );
   },
 );
@@ -1167,6 +1178,39 @@ Deno.test(
   },
 );
 
+Deno.test("completion - scrubbed summary echo never overwrites Mermaid, comments or templates", async () => {
+  const original = SUMMARY_TWO_WRONG_CLAIMS +
+    "\n```mermaid\nsequenceDiagram\nA-->>B: {{x}}\n```\n<!-- author=worker -->\n";
+  const afterRecovery = original.replace(WRONG_CLAIM_SENTENCE, "");
+  const outcome = await runCompletion({
+    summary: original,
+    changedFiles: "docs/notes.md",
+    claudeTurns: [{ writes: afterRecovery }, { echoScrubbedSummary: true }],
+    questionReplies: [
+      verdictReply([
+        findingFor(WRONG_CLAIM_SENTENCE, "the head builds no regex"),
+      ]),
+      verdictReply([findingFor(SENTENCE_B, "the head does not compare")]),
+      verdictReply([]),
+    ],
+  });
+  assertEquals(outcome.claudeCalls, 2);
+  assertEquals(outcome.finalSummary, afterRecovery);
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.prCreateCalls, 0);
+});
+
+Deno.test("completion - pre-existing scrubbed Mermaid blocks PR creation", async () => {
+  const outcome = await runCompletion({
+    summary: SUMMARY_AFTER_CORRECTION +
+      "\n```mermaid\nsequenceDiagram\nA--․>>B: hello\n```\n",
+    changedFiles: "docs/notes.md",
+  });
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.prCreateCalls, 0);
+  assert(outcome.comments.some((c) => c.includes("prompt-scrubbed")));
+});
+
 Deno.test("completion - a manual finding beside another gate is held without an extra correction turn", async () => {
   const outcome = await runCompletion({
     summary: SUMMARY_FOLD,
@@ -1249,4 +1293,59 @@ Deno.test("completion - a timed-out correction reply cannot write manual text", 
   assertEquals(outcome.finalRepoFiles[MANUAL_PATH], MANUAL_WITH_CLAIM);
   assertEquals(outcome.finalisePrCalls, 0);
   assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+});
+
+Deno.test("completion - scrubbed manual replacement leaves the original intact and held", async () => {
+  const sentence = "Only {{x}} crosses A-->B.";
+  const original = `# Manual\n\n${sentence}\n`;
+  const outcome = await runCompletion({
+    summary: SUMMARY_WRONG_CLAIM,
+    changedFiles: DOC_CHANGED_FILES,
+    repoFiles: { [MANUAL_PATH]: original },
+    existingPr: true,
+    claudeTurns: [{ writes: SUMMARY_WRONG_CLAIM_FIXED }, {
+      output: JSON.stringify({
+        replacements: [{ index: 1, text: scrubUntrustedText(sentence) }],
+      }),
+    }],
+    questionReplies: [
+      verdictReply([findingFor(WRONG_CLAIM_SENTENCE, "head differs")]),
+      verdictReply([docFindingFor(sentence, "head differs")]),
+      verdictReply([]),
+    ],
+  });
+  assertEquals(outcome.claudeCalls, 2);
+  assertEquals(outcome.finalRepoFiles[MANUAL_PATH], original);
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.finalisePrCalls, 0);
+  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assertStringIncludes(
+    outcome.claudeCallDetails[1]!.prompt,
+    "Read the original files by path",
+  );
+});
+
+Deno.test("completion - surviving source comment findings are held without a Markdown correction retry", async () => {
+  const file = "src/claim.ts";
+  const sentence = "Every value is accepted.";
+  const original = `// ${sentence}\nexport const limit = 2;\n`;
+  const outcome = await runCompletion({
+    summary: SUMMARY_CLEAN +
+      `\n${DOCS_SWEEP_LINE}\n\n**Branch outcomes:** none added\n`,
+    changedFiles: file,
+    trackedFiles: [file],
+    proseDiff: `+++ b/${file}\n@@ -2 +2 @@\n+export const limit = 2;\n`,
+    repoFiles: { [file]: original },
+    existingPr: true,
+    questionReplies: [
+      verdictReply([{ file, sentence, reason: "the head caps values" }]),
+    ],
+  });
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.questionCalls.length, 2);
+  assertEquals(outcome.claudeCalls, 1);
+  assertEquals(outcome.finalRepoFiles[file], original);
+  assertEquals(outcome.finalisePrCalls, 0);
+  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assert(outcome.comments.some((c) => c.includes(sentence)));
 });

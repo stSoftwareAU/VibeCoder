@@ -12,6 +12,8 @@ Claude remains the default. This page is the operator runbook for a
 Codex-only host and for an **opt-in** mixed Claude/Codex host. Nothing
 here automatically enables new routing on the production fleet.
 
+See also: [Manager-worker contract](MANAGER-WORKER-CONTRACT.md) for the provider-neutral advisor/executor contract.
+
 ```mermaid
 flowchart TD
     M["agent_provider_mode"] --> S["shared quota scheduler"]
