@@ -1126,7 +1126,13 @@ Deno.test("runPrFeedbackDriftCheck - a red run result the recount cannot check i
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runAgent: makeRunAgent([{ ok: true, output: verdictBlock([]) }], calls),
+        runAgent: makeRunAgent(
+          [
+            { ok: true, output: verdictBlock([]) },
+            { ok: true, output: "did nothing" },
+          ],
+          calls,
+        ),
         logger: {
           ...noopLogger(),
           warn: (message: string) => {

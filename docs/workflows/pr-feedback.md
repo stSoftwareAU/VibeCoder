@@ -486,16 +486,23 @@ Five checks run, each only when it applies:
    join across a blank line, a heading, a new list item, a table row or a
    fence. Inside a fenced block each line is its own claim, except a
    command continued onto the next line with a trailing `\` or `/`.
-   An issue number (`#3143`) is not a count, and a line that says tests
-   were added to or extended an existing file (`added to`, `extended`,
-   `with N tests`) is not compared with that file's whole count. Lines it
-   with `--filter`, unrecognised "N new tests" figures, or a paired result
-   citing `./quality.sh` remain out of scope. Blocks with unknown test files,
-   mixed `tests`/`passed` figures or partial additions are reported unchecked. A paired result naming an unchanged test file,
-   several files whose runs differ, a red result with no file and no sole
-   changed test file, several counts that do not each follow the test file
-   they count, or different counts for one test file is logged by the worker
-   as not checked rather than compared.
+   An issue number (`#3143`) is not a count. Each count is decided on its own
+   (Issue #3740): a partial figure — a per-round addition such as "3 tests
+   added to `a_test.ts`", "2 to `b_test.ts`", "+N tests", or "Added to
+   `x_test.ts` (N tests" without "now has" — is not compared with that file's
+   whole count, while a whole-file count in the same unit ("the new
+   `b_test.ts` (N tests", "`b_test.ts` (N tests" with no "added" or "+" before
+   it, "now has N", "the file now has N") is. An unchanged test file leaves
+   only its own figure unchecked, not the whole unit, and a token-less count
+   in a separate sentence ("The related suites (689 tests) passed") is
+   unchecked on its own. Lines it skips with `--filter`, unrecognised "N new
+   tests" figures, or a paired result citing `./quality.sh` remain out of
+   scope. Blocks with unknown test files or mixed `tests`/`passed` figures are
+   unchecked, as is a paired result naming an unchanged test file, several
+   files whose runs differ, a red result with no file and no sole changed test
+   file, several counts that do not each follow the test file they count, or
+   different counts for one test file. Each unchecked figure is drift, not a
+   log line: it goes to the recovery turn below.
 3. **Docs sweep re-check** — when the push changes a code file and a summary
    exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
    files. That gate also requires the Docs sweep line's `siblings:` part
@@ -548,8 +555,10 @@ Five checks run, each only when it applies:
    file names that facts file, not the `.md` summary, and asks for the
    entry's `line`/`endLine` to be renumbered there.
 
-Any hit gets **one** recovery turn: the agent, with full tools, is asked to
-rewrite the listed sentences, recount the Test Plan, fix the Docs sweep
+Any hit gets **one** recovery turn — a Test Plan figure the recount could not
+check is a hit too (Issue #3740) — and the agent, with full tools, is asked
+to rewrite the listed sentences, recount the Test Plan, restate each unchecked
+figure as "`<file>` (N tests at head)" or remove it, fix the Docs sweep
 line, rewrite or remove each stale quoted sentence, and renumber each
 listed line citation to the head, in the file each hit names (a facts
 entry's `line`/`endLine`, or the `.md` summary's `Branch outcomes:` list) —
@@ -567,11 +576,17 @@ model pass that returns no verdict is not a hit and does not trigger a
 recovery turn on its own; it goes straight to the reply note, and a named
 summary the quoted-sentence or line-citation check could not read at the
 head goes there too, along with any not-checked citation case the
-line-citation check reported. Whatever remains after the recovery turn —
-plus a model pass that returned no verdict and a summary that could not be
-checked — is appended to `.pr_response_message` under `### Drift check
-(Issue #3143)`, so it reaches the PR reply instead of being pushed
-silently.
+line-citation check reported. Whatever remains after the recovery turn is
+appended to `.pr_response_message` under `### Drift check (Issue #3143)`, so
+it reaches the PR reply instead of being pushed silently. The residual lists
+the change-request quotes still present, the Branch-outcomes citations still
+at the previous head's numbers, the prose findings and Test Plan counts still
+standing, the Docs sweep problems, a model pass that returned no verdict, a
+named summary the quote check could not read, each citation case the
+line-citation check could not check, and — under the heading "Test Plan
+figures the drift check could not verify" (Issue #3740) — each Test Plan
+figure still unchecked after the recovery turn, with its reason. A push whose
+only drift is an unchecked figure is therefore not reported clean.
 
 ```mermaid
 flowchart TD
