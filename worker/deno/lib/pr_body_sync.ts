@@ -526,9 +526,17 @@ export async function syncPrBodyFromSummary(
       factsOutcome.kind === "valid" ? factsOutcome.content : null,
     ),
   );
-  const summaryContent = factsOutcome.kind === "valid"
-    ? applyBranchOutcomesFacts(rawSummary, factsOutcome.rendered)
-    : rawSummary;
+  let summaryContent = rawSummary;
+  if (factsOutcome.kind === "valid") {
+    try {
+      summaryContent = applyBranchOutcomesFacts(
+        rawSummary,
+        factsOutcome.rendered,
+      );
+    } catch (error) {
+      return { ok: false, error: error as Error };
+    }
+  }
 
   if (recordedDigest !== undefined && recordedDigest === currentDigest) {
     return {

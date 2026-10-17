@@ -1969,7 +1969,7 @@ Deno.test("sync - valid facts render the Branch outcomes list into the rebuilt b
     const newBody = ghCalls[0]?.bodyFileContent ?? "";
     const rendered = renderBranchOutcomes(FACTS);
     assertStringIncludes(newBody, rendered);
-    assertEquals(newBody.includes(BRANCH_OUTCOMES_MARKER), false);
+    assertEquals(newBody.includes(BRANCH_OUTCOMES_MARKER), true);
     assert(
       newBody.indexOf(rendered) < newBody.indexOf("## Test Plan"),
       "expected the list at the marker position, before Test Plan",
@@ -2059,6 +2059,26 @@ Deno.test("Issue #3720: summary refresh preserves the originating assignment", a
     assertEquals(
       assignmentIdFromBody(ghCalls[0]?.bodyFileContent ?? ""),
       assignmentId,
+    );
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - ambiguous outcome ownership fails without editing the PR (Issue #3979)", async () => {
+  const summary = `${BRANCH_OUTCOMES_MARKER}\n${BRANCH_OUTCOMES_MARKER}\n`;
+  const repoPath = await makeRepo({ summary, facts: FACTS_JSON });
+  try {
+    const { result, ghCalls } = await syncFactsCase({
+      repoPath,
+      liveBody: bodyRecording("older"),
+    });
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "ambiguous");
+    assertEquals(
+      ghCalls.filter((call) => call.args[0] === "pr" && call.args[1] === "edit")
+        .length,
+      0,
     );
   } finally {
     await Deno.remove(repoPath, { recursive: true });

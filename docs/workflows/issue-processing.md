@@ -2192,11 +2192,16 @@ outcomes list as structured JSON in
 `parseSummaryFacts`. With no facts file the prose gate above is unchanged. An
 unreadable file (any read error other than not-found), malformed JSON or a
 schema-invalid file blocks PR creation with a reason naming the facts file,
-as a summary-rule block that shares the single in-run recovery. A facts file
-alongside a hand-written `Branch outcomes` header in the summary also blocks.
+as a summary-rule block that shares the single in-run recovery.
 A valid file's list is rendered by `renderBranchOutcomes` into the summary,
-at the `<!-- vibe-branch-outcomes -->` marker or appended when the marker is
-absent, before the PR body is assembled. The gate then reads the assembled
+at the `<!-- vibe-branch-outcomes -->` marker, in place of a safely identified
+legacy list, or appended when neither is present, before the PR body is assembled. The block ends at
+`<!-- /vibe-branch-outcomes -->` and is replaced idempotently on refresh.
+Facts are authoritative: the shared renderer replaces safely identified legacy
+lists, preserving unrelated narrative. Duplicate/unmatched ownership markers,
+unowned legacy evidence and unresolved unreached-outcome admissions remain
+blocking; they are never discarded to make rendering succeed. Agents maintain
+facts plus the marker, rather than a second list. The gate then reads the assembled
 body as it reads a prose list: every test path the prose parser names there —
 each entry's declared test, a test-shaped entry `path`, and a test named in
 the text that follows the list's header — is existence-checked at HEAD with the same

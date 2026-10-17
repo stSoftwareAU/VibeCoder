@@ -41,7 +41,6 @@ import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import {
   applyBranchOutcomesFacts,
-  BRANCH_OUTCOMES_MARKER,
   prSummaryDigestInput,
   resolveBranchOutcomesFacts,
 } from "../pr_summary_facts.ts";
@@ -2352,7 +2351,7 @@ async function completionBody(
   }
 
   // Issue #3535: a structured facts file renders the Branch outcomes list
-  // into the summary. The digest and the hand-written-list check use the raw
+  // into the summary. The digest uses the raw
   // file content, so keep it before rendering.
   const rawSummaryContent = summaryContent;
   const branchOutcomesFacts = await resolveBranchOutcomesFacts(
@@ -2362,14 +2361,19 @@ async function completionBody(
   const factsContent = branchOutcomesFacts.kind === "absent"
     ? null
     : branchOutcomesFacts.content;
+  let branchOutcomesRenderProblem: string | null = null;
   if (branchOutcomesFacts.kind === "valid") {
     logger.info("Loaded PR summary facts file", {
       source: branchOutcomesFacts.relativePath,
     });
-    summaryContent = applyBranchOutcomesFacts(
-      summaryContent,
-      branchOutcomesFacts.rendered,
-    );
+    try {
+      summaryContent = applyBranchOutcomesFacts(
+        summaryContent,
+        branchOutcomesFacts.rendered,
+      );
+    } catch (error) {
+      branchOutcomesRenderProblem = (error as Error).message;
+    }
   } else if (branchOutcomesFacts.kind === "error") {
     logger.warn("PR summary facts file is unusable", {
       error: branchOutcomesFacts.reason,
@@ -2933,8 +2937,8 @@ async function completionBody(
   // prose parser over `prBody` — the same paths `validateBranchOutcomes`
   // checks, so a test-shaped entry `path` or a test named in prose after the
   // marker is looked up too. A facts file that cannot be read or does
-  // not validate, or that sits beside a hand-written Branch outcomes list in
-  // the summary, blocks whether or not the gate is otherwise applicable: a
+  // not validate, or whose block ownership is ambiguous, blocks whether
+  // or not the gate is otherwise applicable: a
   // broken facts file is a fault, not an absent list.
   // ---------------------------------------------------------------------
   // The not-applicable `: []` arm and the empty-list `new Set()` arm both
@@ -2951,16 +2955,11 @@ async function completionBody(
     prSummaryContent: prBody,
     testsAtHead,
   });
-  let branchOutcomesFactsProblem: string | null = null;
+  let branchOutcomesFactsProblem: string | null = branchOutcomesRenderProblem;
   if (branchOutcomesFacts.kind === "error") {
     branchOutcomesFactsProblem = branchOutcomesFacts.reason;
-  } else if (
-    branchOutcomesFacts.kind === "valid" &&
-    parseBranchOutcomes(rawSummaryContent).present
-  ) {
-    branchOutcomesFactsProblem =
-      `Branch outcomes facts file ${branchOutcomesFacts.relativePath} is present, but the PR summary also carries a hand-written \`Branch outcomes\` list — remove the prose list and leave the \`${BRANCH_OUTCOMES_MARKER}\` marker where the rendered list belongs`;
   }
+
   const branchOutcomesBlocked = branchOutcomesFactsProblem !== null ||
     (branchOutcomes.applicable && !branchOutcomes.valid);
   const branchOutcomesReason =

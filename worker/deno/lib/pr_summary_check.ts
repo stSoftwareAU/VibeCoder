@@ -26,7 +26,6 @@ import {
 } from "./branch_outcomes_gate.ts";
 import {
   applyBranchOutcomesFacts,
-  BRANCH_OUTCOMES_MARKER,
   resolveBranchOutcomesFacts,
 } from "./pr_summary_facts.ts";
 
@@ -96,17 +95,16 @@ export async function runPrSummaryCheck(
   const facts = input.issueNumber === null
     ? ({ kind: "absent" } as const)
     : await resolveBranchOutcomesFacts(repoRoot, input.issueNumber);
-  const summaryContent = facts.kind === "valid"
-    ? applyBranchOutcomesFacts(rawSummary, facts.rendered)
-    : rawSummary;
-  let factsProblem: string | null = null;
-  if (facts.kind === "error") {
-    factsProblem = facts.reason;
-  } else if (
-    facts.kind === "valid" && parseBranchOutcomes(rawSummary).present
-  ) {
-    factsProblem =
-      `Branch outcomes facts file ${facts.relativePath} is present, but the PR summary also carries a hand-written \`Branch outcomes\` list — remove the prose list and leave the \`${BRANCH_OUTCOMES_MARKER}\` marker where the rendered list belongs`;
+  let summaryContent = rawSummary;
+  let factsProblem: string | null = facts.kind === "error"
+    ? facts.reason
+    : null;
+  if (facts.kind === "valid") {
+    try {
+      summaryContent = applyBranchOutcomesFacts(rawSummary, facts.rendered);
+    } catch (error) {
+      factsProblem = (error as Error).message;
+    }
   }
 
   const base = await resolveComparableBaseRef(runGit, input.baseBranch, {
