@@ -56,6 +56,6 @@ flowchart LR
   - the per-operand flips are recorded in the branch outcomes below.
 - Existing tests still reaching their logic: `worker/deno/tests/idle_filing_composition_1050_test.ts`, `worker/deno/tests/idle_filer_gate_wiring_1050_test.ts` and `worker/deno/tests/idle_census_milestone_paced_wiring_3464_test.ts` pass unchanged (2-argument hold stubs stay type-compatible).
 - Callers of the widened `runLocalHoldFn` checked: `auditClaimableState` and `anyRepoHasUnblockedRealWork` (both pass `i.milestone`), `maybeFileIdleTaskCommand` (forwards it), and the two production setters (both now `loadIdleDetectionHold`).
-- `./quality.sh` — GATE_RESULT_LINE
+- `./quality.sh` — passed on the final code head (exit 0, "Result: PASSED (with skipped checks)"); the only skip is `config integration` (no `.config.json` in the checkout).
 
 <!-- vibe-branch-outcomes -->
