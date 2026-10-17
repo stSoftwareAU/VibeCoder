@@ -89,7 +89,7 @@
         "outcome": "a failed read or duplicate delete before posting refuses the schedule as announce-failed",
         "test": "worker/deno/tests/collect_self_diagnostic_candidates_test.ts",
         "testName": "self-schedule - a 403 on the duplicate delete refuses the schedule (Issue #3597)",
-        "flipWentRed": "removing the continue in that catch made the test go red: the candidate was emitted"
+        "flipWentRed": "removing the continue in that catch made the test go red: the run fell through to the post and recorded a second refusal"
       },
       {
         "path": "worker/deno/lib/collect_self_diagnostic_candidates.ts",
