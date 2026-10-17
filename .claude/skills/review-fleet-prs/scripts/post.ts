@@ -1,3 +1,4 @@
+import { earlierFindingGaps } from "../../../../worker/deno/lib/earlier_findings.ts";
 // Posts one /review-fleet-prs review (Issue #2678).
 //
 // Input: a JSON file { pr: <one "ready" entry from gate.ts>, review: <the
@@ -73,6 +74,12 @@ interface Input {
     // From the gate entry; required, so a stale entry fails loudly rather
     // than skipping the checklist checks (Issue #3594).
     checklistState: ChecklistState;
+    previousFindings: {
+      file: string;
+      line: number;
+      problem: string;
+      fix?: string;
+    }[];
   };
   review: unknown;
 }
@@ -82,22 +89,32 @@ interface Input {
 // reply or a gate entry without `checklistState`.
 export function reviewForPost(
   raw: unknown,
-  pr: Pick<Input["pr"], "checklistState">,
+  pr: Pick<Input["pr"], "checklistState" | "previousFindings">,
 ): FableReview {
   const state = pr.checklistState as ChecklistState | undefined;
   if (
     typeof state !== "object" || state === null ||
-    !Array.isArray(state.expected) ||
+    !Array.isArray(state.expected) || !Array.isArray(pr.previousFindings) ||
     (state.problem !== null && typeof state.problem !== "string")
   ) {
     throw new Error(
-      "the gate entry has no valid checklistState; re-run gate.ts and pass its entry verbatim",
+      "the gate entry has no valid checklistState or previousFindings; re-run gate.ts and pass its entry verbatim",
     );
   }
-  return withChecklistGaps(
+  const review = withChecklistGaps(
     parseFableReview(typeof raw === "string" ? raw : JSON.stringify(raw)),
     state,
   );
+  return {
+    ...review,
+    findings: [
+      ...review.findings,
+      ...earlierFindingGaps(
+        pr.previousFindings.map((f) => JSON.stringify(f)),
+        review.earlierFindings ?? [],
+      ),
+    ],
+  };
 }
 
 async function run(cmd: string, args: string[]) {

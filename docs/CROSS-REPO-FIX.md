@@ -7,6 +7,10 @@ not spin the real fix out into follow-up issues. This document describes the
 **capability** that makes that possible: resolving the dependency repo, probing
 "can access", and opening the PR.
 
+> **Filing an issue instead?** Which repository an *issue* belongs in — and
+> how to move one filed in the wrong place — is
+> [Issue routing](ISSUE-ROUTING.md).
+
 > **Scope.** This is the *plumbing* (build + verify the worker's ability to
 > raise a cross-repo PR). The *behaviour* that tells the worker when to use it
 > and the dedup / one-follow-up rules are sibling issues under parent; the
