@@ -48,6 +48,7 @@ import { createLogger } from "./logger.ts";
 import { LOG_FILE_PREFIX, LOG_FILE_SUFFIX } from "./credit_tracker.ts";
 import {
   buildDefaultWorkerConfig,
+  LABEL_DEFAULTS,
   OPERATIONAL_DEFAULTS,
 } from "./config_defaults.ts";
 import {
@@ -235,6 +236,7 @@ import { secondaryLatchCount } from "./primary_quota_latch.ts";
 import {
   buildIdleDecisionCensus,
   formatIdleDecisionCensus,
+  isUnblockedFor,
   type RepoCensusSkipReason,
   resolveRepoScanState,
 } from "./idle_decision_census.ts";
@@ -406,6 +408,7 @@ import {
   type FleetAuthorSetInput,
   isFleetAuthor,
   resolveEffectiveFleetPrAuthors,
+  resolveFleetAuthors,
   resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
@@ -433,7 +436,9 @@ import {
   allowedAuthorsByRepoFrom,
   createTrustSnapshotHolder,
   setLiveTrustedAuthors,
+  trustedAuthorsFor,
 } from "./trust_snapshot.ts";
+import { censusUntrustedLabelIssues } from "./census_untrusted_label_issues.ts";
 import {
   formatDerivedAuthorsFoldSummary,
   formatDisjointTrustWarning,
@@ -614,11 +619,13 @@ export interface ProductionDepsOptions {
    * a fix that only the production factory could activate, with nothing
    * asserting the factory activated it.
    *
-   * Scoped deliberately to the audit: it is one probe, and a factory-wide
-   * `gh` override would be a much larger surface for a much smaller reason.
-   * The one other read it answers is the fleet-wide fast-failure diagnostic
-   * lookup (Issue #2955) the audit and census make through `backedOffRepos`,
-   * so a wiring test never spawns a real `gh search issues`.
+   * It is not a factory-wide `gh` override: it answers the idle-detect audit's
+   * probes, the fleet-wide fast-failure diagnostic lookup (Issue #2955) the
+   * audit and census make through `backedOffRepos`, and the idle-task
+   * filer's reads (its back-fill sweep and its fleet-wide startable gate,
+   * Issue #3587), so a wiring test can drive the filer's gate without
+   * spawning a real `gh`. Production leaves it unset, and the filer then
+   * takes its default runner.
    */
   idleDetectGhCommandFn?: (args: string[]) => Promise<string>;
 
@@ -1528,6 +1535,34 @@ export async function createProductionRunCoreDeps(
       cooldownSet.has(`${repo}|${issueNumber}`) ||
       processedIssues.has(repo, issueNumber) ||
       refused(repo, issueNumber);
+  };
+
+  /**
+   * The hold the idle-detect audit and the idle-task filer put on an issue
+   * (Issue #3587): the run-local hold set above, plus the milestone the
+   * persisted pacing ledger paces (`milestone-behind`). The claim scan skips
+   * every issue of such a milestone, so counting them as startable would
+   * suppress or refuse nothing the scan will start.
+   */
+  const loadIdleDetectionHold = async (): Promise<
+    (repo: string, issueNumber: number, milestone: string) => boolean
+  > => {
+    const runLocalHold = await loadRunLocalHolds();
+    const { loadSyncStreaks, milestoneSyncStreakPath } = await import(
+      "./milestone_sync_streak.ts"
+    );
+    const { milestonePacedUntil } = await import("./milestone_presync.ts");
+    // same path the scan and census read (config.workDir || workDir)
+    const pacingLedger = await loadSyncStreaks(
+      milestoneSyncStreakPath(config.workDir || workDir),
+    );
+    return (repo, issueNumber, milestone) =>
+      withholdsFromIdleDetection(
+        sharedProcessedIssues(),
+        runLocalHold,
+        repo,
+        issueNumber,
+      ) || milestonePacedUntil(pacingLedger, repo, milestone) !== undefined;
   };
 
   const circuitBreakerConfig: CircuitBreakerConfig = {
@@ -5624,21 +5659,18 @@ export async function createProductionRunCoreDeps(
         await runIdleTaskFilerCycle({
           repos,
           log: (line) => logger.info(line),
+          // Issue #3587: a wiring test's stub answers the back-fill sweep
+          // too. Undefined (production) means the default runner.
+          ghCommandFn: options.idleDetectGhCommandFn,
           fileFn: async () => {
             // Issue #1050: the filer's fleet-global gate asks "can any of
             // this be started right now?", and work this run is holding
             // back — the persisted retry cooldown plus its processed-issue
-            // registry — cannot be. Resolved from the one hold set the
-            // scan, the census and the audit already share, so all four
+            // registry, and (Issue #3587) a milestone the pacing ledger
+            // paces — cannot be. Resolved from the one hold set the scan,
+            // the census and the audit already share, so all four
             // instruments agree.
-            const runLocalHold = await loadRunLocalHolds();
-            const idleDetectionHold = (repo: string, issueNumber: number) =>
-              withholdsFromIdleDetection(
-                sharedProcessedIssues(),
-                runLocalHold,
-                repo,
-                issueNumber,
-              );
+            const idleDetectionHold = await loadIdleDetectionHold();
             await maybeFileIdleTaskCommand.execute(
               {
                 "monitored-repos": repos.join(","),
@@ -5669,6 +5701,10 @@ export async function createProductionRunCoreDeps(
                   // Issue #2405: a hold the claim path made by deferring the issue
                   // does not hide it — the census draws the same line.
                   runLocalHoldFn: idleDetectionHold,
+                  // Issue #3587: the filer's fleet-wide startable gate reads
+                  // through the same stub when a wiring test sets one;
+                  // undefined (production) means the filer's default runner.
+                  ghCommandFn: options.idleDetectGhCommandFn,
                 },
               },
               config,
@@ -5703,15 +5739,9 @@ export async function createProductionRunCoreDeps(
         // the audit stops counting work this run is itself withholding — the
         // over-count that kept `mis_classification` firing, and the audit's
         // own `claimableTotal` suppressing the idle-task filer, for the life
-        // of the process.
-        const runLocalHold = await loadRunLocalHolds();
-        const idleDetectionHold = (repo: string, issueNumber: number) =>
-          withholdsFromIdleDetection(
-            sharedProcessedIssues(),
-            runLocalHold,
-            repo,
-            issueNumber,
-          );
+        // of the process. Issue #3587: and the milestone the pacing ledger
+        // paces, which the scan skips as `milestone-behind`.
+        const idleDetectionHold = await loadIdleDetectionHold();
         // Issue #2085: the repositories backed off for fast failures (Issue
         // #1950), which `findNextIssue` unions into the scan's
         // `excludeRepos`. The scan was never shown them, so it cannot have
@@ -5782,7 +5812,9 @@ export async function createProductionRunCoreDeps(
             ),
           // Issue #655: this run's persisted retry cooldown and its
           // processed-issue registry, resolved above from the one hold set
-          // `findNextIssue` filters its candidates against.
+          // `findNextIssue` filters its candidates against. Issue #3587: and
+          // a milestone the pacing ledger paces, as the scan's
+          // `milestone-behind` skip does.
           // Issue #2405: a hold the claim path made by deferring the issue
           // does not hide it — the census draws the same line.
           runLocalHoldFn: idleDetectionHold,
@@ -5935,6 +5967,35 @@ export async function createProductionRunCoreDeps(
             } catch {
               openMilestones = new Set<string>();
             }
+            // Issue #3571: the claim scan's `label-author-not-allowed` gate
+            // refuses an issue whose priority label an untrusted author added.
+            // The census reads that same gate (through
+            // `wasLabelAddedByAllowedAuthor`) so such an issue counts as
+            // `claim_refused`, not claimable. Best-effort per issue: a failed
+            // timeline read counts the issue trusted and is logged loudly.
+            // PR #3963: skip issues the census already excludes for labels
+            // or assignment, and share the scan's iteration timeline batch.
+            const priorityIssues = issues.filter((issue) =>
+              [
+                LABEL_DEFAULTS.topPriorityLabel,
+                LABEL_DEFAULTS.workOnLabel,
+                LABEL_DEFAULTS.lowPriorityLabel,
+              ].some((label) => isUnblockedFor(issue, label))
+            );
+            const censusGh = await timelineBatchRegistry.getBatchedGh(
+              repo,
+              priorityIssues.map((issue) => issue.number),
+              options.idleDetectGhCommandFn ?? runGhCommand,
+            );
+            const untrustedLabelIssues = await censusUntrustedLabelIssues(
+              repo,
+              priorityIssues,
+              trustedAuthorsFor(config, repo),
+              censusGh,
+              timelineCache,
+              resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
+              (msg) => logger.warn(msg),
+            );
             return {
               repo,
               monitored: true,
@@ -6026,6 +6087,7 @@ export async function createProductionRunCoreDeps(
                   .map((i) => i.number),
               ),
               openMilestones,
+              untrustedLabelIssues,
             };
           }),
         );

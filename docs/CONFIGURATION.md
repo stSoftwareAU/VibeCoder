@@ -3305,11 +3305,12 @@ The settled policy:
 | **Notify**    | A `[SPEND_CEILING]` error line in the worker log **plus** a `spend-ceiling-stop` entry in the hash-chained audit journal |
 
 The estimate comes from the credit log, so it tracks token usage rather than
-billed invoices — treat it as a guard rail, not an accounting record. A credit
-log that cannot be read is reported as `UNVERIFIED` rather than passed as
-under-budget: a monitoring fault must not halt the fleet, but it is never
-silent. Set `VIBE_CREDIT_LOG_DIR` when the credit logs live somewhere other
-than the default directory below.
+billed invoices — treat it as a guard rail, not an accounting record. The
+estimate includes a split `issue` run's sub-agent tokens, each priced at its own
+model's rate (Issue #3616). A credit log that cannot be read is reported as
+`UNVERIFIED` rather than passed as under-budget: a monitoring fault must not
+halt the fleet, but it is never silent. Set `VIBE_CREDIT_LOG_DIR` when the
+credit logs live somewhere other than the default directory below.
 
 ### Where the credit logs live (Issue #1239)
 

@@ -192,13 +192,13 @@ flowchart LR
     `worker/deno/tests/security_tree_sweep_test.ts::falsePositives - a citation error quotes the citation, truncating a long one (Issue #3658)`.
     It asserts that a short citation is quoted in full in the error, and
     that a 205-character one is cut to its first 120 characters plus `...`.
-    Each mutant turned 1 test red, that one. Negating the `:1200`
+    Each mutant made only the named regression fail. Negating the `:1200`
     truncation ternary as well turned 2 red.
   - `worker/deno/lib/security_tree_sweep.ts:1957` (delete the `""` before
     the unlocated note) and `:1958` (delete its first line): killed by
     `worker/deno/tests/security_tree_sweep_test.ts::baselining one unlocated finding leaves the others reported (Issue #1473)`.
     That test now also asserts the whole note text, set off from the JSON
-    block by a blank line. Each deletion turned 1 test red.
+    block by a blank line. Each deletion made only the named regression fail.
 - `content_tooling_env_test.ts` assertions rewritten, not kept verbatim. The
   mutation gate runs tests under `env -i`, so the worker's own environment
   is empty. Then the old `Object.keys(Deno.env.toObject())` positive control

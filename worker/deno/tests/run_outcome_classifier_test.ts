@@ -18,6 +18,8 @@ import {
   type FailureCategory,
   SECURITY_FIX_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
+import { formatDetailedFailureMessage } from "../lib/failure_message.ts";
+import { redactedTail } from "../lib/redacted_text.ts";
 
 /** Real strings: from failure_diagnosis_test.ts fixtures and worker logs. */
 /**
@@ -698,4 +700,73 @@ Deno.test("classifyRunFailure - a marked security-fix gate refusal is not_code_f
     classifyRunFailure("security_fix_gate", message).failureClass,
     "agent-outcome",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #3694 — the agent's quoted output is not OOM evidence
+// ---------------------------------------------------------------------------
+
+/** The agent's stdout tail for a SIGTERM kill: a command's exit 137, not the agent's. */
+const SIGTERM_AGENT_TAIL = [
+  '{"type":"user","tool_use_result":"Error: Exit code 137"}',
+  '{"type":"system","subtype":"status","status":"compacting"}',
+].join("\n");
+
+const KERNEL_NO_OOM_LINE = "Kernel OOM lines: none in the readable dmesg tail";
+
+/**
+ * Build the message the runner hands the classifier, through the real
+ * `formatDetailedFailureMessage`, so the fixture carries the real shape.
+ */
+function sigtermKillMessage(agentTail: string, kernelLine: string): string {
+  return formatDetailedFailureMessage(
+    "Claude was killed by an external SIGTERM (exit 143) — the worker did not request this shutdown",
+    {
+      elapsedSeconds: 49,
+      clarityStatus: "assessed_clear",
+      rawExitCode: 143,
+      lastOutputSnippet: redactedTail(agentTail, 500),
+      killDiagnostics: [
+        "Top processes by RSS at the kill (5 total):",
+        "pid=74 ppid=1 rss=231 MiB up=37:22 deno run ...",
+        "Cgroup memory: not readable here",
+        kernelLine,
+      ].join("\n"),
+    },
+  );
+}
+
+Deno.test("classify #3694 - a SIGTERM kill whose agent quoted 'Exit code 137' is killed-unknown, not oom", () => {
+  const message = sigtermKillMessage(SIGTERM_AGENT_TAIL, KERNEL_NO_OOM_LINE);
+  const category = detectFailureCategory(message);
+  assertEquals(category, "killed");
+  const got = classifyRunFailure(category, message);
+  assertEquals(got.failureClass, "killed-unknown");
+  assertEquals(got.fixability, "unknown");
+});
+
+Deno.test("classify #3694 - a kernel OOM line in the worker's Processes block still makes the kill oom", () => {
+  // The worker-side evidence must keep counting once the agent block is out
+  // of scope: the kernel's own kill line is the worker's to report.
+  const message = sigtermKillMessage(
+    SIGTERM_AGENT_TAIL,
+    "Out of memory: Killed process 36771 (claude) total-vm:4123456kB",
+  );
+  const category = detectFailureCategory(message);
+  assertEquals(category, "killed");
+  const got = classifyRunFailure(category, message);
+  assertEquals(got.failureClass, "oom");
+  assertEquals(got.fixability, "code_fixable");
+});
+
+Deno.test("classify #3694 - heap-exhaustion prose inside the agent block alone is killed-unknown", () => {
+  const message = sigtermKillMessage(
+    "FATAL ERROR: JavaScript heap out of memory",
+    KERNEL_NO_OOM_LINE,
+  );
+  const category = detectFailureCategory(message);
+  assertEquals(category, "killed");
+  const got = classifyRunFailure(category, message);
+  assertEquals(got.failureClass, "killed-unknown");
+  assertEquals(got.fixability, "unknown");
 });
