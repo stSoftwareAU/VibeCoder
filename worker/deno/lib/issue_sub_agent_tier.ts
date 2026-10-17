@@ -6,7 +6,7 @@
  * the `issue`-phase executor and Standards-reviewer sub-agents, and whether
  * the run carries the read-only explorer sub-agent (Issue #3402); the
  * resolved tier is consumed by `buildIssueRunAgents` in
- * `issue_executor_agents.ts`. Default `"sonnet"`; an invalid value (wrong
+ * `issue_executor_agents.ts`. Default `"haiku"`; an invalid value (wrong
  * type, or a string outside the allowed set) is warned about and replaced
  * by the default, rather than failing `loadConfig`.
  */
