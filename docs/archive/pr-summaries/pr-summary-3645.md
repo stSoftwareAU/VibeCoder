@@ -108,7 +108,7 @@ Evidence for #N citations: #3643: Configure manager, executor and reviewer indep
 - Edited: `worker/deno/tests/mod_test.ts` — `assertEquals(commands.length, 153);` becomes 154 because this issue adds the `fleet-experiment-report` command. No assertion removed. Red-check: without `registry.register(fleetExperimentReportCommand)` the count is 153 and the new `includes` assertion fails.
 - Every branch in the facts file was flipped one at a time and went red as recorded there. One flip, of the `?? CONTROL_ARM_ID` fallback, is exempt: validation makes it unreachable.
 - `deno task test:unit` on the four new test files plus `tests/mod_test.ts` and `tests/lib_sweep_coverage_test.ts`: 132 passed, 0 failed.
-- `./quality.sh` on commit 4db4b439: PASSED (config integration skipped).
+- `./quality.sh` on the final code head (3736e352): PASSED (config integration skipped).
 
 <!-- vibe-branch-outcomes -->
 
