@@ -436,8 +436,13 @@ Deno.test("runPrFeedbackDriftCheck - a docs-only push with a still-present quote
 });
 
 Deno.test("runPrFeedbackDriftCheck - a docs-only push where the recovery turn removes the quoted sentence reports recovered", async () => {
-  const { dir, beforeSha } = await setupBaseline(SUMMARY_WITH_SENTENCE);
+  const { dir } = await setupBaseline(SUMMARY_WITH_SENTENCE);
   try {
+    // The third test case is committed before beforeSha, so the push itself
+    // stays docs-only and the "(3 tests)" figure matches the file.
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_V2);
+    await commitAll(dir, "test: add third case");
+    const beforeSha = (await git(dir, ["rev-parse", "HEAD"])).stdout.trim();
     await writeFile(dir, SUMMARY_PATH, SUMMARY_WITH_SENTENCE_AND_ROUND2);
 
     const calls: AgentCall[] = [];

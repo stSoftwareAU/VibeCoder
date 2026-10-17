@@ -14,6 +14,16 @@
  * by its total (passed + failed), not by "passed" alone, because the run
  * executed every runnable test in the file (Issue #3381).
  *
+ * A block with several figures is read one figure at a time (Issue #3740).
+ * A whole-file figure such as "`a_test.ts` (8 tests)" is compared with that
+ * file. A partial addition ("3 tests added to `a_test.ts`", "+3 tests",
+ * "Added to `a_test.ts` (8 tests") is never compared and is reported
+ * unchecked, and it does not block the other figures. "now has N" gives a
+ * file's whole total and takes precedence over a partial figure for it. A
+ * figure whose file the PR did not change is unchecked on its own. A count
+ * with no file name, in a sentence of its own, is unchecked on its own. A
+ * single-figure block and an ambiguous pairing keep the block-level skip.
+ *
  * The PR summary is untrusted, agent-authored text, so this module only
  * ever uses bounded, hardcoded regexes against it (never `new RegExp` built
  * from input) and caps the amount of text it scans at 200_000 characters.
@@ -424,7 +434,14 @@ const CLAIM_RE = /(?<![\w.#])(\d{1,5})\s+(tests?|passed)\b/gi;
 // so the cost stays linear; see the hostile-input test.
 const RESULT_RE =
   /(?<![\w.#])(\d{1,5})\s+(passed|failed)\b[\s,;|]*(?:and\s+)?(\d{1,5})\s+(passed|failed)\b/gi;
-const PARTIAL_ADD_RE = /\badded to\b|\bextended\b|\bwith\s+\d{1,5}\s+tests?\b/i;
+/**
+ * Block-level partial-addition check for a single-claim block (Issue #3740).
+ * "added to", "extended", "with N tests" or "+N tests" make the one figure a
+ * partial addition, not the file's whole count. A multi-claim block is read per claim
+ * instead, so this regex is not used there.
+ */
+const PARTIAL_ADD_RE =
+  /\badded to\b|\bextended\b|\bwith\s+\d{1,5}\s+tests?\b|(?<![\w.#])\+\s*\d{1,5}\s+tests?\b/i;
 
 /**
  * Split a Test Plan section into logical blocks, one claim each.
@@ -474,9 +491,12 @@ export function logicalBlocks(section: string): string[] {
 /**
  * Flag Test Plan lines whose quoted figure disagrees with the head recount:
  * a single "N tests"/"N passed" claim is compared with the named files' counts
- * (summed), several claims over several files are each compared with the files
- * named since the previous claim (excluding files already matched), and a paired "N passed, M failed" run result is compared by N + M with the
- * runnable count of the test file it ran (Issue #3381).
+ * (summed). In a block with several claims each whole-file figure is compared
+ * with the files named since the previous figure (excluding files already
+ * matched), and a "now has N" total is compared with its file (Issue #3740).
+ * Partial additions are never compared. A paired "N passed, M failed" run
+ * result is compared by N + M with the runnable count of the test file it ran
+ * (Issue #3381).
  */
 export function findTestPlanMismatches(
   opts: TestPlanScanOptions,
@@ -486,9 +506,10 @@ export function findTestPlanMismatches(
 
 /**
  * A figure the recount could not check, so it was neither compared nor passed
- * as correct: a paired run result (Issue #3381) or several counts that do not
- * each follow the test file they count, unknown files, mixed count kinds or
- * partial additions. The worker logs these rather than
+ * as correct: a paired run result (Issue #3381), several counts that do not
+ * each follow the test file they count, a figure naming a file the PR did not
+ * change, a partial addition (Issue #3740), a token-less count, mixed count
+ * kinds, or a superseded whole-file figure. The worker logs these rather than
  * letting an unchecked figure pass silently.
  */
 export interface UncheckedRunResult {
@@ -501,12 +522,14 @@ export interface UncheckedRunResult {
 /**
  * The figures `findTestPlanMismatches` could not check: a block with several
  * "N tests" counts that do not pair up with the test files before them (or
- * differ for one file), a paired run result in a block
- * naming a test file that is not one of the PR's changed test files, a block
- * naming several files whose runs differ, or a red result naming no test file
- * when the section has no sole changed test file. A `quality.sh` block and a
- * file-less green run are out of scope by design and are not reported. Comes
- * from the same scan as `findTestPlanMismatches`.
+ * differ for one file), a paired run result in a block naming a test file that
+ * is not one of the PR's changed test files, a block naming several files whose
+ * runs differ, or a red result naming no test file when the section has no
+ * sole changed test file. In a multi-claim block a partial addition, a figure
+ * naming an unchanged file, or a token-less count in its own sentence is
+ * reported on its own, and does not block the other figures (Issue #3740). A
+ * `quality.sh` block and a file-less green run are out of scope by design and
+ * are not reported. Comes from the same scan as `findTestPlanMismatches`.
  */
 export function findUncheckedRunResults(
   opts: TestPlanScanOptions,
@@ -523,6 +546,212 @@ interface TestPlanScanOptions {
   headCounts: ReadonlyMap<string, TestDeclarationCounts>;
 }
 
+const PARTIAL_REASON =
+  "the block describes partial test additions, not whole-file counts";
+const UNKNOWN_CLAIM_REASON =
+  "the figure names a test file the PR did not change";
+const UNKNOWN_BLOCK_REASON = "the block names a test file the PR did not change";
+const LOOSE_REASON = "the count names no test file in its own sentence";
+const SUPERSEDED_REASON = "the block also gives this file's current total";
+const AMBIGUOUS_REASON =
+  "several counts that do not each follow the test file they count";
+
+/** A file name in a block, with its resolved headCounts key if any (Issue #3740). */
+interface BlockToken {
+  start: number;
+  end: number;
+  key: string | undefined;
+}
+
+/**
+ * How one figure in a multi-claim block is read (Issue #3740): `whole` is a
+ * whole-file count, `total` a "now has N" total, `partial` an addition that is
+ * never compared, `loose` a token-less count in its own sentence, `unknown` a
+ * figure whose file the PR did not change, and `ambiguous` a pairing that
+ * cannot be read, which blocks the whole line.
+ */
+type ClaimRole =
+  | "whole"
+  | "total"
+  | "partial"
+  | "loose"
+  | "unknown"
+  | "ambiguous";
+
+interface RoledClaim {
+  start: number;
+  end: number;
+  claimed: number;
+  role: ClaimRole;
+  /** Index into the block's tokens of the file the figure names, if any. */
+  owner?: number;
+}
+
+const NOW_HAS_RE = /\bnow\s+has\s*$/i;
+/** A "now has N" total with no "tests" word after it (Issue #3740). */
+const TOTAL_RE = /\bnow\s+has\s+(\d{1,5})\b(?!\s+(?:tests?|passed)\b)/gi;
+const ADDED_TO_FOLLOW_RE = /^\s+(?:tests?\s+)?added\s+to[\s`*_]*$/i;
+const WHOLE_GAP_RE = /^[`*_\s]*\(\s*$/;
+const PARTIAL_GAP_RE = /^[`*_\s]*(?:\(|with)?[`*_\s]*$/i;
+const MARKER_RE = /\b(?:added|extended)\b/i;
+const PLUS_RE = /\+\s*$/;
+const BARE_TO_RE = /(?<![\w.#])\d{1,5}\s+to\s+$/;
+
+function scanBlockTokens(
+  raw: string,
+  headCounts: ReadonlyMap<string, TestDeclarationCounts>,
+): BlockToken[] {
+  return [...raw.matchAll(TOKEN_RE)].map((m) => ({
+    start: m.index as number,
+    end: (m.index as number) + m[0].length,
+    key: resolveToken(m[0], headCounts),
+  }));
+}
+
+/**
+ * Read each figure of a multi-claim block on its own (Issue #3740). A figure
+ * is a whole-file count when only "`file` (" sits between the file name and
+ * it, with no "added", "extended" or "+" since the previous claim or file
+ * name. "N tests added to `file`", "N to `file`", "+N tests", "Added to `file`
+ * (N tests" and "extended `file` with N tests" are partial. "now has N" is
+ * the file's total and takes precedence over a partial figure for it.
+ */
+function classifyBlockClaims(
+  raw: string,
+  claimMatches: RegExpMatchArray[],
+  tokens: BlockToken[],
+  isPassed: boolean,
+  totalMatches: RegExpMatchArray[],
+): RoledClaim[] {
+  const claimStarts = claimMatches.map((m) => m.index as number);
+  const claimBetween = (from: number, to: number): boolean =>
+    claimStarts.some((s) => s >= from && s < to);
+  // End of the nearest claim or file name ending at or before pos.
+  const boundaryBefore = (pos: number): number => {
+    let best = 0;
+    for (const m of claimMatches) {
+      const e = (m.index as number) + m[0].length;
+      if (e <= pos && e > best) best = e;
+    }
+    for (const t of tokens) {
+      if (t.end <= pos && t.end > best) best = t.end;
+    }
+    return best;
+  };
+  const lastTokenBefore = (pos: number): number | undefined => {
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      if (tokens[i]!.end <= pos) return i;
+    }
+    return undefined;
+  };
+  const roled = claimMatches.map((m): RoledClaim => {
+    const start = m.index as number;
+    const end = start + m[0].length;
+    const claimed = Number(m[1]);
+    // A passed run figure is always the whole run, read by segment (Issue #3315).
+    if (isPassed) return { start, end, claimed, role: "whole" };
+    const before = raw.slice(Math.max(0, start - 40), start);
+    if (!isPassed && NOW_HAS_RE.test(before)) {
+      const owner = lastTokenBefore(start);
+      return {
+        start,
+        end,
+        claimed,
+        role: owner === undefined ? "loose" : "total",
+        owner,
+      };
+    }
+    const next = tokens.findIndex((t) => t.start >= end);
+    if (
+      !isPassed && next !== -1 && tokens[next]!.start - end <= 40 &&
+      !claimBetween(end, tokens[next]!.start) &&
+      ADDED_TO_FOLLOW_RE.test(raw.slice(end, tokens[next]!.start))
+    ) {
+      return { start, end, claimed, role: "partial", owner: next };
+    }
+    const prev = lastTokenBefore(start);
+    const own = prev !== undefined && !claimBetween(tokens[prev]!.end, start) &&
+        start - tokens[prev]!.end <= 80
+      ? prev
+      : undefined;
+    if (own !== undefined) {
+      const t = tokens[own]!;
+      const gap = raw.slice(t.end, start);
+      const seg = raw.slice(
+        Math.max(boundaryBefore(t.start), start - 200),
+        start,
+      );
+      if (WHOLE_GAP_RE.test(gap) && !MARKER_RE.test(seg)) {
+        return { start, end, claimed, role: "whole", owner: own };
+      }
+      if (!isPassed && PARTIAL_GAP_RE.test(gap) && MARKER_RE.test(seg)) {
+        return { start, end, claimed, role: "partial", owner: own };
+      }
+    }
+    if (!isPassed && PLUS_RE.test(before)) {
+      return { start, end, claimed, role: "partial", owner: own };
+    }
+    if (own !== undefined) {
+      return { start, end, claimed, role: "ambiguous", owner: own };
+    }
+    const sentenceStart = boundaryBefore(start);
+    const sentenceBreak = raw.lastIndexOf(". ", start - 2);
+    return {
+      start,
+      end,
+      claimed,
+      role: sentenceBreak >= sentenceStart && sentenceBreak !== -1
+        ? "loose"
+        : "ambiguous",
+    };
+  });
+  const totals = totalMatches.map((m): RoledClaim => {
+    const start = m.index as number;
+    const owner = lastTokenBefore(start);
+    return {
+      start,
+      end: start + m[0].length,
+      claimed: Number(m[1]),
+      role: owner === undefined ? "loose" : "total",
+      owner,
+    };
+  });
+  return [...roled, ...totals].sort((a, b) => a.start - b.start).map((c) =>
+    c.owner !== undefined && c.role !== "loose" &&
+        tokens[c.owner]!.key === undefined
+      ? { ...c, role: "unknown" }
+      : c
+  );
+}
+
+/** Bare "N to `file`" figures, which are partial and not claims (Issue #3740). */
+function bareToTokens(
+  raw: string,
+  tokens: BlockToken[],
+  claims: RoledClaim[],
+): Set<number> {
+  const owned = new Set(
+    claims.flatMap((c) => (c.owner === undefined ? [] : [c.owner])),
+  );
+  const found = new Set<number>();
+  tokens.forEach((t, i) => {
+    if (
+      !owned.has(i) &&
+      BARE_TO_RE.test(raw.slice(Math.max(0, t.start - 40), t.start))
+    ) {
+      found.add(i);
+    }
+  });
+  return found;
+}
+
+/**
+ * One pass over the Test Plan section (Issue #3143, #3740). Runs and single
+ * claims keep their block-level checks; a multi-claim block is classified per
+ * figure by `classifyBlockClaims` and then compared or reported figure by
+ * figure. Both `findTestPlanMismatches` and `findUncheckedRunResults` read
+ * this result.
+ */
 function scanTestPlan(
   opts: TestPlanScanOptions,
 ): { mismatches: TestPlanMismatch[]; unchecked: UncheckedRunResult[] } {
@@ -590,10 +819,17 @@ function scanTestPlan(
     }
     const claimMatches = [...rawLine.matchAll(CLAIM_RE)];
     if (claimMatches.length === 0) continue;
-    const skip = (reason: string) =>
-      unchecked.push({ line: rawLine.trim().slice(0, 300), reason });
-    if (hasUnknownToken) {
-      skip("the block names a test file the PR did not change");
+    const line = rawLine.trim().slice(0, 300);
+    const skip = (reason: string) => unchecked.push({ line, reason });
+    // A single claim keeps the block-level checks; several claims are read
+    // one at a time (Issue #3740).
+    const passedBlock = claimMatches.some((m) =>
+      (m[2] ?? "").toLowerCase() === "passed"
+    );
+    const totalMatches = passedBlock ? [] : [...rawLine.matchAll(TOTAL_RE)];
+    const multi = claimMatches.length + totalMatches.length > 1;
+    if (!multi && hasUnknownToken) {
+      skip(UNKNOWN_BLOCK_REASON);
       continue;
     }
     const claims = claimMatches.map((m) => Number(m[1]));
@@ -611,8 +847,8 @@ function scanTestPlan(
     // "Added to file (3 tests)" describes tests added to an existing file,
     // not the file's whole declaration count. A "passed" command result
     // is still the whole run.
-    if (!isPassedClaim && PARTIAL_ADD_RE.test(rawLine)) {
-      skip("the block describes partial test additions, not whole-file counts");
+    if (!multi && !isPassedClaim && PARTIAL_ADD_RE.test(rawLine)) {
+      skip(PARTIAL_REASON);
       continue;
     }
 
@@ -629,7 +865,7 @@ function scanTestPlan(
       const actual = sumOf(keys);
       if (claimed !== actual) {
         results.push({
-          line: rawLine.trim().slice(0, 300),
+          line,
           files: keys,
           claimed,
           actual,
@@ -637,48 +873,133 @@ function scanTestPlan(
       }
     };
 
+    const blockTokens = scanBlockTokens(rawLine, opts.headCounts);
+    const roled = multi
+      ? classifyBlockClaims(
+        rawLine,
+        claimMatches,
+        blockTokens,
+        isPassedClaim,
+        totalMatches,
+      )
+      : [];
+    const bareTo = multi
+      ? bareToTokens(rawLine, blockTokens, roled)
+      : new Set<number>();
+    const ownedIdx = new Set(
+      roled.flatMap((c) => (c.owner === undefined ? [] : [c.owner])),
+    );
+    if (
+      multi &&
+      blockTokens.some((t, i) =>
+        t.key === undefined && !ownedIdx.has(i) && !bareTo.has(i)
+      )
+    ) {
+      skip(UNKNOWN_BLOCK_REASON);
+      continue;
+    }
+    const allKeys = new Set(
+      blockTokens.flatMap((t) => (t.key === undefined ? [] : [t.key])),
+    );
+
     // One claim is a combined total for every file the block names (the
     // wrapped-paragraph shape of Issue #3356); the same figure repeated for
     // a sole file is that file's count.
-    if (claimMatches.length === 1 || resolvedKeys.size === 1) {
+    const onlyWhole = roled.every((c) =>
+      c.role === "whole" || c.role === "ambiguous"
+    );
+    if (!multi || (allKeys.size === 1 && onlyWhole && bareTo.size === 0)) {
       if (uniqueClaims.size > 1) {
         skip("several different counts for one test file");
-      } else flag([...resolvedKeys], claims[0] as number);
+      } else flag([...allKeys], claims[0] as number);
+      continue;
+    }
+    if (roled.some((c) => c.role === "ambiguous")) {
+      skip(AMBIGUOUS_REASON);
       continue;
     }
 
-    // Several claims over several files: each claim is the count of the
-    // files named since the previous claim, so a wrapped sentence that gives
-    // each file its own count is compared file by file. Anything that does
-    // not pair up is reported, never passed (Issue #3553 review).
-    const tokenMatches = [...rawLine.matchAll(TOKEN_RE)];
-    const segments: { keys: string[]; claimed: number }[] = [];
-    let segmentStart = 0;
-    let paired = true;
-    const matchedKeys = new Set<string>();
-    for (const m of claimMatches) {
-      const keys = new Set<string>();
-      for (const t of tokenMatches) {
-        if (t.index >= segmentStart && t.index < m.index) {
-          const key = resolveToken(t[0], opts.headCounts) as string;
-          // A breakdown may repeat a file after its own total. Do not add
-          // that file to the next run; an empty group remains unchecked.
-          if (!matchedKeys.has(key)) keys.add(key);
-        }
+    // Several claims over several files: each whole-file figure is the count
+    // of the files named since the previous claim, so a wrapped sentence that
+    // gives each file its own count is compared file by file. Anything that
+    // does not pair up is reported, never passed (Issue #3553 review).
+    const totalKeys = new Set(
+      roled
+        .filter((c) => c.role === "total")
+        .map((c) => blockTokens[c.owner as number]!.key as string),
+    );
+    const excluded = new Set<number>(bareTo);
+    for (const c of roled) {
+      if ((c.role === "partial" || c.role === "unknown") && c.owner !== undefined) {
+        excluded.add(c.owner);
       }
-      if (keys.size === 0) {
-        paired = false;
-        break;
-      }
-      segments.push({ keys: [...keys], claimed: Number(m[1]) });
-      for (const key of keys) matchedKeys.add(key);
-      segmentStart = m.index + m[0].length;
     }
-    if (!paired || tokenMatches.some((t) => t.index >= segmentStart)) {
-      skip("several counts that do not each follow the test file they count");
+    const pending: UncheckedRunResult[] = [];
+    for (const i of bareTo) {
+      pending.push({
+        line,
+        reason: blockTokens[i]!.key === undefined
+          ? UNKNOWN_CLAIM_REASON
+          : PARTIAL_REASON,
+      });
+    }
+    for (const c of roled) {
+      if (c.role === "unknown") {
+        pending.push({ line, reason: UNKNOWN_CLAIM_REASON });
+      } else if (c.role === "partial") {
+        pending.push({ line, reason: PARTIAL_REASON });
+      } else if (c.role === "loose") {
+        pending.push({ line, reason: LOOSE_REASON });
+      }
+    }
+
+    const flags: { keys: string[]; claimed: number }[] = [];
+    const matchedKeys = new Set<string>();
+    let segmentStart = 0;
+    let blocked = false;
+    for (const c of roled) {
+      if (c.role === "whole") {
+        // A breakdown may repeat a file after its own total. Do not add that
+        // file to the next run; an empty group remains unchecked.
+        const keys = new Set<string>();
+        blockTokens.forEach((t, i) => {
+          if (
+            t.key !== undefined && t.start >= segmentStart && t.end <= c.start &&
+            !excluded.has(i) && !matchedKeys.has(t.key)
+          ) {
+            keys.add(t.key);
+          }
+        });
+        if (keys.size === 0) {
+          blocked = true;
+          break;
+        }
+        for (const k of keys) matchedKeys.add(k);
+        if ([...keys].some((k) => totalKeys.has(k))) {
+          pending.push({ line, reason: SUPERSEDED_REASON });
+        } else flags.push({ keys: [...keys], claimed: c.claimed });
+      }
+      segmentStart = c.end;
+    }
+    if (
+      !blocked &&
+      blockTokens.some((t, i) =>
+        t.key !== undefined && t.start >= segmentStart && !excluded.has(i)
+      )
+    ) {
+      blocked = true;
+    }
+    if (blocked) {
+      skip(AMBIGUOUS_REASON);
       continue;
     }
-    for (const seg of segments) flag(seg.keys, seg.claimed);
+    unchecked.push(...pending);
+    for (const f of flags) flag(f.keys, f.claimed);
+    for (const c of roled) {
+      if (c.role === "total") {
+        flag([blockTokens[c.owner as number]!.key as string], c.claimed);
+      }
+    }
   }
 
   return { mismatches: results, unchecked };
