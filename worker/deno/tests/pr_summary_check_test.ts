@@ -442,3 +442,26 @@ Deno.test("main - reads the facts file named by the summary path", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("runPrSummaryCheck - scrubbed markers block even inside Mermaid or code spans", async () => {
+  for (
+    const suffix of [
+      "\n```mermaid\nsequenceDiagram\nA--․>>B: hello\n```",
+      "\n`<․!-- hidden --․>`",
+    ]
+  ) {
+    const r = await run(GOOD_SUMMARY + suffix);
+    assert(r.ok);
+    assertEquals(statusOf(r.value, "#3710"), "blocked");
+    assertStringIncludes(
+      r.value.find((g) => g.issueRef === "#3710")!.problems[0]!,
+      "U+2024",
+    );
+  }
+  const clean = await run(
+    GOOD_SUMMARY +
+      "\n<!-- hidden -->\n```mermaid\nsequenceDiagram\nA-->>B: hello\n```\n",
+  );
+  assert(clean.ok);
+  assertEquals(statusOf(clean.value, "#3710"), "passed");
+});

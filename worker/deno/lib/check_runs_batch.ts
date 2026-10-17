@@ -417,12 +417,14 @@ export async function fetchFailedCheckRunsBatch(
   prNumbers: number[],
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
   conclusions: readonly string[] = ["failure"],
+  observe?: (prNumber: number, rollup: PrRollup) => Promise<void>,
 ): Promise<Map<number, CheckRunEntry[]> | null> {
   if (prNumbers.length === 0) return new Map();
   const result = await fetchCheckRunsBatch(repo, prNumbers, ghCommandFn);
   if (!result.ok) return null;
   const out = new Map<number, CheckRunEntry[]>();
   for (const [num, rollup] of result.rollups) {
+    await observe?.(num, rollup);
     out.set(num, rollupToFailedCheckRuns(rollup, conclusions));
   }
   return out;

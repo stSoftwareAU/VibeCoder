@@ -18,6 +18,7 @@ import type {
   ClaudeDeps,
   GitDeps,
   GitHubDeps,
+  InfrastructureDeps,
 } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
 import type { IssueSubAgentTier } from "../types.ts";
@@ -100,7 +101,13 @@ async function runFeedback(options: {
   /** Fail every git command, so the PR branch cannot be prepared. */
   gitFails?: boolean;
   stats: RunStats | undefined;
-}): Promise<{ invocations: number }> {
+}): Promise<
+  {
+    invocations: number;
+    followOns: Parameters<InfrastructureDeps["recordPrFollowOn"]>[0][];
+  }
+> {
+  const followOns: Parameters<InfrastructureDeps["recordPrFollowOn"]>[0][] = [];
   let invocations = 0;
   const mockClaude: Partial<ClaudeDeps> = {
     runClaudeWithRetry: (() => {
@@ -118,6 +125,12 @@ async function runFeedback(options: {
     prepareRtkRun: rtkSeam([]).prepare,
   };
   const deps = createMockDeps({
+    infrastructure: {
+      recordPrFollowOn: (input) => {
+        followOns.push(input);
+        return Promise.resolve();
+      },
+    },
     claude: mockClaude,
     github: {
       runGhCommand: ghFor(options.body, options.prState),
@@ -167,7 +180,7 @@ async function runFeedback(options: {
     commentId: "123",
     commentBody: "Please fix the typo on line 10",
   }, processorDeps);
-  return { invocations };
+  return { invocations, followOns };
 }
 
 const NAME = "pr_feedback_processor tier telemetry";
@@ -235,4 +248,26 @@ Deno.test(`${NAME} - a run that fails before the agent is invoked records nothin
   assertEquals(invocations, 0, "the agent must not have been invoked");
   assertEquals(telemetryFor("haiku"), { runs: 0, usd: 0 });
   assertEquals(telemetryFor("sonnet"), { runs: 0, usd: 0 });
+});
+
+Deno.test("Issue #3720: real feedback processor records review cycle and excludes uninvoked work", async () => {
+  resetFleetTelemetry();
+  const stats = statsWith(100_000, 10_000);
+  const { followOns } = await runFeedback({
+    body: bodyWithTier("haiku"),
+    stats,
+  });
+  assertEquals(followOns.length, 1);
+  assert(followOns[0]);
+  assertEquals(followOns[0].followOn, "pr_feedback");
+  assertEquals(followOns[0].cycle, "review-123");
+  assertEquals(followOns[0].attempt, 1);
+  assertEquals(followOns[0].runStats, [stats]);
+  assertEquals(followOns[0].prNumber, 42);
+  const closed = await runFeedback({
+    body: bodyWithTier("haiku"),
+    stats,
+    prState: "CLOSED",
+  });
+  assertEquals(closed.followOns, []);
 });

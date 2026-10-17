@@ -498,7 +498,7 @@ function inDir(dir: string): string {
 }
 
 /** Render a count with a correctly pluralised noun. */
-function plural(count: number, noun: string): string {
+export function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 

@@ -152,6 +152,7 @@ export async function recoverFromPushRejection(
   branchName: string,
   options: GitCommandOptions = {},
   pushFailureDetail?: string,
+  beforePush?: () => Promise<Result<void>>,
 ): Promise<Result<string>> {
   if (pushFailureDetail && isWorkflowScopePushRefusal(pushFailureDetail)) {
     return {
@@ -186,6 +187,11 @@ export async function recoverFromPushRejection(
 
   const merged = await mergeRemoteBranch(branchName, options);
   if (!merged.ok) return merged;
+
+  if (beforePush) {
+    const verified = await beforePush();
+    if (!verified.ok) return verified;
+  }
 
   // A plain push through the sanctioned builder (Issue #275) — never forced.
   const retryResult = await runGitCommand(pushArgs, options);
