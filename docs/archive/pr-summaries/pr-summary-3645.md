@@ -127,6 +127,7 @@ Evidence for #N citations: #3643: Configure manager, executor and reviewer indep
 - Red-checks for the classifier rewire: restoring the names-based `statusOf` turned 12 tests red, including `fleet experiment report - legacy quality_green and review_approved outcomes do not verify a merge`; dropping the quality-only gate filter turned `fleet experiment report - first-pass CI reads only the quality gate` red; dropping the `judgedQuality` condition turned the same test red at the skipped-gate record; always attaching `prNumber` in the synthetic `outcome` helper turned `fleet experiment synthetic - only PR events carry a PR number` red.
 - Every branch in the facts file was flipped one at a time and went red as recorded there. One flip, of the `?? CONTROL_ARM_ID` fallback, is exempt: validation makes it unreachable.
 - `deno task test:unit` on the four new test files plus `tests/lifecycle_outcomes_test.ts`: 90 passed, 0 failed; the report and synthetic tests after the last additions: 39 passed, 0 failed.
+- `./quality.sh` on the final code head: PASSED (config integration skipped).
 
 <!-- vibe-branch-outcomes -->
 
