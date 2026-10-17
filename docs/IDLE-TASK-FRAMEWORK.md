@@ -842,10 +842,11 @@ read as a disagreement. For every monitored repo the census records:
 "Unblocked" means the issue carries the priority label, carries **no** blocking
 label (`failed`, `needs-revision`, `refine-issue`, `planning`, `question`,
 `needs-human`), has **no assignees**, is not blocked by an open PR in its work
-stream, is not named by a **merged** fleet PR, sits in a work stream this worker
-has **not** already occupied, and is not one this run is already holding back
-— i.e. work the Priority 2 scan could hand a
-worker right now. Crucially, neither
+stream, is not named by a **merged** fleet PR, carries a priority label a
+trusted author applied (`untrustedLabelIssues`, Issue #3571), sits in a work
+stream this worker has **not** already occupied, and is not one this run is
+already holding back — i.e. work the Priority 2 scan could hand a worker right
+now. Crucially, neither
 `degraded-model` nor `lang:*` is a blocking label, so an issue carrying them
 still counts: the census exists precisely to refute the "a `degraded-model`
 filter is hiding the work" hypothesis.
@@ -893,7 +894,9 @@ flowchart LR
     L -- no --> X[not counted]
     L -- yes --> B{Blocking label<br/>or assignee?}
     B -- yes --> X
-    B -- no --> S{"Stream occupied and tier is<br/>low-priority or idle-task,<br/>or blank stream held here?"}
+    B -- no --> LA{"Priority label added by<br/>an untrusted author?"}
+    LA -- yes --> CR["claim_refused+1"]
+    LA -- no --> S{"Stream occupied and tier is<br/>low-priority or idle-task,<br/>or blank stream held here?"}
     S -- yes --> SO["stream_occupied+1"]
     S -- no --> P{Open PR blocks<br/>its stream?}
     P -- yes --> PB["pr_blocked+1"]
@@ -1038,6 +1041,17 @@ remains an ordinary `run_local_hold`. `idle_detect_diagnostics.ts` is given the
 same answer through `withholdsFromIdleDetection`, so the two detectors cannot
 disagree about the gate.
 
+The **label-author gate** (Issue #3571) is the other refusal the census now
+models, and it is the opposite case. The claim scan refuses an issue whose
+priority label an untrusted author applied as `label-author-not-allowed`, a
+`human`-clearing gate: nobody else holds the issue, and it stays unclaimable
+until a trusted author applies the label. The census therefore counts it as
+`claim_refused=<n>` ahead of run-local holds and occupancy, does not count it
+as claimable, does not report it as `run_local_hold`, and does not let it
+suppress lower tiers. `untrustedLabelIssues` is the caller-precomputed set; the
+census drops those issues before the tier-3 and work-on suppression checks, as
+the scan drops them.
+
 The **work-stream occupancy** gate (Issue #1050) is the fifth instance, and the
 first to be found in the audit rather than the census. `isMilestoneOccupied`
 calls a stream occupied when an issue in it is assigned to an account the fleet
@@ -1118,7 +1132,9 @@ _permanently_ as `merged-pr-permanent` because merged PR #49 names it. All 28
 suppression signal, and the census mirrors both carve-outs — a `work-on` issue
 blocked only by an open dependency (Issue #2610) or permanently by a merged PR
 (Issue #499) does not suppress, while every self-clearing blocker (open PR,
-occupied stream, closed-unmerged cooldown) still does.
+occupied stream, closed-unmerged cooldown) still does. An untrusted-author
+priority label (`label-author-not-allowed`, Issue #3571) does not suppress
+either: it is a `human` gate, so the census drops those issues before the check.
 
 The **stream-level work-on suppression** gate (Issue #2922) closes a sibling
 hole in the same rule, running immediately after the tier-3 gate above.

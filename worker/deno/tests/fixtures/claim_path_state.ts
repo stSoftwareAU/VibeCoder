@@ -47,7 +47,11 @@ import { findOldestIssue } from "../../lib/find_oldest_issue.ts";
 import { IssueCache } from "../../lib/issue_cache.ts";
 import type { WorkerConfig } from "../../types.ts";
 
-/** The claim-scan gates the census also models (`CENSUS_SCAN_GATE_COVERAGE`). */
+/**
+ * The claim-scan gates the census also models (`CENSUS_SCAN_GATE_COVERAGE`)
+ * that a fixture `gate` selects. `label-author-not-allowed` is modelled too
+ * (Issue #3571) but is driven by `untrustedLabel`, not by this list.
+ */
 export const MODELLED_GATES = [
   "milestone-occupied",
   "pr-blocked",
@@ -97,8 +101,10 @@ export interface StateIssue {
   createdAt?: string;
   /**
    * When true the discovery label was applied by an untrusted actor, so the
-   * scan refuses the issue as `label-author-not-allowed` — a `human` gate
-   * outside the census's view, used by the monotonicity property.
+   * scan refuses the issue as `label-author-not-allowed`. The census models
+   * this through `untrustedLabelIssues` (Issue #3571), so it counts as
+   * `claim_refused` and does not suppress lower tiers; this fixture field is
+   * used by the monotonicity property.
    */
   untrustedLabel?: boolean;
 }

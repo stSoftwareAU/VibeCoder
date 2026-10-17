@@ -312,10 +312,15 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     "repo-busy": "upstream",
     "fetch-error": "upstream",
     // Label and assignee filtering, applied by `isUnblockedFor` before any
-    // gate below is reached.
+    // gate below is reached. The label-author gate is the exception (Issue
+    // #3571): it is modelled further down.
     "assigned": "upstream",
     "blocking-label": "upstream",
-    "label-author-not-allowed": "upstream",
+    // Issue #3571: modelled through the caller-precomputed
+    // {@link RepoCensusInput.untrustedLabelIssues}, which counts a priority-
+    // labelled issue whose priority label an untrusted author added as
+    // `claim_refused`.
+    "label-author-not-allowed": "modelled",
     "untrusted-operational-label": "upstream",
     "non-wrapper-title": "upstream",
     // Tracker detection needs a *live* marker (Issue #2673): a body that only
@@ -624,6 +629,15 @@ export interface RepoCensusInput {
    */
   deferredHolds?: ReadonlySet<number>;
   /**
+   * Issue numbers whose every priority label (`top-priority` / `work-on` /
+   * `low-priority`) was added by an author the claim scan's label-author gate
+   * (`wasLabelAddedByAllowedAuthor`) does not trust. The caller precomputes
+   * the set because the census is synchronous. The census counts these issues
+   * as `claim_refused`, never as claimable (Issue #3571). Omitted → there is
+   * no label-author gate.
+   */
+  readonly untrustedLabelIssues?: ReadonlySet<number>;
+  /**
    * Titles of the repo's currently **open** milestones, as
    * `createOpenMilestoneLookup` reads them for the scan (Issue #2455).
    *
@@ -858,10 +872,13 @@ const BLOCKING_SET: ReadonlySet<string> = new Set(BLOCKING_LABELS);
 
 /**
  * Bypass label the collectors honour when an open PR would otherwise block
- * an issue. The census only checks raw label presence — the collectors'
- * trusted-author verification needs timeline lookups the census must not
- * pay for, and under-counting here merely files an idle-task while work
- * exists (bounded harm), whereas over-counting starves the filer.
+ * an issue. The census checks only raw label presence: the bypass label's
+ * author is not verified here, because the collectors' trusted-author
+ * verification needs timeline lookups the census must not pay for. Priority
+ * labels are different — their authors are gated through the caller-
+ * precomputed {@link RepoCensusInput.untrustedLabelIssues} (Issue #3571).
+ * Under-counting here merely files an idle-task while work exists (bounded
+ * harm), whereas over-counting starves the filer.
  */
 const IGNORE_OPEN_PRS_LABEL = "ignore-open-prs";
 
@@ -1054,9 +1071,11 @@ function occupiedStreamsFor(
  * {@link suppressesLowerTiers}, the same declaration the scan derives its own
  * rule from — so the two instruments cannot disagree about a gate, and a 25th
  * gate cannot be classified on one side only. Gates the census cannot see
- * (label author, content integrity) are still not modelled, which makes this
- * *over*-count suppressors and therefore *under*-count claimable work — the
- * bounded-harm direction this module already prefers.
+ * (content integrity) are still not modelled, which makes this *over*-count
+ * suppressors and therefore *under*-count claimable work — the bounded-harm
+ * direction this module already prefers. The label-author gate is modelled
+ * (Issue #3571): the caller's `untrustedLabelIssues` are dropped before this
+ * check, as the claim scan's collectors drop them.
  */
 function hasSuppressingWorkOn(
   issues: CensusIssue[],
@@ -1126,6 +1145,7 @@ function countUnblocked(
   weekPaceEngaged = false,
   deferredHolds: ReadonlySet<number> = new Set<number>(),
   openMilestones: ReadonlySet<string> = new Set<string>(),
+  untrustedLabelIssues: ReadonlySet<number> = new Set<number>(),
   fleetPrSlots?: number,
   blankStreamHeld = false,
   nowMs: number = Date.now(),
@@ -1161,8 +1181,10 @@ function countUnblocked(
   // resolved once before the per-issue pass.
   // Issue #1885: the weekly-quota pace gate suppresses the whole tier for
   // every repo at once, exactly as this repo-level rule does for one.
+  // Issue #3571: an untrusted label does not suppress lower tiers either, so
+  // the untrusted issues are dropped before the check, as the scan drops them.
   const tierThreeSuppressed = weekPaceEngaged || hasSuppressingWorkOn(
-    issues,
+    issues.filter((issue) => !untrustedLabelIssues.has(issue.number)),
     mergedPRs,
     repo,
     openIssueNumbers,
@@ -1180,6 +1202,9 @@ function countUnblocked(
   const workOnSuppressingStreams = new Set<string>();
   for (const issue of issues) {
     if (!isUnblockedFor(issue, LABEL_DEFAULTS.topPriorityLabel)) continue;
+    // Issue #3571: the claim scan drops an untrusted-label issue before it
+    // reaches PR blocking, so it must not suppress `work-on` candidates.
+    if (untrustedLabelIssues.has(issue.number)) continue;
     if (
       (blankStreamHeld && issue.milestone.trim() === "") ||
       (occupiedStreams.has(issue.milestone) &&
@@ -1224,6 +1249,11 @@ function countUnblocked(
       isUnblockedFor(issue, LABEL_DEFAULTS.workOnLabel) ||
       isUnblockedFor(issue, LABEL_DEFAULTS.lowPriorityLabel);
     if (!carriesPriorityLabel) continue;
+    // Issue #3571: the claim scan's label-author gate refuses this issue.
+    if (untrustedLabelIssues.has(issue.number)) {
+      claimRefused += 1;
+      continue;
+    }
     // Attributed ahead of PR blocking, matching `classifyIssues`: an issue
     // the scan already refuses for occupancy keeps that reason, so
     // `pr_blocked` marks only issues that would otherwise be claimable now.
@@ -1447,6 +1477,7 @@ export function buildIdleDecisionCensus(opts: {
       opts.weekPaceEngaged ?? false,
       input.deferredHolds ?? new Set<number>(),
       input.openMilestones ?? new Set<string>(),
+      input.untrustedLabelIssues ?? new Set<number>(),
       input.fleetPrSlots,
       input.blankStreamHeld ?? false,
     );

@@ -405,6 +405,7 @@ import {
   type FleetAuthorSetInput,
   isFleetAuthor,
   resolveEffectiveFleetPrAuthors,
+  resolveFleetAuthors,
   resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
@@ -432,7 +433,9 @@ import {
   allowedAuthorsByRepoFrom,
   createTrustSnapshotHolder,
   setLiveTrustedAuthors,
+  trustedAuthorsFor,
 } from "./trust_snapshot.ts";
+import { censusUntrustedLabelIssues } from "./census_untrusted_label_issues.ts";
 import {
   formatDerivedAuthorsFoldSummary,
   formatDisjointTrustWarning,
@@ -5955,6 +5958,21 @@ export async function createProductionRunCoreDeps(
             } catch {
               openMilestones = new Set<string>();
             }
+            // Issue #3571: the claim scan's `label-author-not-allowed` gate
+            // refuses an issue whose priority label an untrusted author added.
+            // The census reads that same gate (through
+            // `wasLabelAddedByAllowedAuthor`) so such an issue counts as
+            // `claim_refused`, not claimable. Best-effort per issue: a failed
+            // timeline read counts the issue trusted and is logged loudly.
+            const untrustedLabelIssues = await censusUntrustedLabelIssues(
+              repo,
+              issues,
+              trustedAuthorsFor(config, repo),
+              options.idleDetectGhCommandFn ?? runGhCommand,
+              timelineCache,
+              resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
+              (msg) => logger.warn(msg),
+            );
             return {
               repo,
               monitored: true,
@@ -6046,6 +6064,7 @@ export async function createProductionRunCoreDeps(
                   .map((i) => i.number),
               ),
               openMilestones,
+              untrustedLabelIssues,
             };
           }),
         );
