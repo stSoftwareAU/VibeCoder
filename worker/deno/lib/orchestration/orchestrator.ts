@@ -503,7 +503,7 @@ export async function runExternalOrchestration(
     phase: Phase,
   ): Promise<CallResult> => {
     const attempts = bounds.maxRetries + 1;
-    for (let attempt = 0; attempt < attempts; attempt++) {
+    for (let attempt = 0; ; attempt++) {
       const key = await idempotencyKey(options.issueId, role, attempt, prompt);
       const recorded = cp.steps[key];
       if (recorded !== undefined) return { ok: true, output: recorded };
@@ -572,14 +572,6 @@ export async function runExternalOrchestration(
         }),
       };
     }
-    const message = `${role} ${phase} made no attempt`;
-    return {
-      ok: false,
-      outcome: await finish("refused", message, {
-        kind: "retries_exhausted",
-        message,
-      }),
-    };
   };
 
   if (cp.state === "planning") {
