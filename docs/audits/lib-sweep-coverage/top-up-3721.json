@@ -1,0 +1,14 @@
+{
+  "issue": 3721,
+  "chunk": "top-up-3721",
+  "title": "top-up: lifecycle outcomes and reconciliation",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3721",
+  "definition": "Pure lifecycle outcome and cost reconciliation, and PR observation adapters (milestone 106).",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/lifecycle_outcomes.ts",
+    "worker/deno/lib/lifecycle_pr_observation.ts",
+    "worker/deno/lib/lifecycle_reconcile.ts"
+  ],
+  "sweptAt": "6effe8f3b2e261c89a22a2ea10e25c88c911ba00"
+}

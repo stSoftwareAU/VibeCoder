@@ -18,12 +18,17 @@
  */
 
 import type { Logger, Result } from "../types.ts";
+import { recordLifecyclePrFromGithub } from "./lifecycle_pr_observation.ts";
+import type { PrRollup } from "./check_runs_batch.ts";
 import { recordPrRejection } from "./fleet_telemetry.ts";
 import { PRE_PR_VERIFIER_HOLD_MARKER } from "./standing_violation_routing.ts";
 import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { ensureIssueClosedIfPrMerged } from "./issue_lifecycle.ts";
-import { extractIssueNumberFromPrTitle } from "./pr_body.ts";
+import {
+  assignmentIdFromBody,
+  extractIssueNumberFromPrTitle,
+} from "./pr_body.ts";
 import { verifyMergeLanded } from "./merge_landing.ts";
 import {
   findRollbackAfterMerge,
@@ -102,6 +107,9 @@ export interface PrEntry {
   number: number;
   headRefName: string;
   headRefOid?: string;
+  body?: string;
+  createdAt?: string;
+  reviewDecision?: string;
   baseRefName?: string;
   /**
    * The base branch's tip sha, when the listing asked for it — the maintenance
@@ -402,7 +410,7 @@ export interface CiCheckScanOptions extends PrScanOptions {
  * harmless to callers, which read only what they use.
  */
 export const PR_MAINTENANCE_LIST_FIELDS =
-  "number,title,headRefName,headRefOid,baseRefName,baseRefOid,autoMergeRequest,createdAt,updatedAt,author,mergeable,labels";
+  "number,title,headRefName,headRefOid,baseRefName,baseRefOid,autoMergeRequest,createdAt,updatedAt,author,mergeable,labels,body,reviewDecision";
 
 /**
  * Explicit page size for the cached superset listing (Issue #4303). The
@@ -411,6 +419,9 @@ export const PR_MAINTENANCE_LIST_FIELDS =
  * narrower than any consumer's old view.
  */
 export const PR_MAINTENANCE_LIST_LIMIT = 100;
+
+// Cached listings are useful for maintenance, but cannot timestamp new facts.
+const lifecycleListingObservedAt = new WeakMap<PrEntry, string | null>();
 
 export async function listOpenPrs(
   repo: string,
@@ -458,6 +469,10 @@ export async function listOpenPrs(
           if (seen.has(entry.number)) continue;
           seen.add(entry.number);
         }
+        lifecycleListingObservedAt.set(
+          entry,
+          cached !== null ? null : new Date().toISOString(),
+        );
         merged.push(entry);
       }
     } catch {
@@ -778,6 +793,7 @@ export async function buildFailedCheckRunsLookup(
   prs: PrEntry[],
   ghCommandFn: (args: string[]) => Promise<string>,
   conclusions: readonly string[] = ["failure"],
+  observe?: (prNumber: number, rollup: PrRollup) => Promise<void>,
 ): Promise<(pr: PrEntry) => Promise<CheckRunEntry[]>> {
   const prNumbers = prs.map((p) => p.number);
   const batch = await fetchFailedCheckRunsBatch(
@@ -785,6 +801,7 @@ export async function buildFailedCheckRunsLookup(
     prNumbers,
     ghCommandFn,
     conclusions,
+    observe,
   );
   if (batch !== null) {
     return (pr) => Promise.resolve(batch.get(pr.number) ?? []);
@@ -1510,7 +1527,7 @@ export async function findFailedCiChecks(
       repo,
       scanAuthors,
       // headRefOid pins a human-gate park to the head it was confirmed on.
-      "number,headRefName,headRefOid,baseRefName",
+      "number,headRefName,headRefOid,baseRefName,body,createdAt,reviewDecision",
       options,
     );
 
@@ -1523,6 +1540,38 @@ export async function findFailedCiChecks(
       prs,
       ghCommandFn,
       RED_CHECK_CONCLUSIONS,
+      workDir
+        ? (prNumber, rollup) => {
+          const pr = prs.find((entry) => entry.number === prNumber)!;
+          const observedAt = lifecycleListingObservedAt.get(pr);
+          if (observedAt === null) return Promise.resolve();
+          // Known markerless bodies (including dependency bots) need no read.
+          if (typeof pr.body === "string" && !assignmentIdFromBody(pr.body)) {
+            return Promise.resolve();
+          }
+          // Refresh incomplete listings and heads changed since the list read.
+          const snapshot =
+            typeof pr.body === "string" && pr.createdAt && pr.headRefOid &&
+              typeof pr.reviewDecision === "string" &&
+              pr.headRefOid === rollup.headSha
+              ? {
+                body: pr.body,
+                createdAt: pr.createdAt,
+                headRefOid: pr.headRefOid,
+                headRefName: pr.headRefName,
+                reviewDecision: pr.reviewDecision,
+                state: "OPEN",
+                closedAt: null,
+                mergedAt: null,
+              }
+              : undefined;
+          return recordLifecyclePrFromGithub(
+            { workDir, repo, prNumber, rollup, snapshot, observedAt },
+            ghCommandFn,
+            logger,
+          );
+        }
+        : undefined,
     );
 
     // Issue #1878: the `needs:` topology from the host's existing clone,

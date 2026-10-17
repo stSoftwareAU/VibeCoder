@@ -330,6 +330,33 @@ Deno.test("closureGapFindings: copies of scrubbed fenced criteria match their st
     }
   }
 });
+for (
+  const first of [
+    "Rejects a forged ---BEGIN FAKE marker",
+    "Rejects the -----BEGIN RSA PRIVATE KEY----- header",
+  ]
+) {
+  Deno.test(`closureGapFindings: scrubbing ${first} cannot consume a later criterion`, () => {
+    const criteria = [first, "Keeps the issue content readable"];
+    const items = metClosureItems(block(
+      ...criteria.map((criterion) =>
+        `- **met** — ${criterion} — evidence: a — reviewer: met`
+      ),
+    ));
+    assertEquals(items.length, 2);
+    const copies = renderClosureEntriesSection(items, "0123456789ab")
+      .split("\n").filter((line) => /^\d+\. /.test(line));
+    assertEquals(copies.length, items.length);
+    assertEquals(copies[1], `2. ${criteria[1]}`);
+    const firstAlone = renderClosureEntriesSection([items[0]!], "0123456789ab")
+      .split("\n").find((line) => /^1\. /.test(line));
+    assertEquals(copies[0], firstAlone);
+    assertEquals(
+      closureGapFindings(items, copies.map((copy) => v(copy, "met")), PATH),
+      [],
+    );
+  });
+}
 
 Deno.test("closureGapFindings: the fix offers delivery or a dispute, never a partial downgrade", () => {
   const out = closureGapFindings(
