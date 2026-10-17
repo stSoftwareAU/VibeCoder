@@ -1,0 +1,12 @@
+{
+  "issue": 3571,
+  "chunk": "top-up-3571",
+  "title": "top-up: census label-author gate",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3571",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: census_untrusted_label_issues.ts (#3571)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/census_untrusted_label_issues.ts"
+  ],
+  "sweptAt": "43904d6b98340ca763ee45891b5a8939ce6603b9"
+}

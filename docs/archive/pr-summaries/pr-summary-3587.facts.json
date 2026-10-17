@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 1559,
+        "outcome": "milestonePacedUntil operand: an issue of a milestone the pacing ledger paces is held",
+        "test": "worker/deno/tests/idle_detect_milestone_paced_wiring_3587_test.ts",
+        "testName": "idle-detect audit - a paced milestone's issue is held as run_local_hold, not claimable (Issue #3587)",
+        "flipWentRed": "dropping the milestonePacedUntil operand turned it red (claimable=1 reason=has_claimable), and the paced filer test red (startable=1)"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 1559,
+        "outcome": "withholdsFromIdleDetection operand: a run-local hold with no ledger entry still holds the issue",
+        "test": "worker/deno/tests/idle_detect_milestone_paced_wiring_3587_test.ts",
+        "testName": "idle-detect audit - a run-local hold with no ledger entry is run_local_hold, not claimable (Issue #3587)",
+        "flipWentRed": "forcing the withholdsFromIdleDetection operand to false turned it red: claimable=1 reason=has_claimable"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 1559,
+        "outcome": "neither operand holds: the issue stays claimable and startable",
+        "test": "worker/deno/tests/idle_detect_milestone_paced_wiring_3587_test.ts",
+        "testName": "idle-detect audit - without a ledger entry the same issue is claimable (Issue #3587 negative control)",
+        "flipWentRed": "forcing the hold predicate to always return true turned it red: the audit negative control (test line 213) got claimable=0 reason=run_local_hold, and the filer negative control (test line 293) got startable=0"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 1551,
+        "outcome": "config.workDir operand: the ledger is read from config.workDir when set",
+        "test": "worker/deno/tests/idle_detect_milestone_paced_wiring_3587_test.ts",
+        "testName": "idle-detect audit - config.workDir wins: the paced ledger in config.workDir holds the issue even when the factory workDir has none (Issue #3587)",
+        "flipWentRed": "replacing `config.workDir || workDir` with `workDir` turned it red: claimable=1"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 1551,
+        "outcome": "workDir operand: the factory workDir is the fallback when config.workDir is empty",
+        "test": "worker/deno/tests/idle_detect_milestone_paced_wiring_3587_test.ts",
+        "testName": "idle-detect audit - the factory workDir is the fallback when config.workDir is empty: the paced ledger there holds the issue (Issue #3587)",
+        "flipWentRed": "replacing `config.workDir || workDir` with `config.workDir` turned it red: claimable=1"
+      }
+    ]
+  }
+}
