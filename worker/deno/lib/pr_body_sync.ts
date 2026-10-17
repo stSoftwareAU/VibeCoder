@@ -41,6 +41,13 @@
  * rendered into the rebuilt body and its content is part of the digest input,
  * so a push changing only the facts still refreshes the body.
  *
+ * Issue #3760: the digest-reconcile pass in `pr_body_reconcile.ts` is a further
+ * caller, whoever pushed the PR head. It compares the digest the live body
+ * records against the summary at that head and calls
+ * {@link syncPrBodyFromSummary} only when they differ, so a push made outside
+ * the worker (which never reaches the post-push sync above) still refreshes
+ * the body.
+ *
  * The rebuilt body also carries over the hidden sub-agent tier marker (Issue
  * #3403) the live body carries, so a review-fix refresh keeps attributing
  * the PR to the tier of the issue run that opened it rather than silently
@@ -331,7 +338,7 @@ interface PrViewJson {
  * integer) is skipped rather than stopping the search — the body's own
  * marker can still be found after it (PR #3353 review).
  */
-function issueNumberFromMarker(body: string): number | undefined {
+export function issueNumberFromMarker(body: string): number | undefined {
   const pattern = new RegExp(
     `${
       WORKER_PR_MARKER_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -846,9 +853,11 @@ export async function syncPrBodyFromSummary(
  * Call {@link syncPrBodyFromSummary} (or an injected stand-in) and log the
  * outcome, without ever failing the caller's run (Issue #3089).
  *
- * Shared by the three fix-run processors (feedback, CI, merge-conflict) so
- * each one does not duplicate the "call, then log success or failure"
- * boilerplate.
+ * Shared by the three fix-run processors (feedback, CI, merge-conflict) and by
+ * the Issue #3760 digest-reconcile pass in `pr_body_reconcile.ts`, which calls
+ * the sync for a PR whose body digest differs from the summary at the PR head,
+ * whoever pushed it, so none of them duplicates the "call, then log success or
+ * failure" boilerplate.
  */
 export async function runPrBodySync(
   input: SyncPrBodyInput,

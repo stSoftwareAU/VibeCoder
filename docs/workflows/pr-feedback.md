@@ -224,12 +224,50 @@ for a gated milestone head are skipped, and only a worker-authored PR is
 edited. A failed sync is logged once at warning and does not fail the run
 (Issue #3089).
 
+**Priority 1.64 — Reconcile PR Body Digests** (Issue #3760) covers pushes the
+worker did not make. The re-sync above runs only on the worker's own runs (PR
+feedback, CI fix and merge conflict, after their push; a PR-feedback run that
+pushed nothing also runs it, Issue #3315), so a review-fix commit pushed by
+hand, from a laptop or an interactive Claude Code session, never reaches it:
+the live description stayed on the old summary until some later worker push.
+Each cycle the pass lists the open fleet-authored PRs (the push-capable
+maintenance author set) in the repos due that cycle (`pollRepos`). A listing
+entry with no body (the fleet prefetch's cached maintenance entries carry none)
+is first fetched with `gh pr view <n> --json body,headRefOid`; a failure there
+is logged at warning naming the cause, as for a contents read failure, and the
+body is left unchanged. For a PR whose body carries both the worker marker and
+the `vibe-pr-summary sha256` digest marker, it reads `pr-summary-<N>.md`
+(falling back to the legacy `docs/pr-summary-<N>.md`) and
+`pr-summary-<N>.facts.json` at the PR's head commit through the contents API
+(`gh api repos/{repo}/contents/<path>?ref=<head>`), with no checkout, and
+computes the same digest the body records. When the digest matches, nothing is
+edited and nothing is logged. The match is memoised per PR, keyed on the head
+SHA and the recorded digest, and reused only while both are unchanged, so later
+cycles make no contents calls for that PR; an entry is pruned once the PR is no
+longer listed. When it differs, the pass logs that it is
+rebuilding, fetches the PR head into a disposable shallow clone in a temporary
+directory, runs the same `syncPrBodyFromSummary` rebuild there, and then deletes
+the clone. Every part of that rebuild applies unchanged: the milestone section,
+the leading degraded-run, partial-delivery and chain-stop sections, the bump
+note, the footer markers, and the head check against the PR's current
+`headRefOid`, so a head that moved since the listing is skipped. A body with no
+digest marker (raised before Issue #3315) is skipped, and the older
+before-push-SHA rule on the worker's own pushes still covers it. A contents read
+failure other than a missing file is logged at warning naming the cause, and the
+body is left as it is; a missing summary is skipped. The pass is a deferrable
+fixed-cost sweep: it stands down while the GraphQL budget is in its reserve
+(Issue #2449). It never claims an issue, and because it never touches the shared
+clone it does not run in the maintenance lane. The module is
+`worker/deno/lib/pr_body_reconcile.ts`, and the entry point is
+`reconcilePrBodyDigests`.
+
 When the live body carries no leading degraded or partial-delivery section and
 the rebuilt summary newly marks a criterion `partial` or `missing`, the sync
 also reads the parent issue, re-verifies its content, and files or reuses the
 follow-up (or hands a partial-delivery follow-up to a human) before it writes
 the new section. This is the one path where a re-sync touches the follow-up;
-see
+the Priority 1.64 reconcile pass reaches it too, because it runs the same sync.
+See
 [the fix-run gap case](issue-processing.md#a-healthy-runs-own-gaps-get-a-follow-up-too-issue-3506)
 (Issue #3678).
 

@@ -1,0 +1,12 @@
+{
+  "issue": 3760,
+  "chunk": "top-up-3760",
+  "title": "top-up: PR body digest reconcile",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3760",
+  "definition": "modules added for reconciling live PR bodies with the committed summary digest: pr_body_reconcile.ts (#3760)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/pr_body_reconcile.ts"
+  ],
+  "sweptAt": "0f8b3e56c523a521b9f54df9b4b1c0fe45b130e1"
+}
