@@ -140,6 +140,7 @@ interface Scenario {
 }
 
 interface Outcome {
+  infoLogs: Array<{ message: string; context: unknown }>;
   status: string;
   reason?: string;
   prCreateCalls: number;
@@ -249,10 +250,15 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     },
   });
 
+  const infoLogs: Array<{ message: string; context: unknown }> = [];
+  deps.logger.info = (message, context) => {
+    infoLogs.push({ message, context });
+  };
   const result = await workOnIssueCompletion(ctx, state, deps);
   await Deno.remove(repoPath, { recursive: true });
 
   return {
+    infoLogs,
     status: result.status,
     reason: result.status === "failure" ? result.reason : undefined,
     prCreateCalls,
@@ -712,3 +718,29 @@ Deno.test(
     );
   },
 );
+
+Deno.test("completion - a passing discrimination log retains cited tests that did not run", async () => {
+  const notRun = [{
+    test: { file: "tests/path.bats", name: "rejects traversal" },
+    reason: "unsupported language: only Deno and Rust tests run",
+  }];
+  const outcome = await runCompletion({
+    labels: ["security", "work-on"],
+    summary: COMPLIANT_SUMMARY,
+    changedFiles: ["worker/deno/lib/sanitise.ts", CITED_TEST.file],
+    discrimination: { ...RED_GREEN, notRun },
+  });
+  assertEquals(outcome.prCreateCalls, 1);
+  assertEquals(
+    outcome.infoLogs.find((line) =>
+      line.message === "Security-fix discrimination check ran"
+    )?.context,
+    {
+      test: CITED_TEST,
+      preFix: "fail",
+      postFix: "pass",
+      others: undefined,
+      notRun,
+    },
+  );
+});

@@ -65,13 +65,24 @@ export interface DiscriminationRun {
   postFix: DiscriminationRunOutcome;
 }
 
+/** A cited test that could not be run, with the cause retained as evidence. */
+export interface DiscriminationNotRun {
+  test: CitedSecurityTest;
+  reason: string;
+}
+
 /**
  * `checked` carries the deciding run (a red-to-green test if the summary cited
  * one, else the first) and, when the summary cited several tests, every other
- * run in `others`. The gate decides on the deciding run alone.
+ * completed run in `others` and each unrun test with its cause in `notRun`.
+ * The gate decides on the deciding run alone.
  */
 export type SecurityFixDiscrimination =
-  | ({ kind: "checked"; others?: DiscriminationRun[] } & DiscriminationRun)
+  | ({
+    kind: "checked";
+    others?: DiscriminationRun[];
+    notRun?: DiscriminationNotRun[];
+  } & DiscriminationRun)
   | { kind: "not_checked"; reason: string };
 
 export interface DiscriminationRunInput {
@@ -190,7 +201,8 @@ class NotChecked extends Error {}
 
 /** Whether the worker can execute this cited test (a Deno or Rust one). */
 function isRunnable(t: CitedSecurityTest): boolean {
-  return t.name.trim() !== "" && (isRustFile(t.file) || isDenoTestFile(t.file));
+  return t.name.trim() !== "" && (isRustFile(t.file) ||
+    (/\.(?:[cm]?[jt]s|[jt]sx)$/i.test(t.file) && isDenoTestFile(t.file)));
 }
 
 /** The budget shared by every cited test's runs. */
@@ -212,20 +224,10 @@ export async function runSecurityFixDiscrimination(
   input: DiscriminationRunInput,
   seams: MutationRunnerSeams,
 ): Promise<SecurityFixDiscrimination> {
-  const runnable = input.tests.filter(isRunnable);
-  if (runnable.length === 0) {
-    if (input.tests.length === 0) {
-      return notChecked(
-        "the PR summary cites no test the worker can execute: only a " +
-          "string-named Deno test or a Rust `fn` test declared in the branch " +
-          "diff, and named in full in the summary, is run (a test in another " +
-          "language cannot be executed)",
-      );
-    }
+  if (input.tests.length === 0) {
     return notChecked(
-      "the language of the cited test cannot be executed: the worker runs " +
-        "only Deno and Rust tests " +
-        `(cited: ${input.tests.map((t) => t.file).join(", ")})`,
+      "the PR summary cites no test the worker can execute: none declared in the branch diff and named " +
+        "in full in the summary; the worker runs only Deno and Rust tests",
     );
   }
   if (input.baseRef === "" || input.baseRef.startsWith("-")) {
@@ -240,7 +242,17 @@ export async function runSecurityFixDiscrimination(
   const runs: Array<
     { test: CitedSecurityTest; result: SecurityFixDiscrimination }
   > = [];
-  for (const test of runnable) {
+  for (const test of input.tests) {
+    if (!isRunnable(test)) {
+      runs.push({
+        test,
+        result: notChecked(
+          "the language of the cited test cannot be executed: the worker " +
+            `runs only Deno and Rust tests (cited: ${clip(test.file)})`,
+        ),
+      });
+      continue;
+    }
     try {
       runs.push({
         test,
@@ -279,7 +291,17 @@ function combineRuns(
   const winner = checked.find((c) =>
     c.preFix === "fail" && c.postFix === "pass"
   );
-  if (winner !== undefined) return withOthers(winner, checked);
+  if (winner !== undefined) {
+    const notRun: DiscriminationNotRun[] = runs.flatMap(({ test, result }) =>
+      result.kind === "not_checked"
+        ? [{
+          test: { file: clip(test.file), name: clip(test.name) },
+          reason: clip(result.reason),
+        }]
+        : []
+    );
+    return withOthers(winner, checked, notRun);
+  }
   if (checked.length < runs.length) {
     // A test that did not run may be the one that discriminates.
     return notChecked(
@@ -301,11 +323,15 @@ function combineRuns(
 function withOthers(
   deciding: DiscriminationRun,
   all: DiscriminationRun[],
+  notRun: DiscriminationNotRun[] = [],
 ): SecurityFixDiscrimination {
   const others = all.filter((c) => c !== deciding);
-  return others.length === 0
-    ? { kind: "checked", ...deciding }
-    : { kind: "checked", ...deciding, others };
+  return {
+    kind: "checked",
+    ...deciding,
+    ...(others.length > 0 ? { others } : {}),
+    ...(notRun.length > 0 ? { notRun } : {}),
+  };
 }
 
 async function discriminate(

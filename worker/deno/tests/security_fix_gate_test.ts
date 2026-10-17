@@ -653,7 +653,7 @@ Deno.test("citedSecurityTests - a Rust test fn is cited by its function name", (
   ]);
 });
 
-Deno.test("citedSecurityTests - a Rust fn without a test attribute, and a pytest def, yield nothing", () => {
+Deno.test("citedSecurityTests - a Rust helper yields nothing while a pytest declaration remains cited", () => {
   const rust = `+++ b/tests/index_test.rs
 +fn rejects_oob_index() {}`;
   assertEquals(
@@ -665,7 +665,7 @@ Deno.test("citedSecurityTests - a Rust fn without a test attribute, and a pytest
 +    pass`;
   assertEquals(
     citedSecurityTests("`tests/test_db.py::test_rejects_injection`", py),
-    [],
+    [{ file: "tests/test_db.py", name: "test_rejects_injection" }],
   );
 });
 
@@ -905,4 +905,49 @@ Deno.test("citedSecurityTests - a hunk header with omitted counts defaults each 
     { file: "tests/a_test.ts", name: "rejects_injection" },
     { file: "tests/b_test.ts", name: "rejects_injection" },
   ]);
+});
+
+Deno.test("citedSecurityTests - unsupported function declarations remain cited without stealing Deno names", () => {
+  for (
+    const [file, name, declaration] of [
+      [
+        "tests/test_path.py",
+        "test_rejects_traversal",
+        "def test_rejects_traversal():",
+      ],
+      [
+        "tests/path_test.go",
+        "TestRejectsTraversal",
+        "func TestRejectsTraversal(t *testing.T) {}",
+      ],
+      [
+        "tests/PathTest.java",
+        "rejectsTraversal",
+        "@Test\n+public void rejectsTraversal() {}",
+      ],
+    ]
+  ) {
+    assertEquals(
+      citedSecurityTests(
+        `Added \`${file}::${name}\`.`,
+        `+++ b/${file}\n+${declaration}`,
+      ),
+      [{ file, name }],
+    );
+  }
+  for (
+    const body of [
+      "() => void check()",
+      '() => check("def test_other(")',
+      '() => check("func TestOther(")',
+    ]
+  ) {
+    assertEquals(
+      citedSecurityTests(
+        "`tests/path_test.ts::sanitise rejects traversal`",
+        `+++ b/tests/path_test.ts\n+Deno.test("sanitise rejects traversal", ${body});`,
+      ),
+      [{ file: "tests/path_test.ts", name: "sanitise rejects traversal" }],
+    );
+  }
 });

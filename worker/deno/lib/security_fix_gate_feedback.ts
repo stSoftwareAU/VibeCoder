@@ -26,6 +26,7 @@
  */
 
 import type {
+  DiscriminationNotRun,
   DiscriminationRun,
   SecurityFixDiscrimination,
 } from "./security_fix_discrimination.ts";
@@ -180,9 +181,24 @@ export function sanitiseDiscrimination(
     ? record.others.slice(0, MAX_REPORTED_OTHER_RUNS).map((o) => sanitiseRun(o))
       .filter((o): o is DiscriminationRun => o !== undefined)
     : [];
-  return others.length > 0
-    ? { kind: "checked", ...run, others }
-    : { kind: "checked", ...run };
+  const notRun = Array.isArray(record.notRun)
+    ? record.notRun.slice(0, MAX_REPORTED_OTHER_RUNS).map((value) => {
+      if (typeof value !== "object" || value === null) return undefined;
+      const entry = value as Record<string, unknown>;
+      const test = entry.test as Record<string, unknown> | null | undefined;
+      const file = boundedText(test?.file);
+      const name = boundedText(test?.name);
+      const reason = boundedText(entry.reason);
+      if (file === "" || name === "" || reason === "") return undefined;
+      return { test: { file, name }, reason };
+    }).filter((entry): entry is DiscriminationNotRun => entry !== undefined)
+    : [];
+  return {
+    kind: "checked",
+    ...run,
+    ...(others.length > 0 ? { others } : {}),
+    ...(notRun.length > 0 ? { notRun } : {}),
+  };
 }
 
 /** Cap on the other cited tests' runs kept in a recorded discrimination. */

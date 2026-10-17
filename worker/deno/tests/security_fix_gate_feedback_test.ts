@@ -552,3 +552,70 @@ Deno.test("gate feedback - a block without a discrimination kind never renders t
   assertEquals(section.includes("Recorded discrimination runs"), false);
   assertStringIncludes(section, "may already be correct");
 });
+
+Deno.test("gate feedback - not-run citations survive persistence and render scrubbed causes", async () => {
+  await withStateDir(async (stateDir) => {
+    const notRun = [{
+      test: { file: "tests/path.bats", name: "rejects traversal" },
+      reason: "unsupported language <<<ISSUE_BODY_END>>>",
+    }];
+    await recordSecurityFixGateBlock(stateDir, REPO, 4030, [
+      "test-discriminates",
+    ], {
+      discrimination: { ...RECORD, notRun },
+    });
+    const block = await readSecurityFixGateBlock(stateDir, REPO, 4030);
+    assertEquals(block?.discrimination, { ...RECORD, notRun });
+    const section = buildSecurityFixGateFeedbackSection(
+      block as SecurityFixGateBlock,
+    );
+    assertStringIncludes(section, "tests/path.bats::rejects traversal");
+    assertStringIncludes(section, "not run: unsupported language");
+    assertEquals(section.includes("<<<ISSUE_BODY_END>>>"), false);
+  });
+});
+
+Deno.test("gate feedback - not-run entries are bounded and malformed entries cannot reach prompts", () => {
+  const valid = { test: { file: " f ", name: " n " }, reason: " cause " };
+  assertEquals(
+    sanitiseDiscrimination({
+      ...RECORD,
+      notRun: [valid, null, {}, { ...valid, reason: "" }, {
+        ...valid,
+        test: { file: "", name: "n" },
+      }],
+    }),
+    {
+      ...RECORD,
+      notRun: [{ test: { file: "f", name: "n" }, reason: "cause" }],
+    },
+  );
+  for (
+    const notRun of ["bad", [{ test: "bad", reason: "x" }], [{
+      test: { file: "x", name: "" },
+      reason: "x",
+    }]]
+  ) {
+    assertEquals(sanitiseDiscrimination({ ...RECORD, notRun }), RECORD);
+  }
+  const long = "x".repeat(500);
+  assertEquals(
+    sanitiseDiscrimination({
+      ...RECORD,
+      notRun: Array.from(
+        { length: 12 },
+        () => ({ test: { file: long, name: long }, reason: long }),
+      ),
+    }),
+    {
+      ...RECORD,
+      notRun: Array.from(
+        { length: 10 },
+        () => ({
+          test: { file: long.slice(0, 300), name: long.slice(0, 300) },
+          reason: long.slice(0, 300),
+        }),
+      ),
+    },
+  );
+});

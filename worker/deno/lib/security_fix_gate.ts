@@ -415,9 +415,9 @@ function containsWholeToken(haystack: string, needle: string): boolean {
 export const MAX_CITED_SECURITY_TESTS = 10;
 
 /**
- * The runnable test declarations, per file, that the PR summary cites and the
- * added lines of the test diff declare (Issue #3659): string-named tests, and
- * the `fn` name of a Rust test in a `.rs` file.
+ * The test declarations, per file, that the PR summary cites and the added
+ * lines of the test diff declare (Issue #3659). Unsupported languages remain
+ * represented so the runner can record why each cited test could not run.
  *
  * The file sections come from the `+++ b/<path>` headers of the unified diff;
  * `+++ /dev/null` (a deletion) names no file and is skipped. The match rule is
@@ -425,13 +425,11 @@ export const MAX_CITED_SECURITY_TESTS = 10;
  * declared name, normalised, must EQUAL a name the summary cites
  * ({@link extractCitedTestNames}), so a declaration sharing only a word with the
  * cited name is not run in its place. The name returned is the first string
- * literal on the declaration line, as written — or, in a `.rs` file, the
- * function name after `fn`.
- *
- * Only declarations the worker can run by name are returned: a string-named
- * Deno test and a Rust `#[test] fn`. A pytest `def test_x` or a Go
- * `func Test…` is a valid citation for the static gate but yields nothing
- * here. The result is
+ * literal on the declaration line, as written — or the function name of a
+ * Rust, pytest, Go or Java test in its own language's file. JS/TS declarations
+ * always retain their string name, even if the callback resembles another
+ * language's function declaration. The runner executes only Deno and Rust;
+ * the other citations receive a not-run cause. The result is
  * deduplicated by file and name, kept in diff order and capped at
  * {@link MAX_CITED_SECURITY_TESTS}. Bounded patterns over a capped slice only —
  * both inputs are untrusted.
@@ -493,7 +491,8 @@ export function citedSecurityTests(
     for (const declaration of testDeclarationLines(section.lines.join("\n"))) {
       const name = section.file.endsWith(".rs")
         ? RUST_FN_NAME_PATTERN.exec(declaration)?.[1] ?? ""
-        : STRING_NAME_PATTERN.exec(declaration)?.[2] ?? "";
+        : declaredFunctionName(section.file, declaration) ??
+          STRING_NAME_PATTERN.exec(declaration)?.[2] ?? "";
       if (!name.trim()) continue;
       declared.push({ file: section.file, name, normalised: normalise(name) });
     }
@@ -516,6 +515,26 @@ export function citedSecurityTests(
     if (found.length >= MAX_CITED_SECURITY_TESTS) break;
   }
   return found;
+}
+
+/** Unsupported function-named tests still need a recorded not-run cause. */
+function declaredFunctionName(
+  file: string,
+  declaration: string,
+): string | undefined {
+  if (file.endsWith(".py")) {
+    return /^\s*(?:async\s+)?def\s+(test_\w+)\s*\(/.exec(declaration)?.[1];
+  }
+  if (file.endsWith(".go")) {
+    return /^\s*func\s+(Test\w*)\s*\(/.exec(declaration)?.[1];
+  }
+  if (file.endsWith(".java")) {
+    return /^\s*(?:(?:public|protected|private|static|final)\s+)*void\s+(\w+)\s*\(/
+      .exec(declaration)?.[1];
+  }
+  // JS/TS declarations keep their string name even when the callback contains
+  // `void check()` or a string resembling another language's declaration.
+  return undefined;
 }
 
 /** A unified-diff hunk header; groups 1 and 2 are the optional old/new line counts. */
@@ -681,6 +700,11 @@ export function formatDiscriminationRecord(
     ? [
       ...runLines(discrimination),
       ...(discrimination.others ?? []).flatMap((o) => ["", ...runLines(o)]),
+      ...(discrimination.notRun ?? []).flatMap((run) => [
+        "",
+        `${run.test.file}::${run.test.name}`,
+        `not run: ${run.reason}`,
+      ]),
     ]
     : [discrimination.reason];
   const body = scrubUntrustedText(lines.join("\n"));

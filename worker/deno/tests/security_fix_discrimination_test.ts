@@ -1101,6 +1101,11 @@ Deno.test("discrimination: a red-to-green cited test decides even when another c
       test: SECOND,
       preFix: "fail",
       postFix: "pass",
+      notRun: [{
+        test: FIRST,
+        reason:
+          'the cited test did not run at the head: no test named "first case" was reported',
+      }],
     });
   });
 });
@@ -1124,5 +1129,51 @@ Deno.test("discrimination: the cited tests share one budget, so a later test sta
     assertStringIncludes(reason, "1 of 2 cited tests could not be run");
     assertStringIncludes(reason, "budget of 10s ran out");
     assertStringIncludes(reason, "first case base pass, head pass");
+  });
+});
+
+Deno.test("discrimination: an unsupported citation makes a green-green result not_checked", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, MULTI_FILES, async (root) => {
+    const unsupported = {
+      file: "tests/sanitise.bats",
+      name: "rejects dot-dot traversal",
+    };
+    const rec = planSeams({ "first case": { base: "ok", head: "ok" } }, []);
+    const r = await runSecurityFixDiscrimination(
+      input(root, { tests: [unsupported, FIRST] }),
+      rec.seams,
+    );
+    const reason = reasonOf(r);
+    assertStringIncludes(
+      reason,
+      "tests/sanitise.bats::rejects dot-dot traversal",
+    );
+    assertStringIncludes(reason, "language");
+    assertStringIncludes(reason, "only Deno and Rust");
+    assertStringIncludes(reason, "first case base pass, head pass");
+  });
+});
+
+Deno.test("discrimination: red-green records an unsupported citation without executing it as Deno", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, MULTI_FILES, async (root) => {
+    const unsupported = {
+      file: "tests/sanitise_test.py",
+      name: "test_rejects_traversal",
+    };
+    const filters: string[] = [];
+    const rec = planSeams(
+      { "first case": { base: "FAILED", head: "ok" } },
+      filters,
+    );
+    const r = await runSecurityFixDiscrimination(
+      input(root, { tests: [unsupported, FIRST] }),
+      rec.seams,
+    );
+    assertEquals(filters, ["first case", "first case"]);
+    assertEquals(r.kind, "checked");
+    assertStringIncludes(JSON.stringify(r), '"notRun"');
+    assertStringIncludes(JSON.stringify(r), unsupported.file);
+    assertStringIncludes(JSON.stringify(r), unsupported.name);
+    assertStringIncludes(JSON.stringify(r), "language");
   });
 });

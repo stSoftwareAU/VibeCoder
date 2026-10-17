@@ -121,9 +121,12 @@ the end of the line, or a quoted name), so a declaration that only shares a word
 with the cited name is not run in its place. The first word of a `::` citation
 is consulted only when no full name matches, for a name written in prose without
 backticks. When several cited tests match (at most ten), each is run in turn
-under the one 600 s budget and every outcome is recorded. The fix passes when
-any one goes red then green; otherwise a cited test that could not be run makes
-the result `not_checked`, because it may be the one that discriminates. The
+under the one 600 s budget and every outcome is recorded. Completed runs are
+kept in the deciding record and `others`; unsupported citations and failed
+attempts are kept in `notRun`, each with its test and cause. The fix passes when
+any one goes red then green, retaining those unrun citations in the pass log;
+otherwise a cited test that could not be run makes the result `not_checked`,
+because it may be the one that discriminates. The
 static `test-identifier-in-diff` check is unchanged and still accepts any whole
 token of a declaration line.
 
@@ -136,8 +139,11 @@ with `test-discriminates`. A run that cannot execute blocks with
 shape): a runner error, an unresolvable base ref or merge base, a timeout, the
 600 s budget exhausted, a cited test deno or cargo does not report, a build
 failure, no Deno or Rust test cited, or no runner wired. Only Deno and Rust
-tests can be executed today, so a security fix whose cited test is in another
-language blocks as not checked unless the repo sets `skip_security_fix_check`.
+tests can be executed today. A cited test in another language is recorded as
+unrun, and blocks as not checked when no other cited test discriminates the fix,
+unless the repo sets `skip_security_fix_check`. Function-named pytest, Go and
+Java citations remain in that record; their names are read only in their own
+language's files, so JS/TS callback text cannot replace a Deno test's string name.
 The reason says which: "the language of the cited test cannot be executed" when
 a test is cited but cannot be run, and "cites no test the worker can execute"
 when the summary cites none the worker can run.
@@ -168,10 +174,12 @@ The sibling placement is the same reasoning as the content-approval baseline —
 `nukeWorkDir` and an agent-driven `rm` inside the work tree must not be able to
 erase the record. Each file holds the missing evidence kinds, the ISO timestamp
 of the last block, the test declarations the gate matched, the bounded
-discrimination record (an optional field added to the version-1 file — a file
-written before it existed reads as having none, so the key is not bumped), and a
-running `blockCount` so a repeat loop is visible in the retry prompt and the
-worker log.
+discrimination record, and a running `blockCount` so a repeat loop is visible
+in the retry prompt and the worker log. Optional `notRun` entries are capped at
+ten with 300-character file, test-name and reason fields. Older records without
+`notRun` still read. The discrimination record itself is an optional field in
+the version-1 file: a file written before it existed reads as having none, so
+the key is not bumped.
 
 Since Issue #1575, `blockCount` counts **blocked runs** — runs that ended in
 `failure` from the gate — not blocks. The first block inside a run is recovered

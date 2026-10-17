@@ -44,12 +44,12 @@ run. The prose `regression-test` requirement is removed. Closes #3659.
   Rust test is a `#[test] fn` in a `.rs` file under a `Cargo.toml` package, run
   with `cargo test --no-fail-fast [--test <stem>] <name>` in the nearest
   `[package]` directory and read from the named `test <path> ... ok|FAILED` line
-  (PR #3921 review). A security fix whose cited test is in another language
-  blocks as `discrimination-not-checked`, with a reason that says the worker
-  runs only Deno and Rust tests and lists the cited files (or, when no
-  executable test was cited at all, says so), unless the repository sets
-  `skip_security_fix_check`. That is fail-closed by design: "could not run"
-  blocks.
+  (PR #3921 review). A cited test in another language is retained with its
+  cause in `notRun` when another cited test discriminates the fix. Without a
+  red-to-green result it blocks as `discrimination-not-checked`, with a reason
+  naming the unsupported language and the cited file, unless the repository
+  sets `skip_security_fix_check`. A test that could not run never counts as
+  red-to-green evidence.
 - The record travels on the block verdict in run state
   (`SecurityGateRunVerdict.discrimination` in `state.securityGateBlocks`) and is
   rendered in the block message as "Recorded discrimination runs" (scrubbed and
@@ -249,7 +249,8 @@ test.
     not_checked, null, missing identifier).
   - `citedSecurityTests`, including the two header-spoofing evasion cases, a
     Rust `#[test] fn` cited by its function name, and a Rust `fn` with no test
-    attribute and a pytest `def` (neither yields a runnable citation).
+    attribute (which yields no citation) and a pytest `def` (retained as an
+    unsupported citation with a not-run cause).
   - Message rendering.
 - New `worker/deno/tests/security_fix_gate_growth_test.ts`: linear-growth
   hostile case for `STRING_NAME_PATTERN` (wall-clock, serial lane).
@@ -296,13 +297,68 @@ test.
   - The `productionFiles` filter.
   - The `citedTestIdentifierInDiff` operand.
   - Every runner branch listed in the facts file.
-- PR #3921 review: every branch the fix adds was flipped on its own and the
+- Earlier PR #3921 review: the branches that fix added were flipped on their own and the
   named test went red, including each operand of the compound conditions (the
-  runnable-test `filter`, the cargo name match, `sanitiseDiscrimination`'s checked
+  runnable-test predicate, the cargo name match, `sanitiseDiscrimination`'s checked
   guard and `blocksOnDiscrimination`); the entries are in the facts file.
 - Edited expectations: the gate-block `missing` list in
   `completion_phase_security_gate_test.ts` still goes red when the identifier
   guard is removed.
-- `./quality.sh < /dev/null` on the PR #3921 review-fix tree: passed — every stage passed (parallel and serial Deno test passes included) except `config integration`, which skipped because the checkout has no `.config.json`.
+- `./quality.sh < /dev/null` on the earlier PR #3921 review-fix tree: passed — every stage passed (parallel and serial Deno test passes included) except `config integration`, which skipped because the checkout has no `.config.json`.
+
+### PR #3921: retain every cited test outcome
+
+The published tree still discarded unsupported citations before running tests
+and omitted unrun attempts when another test passed red-to-green. The runner
+now keeps those citations in a checked record's optional `notRun` field, with
+the test and reason. Without a red-to-green result, any unrun citation makes
+the result `not_checked`. The existing exact-name matching and Rust
+`should_panic` handling remain intact.
+
+- `security_fix_discrimination_test.ts`: the existing red-to-green-plus-unrun
+  assertion retains every deciding-run field and now also requires `notRun`.
+  Mixed BATS/Deno citations with a green-green Deno result produce
+  `not_checked`; a Python `*_test.py` citation remains unrun beside a
+  red-to-green Deno result and is never executed through Deno.
+- `security_fix_gate_test.ts`: function-named pytest, Go and Java declarations
+  remain cited so the runner can record their unsupported-language cause.
+  Function parsing is restricted to `.py`, `.go` and `.java`; Java method
+  parsing is anchored. Deno declarations retain their string name when a
+  one-line callback contains `void check()`, `def test_other(` or `func
+  TestOther(`. Existing full-name and Rust controls still pass.
+- Edited expectation in `citedSecurityTests - a Rust helper yields nothing
+  while a pytest declaration remains cited`: the pytest result changes from
+  `[]` to its file/name; the Rust helper assertion remains `[]`. Required by:
+  "A test run that cannot execute blocks as not checked, never as red."
+  Replaced by: ``assertEquals(citedSecurityTests("`tests/test_db.py::test_rejects_injection`", py), [{ file: "tests/test_db.py", name: "test_rejects_injection" }]);``.
+  Dropping the Python declaration would hide the unrun security test; the
+  new mixed-language runner tests enforce the resulting not-checked verdict.
+- `security_fix_gate_feedback_test.ts`: `notRun` survives a persisted verdict
+  and renders its test and scrubbed cause. Malformed entries are discarded
+  individually; arrays are capped at ten and each file, name and reason at
+  300 characters. Existing old-record tests still pass without `notRun`, so
+  the version-1 store remains readable and its key stays unchanged.
+- `completion_phase_security_gate_test.ts`: a successful live completion
+  retains `notRun` in the information log alongside the deciding test's base
+  and head outcomes. No prior log or PR-creation assertion was removed.
+- Red proof: before the implementation, the updated gate and runner suites
+  reported 110 passes and five failures, including the missing not-run
+  record and the unsupported-citation verdict. This behavioural run used
+  `--no-check` while the new record field did not yet exist in the type.
+- Mutation proof: removing `notRun` from aggregation, persistence, rendering
+  or the pass log each made its regression fail. Restoring the unpublished
+  broad function-name regex also made the Deno callback regression fail.
+  Every mutation was restored; final type-checking is enabled.
+- Validation: 227 focused security gate, runner, feedback, retry, completion
+  and wiring tests passed. The manifest gate passed with 687 tests and one
+  existing ignored test. These are this review fix's checks; the full-gate
+  result above belongs to the earlier implementation. Required CI remains
+  the full validation for the new head.
+- Docs sweep: updated `docs/security-fix-gate-feedback.md`'s discrimination
+  and persisted-state sections plus the `citedSecurityTests` and result-type
+  comments. Corrected the facts file's line references against this tree.
+  The old empty-name/Python mutation entry was retired because Python names
+  are now deliberately retained; the new extraction regression replaces it.
+  Independent read-only review found no actionable findings.
 
 <!-- vibe-branch-outcomes -->
