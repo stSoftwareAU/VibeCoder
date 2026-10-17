@@ -158,8 +158,9 @@ uses a `checkov` binary on PATH (naming any version drift from
 image, and never pulls it. Neither available, or a scan past the 300s deadline,
 reports `SKIPPED`; `--strict` promotes that to a failure. The worker container
 image does not carry Checkov, so a fleet run reports `SKIPPED`. A failed check,
-an unparseable template, or a skip without an inline reason fails; no SARIF is
-uploaded.
+an unparseable template, a skip without an inline reason, or a `.checkov.yaml` /
+`.checkov.yml` at the repository root (Checkov loads either by default, so it
+could skip checks unseen; `judgeCheckovScanRoot`) fails; no SARIF is uploaded.
 
 Progress is **streamed**: every check emits one `✓ / ✗ / - name: STATUS (1.2s)`
 line to stdout the moment it settles (Issue #399), ahead of the detailed output

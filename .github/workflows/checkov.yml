@@ -2,9 +2,11 @@ name: Checkov
 
 # Issue #3653 — CloudFormation security misconfiguration scan. Checkov scans
 # every CloudFormation template in the repository (no path filter) and the job
-# fails on any failed check, on any template Checkov cannot parse, and on any
-# skip that is not an inline `# checkov:skip=<ID>:<reason>` comment. No SARIF
-# upload: the job log and the job status are the whole report.
+# fails on any failed check, on any template Checkov cannot parse, on any skip
+# that is not an inline `# checkov:skip=<ID>:<reason>` comment, and on a
+# `.checkov.yaml` / `.checkov.yml` at the repository root (Checkov loads either
+# by default, so it could skip checks unseen). No SARIF upload: the job log and
+# the job status are the whole report.
 #
 # Called by quality.yml, whose `gate` job is the one required check: this
 # workflow's result reaches the ruleset only through that call.

@@ -12,14 +12,22 @@
  *   deno run --frozen --lock=deno.lock --allow-read checkov_report.ts \
  *     --report <path> --checkov-exit <n>
  *
- * Exit status: 0 when PASSED, 1 when FAILED, a bad or missing argument, or an
- * unreadable report file (fail loud — never a pass by default).
+ * Exit status: 0 when PASSED, 1 when FAILED, a bad or missing argument, a
+ * `.checkov.yaml` / `.checkov.yml` at the repository root, or an unreadable
+ * report file (fail loud — never a pass by default).
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
 import { installConsoleRedaction } from "./lib/console_redaction.ts";
-import { judgeCheckovRun } from "./lib/checkov_check.ts";
+import { judgeCheckovRun, judgeCheckovScanRoot } from "./lib/checkov_check.ts";
+
+/**
+ * The directory the CI job scans: the repository root, two levels above this
+ * file. A Checkov config file there fails the judgement.
+ */
+export const CHECKOV_REPORT_SCAN_ROOT = new URL("../..", import.meta.url)
+  .pathname.replace(/\/$/, "");
 
 /** The arguments a valid invocation names. */
 const USAGE = "usage: checkov_report.ts --report <path> --checkov-exit <n>";
@@ -37,9 +45,13 @@ function flagValue(args: string[], flag: string): string | null {
  * Run the judgement over the report file and print the verdict.
  *
  * @param args - The command-line arguments, without the program name.
+ * @param scanRoot - The directory Checkov scanned (injected by the tests).
  * @returns 0 when PASSED, 1 when FAILED or the invocation is invalid.
  */
-export async function main(args: string[]): Promise<number> {
+export async function main(
+  args: string[],
+  scanRoot: string = CHECKOV_REPORT_SCAN_ROOT,
+): Promise<number> {
   // Issue #1280 (SEC-1217-12): every entry point patches its own console.
   installConsoleRedaction();
 
@@ -58,6 +70,12 @@ export async function main(args: string[]): Promise<number> {
     console.error(
       `checkov_report: --checkov-exit must be a non-negative integer, got "${exitText}"`,
     );
+    return 1;
+  }
+
+  const configured = await judgeCheckovScanRoot(scanRoot);
+  if (configured !== null) {
+    console.error(configured.output);
     return 1;
   }
 

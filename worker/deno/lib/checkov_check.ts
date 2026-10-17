@@ -14,6 +14,9 @@
  *     `# checkov:skip=<ID>` comment with no reason, and a `Metadata` skip
  *     block, exactly as it reports a justified skip. Only an inline
  *     `# checkov:skip=<ID>:<reason>` comment on the resource is accepted.
+ *   - **No config file.** Checkov loads `.checkov.yaml` / `.checkov.yml`
+ *     from the scanned directory by default, and either can skip checks
+ *     without a reason. {@link judgeCheckovScanRoot} fails a root that has one.
  *   - **Unparseable templates fail.** Checkov exits 0 when a template cannot
  *     be parsed, so the report is read, not just the exit code.
  *   - **Same image, same arguments.** {@link checkovScanArgs} is the single
@@ -596,6 +599,52 @@ export function judgeCheckovRun(run: {
   };
 }
 
+/**
+ * The config files Checkov loads by default from the directory it scans.
+ * Either one can skip checks, paths or frameworks with no inline reason, and
+ * the report would show nothing of it.
+ */
+export const CHECKOV_CONFIG_FILES: readonly string[] = [
+  ".checkov.yaml",
+  ".checkov.yml",
+];
+
+/**
+ * Judge the scan root before any report (Issue #3653): FAILED when a
+ * default-loaded Checkov config file is present there, else null. Both the
+ * local gate and the CI entry apply it. Only a genuine absence clears a
+ * name; any other stat error propagates, so a fault is never read as "no
+ * config".
+ */
+export async function judgeCheckovScanRoot(
+  scanRoot: string,
+): Promise<CheckovJudgement | null> {
+  const found: string[] = [];
+  for (const name of CHECKOV_CONFIG_FILES) {
+    try {
+      await Deno.lstat(`${scanRoot}/${name}`);
+      found.push(name);
+    } catch (err) {
+      if (!(err instanceof Deno.errors.NotFound)) throw err;
+    }
+  }
+  if (found.length === 0) return null;
+  return {
+    status: "FAILED",
+    output: [
+      `checkov: FAILED (${found.length} Checkov config file(s) at the scan root)`,
+      "",
+      ...found.map((name) =>
+        `  ${name} — Checkov loads this file by default, so it could skip ` +
+        "checks with no inline reason"
+      ),
+      "",
+      "Remedy: delete the file. A skip is accepted only as an inline",
+      "`# checkov:skip=<ID>:<reason>` comment inside the resource it applies to.",
+    ].join("\n"),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Invocation detection
 // ---------------------------------------------------------------------------
@@ -674,7 +723,8 @@ export async function checkovStageApplies(scriptDir: string): Promise<boolean> {
 /**
  * Run the Checkov check over the repository.
  *
- * No invocation → SKIPPED naming the required CI job. A deadline hit →
+ * A Checkov config file at the root → FAILED, whether or not Checkov is
+ * installed. No invocation → SKIPPED naming the required CI job. A deadline hit →
  * SKIPPED. Otherwise the run is judged by {@link judgeCheckovRun}, with the
  * invocation named in the output, and a local PASSED from a version other
  * than the CI pin is flagged as not a guarantee.
@@ -683,6 +733,9 @@ export async function runCheckovCheck(
   scriptDir: string,
   options: CheckovCheckOptions = {},
 ): Promise<CheckovCheckResult> {
+  const configured = await judgeCheckovScanRoot(scriptDir);
+  if (configured !== null) return configured;
+
   const detect = options.detectInvocation ?? detectCheckovInvocation;
   const invocation = await detect(scriptDir);
   if (invocation === null) {

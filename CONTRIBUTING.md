@@ -183,6 +183,10 @@ before the push.
 - **An unparseable template fails.** Checkov exits 0 on a template it cannot
   parse, so the gate reads the report, not the exit code. A template like that
   has no skip form: fix the template.
+- **No Checkov config file.** Checkov loads `.checkov.yaml` / `.checkov.yml`
+  from the scanned directory by default, and either can skip checks with no
+  inline reason. One at the repository root fails the stage and the CI job,
+  whether or not Checkov is installed.
 
 ### Workflow hygiene
 

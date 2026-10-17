@@ -16,8 +16,10 @@ import {
   assertThrows,
 } from "@std/assert";
 import { restoreConsole } from "../lib/console_redaction.ts";
+import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import {
   buildCheckovContainerArgs,
+  CHECKOV_CONFIG_FILES,
   CHECKOV_DEADLINE_MS,
   CHECKOV_WORKFLOW_PATH,
   type CheckovInvocation,
@@ -25,12 +27,13 @@ import {
   checkovStageApplies,
   inlineSkipScan,
   judgeCheckovRun,
+  judgeCheckovScanRoot,
   parseCheckovReport,
   runCheckovCheck,
 } from "../lib/checkov_check.ts";
 import { CHECKOV_IMAGE, CHECKOV_IMAGE_TAG } from "../lib/pinned_actions.ts";
 import { runQualityGate } from "../lib/quality_gate.ts";
-import { main } from "../checkov_report.ts";
+import { CHECKOV_REPORT_SCAN_ROOT, main } from "../checkov_report.ts";
 
 /** One `[lineNumber, lineText]` pair of a Checkov code block. */
 type Line = [number, string];
@@ -680,6 +683,27 @@ Deno.test("checkov_check - judgeCheckovRun FAILED for a failed check (t6)", () =
   assertStringIncludes(judged.output, "# checkov:skip=<ID>:<reason>");
 });
 
+Deno.test("checkov_check - a FAILED finding prints the whole remedy", () => {
+  // Each line carries a rule an agent must meet: the fix, the one accepted
+  // skip form, the Floci-only skip condition and the refused forms.
+  const judged = judgeCheckovRun({
+    exitCode: 1,
+    stdout: asStdout(T6_REPORT),
+    stderr: "",
+  });
+  assertStringIncludes(
+    judged.output,
+    [
+      "Remedy: fix the resource so Checkov passes. A skip is accepted only as an",
+      "inline `# checkov:skip=<ID>:<reason>` comment inside the resource it",
+      "applies to. In this repository a skip is allowed only where the fix stops",
+      "`infra/cloudformation/test-floci.sh` reaching CREATE_COMPLETE, and the",
+      "reason must say so. A skip with no reason, or a `Metadata` skip block, is",
+      "refused. A template Checkov cannot parse has no skip form: fix the template.",
+    ].join("\n"),
+  );
+});
+
 Deno.test("checkov_check - judgeCheckovRun FAILED on exit 0 with a failed check (t6)", () => {
   // The report decides, whatever the exit code says.
   const judged = judgeCheckovRun({
@@ -764,6 +788,88 @@ Deno.test("checkov_check - judgeCheckovRun FAILED on an unreadable report", () =
     "checkov: FAILED (exit 0, unreadable report)",
   );
   assertStringIncludes(judged.output, "no JSON report on stdout");
+});
+
+// ---------------------------------------------------------------------------
+// Checkov config files at the scan root
+// ---------------------------------------------------------------------------
+
+Deno.test("checkov_check - judgeCheckovScanRoot is null where no Checkov config file exists", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(`${dir}/checkov.yaml`, "skip-check: CKV_AWS_24\n");
+    assertEquals(await judgeCheckovScanRoot(dir), null);
+  });
+});
+
+Deno.test("checkov_check - judgeCheckovScanRoot FAILED for each default-loaded config file", async () => {
+  assertEquals(CHECKOV_CONFIG_FILES, [".checkov.yaml", ".checkov.yml"]);
+  for (const name of CHECKOV_CONFIG_FILES) {
+    await withTempDir(async (dir) => {
+      await Deno.writeTextFile(`${dir}/${name}`, "skip-check: CKV_AWS_24\n");
+      const judged = await judgeCheckovScanRoot(dir);
+      assertEquals(judged?.status, "FAILED", name);
+      assertStringIncludes(
+        judged?.output ?? "",
+        "checkov: FAILED (1 Checkov config file(s) at the scan root)",
+      );
+      assertStringIncludes(
+        judged?.output ?? "",
+        `  ${name} — Checkov loads this file by default`,
+      );
+      assertStringIncludes(judged?.output ?? "", "Remedy: delete the file.");
+    });
+  }
+});
+
+Deno.test("checkov_check - judgeCheckovScanRoot names both config files when both exist", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(`${dir}/.checkov.yaml`, "");
+    await Deno.writeTextFile(`${dir}/.checkov.yml`, "");
+    const judged = await judgeCheckovScanRoot(dir);
+    assertStringIncludes(
+      judged?.output ?? "",
+      "checkov: FAILED (2 Checkov config file(s) at the scan root)",
+    );
+  });
+});
+
+Deno.test("checkov_check - judgeCheckovScanRoot counts a dangling symlink as present", async () => {
+  // Fail closed: lstat, not stat, so a link Checkov might follow is refused.
+  await withTempDir(async (dir) => {
+    await Deno.symlink(`${dir}/absent`, `${dir}/.checkov.yaml`);
+    assertEquals((await judgeCheckovScanRoot(dir))?.status, "FAILED");
+  });
+});
+
+Deno.test("checkov_check - runCheckovCheck FAILED for a config file even with a passing scan", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      `${dir}/.checkov.yaml`,
+      "skip-check: CKV_AWS_24\n",
+    );
+    let detected = false;
+    const result = await runCheckovCheck(dir, {
+      detectInvocation: () => {
+        detected = true;
+        return Promise.resolve(
+          fakeInvocation({ exitCode: 0, stdout: asStdout(T1_REPORT) }, true),
+        );
+      },
+    });
+    assertEquals(result.status, "FAILED");
+    assertStringIncludes(result.output, "at the scan root");
+    assertEquals(detected, false, "a config file fails before Checkov runs");
+  });
+});
+
+Deno.test("checkov_check - runCheckovCheck FAILED for a config file with no Checkov installed", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(`${dir}/.checkov.yml`, "");
+    const result = await runCheckovCheck(dir, {
+      detectInvocation: () => Promise.resolve(null),
+    });
+    assertEquals(result.status, "FAILED");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -903,11 +1009,82 @@ Deno.test("checkov_report - a non-integer --checkov-exit is refused with exit 1"
 
 Deno.test("checkov_report - an unreadable report file is refused with exit 1", async () => {
   await withTempDir(async (dir) => {
+    const absent = `${dir}/absent.json`;
+    const message = await Deno.readTextFile(absent).then(
+      () => "",
+      (err: Error) => err.message,
+    );
+    assert(message !== "", "the report must be absent");
     const run = await captureConsole(() =>
-      main(["--report", `${dir}/absent.json`, "--checkov-exit", "0"])
+      main(["--report", absent, "--checkov-exit", "0"])
     );
     assertEquals(run.code, 1);
-    assertStringIncludes(run.err, "cannot read the Checkov report at");
+    // The error's message, not its `Name: message` string form.
+    assertEquals(
+      run.err,
+      `checkov_report: cannot read the Checkov report at ${absent}: ${message}`,
+    );
+  });
+});
+
+Deno.test("checkov_report - main installs console redaction", async () => {
+  // A token in the echoed report path must not reach the job log.
+  const token = `ghp_${"a".repeat(36)}`;
+  await withTempDir(async (dir) => {
+    const run = await captureConsole(() =>
+      main(["--report", `${dir}/${token}.json`, "--checkov-exit", "0"])
+    );
+    assertEquals(run.code, 1);
+    assertEquals(run.err.includes(token), false);
+    assertStringIncludes(run.err, REDACTION_PLACEHOLDER);
+  });
+});
+
+Deno.test("checkov_report - the default scan root is the repository root", async () => {
+  const info = await Deno.stat(
+    `${CHECKOV_REPORT_SCAN_ROOT}/${CHECKOV_WORKFLOW_PATH}`,
+  );
+  assert(info.isFile);
+});
+
+Deno.test("checkov_report - a Checkov config file at the scan root exits 1 on a passing report", async () => {
+  await withTempDir(async (dir) => {
+    const report = `${dir}/report.json`;
+    await Deno.writeTextFile(report, asStdout(T1_REPORT));
+    await Deno.writeTextFile(
+      `${dir}/.checkov.yaml`,
+      "skip-check: CKV_AWS_24\n",
+    );
+    const run = await captureConsole(() =>
+      main(["--report", report, "--checkov-exit", "0"], dir)
+    );
+    assertEquals(run.code, 1);
+    assertStringIncludes(run.err, "  .checkov.yaml — Checkov loads this file");
+    assertEquals(run.out, "");
+  });
+});
+
+Deno.test("checkov_report - run as a script, a FAILED verdict is the process exit status", async () => {
+  await withTempDir(async (dir) => {
+    const output = await new Deno.Command(Deno.execPath(), {
+      args: [
+        "run",
+        "--frozen",
+        "--lock=deno.lock",
+        "--allow-read",
+        "checkov_report.ts",
+        "--report",
+        `${dir}/absent.json`,
+        "--checkov-exit",
+        "0",
+      ],
+      cwd: new URL("..", import.meta.url).pathname,
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    const stderr = new TextDecoder().decode(output.stderr);
+    assertEquals(output.code, 1, stderr);
+    assertStringIncludes(stderr, "cannot read the Checkov report at");
   });
 });
 

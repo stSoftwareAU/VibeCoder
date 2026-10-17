@@ -1,14 +1,15 @@
 ## Summary
 
-Adds Checkov security scanning for AWS CloudFormation. Closes #3653.
+Adds Checkov security scanning for AWS CloudFormation. Part of #3653 — it does not close the issue: the issue's on-demand (or isolated-runner) install of the pinned Checkov for the pre-PR stage is not in this PR, and needs splitting into a follow-up issue (see the **partial** row under Acceptance Criteria).
 
 - **CI gate.** A new reusable workflow, `.github/workflows/checkov.yml`, is called from `quality.yml` and listed in `gate`'s `needs`. It runs `bridgecrew/checkov:3.3.29@sha256:3cc125b5…` with `-d . --framework cloudformation -o json --skip-download`. The JSON report is then judged by `worker/deno/checkov_report.ts`. The job fails when any of these happens:
   - a check fails;
   - Checkov cannot parse a template (Checkov itself exits 0 on that);
-  - a skip is not an inline `# checkov:skip=<ID>:<reason>` comment on the resource. A skip with no reason, or a `Metadata` skip block, is refused.
+  - a skip is not an inline `# checkov:skip=<ID>:<reason>` comment on the resource. A skip with no reason, or a `Metadata` skip block, is refused;
+  - a `.checkov.yaml` or `.checkov.yml` is at the repository root. Checkov loads either one by default from the scanned directory, so it could skip checks without the report showing it. `judgeCheckovScanRoot` refuses it before the report is read.
 
   There is no SARIF upload.
-- **Local stage, the same scan before the push.** `./quality.sh` gains a `checkov` stage (`worker/deno/lib/checkov_check.ts`), registered only where `checkov.yml` exists. It uses the same `checkovScanArgs()` and the same `judgeCheckovRun` as CI. It runs either a `checkov` binary on PATH (any version other than the CI pin is named in the output) or the pinned image in a runtime that already holds it. When neither is available, it reports `SKIPPED (not run — …)`, and the required CI job stays authoritative.
+- **Local stage, the same scan before the push.** `./quality.sh` gains a `checkov` stage (`worker/deno/lib/checkov_check.ts`), registered only where `checkov.yml` exists. It uses the same `checkovScanArgs()`, `judgeCheckovScanRoot` and `judgeCheckovRun` as CI. A config file at the root fails the stage even where Checkov is not installed. It runs either a `checkov` binary on PATH (any version other than the CI pin is named in the output) or the pinned image in a runtime that already holds it. When neither is available, it reports `SKIPPED (not run — …)`, and the required CI job stays authoritative.
 - **Equivalence test.** `validateCheckovWorkflows` (`worker/deno/lib/checkov_workflow_check.ts`) checks that `checkov.yml` uses `CHECKOV_IMAGE` and `checkovScanArgs()`. It also checks that the workflow:
   - runs the judge with `--checkov-exit` and captures the exit code;
   - passes no flag that weakens the scan (`--soft-fail`, `--skip-check`, …);
@@ -29,6 +30,7 @@ Adds Checkov security scanning for AWS CloudFormation. Closes #3653.
 - `checkovScanArgs()` and `CHECKOV_IMAGE` are the single source of truth. `checkov.yml` must match them, and `worker/deno/tests/checkov_workflow_check_test.ts` fails if it does not.
 - Skips are judged from the report's `code_block`. Checkov records a reasonless inline skip and a `Metadata` skip exactly like a justified one, so only an inline marker naming the same check ID with a non-empty reason is accepted.
 - `--entrypoint checkov` is required: the image's `/entrypoint.sh` ignores argv when `GITHUB_ACTIONS=true`.
+- A Checkov config file at the scan root fails closed. Checkov reads `.checkov.yaml` / `.checkov.yml` from the scanned directory (`-d .`), the working directory and the home directory. In CI the first two are the repository root (the container's HOME is its own, not under the read-only `/src` mount), so a root-level file is the only one a PR can commit. `judgeCheckovScanRoot` uses `lstat`, so a dangling symlink counts as present. A local PATH binary can still read the developer's own `~/.checkov.yaml`; that is outside the repository, and the CI job stays authoritative.
 - The local stage never pulls or installs Checkov. A missing tool reports `SKIPPED` with the reason, never `PASSED`. Checkov stays out of `container/tools.json`, as the issue agreed.
 
 ### Undiscoverable Facts
@@ -62,12 +64,13 @@ Backend and CI change only; there is no UI surface.
   | inline skip with a reason | 0 |
   | no templates | 0 |
 
+- **Config file:** with a `.checkov.yaml` beside a passing report, `checkov_report.ts` exits 1 naming the file (`checkov_report - a Checkov config file at the scan root exits 1 on a passing report`).
 - **Local stage:** with Checkov on PATH, `runCheckovCheck` returned `PASSED … via checkov 3.3.29 on PATH`. Without it, it returned `SKIPPED (not run — checkov is not installed and no container runtime holds bridgecrew/checkov:3.3.29@sha256:…; the required checkov CI job (.github/workflows/checkov.yml) still scans every template — …)`.
 - **Workflow lint:** `actionlint .github/workflows/checkov.yml .github/workflows/quality.yml` exits 0.
 - **Action pins:** the SHAs were resolved this run with `gh api repos/<owner>/<repo>/commits/<tag> --jq .sha`: `actions/checkout@v7.0.1` → `3d3c42e5…`, `denoland/setup-deno@v2.0.5` → `22d081ff…`. The `actions/cache` pin was copied from `validate-scripts.yml`.
 - **Supply-chain gate:** passes after `--write-inventory`. `docs/audits/dependency-inventory.md` only gains `checkov.yml` on the existing `uses:` rows.
 - **Fakes:** the test reports are trimmed copies of real Checkov 3.3.29 JSON output. `fakeInvocation` injects at the `detectInvocation` seam with Checkov's observed exit codes (0 and 1).
-- **Callers checked when widening helper visibility:** `spawnWithDeadline` and `probe` in `semgrep_check.ts` gain an export and a defaulted `deadlineMs`, and semgrep's callers are unchanged. `joinContinuations` in `ci_install_pin_scanner.ts` gains only an export.
+- **Callers checked when widening helper visibility:** in `semgrep_check.ts`, `spawnWithDeadline` gains an export and a defaulted `deadlineMs` parameter, and `probe` gains only an export (its signature is still `(binary, probeArgs)`); semgrep's callers are unchanged. `joinContinuations` in `ci_install_pin_scanner.ts` gains only an export.
 - **Provenance:** #3653: Add Checkov security scanning for AWS CloudFormation templates.
 
 ```mermaid
@@ -133,7 +136,9 @@ Added or edited tests:
   - `parseCheckovReport` and `judgeCheckovRun`, over reports trimmed from the real t1, t2, t4, t5, t6 and t7 runs;
   - `runCheckovCheck` with an injected detector;
   - `checkovStageApplies`;
-  - `checkov_report.ts` `main()`;
+  - `checkov_report.ts` `main()`: the unreadable-report message is matched exactly (the error's message, not its `Name: message` string form); "main installs console redaction" checks a token in the report path is masked; "run as a script, a FAILED verdict is the process exit status" spawns the script and expects exit 1;
+  - "a FAILED finding prints the whole remedy" matches every line of `CHECKOV_REMEDY`;
+  - `judgeCheckovScanRoot`: no config file, each of `.checkov.yaml` / `.checkov.yml`, both, and a dangling symlink; "runCheckovCheck FAILED for a config file even with a passing scan" (Checkov is never detected) and "… with no Checkov installed"; "checkov_report - a Checkov config file at the scan root exits 1 on a passing report"; "the default scan root is the repository root";
   - two `runQualityGate` registration tests.
 - `worker/deno/tests/checkov_workflow_check_test.ts` (new):
   - the real-file lock-step and `WORKFLOW_FILE_CHECKS` tests;
@@ -157,13 +162,16 @@ Red checks:
   - The renamed configured test went red when the Checkov regex was broken.
 - **Skip judgement:** accepting a reasonless marker turned the t2 parse and judge tests red.
 - **Validator:** each invariant clause (a–f) removed in turn turned its own negative test red.
+- **Mutants the mutation check reported as surviving, applied by hand:** each turned one test red. These were deleting `installConsoleRedaction()` (`checkov_report.ts:44`), negating the error-message ternary (`:68`), deleting `Deno.exit(await main(Deno.args))` (`:85`), and deleting each of the `CHECKOV_REMEDY` lines at `checkov_check.ts:132`, `:134`–`:137` (line numbers as the mutation check reported them; this fix has since moved them).
+- **Config file:** replacing the `checkov_report.ts` guard with `false` turned its config-file test red. Deleting the `runCheckovCheck` guard turned both stage config-file tests red. Swapping `lstat` for `stat` turned the dangling-symlink test red. Making `judgeCheckovScanRoot` always fail turned 12 tests red.
 - **Gate wiring:**
   - Removing the `checkov` stage push turned "quality gate - registers the checkov stage where checkov.yml exists" red.
   - Replacing the guard with `true` turned "quality gate - no checkov stage where checkov.yml is absent" red.
 
 Results on the head:
-- `deno task test:unit tests/checkov_check_test.ts tests/checkov_workflow_check_test.ts tests/ci_install_pin_scanner_test.ts tests/issue_3642_ci_install_pin_test.ts`: 111 passed, 0 failed.
+- `deno task test:unit tests/checkov_check_test.ts tests/checkov_workflow_check_test.ts tests/ci_install_pin_scanner_test.ts tests/issue_3642_ci_install_pin_test.ts`: 122 passed, 0 failed.
 - `tests/linter_in_ci_check_test.ts`: 47 passed.
+- `actionlint .github/workflows/checkov.yml .github/workflows/quality.yml`: exit 0.
 - `deno task check:manifests`: PASSED.
 - `./quality.sh < /dev/null` on the final code head: exit 0, `Result: PASSED (with skipped checks)` — `checkov` SKIPPED (no Checkov in this container; CI scans) and `config integration` SKIPPED (no `.config.json`)
 
