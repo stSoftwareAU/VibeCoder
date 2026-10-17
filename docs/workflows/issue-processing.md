@@ -1572,6 +1572,26 @@ each (or saying why it should outlive a healthy run), following an existing
 set/clear pair, a lifecycle test through the real helper that goes red when
 the clear is deleted, and the set/clear pairs in the PR summary.
 
+**Every step of a multi-write operation has a named finisher when it fails
+(Issue #3562).** Fleet PRs wrote operations that make more than one durable
+write for the happy path only. VibeCoder#2909's `recordCiCheckRetry` charged
+a CI-fix retry before the fix-branch checkout, so a checkout refused for lane
+contention burned a retry with the agent never running. A private fleet PR
+wrote an exception record behind an early-return error before its cancel
+pass, so a failed record skipped the cancel; after the reorder, a failed
+cancel pass was only logged, while a test message and the manual claimed the
+next scheduled run would redo it. Another private fleet PR landed a
+decision, then wrote its audit record separately; a retry of the same request
+was refused as a conflict before the record step, so the record could never
+be written. The guidelines and the issue prompt's Test Plan step now require
+listing each step of such an operation in order with what is left behind when
+it alone fails and who finishes the rest (a retry counts only if it reaches
+the missing step, and a failure that is only logged has no finisher), never
+letting a bookkeeping write block a safety step or spending a counted retry
+before its step can no longer be refused, a fail-then-finish test per
+fallible step that goes red when the finisher is removed, and the steps and
+finishers in the PR summary.
+
 **Nothing exists only for a test to read (Issue #3455).** Three private
 fleet PRs in one week added a production member that only tests used: an
 optional preset prop on a web UI component that no production caller

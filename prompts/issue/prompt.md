@@ -1478,7 +1478,20 @@ The file MUST contain:
    checked, and name a test that uses the real record helper, drives the
    failure and then a healthy run, asserts the record is gone, and goes red
    when the clear is deleted; a record with no clear on a healthy path is a
-   blocking self-review finding. Likewise, each field, prop, parameter, type
+   blocking self-review finding. Likewise, an operation the diff adds or
+   reorders that makes more than one durable write or external side effect
+   — a state change plus an audit or history record, a safety action plus
+   the record of it, a counter plus the work it pays for — names a finisher
+   for each step that can fail (see **Every step of a multi-write operation
+   has a named finisher when it fails** in the guidelines): list the steps
+   in order and, for each, what is left behind and who finishes the rest; a
+   bookkeeping write never blocks a safety step, and no counted retry is
+   spent before the step it pays for can no longer be refused; name a test
+   per fallible step that makes it fail, runs the finisher, asserts exactly
+   one copy of each record, and goes red when the finisher is removed; list
+   the steps and their finishers in the PR summary; a step whose failure
+   leaves work that no path ever completes is a blocking self-review
+   finding. Likewise, each field, prop, parameter, type
    or export the diff adds to non-test code has a production reader or
    setter (see **Nothing exists only for a test to read** in the
    guidelines): find one with `git grep -n -w <name>` outside test code, or
