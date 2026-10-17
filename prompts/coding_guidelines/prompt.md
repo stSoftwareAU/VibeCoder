@@ -1032,6 +1032,17 @@ this **instead of looping**:
    blocking, and what a solution would look like. Use
    `gh issue create --repo <owner>/<repo> --title "..." --body "..."`. Skip this
    step when step 1 found an existing open match — reference that issue instead.
+
+   **The relevant repository is the one that owns the work** (see
+   `docs/ISSUE-ROUTING.md` in stSoftwareAU/VibeCoder). A product code change
+   belongs in the repository that versions that code; a worker, fleet,
+   container, prompt, provider or orchestration change belongs in
+   `stSoftwareAU/VibeCoder`, whichever repository it was noticed in. A
+   repo-scoped diagnostic or back-off anchor (#2592) stays in the monitored
+   repository it describes, even when worker code is the root cause. When the
+   owner is unclear, file in the current repository and state the basis for
+   that choice in the body. The worker's `route-issue` command applies the
+   same rule for operators and scripts.
 3. Post **one** message that:
    - Names the follow-up issue you filed or referenced (e.g.
      `stSoftwareAU/foo#NNN`).

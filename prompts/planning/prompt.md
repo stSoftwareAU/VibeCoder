@@ -27,6 +27,8 @@ gh issue list --repo {{REPO}} --state open --limit 50
 
 Reference an existing issue rather than recreating it; note related issues so the draft can link them.
 
+**Route each sub-issue to the repository that owns it** (see `docs/ISSUE-ROUTING.md` in stSoftwareAU/VibeCoder). Sub-issues are filed in {{REPO}}, so only work that changes code {{REPO}} versions becomes one. A change to code another repository versions — a product fix raised in the Vibe Coder repository, or a worker, prompt or fleet change raised from a product repository — is not a sub-issue here: name the owning repository and the basis for it in the plan, so an operator can file it there with the worker's `route-issue` command. The exception is a repo-scoped diagnostic or back-off anchor (#2592): it stays in the monitored repository it describes, even when worker code is the root cause.
+
 <escalation_context>
 {{COMPLEXITY_CONTEXT}}
 </escalation_context>

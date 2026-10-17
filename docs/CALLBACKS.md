@@ -653,6 +653,32 @@ Other optional facts the run could not supply — no provider, no session — ar
 empty, so `[ -n "$VIBECODER_SESSION_ID" ]` is a truthful test. `result` and
 `exitCode` are unchanged (Issue #1947): hooks keyed on them keep working.
 
+
+### Lifecycle ledger cross-reference
+
+The schema-2 callback contract is unchanged. Its run summary and the
+append-only lifecycle ledger share token extraction and pricing, but have
+different scopes: the callback summarises an issue run, while ledger events
+retain assignment identity, individual invocations and later PR work.
+
+| Callback field | Lifecycle field or interpretation |
+|----------------|-----------------------------------|
+| `telemetry.inputTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens` | Invocation `models[].tokens` counters, retained per model rather than as one run total |
+| `telemetry.estimatedCostUsd` | Invocation `estimatedApiEquivalentUsd`; the ledger explicitly labels the estimate API-equivalent |
+| `telemetry.model` | Invocation `servedModel` when observable, plus `requestedModel` and per-model `models[].model`; the callback selects its dominant invocation |
+| `telemetry.effort` | Invocation `effort`; the callback reports the dominant invocation's effort |
+| `telemetryAbsentReason` | Invocation `usage: "unknown"` and `telemetryAbsentReason`; unknown pricing uses `pricing: "unknown"` with no USD value |
+| Callback run outcome | Separate from ledger PR outcomes: a successful run is not proof of a reviewed, quality-green merge |
+
+Estimated API-equivalent cost is observed usage multiplied by the published
+per-model rows in `cost_estimate.ts`, always an estimate. It excludes
+subscription fees, fee allocation, seat amortisation and billing. Missing
+usage/pricing remains unknown; partial reconciliation subtotals are lower
+bounds, not complete zero-dollar runs. See
+[Lifecycle ledger and gated success](MODEL-AND-CACHING.md#estimated-api-equivalent-cost-and-lifecycle-ledger)
+for the allowlisted fields, outcome states, collection boundaries and
+reconciliation API.
+
 ## Versioning — the contract is additive
 
 `schemaVersion` is a compatibility number, not a changelog. The rule, on both

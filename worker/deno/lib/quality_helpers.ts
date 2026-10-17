@@ -35,11 +35,13 @@ export interface CheckResult {
   name: string;
   status: CheckStatus;
   /**
-   * What the check printed (Issue #1852). Recorded for FAILED checks so the
-   * post-change gate can ask whether a failure reproduces one the untouched
-   * tree already had. Absent when the caller recorded no output — the
-   * comparison then cannot attribute the failure and falls back to today's
-   * behaviour.
+   * What the check printed (Issues #1852, #3726). Recorded for FAILED checks
+   * so the post-change gate can ask whether a failure reproduces one the
+   * untouched tree already had, and for SKIPPED checks because the output is
+   * the reason the stage did not run, which an audit needs to match a CI-only
+   * failure to a skipped local stage. Absent when the caller recorded no
+   * output — the comparison then cannot attribute the failure and falls back
+   * to today's behaviour.
    */
   output?: string;
 }
