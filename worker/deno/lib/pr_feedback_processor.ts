@@ -13,6 +13,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { redactSecrets } from "./secret_redaction.ts";
+
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import {
   fenceUntrustedIssueText,
@@ -757,6 +759,23 @@ async function recordFeedbackTierRun(
 ): Promise<void> {
   if (!carrier.agentRan) return;
   const { deps, logger } = processorDeps;
+  try {
+    await deps.infrastructure.recordPrFollowOn({
+      workDir: processorDeps.workRoot,
+      repo: input.repo,
+      prNumber: input.prNumber,
+      followOn: "pr_feedback",
+      cycle: `${input.commentType}-${input.commentId}`,
+      attempt: 1,
+      runStats: carrier.lifecycleStats ?? [],
+    });
+  } catch (error) {
+    logger.error(
+      `Lifecycle follow-on recording failed for ${input.repo}#${input.prNumber}: ${
+        redactSecrets(error instanceof Error ? error.message : String(error))
+      }`,
+    );
+  }
   const tier = await fetchPrSubAgentTier(
     input.repo,
     input.prNumber,
@@ -775,6 +794,8 @@ async function recordFeedbackTierRun(
 
 /** What the body hands back to every one of its successful return paths. */
 interface FeedbackRunCarrier {
+  /** Every retry's usage, separate from the existing fleet counters (Issue #3720). */
+  lifecycleStats?: (RunStats | undefined)[];
   /**
    * Issue #3404: set once the coding agent is about to be invoked; a run that
    * exits earlier never sets it and so records no fleet-telemetry run.
@@ -1195,6 +1216,7 @@ async function _processFeedbackWithHeartbeat(
       {
         repo,
         ...request,
+        captureInvocationStats: true,
         ...(commentType === "pr_review"
           ? {
             systemPrompt: `${
@@ -1213,7 +1235,11 @@ async function _processFeedbackWithHeartbeat(
     );
     if (invocation.ok) {
       (carrier.runStats ??= []).push(invocation.value.runStats);
+      (carrier.lifecycleStats ??= []).push(
+        ...(invocation.value.invocationStats ?? [invocation.value.runStats]),
+      );
     }
+    if (!invocation.ok) (carrier.lifecycleStats ??= []).push(undefined);
     return invocation;
   };
   const agentRequest = {

@@ -2428,6 +2428,7 @@ async function completionBody(
       prSummaryDigestInput(rawSummaryContent, factsContent),
     ),
     subAgentTier: prSubAgentTier,
+    assignmentId: state.assignmentId,
     ensureReferences: deps.pr.ensurePrReferencesIssue,
   });
   // Issue #3177: `assemblePrBody` withholds the closing keyword when the

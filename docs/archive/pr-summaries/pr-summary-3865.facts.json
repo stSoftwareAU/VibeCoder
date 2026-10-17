@@ -133,7 +133,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 3695,
+        "line": 3696,
         "outcome": "late manual-only claims receive the correction turn",
         "test": "worker/deno/tests/completion_phase_summary_claim_check_test.ts",
         "testName": "completion - a later doc finding gets a narrow sentence correction turn",
@@ -149,7 +149,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 3351,
+        "line": 3352,
         "outcome": "mixed-gate blocks retain the manual hold",
         "test": "worker/deno/tests/completion_phase_summary_claim_check_test.ts",
         "testName": "completion - a manual finding beside another gate is held without an extra correction turn",
@@ -165,7 +165,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 3037,
+        "line": 3038,
         "outcome": "completion applies manual carry-forward before deciding gates",
         "test": "worker/deno/tests/completion_phase_summary_claim_check_test.ts",
         "testName": "completion - an unchanged manual finding cannot disappear in a flaky correction recheck",

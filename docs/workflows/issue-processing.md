@@ -1217,8 +1217,16 @@ raised. The agent dispatches nothing for it.
   ([`closure_met_check.ts`](../../worker/deno/lib/closure_met_check.ts)). The
   worker adds a blocking finding on the PR summary for each listed entry rated
   `partial` or `missing`, and one for the entries left without a verdict (a
-  reply without the array counts as no verdicts), whatever the model's own
-  findings say. A summary that marks no entry `met`, or has no closure block,
+  reply without the array counts as no verdicts, and a malformed array entry
+  is dropped rather than failing the reply, so it counts as no verdict while the
+  reply's other findings stay), whatever the model's own findings say. Matching
+  ignores a copied leading list number (`1.` or `1)`, followed by whitespace)
+  before clipping the criterion, so the displayed numbering cannot turn a
+  complete verdict into a missing one. The
+  listed criteria are agent-written text copied from the issue, so they are
+  rendered inside the prompt's untrusted fence and named in its
+  boundary-integrity instruction; only the worker's instruction sentence sits
+  outside it. A summary that marks no entry `met`, or has no closure block,
   lists none and owes no verdict. The fleet reviewer shares the brief and so
   the instruction, but its `post.ts` does not check the array.
 - **Disposable checkout.** A `git clone --shared` of the issue checkout at the

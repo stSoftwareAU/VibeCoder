@@ -4,11 +4,12 @@ Nothing checked a closure entry the agent marked `met` against the criterion it 
 
 - `worker/deno/lib/closure_met_check.ts` (new):
   - `metClosureItems` reads the summary's closure block through the existing `parseClosureEntries` and `subjectOf`, keeping only the entries marked `met`.
-  - `renderClosureEntriesSection` lists those entries in the brief.
-  - `parseClosureEntryVerdicts` validates the reply's `closure` array.
+  - `renderClosureEntriesSection` lists those entries in the brief: the worker's instruction sentence outside the run's untrusted fence, the criteria inside it (PR #3890 review).
+  - `parseClosureEntryVerdicts` reads the reply's `closure` array and drops a malformed entry instead of throwing, so the reply's other findings are kept and the listed item falls into the no-verdict finding (PR #3890 review).
   - `closureGapFindings` turns a `partial` or `missing` verdict, or a missing verdict, into a blocking finding on the PR summary.
 - `worker/deno/lib/pre_pr_verifier.ts`:
   - The brief gains a sixth field, `{{CLOSURE_ENTRIES}}`.
+  - `buildPrePrVerifierPrompt` takes `closureItems`, renders the section with its own boundary id and names "closure entries" in the boundary-integrity instruction.
   - `ReviewReply` gains a required `closure` array, which `parseReviewReply` fills (`[]` when the reply omits it).
   - `verifyInCheckout` appends the closure gap findings after the checklist gaps.
 - `prompts/pr_review_brief/prompt.md`: a new step 8 asks for one verdict per listed entry. `met` is allowed only when the change delivers every case, path and test the criterion names. The reply JSON carries `closure`.
@@ -25,23 +26,30 @@ Nothing checked a closure entry the agent marked `met` against the criterion it 
 ### Essential Design Decisions
 
 - "No verdict" is never a pass. A reply without `closure`, or with a criterion that does not match a listed one, leaves the entry unreported, and that blocks the PR.
-- The criterion text is bounded and neutralised by `gapText`. Both sides of the match are keyed the same way (`normaliseVerdictText(gapText(…))`), so differences in case, spacing or backticks still match.
+- The criterion text is bounded and neutralised by `gapText`. Both sides of the match are keyed the same way (`normaliseVerdictText(gapText(…))` after stripping zero-width characters, so `gapText`'s invisible space after `@` cannot make the keys differ), so differences in case, spacing, backticks or that space still match.
+- A malformed verdict entry is dropped, never thrown on: a throw turned the whole reply, real findings included, into `not_checked`. The gap finding's fix offers delivery or an evidence-backed dispute only, matching the gate comment's procedure (PR #3890 review).
 - Closure gaps are ordinary findings, so `prePrVerifierBlocked`, the block reason and the in-run recovery turn need no change.
 - Trailing separators are stripped with a backwards scan rather than a trailing-run regex, so hostile input stays linear.
 
 ### Undiscoverable Facts
 
 - The issue body has no `## Acceptance Criteria` heading, so no closure block or two-axis review block is required, and none is emitted.
-- The issue scopes pr_feedback rounds out, and they still do not run the verifier. The fleet's `post.ts` does not enforce the `closure` array in code; the issue scopes code enforcement to the pre-PR verifier.
+- The original issue scoped PR-feedback rounds out. Main now runs the shared verifier on review-fix pushes too. The fleet's `post.ts` does not enforce the `closure` array in code.
 
 ## Evidence
 
 Backend-only change, with no UI file touched. It is verified by unit and integration tests against real git, using a scripted model.
 
+PR #3890's numbered-copy review fix strips the displayed list prefix before
+clipping the criterion. The new regression failed against target head
+`d37fb603` with `No verdict was reported`, then passed after the change.
+The closure, verifier and shared-brief suites pass 94 tests. No existing
+test or assertion was removed. Full CI remains required on this follow-up.
+
 ```mermaid
 flowchart LR
     S[PR summary] -->|parseClosureEntries, met only| M[metClosureItems]
-    M -->|renderClosureEntriesSection| B["brief CLOSURE_ENTRIES"]
+    M -->|renderClosureEntriesSection, fenced| B["brief CLOSURE_ENTRIES"]
     B --> V[verifier model]
     V -->|"closure: verdict per entry"| P[parseReviewReply]
     P --> G[closureGapFindings]
@@ -58,27 +66,33 @@ flowchart LR
 
 ## Test Plan
 
-- New tests in `worker/deno/tests/closure_met_check_3766_test.ts` (19 tests) cover:
+- Retain `runPrePrVerifier: earlier findings need complete fixed verdicts even when findings is empty` unchanged from the target branch. It checks that omitted and partial earlier-finding verdicts block, and a complete fixed verdict passes; the closure fixes do not replace this regression coverage.
+
+- New tests in `worker/deno/tests/closure_met_check_3766_test.ts` (24 tests) cover:
   - extraction, de-duplication, neutralising and clipping
   - each trailing separator kind
   - linear growth on hostile separator runs (`assertLinearGrowth`)
-  - rendering and reply validation
+  - rendering (criteria inside the untrusted fence, instruction outside) and reply reading (malformed entries dropped, no throw)
   - each finding branch: partial, missing, worst-wins, no verdict, more than five, singular, no note, unlisted verdicts ignored, and normalised matching
+  - numbered verdict copies (`1.` and `1)`), leading whitespace and a full-length criterion; a numbered partial verdict still blocks and an unrelated numbered criterion covers nothing
 - New tests in `worker/deno/tests/pre_pr_verifier_3395_test.ts`, run against real git:
   - `a met closure entry the verifier rates partial blocks, with a finding on the summary`
   - `a clean reply with no closure array blocks: no verdict on a met entry is never a pass`
   - `a clean reply with a met closure verdict is not blocked`
-  - `parseReviewReply parses a closure array, defaults to [] and rejects a bad verdict`
+  - `parseReviewReply parses a closure array, defaults to [] and drops a bad verdict without throwing`
+  - `a reply with a real finding and an out-of-vocabulary closure verdict is still checked and blocked`
+  - `buildPrePrVerifierPrompt renders closure criteria inside the untrusted fence and names the block`
+  - `the closure gap finding's fix agrees with the gate comment's procedure`
   - `runPrePrVerifier: a clean reply is checked and not blocked` gains an assertion that a summary without a closure block gets no closure section.
 - New test in `worker/deno/tests/pr_review_brief_shared_3395_test.ts`: `renderReviewBrief fills {{CLOSURE_ENTRIES}} and the reply shape carries closure`.
 - Removed or changed assertions, each required by this issue:
   - `assertEquals(REVIEW_BRIEF_FIELDS.length, 5);` becomes 6, because the issue adds a per-entry field to the shared brief. Red check: removing `"CLOSURE_ENTRIES"` from `REVIEW_BRIEF_FIELDS` turns `the brief carries six fields including {{REVIEW_CHECKLISTS}}, which the renderer fills` red (5 ≠ 6).
   - `assertEquals(parseFableReview(JSON.stringify(audit)), audit);`, `assertEquals(parseFableReview(JSON.stringify(reply)), reply);` and `assertEquals(parseFableReview(\`Review:\n${JSON.stringify(reply)}\n\`), reply);` now expect `closure: []`, because the shared parser now reads the `closure` array the issue asks for. Red check: deleting `closure: parseClosureEntryVerdicts(r.closure),` from `parseReviewReply` turns `the fleet reviewer's parser and audit send-back survive the shared parser` red.
   - `makeDeps(() => Promise.resolve(okRun({ output: REPLY_CLEAN })), []),` was replaced by a stub that also captures the prompt. Every assertion the test made is kept.
-- Call site check: replacing `closureEntries: renderClosureEntriesSection(metItems)` with `""` in `verifyInCheckout` turns `a met closure entry the verifier rates partial blocks, with a finding on the summary` red. Removing the `closureGapFindings` append turns both that test and `a clean reply with no closure array blocks…` red.
-- Callers checked for the now-required `ReviewReply.closure` and `buildPrePrVerifierPrompt`'s required `closureEntries`: the synthetic review in `pre_pr_verifier.ts`, `createMockDeps` in `lib/issue_worker_wiring.ts`, and `tests/completion_phase_pre_pr_verifier_3395_test.ts`. All three now pass `closure: []`. `deno check` over `lib/`, `tests/` and the fleet scripts passes.
+- Call site check: replacing `closureItems: metItems` with `[]` in `verifyInCheckout` turns `a met closure entry the verifier rates partial blocks, with a finding on the summary` red. Removing the `closureGapFindings` append turns both that test and `a clean reply with no closure array blocks…` red.
+- Callers checked for the now-required `ReviewReply.closure` and `buildPrePrVerifierPrompt`'s required `closureItems`: the synthetic review in `pre_pr_verifier.ts`, `createMockDeps` in `lib/issue_worker_wiring.ts`, and `tests/completion_phase_pre_pr_verifier_3395_test.ts`. All three now pass `closure: []`. `deno check` over `lib/`, `tests/` and the fleet scripts passes.
 - A dead operand (`matching.length === 0`) found by flip checks was removed.
-- Targeted run on the final head: `deno task test:unit tests/closure_met_check_3766_test.ts tests/pre_pr_verifier_3395_test.ts tests/pr_review_brief_shared_3395_test.ts tests/completion_phase_pre_pr_verifier_3395_test.ts tests/review_fleet_prs_checklists_3594_test.ts tests/review_fleet_prs_log_2678_test.ts` passed: parallel pass 110 passed, 0 failed; serial pass 18 passed, 0 failed.
-- `./quality.sh` on the final head, after merging the milestone base (#3761 Standards Review change): Result PASSED (config integration skipped). The targeted run above, plus `tests/independent_review_gate_test.ts`, passed again after the merge: 138 passed in the parallel pass, 19 in the serial pass.
+- Targeted run at `3d880384` (before restoring the target branch's earlier-findings regression): `deno task test:unit tests/closure_met_check_3766_test.ts tests/pre_pr_verifier_3395_test.ts tests/pr_review_brief_shared_3395_test.ts tests/completion_phase_pre_pr_verifier_3395_test.ts tests/review_fleet_prs_checklists_3594_test.ts tests/review_fleet_prs_log_2678_test.ts tests/independent_review_gate_test.ts` passed: parallel pass 147 passed, 0 failed; serial pass 23 passed, 0 failed.
+- `./quality.sh` at `3d880384`, before restoring the target branch's earlier-findings regression: Result PASSED (with skipped checks, as the gate reports them). CI must re-run the restored test on the updated head; no new local full-gate pass is claimed.
 
 <!-- vibe-branch-outcomes -->
