@@ -1787,6 +1787,20 @@ reconcile pass has nothing to repaint.
    emoji intact. Example rendered footer:
    `🏷️ Filed by idle-task template: \`security-scan\` · Run id: \`vibe-abc123\``.
 
+   **A suggested regression test never times the work.** When
+   `## Suggested fix` proposes a regression test, prescribe one that
+   asserts what the code produces on the trigger input, or one that
+   counts deterministic work through an injected observer or counter
+   and asserts the count grows linearly — never a wall-clock ratio test
+   (time the work at N and 4N, fail above k times), which flakes on a
+   loaded host and which many repositories' testing standards forbid.
+   Even where the scanned repository's own standard explicitly allows
+   ratio tests, a ratio stays that repository's last resort for the
+   implementer to reach for, not a fix for this scan to prescribe.
+   Name a precedent test file or helper only after confirming it exists
+   in the scanned repository, and never cite another repository's
+   helper or issue number as the pattern to follow.
+
    **Redact secret values.** No part of the title, body, or a comment
    may contain a live credential, token, key, or password value —
    including inside `## Trigger` and `## Exploit sketch`. Cite the

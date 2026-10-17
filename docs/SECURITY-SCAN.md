@@ -634,7 +634,13 @@ The body has three parts (per the Phase 4 instructions in
    - `## Exploit sketch` — what the attacker gains (data leak, RCE,
      privilege bump, …).
    - `## Suggested fix` — a one- or two-paragraph proposal that the
-     downstream issue run will treat as the starting point.
+     downstream issue run will treat as the starting point. A
+     regression test it proposes asserts the output on the trigger
+     input or counts deterministic work through an injected counter —
+     never a wall-clock ratio test, even in a repository whose standard
+     allows one as a last resort — and it names a precedent test file
+     or helper only after confirming it exists in the scanned
+     repository (Issue #3680).
 
 **Secret values are redacted.** A finding about a hard-coded or
 committed secret cites it by `file:line` and shows at most the

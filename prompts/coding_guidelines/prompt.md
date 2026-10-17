@@ -723,14 +723,30 @@ separate.
   and friends are flaky across machines (loaded CI runner, shared laptop, ARM
   vs x86) and parallel execution makes them worse. Use dedicated benchmarks
   when you need numbers.
-- **Ratio timing assertions are the exception, and they are permitted.**
-  Catastrophic backtracking has no wrong output, only a runtime one, so a few
-  tests must measure. `assertLinearGrowth` in
-  `worker/deno/tests/support/growth.ts` times the same work at size N and 4N
-  and fails only when the cost grew faster than the input — a slower host
-  inflates both readings and stays green, which is exactly what an absolute
-  budget cannot do (Issue #530). Compare two readings of the same work; never
-  a reading against a constant.
+- **The target repository's own testing standard wins on timing.** When the
+  repository you are working in keeps timing out of unit tests — "no
+  `Instant`/`elapsed` for pass/fail", "timing belongs in `benches/`", no
+  `performance.now()` deltas — that rule covers a ratio of two wall-clock
+  readings too. A ratio between two timings is still a timing threshold: a
+  loaded host skews the two readings differently, and a ratio assertion has
+  gone red reading 30 ms against 355 ms for work that is linear.
+- **Guard super-linear cost by output, then by counted work.** First assert
+  what the code **produces** on the hostile input: catastrophic backtracking
+  on an input of real size never returns, so the case hangs on every host.
+  When the output cannot tell the two apart, count **deterministic work**
+  through an injected observer or counter (steps, comparisons, nodes visited)
+  at size N and 4N and assert the count grows linearly — the count is the
+  same on every host under every load. Timing comparisons belong in the
+  repository's benchmark harness. A wall-clock ratio inside a unit test is a
+  last resort, used only where the repository's own standard explicitly
+  allows ratio tests and neither the output nor a work count distinguishes
+  the two; even then, compare two readings of the same work, never a reading
+  against a constant.
+- **Cite only what exists in the repository you are working.** A helper,
+  test file or issue number from another repository is not a precedent
+  there — the issue numbers this guidance cites belong to
+  stSoftwareAU/VibeCoder. Before you name a precedent file or helper in a
+  test, PR body or issue, confirm it exists in the target repository.
 - **Vet every regex on untrusted text, one hostile case per pattern.** Every
   regex a change adds or edits that runs on untrusted or agent-written text
   (an issue body, a PR summary, agent output) gets its own check, not one per
