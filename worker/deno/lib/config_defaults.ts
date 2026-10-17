@@ -497,9 +497,10 @@ export const OPERATIONAL_DEFAULTS = {
    */
   enableSessionResume: true,
   /**
-   * Whether `issue`-phase runs use the split executor (Issue #2341): an Opus
-   * advisor plans and Sonnet executors edit. On by default since Sonnet 5.5
-   * costs half of Opus 5.5 (Issue #2812); `issue_executor_split: false` opts out.
+   * Whether `issue`-phase runs use the split executor (Issue #2341): the
+   * manager plans and dispatches sub-agent executors that edit, on the
+   * sub-agent tier (`issue_sub_agent_tier`, Haiku by default, Issue #3402). On
+   * by default since Issue #2812; `issue_executor_split: false` opts out.
    */
   issueExecutorSplit: true,
   /**

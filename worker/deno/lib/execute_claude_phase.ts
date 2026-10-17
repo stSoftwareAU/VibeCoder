@@ -350,9 +350,10 @@ export interface ExecuteClaudePhaseOptions {
    * Host-wide `issue_sub_agent_tier` (Issue #3402), threaded from
    * `config.issueSubAgentTier` by `commands/execute_claude_phase.ts`. The
    * repository's own `repo_config` override is layered over it here by
-   * `resolveIssueSubAgentTier`. Unset — the default — resolves to `"sonnet"`,
-   * whose `--agents` JSON is byte-identical to a run from before this key
-   * existed.
+   * `resolveIssueSubAgentTier`. Unset resolves to `"sonnet"` only when no
+   * options are passed; production always passes the host value, which
+   * defaults to `"haiku"` (Issue #3402). `"sonnet"` yields a `--agents` JSON
+   * byte-identical to a run from before this key existed.
    */
   issueSubAgentTier?: IssueSubAgentTier;
   /**
@@ -1265,12 +1266,13 @@ async function executeClaudePhaseBody(
 
   // The issue-executor split (Issue #2342): with the key on, the invocation
   // carries `--agents` definitions so the advisor delegates mechanical edit
-  // work to executors on the run's sub-agent tier — Sonnet by default, Haiku
-  // under `issue_sub_agent_tier: "haiku"` (Issue #3402) — and the prompt
-  // carries the advisor/executor block that tells it to (Issue #2343). Off —
-  // the default — `agents` stays
-  // absent, no argument is emitted, the block renders as nothing, and every
-  // sub-agent inherits the phase's model exactly as it does today. Resolved
+  // work to executors on the run's sub-agent tier — Haiku by default, Sonnet
+  // under `issue_sub_agent_tier: "sonnet"` (Issue #3402) — and the prompt
+  // carries the advisor/executor block that tells it to (Issue #2343). Off
+  // (`issue_executor_split: false`) — `agents` stays absent, no argument is
+  // emitted, the block renders as nothing, and no executor definitions are
+  // built (reviewer and explorer definitions are governed by their own
+  // settings). Resolved
   // before the prompt is built so the prompt and the argv cannot disagree.
   const issueExecutorSplit = isIssueExecutorSplitEnabled(
     "issue",

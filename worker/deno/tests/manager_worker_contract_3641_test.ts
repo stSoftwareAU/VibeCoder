@@ -268,10 +268,12 @@ Deno.test("#3641 contract — Codex and Gemini drop agents and settings silently
       false,
       `${id} must not carry the settings JSON anywhere in argv`,
     );
+    // The effort notice is a separate, existing warning; only the agents and
+    // settings drop is pinned as silent here.
     assertEquals(
-      warnings.filter((w) => w.includes("--agents") || w.includes("Sub-agent")),
+      warnings.filter((w) => /agent|settings/i.test(w)),
       [],
-      `${id} drops agents silently, with no warning`,
+      `${id} drops agents and settings silently, with no warning about either`,
     );
   }
 });
