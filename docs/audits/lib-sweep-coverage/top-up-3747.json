@@ -1,0 +1,12 @@
+{
+  "issue": 3747,
+  "chunk": "top-up-3747",
+  "title": "top-up: wrong-repo duplicate resolution",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3747",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/issue_routing_resolve.ts, the wrong-repository duplicate resolution behind route-issue --resolve-duplicate (#3747)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/issue_routing_resolve.ts"
+  ],
+  "sweptAt": "74f42527483bfd363955ceb25b2ebe92765d9e03"
+}

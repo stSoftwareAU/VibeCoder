@@ -15,6 +15,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildClosureGateComment,
   extractAcceptanceCriteria,
+  extractAcceptedScope,
   parseClosureEntries,
   validateAcceptanceClosure,
 } from "../lib/acceptance_criteria_gate.ts";
@@ -74,6 +75,71 @@ Deno.test("extractAcceptanceCriteria - no section means no criteria", () => {
 Deno.test("extractAcceptanceCriteria - heading with no list items yields none", () => {
   const body = "## Acceptance Criteria\n\nTo be decided.\n";
   assertEquals(extractAcceptanceCriteria(body), []);
+});
+
+Deno.test("extractAcceptanceCriteria - reads criteria under a Definition of done heading (Issue #3761)", () => {
+  const body =
+    "## Problem\n\nX.\n\n## Definition of done\n\n- [ ] The guard runs.\n- [ ] A test pins it.\n\n## Notes\n\n- not a criterion\n";
+  assertEquals(extractAcceptanceCriteria(body), [
+    "The guard runs.",
+    "A test pins it.",
+  ]);
+
+  const variant =
+    "## Problem\n\nX.\n\n### Definition of Done:\n\n- [ ] The guard runs.\n- [ ] A test pins it.\n\n## Notes\n\n- not a criterion\n";
+  assertEquals(extractAcceptanceCriteria(variant), [
+    "The guard runs.",
+    "A test pins it.",
+  ]);
+});
+
+Deno.test("extractAcceptanceCriteria - Acceptance Criteria wins over Definition of done (Issue #3761)", () => {
+  const both =
+    "## Acceptance Criteria\n\n- [ ] The AC item.\n\n## Definition of done\n\n- [ ] The DoD item.\n";
+  assertEquals(extractAcceptanceCriteria(both), ["The AC item."]);
+
+  // An Acceptance Criteria heading with no list items does not block the fallback.
+  const emptyAc =
+    "## Acceptance Criteria\n\nTo be decided.\n\n## Definition of done\n\n- [ ] The DoD item.\n";
+  assertEquals(extractAcceptanceCriteria(emptyAc), ["The DoD item."]);
+});
+
+Deno.test("extractAcceptanceCriteria - a padded Definition of done near-miss is not a heading (Issue #3761)", () => {
+  const padded = "## Definition of done" + " ".repeat(50_000) + "x";
+  assertEquals(extractAcceptanceCriteria(`${padded}\n- not a criterion\n`), []);
+
+  const paddedWords = "# definition" + " ".repeat(50_000) + "of done!";
+  assertEquals(
+    extractAcceptanceCriteria(`${paddedWords}\n- not a criterion\n`),
+    [],
+  );
+
+  // A real heading after the near-miss is still read.
+  const body = [
+    padded,
+    "- not a criterion",
+    "",
+    "## Definition of done:",
+    "- the real criterion",
+  ].join("\n");
+  assertEquals(extractAcceptanceCriteria(body), ["the real criterion"]);
+});
+
+Deno.test("extractAcceptedScope - a Definition of done list is the scope (Issue #3761)", () => {
+  const body = [
+    "## Problem",
+    "",
+    "The scope is unclear.",
+    "",
+    "## Definition of done",
+    "",
+    "- [ ] The scope item.",
+    "- [ ] The second item.",
+  ].join("\n");
+  assertEquals(extractAcceptedScope(body), [
+    "The scope item.",
+    "The second item.",
+  ]);
 });
 
 // --- parseClosureEntries ---
@@ -232,6 +298,25 @@ Deno.test("validateAcceptanceClosure - issue without criteria is unaffected", ()
   assertEquals(result.applicable, false);
   assertEquals(result.valid, true);
   assertEquals(result.problems, []);
+});
+
+Deno.test("validateAcceptanceClosure - applies to an issue whose criteria sit under Definition of done (Issue #3761)", () => {
+  const result = validateAcceptanceClosure({
+    issueBody: [
+      "## Problem",
+      "",
+      "The guard reads only one heading.",
+      "",
+      "## Definition of done",
+      "",
+      "- [ ] The guard runs.",
+      "- [ ] A test pins it.",
+    ].join("\n"),
+    prSummaryContent: summary([]),
+  });
+
+  assertEquals(result.applicable, true);
+  assertEquals(result.valid, false);
 });
 
 Deno.test("validateAcceptanceClosure - criterion prose mentioning a status word does not reclassify", () => {

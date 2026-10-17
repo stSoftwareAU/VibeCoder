@@ -1,0 +1,160 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/lifecycle_ledger.ts",
+        "line": 225,
+        "outcome": "assignment per-host identity",
+        "test": "worker/deno/tests/lifecycle_ledger_test.ts",
+        "testName": "Issue #3755: assignment dedupes across runs on one host and keeps another host",
+        "flipWentRed": "Changed assignment per-host identity in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_ledger.ts",
+        "line": 1000,
+        "outcome": "dedupe first occurrence",
+        "test": "worker/deno/tests/lifecycle_ledger_test.ts",
+        "testName": "lifecycle ledger - a replayed event is read back once",
+        "flipWentRed": "Changed dedupe first occurrence in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_ledger.ts",
+        "line": 581,
+        "outcome": "unknown usage rejects USD",
+        "test": "worker/deno/tests/lifecycle_invocation_3719_test.ts",
+        "testName": "Issue #3719: nested telemetry rejects private fields and false zero estimates",
+        "flipWentRed": "Changed unknown usage rejects USD in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_ledger.ts",
+        "line": 581,
+        "outcome": "unknown pricing rejects USD",
+        "test": "worker/deno/tests/lifecycle_invocation_3719_test.ts",
+        "testName": "Issue #3719: nested telemetry rejects private fields and false zero estimates",
+        "flipWentRed": "Changed unknown pricing rejects USD in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_ledger.ts",
+        "line": 234,
+        "outcome": "follow-on replay identity",
+        "test": "worker/deno/tests/lifecycle_follow_on_3720_test.ts",
+        "testName": "Issue #3720: two PRs share assignment, replay dedupes across runs and marker-less work stays unknown",
+        "flipWentRed": "Changed follow-on replay identity in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/issue_assignment.ts",
+        "line": 294,
+        "outcome": "trusted marker reuse",
+        "test": "worker/deno/tests/issue_assignment_test.ts",
+        "testName": "issue assignment - an existing trusted marker is reused without posting",
+        "flipWentRed": "Changed trusted marker reuse in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/issue_assignment.ts",
+        "line": 217,
+        "outcome": "untrusted marker ignored",
+        "test": "worker/deno/tests/issue_assignment_test.ts",
+        "testName": "issue assignment - a forged marker from an untrusted author is ignored",
+        "flipWentRed": "Changed untrusted marker ignored in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/issue_assignment.ts",
+        "line": 345,
+        "outcome": "racing marker adoption",
+        "test": "worker/deno/tests/issue_assignment_test.ts",
+        "testName": "issue assignment - a racing earlier trusted marker is adopted after the re-read",
+        "flipWentRed": "Changed racing marker adoption in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/phases/execute_phase.ts",
+        "line": 1151,
+        "outcome": "assignment precedes invocation",
+        "test": "worker/deno/tests/execute_phase_assignment_3718_test.ts",
+        "testName": "execute_phase assignment - the assignment event is on the ledger before the first agent invocation (Issue #3718)",
+        "flipWentRed": "Changed assignment precedes invocation in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/run_callback_telemetry.ts",
+        "line": 176,
+        "outcome": "absent usage remains unknown",
+        "test": "worker/deno/tests/lifecycle_invocation_3719_test.ts",
+        "testName": "Issue #3719: absent usage and unobserved served models stay unknown",
+        "flipWentRed": "Changed absent usage remains unknown in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/run_callback_telemetry.ts",
+        "line": 203,
+        "outcome": "unknown aggregate price omitted",
+        "test": "worker/deno/tests/lifecycle_invocation_3719_test.ts",
+        "testName": "Issue #3719: split models retain separate prices and unattributed sub-agent roles",
+        "flipWentRed": "Changed unknown aggregate price omitted in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_recording.ts",
+        "line": 38,
+        "outcome": "new claims keep new spend",
+        "test": "worker/deno/tests/lifecycle_invocation_3719_test.ts",
+        "testName": "Issue #3719: concurrent claims isolate identities and fresh claims retain new spend",
+        "flipWentRed": "Changed new claims keep new spend in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_recording.ts",
+        "line": 91,
+        "outcome": "invocations require active assignment",
+        "test": "worker/deno/tests/lifecycle_invocation_3719_test.ts",
+        "testName": "Issue #3719: failure, timeout and restart replay record once per invocation",
+        "flipWentRed": "Changed invocations require active assignment in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/pr_body.ts",
+        "line": 274,
+        "outcome": "PR marker ambiguity",
+        "test": "worker/deno/tests/lifecycle_follow_on_3720_test.ts",
+        "testName": "Issue #3720: PR assembly uses worker assignment and neutralises quoted markers",
+        "flipWentRed": "Changed PR marker ambiguity in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync.ts",
+        "line": 629,
+        "outcome": "PR marker refresh",
+        "test": "worker/deno/tests/pr_body_sync_test.ts",
+        "testName": "Issue #3720: summary refresh preserves the originating assignment",
+        "flipWentRed": "Changed PR marker refresh in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/pr_ci_processor.ts",
+        "line": 1061,
+        "outcome": "CI follow-on producer",
+        "test": "worker/deno/tests/pr_ci_processor_tier_telemetry_test.ts",
+        "testName": "Issue #3720: real CI processor records check cycle and all post-quality invocations",
+        "flipWentRed": "Changed CI follow-on producer in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 763,
+        "outcome": "feedback follow-on producer",
+        "test": "worker/deno/tests/pr_feedback_processor_tier_telemetry_test.ts",
+        "testName": "Issue #3720: real feedback processor records review cycle and excludes uninvoked work",
+        "flipWentRed": "Changed feedback follow-on producer in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/lifecycle_follow_on.ts",
+        "line": 33,
+        "outcome": "partial follow-on cost unknown",
+        "test": "worker/deno/tests/lifecycle_follow_on_3720_test.ts",
+        "testName": "Issue #3720: two PRs share assignment, replay dedupes across runs and marker-less work stays unknown",
+        "flipWentRed": "Changed partial follow-on cost unknown in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      },
+      {
+        "path": "worker/deno/lib/run_callback_telemetry.ts",
+        "line": 208,
+        "outcome": "per-model sub-agent role stays unattributed",
+        "test": "worker/deno/tests/lifecycle_invocation_3719_test.ts",
+        "testName": "Issue #3719: split models retain separate prices and unattributed sub-agent roles",
+        "flipWentRed": "Changed per-model sub-agent role stays unattributed in an isolated copy; the named runtime assertion failed (exit 1), then source was restored."
+      }
+    ]
+  }
+}

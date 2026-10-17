@@ -17,6 +17,7 @@ import type { SessionResumeState } from "./session_resume.ts";
 import type { JoinedStream } from "./stream_session.ts";
 import type { FailedCheck, GenericFinding } from "./baseline_gate.ts";
 import type { QualityGateAttemptOutcome } from "./issue_run_stats_comment.ts";
+import type { GateStageOutcome } from "./gate_stage_outcome.ts";
 import type { BumpInfo } from "./bump_deps.ts";
 import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { GraftContextResult } from "./graft_context.ts";
@@ -197,6 +198,13 @@ export interface PhaseState {
    */
   qualityGateOutcome?: QualityGateAttemptOutcome;
   /**
+   * The stage outcomes (passed, skipped with reason, failed) of the latest
+   * gate run in the quality-gate phase (Issue #3726). Rendered on the
+   * run-stats comment so an audit can tell a skipped local stage from a
+   * passed one. `undefined` when the gate did not complete a run.
+   */
+  qualityGateStages?: readonly GateStageOutcome[];
+  /**
    * Outcome of the per-repo `bump-deps.sh` phase (Issue #1613). Set by
    * `workOnIssueBumpDeps`. Consumed by the quality-gate audit (which
    * may flip the status to `rejected_by_audit`) and by the completion
@@ -289,6 +297,8 @@ export interface PhaseState {
    * the aggregate. Absent when Claude never ran.
    */
   claudeRunStats?: PhaseClaudeResult[];
+  /** Stable assignment carried to every PR this issue raises (Issue #3720). */
+  assignmentId?: string;
   /**
    * What the Graft repo-context collection did for this run (Issue #2102,
    * part of #2060).

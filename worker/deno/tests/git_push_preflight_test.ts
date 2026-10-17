@@ -714,3 +714,97 @@ Deno.test("commitAndPushPending - a Step 1a hook that throws never fails the pus
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+Deno.test("commitAndPushPending - review verifier inspects committed head and blocks the remote", async () => {
+  const branch = "issue-3784-verify";
+  const { tmp, downstream } = await makeRepo("review_verifier_", branch);
+  try {
+    const before =
+      (await runGit(["rev-parse", `origin/${branch}`], downstream)).stdout;
+    await Deno.writeTextFile(`${downstream}/feature.txt`, "fix\n");
+    let checks = 0;
+    const blocked = await commitAndPushPending(
+      branch,
+      "fix",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        checks++;
+        assertEquals(
+          (await runGit(["show", "HEAD:feature.txt"], downstream)).stdout,
+          "fix\n",
+        );
+        return { ok: false, error: new Error("partial fix") };
+      },
+    );
+    assertEquals(blocked.ok, false);
+    assertEquals(checks, 1);
+    assertEquals(
+      (await runGit(["rev-parse", `origin/${branch}`], downstream)).stdout,
+      before,
+    );
+    const cleared = await commitAndPushPending(
+      branch,
+      "fix",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      undefined,
+      undefined,
+      undefined,
+      () => Promise.resolve({ ok: true, value: undefined }),
+    );
+    assert(cleared.ok);
+    assertEquals(cleared.value.commitsPushed, 1);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - a push recovery merge needs a fresh verdict", async () => {
+  const branch = "issue-3784-merge";
+  const { tmp, downstream } = await makeRepo("review_recovery_", branch);
+  try {
+    await runGit(["checkout", branch], `${tmp}/seed`);
+    // The seed has no branch yet; fetch it explicitly before advancing it.
+    await runGit(["fetch", "origin", branch], `${tmp}/seed`);
+    await runGit(["checkout", "-B", branch, "FETCH_HEAD"], `${tmp}/seed`);
+    await Deno.writeTextFile(`${tmp}/seed/remote.txt`, "remote\n");
+    await runGit(["add", "."], `${tmp}/seed`);
+    await runGit(["commit", "-m", "remote change"], `${tmp}/seed`);
+    await runGit(["push", "origin", branch], `${tmp}/seed`);
+    const remote = (await runGit(["rev-parse", "HEAD"], `${tmp}/seed`)).stdout
+      .trim();
+    await Deno.writeTextFile(`${downstream}/local.txt`, "local\n");
+    const heads: string[] = [];
+    const result = await commitAndPushPending(
+      branch,
+      "local",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      undefined,
+      undefined,
+      undefined,
+      async () => {
+        heads.push((await runGit(["rev-parse", "HEAD"], downstream)).stdout);
+        return heads.length === 1
+          ? { ok: true, value: undefined }
+          : { ok: false, error: new Error("merged head not verified") };
+      },
+    );
+    assertEquals(result.ok, false);
+    assertEquals(heads.length, 2);
+    assert(heads[0] !== heads[1]);
+    {
+      const actual = (await runGit(
+        ["ls-remote", "origin", `refs/heads/${branch}`],
+        downstream,
+      )).stdout;
+      assert(actual.startsWith(remote));
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
