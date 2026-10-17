@@ -548,3 +548,35 @@ Deno.test("a completed cross-provider handoff runs the executor on deepseek and 
     assertEquals(fake.calls[1]?.envelope.role, "executor");
   });
 });
+
+Deno.test("an empty manager plan ends the run blocked before any executor call", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeInvoker((call) =>
+      phaseOf(call) === "plan" ? { ok: true, output: "   " } : okScript(call)
+    );
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke),
+    );
+    assertEquals(outcome.state, "blocked");
+    assertStringIncludes(outcome.reason ?? "", "empty plan");
+    assertEquals(fake.calls.map(phaseOf), ["plan"]);
+    assertEquals(
+      fake.calls.filter((call) => phaseOf(call) === "execute").length,
+      0,
+    );
+  });
+});
+
+Deno.test("an empty manager review ends the run blocked", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeInvoker((call) =>
+      phaseOf(call) === "review" ? { ok: true, output: "" } : okScript(call)
+    );
+    const outcome = await runExternalOrchestration(
+      optionsFor(dir, fake.invoke),
+    );
+    assertEquals(outcome.state, "blocked");
+    assertStringIncludes(outcome.reason ?? "", "empty review");
+    assertEquals(fake.calls.map(phaseOf), ["plan", "execute", "review"]);
+  });
+});

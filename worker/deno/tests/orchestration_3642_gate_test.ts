@@ -330,3 +330,98 @@ Deno.test("orchestration gate - createDefaultDeps wires runExternalOrchestratedI
   const deps = createDefaultDeps();
   assertEquals(typeof deps.runExternalOrchestratedIssueRun, "function");
 });
+
+Deno.test("orchestration gate - an unknown manager provider is refused before any runner call (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    const refused = fakeRunner();
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { manager: { provider: "nope" } }),
+      depsFor(dir, refused.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, false);
+    if (outcome.ok) return;
+    assertStringIncludes(outcome.error.message, 'unknown provider "nope"');
+    assertEquals(refused.calls.length, 0);
+
+    // Positive control: the same settings with a known provider reach the runner.
+    const accepted = fakeRunner();
+    const control = await runOrchestratedIssueRun(
+      inputFor(dir, { manager: { provider: "claude" } }),
+      depsFor(dir, accepted.runClaudeWithRetry),
+    );
+    assertEquals(control.ok, true);
+    assertEquals(accepted.calls.length > 0, true);
+  });
+});
+
+Deno.test("orchestration gate - a runner exit 124 is a timeout that ends the run timed_out after its retries (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner(() => runResult({ exitCode: 124 }));
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { maxRetries: 1 }),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, false);
+    if (outcome.ok) return;
+    assertStringIncludes(outcome.error.message, "timed out after 2 attempt(s)");
+    assertStringIncludes(outcome.error.message, "exited with code 124");
+    assertEquals(fake.calls.length, 2);
+  });
+});
+
+Deno.test("orchestration gate - a non-zero runner exit is an error that exhausts its retries (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    const fake = fakeRunner(() => runResult({ exitCode: 1 }));
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { maxRetries: 1 }),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, false);
+    if (outcome.ok) return;
+    assertStringIncludes(outcome.error.message, "failed after 2 attempt(s)");
+    assertStringIncludes(outcome.error.message, "exited with code 1");
+    assertEquals(fake.calls.length, 2);
+  });
+});
+
+Deno.test("orchestration gate - a runner Result failure maps to an error call that is retried (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    let runnerCalls = 0;
+    const failing: IssueRunGateDeps["runClaudeWithRetry"] = () => {
+      runnerCalls += 1;
+      return Promise.resolve({ ok: false, error: new Error("boom") });
+    };
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { maxRetries: 1 }),
+      depsFor(dir, failing),
+    );
+    assertEquals(outcome.ok, false);
+    if (outcome.ok) return;
+    assertStringIncludes(outcome.error.message, "failed after 2 attempt(s)");
+    assertStringIncludes(outcome.error.message, "boom");
+    assertEquals(runnerCalls, 2);
+  });
+});
+
+Deno.test("orchestration gate - a rate-limit failure is a quota refusal with no retry (Issue #3642)", async () => {
+  await withWorkDir(async (dir) => {
+    const rateLimit: AgentFailure = {
+      category: "rate-limit",
+      message: "rate limit reached",
+      evidence: "prose",
+      terminal: false,
+      errors: [],
+    };
+    const fake = fakeRunner(() =>
+      runResult({ exitCode: 1, agentFailure: rateLimit })
+    );
+    const outcome = await runOrchestratedIssueRun(
+      inputFor(dir, { maxRetries: 1 }),
+      depsFor(dir, fake.runClaudeWithRetry),
+    );
+    assertEquals(outcome.ok, false);
+    if (outcome.ok) return;
+    assertStringIncludes(outcome.error.message, "rate limit reached");
+    assertEquals(fake.calls.length, 1);
+  });
+});
