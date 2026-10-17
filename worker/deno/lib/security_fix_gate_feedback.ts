@@ -73,11 +73,13 @@ export interface SecurityFixGateBlock {
    */
   declarations?: string[];
   /**
-   * The worker-executed red → green record behind a `test-discriminates` or
-   * `discrimination-not-checked` block (Issue #3659), bounded by
-   * {@link sanitiseDiscrimination}. Absent for a block recorded before the
-   * field existed, and for a block that carries neither kind. Agent-authored
-   * test names and tool output — scrubbed and fenced wherever it is rendered.
+   * The worker-executed discrimination record (Issue #3659), bounded by
+   * {@link sanitiseDiscrimination} and kept whenever the check ran, regardless
+   * of the missing evidence kinds. Absent when the check did not run or the
+   * block predates this field. Callers must gate rendering on
+   * {@link blocksOnDiscrimination} so a passing record is not presented as the
+   * cause of an unrelated block. Agent-authored test names and tool output —
+   * scrubbed and fenced wherever it is rendered.
    *
    * Persisted shape: an optional field added to the version-1 file. An older
    * file lacks it and still reads (as absent); a newer file read by older code

@@ -584,10 +584,12 @@ export function referencesFindingId(content: string): boolean {
  *
  * The gate is active when the issue carries the `security` label or the PR
  * summary references a `SEC-<hex>` finding id. When active it asserts the
- * machine-checkable diff signals first (a test file is changed, and a test
- * identifier named in the summary appears in that test diff), then the
- * self-reported prose linkage as a secondary human-review aid. Pure — inspects
- * strings only, never executes anything.
+ * machine-checkable diff signals first: a test file changed and a cited test
+ * is declared in the added lines. Only when both hold does it check the
+ * worker-executed record: null or not_checked yields discrimination-not-checked;
+ * any checked outcome other than red → green yields test-discriminates. It
+ * then checks the self-reported trigger-closed statement. Pure — inspects the
+ * supplied strings and record, never executes anything.
  */
 export function evaluateSecurityFixGate(
   input: SecurityFixGateInput,
