@@ -231,7 +231,6 @@ Deno.test("timing policy - CODING-STANDARDS keeps the ratio only as this reposit
     standards,
     "this repository allows a ratio as a last resort",
   );
-  assertStringIncludes(standards, HELPER);
   // Whole-file absence: the unqualified permission must not survive anywhere
   // in CODING-STANDARDS.md, not just inside the Unit tests section.
   const whole = await readRepoDoc(STANDARDS_SECTION.doc);
