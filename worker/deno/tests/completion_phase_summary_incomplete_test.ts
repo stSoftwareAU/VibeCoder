@@ -535,6 +535,30 @@ Deno.test(
 );
 
 Deno.test(
+  "completion - an issue with no criteria heading still holds auto-merge on an own-line standing violation (Issue #3761)",
+  async () => {
+    const observed = await runCompletion({
+      issueBody:
+        "## Problem\n\nThe teardown leaks a snapshot.\n\n## Notes\n\n- no criteria heading here\n",
+      summary: SUMMARY_STANDING_VIOLATION,
+      labels: ["enhancement"],
+      prExistsForBranch: true,
+      diffUnified0: DIFF_ADDS_LINES_10_TO_15,
+    });
+
+    assertEquals(observed.status, "early_exit");
+    assertEquals(observed.outcomeKind, "summary_incomplete");
+    assertEquals(observed.recoverCalls, 1);
+    assertEquals(observed.finaliseCalls, 0, "auto-merge must not be armed");
+    assertEquals(
+      observed.labelCalls.some((l) => l.includes("standing-violation")),
+      true,
+      "the PR must be labelled standing-violation",
+    );
+  },
+);
+
+Deno.test(
   "completion - a failed standing-violation label creation still labels the PR and holds auto-merge (Issue #3382)",
   async () => {
     const observed = await runCompletion({

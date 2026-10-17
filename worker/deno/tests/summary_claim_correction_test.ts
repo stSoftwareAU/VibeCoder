@@ -9,14 +9,22 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
+import {
+  applyFlaggedSentenceReplacements,
   buildSummaryClaimCorrectionPrompt,
   carryForwardCorrectedClaims,
+  carryForwardManualClaims,
   CORRECTED_SUMMARY_CLOSE,
   CORRECTED_SUMMARY_OPEN,
   MAX_CORRECTED_SUMMARY_CHARS,
   parseCorrectedSummary,
+  readClaimCorrectionFile,
   SUMMARY_CLAIM_CORRECTION_DISALLOWED_TOOLS,
   type SummaryClaimCorrection,
 } from "../lib/summary_claim_correction.ts";
@@ -268,4 +276,215 @@ Deno.test("SUMMARY_CLAIM_CORRECTION_DISALLOWED_TOOLS - denies Bash, Edit, Write,
       `expected ${tool} to be disallowed`,
     );
   }
+});
+
+Deno.test("manual correction - replaces only unique flagged spans, preserving surrounding bytes", () => {
+  const findings = [{
+    file: "docs/manual.md",
+    sentence: "Wrong claim.",
+    reason: "code differs",
+  }];
+  const original = "# Manual\n\nKeep this. Wrong\nclaim. Keep that.\n";
+  const result = applyFlaggedSentenceReplacements(
+    JSON.stringify({ replacements: [{ index: 1, text: "Accurate claim." }] }),
+    findings,
+    new Map([["docs/manual.md", original]]),
+  );
+  assertEquals(
+    result.get("docs/manual.md"),
+    "# Manual\n\nKeep this. Accurate claim. Keep that.\n",
+  );
+});
+
+Deno.test("manual correction - regex syntax in findings stays literal", () => {
+  const sentence = String.raw`The pattern (a+)+$ [x] .* | \\ matches.`;
+  const original = `Keep. ${sentence} Keep too.`;
+  const result = applyFlaggedSentenceReplacements(
+    JSON.stringify({ replacements: [{ index: 1, text: "Correct." }] }),
+    [{ file: "docs/manual.md", sentence, reason: "code differs" }],
+    new Map([["docs/manual.md", original]]),
+  );
+  assertEquals(result.get("docs/manual.md"), "Keep. Correct. Keep too.");
+});
+
+Deno.test("manual correction - rejects missing, duplicate, unknown or ambiguous replacements", () => {
+  const findings = [{
+    file: "docs/manual.md",
+    sentence: "Wrong claim.",
+    reason: "code differs",
+  }];
+  for (
+    const replacements of [[], [{ index: 2, text: "x" }], [{
+      index: 1,
+      text: "x",
+    }, { index: 1, text: "y" }], [{ index: 1, text: 3 }]]
+  ) {
+    assertThrows(() =>
+      applyFlaggedSentenceReplacements(
+        JSON.stringify({ replacements }),
+        findings,
+        new Map([["docs/manual.md", "Wrong claim."]]),
+      )
+    );
+  }
+  const reply = JSON.stringify({
+    replacements: [{ index: 1, text: "accurate" }],
+  });
+  for (const text of ["No matching sentence.", "Wrong claim. Wrong claim."]) {
+    assertThrows(() =>
+      applyFlaggedSentenceReplacements(
+        reply,
+        findings,
+        new Map([["docs/manual.md", text]]),
+      )
+    );
+  }
+});
+
+Deno.test("manual correction - unchanged and unreadable confirmed claims survive a flaky recheck", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const finding = {
+      file: "manual.md",
+      sentence: "Wrong claim.",
+      reason: "code differs",
+    };
+    const correction = { ...usedCorrection([]), docFindings: [finding] };
+    await Deno.writeTextFile(`${root}/manual.md`, "Wrong\nclaim.");
+    assertEquals(
+      (await carryForwardManualClaims(BASE_RESULT, correction, root))
+        .docFindings,
+      [finding],
+    );
+    assertEquals(
+      (await carryForwardManualClaims(
+        { ...BASE_RESULT, docFindings: [finding] },
+        correction,
+        root,
+      )).docFindings,
+      [finding],
+    );
+    for (
+      const other of [{ ...finding, file: "other.md" }, {
+        ...finding,
+        sentence: "Other claim.",
+      }]
+    ) {
+      assertEquals(
+        (await carryForwardManualClaims(
+          { ...BASE_RESULT, docFindings: [other] },
+          correction,
+          root,
+        )).docFindings,
+        [other, finding],
+      );
+    }
+    await Deno.writeTextFile(`${root}/manual.md`, "Accurate claim.");
+    assertEquals(
+      (await carryForwardManualClaims(BASE_RESULT, correction, root))
+        .docFindings,
+      [],
+    );
+    await Deno.remove(`${root}/manual.md`);
+    assertEquals(
+      (await carryForwardManualClaims(BASE_RESULT, correction, root))
+        .docFindings,
+      [finding],
+    );
+    assertEquals(
+      await carryForwardManualClaims(BASE_RESULT, undefined, root),
+      BASE_RESULT,
+    );
+    assertEquals(
+      await carryForwardManualClaims(BASE_RESULT, {
+        ...correction,
+        status: "pending",
+      }, root),
+      BASE_RESULT,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("manual correction - rejects unsafe paths, symlink aliases and overlapping spans", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${root}/manual.md`, "Wrong claim.");
+    assertEquals(
+      await readClaimCorrectionFile(root, "manual.md"),
+      "Wrong claim.",
+    );
+    for (const path of ["../manual.md", `${root}/manual.md`, "source.ts"]) {
+      await assertRejects(() => readClaimCorrectionFile(root, path));
+    }
+    await Deno.symlink(`${root}/manual.md`, `${root}/alias.md`);
+    await assertRejects(() => readClaimCorrectionFile(root, "alias.md"));
+    const findings = ["Wrong claim.", "claim."].map((sentence) => ({
+      file: "manual.md",
+      sentence,
+      reason: "wrong",
+    }));
+    assertThrows(() =>
+      applyFlaggedSentenceReplacements(
+        JSON.stringify({
+          replacements: [{ index: 1, text: "one" }, { index: 2, text: "two" }],
+        }),
+        findings,
+        new Map([["manual.md", "Wrong claim."]]),
+      )
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("manual correction - rejects malformed index sets and oversized replies before any write", () => {
+  const findings = ["First claim.", "Second claim."].map((sentence) => ({
+    file: "manual.md",
+    sentence,
+    reason: "wrong",
+  }));
+  const contents = new Map([["manual.md", "First claim. Second claim."]]);
+  for (
+    const replacements of [
+      [{ index: 1, text: "a" }, { index: 1, text: "b" }],
+      [{ index: "1", text: "a" }, { index: 2, text: "b" }],
+    ]
+  ) {
+    assertThrows(
+      () =>
+        applyFlaggedSentenceReplacements(
+          JSON.stringify({ replacements }),
+          findings,
+          contents,
+        ),
+      Error,
+      "Invalid or duplicate sentence replacement index",
+    );
+  }
+  assertThrows(() =>
+    applyFlaggedSentenceReplacements(
+      JSON.stringify({
+        replacements: [{
+          index: 1,
+          text: "x".repeat(MAX_CORRECTED_SUMMARY_CHARS),
+        }, { index: 2, text: "y" }],
+      }),
+      findings,
+      contents,
+    )
+  );
+  const reply = JSON.stringify({
+    replacements: [{ index: 1, text: "" }, {
+      index: 2,
+      text: "Correct claim.",
+    }],
+  });
+  assertEquals(
+    applyFlaggedSentenceReplacements(reply, findings, contents).get(
+      "manual.md",
+    ),
+    " Correct claim.",
+  );
 });
