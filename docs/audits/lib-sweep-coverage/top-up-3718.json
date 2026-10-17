@@ -11,5 +11,5 @@
     "worker/deno/lib/lifecycle_recording.ts",
     "worker/deno/lib/lifecycle_follow_on.ts"
   ],
-  "sweptAt": "89f5138244e10b35021a692a72f20d6f29101ac0"
+  "sweptAt": "f64d2f1fa47ea018352943d33e785c3e657be81d"
 }

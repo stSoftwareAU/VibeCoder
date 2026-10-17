@@ -70,7 +70,9 @@ The full unit pass stalled at the orphan-process rendezvous in
 unchanged main also timed out after 45 seconds. No complete local unit-suite
 pass is claimed; GitHub CI must establish that result before merge.
 
-Docs sweep — grep: "lifecycle_ledger", "vibe-assignment", "subscription_allocation_label"; updated `docs/INTERNALS.md` and `docs/CONFIGURATION.md`; section: `docs/INTERNALS.md` → Lifecycle ledger and issue assignment, and `docs/CONFIGURATION.md` → issue-agent settings; siblings: "vibe-sub-agent-tier", "recordCiFixTierRun", "recordFeedbackTierRun" in the PR body and maintenance processors. `docs/INTERNALS.md:1021` remains true because existing tier counters retain their inputs and default. `worker/deno/lib/pr_body.ts:182` and `worker/deno/lib/pr_body.ts:218` remain true because the sibling tier marker is unchanged. The audit coverage record registers the four new library modules.
+Docs sweep — grep: "lifecycle_ledger", "vibe-assignment", "subscription_allocation_label"; updated `docs/INTERNALS.md` and `docs/CONFIGURATION.md`; section: `docs/INTERNALS.md` → Lifecycle ledger and issue assignment, and `docs/CONFIGURATION.md` → issue-agent settings; siblings: "vibe-sub-agent-tier", "recordCiFixTierRun", "recordFeedbackTierRun" in the PR body and maintenance processors. `docs/INTERNALS.md:1021` remains true because existing tier counters retain their inputs and default. `worker/deno/lib/pr_body.ts:182` and `worker/deno/lib/pr_body.ts:218` remain true because the sibling tier marker is unchanged. The audit coverage record registers the four new library modules and anchors
+`sweptAt` to the main-branch merge base, correcting the stale foundation
+reference detected by CI.
 
 ## Test Plan
 
