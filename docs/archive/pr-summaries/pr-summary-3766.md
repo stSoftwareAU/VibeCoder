@@ -13,7 +13,8 @@ Nothing checked a closure entry the agent marked `met` against the criterion it 
   - `ReviewReply` gains a required `closure` array, which `parseReviewReply` fills (`[]` when the reply omits it).
   - `verifyInCheckout` appends the closure gap findings after the checklist gaps.
 - `prompts/pr_review_brief/prompt.md`: a new step 8 asks for one verdict per listed entry. `met` is allowed only when the change delivers every case, path and test the criterion names. The reply JSON carries `closure`.
-- `.claude/skills/review-fleet-prs/SKILL.md`: the fleet reviewer fills the new field from the PR body, so it gets the same per-entry instruction. `post.ts` does not check the array itself.
+- `.claude/skills/review-fleet-prs/scripts/gate.ts`: reads the PR body in its search and renders `closureEntries` through `renderClosureEntriesSection(metClosureItems(body))`, so the fleet path gets the same redaction, fresh untrusted boundary and per-entry instruction as the worker.
+- `.claude/skills/review-fleet-prs/SKILL.md`: copies that gate field verbatim into the brief, never raw criteria. `post.ts` does not check the array itself.
 - Docs and the issue prompt say the verifier now re-judges each `met` entry.
 
 ## Spec
@@ -58,6 +59,15 @@ The closure, verifier, shared-brief and completion-phase suites pass 109 tests
 on this follow-up; full CI is still required. Main at `65bdd763` is merged
 as a second parent, preserving closure verdicts and earlier-findings checks.
 
+Review 5556946831's fleet-path boundary fix is verified by 140 passing tests
+across the fleet checklist, gate and audit suites plus the worker verifier
+and closure suites. The added regression failed before implementation
+(missing section) and when the section was mutated to raw criteria (missing
+boundary). Removing the PR-body field from the GraphQL request also made it
+fail. Fresh per-render boundaries, criteria placement, the external instruction,
+and empty/no-met bodies are covered. No existing assertion was removed.
+Main through `6effe8f3` is included; full CI remains required.
+
 ```mermaid
 flowchart LR
     S[PR summary] -->|parseClosureEntries, met only| M[metClosureItems]
@@ -79,6 +89,8 @@ flowchart LR
 ## Test Plan
 
 - Retain `runPrePrVerifier: earlier findings need complete fixed verdicts even when findings is empty` unchanged from the target branch. It checks that omitted and partial earlier-finding verdicts block, and a complete fixed verdict passes; the closure fixes do not replace this regression coverage.
+
+- `review_fleet_prs_checklists_3594_test.ts`: `gate: closure criteria are fenced data in the fleet reviewer brief` exercises the real gate output and outbound search request; `gate: no met closure entries gives an empty fleet section` covers empty and partial-only bodies. Existing helper defaults remain empty and existing checklist assertions stay unchanged. Related rules checked: the shared brief, the worker renderer and the skill's existing field-fill instructions; the fleet now copies the shared renderer's output rather than maintaining a second rule. Applying the rule to this diff found no remaining raw-criteria fill instruction.
 
 - New tests in `worker/deno/tests/closure_met_check_3766_test.ts` (25 tests) cover:
   - extraction, de-duplication, neutralising and clipping
