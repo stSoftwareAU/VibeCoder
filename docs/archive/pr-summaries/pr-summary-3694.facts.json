@@ -1,0 +1,12 @@
+{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
+  {"path":"worker/deno/lib/run_outcome_classifier.ts","line":358,
+   "outcome":"OOM evidence only inside the agent's quoted output block → killed-unknown",
+   "test":"worker/deno/tests/run_outcome_classifier_test.ts",
+   "testName":"classify #3694 - a SIGTERM kill whose agent quoted 'Exit code 137' is killed-unknown, not oom",
+   "flipWentRed":"scanning the whole message again turned it red: the class was oom"},
+  {"path":"worker/deno/lib/run_outcome_classifier.ts","line":358,
+   "outcome":"OOM evidence in the worker's own kill-diagnostics block → oom",
+   "test":"worker/deno/tests/run_outcome_classifier_test.ts",
+   "testName":"classify #3694 - a kernel OOM line in the worker's Processes block still makes the kill oom",
+   "flipWentRed":"forcing the condition false (no worker text scanned) makes this and 'killed, exit 137 only → oom' fail: the class was killed-unknown"}
+]}}
