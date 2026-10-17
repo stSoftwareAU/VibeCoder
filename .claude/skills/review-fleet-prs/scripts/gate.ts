@@ -68,6 +68,10 @@ import {
 } from "../../../../worker/deno/lib/review_checklists.ts";
 import { isDependencyAuditCheck } from "../../../../worker/deno/lib/dependency_audit_check.ts";
 import {
+  metClosureItems,
+  renderClosureEntriesSection,
+} from "../../../../worker/deno/lib/closure_met_check.ts";
+import {
   type CiFixMarkerComment,
   collectFleetCiFixMarkers,
 } from "../../../../worker/deno/lib/ci_fix_attempt_markers.ts";
@@ -125,6 +129,8 @@ export interface ReadyPr {
   // apply to this diff, rendered for the brief's {{REVIEW_CHECKLISTS}} field;
   // "" when none applies (Issue #3594).
   reviewChecklists: string;
+  // Pre-rendered, redacted and fenced PR-body criteria for {{CLOSURE_ENTRIES}}.
+  closureEntries: string;
   // What the code knows about that load: the problem that stopped it being
   // applied and the items a verdict is owed for. post.ts turns a problem or
   // an unreported item into a blocking finding, so a reply that ignores the
@@ -162,6 +168,7 @@ export interface RollupContextNode {
 export interface SearchPr {
   number: number;
   title: string;
+  body?: string;
   url: string;
   isDraft: boolean;
   mergeable: string;
@@ -597,7 +604,7 @@ query($q: String!, $after: String) {
   search(query: $q, type: ISSUE, first: 10, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes { ... on PullRequest {
-      number title url isDraft mergeable mergeStateStatus headRefOid baseRefName
+      number title body url isDraft mergeable mergeStateStatus headRefOid baseRefName
       autoMergeRequest { enabledAt }
       repository {
         nameWithOwner defaultBranchRef { name }
@@ -882,6 +889,7 @@ export async function pass(
         previousFindings: previousFindings(log, repo, pr.number),
         // No model review runs for an audit send-back, so no checklist.
         reviewChecklists: "",
+        closureEntries: "",
         checklistState: { problem: null, expected: [] },
         check: auditCheck,
         review: auditSendBack(auditCheck),
@@ -944,6 +952,7 @@ export async function pass(
       noTestAdded: noTestAdded(files, kind),
       previousFindings: previousFindings(log, repo, pr.number),
       reviewChecklists: renderChecklistSection(checklists, changed),
+      closureEntries: renderClosureEntriesSection(metClosureItems(pr.body ?? "")),
       checklistState: checklistState(checklists, changed),
     });
   }
