@@ -15,8 +15,8 @@ function run(prSummaryContent: string) {
 
 Deno.test("hard-wrapped key split from its value is read (pr-summary-3092 shape)", () => {
   const result = run(
-    "- **Docs sweep**: grep: reportSummaryRuleBlock, degraded-run guard,\n" +
-      "  assessDegradedDelivery; section:\n" +
+    "- **Docs sweep**: grep: `reportSummaryRuleBlock`, `degraded-run guard`,\n" +
+      "  `assessDegradedDelivery`; section:\n" +
       "  docs/workflows/issue-processing.md#️-a-degraded-run-never-closes-an-issue-as-complete;\n" +
       "  siblings: none — no existing set gained a member\n",
   );

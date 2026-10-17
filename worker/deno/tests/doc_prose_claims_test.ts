@@ -2,7 +2,14 @@
 // first-run claim check and the review-fix drift check (Issue #3347).
 // Uses Australian English throughout.
 
-import { assert, assertEquals, assertFalse, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertFalse,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
+import { collectDocProseScope } from "../lib/doc_prose_scope.ts";
 import {
   docProseClaimInstruction,
   isManualProsePath,
@@ -100,4 +107,151 @@ Deno.test("docProseClaimInstruction substitutes the change phrase", () => {
     assertFalse(s.includes("\n"));
     assertFalse(s.includes("  "));
   }
+});
+
+Deno.test("prose scope selects changed comments and unchanged attached headers, never code or strings", async () => {
+  const sources = {
+    "src/a.ts":
+      '/** Entries record only a. */\nexport interface Entry {\n  a: string;\n  b: string;\n}\nconst sample = "// not a comment";\n// Every value is accepted.\nrun();\n',
+    "src/run.sh": '# only one caller\necho "# not a comment"\n',
+    "src/run.rs": '// only one caller\nlet text = r#"// not a comment"#;\n',
+    "src/run.sql": "-- only one caller\nSELECT '-- not a comment';\n",
+    "tests/a_test.ts": "// must never be selected\n",
+  };
+  const scope = await collectDocProseScope({
+    changedFiles: Object.keys(sources),
+    trackedFiles: Object.keys(sources),
+    summaryContent: "",
+    diff: Object.keys(sources).map((p) => `+++ b/${p}\n@@ -0,0 +1,8 @@\n`).join(
+      "",
+    ),
+    readFile: async (p) => sources[p as keyof typeof sources],
+  });
+  assertStringIncludes(
+    scope.contents.get("src/a.ts")!,
+    "Entries record only a.",
+  );
+  assertStringIncludes(
+    scope.contents.get("src/a.ts")!,
+    "Every value is accepted.",
+  );
+  for (const text of scope.contents.values()) {
+    assertFalse(text.includes("not a comment"));
+    assertFalse(text.includes("run();"));
+    assertFalse(text.includes("a: string"));
+  }
+  assertEquals(scope.contents.has("tests/a_test.ts"), false);
+  assertEquals(scope.contents.size, 4);
+});
+
+Deno.test("prose scope follows named sections and source basenames into untouched manuals", async () => {
+  const files = new Map([
+    [
+      "src/gate.ts",
+      "/** Applies a gate. */\nexport function gate() {\n  third();\n}\n",
+    ],
+    [
+      "docs/config.md",
+      "# Configuration\n## Pre-flight gate\nThe gate runs at two points.\nEvery failure is refused.\n## Other\nUnrelated claim.\n",
+    ],
+    [
+      "docs/operator.md",
+      "# Operator\n## Invocation\n`gate.ts` never runs before a push.\n## Other\nNot selected.\n",
+    ],
+    ["docs/api.md", "# API\n## Contract\nThe exported gate always rejects.\n"],
+    ["docs/archive/old.md", "# Old\n`gate.ts` old claim.\n"],
+  ]);
+  const scope = await collectDocProseScope({
+    changedFiles: ["src/gate.ts"],
+    trackedFiles: [...files.keys()],
+    summaryContent:
+      "**Docs sweep** — section: docs/config.md pre-flight gate section; siblings: none — no member added",
+    diff: "+++ b/src/gate.ts\n@@ -2,0 +3,1 @@\n+third();\n",
+    readFile: async (p) => files.get(p),
+  });
+  assertStringIncludes(scope.contents.get("src/gate.ts")!, "Applies a gate.");
+  assertStringIncludes(
+    scope.contents.get("docs/config.md")!,
+    "The gate runs at two points.",
+  );
+  assertStringIncludes(
+    scope.contents.get("docs/config.md")!,
+    "Every failure is refused.",
+  );
+  assertFalse(
+    scope.contents.get("docs/config.md")!.includes("Unrelated claim"),
+  );
+  assertStringIncludes(
+    scope.contents.get("docs/operator.md")!,
+    "never runs before a push",
+  );
+  assertStringIncludes(
+    scope.contents.get("docs/api.md")!,
+    "The exported gate always rejects.",
+  );
+  assertFalse(scope.contents.has("docs/archive/old.md"));
+  const capped = await collectDocProseScope({
+    changedFiles: ["src/gate.ts"],
+    trackedFiles: [...files.keys()],
+    summaryContent: "",
+    diff: "+++ b/src/gate.ts\n@@ -2,0 +3,1 @@\n+third();\n",
+    readFile: async (p) => files.get(p),
+    sectionCap: 0,
+  });
+  assertFalse(capped.contents.has("docs/operator.md"));
+  assert(
+    capped.notChecked.some((s) =>
+      s.includes("docs/operator.md:2-3") &&
+      s.includes("not checked, never passed")
+    ),
+  );
+});
+
+Deno.test("prose scope bounds the issue's Configuration section and recognises multiline declaration parameters", async () => {
+  const files = new Map([
+    [
+      "src/gate.ts",
+      'import { run } from "./run.ts";\n/** This function runs only twice. */\nexport function gate(\n  opts: {\n    x: string;\n  },\n) {\n  run();\n  run();\n  run();\n}\n',
+    ],
+    [
+      "docs/CONFIGURATION.md",
+      "# Configuration\n## Pre-flight gate\nThe gate runs at two points.\n## Unrelated\nOld unrelated prose.\n",
+    ],
+  ]);
+  const scope = await collectDocProseScope({
+    changedFiles: ["src/gate.ts"],
+    trackedFiles: [...files.keys()],
+    summaryContent:
+      "**Docs sweep** — section: docs/CONFIGURATION.md pre-flight gate section; siblings: none — no member added",
+    diff: "+++ b/src/gate.ts\n@@ -9,0 +10,1 @@\n+run();\n",
+    readFile: async (p) => files.get(p),
+  });
+  assertStringIncludes(
+    scope.contents.get("src/gate.ts")!,
+    "This function runs only twice.",
+  );
+  assertEquals(
+    scope.ranges.filter((r) => r.file === "docs/CONFIGURATION.md").map((
+      r,
+    ) => [r.start, r.end]),
+    [[2, 3]],
+  );
+  assertFalse(
+    scope.contents.get("docs/CONFIGURATION.md")!.includes(
+      "Old unrelated prose.",
+    ),
+  );
+  const unreadable = await collectDocProseScope({
+    changedFiles: ["src/gate.ts"],
+    trackedFiles: ["src/gate.ts"],
+    summaryContent: "",
+    diff: null,
+    readFile: async () => undefined,
+  });
+  assertEquals(unreadable.contents.size, 0);
+  assert(
+    unreadable.notChecked.some((n) =>
+      n.includes("src/gate.ts") && n.includes("not checked, never passed")
+    ),
+  );
 });
