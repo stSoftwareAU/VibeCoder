@@ -55,6 +55,6 @@ flowchart TD
 - Drift-check wiring red checks, by line in `worker/deno/tests/pr_feedback_drift_check_3740_test.ts`: dropping the `uncheckedFigures` handoff → red at :242; dropping the residual spread → red at :295 and :417; dropping the render heading block → red at :295 and :394; skipping the fresh re-check after recovery → red at :350.
 - The growth test "hostile runs of the sentence-scope and added-tail checks grow linearly" cannot be made red by removing a cap, because the existing 200-character segment cap bounds the input before these checks run. It pins linear growth only.
 - `deno.lock` unchanged.
-- `./quality.sh < /dev/null`: see the commit's run.
+- `./quality.sh < /dev/null`: exit 0, every check PASSED; config integration SKIPPED (no `.config.json` in the worktree). A first run failed markdownlint MD018 on a rewrapped `#3750)` line in `docs/workflows/pr-feedback.md`, fixed by rewrapping.
 
 <!-- vibe-branch-outcomes -->
