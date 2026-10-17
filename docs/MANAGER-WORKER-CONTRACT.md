@@ -25,9 +25,9 @@ phases, except where they share the provider seam; the billing policy itself
 - **Vendor:** the company whose model is run (Anthropic, OpenAI, Google,
   DeepSeek).
 - **Provider CLI:** the program the worker spawns for one invocation. The four
-  are registered in `AGENT_PROVIDERS` (`worker/deno/lib/agent_provider.ts:1151`).
+  are registered in `AGENT_PROVIDERS` (`worker/deno/lib/agent_provider.ts:1154`).
   A provider CLI is not a vendor. The `deepseek` child environment points
-  `ANTHROPIC_BASE_URL` at DeepSeek's endpoint (`worker/deno/lib/deepseek_env.ts:157`),
+  `ANTHROPIC_BASE_URL` at DeepSeek's endpoint (`worker/deno/lib/deepseek_env.ts:166-167`),
   so the vendor and the CLI are different axes.
 - **Model:** the identifier passed to a provider CLI for one phase, such as
   `sonnet`, `haiku` or `opus` for Claude. The `issue` default is
@@ -59,35 +59,49 @@ relative to the repository root.
 | Reviewer definitions | `worker/deno/lib/issue_executor_agents.ts:208`, `:296` | Read-only tools `Read`, `Grep`, `Glob`; `buildIssueReviewerAgents`. |
 | Explorer definition | `worker/deno/lib/issue_executor_agents.ts:337`, `:374` | Haiku, read-only. Built only on the haiku tier (see assembly below). |
 | Assembly | `worker/deno/lib/issue_executor_agents.ts:420-434` | `buildIssueRunAgents` returns `undefined` when the split is off, reviewers are off and the tier is not haiku (`:424-426`). The explorer is added only on the haiku tier (`:434`). |
-| Phase wiring | `worker/deno/lib/execute_claude_phase.ts:1266-1295` | Resolves the split, then the tier (the `"sonnet"` fallback at `:1286` applies only when no option is passed), then calls `buildIssueRunAgents` at `:1295`. |
+| Phase wiring | `worker/deno/lib/execute_claude_phase.ts:1266-1302` | Resolves the split (`:1278-1282`), then the tier (the `"sonnet"` fallback at `:1287` applies only when no option is passed), then calls `buildIssueRunAgents` at `:1296`. |
 | Edit guard | `worker/deno/lib/issue_executor_enforcement.ts:47`, `:58`, `:124`, `:138` | Guarded tools are `Edit` and `Write`. A call with `agent_id` present (an executor) is allowed; a call without it (the advisor) is denied. |
 | Hook settings | `worker/deno/lib/issue_executor_enforcement.ts:205`, `:240` | `buildIssueExecutorHookSettings` and `resolveIssueExecutorHookSettings` build the `--settings` payload. |
 | Guard CLI | `worker/deno/lib/issue_edit_guard_cli.ts:46` | `runIssueEditGuard` is the hook entry point. |
-| Flag delivery | `worker/deno/lib/agent_provider.ts:593`, `:614-615`, `:619-620`, `:635-636` | `buildClaudeCliArgs` emits `--agents` JSON, and `--settings` at two places. The `--settings` argument is emitted twice when `settingsJson` is set. This is recorded here and not fixed by this change. |
-| Descriptor | `worker/deno/lib/agent_provider.ts:365`, `:373`, `:395`, `:410`, `:431`, `:444`, `:506`, `:515` | The `AgentProviderDescriptor` fields: `agents`, `settingsJson`, `promptTransport`, `buildInvocation`, `buildChildEnv`. |
+| Flag delivery | `worker/deno/lib/agent_provider.ts:595` (`buildClaudeCliArgs`), `:617-618`, `:622-623`, `:638-639` | `buildClaudeCliArgs` emits `--agents` JSON (`:617-618`), and `--settings` at two places (`:622-623`, `:638-639`). The `--settings` argument is emitted twice when `settingsJson` is set. This is recorded here and not fixed by this change. |
+| Descriptor | `worker/deno/lib/agent_provider.ts:373` (`agents`), `:412` (`settingsJson`), `:446` (`promptTransport`), `:508` (`buildInvocation`), `:517` (`buildChildEnv`) | The `AgentProviderDescriptor` fields. |
 
 Per-provider behaviour, from the same file:
 
-- **Claude:** `promptTransport` is `"stdin"` (`agent_provider.ts:717`). Its
-  `buildInvocation` is at `:745` and `buildChildEnv` at `:758`, which calls
+- **Claude:** `promptTransport` is `"stdin"` (`agent_provider.ts:720`). Its
+  `buildInvocation` is at `:748` and `buildChildEnv` at `:761-762`, which calls
   `buildClaudeChildEnv` (`worker/deno/lib/claude_env.ts:228`).
-- **Codex:** `promptTransport` is `"stdin"` (`:850`). `buildInvocation` (`:867`)
-  calls `buildCodexArgs` (`:890`) and carries no `agents` or `settingsJson`.
-  `buildChildEnv` (`:913`) uses `buildCodexChildEnv` (`worker/deno/lib/codex_env.ts:90`).
-- **Gemini:** `promptTransport` is `"argv"` (`:970`). `buildInvocation` (`:985`)
-  calls `buildGeminiArgs` (`:987`) and carries no `agents` or `settingsJson`.
-  `buildChildEnv` (`:1003`) uses `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`).
-- **DeepSeek:** `promptTransport` is `"stdin"` (`:1064`). `buildInvocation`
-  (`:1100`) removes `agents` and `settingsJson` (`:1117`). It warns only for
-  `agents`, through `warnDeepSeekAgentsUnsupported` (`:1118`,
+- **Codex:** `promptTransport` is `"stdin"` (`:853`). `buildInvocation` (`:870`)
+  calls `buildCodexArgs` (`:893`, defined at `worker/deno/lib/codex_executor.ts:343`)
+  and carries no `agents` or `settingsJson`. `buildChildEnv` (`:916`) calls
+  `buildIsolatedCodexChildEnv` (`worker/deno/lib/codex_env.ts:116`), which calls
+  `buildCodexChildEnv` (`worker/deno/lib/codex_env.ts:90`).
+- **Gemini:** `promptTransport` is `"argv"` (`:973`). `buildInvocation` (`:988`)
+  calls `buildGeminiArgs` (`:990`, defined at `worker/deno/lib/gemini_executor.ts:251`)
+  and carries no `agents` or `settingsJson`. `buildChildEnv` (`:1006`) uses
+  `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`).
+- **DeepSeek:** `promptTransport` is `"stdin"` (`:1067`). `buildInvocation`
+  (`:1103`) destructures out `agents` and `settingsJson` (`:1120`). `agents`
+  triggers `warnDeepSeekAgentsUnsupported` (`:1121`,
   `worker/deno/lib/deepseek_executor.ts:253`). `settingsJson` is dropped
-  silently (`:1129`). `buildChildEnv` (`:1135`) uses `buildDeepSeekChildEnv`
-  (`worker/deno/lib/deepseek_env.ts:157`).
+  silently, with `settingsJson: undefined` at `:1132`. `buildChildEnv` (`:1138`)
+  uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:157`).
 
-DeepSeek strips both `agents` and `settingsJson`
-(`worker/deno/lib/agent_provider.ts:1117-1118`). It warns only for `agents`,
-through `warnDeepSeekAgentsUnsupported`, and drops `settingsJson` silently
-(`worker/deno/lib/agent_provider.ts:1129`).
+Prompt templates. The advisor and executor instructions are built in code, and
+the template carries only a placeholder.
+
+- The block is `ISSUE_EXECUTOR_SPLIT_INSTRUCTIONS`
+  (`worker/deno/lib/issue_executor_split_prompt.ts:27`).
+- `buildPrompt` splices it into `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` when the split
+  is on, and renders the empty string otherwise
+  (`worker/deno/lib/prompt_builder.ts:718-728`, `:782`, `:832-834`).
+- It warns when a split run's template lacks the placeholder (`prompt_builder.ts:845-856`).
+- The placeholder is optional for the `issue` template
+  (`worker/deno/lib/prompt_manager.ts:259-270`, `:267`).
+- The shipped template carries it at `prompts/issue/prompt.md:405`. A
+  case-insensitive grep of `prompts/` for `executor` finds no other advisor or
+  executor instruction text. `prompts/coding_guidelines/prompt.md:72` names the
+  section only.
 
 Lifecycle entry points are covered in section 5.
 
@@ -196,9 +210,9 @@ from the claim through the advisor and its sub-agents to the result.
 
 ```mermaid
 flowchart LR
-  A["Claim the issue<br/>claim_issue.ts:1240"] --> B["Phase options<br/>execute_claude_phase.ts:1266-1295"]
+  A["Claim the issue<br/>claim_issue.ts:1240"] --> B["Phase options<br/>execute_claude_phase.ts:1266-1302"]
   B --> C["buildIssueRunAgents<br/>issue_executor_agents.ts:420"]
-  C --> D["buildClaudeCliArgs<br/>agent_provider.ts:593"]
+  C --> D["buildClaudeCliArgs<br/>agent_provider.ts:595"]
   D --> E["claude CLI<br/>--agents and --settings"]
   E --> F["Advisor, no agent_id<br/>Edit and Write denied"]
   E --> G["Executor or reviewer<br/>agent_id present"]
@@ -216,8 +230,15 @@ Supporting lifecycle code, each cited from the file it lives in:
   `createClaimLeaseRenewer` cover the lease used by PR review.
 - `worker/deno/lib/stream_compaction.ts:67-70` lists the compactable
   providers (`claude` and `deepseek` only). `:160` is `supportsCompaction`.
-- `worker/deno/lib/session_resume.ts:132` `recordPhaseCompletion`, `:216`
-  `buildSessionResumeArgs` and `:233` `sessionResumeForProvider` cover resume.
+- **Session persistence and resume.** `worker/deno/lib/session_resume.ts:132`
+  `recordPhaseCompletion` increments the phase count on a session-state record
+  (called from `worker/deno/lib/planning_processor.ts:1872`). `:216`
+  `buildSessionResumeArgs` returns the `--resume` or `--session-id` arguments.
+  `:233-247` `sessionResumeForProvider` filters the stored state to the calling
+  provider. A state tagged with another `providerId` is dropped (`:238`). An
+  untagged legacy state is kept only for `claude` or `deepseek` (`:239-245`).
+  DeepSeek calls it at `worker/deno/lib/agent_provider.ts:1125-1128`. Compaction
+  is a separate path (`stream_compaction.ts:67-70`, see section 7).
 
 ### Target
 
@@ -284,7 +305,7 @@ stateDiagram-v2
     deletes `OPENAI_API_KEY`, `CODEX_API_KEY` and `CODEX_HOME`, and fails closed
     when a Codex home is selected.
   - DeepSeek: `ANTHROPIC_AUTH_TOKEN` is set only from `DEEPSEEK_API_KEY`
-    (`worker/deno/lib/deepseek_env.ts:157`).
+    (`worker/deno/lib/deepseek_env.ts:172-173`).
   - Gemini: `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`) delegates to
     `buildAgentChildEnv` with a Gemini denylist and secret allowlist.
 - **The gap today.** The edit guard exists only for Claude. Codex and Gemini
@@ -299,20 +320,40 @@ Compatibility with the split switched on. "Silent" means no warning is logged.
 
 | Provider | Prompt transport | `--agents` | `--settings` (edit guard) | `supportsCompaction` | Behaviour with split on |
 | --- | --- | --- | --- | --- | --- |
-| `claude` | stdin (`agent_provider.ts:717`) | Emitted (`:614-615`) | Emitted (`:619-620`) | Yes (`stream_compaction.ts:67-70`) | Executors defined; edit guard active. |
-| `codex` | stdin (`:850`) | Not carried, silent | Not carried, silent | No | No executor definitions; no edit guard. |
-| `gemini` | argv (`:970`) | Not carried, silent | Not carried, silent | No | No executor definitions; no edit guard. |
-| `deepseek` | stdin (`:1064`) | Stripped, warned (`:1117-1118`) | Stripped, silent (`:1117`, `:1129`) | Yes | No executor definitions; warning for `agents` only. No edit guard. |
+| `claude` | stdin (`agent_provider.ts:720`) | Emitted (`:617-618`) | Emitted (`:622-623`) | Yes (`stream_compaction.ts:67-70`) | Prompt block renders; executors defined; edit guard active. |
+| `codex` | stdin (`:853`) | Not carried, silent | Not carried, silent | No | Prompt block renders; no executor definitions; no edit guard. |
+| `gemini` | argv (`:973`) | Not carried, silent | Not carried, silent | No | Prompt block renders; no executor definitions; no edit guard. |
+| `deepseek` | stdin (`:1067`) | Stripped, warned (`:1120-1121`) | Stripped, silent (`:1120`, `:1132`) | Yes | Prompt block renders; no executor definitions; warning for `agents` only. No edit guard. |
 
-Unconfirmed for every non-Claude row: whether the advisor/executor prompt block
-renders on that provider. The block renders from the split switch and is not
-checked against the provider here.
+**The prompt block renders on every provider (confirmed).** The advisor/executor
+block is not gated on the provider. `isIssueExecutorSplitEnabled` takes the
+phase, repo and host config only (`worker/deno/lib/issue_executor_split.ts:42-59`).
+Both phase paths call it with no provider argument
+(`worker/deno/lib/execute_claude_phase.ts:1278-1282`,
+`worker/deno/lib/phases/execute_phase.ts:662-666`) and pass the result to
+`buildPrompt` (`execute_claude_phase.ts:1338`, `phases/execute_phase.ts:726-727`).
+`prompt_builder.ts:832-834` splices the block whenever it is true. The only
+provider check is `worker/deno/lib/claude_runner.ts:1211`, which gates the
+`--settings` hook and nothing else. The `agents` request still reaches every
+provider's `buildInvocation` (`worker/deno/lib/claude_runner.ts:1217`), where the
+Codex, Gemini and DeepSeek rows above drop it. On those three providers the
+advisor is therefore told to dispatch `executor` sub-agents that the CLI never
+defines. This is a known gap, recorded beside the silent-drop gap in section 6.
+No code change in this PR.
 
 ## 8. Rollout and safeguards
 
-- **Flags.** `issue_executor_split` (repo and host), `issue_sub_agent_tier`
-  (`haiku` or `sonnet`, with a repo override) and `issue_reviewer_agents` (host
-  only). See [Configuration Reference](CONFIGURATION.md), rows for these keys.
+- **Flags.** Each key is read host-wide, and a repository can override some of
+  them.
+  - `issue_executor_split`: host value `worker/deno/lib/config.ts:976-977`; a
+    `repo_config` boolean overrides it (`worker/deno/lib/issue_executor_split.ts:49-51`).
+  - `issue_sub_agent_tier` (`haiku` or `sonnet`): host value read through
+    `resolveHostIssueSubAgentTier` (`worker/deno/lib/config.ts:981-983`,
+    `worker/deno/lib/issue_sub_agent_tier.ts:43`); the repo override is applied
+    by `resolveIssueSubAgentTier` (`worker/deno/lib/issue_sub_agent_tier.ts:72`).
+  - `issue_reviewer_agents`: host only (`worker/deno/lib/config.ts:986-987`).
+
+  See [Configuration Reference](CONFIGURATION.md), rows for these keys.
 - **Invariant (target).** A provider that cannot carry the contract fails loud
   when the split is on. It is refused before any sub-agent starts, and the run
   reports why. This is a behaviour change and is not part of this document's
