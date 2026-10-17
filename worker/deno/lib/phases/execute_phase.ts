@@ -12,6 +12,9 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { redactSecrets } from "../secret_redaction.ts";
+import { activateLifecycleAssignment } from "../lifecycle_recording.ts";
+
 import type { IssueSubAgentTier, Logger } from "../../types.ts";
 import { browserGranted } from "../browser_grant.ts";
 import {
@@ -60,7 +63,12 @@ import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { saveResumeState } from "../resume_state_store.ts";
 import { handOnStreamSession } from "../stream_session.ts";
 import { recordStreamHolderForRun } from "../stream_holder.ts";
-import { resolveFleetAuthors } from "../fleet_authors.ts";
+import {
+  resolveFleetAuthors,
+  resolveFleetMaintenanceAuthorSet,
+} from "../fleet_authors.ts";
+import { issueRunRoleTreatments } from "../issue_assignment.ts";
+import { selectAgentProvider } from "../agent_provider.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
 import {
   buildInterruptedWipCommitMessage,
@@ -495,6 +503,63 @@ async function executeWithFreshSessionFallback(
   delete state.autocompactTokens;
   state.claudeOutput = "";
   return await executeWithFreshSessionFallback(ctx, state, deps);
+}
+
+/**
+ * Record this run's lifecycle assignment on the host ledger (Issue #3718).
+ *
+ * Called before the first agent invocation by design: the assignment event
+ * must exist before the billed work it describes. Telemetry must not stop the
+ * work, so a failure is logged at error level, naming what was not recorded
+ * and the error, and the run carries on without it.
+ */
+async function recordRunAssignment(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+  agents: ReturnType<typeof buildIssueRunAgents>,
+): Promise<void> {
+  const { repo, issueNumber, config } = ctx;
+  try {
+    const trustedAuthors = resolveFleetMaintenanceAuthorSet({
+      githubUser: ctx.githubUser,
+      fleetPrAuthors: config.fleetPrAuthors,
+      serviceAccounts: config.serviceAccounts,
+    });
+    const roles = issueRunRoleTreatments({
+      provider: selectAgentProvider(),
+      claudeModel: config.claudeModel || undefined,
+      agents,
+    });
+    const assignment = await deps.infrastructure.recordIssueAssignment({
+      workDir: config.workDir,
+      repo,
+      issueNumber,
+      trustedAuthors,
+      roles,
+      ...(config.subscriptionAllocationLabel
+        ? { subscriptionAllocation: config.subscriptionAllocationLabel }
+        : {}),
+    });
+    state.assignmentId = assignment.assignmentId;
+    activateLifecycleAssignment(assignment.assignmentId);
+    deps.logger.info(
+      `Lifecycle assignment ${assignment.assignmentId} for ${repo}#${issueNumber} ` +
+        `(cohort ${assignment.cohort}, ${
+          assignment.reused ? "reused" : "minted"
+        }) (Issue #3718)`,
+      { repo, issueNumber },
+    );
+  } catch (error) {
+    activateLifecycleAssignment("unknown");
+    const message = error instanceof Error ? error.message : String(error);
+    deps.logger.error(
+      `Could not record the lifecycle assignment for ${repo}#${issueNumber}: ` +
+        `this run's assignment was not recorded, and the run continues ` +
+        `(Issue #3718). Error: ${redactSecrets(message)}`,
+      { repo, issueNumber },
+    );
+  }
 }
 
 /** Single-attempt execute-phase body — see `workOnIssueExecuteClaude`. */
@@ -1081,6 +1146,12 @@ async function executeClaudeBody(
       }
     }
   };
+
+  // Lifecycle assignment (Issue #3718): recorded before the first agent
+  // invocation by design, so the event exists before any billed work it
+  // describes. It sits after every early exit, so only a run that actually
+  // invokes the agent records one.
+  await recordRunAssignment(ctx, state, deps, issueRunAgents);
 
   let claudeResult = await invokeAgent(executeTimeoutSeconds);
   /** What the usage-limit checkpoint preserved, when one ran (Issue #1670). */

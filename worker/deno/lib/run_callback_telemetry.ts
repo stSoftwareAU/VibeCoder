@@ -165,3 +165,52 @@ export function callbackTelemetryAbsenceReason(
   }
   return "usage_not_reported";
 }
+
+/** Per-invocation pricing from the same attribution and rate table as totals (Issue #3719). */
+export function breakdownInvocationTelemetry(
+  invocation: TelemetrySource,
+  role: import("./lifecycle_ledger.ts").LifecycleRole,
+  provider?: string,
+): import("./lifecycle_ledger.ts").InvocationTelemetry {
+  const stats = invocation.runStats;
+  if (!stats?.tokenUsage) {
+    return {
+      usage: "unknown",
+      telemetryAbsentReason: callbackTelemetryAbsenceReason(
+        [invocation],
+        provider,
+      ),
+      pricing: "unknown",
+    };
+  }
+  const main = stats.servedModels[0] ?? stats.requestedModel;
+  const entries = attributeUsageByModel(
+    stats.tokenUsage,
+    stats.modelUsage,
+    main,
+  );
+  const estimate = estimateRunCost(entries);
+  if (entries.length === 0) {
+    return {
+      usage: "unknown",
+      telemetryAbsentReason: "usage_not_reported",
+      pricing: "unknown",
+    };
+  }
+  return {
+    usage: "known",
+    pricing: estimate.hasUnknownPricing ? "unknown" : "known",
+    ...(estimate.hasUnknownPricing
+      ? {}
+      : { estimatedApiEquivalentUsd: estimate.totalCost }),
+    models: estimate.perModel.map((item) => ({
+      model: item.model,
+      role: item.model === main ? role : "sub-agent (unattributed)",
+      tokens: item.usage,
+      pricing: item.breakdown === null ? "unknown" : "known",
+      ...(item.breakdown === null
+        ? {}
+        : { estimatedApiEquivalentUsd: item.breakdown.totalCost }),
+    })),
+  };
+}
