@@ -89,7 +89,7 @@ import {
   codexAuthActionableMessage,
   isCodexAuthError,
 } from "./codex_auth.ts";
-import { resolveCodexAuthMode, resolveCodexHome } from "./codex_auth_mode.ts";
+import { resolveCodexAuthMode } from "./codex_auth_mode.ts";
 import {
   buildGeminiArgs,
   resolveGeminiEffort,
@@ -277,7 +277,9 @@ export interface AgentProviderBilling {
    * persistent ChatGPT login under `CODEX_HOME`. Consulted before the
    * declared metered variables, so a provider whose CLI gives an API key
    * precedence can say so. Absent means the declared variables are the only
-   * proof; `undefined` means this probe proved nothing.
+   * proof; `undefined` means this probe proved nothing. The probe must read
+   * only the home the child is actually given, so a provider whose child
+   * gets no home may answer `undefined` rather than guess one.
    */
   resolveStoredBilling?(
     context: AgentProviderBillingContext,
@@ -793,43 +795,31 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
   // Fixed-price subscription vs metered spend (Issue #1923). No environment
   // variable carries a ChatGPT subscription: it lives in the auth state the
   // CLI persists under CODEX_HOME, so the proof is a probe rather than a
-  // name. `resolveCodexAuthMode` gives an environment API key precedence,
-  // exactly as the CLI does, so the probe answers metered in that case.
+  // name. The probe reads only an EXPLICIT CODEX_HOME (Issue #3955): that is
+  // the one home `buildIsolatedCodexChildEnv` gives the child. Without it the
+  // child gets no home, the CLI falls back to $HOME/.codex, which the worker
+  // never probes, so the answer comes from the metered-key check instead.
   billing: {
     subscriptionEnvVars: [],
     meteredEnvVars: CODEX_API_KEY_ENV_VARS,
     resolveStoredBilling(context) {
-      const home = resolveCodexHome(context.workDir, context.env);
-      if (!home) return undefined;
-      // Classify the way `buildChildEnv` above actually builds the child, or
-      // the two drift apart and the run is told the wrong billing mode.
-      // `buildIsolatedCodexChildEnv` honours an **explicit** CODEX_HOME: it
-      // hands that directory to the child and withholds OPENAI_API_KEY /
-      // CODEX_API_KEY, so a persisted ChatGPT login is what the run spends
-      // even when a metered key sits in the worker's own environment —
-      // asking `resolveCodexAuthMode` with no environment is what says so.
-      // Without an explicit CODEX_HOME those keys do reach the child, so
-      // there the environment keeps its precedence.
       const explicitHome = (context.env(CODEX_HOME_ENV_VAR) ?? "").trim();
-      const modeEnv: EnvLookup = explicitHome ? () => undefined : context.env;
-      const { mode, source, detail } = resolveCodexAuthMode(home, modeEnv);
+      if (!explicitHome) return undefined;
+      // An explicit CODEX_HOME withholds OPENAI_API_KEY / CODEX_API_KEY from
+      // the child, so the environment is not consulted here: a persisted
+      // ChatGPT login is what the run spends even when a metered key sits in
+      // the worker's own environment.
+      const { mode, source, detail } = resolveCodexAuthMode(
+        explicitHome,
+        () => undefined,
+      );
       if (mode === "chatgpt") {
         return { mode: "fixed-subscription", reason: "codex-chatgpt-login" };
       }
       if (mode === "api-key") {
-        // Name the credential that is actually in play. An unattended
-        // operator reads this reason to know what to change, so reporting
-        // OPENAI_API_KEY for a key held in CODEX_API_KEY — or in auth.json,
-        // where no variable is set at all — sends them to the wrong place.
-        const variable = source === "env"
-          ? CODEX_API_KEY_ENV_VARS.find(
-            (name) => (context.env(name) ?? "").trim().length > 0,
-          )
-          : undefined;
-        return {
-          mode: "metered",
-          reason: variable ?? "codex-auth-json-api-key",
-        };
+        // With the environment withheld, a key can only come from auth.json,
+        // where no variable is set at all.
+        return { mode: "metered", reason: "codex-auth-json-api-key" };
       }
       if (source === "read-error") {
         // A login that cannot be read is a fault, not an absent login. Say
