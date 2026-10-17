@@ -68,6 +68,22 @@ fail. Fresh per-render boundaries, criteria placement, the external instruction,
 and empty/no-met bodies are covered. No existing assertion was removed.
 Main through `6effe8f3` is included; full CI remains required.
 
+Review 5557514840 exposed cross-entry scrubbing: a forged BEGIN marker changed
+the next entry's `content`, and a private-key header consumed the later entry.
+Two new regressions failed against the joined-block scrub (26 passed, 2 failed).
+The renderer now scrubs each criterion separately, as matching does, then puts
+the already-scrubbed lines inside one fresh shared boundary without scrubbing
+them again. Both regressions copy the actual displayed lines, assert that each
+entry remains independently rendered and check that `met` verdicts cover them.
+The 11 focused closure, verifier, fleet, brief, completion and manual-claim
+suites passed 285 tests, then 292 after integrating current main; lint and
+formatting pass for the touched TypeScript. No existing assertion was removed.
+Main through `a4ce4146` is included, retaining PR #3894's correction/hold changes
+and the subsequent main updates to them, with the completion/correction code
+and tests identical to main. The earlier-findings regression is preserved.
+Full CI is still required; no new local full
+quality-gate pass is claimed.
+
 ```mermaid
 flowchart LR
     S[PR summary] -->|parseClosureEntries, met only| M[metClosureItems]
@@ -91,8 +107,7 @@ flowchart LR
 - Retain `runPrePrVerifier: earlier findings need complete fixed verdicts even when findings is empty` unchanged from the target branch. It checks that omitted and partial earlier-finding verdicts block, and a complete fixed verdict passes; the closure fixes do not replace this regression coverage.
 
 - `review_fleet_prs_checklists_3594_test.ts`: `gate: closure criteria are fenced data in the fleet reviewer brief` exercises the real gate output and outbound search request; `gate: no met closure entries gives an empty fleet section` covers empty and partial-only bodies. Existing helper defaults remain empty and existing checklist assertions stay unchanged. Related rules checked: the shared brief, the worker renderer and the skill's existing field-fill instructions; the fleet now copies the shared renderer's output rather than maintaining a second rule. Applying the rule to this diff found no remaining raw-criteria fill instruction.
-
-- New tests in `worker/deno/tests/closure_met_check_3766_test.ts` (25 tests) cover:
+- Tests in `worker/deno/tests/closure_met_check_3766_test.ts` (28 tests) cover:
   - extraction, de-duplication, neutralising and clipping
   - each trailing separator kind
   - linear growth on hostile separator runs (`assertLinearGrowth`)

@@ -461,7 +461,7 @@ function rollupStateToCiStatus(
  * @param rollupState - GitHub's aggregate `statusCheckRollup.state`, when the
  *   GraphQL path supplied one; `null` on the REST fallback path
  */
-function determineCiStatus(
+export function determineCiStatus(
   checkRuns: CheckRunsResponse,
   combinedStatus: CombinedStatusResponse,
   rollupState: string | null = null,

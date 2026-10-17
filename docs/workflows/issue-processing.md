@@ -1220,10 +1220,12 @@ raised. The agent dispatches nothing for it.
   reply without the array counts as no verdicts, and a malformed array entry
   is dropped rather than failing the reply, so it counts as no verdict while the
   reply's other findings stay), whatever the model's own findings say. Matching
-  applies the fence's delimiter scrub and secret redaction to both the stored
-  criterion and the verifier's copy, so faithfully copying the displayed text
-  still matches. It ignores all leading list numbers (`1.` or `1)`, followed by
-  whitespace), including a criterion's own numbering, before clipping, so
+  applies delimiter scrubbing and secret redaction to each criterion separately,
+  both when rendering inside the shared fence and when matching the stored
+  criterion against the verifier's copy. No scrub runs across the joined entries,
+  so one criterion cannot rewrite or hide a later entry and faithfully copying
+  the displayed text still matches. It ignores all leading list numbers (`1.` or
+  `1)`, followed by whitespace), including a criterion's own numbering, before clipping, so
   displayed numbering cannot turn a complete verdict into a missing one. The
   listed criteria are agent-written text copied from the issue, so they are
   rendered inside the prompt's untrusted fence and named in its
@@ -2040,12 +2042,31 @@ place. If the file changes at or after the line where that literal opened,
 every assertion-shaped line of the old side from that line on is reported.
 A copy on such a new side from that line on cannot vouch for a move.
 
-Each remaining removed assertion must appear, ignoring whitespace, in the
-Test Plan section; otherwise PR creation is blocked and the notice lists
-every unaccounted assertion. The gate checks only that the assertion is
-named — whether the stated requirement truly makes it untrue is left to the
-Standards reviewer, whose brief now asks it to list every assertion the diff
-removes from an existing test and return a `violation` for any that has none.
+Each remaining removed assertion must appear, ignoring whitespace, in its
+own Test Plan list entry. The entry carries exactly one structured reason:
+
+- `Required by: "<quote>"` quotes at least 5 words verbatim from the linked
+  issue's title or body (not comments), ignoring whitespace wrapping. The
+  quote must occur within one of those fields, not across their boundary.
+- `Moved to: <path>` names a file where the same canonical assertion occurs
+  on added lines, with its guards, skips and early exits preserved. The
+  existing scanner still exempts safe moves; any explicit move claim is
+  checked, and a surviving copy cannot account for multiple removals.
+
+A replacement also carries `Replaced by:` with each new assertion in inline
+code. Every named replacement must be added in the same test file as the
+removed assertion. Whether an added assertion replaces a removed one is
+reviewed semantically; an unrelated new test in that file does not establish
+a replacement. A missing or fabricated reason, a wrong destination, or a
+named replacement absent from the added lines blocks PR creation
+(Issue #3739). Reasons on another
+list entry cannot justify a removal. The Standards reviewer still judges
+whether a quoted requirement actually makes the old assertion untrue, and
+identifies replacements from the diff even when `Replaced by:` is omitted.
+A missing replacement entry is a `violation`; comparing each pair also
+returns a `violation` when a value the old assertion checked is no longer
+checked anywhere.
+
 When the test-file patch itself cannot be read, or it reaches the
 8,000,000-character read cap, only the heading rule applies and a warning
 is logged. The patch is not scanned after a silent cut.
@@ -2066,7 +2087,7 @@ flowchart TD
   B -->|No| X["Block PR"]
   B -->|Yes| C["Any assertion edited, deleted, or re-added under a new guard, skip or exit?"]
   C -->|No| Z
-  C -->|Yes| D["Each named in the Test Plan?"]
+  C -->|Yes| D["Each named with a verified reason and replacement evidence?"]
   D -->|Yes| Z
   D -->|No| X
   style Z fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
@@ -2267,68 +2288,91 @@ takes the one recovery turn, then a further block fails the run (or
 finalises an existing PR as `summary_incomplete`). The claim check runs again
 on the re-run after that turn either way.
 
-**Changed manuals and prompts (Issue #3347).** The one read-only model question
-also covers the manual and prompt files among the branch's changed files (the
-completion phase's `git diff --name-only <base>...HEAD` list, so committed
-changes), up to 20 of them. A file qualifies when
-[`isManualProsePath`](../../worker/deno/lib/doc_prose_claims.ts) accepts it: a
-Markdown path outside `docs/archive/pr-summaries/` that is not a PR summary, a
-test file or a worker state file, and has a safe relative shape. For each, the
-shared question (`docProseClaimInstruction`) asks the model to check only the
-lines the change adds or edits, and only the sentences that say when the new
-behaviour happens, what it refuses, rejects, allows or skips, or that use an
-absolute word ("only", "never", "always", "any", "every", "all", "each",
-"automatically") or a counted or closed list. It opens the head code that
-decides each one (the branch condition, the callers, the list the sentence
-names) and reports the sentence, quoted verbatim, when that code contradicts
-it, naming the contradicting `file:line`. Files past the cap are logged at error
-level and recorded as not checked; a changed file deleted on the branch is
-skipped; one that cannot be read is recorded as not checked. If the
-changed-files list itself could not be read, the doc part is recorded as not
-checked (an error log) and the summary is still questioned. A doc finding is
-confirmed only when it names one of those files and its sentence is found in
-that file's current text; it goes into a separate `docFindings` list and blocks
-like any other claim-check finding, through the same summary-rule block. The
-gate comment names the file and asks for that sentence to be rewritten in that
-file to say what the head code does, or removed — "not the code".
-GRQ-AutoTrader#2609, #2685 and #2699 and VibeCoder#3308 each shipped a manual or
-prompt sentence about the PR's own new behaviour that the head code
-contradicted, after #3120 and #3232 had asked for this care in prose only.
+**Prose affected by the change (Issues #3347, #3715, #3731).** The one
+read-only model question also covers added or edited lines in manual/prompt
+Markdown outside `docs/archive/pr-summaries/`, excluding summaries and tests.
+For changed source files recognised by `isProseSourcePath`, the shared lexer
+selects comment text, excluding executable code and string literals: changed
+comments, module headers, and doc comments attached to changed declarations.
+The recognised extensions cover JavaScript/TypeScript, Rust, shell, Python,
+Ruby, C/C++, Java, Go, C# and SQL; other source formats are outside this scope.
+The question explicitly asks for a grep of the whole head tree when a claim
+names a set without one authoritative list, such as signal senders, result
+readers or files a command reads.
 
-**Issue #3324.** A later block where the claim check is the only gate still
-failing — reached only once every earlier summary gate has passed, and every
-finding it confirmed is in the summary itself — instead gets one summary-only
-correction turn before the ordinary recovery path even
-applies: the claim gate's comment and the current summary, fenced as
-untrusted data, go to a fresh agent invocation with file-writing tools and
-`Bash` denied (`Read`/`Grep`/`Glob` stay), which must reply with the complete
-corrected summary between `<!-- vibe-corrected-summary -->` markers. The
-worker writes only the summary file from that reply, commits it, re-runs the
-quality gate, then re-runs completion; every sentence the claim check had
-confirmed wrong that is still in the summary is carried forward as a finding,
-so a re-run model pass that misses it, or cannot run at all, does not wave it
-through — it blocks exactly as before. A launch failure, an unreadable reply
-or an unchanged summary writes nothing and re-runs completion, which then
-blocks on the carried-forward finding. Two incidents motivated it:
-VibeCoder#3310, where the one in-run recovery turn received several
-`---`-separated gate notices folded together and fixed only one of them, and
-VibeCoder#3322, where the claim check found its wrong sentence only on the re-run
-after recovery — the run's second block, spent with no correction turn left.
-A claim-check block folded with another gate on a later attempt is not this
-case and gets no correction turn — the ordinary recovery (or its absence)
-applies. Neither does a block carrying a doc finding (Issue #3347): the turn can
-only rewrite the summary file, so that block takes the ordinary path (fails the
-run, or finalises an existing PR as `summary_incomplete`).
-A pre-PR verifier block on that same attempt is not folded into the
-correction turn: the claim gate returns first, so the verifier is gated again
-on the re-run that follows.
+The same scope builder, `doc_prose_scope.ts`, adds unchanged manual sections:
+the heading-bounded section named by the summary's Docs sweep `section:` field,
+and sections mentioning a changed source path, basename or exported
+declaration. These extra sections can be in untouched manuals, but never
+under `docs/archive/`. A named parent heading includes its subsections; a
+source-reference match ends at the next heading. The model asks whether
+**this change** makes the sentence false, not whether it was always right.
+Sentences the head still agrees with are not findings.
+
+The combined prose scope is capped at 20 files and the extra manual scope at
+40 sections. The prompt lists selected paths and line ranges inside its
+untrusted-data boundary. Files/sections past a cap, unreadable tracked files,
+unavailable diffs and unterminated source literals/comments are recorded as
+not checked, never passed. The first-run check logs these at error level; the
+review-fix check logs them at warning level. A deleted file has no prose to
+check. If the changed-file list itself is unavailable, the summary is still
+questioned and its prose extension is recorded as not checked.
+
+`docProseClaimInstruction` retains the trigger classes: when behaviour
+happens, what it refuses, rejects, allows or skips, absolute words, and counted
+or closed lists. A reported contradiction quotes the sentence verbatim and
+names the contradicting head `file:line`. Confirmed findings go through the
+existing summary-rule recovery path. First-run `docFindings` carry the
+manual/comment findings separately from summary findings. Markdown findings
+can use the sentence correction below; source comments stay on the ordinary
+recovery and hold path, without granting the narrow turn source-code writes.
+The review-fix check uses the same scope and does not send an unconfirmed
+source/prose finding to its recovery turn. Neither check becomes a general
+manual audit.
+
+**Issues #3324 and #3865.** A later block where the claim check is the only
+earlier summary gate still failing gets one narrow correction turn. This
+covers summary sentences and confirmed `docFindings` in selected manuals or
+prompts, including the affected unchanged sections. A block containing a source
+comment finding follows the ordinary recovery and hold path. File-writing
+tools and `Bash` are denied; `Read`/`Grep`/`Glob` remain available to inspect
+the head code.
+
+The model reads the original files by path; fenced findings are scrubbed
+evidence, never the editable source. When findings are summary-only, the model
+returns the corrected summary between `<!-- vibe-corrected-summary -->`
+markers. When manual or prompt findings are present, it returns an indexed
+replacement string for each
+flagged sentence, including any summary findings in that same block. The
+worker locates each flagged span with the claim check's whitespace-normalised
+matching rules and changes only that span in its own file. Missing or duplicate
+indices, ambiguous or overlapping spans, unsafe paths and symlink aliases are
+refused. Text outside those spans is preserved byte for byte. Both reply
+formats refuse newly introduced prompt-scrubbing artefacts (U+2024, fullwidth
+braces/angle brackets, `author＝` or a redaction placeholder) before writing.
+Completion and the local summary checker also reject scrubbed HTML-comment
+markers, including inside Mermaid or code spans (Issue #3710).
+
+The worker commits changed files, runs the quality gate, then re-runs
+completion once. Confirmed sentences still present are carried forward even
+if the next model check misses them; an unreadable manual does not clear its
+confirmed finding. A failed invocation, malformed reply or unchanged sentence
+therefore cannot silently clear the block. A later block folded with another
+gate does not get this extra turn. A surviving manual or source-comment finding
+holds an existing PR whether the block is claim-check-only or mixed:
+auto-merge is withheld,
+`standing-violation` is applied, and the findings are posted with the existing
+worker repair marker so PR feedback can act on them. With no PR, the run fails.
+
+A pre-PR verifier block on that same attempt is checked again after the claim
+correction: the claim gate returns first and completion rechecks the gates.
 
 ```mermaid
 flowchart TD
     A["Completion phase, summary loaded,<br/>before raising the PR"] --> B["Test Plan backstop:<br/>quoted behaviour vs. named test file"]
     A --> C{"Base ref known?"}
     C -- no --> D["Not checked"]
-    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code,<br/>and changed manual and prompt prose"]
+    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code,<br/>selected comments and manual prose"]
     E --> F["Confirm each finding against<br/>the summary's or the doc's own text"]
     B --> G{"Any confirmed finding<br/>or Test Plan problem?"}
     F --> G
@@ -2337,9 +2381,9 @@ flowchart TD
     G -- no --> I["PR raised"]
     H -- yes --> RT["One recovery turn<br/>(all folded gates, one per item)"]
     RT --> A
-    H -- no --> J{"Claim check the only gate,<br/>summary findings only?"}
+    H -- no --> J{"Claim check the only gate,<br/>summary/manual findings only,<br/>correction turn unused?"}
     J -- no --> K["Fail / finalise<br/>summary_incomplete"]
-    J -- yes --> L["One summary-only<br/>correction turn (Issue #3324)"]
+    J -- yes --> L["One narrow claim<br/>correction turn (#3324, #3865)"]
     L --> M["Re-run: wrong sentences<br/>still present carried forward"]
     M --> N{"Gate satisfied?"}
     N -- yes --> I
@@ -2673,7 +2717,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on the summary's own sentences, after the one summary-only correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on summary or manual/prompt sentences, after the one claim correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised; auto-merge withheld for surviving standing violations, verifier findings or manual findings, otherwise armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -2683,9 +2727,9 @@ whether or not the run's branch already carries a PR (Issue #3163) — see
 An existing PR is not finalised, labelled or auto-merged across that turn;
 only a block that survives the recovery (the run's second such block) on an
 existing-PR branch finalises as `summary_incomplete` — except that when the
-claim check alone is still blocking on that second attempt, on the summary's
-own sentences, it first gets
-one summary-only correction turn (Issue #3324), and only a block that
+claim check alone is still blocking on that second attempt, on summary or
+manual/prompt sentences, it first gets
+one claim correction turn (Issue #3324), and only a block that
 survives *that* turn finalises the PR. Either way the gate's
 remediation comment is posted, so the shortfall is on the issue thread rather
 than only in one host's log.
@@ -2785,7 +2829,7 @@ flowchart TD
     R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
     RT --> G
     R -->|no| CC{"Claim check the only gate<br/>still blocking, correction<br/>turn unused this run?"}
-    CC -->|yes| CT["One summary-only correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
+    CC -->|yes| CT["One claim correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
     CT --> G
     CC -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
@@ -2846,9 +2890,9 @@ A run that satisfies the gate on the re-run raises its PR, or, when the run's
 branch already carried a PR from the execute phase, updates and finalises that
 same PR — no second PR is opened. A **second** block in the same run is not
 recovered again, with one exception: when the claim check alone is still
-blocking on the summary's own sentences — every earlier summary gate having
+blocking on summary or manual/prompt sentences — every earlier summary gate having
 passed — the run instead gets
-one summary-only correction turn before it is treated as a second block
+one claim correction turn before it is treated as a second block
 (Issue #3324, [above](#-a-summary-that-describes-named-code-wrongly-blocks-the-pr-issue-3257)).
 Any other second block fails exactly as a block did before, with the
 comment already on the thread; on an existing-PR branch that PR is finalised
@@ -2871,8 +2915,8 @@ the old no-changes deferral in this manual. The run's first block now always
 takes the one recovery turn, whichever kind of branch it is on; a block that
 survives that turn is handled as before — finalised as `summary_incomplete`
 when a PR exists, failed when none does — unless it is the claim check
-alone still blocking on the summary's own sentences, in which case it gets the
-one summary-only correction turn first (Issue #3324).
+alone still blocking on summary or manual/prompt sentences, in which case it gets the
+one claim correction turn first (Issue #3324).
 
 **Issue #3382.** The recovery turn used to be told the code had already
 passed the quality gate and must not change, while the Issue #3196 gate
