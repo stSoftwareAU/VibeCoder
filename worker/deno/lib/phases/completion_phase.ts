@@ -2864,7 +2864,7 @@ async function completionBody(
   }
   const removedAssertionGateCouldApply = !changedFilesKnown ||
     removedAssertionTestFiles.length > 0 ||
-    (changedFilesKnown && changedFiles.some((file) => isTestFilePath(file)));
+    changedFiles.some((file) => isTestFilePath(file));
   let testDiff: string | null = null;
   if (
     comparableBase.ok && removedAssertionGateCouldApply &&
