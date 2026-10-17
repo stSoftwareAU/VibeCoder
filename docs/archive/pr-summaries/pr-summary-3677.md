@@ -40,6 +40,7 @@ Issue numbers cited: #3677 (this issue); #3676 is the PR for #3506, "A healthy r
 - `worker/deno/tests/degraded_delivery_test.ts`
   - New: `rederiveDegradedSection - changed shortfalls no longer claim to continue in the follow-up (Issue #3677)`. This is the issue's scenario: #77 was filed for "the export works"; now that is `met` and "the import works" is `partial`.
   - New: `rederiveDegradedSection - a section already marked stale re-syncs under the same follow-up number (Issue #3677)`.
+  - New: `buildDegradedStaleFollowUpSection - renders the heading, the stale follow-up line and the bullets (Issue #3677)`. It pins the whole rendered section, blank lines included.
   - Edited: `parseDegradedSection - round-trips a reason with parentheses from each builder` gains a round-trip assertion for the new builder.
   - Edited: `rederiveDegradedSection - keeps the follow-up number and reason` gains `assertEquals(out, liveSection)`. Its live fixture now names the criterion as the issue states it (`the export works`), so the section really is unchanged. No assertion was removed.
 - `worker/deno/tests/pr_body_sync_test.ts`
@@ -50,8 +51,9 @@ Issue numbers cited: #3677 (this issue); #3676 is the PR for #3506, "A healthy r
   - `rederiveDegradedSection` returning `buildDegradedPrSection` unconditionally (the base behaviour) → 4 red: both "changed"/"stale" degraded tests, the #3677 sync "differ" test, and the edited #2562 sync test.
   - Forcing the equality to `false` → red: the "keeps" test and the #3677 "same gaps" sync test.
   - Removing the `filed` operand from the `parseDegradedSection` regex → red: the round-trip test and the "already marked stale" test.
+  - Deleting each `""` separator in `buildDegradedStaleFollowUpSection` (`worker/deno/lib/degraded_delivery.ts:537`, `:545`, `:547`, `:548`) → red: the new `renders the heading…` test.
   - Edited #2562 test: making the sync drop the re-derived leading section (`body = "" + …`) → red at its `startsWith` assertion.
-- `deno task test:unit tests/degraded_delivery_test.ts tests/pr_body_sync_test.ts`: 124 passed, 0 failed on the final head.
+- `deno task test:unit tests/degraded_delivery_test.ts tests/pr_body_sync_test.ts`: 125 passed, 0 failed on the final head.
 - `./quality.sh < /dev/null`: PASSED (with skipped checks: config integration) on the final head.
 
 <!-- vibe-branch-outcomes -->

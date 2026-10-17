@@ -935,6 +935,27 @@ Deno.test("buildDegradedUnfiledGapSection - throws on an all-unassessed verdict"
   );
 });
 
+Deno.test("buildDegradedStaleFollowUpSection - renders the heading, the stale follow-up line and the bullets (Issue #3677)", () => {
+  assertEquals(
+    buildDegradedStaleFollowUpSection({
+      degraded: true,
+      reason: PAREN_REASON,
+      delivered: [],
+      shortfalls: [...PARTIAL_SHORTFALL],
+    }, 77),
+    "## ⚠️ Degraded run — partial delivery\n" +
+      "\n" +
+      `This run was degraded (${PAREN_REASON}) and did not show every ` +
+      "accepted scope item as met, or reported a gap of its own. The worker " +
+      "filed #77 for the outstanding items when the PR was raised and a " +
+      "re-sync does not rewrite it, so it may not list every item below — " +
+      "check them against the diff before merging:\n" +
+      "\n" +
+      "- **partial** — the export\n" +
+      "\n",
+  );
+});
+
 Deno.test("rederiveDegradedSection - empty when every item is now met", () => {
   const liveSection = buildDegradedPrSection({
     degraded: true,
