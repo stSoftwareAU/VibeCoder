@@ -1,0 +1,329 @@
+{
+ "version": 1,
+ "branchOutcomes": {
+  "noneAdded": false,
+  "entries": [
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 368,
+    "outcome": "merged without quality_green and review_approved is merged_unverified",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - a merge without review approval is unverified, not success",
+    "flipWentRed": "returning \"merged\" turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 370,
+    "outcome": "a failure outcome makes the assignment failed",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - failed retries' cost is included",
+    "flipWentRed": "returning \"pending\" turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 430,
+    "outcome": "maturity depends on assignment age only",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - an early merge younger than the horizon is immature and excluded from rates",
+    "flipWentRed": "restoring the status operand turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 499,
+    "outcome": "unknown assignment id events are unattributed",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - an unknown assignment id is counted as unattributed",
+    "flipWentRed": "deleting the continue turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 519,
+    "outcome": "a group with no assignment event is counted unattributed",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - an unknown assignment id is counted as unattributed",
+    "flipWentRed": "dropping the count turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 850,
+    "outcome": "biased-assignment fires above the total-variation threshold",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - biased assignment fires on a skewed covariate",
+    "flipWentRed": "raising the threshold to 2 turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 882,
+    "outcome": "unequal-exposure fires on a share deviation",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - unequal exposure fires when one arm takes most assignments",
+    "flipWentRed": "raising the tolerance to 2 turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 900,
+    "outcome": "unequal-exposure fires on the host-day rule",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - one arm packed into a single host-day raises unequal-exposure (gate d)",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 922,
+    "outcome": "low-sample fires below the per-arm minimum",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - low sample fires below the per-arm minimum",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 930,
+    "outcome": "missing-cost fires on unknown cost",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - an unknown cost is counted, not zero, and raises missing-cost",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 938,
+    "outcome": "unknown-arm fires on an unconfigured cohort",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - an unconfigured cohort raises unknown-arm",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 950,
+    "outcome": "unverified-merge warning fires",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - a merge without review approval is unverified, not success",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 957,
+    "outcome": "unattributed-events warning fires",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - an unknown assignment id is counted as unattributed",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 965,
+    "outcome": "excluded-model warning fires on Fable",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - a Fable model raises excluded-model",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 996,
+    "outcome": "fewer than two active arms gives no decision",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - a single active arm gives no decision, even with merged data",
+    "flipWentRed": "removing the guard turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 1009,
+    "outcome": "an active arm under 30 merged blocks a verdict",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - the verdict needs every active arm to have 30 merged (gate a)",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 1019,
+    "outcome": "a blocking warning blocks a verdict",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - a blocking warning stops a verdict that the data would otherwise give (gate b)",
+    "flipWentRed": "making the condition never true turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_report.ts",
+    "line": 1047,
+    "outcome": "overlapping intervals give no decision",
+    "test": "worker/deno/tests/fleet_experiment_report_test.ts",
+    "testName": "fleet experiment report - overlapping merged-per-USD intervals give no decision (gate c)",
+    "flipWentRed": "forcing the condition true turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_arms.ts",
+    "line": 120,
+    "outcome": "empty arm list refused as empty",
+    "test": "worker/deno/tests/fleet_experiment_arms_test.ts",
+    "testName": "fleet experiment arms - an empty list is refused as empty",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_arms.ts",
+    "line": 126,
+    "outcome": "repeated id refused as duplicate-id",
+    "test": "worker/deno/tests/fleet_experiment_arms_test.ts",
+    "testName": "fleet experiment arms - a repeated id is refused as duplicate-id",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_arms.ts",
+    "line": 136,
+    "outcome": "malformed id refused as invalid-id",
+    "test": "worker/deno/tests/fleet_experiment_arms_test.ts",
+    "testName": "fleet experiment arms - a malformed id is refused as invalid-id",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_arms.ts",
+    "line": 146,
+    "outcome": "not exactly one control refused as control-count",
+    "test": "worker/deno/tests/fleet_experiment_arms_test.ts",
+    "testName": "fleet experiment arms - no control or two controls is refused as control-count",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_arms.ts",
+    "line": 152,
+    "outcome": "inactive control refused as control-inactive",
+    "test": "worker/deno/tests/fleet_experiment_arms_test.ts",
+    "testName": "fleet experiment arms - an inactive control is refused as control-inactive",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_arms.ts",
+    "line": 160,
+    "outcome": "Fable model refused as excluded-model",
+    "test": "worker/deno/tests/fleet_experiment_arms_test.ts",
+    "testName": "fleet experiment arms - a Fable model is refused as excluded-model",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_arms.ts",
+    "line": 171,
+    "outcome": "bad weight refused as invalid-weight",
+    "test": "worker/deno/tests/fleet_experiment_arms_test.ts",
+    "testName": "fleet experiment arms - a non-positive or non-finite weight is refused as invalid-weight",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 98,
+    "outcome": "days text not in plain decimal form is refused",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - days text is read only in plain decimal form",
+    "flipWentRed": "weakening the regex guard turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 102,
+    "outcome": "window and horizon outside (0, 365] are refused",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - window must be a number of days in (0, 365]",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 115,
+    "outcome": "unknown format is refused",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - format must be text, json or csv",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 128,
+    "outcome": "synthetic text not plain digits is refused",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - synthetic text is read only as plain digits",
+    "flipWentRed": "weakening the regex guard turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 132,
+    "outcome": "synthetic out of range is refused",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - synthetic must be a non-negative integer",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 141,
+    "outcome": "non-string ledger is refused",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - ledger must be text",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 145,
+    "outcome": "ledger of empty segments is refused",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - ledger of only commas and blanks is refused as empty",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 164,
+    "outcome": "non-string or blank covariates is refused",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - covariates must be text naming a file",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 171,
+    "outcome": "unreadable covariates file is refused",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - covariates must be an object of objects of strings",
+    "flipWentRed": "making the read succeed turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 178,
+    "outcome": "covariates that are not JSON are refused",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - covariates that are not JSON are refused",
+    "flipWentRed": "making the parse succeed turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 185,
+    "outcome": "covariates of the wrong shape are refused",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - covariates must be an object of objects of strings",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 228,
+    "outcome": "a missing work directory fails as no ledgers",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - a missing work directory fails as no ledgers",
+    "flipWentRed": "forcing the NotFound check false turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 241,
+    "outcome": "no ledgers on the work volume fails",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - no ledgers on the work volume fails",
+    "flipWentRed": "forcing the condition false turned it red"
+   },
+   {
+    "path": "worker/deno/commands/fleet_experiment_report.ts",
+    "line": 264,
+    "outcome": "an event seen in two hosts' ledgers is kept once",
+    "test": "worker/deno/tests/fleet_experiment_report_command_test.ts",
+    "testName": "fleet-experiment-report - a follow-on seen by two hosts is costed once",
+    "flipWentRed": "disabling the dedupe turned it red"
+   },
+   {
+    "path": "worker/deno/lib/fleet_experiment_arms.ts",
+    "line": 236,
+    "outcome": "fallback to the control when no active arm is found",
+    "exempt": {
+     "kind": "untestable",
+     "reason": "validateExperimentArms always requires an active control so the type-required fallback cannot be staged; the harness search found only worker/deno/tests/fleet_experiment_arms_test.ts and worker/deno/tests/fleet_experiment_synthetic_test.ts calling assignExperimentArm, and both pass validated arms"
+    }
+   }
+  ]
+ }
+}

@@ -16,7 +16,8 @@ Closes #3645.
 Partial: the execute phase still mints cohort `unassigned`, and nothing
 enacts an arm yet. Enacting an arm needs per-role host configuration (#3643,
 open). There is no production writer for gate and outcome events yet, so
-until one lands every live assignment reports as pending. The bandit
+until one lands no live assignment can count as merged: young assignments
+show as pending, and mature ones are censored as not merged. The bandit
 allocation and the pre-PR-verification on/off comparison are not part of
 this change.
 
@@ -78,3 +79,37 @@ flowchart LR
 
 `deno run mod.ts fleet-experiment-report --synthetic 42` is identical on
 every run.
+
+**Docs sweep** — grep: "no experiment supplies cohorts", "#3645", "gate and outcome writers", `fleet-experiment-report`, `UNASSIGNED_COHORT`; section: `docs/INTERNALS.md#-lifecycle-ledger-and-issue-assignment-issue-3718`; siblings: `backlog-report`, `green-gate-report` — neither appears in a manual list of every command, so no list gained a member; updated: `docs/INTERNALS.md` (new section "🧪 Randomised fleet experiments — merged issues per dollar (Issue #3645)", and the cohort sentence in the ledger section); `docs/INTERNALS.md:1131` — still true because this change writes no gate or outcome events; `worker/deno/lib/lifecycle_ledger.ts:61` — still true because cohorts stay `unassigned` until an operator or a later change labels them
+
+Evidence for #N citations: #3643: Configure manager, executor and reviewer independently per host and repository (open); #3644: Record end-to-end issue lifecycle, cohort attribution and fully loaded cost (closed); #3647: Validate subscription-only Codex and mixed-provider manager–worker feasibility (open).
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Reproducible experiment on synthetic randomized issue histories with pending PRs and unequal model prices. — evidence: `worker/deno/tests/fleet_experiment_synthetic_test.ts::fleet experiment synthetic - running twice gives identical events and report`, `worker/deno/tests/fleet_experiment_report_command_test.ts::fleet-experiment-report - synthetic run is byte-identical across calls` — reviewer: met
+- **met** — No quality-gate bypass or premature success counting. — evidence: `worker/deno/tests/fleet_experiment_report_test.ts::fleet experiment report - a merge without review approval is unverified, not success`, `worker/deno/tests/fleet_experiment_report_test.ts::fleet experiment report - an early merge younger than the horizon is immature and excluded from rates` — reviewer: met — reason: the reviewer also flagged status-based maturity as survivor bias; maturity is now by assignment age alone, fixed in this diff
+- **partial** — Clear warning for biased assignment, low sample size, missing costs or unequal exposure. — evidence: `worker/deno/tests/fleet_experiment_report_test.ts::fleet experiment report - biased assignment fires on a skewed covariate`, `worker/deno/tests/fleet_experiment_report_test.ts::fleet experiment report - low sample fires below the per-arm minimum`, `worker/deno/tests/fleet_experiment_report_test.ts::fleet experiment report - one arm packed into a single host-day raises unequal-exposure (gate d)` — reviewer: partial — reason: size, type and priority balance is checked only when a `--covariates` file supplies them (the ledger does not carry them), and exposure is measured in host-days rather than configured host capacity
+- **unrequested** — `--covariates <file>` option — reviewer: unrequested — reason: the ledger carries no issue size, type or priority, so this is how the requested balance check gets them
+- **unrequested** — `--synthetic <seed>` mode in the production command — reviewer: unrequested — reason: it makes the reproducible synthetic experiment the acceptance criterion asks for runnable by an operator
+- **unrequested** — `excluded-model`, `unknown-arm`, `unattributed-events` and `unverified-merge` warnings — reviewer: unrequested — reason: they surface the Fable exclusion, the premature-success rule and data the report could not attribute
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — the verdict could name a leading arm with only one active arm, so a win was declared with no comparison — evidence: `worker/deno/lib/fleet_experiment_report.ts:996` — reason: fixed in this diff
+- **clean** — fail loud (every refusal and read error returns `success: false` naming the argument or path, never echoing content); nothing exists only for a test to read; Australian English; no source-grep tests; temp directories from `Deno.makeTempDir`; the persisted ledger shape is unchanged (read-only); no workflow change; review-enforced rules checked: removed and edited test assertions (`tests/mod_test.ts` count 153 → 154 only)
+
+## Test Plan
+
+- New: `worker/deno/tests/fleet_experiment_arms_test.ts` (19), `worker/deno/tests/fleet_experiment_report_test.ts` (28), `worker/deno/tests/fleet_experiment_synthetic_test.ts` (7), `worker/deno/tests/fleet_experiment_report_command_test.ts` (21).
+- Edited: `worker/deno/tests/mod_test.ts` — `assertEquals(commands.length, 153);` becomes 154 because this issue adds the `fleet-experiment-report` command. No assertion removed. Red-check: without `registry.register(fleetExperimentReportCommand)` the count is 153 and the new `includes` assertion fails.
+- Every branch in the facts file was flipped one at a time and went red as recorded there. One flip, of the `?? CONTROL_ARM_ID` fallback, is exempt: validation makes it unreachable.
+- `deno task test:unit` on the four new test files plus `tests/mod_test.ts` and `tests/lib_sweep_coverage_test.ts`: 132 passed, 0 failed.
+- `./quality.sh` on commit 4db4b439: PASSED (config integration skipped).
+
+<!-- vibe-branch-outcomes -->
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
