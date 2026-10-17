@@ -653,6 +653,12 @@ Deno.test("self-schedule - a stranger's announcement marker is never deleted (Is
     !deleteTargets(calls).some((target) => target.endsWith("/50")),
     "no DELETE is issued against the stranger's comment",
   );
+  assertEquals(thread.rows.map((r) => r.id), [50, 1000]);
+  assertEquals(
+    deleteTargets(calls),
+    [],
+    "our own announcement is not deleted in favour of the stranger's",
+  );
 });
 
 Deno.test("self-schedule - a stranger's marker between two fleet comments is never deleted (Issue #3597)", async () => {
