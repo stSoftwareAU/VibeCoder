@@ -199,7 +199,12 @@ async function recover(
       ctx,
       state,
       deps,
-      () => Promise.resolve({ status: "failure", reason: "blocked again" }),
+      () =>
+        Promise.resolve({
+          status: "failure",
+          category: "unknown",
+          reason: "blocked again",
+        }),
     );
     await options.inspect?.(config.workDir, prompts);
     return result;

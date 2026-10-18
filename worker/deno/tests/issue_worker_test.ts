@@ -4801,6 +4801,7 @@ Deno.test("terminal reconciliation preserves completed, skipped, booked and bran
     });
     const input = {
       success: false,
+      category: "unknown" as const,
       expectedSkip: false,
       phase: "completion",
       reason: "existing terminal decision",

@@ -11,6 +11,7 @@ import {
   buildIssueRunCallbackContext,
   resolveSessionLogPath,
 } from "../lib/run_callback_context.ts";
+import { deriveRunOutcome } from "../lib/run_outcome.ts";
 import { IssueCallbackGuard } from "../lib/issue_callback_guard.ts";
 import {
   codegraphNotRun,
@@ -461,4 +462,28 @@ Deno.test("run_callback_context - reporting an RTK outcome leaves the CodeGraph 
     IDENTITY,
   );
   assertEquals(rtkOnly.codegraph, { enabled: false, status: "off" });
+});
+
+Deno.test("callback context retains all declared causes after a PR exists (Issue #3738)", () => {
+  const outcome = deriveRunOutcome({
+    success: false,
+    phase: "completion",
+    reason: "verifier found a code defect; quoted fixture says rate limit",
+    category: "quality_check",
+    categories: ["summary_incomplete", "quality_check"],
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/123",
+    prNumber: 123,
+  });
+  const context = buildIssueRunCallbackContext(
+    run({ result: "failure", outcome }),
+    IDENTITY,
+  );
+  assertEquals(context.outcome?.kind, "pr");
+  assertEquals(context.outcome?.prNumber, 123);
+  assertEquals(context.outcome?.category, "quality_check");
+  assertEquals(context.outcome?.failureClass, "agent-outcome");
+  assertEquals(context.outcome?.categories, [
+    "summary_incomplete",
+    "quality_check",
+  ]);
 });

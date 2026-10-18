@@ -17,9 +17,8 @@
  *
  * Modelled on `ci_failure_classifier.ts` (classify, then file, with a stable
  * class slug for dedup). The primary input is the `FailureCategory` from
- * `failure_diagnosis.ts` — `detectFailureCategory()` is the single diagnosis
- * path (#4298's corrected messages flow through it) and this refines it
- * rather than re-deriving it. The raw message is a secondary input only, for
+ * `failure_diagnosis.ts`, declared by new worker results or detected by legacy
+ * raw-output adapters. This refines that category rather than re-deriving it. The raw message is a secondary input only, for
  * signals the category cannot express (OOM evidence, disk exhaustion,
  * out-of-credit).
  *
@@ -242,8 +241,18 @@ const AGENT_OUTCOME: RunFailureClassification = {
 export function classifyRunFailure(
   category: FailureCategory,
   failureMessage: string,
+  declaredCategory: boolean,
 ): RunFailureClassification {
-  const message = failureMessage ?? "";
+  // A declared source cause cannot be replaced by quoted git, test or agent
+  // prose. Kills, account limits and internal-tool errors retain their source-specific
+  // diagnostic refinements. Timeout disk evidence has its narrow exception below;
+  // other declared categories do not read a message.
+  const message = declaredCategory
+    ? category === "killed" || category === "rate_limit" ||
+        category === "internal_error"
+      ? splitAgentNarration(failureMessage ?? "").worker
+      : ""
+    : failureMessage ?? "";
 
   // The PR-summary gate refusal quotes the agent's own summary, so any
   //    message-pattern rule below (secondary limit, out-of-credit, stale
@@ -332,7 +341,14 @@ export function classifyRunFailure(
 
   // 3. Disk exhaustion by message — outranks killed/crash because a full
   //    disk is what killed or crashed the run.
-  if (isDiskFull(message)) {
+  // Existing timeout diagnostics intentionally retain error-shaped disk evidence
+  // from CLI output. That narrow refinement does not grant quoted account,
+  // crash or lineage prose authority over a declared execution timeout.
+  if (
+    isDiskFull(
+      declaredCategory && category === "timeout" ? failureMessage : message,
+    )
+  ) {
     return {
       fixability: "code_fixable",
       failureClass: "disk-full",

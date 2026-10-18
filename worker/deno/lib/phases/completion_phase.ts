@@ -1,3 +1,4 @@
+import { assertNever } from "../assert_never.ts";
 /**
  * Phase 5 — Completion (Push & PR).
  *
@@ -15,6 +16,7 @@
 import { summaryScrubProblem } from "../summary_scrub_gate.ts";
 
 import {
+  type FailureCategory,
   PRE_PUSH_GATE_MARKER,
   PRE_PUSH_LOOKUP_FAILED_MARKER,
   SUMMARY_RULE_GATE_MARKER,
@@ -64,7 +66,6 @@ import { resolveRepoCredentials } from "../repo_credentials.ts";
 import {
   PRE_PUSH_GATE_REASON_HEAD_CHARS,
   PRE_PUSH_GATE_REASON_TAIL_CHARS,
-  PrePushGateBlockedError,
   resolvePreFlightSpec,
 } from "../git_push.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
@@ -613,6 +614,8 @@ async function lookupBlockedGatePr(
  * (Issue #3324).
  */
 interface SummaryRuleBlock {
+  /** Reuses the existing failure enum, preserving every simultaneous cause. */
+  categories: readonly FailureCategory[];
   /** The phase-failure reason the gate would have reported. */
   reason: string;
   /** The gate's remediation comment, posted to the issue thread. */
@@ -733,9 +736,17 @@ async function reportSummaryRuleBlock(
 ): Promise<PhaseResult> {
   const { reason, comment, sections, standingViolations, allowsTestChanges } =
     block;
+  const category: FailureCategory = block.categories.includes("quality_check")
+    ? "quality_check"
+    : block.categories[0] ?? "summary_incomplete";
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
   const client = deps.github.createClient(logger);
+  logger.warn("Summary-rule causes", {
+    repo,
+    issueNumber,
+    categories: block.categories,
+  });
   // Issue #3431: the failure reason leads with the worker's own marker so the
   // category detector never reads the gates' quoted agent text as a crash.
   const failureReason = `${SUMMARY_RULE_GATE_MARKER}: ${reason}`;
@@ -755,6 +766,7 @@ async function reportSummaryRuleBlock(
     state.summaryRuleBlocks = [
       ...verdicts,
       {
+        categories: block.categories,
         reason,
         comment,
         sections,
@@ -789,7 +801,12 @@ async function reportSummaryRuleBlock(
         lookup: existingPr.error.message,
       },
     );
-    return { status: "failure", reason: failureReason };
+    return {
+      category,
+      categories: block.categories,
+      status: "failure",
+      reason: failureReason,
+    };
   }
 
   const prUrl = existingPr.value;
@@ -823,7 +840,12 @@ async function reportSummaryRuleBlock(
     }
     // Always replaced by `recoverFromSummaryRuleBlock`'s outcome, so this
     // reason never leaves the phase; marked anyway to match the other returns.
-    return { status: "failure", reason: failureReason };
+    return {
+      category,
+      categories: block.categories,
+      status: "failure",
+      reason: failureReason,
+    };
   }
 
   logger.warn(
@@ -861,7 +883,12 @@ async function reportSummaryRuleBlock(
         "summary rule as a failure rather than naming an unnumbered PR",
       { repo, issueNumber, prUrl },
     );
-    return { status: "failure", reason: failureReason };
+    return {
+      category,
+      categories: block.categories,
+      status: "failure",
+      reason: failureReason,
+    };
   }
 
   const recovered = await recoverAndFinaliseExistingPr(
@@ -881,9 +908,12 @@ async function reportSummaryRuleBlock(
   if (recovered.status !== "continue") return recovered;
 
   return {
+    category,
     status: "early_exit",
     reason,
     outcome: summaryIncompleteOutcome({
+      category,
+      categories: block.categories,
       phase: "completion",
       prUrl,
       prNumber,
@@ -984,6 +1014,7 @@ async function applyDegradedDeliveryGuard(
       return {
         ok: false,
         result: {
+          category: "unknown",
           status: "failure",
           reason:
             `Run reported ${verdict.shortfalls.length} acceptance criteria as partial or missing on a partial-delivery follow-up, and it could not be handed to a human: ${handed.error.message}`,
@@ -1033,6 +1064,7 @@ async function applyDegradedDeliveryGuard(
       return {
         ok: false,
         result: {
+          category: "unknown",
           status: "failure",
           reason: verdict.degraded
             ? `Degraded run (${verdict.reason}) left ${verdict.shortfalls.length} ` +
@@ -1434,6 +1466,7 @@ async function runCompletionAttempt(
     state,
     deps.logger,
     {
+      category: result.category,
       backoffMs: ctx.config.infraRetryBackoffMs,
       cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs,
     },
@@ -1776,6 +1809,7 @@ async function abortStaleClaim(
   }
 
   return {
+    category: "unknown",
     status: "early_exit",
     reason: formatStaleClaimReason(stale),
     outcome: claimStaleOutcome({
@@ -1855,6 +1889,9 @@ async function completionBody(
       }
     }
     return {
+      category: reconcile.error instanceof HeadDivergedError
+        ? "unknown"
+        : "push_failure",
       status: "failure",
       reason:
         `Cannot push branch \`${state.branchName}\`: ${reconcile.error.message}`,
@@ -1891,6 +1928,7 @@ async function completionBody(
   });
   if (lineage.kind === "refused") {
     return {
+      category: "unknown",
       status: "failure",
       reason:
         `Refusing to push \`${state.branchName}\`: ${lineage.detail} (Issue #534)`,
@@ -1965,6 +2003,7 @@ async function completionBody(
   });
   if (prRaiseSync.kind === "refused") {
     return {
+      category: "unknown",
       status: "failure",
       reason: `Refusing to raise the PR for \`${state.branchName}\`: ` +
         `${prRaiseSync.detail} (Issue #2809)`,
@@ -2054,6 +2093,7 @@ async function completionBody(
       // Issue #2689: the host's gap, logged once; the run releases uncounted.
       deps.infrastructure.warnMissingWorkflowScope((m) => logger.warn(m));
       return {
+        category: "token_scope",
         status: "failure",
         reason: `Cannot push: the token lacks the 'workflow' scope and the ` +
           `branch changes ${workflowPaths.join(", ")} (per ${provenance}) — ` +
@@ -2116,9 +2156,20 @@ async function completionBody(
     // (infrastructure) whatever git text it quotes — a "timed out" in it must
     // not make it a `timeout` — so it is retried instead of using a ladder
     // attempt.
-    if (!(gate.error instanceof PrePushGateBlockedError)) {
+    const gateCategory = (() => {
+      switch (gate.error.kind) {
+        case "infrastructure":
+          return "push_failure" as const;
+        case "verdict":
+          return "pre_push_gate" as const;
+        default:
+          return assertNever(gate.error);
+      }
+    })();
+    if (gateCategory === "push_failure") {
       return {
         status: "failure",
+        category: "push_failure",
         reason: `${PRE_PUSH_LOOKUP_FAILED_MARKER}: ${
           redactedHeadTail(
             gate.error.message,
@@ -2135,6 +2186,7 @@ async function completionBody(
     // 65,536 characters, and the failure labelling swallows that refusal.
     return {
       status: "failure",
+      category: "pre_push_gate",
       reason: `${PRE_PUSH_GATE_MARKER}: ${
         redactedHeadTail(
           gate.error.message,
@@ -2162,7 +2214,11 @@ async function completionBody(
       // WARNING per process, and the run releases uncounted.
       deps.infrastructure.warnMissingWorkflowScope((m) => logger.warn(m));
       logger.info(reason);
-      return { status: "failure", reason };
+      return {
+        category: "token_scope",
+        status: "failure",
+        reason,
+      };
     }
     // Another worker may have merged while this run was pushing.
     const landedDuringPush = await alreadyLandedPhaseResult(
@@ -2183,6 +2239,7 @@ async function completionBody(
     );
     if (!recoveryResult.ok) {
       return {
+        category: "push_failure",
         status: "failure",
         // Issue #1550: include "Git push failed" so detectFailureCategory
         // classifies this as `push_failure` (infrastructure) and the infra
@@ -2200,6 +2257,7 @@ async function completionBody(
     });
     if (!retryPush.ok) {
       return {
+        category: "push_failure",
         status: "failure",
         reason: `Git push failed after recovery: ${retryPush.error.message}`,
       };
@@ -2268,7 +2326,13 @@ async function completionBody(
           deps,
           comparableBase.value,
         );
-        if (halfDone) return { status: "failure", reason: halfDone };
+        if (halfDone) {
+          return {
+            category: "unknown",
+            status: "failure",
+            reason: halfDone,
+          };
+        }
       }
       if (Number.isFinite(aheadCount) && aheadCount === 0) {
         // Issue #218: this used to describe the loss and stop — "uncommitted
@@ -2313,6 +2377,7 @@ async function completionBody(
             },
           );
           return {
+            category: "unknown",
             status: "early_exit",
             reason: formatSupersededReason(disposition, wip.wipNote),
             outcome: supersededOutcome({
@@ -2335,6 +2400,7 @@ async function completionBody(
           ? ` — ${wip.wipNote}`
           : "";
         return {
+          category: "unknown",
           status: "failure",
           reason:
             `Branch \`${state.branchName}\` has no commits ahead of \`${baseBranch}\` — cannot create PR${wipHint}`,
@@ -2576,7 +2642,11 @@ async function completionBody(
           "deferring to one extra agent turn (Issue #2960)",
       );
       state.screenshotGateBlock = { failureMessage };
-      return { status: "failure", reason: SCREENSHOT_EVIDENCE_MISSING_REASON };
+      return {
+        category: "evidence_missing",
+        status: "failure",
+        reason: SCREENSHOT_EVIDENCE_MISSING_REASON,
+      };
     }
     logger.error(
       "Screenshot validation still fails after the one extra agent turn " +
@@ -2691,6 +2761,7 @@ async function completionBody(
         { missing: securityGate.missing, declarations, discrimination },
       ];
       return {
+        category: "security_fix_gate",
         status: "failure",
         reason: buildSecurityFixGateMessage(
           securityGate.missing,
@@ -2824,7 +2895,11 @@ async function completionBody(
         state.prUrl = blockedPr.url;
         state.prNumber = blockedPr.number;
       }
-      return { status: "failure", reason: message };
+      return {
+        category: "workflow_gate",
+        status: "failure",
+        reason: message,
+      };
     }
   }
 
@@ -3217,6 +3292,7 @@ async function completionBody(
    * standalone blocks further down.
    */
   interface LateSummaryVerdict {
+    categories?: readonly FailureCategory[];
     blocked: boolean;
     reason: string;
     comment: () => string;
@@ -3321,6 +3397,9 @@ async function completionBody(
       });
     }
     mutationVerdict = {
+      categories: [
+        mutationResult.kind === "error" ? "internal_error" : "quality_check",
+      ],
       blocked: gate.blocked,
       reason: gate.reason,
       comment: () => buildMutationGateComment(gate),
@@ -3455,6 +3534,14 @@ async function completionBody(
       claimCheck !== null ? buildSummaryClaimGateComment(claimCheck) : "",
   };
   const prePrVerifierVerdict: LateSummaryVerdict = {
+    categories: prePrVerifier?.status === "checked" &&
+        prePrVerifier.review.findings.length > 0
+      ? [
+        ...new Set(prePrVerifier.review.findings.map((finding) =>
+          finding.category ?? "quality_check"
+        )),
+      ]
+      : ["quality_check"],
     blocked: prePrVerifier !== null && prePrVerifierBlocked(prePrVerifier),
     reason: prePrVerifier?.status === "checked"
       ? prePrVerifierBlockReason(prePrVerifier.review)
@@ -3536,11 +3623,20 @@ async function completionBody(
     let foldedReason = reason;
     let foldedComment = comment;
     const sections = [comment];
+    const categories = new Set<FailureCategory>(
+      skip.length > 0
+        ? skip.flatMap((v) => v.categories ?? ["summary_incomplete"])
+        : ["summary_incomplete"],
+    );
+    if (standingViolations.length > 0) categories.add("quality_check");
     // `skip` names the verdicts already represented by `reason`/`comment`, so a
     // blocked mutation verdict there still means the recovery turn must test.
     let allowsTestChanges = skip.some((v) => v.blocked && v.needsTestChanges);
     for (const verdict of lateSummaryVerdicts) {
       if (skip.includes(verdict) || !verdict.blocked) continue;
+      for (const category of verdict.categories ?? ["summary_incomplete"]) {
+        categories.add(category);
+      }
       if (verdict.needsTestChanges) allowsTestChanges = true;
       foldedReason = `${foldedReason}; ${verdict.reason}`;
       const verdictComment = verdict.comment();
@@ -3548,6 +3644,7 @@ async function completionBody(
       sections.push(verdictComment);
     }
     return {
+      categories: [...categories],
       reason: foldedReason,
       comment: foldedComment,
       sections,
@@ -3964,7 +4061,11 @@ async function completionBody(
           "one narrow claim correction turn (Issues #3324, #3865)",
         { repo, issueNumber, reason: claimCheckVerdict.reason },
       );
-      return { status: "failure", reason: claimCheckVerdict.reason };
+      return {
+        category: "summary_incomplete",
+        status: "failure",
+        reason: claimCheckVerdict.reason,
+      };
     }
     return await reportSummaryRuleBlock(
       foldInLateSummaryVerdicts(
@@ -4005,6 +4106,7 @@ async function completionBody(
     const comment = prePrVerifierVerdict.comment();
     return await reportSummaryRuleBlock(
       {
+        categories: prePrVerifierVerdict.categories ?? ["quality_check"],
         reason: prePrVerifierVerdict.reason,
         comment,
         sections: [comment],
@@ -4300,7 +4402,11 @@ async function completionBody(
           },
         );
       } else {
-        return { status: "failure", reason: `PR creation failed: ${errorMsg}` };
+        return {
+          category: "unknown",
+          status: "failure",
+          reason: `PR creation failed: ${errorMsg}`,
+        };
       }
     }
   }

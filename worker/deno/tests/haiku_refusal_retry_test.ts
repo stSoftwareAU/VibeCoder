@@ -274,7 +274,11 @@ Deno.test("execute - a refusal on an attempt that ended no_changes fails instead
 Deno.test("execute - a no_changes attempt with no refusal still exits early (Issue #3406)", async () => {
   const h = await run("sonnet", [{ stream: CLEAN }], false);
 
-  assertEquals(h.result, { status: "early_exit", reason: "no_changes" });
+  assertEquals(h.result, {
+    status: "early_exit",
+    category: "unknown",
+    reason: "no_changes",
+  });
 });
 
 Deno.test("execute - the infrastructure retry after a sonnet retry stays on the sonnet tier (Issue #3406)", async () => {

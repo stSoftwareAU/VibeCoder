@@ -278,6 +278,7 @@ async function reportBlock(
   }
 
   return {
+    category: countsAsBlockedRun ? "security_fix_gate" : "unknown",
     status: "failure",
     reason: countsAsBlockedRun
       ? `${SECURITY_FIX_GATE_MARKER}: ${comment}`
@@ -312,6 +313,7 @@ export async function recoverFromSecurityGateBlock(
   const block = await persistVerdict(ctx, state, deps, false);
   if (!block) {
     return {
+      category: "unknown",
       status: "failure",
       reason: "No security-fix gate verdict to act on",
     };

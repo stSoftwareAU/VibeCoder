@@ -18,6 +18,7 @@ import {
   resetInfraRetryCount,
   shouldRetryInfrastructureFailure,
 } from "../lib/infra_retry.ts";
+import type { HandleFailureOptions } from "../lib/label_types.ts";
 import type { PhaseState } from "../lib/issue_worker_types.ts";
 import type { Logger } from "../types.ts";
 import {
@@ -437,7 +438,8 @@ Deno.test(
           }),
       },
       github: {
-        handleIssueFailure: (() => {
+        handleIssueFailure: ((options: HandleFailureOptions) => {
+          assertEquals(options.category, "zero_output");
           handleFailureCalls++;
           return Promise.resolve({
             ok: true,
@@ -455,6 +457,9 @@ Deno.test(
     const result = await workOnIssueQualityGate(ctx, state, deps);
 
     assertEquals(result.status, "failure");
+    if (result.status === "failure") {
+      assertEquals(result.category, "zero_output");
+    }
     assertEquals(
       handleFailureCalls,
       1,
@@ -778,6 +783,24 @@ Deno.test("infra retry - a rate_limit retry with no latched reset keeps the fixe
 
   assertEquals(retry, true);
   assertEquals(sleptMs, 15_000);
+});
+
+Deno.test("infra retry honours a declared cause over a contradictory wrapper (Issue #3738)", async () => {
+  for (
+    const [category, reason, expected] of [
+      ["push_failure", "a neutral transport wrapper", true],
+      ["quality_check", "Claude rate limit exceeded", false],
+    ] as const
+  ) {
+    const retry = await shouldRetryInfrastructureFailure(
+      "completion",
+      reason,
+      makeState(),
+      makeCapturingLogger([]),
+      { category, sleepFn: instantSleep },
+    );
+    assertEquals(retry, expected);
+  }
 });
 
 Deno.test("qualityGate reconciles an exact merge immediately before charging failure (Issue #3977)", async () => {

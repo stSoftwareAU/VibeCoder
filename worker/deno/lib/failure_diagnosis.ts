@@ -278,28 +278,21 @@ export const PRE_PUSH_LOOKUP_FAILED_MARKER =
   "Git push failed: the pre-push gate could not read the branch state";
 
 /**
- * The worker-written head of a posted summary-gate failure record: the
- * `## Automated Processing Failed …` heading line followed by the
- * `**Category:** \`summary-incomplete\`` line `markIssueAsFailedOnce` and
- * `markIssueAsFailed` write straight after it. Anchored to the start of the
- * comment, ahead of the quoted agent text, so a quoted category line further
- * down cannot forge it. `[^\n]*` and `\s*` are separated by a literal `\n`,
- * so the pattern stays linear.
+ * The worker-written head of a summary or substantive quality failure record.
+ * The Category line immediately follows the heading, before quoted agent text;
+ * a category line deeper in the reason cannot forge this provenance.
+ * The literal newline separates the bounded heading scan from whitespace.
  */
-const SUMMARY_GATE_RECORD_RE =
-  /^##[^\n]*\n\s*\*\*Category:\*\* `summary-incomplete`/;
+const SUMMARY_OR_QUALITY_RECORD_RE =
+  /^##[^\n]*\n\s*\*\*Category:\*\* `(?:summary-incomplete|quality-failure)`/;
 
 /**
- * Whether a posted failure-record comment body records a PR-summary gate
- * refusal (Issue #3431; PR #3440 review). The record embeds the reason under
- * a heading, so {@link SUMMARY_RULE_GATE_MARKER} is no longer at the start of
- * the body; the sweeps that re-classify posted bodies
- * (`host_fault_release.ts`, `milestone_branch_refusal_release.ts`) use this
- * to leave such a record alone, because the text it quotes is the agent's
- * own, not host or repository output.
+ * Whether a posted failure record declares a summary or quality verdict.
+ * Release sweeps preserve that cause rather than reclassifying quoted text
+ * as a host fault or a repository refusal (Issues #3431 and #3738).
  */
-export function isSummaryGateFailureRecord(body: string): boolean {
-  return SUMMARY_GATE_RECORD_RE.test(body.trimStart());
+export function isSummaryOrQualityFailureRecord(body: string): boolean {
+  return SUMMARY_OR_QUALITY_RECORD_RE.test(body.trimStart());
 }
 
 /**

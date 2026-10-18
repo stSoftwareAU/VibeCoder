@@ -3382,7 +3382,33 @@ discard),
 (`executeWithFreshSessionFallback`), and the `prompt_too_long` category in
 [failure_diagnosis.ts](../../worker/deno/lib/failure_diagnosis.ts).
 
-A run refused by the PR-summary gates is categorised `summary_incomplete`
+### Source-declared failure causes (Issue #3738)
+
+The phase supplies its category before retry or failure bookkeeping. The
+orchestrator and production failure handler retain it through the existing
+outcome and callback, so a network error caught by a gate wrapper stays
+infrastructure. The pre-push helper's existing errors now distinguish
+`infrastructure` from `verdict`; both still refuse the push. Declared hand-off
+pushes likewise retain their push/token-scope categories.
+
+Summary-rule folding records every category. Evidence-only findings remain
+`summary_incomplete`; implementation/test findings are `quality_check`, including
+mixed findings. These diagnostics also stay attached to an existing PR's outcome;
+all verifier findings still block and hold merge. Their category annotation is
+not authority to declare an outage or bypass a gate.
+
+Raw external CLI/tool boundaries may capture the existing host classification
+once. Retry/label decisions and emitted outcomes retain that diagnosis rather
+than letting later quoted text replace it. Known scheduled releases, execution
+timeouts, watchdog lateness and incomplete termination retain their runner
+fields. Absent evidence does not acquire an inferred cause. Existing already-landed
+outcomes keep their semantics; this classification change does not decide
+completion or delivery target.
+
+The marker rules below remain the compatibility path for legacy text and posted
+records. New worker-written results carry their category explicitly.
+
+For legacy text diagnosis, a PR-summary-gate refusal is `summary_incomplete`
 (display `summary-incomplete`, Issue #3431): the worker prefixes the failure
 reason with its own marker, and a message that starts with it is classified
 before the free-text scheduled-release, timeout, kill, rate-limit and disk-full rules, so the
@@ -3396,9 +3422,10 @@ fault. The posted
 `## Automated Processing Failed` comment embeds the reason under a heading, so
 the two label-release sweeps that re-classify a posted body
 (`host_fault_release.ts` and `milestone_branch_refusal_release.ts`) recognise
-the record by its worker-written `**Category:** \`summary-incomplete\`` line at
-the head of the comment (`isSummaryGateFailureRecord`) and leave its labels
-alone, however the quoted summary reads. The catch-all `Error:` rule excludes `::` paths.
+the record by its worker-written `**Category:**` line containing
+`summary-incomplete` or `quality-failure` at the head of the comment
+(`isSummaryOrQualityFailureRecord`) and leave its labels alone, however the
+quoted summary or verifier evidence reads. The catch-all `Error:` rule excludes `::` paths.
 
 A run refused by the security-fix gate is categorised `security_fix_gate`
 (display `security-fix-gate`, Issue #3454) the same way: the failure reason opens

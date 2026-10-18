@@ -554,6 +554,7 @@ export async function alreadyLandedPhaseResult(
     },
   );
   return {
+    category: "unknown",
     status: "early_exit",
     expectedSkip: true,
     reason: formatStaleClaimReason(landed),

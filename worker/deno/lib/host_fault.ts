@@ -17,6 +17,7 @@
  */
 
 import {
+  type FailureCategory,
   PRE_PUSH_GATE_MARKER,
   SECURITY_FIX_GATE_MARKER,
   SUMMARY_RULE_GATE_MARKER,
@@ -91,7 +92,12 @@ const CLONE_CORRUPT_PATTERNS: readonly RegExp[] = [
  * invalid branch name, an unknown ref) returns `null` rather than being
  * guessed at.
  */
-export function detectHostFault(message: string): HostFaultKind | null {
+export function detectHostFault(
+  message: string,
+  category?: FailureCategory,
+): HostFaultKind | null {
+  if (category === "clone_corrupt") return "clone-corrupt";
+  if (category !== undefined && category !== "internal_error") return null;
   // A PR-summary gate refusal is the worker's own words plus a quotation of
   // the agent's summary (Issue #3431; PR #3440 review): a quoted `ENOSPC` or
   // `Failed to clone` there is not host output, so it is never a host fault.
@@ -200,7 +206,7 @@ const QUALITY_GATE_RECORD_RE =
  * Whether a posted failure-record body is a quality-gate failure (Issue
  * #3445). Anchored to the worker-written head of the comment (heading,
  * Category line, Source line) so a quoted line deeper in the output cannot
- * forge it; mirrors `isSummaryGateFailureRecord` in failure_diagnosis.ts.
+ * forge it; mirrors `isSummaryOrQualityFailureRecord` in failure_diagnosis.ts.
  */
 export function isQualityGateFailureRecord(body: string): boolean {
   return QUALITY_GATE_RECORD_RE.test(body.trimStart());
