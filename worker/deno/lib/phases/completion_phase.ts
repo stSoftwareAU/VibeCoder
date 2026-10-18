@@ -61,6 +61,7 @@ import {
 } from "../pre_pr_verifier.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
+import { resolveRepoCredentials } from "../repo_credentials.ts";
 import {
   PRE_PUSH_GATE_REASON_HEAD_CHARS,
   PRE_PUSH_GATE_REASON_TAIL_CHARS,
