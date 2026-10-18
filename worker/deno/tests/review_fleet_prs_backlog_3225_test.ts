@@ -316,7 +316,7 @@ Deno.test("updateBranch: asks GitHub to merge the base into the PR at the expect
   });
 });
 
-Deno.test("pass: a fleet PR approved at its head but behind is brought up to date once per head, and never a Dependabot one (Issue #3225)", async () => {
+Deno.test("pass: a fleet PR approved at its head but behind is brought up to date once per head, including an approved Dependabot one (Issue #3225)", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const approvedBehind = fleetPr(30, {
@@ -351,21 +351,23 @@ Deno.test("pass: a fleet PR approved at its head but behind is brought up to dat
     assertEquals(updates.map((c) => c[3]), [
       "repos/acme/app/pulls/30/update-branch",
       "repos/acme/app/pulls/31/update-branch",
+      "repos/acme/app/pulls/34/update-branch",
     ]);
     assertEquals(
       result.upkeep.filter((u) => u.includes("branch")),
       [
         "acme/app#30 branch update requested",
         "acme/app#31 branch update requested",
+        "acme/app#34 branch update requested",
       ],
     );
     // Review first, update second: the unreviewed PR is reviewed as it is
     // and is only brought up to date once approved (post.ts does that).
     assertEquals(result.ready.map((p) => p.number), [33]);
-    // Dependabot gets its rebase comment, never a push to its branch.
+    // Dependabot shares the leased branch update and gets no comment.
     assertEquals(
       calls.some((c) => c[0] === "pr" && c[1] === "comment" && c[2] === "34"),
-      true,
+      false,
     );
 
     // Same heads next pass: nothing is asked twice.
@@ -416,20 +418,23 @@ Deno.test("pass: a refused branch update is reported in upkeep and not retried a
 
 // --- post.ts: the approval comes first, the update follows it --------------
 
-Deno.test("shouldUpdateBranch: only an approval of a fleet PR that is behind its base (Issue #3225)", async () => {
+Deno.test("shouldUpdateBranch: only an approval of a PR that is behind its base (Issue #3225)", async () => {
   const { shouldUpdateBranch, postedResult } = await import(
     "../../../.claude/skills/review-fleet-prs/scripts/post.ts"
   );
-  assertEquals(shouldUpdateBranch("approved", "fleet", "BEHIND"), true);
-  assertEquals(shouldUpdateBranch("approved", undefined, "BEHIND"), true);
-  assertEquals(shouldUpdateBranch("approved", "fleet", "CLEAN"), false);
-  assertEquals(shouldUpdateBranch("approved", "fleet", undefined), false);
-  assertEquals(shouldUpdateBranch("approved", "dependabot", "BEHIND"), false);
+  assertEquals(shouldUpdateBranch("approved", "BEHIND"), true);
+  assertEquals(shouldUpdateBranch("approved", "BEHIND", true), false);
+  assertEquals(shouldUpdateBranch("approved", "CLEAN"), false);
+  assertEquals(shouldUpdateBranch("approved", undefined), false);
   assertEquals(
-    shouldUpdateBranch("changes_requested", "fleet", "BEHIND"),
+    shouldUpdateBranch("approved", "BEHIND", false, "CONFLICTING"),
     false,
   );
-  assertEquals(shouldUpdateBranch("held", "fleet", "BEHIND"), false);
+  assertEquals(
+    shouldUpdateBranch("changes_requested", "BEHIND"),
+    false,
+  );
+  assertEquals(shouldUpdateBranch("held", "BEHIND"), false);
   assertEquals(
     postedResult("approved", [], undefined, { updated: true }),
     { posted: true, outcome: "approved", filedIssues: [], branchUpdated: true },

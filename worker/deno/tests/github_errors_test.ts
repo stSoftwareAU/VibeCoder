@@ -164,6 +164,16 @@ Deno.test("github_errors - 'could not resolve to a repository' with gh command p
 // Network errors
 // =============================================================================
 
+Deno.test("github_errors - gh's connection diagnostic remains retryable through its command wrapper", () => {
+  for (const prefix of ["", "gh command failed (exit 1): "]) {
+    const result = classifyGitHubError(
+      `${prefix}error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com`,
+    );
+    assertEquals(result.category, GitHubErrorCategory.Network);
+    assertEquals(result.isRetryable, true);
+  }
+});
+
 Deno.test("github_errors - connection timeout is classified as network error", () => {
   const result = classifyGitHubError("connection timed out after 30s");
   assertEquals(result.category, GitHubErrorCategory.Network);

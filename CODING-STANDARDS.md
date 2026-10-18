@@ -722,18 +722,28 @@ a Docs Change** below on a change that alters what an existing state
 means. List the messages checked in the PR summary's Test Plan
 (Issue #3259).
 
-**Narrowing a shared helper changes every caller.** Before a helper that
-other code already calls starts rejecting, throwing on or dropping a value it
-used to accept (a validator, type guard, allowed-value set, required field,
-ref/name check), list its existing callers and the real values each can
-receive. Check those values against the tool or API's actual output, not its
-documentation's happy path (see **Observe the real tool before you rely on
-it**). If any existing caller can legitimately pass a value the new rule
-rejects, keep the shared helper as it was and apply the stricter rule at the
-new call site. Otherwise add a test showing an existing caller still accepts
-its real inputs. List the callers checked in the PR summary. A narrowed shared
-helper with no callers-checked list is a blocking self-review finding
-(Issue #3100).
+**Changing what a shared helper returns, refuses or finds changes every
+caller.** Before a helper that other code already calls starts rejecting,
+refusing, throwing on, dropping, finding or returning something different for
+an input it already handled — a validator, type guard, allowed-value set,
+required field or ref/name check that narrows, a lookup that gains a fallback,
+a routine that gains a refusal or precondition — list its existing callers and
+the real values each can receive. Check those values against the tool or API's
+actual output, not its documentation's happy path (see **Observe the real tool
+before you rely on it**). For each existing caller, decide whether its
+behaviour changes under the new result. When one depends on the old result (it
+passes a value the new rule rejects, reads "nothing found" as "leave it
+alone", or runs where the new refusal fires), keep the shared helper as it was
+and apply the new behaviour at the new call site, or change that caller too.
+Add a test that exercises each existing caller whose behaviour the change
+touches, under the new result; a callers-checked list alone does not count,
+because nothing checks a wrong conclusion in it. List the callers checked in
+the PR summary. When the worker's pre-PR verifier runs, it is also given the
+callers outside the diff of each function whose body the diff changes, found
+by the worker's own word search and capped per function, and a listed caller
+left without a verdict, or reported `regressed`, blocks the PR. A changed
+shared helper with no test through an existing caller whose behaviour it
+touches is a blocking self-review finding (Issues #3100, #3779).
 
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the
@@ -1788,6 +1798,21 @@ the Branch outcomes gate sees the list rendered at the
 `<!-- vibe-branch-outcomes -->` marker. It blocks on invalid facts, ambiguous
 block ownership or unresolved evidence; a safely identified legacy duplicate is
 regenerated from the facts.
+
+Pending required CI/quality execution and routine clean code review belong in
+`## Merge verification` on the originating PR, with an honest pending status.
+Waiting for these checks alone is not unfinished implementation and does not
+warrant a partial-delivery follow-up or nested escalation. When the issue
+explicitly states a merge-check criterion, retain its truthful closure entry;
+use a clear pending reason such as `CI not yet verified` or `awaiting code
+review`, without claiming it passed. A mixed criterion whose implementation
+is complete can state its only remainder explicitly:
+`reason: CI not yet verified — remaining: merge-verification-only` (also accepts
+`awaiting code review` or `quality gate not yet run`). Record unavailable local
+tooling and observed results in Evidence. This annotation is not for unfinished
+implementation, absent tests or known failing checks. Failed checks, absent tests,
+known defects and mixed criteria with unfinished product work remain gaps.
+Required CI, review and acceptance gates still apply.
 
 CI runs the same gates on every push to a pull request: the `PR summary
 freshness and gates` step in `.github/workflows/validate-scripts.yml` runs

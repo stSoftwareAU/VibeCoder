@@ -403,6 +403,160 @@ function fakeGh(
   return { gh, calls };
 }
 
+const versionPatch = (from: string, to: string) =>
+  `@@ -1 +1 @@\n-${from}\n+${to}`;
+
+Deno.test("own-diff version-only increments await the existing fix, including a separate bump commit (Issue #3713)", async () => {
+  for (
+    const commits of [
+      [{ sha: "merge", parents: 2 }],
+      [{ sha: "merge", parents: 2 }, { sha: "bump", parents: 1 }],
+    ]
+  ) {
+    const { gh } = fakeGh({
+      "repos/o/r/compare/X...head": compareResponse("ahead", commits),
+      "repos/o/r/compare/main...X": compareFiles([
+        { filename: "VERSION", patch: versionPatch("1.32.4", "1.32.5") },
+        { filename: "a.ts", patch: "@@ -1 +1 @@\n-old\n+unfixed" },
+      ]),
+      "repos/o/r/compare/main...head": compareFiles([
+        { filename: "VERSION", patch: versionPatch("1.32.5", "1.32.6") },
+        { filename: "a.ts", patch: "@@ -3 +3 @@\n-old\n+unfixed" },
+      ]),
+    });
+    assertEquals(
+      await skipReason(
+        searchPr({
+          headRefOid: "head",
+          baseRefName: "main",
+          reviews: { nodes: [review("CHANGES_REQUESTED", "X")] },
+        }),
+        "nleck",
+        (since) =>
+          ownDiffUnchanged(gh, "o/r", "main", since, "head", [{
+            file: "a.ts",
+          }]),
+      ),
+      "awaiting-fix",
+    );
+  }
+});
+
+Deno.test("own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)", async () => {
+  const prior = versionPatch("1.32.4", "1.32.5");
+  const next = versionPatch("1.32.5", "1.32.6");
+  for (
+    const [oldPatch, newPatch, findings, otherPatch, expected] of [
+      [prior, next, [], "+different", false],
+      [prior, `${next}\n-old text\n+new text`, [], "+same", false],
+      [prior, `${next}\n@@ -4 +4 @@\n-2.0\n+2.1`, [], "+same", false],
+      [prior, next, [{ file: "VERSION" }], "+same", false],
+      [prior, next, [{ file: "./VERSION" }], "+same", false],
+      [prior, next, undefined, "+same", false],
+      [prior, versionPatch("1.32.7", "1.32.6"), [], "+same", false],
+      [versionPatch("1.32.5", "1.32.4"), next, [], "+same", false],
+      [prior, versionPatch("1.32.6", "1.32.6"), [], "+same", false],
+      [prior, versionPatch("v1.32.5", "v1.32.6"), [], "+same", false],
+      [versionPatch("v1.32.4", "1.32.5"), next, [], "+same", false],
+      [prior, versionPatch("1.32.5", "v1.32.6"), [], "+same", false],
+      [versionPatch(" 1.32.4", "1.32.5"), next, [], "+same", false],
+      [prior, versionPatch("1.32.5", "1.32.6 "), [], "+same", false],
+      [
+        prior,
+        versionPatch("1.32.5", "1.32.6") + "\n\\ No newline at end of file",
+        [],
+        "+same",
+        false,
+      ],
+      [prior, "@@ -1,9 +1,9 @@\n-1.32.5\n+1.32.6", [], "+same", false],
+      [prior, versionPatch("1.32.5", "1.32.6.0"), [], "+same", false],
+      [
+        versionPatch("1.9", "1.10"),
+        versionPatch("1.10", "1.11"),
+        [],
+        "+same",
+        true,
+      ],
+      [
+        versionPatch("1.2.3.9", "1.2.3.10"),
+        versionPatch("1.2.3.10", "1.2.4.0"),
+        [],
+        "+same",
+        true,
+      ],
+      [
+        versionPatch("1.2.3-beta.1", "1.2.4-beta.2"),
+        versionPatch("1.2.4-beta.2", "1.2.5+build.1"),
+        [],
+        "+same",
+        true,
+      ],
+      [
+        prior,
+        versionPatch("1.32.6-beta.1", "1.32.6-beta.2"),
+        [],
+        "+same",
+        false,
+      ],
+      [
+        prior,
+        versionPatch("1.32.6+build.1", "1.32.6+build.2"),
+        [],
+        "+same",
+        false,
+      ],
+    ] as [string, string, { file: string }[] | undefined, string, boolean][]
+  ) {
+    const { gh } = fakeGh({
+      "repos/o/r/compare/X...head": compareResponse("ahead", [{
+        sha: "merge",
+        parents: 2,
+      }, { sha: "bump", parents: 1 }]),
+      "repos/o/r/compare/main...X": compareFiles([{
+        filename: "VERSION",
+        patch: oldPatch,
+      }, { filename: "a.ts", patch: "+same" }]),
+      "repos/o/r/compare/main...head": compareFiles([{
+        filename: "VERSION",
+        patch: newPatch,
+      }, { filename: "a.ts", patch: otherPatch }]),
+    });
+    assertEquals(
+      await ownDiffUnchanged(gh, "o/r", "main", "X", "head", findings),
+      expected,
+      JSON.stringify({ oldPatch, newPatch, findings, otherPatch }),
+    );
+  }
+});
+
+Deno.test("own-diff version exception never hides a file addition or rename (Issue #3713)", async () => {
+  for (const status of ["added", "renamed"]) {
+    const { gh } = fakeGh({
+      "repos/o/r/compare/X...head": compareResponse("ahead", [{
+        sha: "bump",
+        parents: 1,
+      }]),
+      "repos/o/r/compare/main...X": compareFiles([{
+        filename: "VERSION",
+        status,
+        previous_filename: "old-version",
+        patch: versionPatch("1.32.4", "1.32.5"),
+      }]),
+      "repos/o/r/compare/main...head": compareFiles([{
+        filename: "VERSION",
+        status,
+        previous_filename: "old-version",
+        patch: versionPatch("1.32.5", "1.32.6"),
+      }]),
+    });
+    assertEquals(
+      await ownDiffUnchanged(gh, "o/r", "main", "X", "head", []),
+      false,
+      status,
+    );
+  }
+});
+
 Deno.test("skipReason: a merge-only head after a send-back is awaiting-fix (Issue #3063)", async () => {
   const pr = searchPr({
     headRefOid: "head",
