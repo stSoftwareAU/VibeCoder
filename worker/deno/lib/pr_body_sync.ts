@@ -558,9 +558,15 @@ export async function syncPrBodyFromSummary(
       factsOutcome.kind === "valid" ? factsOutcome.content : null,
     ),
   );
-  const summaryContent = factsOutcome.kind === "valid"
-    ? applyBranchOutcomesFacts(rawSummary, factsOutcome.rendered)
-    : rawSummary;
+  let summaryContent = rawSummary;
+  if (factsOutcome.kind === "valid") {
+    const rendered = applyBranchOutcomesFacts(
+      rawSummary,
+      factsOutcome.rendered,
+    );
+    if (!rendered.ok) return rendered;
+    summaryContent = rendered.value;
+  }
 
   if (recordedDigest !== undefined && recordedDigest === currentDigest) {
     return {
