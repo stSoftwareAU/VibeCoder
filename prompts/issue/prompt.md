@@ -909,13 +909,28 @@ one is broken:
   is not evidence.
 - **Every `partial` and `missing` carries a one-line reason.** An unexplained gap
   is a failure to surface, not a pass. The worker files (or reuses) one
-  `idle-task` follow-up naming each `partial` or `missing` entry and opens the
+  `idle-task` follow-up naming each implementation shortfall and opens the
   PR body with a section linking it, so the reason should say what is left to
   do (Issue #3506). The exception, for a healthy run only (a degraded run still
   files one): on an issue that is itself a partial-delivery follow-up, the worker
   files no nested follow-up. It labels the issue `needs-human`, opens the PR body
   with a "handed to a human" section that links no follow-up, and the PR says
   `Part of` rather than closing the issue.
+- **Pending merge verification stays on this PR.** Record required CI/quality
+  execution and the routine clean code review under `## Merge verification`
+  as pending until observed. Waiting for those checks alone is not unfinished
+  implementation and must not generate a partial-delivery follow-up or a nested
+  escalation. If an issue explicitly states such a criterion, keep its closure
+  entry truthful and use a clear reason such as `CI not yet verified` or
+  `awaiting code review`; never call a pending check `met`. If completed
+  implementation shares a criterion with pending checks, record the remainder
+  exactly as `reason: CI not yet verified — remaining: merge-verification-only`
+  (or `awaiting code review` / `quality gate not yet run` for the reason).
+  Put local tooling limitations and observed results in Evidence. Use this
+  annotation only when no implementation, test or failed-check repair remains.
+  Failed checks,
+  missing tests, known defects and unfinished product work remain real
+  gaps, including when combined with pending CI in the same criterion.
 - **Name your scope creep.** Add an `unrequested` entry for any change in the
   diff that is not traceable to the issue, carrying **both**
   `reviewer: unrequested` and a one-line `reason:` — copy the `unrequested` line
