@@ -77,7 +77,7 @@ flowchart LR
 - Thirty-nine retained production mutations each fail a named regression
   assertion. An unobservable secondary category-selection branch was removed;
   no surviving mutation is represented as red.
-- Integration with main `60392646` passes five completion/quality/summary suites: 115 tests with type checking enabled, including typed divergence, generic git-error and terminal turn-limit controls. The assertion ledger accounts for all 22 replacements.
+- Integration with main `7bd0d619` passes five completion/quality/summary suites: 115 tests with type checking enabled, including typed divergence, generic git-error and terminal turn-limit controls. The assertion ledger accounts for all 22 replacements.
 - Foreground `./quality.sh --sequential < /dev/null` passed at implementation head `74bdb230dbac4e26bace51fd98254cdcb5f305f3`: both unit passes, completeness, lint, type check, format, Markdown/Mermaid, Semgrep and the repository static/security checks. Optional local configuration integration was skipped because `.config.json` is absent. Required CI and merge protections remain in force.
 - Independent Spec and Standards source reviews found no remaining material
   findings. Their earlier findings drove the source-provenance, callback and
