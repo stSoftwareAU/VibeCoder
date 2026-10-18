@@ -6,9 +6,9 @@
 // cheap, deterministic things for each open Dependabot PR into a default
 // branch, with no model involved:
 //
-//   - behind or conflicting: ask Dependabot to rebase it (once per head
-//     commit), so the branch is brought up to date and conflicts resolved by
-//     Dependabot itself; pushing to its branch would stop it updating the PR;
+//   - behind and approved at its head: branch_update.ts merges in the base
+//     once per head with expected_head_sha; conflicting PRs wait on Dependabot
+//     with no push or comment, and unapproved PRs get their review first;
 //   - approved by the reviewer and not yet armed: arm auto-merge, so it
 //     merges as soon as every required check passes.
 //
@@ -18,23 +18,20 @@ import type { SearchPr } from "./gate.ts";
 import { sameLogin } from "./review_log.ts";
 
 export type DependabotAction =
-  | { kind: "rebase" }
   | { kind: "auto-merge"; method: "squash" | "merge" | "rebase" }
   | { kind: "none"; reason: string };
 
-// Decides the one action a Dependabot PR needs this pass. `rebaseAskedFor`
-// is the head commit a rebase was last requested for, so the request is not
-// repeated while Dependabot works on it.
+// Decides whether to arm auto-merge. Branch updates share the fleet path.
 export function dependabotAction(
   pr: SearchPr,
   reviewer: string,
-  rebaseAskedFor: string | undefined,
 ): DependabotAction {
   if (pr.isDraft) return { kind: "none", reason: "draft" };
-  if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "BEHIND") {
-    return rebaseAskedFor === pr.headRefOid
-      ? { kind: "none", reason: "rebase already requested" }
-      : { kind: "rebase" };
+  if (pr.mergeable === "CONFLICTING") {
+    return { kind: "none", reason: "conflicting, waiting on Dependabot" };
+  }
+  if (pr.mergeStateStatus === "BEHIND") {
+    return { kind: "none", reason: "branch update follows approval" };
   }
   if (pr.autoMergeRequest) return { kind: "none", reason: "auto-merge armed" };
   const approvedByReviewer = pr.reviews.nodes.some((r) =>

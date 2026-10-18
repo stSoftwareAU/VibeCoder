@@ -2537,3 +2537,46 @@ Deno.test("Issue #3720: summary refresh preserves the originating assignment", a
     await Deno.remove(repoPath, { recursive: true });
   }
 });
+
+Deno.test("sync - pending verification stays visible without a partial-delivery follow-up banner (Issue #3961)", async () => {
+  const summary =
+    `## Summary\n\nCloses #${ISSUE_NUMBER}.\n\n## Acceptance Criteria\n\n- **partial** — required CI — evidence: PR checks pending — reviewer: partial — reason: CI not yet verified\n`;
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary,
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({ body: "## Acceptance Criteria\n\n- required CI\n" }),
+  });
+  assert(result.ok);
+  assertEquals(result.value.status, "updated");
+  const synced =
+    ghCalls.find((call) => call.args[0] === "pr" && call.args[1] === "edit")
+      ?.bodyFileContent ?? "";
+  assertStringIncludes(synced, "CI not yet verified");
+  assert(!synced.includes("Partial delivery —"));
+  assert(!synced.includes("#77"));
+  assertEquals(
+    ghCalls.filter((call) =>
+      call.args[0] === "issue" && call.args[1] !== "view"
+    ),
+    [],
+  );
+});
+
+Deno.test("sync - newly pending-only verification does not discover or file a follow-up (Issue #3961)", async () => {
+  const summary =
+    `## Summary\n\nCloses #${ISSUE_NUMBER}.\n\n## Acceptance Criteria\n\n- **partial** — required CI — evidence: PR checks pending — reviewer: partial — reason: CI not yet verified\n`;
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary,
+    live: OLD_SUMMARY_WITH_FOOTER,
+    issueView: () => {
+      throw new Error("pending-only sync must not fetch the issue");
+    },
+  });
+  assert(result.ok, result.ok ? "" : result.error.message);
+  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
+    ?.bodyFileContent ?? "";
+  assertStringIncludes(synced, "CI not yet verified");
+  assert(!synced.includes("Partial delivery —"));
+  assertEquals(ghCalls.filter((c) => c.args[0] === "issue"), []);
+});
