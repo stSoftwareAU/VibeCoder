@@ -134,68 +134,24 @@ other caller reads `FormatterFix.paths` expecting the old whole-root value.
 
 ## Acceptance Criteria
 
-1. **Reproduction explains why the formatter did not prevent each failure** —
-   SATISFIED. The Rust and nested-Deno cases were reconstructed against the
-   current worker build; both format-then-gate paths already pass on main, so
-   the historical failures were deployment lag (an older build lacking the
-   Issue #2967/#2932 wiring). The one live defect — cargo's broad staging — is
-   reproduced above and fixed here.
-2. **Valid unformatted Rust and nested-Deno/JSON fixtures pass the gate after
-   auto-formatting, without a coding-failure attempt** — SATISFIED. The two
-   `completion - an unformatted …` tests drive `formatBranchChanges` then
-   `gateUnpushedCommits` and assert bare-gate-fails → committed → gate-passes.
-3. **A recovery merge or later approved edit cannot leave the final
-   checked/pushed head different from the formatted head unnoticed** —
-   SATISFIED (unchanged). The completion phase re-runs `gateBeforePush()` after
-   `recoverFromPushRejection` (`completion_phase.ts:2164`), and the feedback/CI
-   processors re-run `finalise()` on retry. No new divergence is introduced by
-   this change; the whole-workspace reformat of a branch-untouched `.rs` file
-   is deliberately left unstaged (see Spec → Undiscoverable Facts) and only
-   arises from pre-existing red-on-main debt.
-4. **Missing tooling / invalid syntax / real lint/test failures stay visible
-   and blocking** — SATISFIED (unchanged). `runRepoFormatters` records a
-   non-zero formatter exit in `failures`, logs it, and never throws; the gate
-   that follows still runs and reports the problem. The new Rust tests skip via
-   `hasCargo()` only when `cargo`/`rustfmt` are absent, and assert a real gate
-   outcome whenever the tools are present.
-5. **Repair is idempotent and preserves unrelated edits (no second formatter
-   implementation)** — SATISFIED. The staging change is a four-line edit inside
-   the existing `planFormatterFixes`; idempotency is preserved by the snapshot
-   short-circuit (test "formatter that changes nothing does not commit"), and
-   unrelated-edit preservation is proven by the new staging test.
-6. **Deployed-build evidence + regression fixture where main already fixes the
-   historical failure** — SATISFIED. The nested-Deno case needed no code change
-   (the deno loop was always scoped); the regression fixture is the new JSON
-   test, and the Rust fixtures double as evidence that the current build's
-   format-then-gate path is correct.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — reproduction explains why the formatter did not prevent each historical failure — evidence: `worker/deno/tests/completion_phase_repo_formatters_test.ts::completion - an unformatted Rust change is formatted and committed, then passes the gate` — reviewer: partial — reason: the narrative was absent from the diff the reviewer saw; it is now in the Reproduction section above (deployment lag plus the cargo broad-staging defect).
+- **met** — valid unformatted Rust and nested-Deno/JSON fixtures pass the gate after auto-formatting, without a coding-failure attempt — evidence: `worker/deno/tests/completion_phase_repo_formatters_test.ts::completion - an unformatted nested-Deno JSON change is formatted and committed, then passes the gate` — reviewer: met
+- **partial** — a recovery merge or later approved edit cannot leave the final checked/pushed head different from the formatted head unnoticed — evidence: `worker/deno/lib/phases/completion_phase.ts:2164` — reviewer: partial — reason: the recovery re-gate pre-exists and is unchanged; the only residual is a whole-workspace reformat of a branch-untouched `.rs` file, deliberately left unstaged and only arising from pre-existing red-on-main debt.
+- **met** — missing tooling, invalid syntax, and real lint/test failures stay visible and blocking — evidence: `worker/deno/lib/repo_formatters.ts` failures record and the `hasCargo()` skip guard in `worker/deno/tests/completion_phase_repo_formatters_test.ts` — reviewer: met
+- **met** — repair is idempotent and preserves unrelated edits, with no second formatter implementation — evidence: `worker/deno/tests/completion_phase_repo_formatters_test.ts::completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit` — reviewer: met
+- **partial** — where current main already fixes the historical failure, provide deployed-build evidence plus a regression fixture — evidence: `worker/deno/tests/completion_phase_repo_formatters_test.ts::completion - an unformatted nested-Deno JSON change is formatted and committed, then passes the gate` — reviewer: partial — reason: the nested-Deno case needed no code change (the deno loop was always scoped); the three fixtures, run against the real worker build, are the deployed-build evidence.
 
 ## Standards Review
 
-Standards reviewer: no blockers. Findings and disposition:
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- PASS — all new tests drive real code (`formatBranchChanges`,
-  `gateUnpushedCommits`, real git) and assert on results, file bytes, `git
-  show`/`git status`; no grep/source-text assertions.
-- PASS — the edited `repo_formatters_test.ts:191` assertion and the new staging
-  test both genuinely go red if `paths: changedRs` is reverted to `[root]`.
-- INFO (accepted) — the Rust/JSON format-then-pass tests are coverage of the
-  pre-existing happy path rather than regression guards for this change; the
-  true guards are the staging test and the edited unit assertion.
-- PASS — no secrets, no hidden files, no `git add -f`/`--no-verify`; working
-  tree clean of the scratch repro file (created then removed within the branch).
-- PASS — Markdown restriction preserved; `DENO_CODE_FORMAT_EXTENSIONS` and the
-  "never Markdown" logic untouched.
-- MINOR (accepted) — the two WIP checkpoint commits (`c65d7ae1`, `3d6f655f`)
-  carry `Vibe-Coder-Run-Id` but not `Co-Authored-By`; both are worker
-  auto-commits on this feature branch and are not rewritten (force-push is
-  forbidden). The hand-authored commits (`1c7cfa47`, `388d5b5a`) carry both
-  trailers.
-- MINOR (fixed) — `FormatterFix.paths` doc now reads "staged after the
-  formatter runs" instead of "may rewrite".
-- INFO (accepted) — `hasCargo()` returns early with a `console.warn` when the
-  tools are absent, which Deno reports green (the standard no-`t.ignore()`
-  workaround); it performs zero assertions on the skip path, so it cannot mask
-  a real failure as a pass.
+- **violation** — the `FormatterFix.paths` doc comment described the staging pathspec as "the formatter may rewrite", imprecise once cargo staging narrowed — evidence: `worker/deno/lib/pre_push_gate.ts:483` — reason: fixed in this diff
+- **clean** — new and edited tests drive real code (`formatBranchChanges`, `gateUnpushedCommits`, a real git repo) and assert on results, file bytes, `git show`/`git status`; no source-text inspection
+- **clean** — no secrets, no hidden files, no `git add -f`/`--no-verify`; the scratch repro file was created and removed within the branch and is not in the final diff
+- **clean** — the deliberate Markdown restriction is preserved (`DENO_CODE_FORMAT_EXTENSIONS` and the "never Markdown" logic untouched)
+- **clean** — Australian English in all new comments and messages; no second formatter implementation (a four-line edit inside the existing `planFormatterFixes`/`runRepoFormatters`)
 
 ## Test Plan
 
