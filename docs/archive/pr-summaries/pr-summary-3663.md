@@ -63,8 +63,17 @@ guard mutations each caused an assertion failure; restored
 production code passed again. The full review-fleet suite passed 243 tests;
 the manifest gate passed 687 tests with one existing ignored test. Changed TypeScript files passed lint, and Markdown lint reported no errors.
 The quality-repair regressions first failed (57 passed, 2 failed), then all
-67 related classifier/ruleset tests passed. Full local quality validation and
-hosted CI remain pending.
+67 related classifier/ruleset tests passed. The first hosted full gate reached
+28,649 passing parallel tests and one orchestration-test failure: its empty
+fixture depended on a host Markdown runner that failed to spawn. The fixture
+now supplies its own executable through the real local-binary discovery path;
+the original shellcheck assertion remains intact. With Markdown absent from
+`PATH`, a new positive assertion first failed (zero passed, one failed), then
+passed with the fixture. All 56 scoped quality-gate and Markdown tests pass.
+The same hosted run lacked `GH_TOKEN` for the release-ruleset check and did not
+reach serial tests. The earlier local full gate was interrupted after 45
+minutes without unit-stage output. A corrected hosted full-gate run is pending;
+none of these incomplete attempts is counted as a pass.
 
 Docs sweep — grep: `"Dependabot branches are never pushed"`, `"rebase requested"`,
 `"dependabot-rebase"`; updated the skill's Rules and references/edge-cases.md;
@@ -87,6 +96,9 @@ The forwarding shims delegate to these scripts and need no duplicate edit.
 - `worker/deno/tests/review_fleet_prs_app_reviewer_test.ts`: retain the App approval
   assertion after removing the obsolete rebase-cache parameter.
 - Existing auto-merge and failure-continuation assertions remain covered.
+- `worker/deno/tests/quality_gate_test.ts`: keep the shellcheck-removal assertion
+  and positively confirm that the fixture's Markdown check completes without
+  relying on a global Node installation.
 
 The following assertion replacements remove obsolete helper arguments or change
 only issue-required author/rebase expectations. The added end-to-end post case

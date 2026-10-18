@@ -20,9 +20,17 @@ jobs:
         # actions/checkout@v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 754aa0ada96f806235f310f72f4a9fec9e9d6e17
+          ref: b1145f6c8bbea51cca8d829a593a41538be4c92b
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Set the fetched default branch for changed-file checks
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git show-ref --verify --quiet "refs/remotes/origin/${DEFAULT_BRANCH}"
+          git symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/${DEFAULT_BRANCH}"
 
       - name: Install pinned Deno
         # denoland/setup-deno@v2.0.5
@@ -40,7 +48,12 @@ jobs:
         # zizmor: ignore[adhoc-packages] -- identical exact pin and --ignore-scripts used by markdown-lint.yml; this temporary validation workflow is excluded from the source tree under test.
         run: npm install -g --ignore-scripts markdownlint-cli2@0.23.2
 
+      - name: Fetch the existing CI-pinned Semgrep image
+        run: docker pull semgrep/semgrep:1.173.0@sha256:67319956da3dcb58baf5b322899c15458e3963e7018a86aeeb5cd224e69cb77a
+
       - name: Run the unchanged full repository quality gate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           ./quality.sh < /dev/null 2>&1 | tee /tmp/milestone-quality.log
