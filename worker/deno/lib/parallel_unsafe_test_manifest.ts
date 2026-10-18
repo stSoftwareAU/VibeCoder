@@ -50,7 +50,7 @@
  * change. {@link WALL_CLOCK_TEST_FILES} carries those. A third, narrower
  * reason showed up in the trial after: two suites that spawn something real —
  * a container runtime, `run.sh` — and then race it, which nine competing
- * workers win. {@link SUBPROCESS_TIMING_TEST_FILES} carries those two, with
+ * workers win. {@link SUBPROCESS_TIMING_TEST_FILES} carries these suites, with
  * the measurement that put them there.
  *
  * {@link PARALLEL_UNSAFE_TEST_FILES} is the union the gate actually ignores.
@@ -468,6 +468,10 @@ const ELAPSED_BOUND =
  */
 export const SUBPROCESS_TIMING_TEST_FILES: ReadonlyMap<string, string> =
   new Map([
+    [
+      "tests/run_core_signal_cleanup_test.ts",
+      "Real SIGINT/SIGTERM entrypoint and descendant cleanup. Full --parallel pass: both tests exceeded 1s (2.38s total); isolated: 887ms and 820ms. Process startup and graceful termination contend with parallel workers. Keep every assertion in the required serial pass.",
+    ],
     [
       "tests/container_containment_test.ts",
       "builds a real container and bounds `<runtime> volume create` with " +
