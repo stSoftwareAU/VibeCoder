@@ -98,8 +98,8 @@ behaviour the change touches. Closes #3779.
 ## Evidence
 
 Backend-only change; no UI file is touched. It is verified by unit tests
-against real git with a scripted model. The four focused suites pass 114
-tests: `caller_checks_3779_test.ts` (37), `pre_pr_verifier_3395_test.ts`
+against real git with a scripted model. The four focused suites pass 116
+tests: `caller_checks_3779_test.ts` (39), `pre_pr_verifier_3395_test.ts`
 (69, including the retained earlier-findings regression), `narrowing_shared_helper_3100_test.ts`
 (1) and `pr_review_brief_shared_3395_test.ts` (7).
 
@@ -124,7 +124,7 @@ flowchart LR
 
 ## Test Plan
 
-- `worker/deno/tests/caller_checks_3779_test.ts` (37 tests) covers the gate in
+- `worker/deno/tests/caller_checks_3779_test.ts` (39 tests) covers the gate in
   isolation against real git:
   - `definitionName` across each supported language, and its rejection of
     control words, short names and ordinary calls; `assertLinearGrowth` on
@@ -161,6 +161,15 @@ flowchart LR
   rule's wording on both surfaces, and the added phrases (`a lookup that gains
   a fallback`, `reads "nothing found" as "leave it alone"`, `a callers-checked
   list alone does not count`) were absent from the base paragraph.
+- Removed from `worker/deno/tests/narrowing_shared_helper_3100_test.ts`: assert(start >= 0, `could not locate the narrowing-helper rule in ${what}`);
+  Required by: "Changing what a shared helper returns, refuses or finds changes every caller"
+  Replaced by: ``assert(start >= 0, `could not locate the changing-a-shared-helper rule in ${what}`)``
+- Removed from `worker/deno/tests/narrowing_shared_helper_3100_test.ts`: assert(paragraph.includes(phrase), `${surface} is missing "${phrase}" from the narrowing-helper rule: ${paragraph}`);
+  Required by: "Changing what a shared helper returns, refuses or finds changes every caller"
+  Replaced by: ``assert(paragraph.includes(phrase), `${surface} is missing "${phrase}" from the changing-a-shared-helper rule: ${paragraph}`)``
+- Removed from `worker/deno/tests/narrowing_shared_helper_3100_test.ts`: assertEquals(narrowingHelperParagraph(standards, "CODING-STANDARDS.md"), narrowingHelperParagraph(guidelines, "coding_guidelines"), "the narrowing-a-shared-helper rule must be identical on both surfaces");
+  Required by: "Changing what a shared helper returns, refuses or finds changes every caller"
+  Replaced by: ``assertEquals(sharedHelperRuleParagraph(standards, "CODING-STANDARDS.md"), sharedHelperRuleParagraph(guidelines, "coding_guidelines"), "the changing-a-shared-helper rule must be identical on both surfaces")``
 - `worker/deno/tests/pr_review_brief_shared_3395_test.ts` gives the prompt
   base its new `callerChecks: { expected: [], notes: [] }` field so the
   existing "carries every rule" test still runs.
@@ -176,6 +185,8 @@ flowchart LR
   production caller) and that wiring is exercised by the verifier tests above;
   the fixture `sharedHelper` body change has its caller listed by the tests
   that read it.
+- `worker/deno/lib/caller_checks.ts:92` — exempt (untestable): `if` is two characters, so the length check rejects it before the control-word set is read
+- `worker/deno/lib/caller_checks.ts:100` — exempt (untestable): `do` is two characters, so the length check rejects it before the control-word set is read
 - Docs sweep — grep: "Narrowing a shared helper", "starts rejecting, throwing
   on or dropping", "apply the stricter rule at the new call site", "callers",
   "pre-PR verifier"; section: `CODING-STANDARDS.md#test-coverage-expectations`,
