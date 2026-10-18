@@ -99,8 +99,8 @@ export function detectHostFault(
   // A worker gate refusal (every WORKER_GATE_MARKERS category) is the worker's
   // own words plus a quotation of text it did not write: the agent's summary
   // or tests, or the branch's raw check output (Issues #3431, #3454; PR #3716
-  // review; Issue #3735). A quoted `ENOSPC` or `Failed to clone` there is not
-  // host output, so it is never a host fault.
+  // review). A quoted `ENOSPC` or `Failed to clone` there is not host output,
+  // so it is never a host fault.
   if (workerGateCategoryOf(message) !== null) return null;
   if (
     brokenRefsIn(message).length > 0 || isObjectStoreCorruption(message) ||

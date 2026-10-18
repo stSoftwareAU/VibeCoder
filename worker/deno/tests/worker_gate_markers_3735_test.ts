@@ -1,7 +1,7 @@
 /**
  * Issue #3735: one registry, `WORKER_GATE_MARKERS`, decides the category of a
- * worker gate refusal, and every classifier reads it first. Each registered
- * gate is exercised against hostile quotations of tool, agent and issue text.
+ * raw worker gate refusal before free-text heuristics. Declared source causes
+ * remain authoritative. Each registered gate is exercised against hostile quotations of tool, agent and issue text.
  * The tests iterate the registry, so a new gate is covered by construction.
  *
  * Uses Australian English spelling (behaviour, recognised, etc.).
@@ -12,6 +12,7 @@ import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
 import {
   DEADLINE_BOUND_TIMEOUT_MARKER,
   detectFailureCategory,
+  type FailureCategory,
   getFailureCategoryDisplay,
   isWorkerGateCategory,
   isWorkerGateFailureRecord,
@@ -164,7 +165,10 @@ async function hostFaultSweepReleases(body: string): Promise<boolean> {
  * The comment bodies the real label writers post for `reason`: the first
  * attempt (`markIssueAsFailedOnce`) and the second (`markIssueAsFailed`).
  */
-async function postedBodies(reason: string): Promise<string[]> {
+async function postedBodies(
+  reason: string,
+  category?: FailureCategory,
+): Promise<string[]> {
   const bodies: string[] = [];
   const ghCommandFn = (args: string[]): Promise<string> => {
     if (args[1] === "comment") {
@@ -177,11 +181,50 @@ async function postedBodies(reason: string): Promise<string[]> {
     issueNumber: ISSUE,
     githubUser: FLEET_AUTHOR,
     failureMessage: reason,
+    category,
   };
   await markIssueAsFailedOnce(options, { ghCommandFn });
   await markIssueAsFailed(options, { ghCommandFn });
   return bodies;
 }
+
+Deno.test("declared verifier quality records remain protected alongside registry gates in both release sweeps (Issues #3735 and #3738)", async () => {
+  for (const quote of [BROKEN_REF_QUOTE, GH013_REFUSAL]) {
+    const reason = `Verifier found a defect; quoted fixture:\n${quote}`;
+    for (const body of await postedBodies(reason, "quality_check")) {
+      assert(body.includes("**Category:** `quality-failure`"));
+      assert(!body.includes("**Source:** quality gate"));
+      assertEquals(isWorkerGateFailureRecord(body), false);
+      if (quote === BROKEN_REF_QUOTE) {
+        assertEquals(detectHostFault(body), "clone-corrupt");
+      }
+      assertEquals(refusalIsMostRecentFailure([body]), false);
+      assertEquals(await hostFaultSweepReleases(body), false);
+    }
+  }
+  // The headed-record contract also covers records without the current
+  // writer's follow-up advice (which itself mentions quality checks).
+  const headedRecord = "## Automated Processing Failed (First Attempt)\n\n" +
+    "**Category:** `quality-failure`\n\n### Error Output\n" + GH013_REFUSAL;
+  assertEquals(detectFailureCategory(headedRecord), "repo_config");
+  assertEquals(refusalIsMostRecentFailure([headedRecord]), false);
+});
+
+Deno.test("declared source causes outrank quoted registry markers (Issues #3735 and #3738)", () => {
+  for (const entry of WORKER_GATE_MARKERS) {
+    const reason = `${entry.marker}: ${ENOSPC_QUOTE}`;
+    assertEquals(
+      classifyCodingFailure(reason, "push_failure").category,
+      "push_failure",
+    );
+    assertEquals(
+      classifyCodingFailure(reason, "push_failure").disposition,
+      "transient",
+    );
+    assertEquals(detectHostFault(reason, "clone_corrupt"), "clone-corrupt");
+    assertEquals(detectHostFault(reason, "quality_check"), null);
+  }
+});
 
 /** A failure record the worker did not mark: the `unknown` category line. */
 function unmarkedRecord(quote: string): string {
@@ -195,7 +238,7 @@ for (const entry of WORKER_GATE_MARKERS) {
       const reason = `${entry.marker}: ${quote}`;
       assertEquals(detectFailureCategory(reason), entry.category, quote);
       assertEquals(
-        classifyRunFailure(entry.category, reason).failureClass,
+        classifyRunFailure(entry.category, reason, false).failureClass,
         "agent-outcome",
         quote,
       );

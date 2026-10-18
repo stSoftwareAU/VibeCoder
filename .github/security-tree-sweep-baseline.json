@@ -122,6 +122,16 @@
         "worker/deno/lib/parallel_unsafe_test_manifest.ts:439"
       ],
       "reason": "Deliberate, and the missing space is the point: the fixture is assembled from halves so this test file does not itself contain the literal `assertLinearGrowth`, which the manifest scan under test searches for. Written whole, the fixture would classify its own test file as measuring wall-clock time. Same triage as the `export_branding_test.ts` split fixtures (Issue #1518 triage, js/missing-space-in-concatenation)."
+    },
+    {
+      "path": "worker/deno/tests/failure_diagnosis_test.ts",
+      "rule": "template-syntax-in-string-literal",
+      "line": 990,
+      "evidence": [
+        "worker/deno/tests/failure_diagnosis_test.ts:990",
+        "worker/deno/tests/failure_diagnosis_test.ts:993"
+      ],
+      "reason": "Deliberate source-code fixture: the literal ${detectFailureCategory(reason)} must reach resultLiteralReclassifies unchanged so this assertion catches failure categories derived from template interpolation. It is parsed as test input, never evaluated (Issue #3738; PR #4003 CI triage)."
     }
   ],
   "accepted": [

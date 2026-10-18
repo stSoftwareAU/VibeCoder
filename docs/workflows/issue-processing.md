@@ -3423,9 +3423,10 @@ fault. The posted
 the two label-release sweeps that re-classify a posted body
 (`host_fault_release.ts` and `milestone_branch_refusal_release.ts`) recognise
 the record by its worker-written `**Category:**` line at the head of the
-comment naming any registered gate category, such as `summary-incomplete`, or
-`quality-failure` (`isWorkerGateFailureRecord`), and leave its labels
-alone, however the quoted summary or verifier evidence reads. The catch-all `Error:` rule excludes `::` paths.
+comment naming any registered gate category or `quality-failure`
+(`isWorkerGateFailureRecord` and `isSummaryOrQualityFailureRecord`), and leave
+its labels alone, however the quoted summary or verifier evidence reads. The
+catch-all `Error:` rule excludes `::` paths.
 
 A run refused by the security-fix gate is categorised `security_fix_gate`
 (display `security-fix-gate`, Issue #3454) the same way: the failure reason opens

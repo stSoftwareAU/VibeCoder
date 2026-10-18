@@ -96,8 +96,8 @@ the fault immediately rather than swallowing it into a green result.
   (`workerGateCategoryOf`) before their free-text rules; `classifyRunFailure`
   and `classifyCodingFailure` first test the category they classify with
   `isWorkerGateCategory`, a comparison with the registry's categories
-  (`classifyCodingFailure` takes it from `detectFailureCategory`, and
-  `shouldRetryInfrastructureFailure` follows through `detectFailureCategory`);
+  (`classifyCodingFailure` and `shouldRetryInfrastructureFailure` retain a
+  supplied source category and use `detectFailureCategory` for raw reasons);
   the label-release sweeps skip any worker gate record
   (`isWorkerGateFailureRecord`). A new gate refusal is one registry entry,
   which each reader above then sees with no edit of its own.

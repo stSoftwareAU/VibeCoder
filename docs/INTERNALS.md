@@ -5104,12 +5104,16 @@ to its `FailureCategory`. `detectFailureCategory` and `detectHostFault`
 (`run_outcome_classifier.ts`) and `classifyCodingFailure`
 (`coding_failure_ladder.ts`) instead first test the category they are given
 with `isWorkerGateCategory`, which compares it with the registry's categories;
-`classifyCodingFailure` takes that category from `detectFailureCategory`, and
-so does `shouldRetryInfrastructureFailure`. The
-host-fault and milestone-refusal label-release sweeps skip any posted failure
-comment that `isWorkerGateFailureRecord` recognises: one whose head
-`**Category:**` line names a registered gate category's display
-(`summary-incomplete`, `security-fix-gate`, `pre-push-gate`).
+`classifyCodingFailure` and `shouldRetryInfrastructureFailure` retain a supplied
+source category and call `detectFailureCategory` only for raw reasons.
+`detectHostFault` also honours a declared source cause before reading the
+message. The host-fault and milestone-refusal label-release sweeps skip any
+posted failure comment that `isWorkerGateFailureRecord` recognises: one whose
+head `**Category:**` line names a registered gate category's display
+(`summary-incomplete`, `security-fix-gate`, `pre-push-gate`). They separately
+preserve substantive `quality-failure` records through
+`isSummaryOrQualityFailureRecord`, including verifier records without a
+repository-quality Source line.
 `PRE_PUSH_LOOKUP_FAILED_MARKER` is deliberately not registered: a failed git or
 remote lookup stays `push_failure`, an infrastructure category. A new gate is one
 registry entry with its own category, plus its hostile quotes in
@@ -5146,13 +5150,13 @@ the posted comment instead, which buries the marker, so they need the check
 below. The posted failure comment embeds
 the reason under a heading, so the marker no longer opens the body; the
 host-fault and milestone-refusal label-release sweeps, which re-classify posted
-bodies, therefore skip any record whose worker-written `**Category:**` line at the
-head of the comment names a registered gate category, such as
-`summary-incomplete`, or `quality-failure` (`isWorkerGateFailureRecord` in
+bodies, therefore skip a record whose worker-written `**Category:**` line at the
+head of the comment names a registered gate category or `quality-failure`
+(`isWorkerGateFailureRecord` and `isSummaryOrQualityFailureRecord` in
 `failure_diagnosis.ts`). A quoted `ignoring broken ref` or milestone `GH013`
-rejection in a refused summary or substantive verifier finding cannot strip
-`failed-once` or `failed`. Quality findings retain their category without a
-`quality gate` Source line: that line is reserved for actual repository output.
+rejection in a refused summary, gate or substantive verifier finding cannot
+strip `failed-once` or `failed`. Quality findings retain their category without
+a `quality gate` Source line: that line is reserved for actual repository output.
 
 #### `security_fix_gate` is its own failure category (Issue #3454)
 
