@@ -86,6 +86,33 @@ the fault immediately rather than swallowing it into a green result.
   summary. Observe the real tool's output for each failure class the reason
   claims to tell apart (see **Observe the real tool before you rely on it**),
   and test it as **A failure-reason test asserts the cause** says.
+- **A failure reason that quotes text the worker did not write opens with a
+  registered worker marker** — a reason that embeds tool output (formatter
+  diffs, linter context, cspell words, test output), agent text (the PR summary,
+  test declarations) or issue or comment text opens with a worker-written
+  constant from `worker/deno/lib/failure_diagnosis.ts`, registered with its own
+  category in `WORKER_GATE_MARKERS`. `detectFailureCategory` and
+  `detectHostFault` read that registry with `startsWith` on the message
+  (`workerGateCategoryOf`) before their free-text rules; `classifyRunFailure`
+  and `classifyCodingFailure` first test the category they classify with
+  `isWorkerGateCategory`, a comparison with the registry's categories
+  (`classifyCodingFailure` and `shouldRetryInfrastructureFailure` retain a
+  supplied source category and use `detectFailureCategory` for raw reasons);
+  the label-release sweeps skip any worker gate record
+  (`isWorkerGateFailureRecord`). A new gate refusal is one registry entry,
+  which each reader above then sees with no edit of its own.
+  Without such a marker, the quoted cause line that the bullet above asks for
+  lets a quoted `rate limit`, `timeout`, `SIGKILL`, `command not found`,
+  `ENOSPC` or `Error:` turn a gate block into a transient, killed,
+  missing-tools, disk-full or worker-crash run, with no ladder attempt or
+  failure comment, re-claimed every cycle (VibeCoder#3440, #3716). Reading the
+  marker back is a gate over text (rule 5 of **Writing a gate over text**).
+  Each new entry's hostile quotes go in
+  `worker/deno/tests/worker_gate_markers_3735_test.ts`, which asserts the gate's
+  own category, a `ladder` disposition and no host fault for the raw reason,
+  and for the posted failure comment that it is a worker gate record
+  (`isWorkerGateFailureRecord`) that neither label-release sweep releases
+  (Issue #3735).
 
 ## Worker failure causes
 
@@ -1096,6 +1123,34 @@ stale. Before calling a gate done (Issue #3149):
    way — escapes, whitespace, comments — and use equality on the normalised
    forms rather than substring containment, unless containment is the
    contract.
+5. **Reading the worker's own marker is a gate over text.** Code that asks
+   "does this body carry my marker?" — an HTML-comment marker or a reason
+   prefix the worker writes — is a gate over text whenever the body also
+   holds agent-written, issue or comment text: a PR body that opens with the
+   agent's PR summary, a failure reason that quotes the agent's summary or
+   test lines, or a failure comment that embeds that reason. Summaries
+   routinely quote a feature's own marker in a code span, so the control path
+   trips with no attacker involved (VibeCoder#3353, #3440, #3676). Read the
+   marker only where the worker writes it: at the anchored position — the
+   block that opens the body (`extractLeadingSection` in
+   `worker/deno/lib/pr_body_sync.ts`), the opening heading with the marker on
+   the next line (`hasFollowUpChainStop` in
+   `worker/deno/lib/missing_criterion_close_guard.ts`), or a `startsWith` on
+   the worker-written prefix (`SUMMARY_RULE_GATE_MARKER` in
+   `worker/deno/lib/failure_diagnosis.ts`, one of the gate-refusal prefixes
+   registered in `WORKER_GATE_MARKERS` and read by
+   `workerGateCategoryOf`) — or after the agent part has been
+   neutralised before the worker appends its own marker
+   (`neutraliseAgentMarkers` in
+   `worker/deno/lib/agent_marker_neutralisation.ts`,
+   `neutraliseSubAgentTierMarkers` in `worker/deno/lib/pr_body.ts`). Never
+   use `includes()` or a first-occurrence match over such a mixed body.
+   Reuse the anchoring a sibling marker already uses rather than writing a
+   new helper, widening its export where it is private. Rule 1's look-alike
+   tests include the agent's text quoting the marker in a code span and in
+   plain prose after the summary heading, each asserting the control path
+   does **not** fire, plus one for the body after any later re-wrapping the
+   worker does, such as a reason embedded in a failure comment (Issue #3696).
 
 A gate's matcher must also stay cheap on hostile input — see the ReDoS
 guidance under **Unit tests** below.

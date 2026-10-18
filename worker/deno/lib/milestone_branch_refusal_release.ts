@@ -26,6 +26,7 @@ import {
 import {
   detectFailureCategory,
   isSummaryOrQualityFailureRecord,
+  isWorkerGateFailureRecord,
 } from "./failure_diagnosis.ts";
 import {
   FAILURE_RECORD_HEADING_PATTERN,
@@ -145,9 +146,9 @@ export function resetMilestoneBranchRefusalSweepsForTest(): void {
  * `quality_check` here, so its label survives — matching the refusal pattern
  * against the comment body alone would have released it.
  *
- * A summary or substantive quality record (`isSummaryOrQualityFailureRecord`)
- * retains its declared verdict even when quoted evidence shows rejection text
- * (Issues #3431 and #3738).
+ * Registered worker gate records and substantive quality records retain their
+ * declared verdict, even when quoted evidence resembles rejection text
+ * (Issues #3735 and #3738).
  *
  * A newer claim-churn, question-answering-failure or planning-escalation
  * record also keeps the labels: it is a genuine failure record of its own,
@@ -159,8 +160,11 @@ export function refusalIsMostRecentFailure(
   for (let i = commentBodies.length - 1; i >= 0; i--) {
     const body = commentBodies[i];
     if (body === undefined || !FAILURE_RECORD_RE.test(body)) continue;
-    // Preserve summary and quality verdicts before examining quoted evidence.
-    if (isSummaryOrQualityFailureRecord(body)) return false;
+    // Preserve both registered gates and substantive quality verdicts before
+    // examining quoted rejection evidence.
+    if (
+      isWorkerGateFailureRecord(body) || isSummaryOrQualityFailureRecord(body)
+    ) return false;
     return REFUSAL_CANDIDATE_RE.test(body) &&
       detectFailureCategory(body) === "repo_config";
   }

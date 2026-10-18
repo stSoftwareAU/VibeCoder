@@ -85,7 +85,7 @@ function prLookup(url: string | undefined) {
 
 /** Records each sync call instead of touching GitHub. */
 function recordingSync(calls: SyncPrBodyInput[]): typeof syncPrBodyFromSummary {
-  return (input) => {
+  return (input, _deps) => {
     calls.push(input);
     return Promise.resolve({
       ok: true,

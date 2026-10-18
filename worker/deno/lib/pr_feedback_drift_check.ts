@@ -1493,7 +1493,6 @@ export async function runPrFeedbackDriftCheck(
     [];
   let modelPassUnavailable: string | undefined;
   let files: string[] = [];
-  let proseContents = new Map<string, string>();
   const modelPassNeeded = changesBehaviour ||
     pushFiles.some((f) => isTestFilePath(f)) ||
     pushFiles.some((f) => isManualProsePath(f)) ||
@@ -1516,7 +1515,7 @@ export async function runPrFeedbackDriftCheck(
       diff: patch?.code === 0 ? patch.stdout : null,
       readFile: (file) => readIfExists(repoPath, file),
     });
-    proseContents = scope.contents;
+    const proseContents = scope.contents;
     if (trackedFiles === null) {
       scope.notChecked.push(
         "tracked manuals could not be listed; not checked, never passed",
