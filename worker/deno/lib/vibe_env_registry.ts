@@ -575,6 +575,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "switch",
     note: "a CREDENTIAL provisioned to setup; must never reach .config.json",
   },
+  VIBE_BROKER_ACCESS_TOKEN: {
+    role: "switch",
+    note:
+      "per-run capability for the experimental credential broker; never an upstream credential",
+  },
   VIBE_LAUNCHAGENT_ANTHROPIC_API_KEY: {
     role: "switch",
     note: "a CREDENTIAL provisioned to setup; must never reach .config.json",

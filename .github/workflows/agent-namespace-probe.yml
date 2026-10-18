@@ -1,0 +1,67 @@
+name: Agent Namespace Prerequisite Probe
+
+# Temporary validation branch only. This is neither a deployment nor a
+# production containment claim, and is deliberately outside the PR gate.
+on:
+  push:
+    branches: [codex/milestone122-validation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docker-prerequisite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      IMAGE: vibe-coder:namespace-probe
+    steps:
+      - name: Checkout validation code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Deno
+        # denoland/setup-deno@v2.0.5
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          deno-version-file: .deno-version
+
+      - name: Build the production image
+        run: |
+          set -euo pipefail
+          deno run --frozen --lock=worker/deno/deno.lock \
+            --allow-read --allow-write --allow-env \
+            worker/deno/mod.ts strip-containerfile --out /tmp/Containerfile.stripped
+          docker build -f /tmp/Containerfile.stripped -t "${IMAGE}" container/
+
+      - name: Check probe assertions and broker handlers
+        working-directory: worker/deno
+        run: |
+          set -euo pipefail
+          deno test --frozen --lock=deno.lock --allow-read --allow-env \
+            tests/agent_namespace_probe_test.ts tests/credential_broker_test.ts
+
+      - name: Exercise real sockets and the unmodified Docker security boundary
+        working-directory: worker/deno
+        run: |
+          set -euo pipefail
+          deno run --frozen --lock=deno.lock \
+            --allow-read --allow-write --allow-env --allow-run \
+            tests/fixtures/agent_namespace_probe_cli.ts "${IMAGE}" \
+            2>&1 | tee /tmp/agent-namespace-probe.log
+
+      - name: Retain diagnostic evidence, including a refused namespace
+        if: always()
+        # actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: agent-namespace-prerequisite
+          path: /tmp/agent-namespace-probe.log
+          if-no-files-found: warn
+          retention-days: 7

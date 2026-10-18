@@ -3,6 +3,10 @@
 **Status:** reference gap analysis for Issue #3652. Point-in-time. The verdicts
 are recorded and follow-ups #3698–#3703 are filed.
 
+The [milestone 122 implementation checkpoint](agent-egress-credential-isolation.md)
+records the proposed boundary, experimental broker and outstanding evidence for
+Issues #3698 and #3699. It does not close the network or credential gaps below.
+
 **Comparison axis:** _containment of the running agent_ — sandbox, network,
 credentials, permissions, run limits, monitoring and incident response. It does
 not compare detection or scanning methods.

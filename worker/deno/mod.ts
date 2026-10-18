@@ -183,6 +183,7 @@ import { sweepDriftCommand } from "./commands/sweep_drift.ts";
 import { containerImageHashCommand } from "./commands/container_image_hash.ts";
 import { firstRunVerifyCommand } from "./commands/first_run_verify.ts";
 import { containerRuntimeDetectCommand } from "./commands/container_runtime_detect.ts";
+import { credentialBrokerCommand } from "./commands/credential_broker.ts";
 import { containerLaunchPlanCommand } from "./commands/container_launch_plan.ts";
 import { containerRestartBackoffCommand } from "./commands/container_restart_backoff.ts";
 import { containerReapCommand } from "./commands/container_reap.ts";
@@ -385,6 +386,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(toolchainSelfcheckCommand);
   registry.register(firstRunVerifyCommand);
   registry.register(containerRuntimeDetectCommand);
+  registry.register(credentialBrokerCommand);
   registry.register(containerLaunchPlanCommand);
   registry.register(containerRestartBackoffCommand);
   registry.register(containerReapCommand);
