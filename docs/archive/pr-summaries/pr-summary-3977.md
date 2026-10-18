@@ -72,7 +72,7 @@ flowchart LR
   including actual production worker dispatch, every new bookkeeping caller,
   both core release arms and deferred heartbeat publication. The facts companion
   records 98 nonredundant source anchors and tests; the three superseded whole-expression flips are covered by independent operand records. No type failure counts as a red test.
-- Before the latest renderer integration and review fixes, twelve focused suites passed: 329 tests, no failures. Current integrated full validation remains pending. The repository quality
+- Before the latest renderer integration and review fixes, twelve focused suites passed: 329 tests, no failures. After merging main `7bd0d619`, the twelve feature suites and five polling/default suites pass 748 tests with type checking enabled. Six affected mutation receipts were refreshed against the new source with passing baselines before and after; all 101 source/test hashes match the current files. Current integrated full validation remains pending. The repository quality
   gate is recorded separately when complete. No deployed-worker or fleet-wide
   recurrence improvement is claimed from these fixtures.
 - Docs sweep — grep: "claim freshness", "already-landed", "Preservation runs
