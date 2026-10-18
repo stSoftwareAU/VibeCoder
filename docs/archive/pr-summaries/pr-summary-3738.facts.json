@@ -109,7 +109,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 2058,
+        "line": 2138,
         "outcome": "gate infrastructure map preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
         "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
@@ -117,7 +117,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 2060,
+        "line": 2140,
         "outcome": "gate verdict map preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
         "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
@@ -125,7 +125,7 @@
       },
       {
         "path": "worker/deno/lib/pre_pr_verifier.ts",
-        "line": 207,
+        "line": 225,
         "outcome": "verifier evidence tag preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
         "testName": "verifier findings preserve evidence and substantive causes without accepting infrastructure claims (Issue #3738)",
@@ -133,7 +133,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 652,
+        "line": 732,
         "outcome": "mixed primary quality preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
         "testName": "completion retains evidence, substantive and mixed verifier causes without hiding blockers (Issue #3738)",
@@ -141,7 +141,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 3281,
+        "line": 3386,
         "outcome": "verifier default substantive preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
         "testName": "completion retains evidence, substantive and mixed verifier causes without hiding blockers (Issue #3738)",
@@ -149,7 +149,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 829,
+        "line": 909,
         "outcome": "summary existing pr causes preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
         "testName": "existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)",
@@ -269,7 +269,7 @@
       },
       {
         "path": "worker/deno/lib/pre_pr_verifier.ts",
-        "line": 207,
+        "line": 225,
         "outcome": "verifier quality tag preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
         "testName": "verifier findings preserve evidence and substantive causes without accepting infrastructure claims (Issue #3738)",
