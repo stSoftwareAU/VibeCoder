@@ -16,7 +16,10 @@
  * host fault silently swallows a label a human genuinely needed to see.
  */
 
-import { workerGateCategoryOf } from "./failure_diagnosis.ts";
+import {
+  type FailureCategory,
+  workerGateCategoryOf,
+} from "./failure_diagnosis.ts";
 import { brokenRefsIn } from "./broken_ref_repair.ts";
 import { isObjectStoreCorruption } from "./object_store_repair.ts";
 
@@ -87,7 +90,12 @@ const CLONE_CORRUPT_PATTERNS: readonly RegExp[] = [
  * invalid branch name, an unknown ref) returns `null` rather than being
  * guessed at.
  */
-export function detectHostFault(message: string): HostFaultKind | null {
+export function detectHostFault(
+  message: string,
+  category?: FailureCategory,
+): HostFaultKind | null {
+  if (category === "clone_corrupt") return "clone-corrupt";
+  if (category !== undefined && category !== "internal_error") return null;
   // A worker gate refusal (every WORKER_GATE_MARKERS category) is the worker's
   // own words plus a quotation of text it did not write: the agent's summary
   // or tests, or the branch's raw check output (Issues #3431, #3454; PR #3716

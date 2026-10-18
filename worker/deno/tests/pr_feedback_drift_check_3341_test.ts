@@ -86,6 +86,12 @@ function makeRunGit(dir: string): DriftCheckDeps["runGit"] {
   return async (args: string[]) => await git(dir, args);
 }
 
+/** Fake `runMutationCheck` for tests not about the mutation gate (Issue #3750). */
+const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
+  kind: "not_applicable",
+  reason: "not under test",
+});
+
 /** Fake `runGh` that always answers the `baseRefName` read with `main`. */
 function makeRunGh(): DriftCheckDeps["runGh"] {
   return async () => "main\n";
@@ -158,6 +164,11 @@ Deno.test("checkRule - accepts a subject", () => {
   assertEquals(checkRule({ subject: "x" }), true);
 });
 `;
+
+// The fix push also touches the test file. It still declares one test, so the
+// summary's "(1 test)" figure is checked against the head and matches
+// (Issue #3740: an unchanged test file makes the figure unchecked).
+const RULE_TEST_TS_V2 = `// A comment added by the fix push.\n${RULE_TEST_TS}`;
 
 const SUMMARY_PATH = "docs/archive/pr-summaries/pr-summary-7.md";
 
@@ -252,6 +263,7 @@ Deno.test("runPrFeedbackDriftCheck - a push that moves a cited line without renu
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -294,6 +306,7 @@ Deno.test("runPrFeedbackDriftCheck - a push that moves a cited line AND renumber
   const { dir, beforeSha } = await setupBaseline(SUMMARY_STALE);
   try {
     await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_TS_V2);
     await writeFile(dir, SUMMARY_PATH, SUMMARY_RENUMBERED);
 
     const calls: AgentCall[] = [];
@@ -307,6 +320,7 @@ Deno.test("runPrFeedbackDriftCheck - a push that moves a cited line AND renumber
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -328,6 +342,7 @@ Deno.test("runPrFeedbackDriftCheck - a recovery turn that renumbers the stale ci
   const { dir, beforeSha } = await setupBaseline(SUMMARY_STALE);
   try {
     await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_TS_V2);
 
     const calls: AgentCall[] = [];
     const baseRunAgent = makeRunAgent(
@@ -350,6 +365,7 @@ Deno.test("runPrFeedbackDriftCheck - a recovery turn that renumbers the stale ci
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -369,6 +385,9 @@ Deno.test("runPrFeedbackDriftCheck - a recovery turn that renumbers the stale ci
 Deno.test("runPrFeedbackDriftCheck - a push that changes an uncited file is clean", async () => {
   const { dir } = await setupBaseline(SUMMARY_STALE);
   try {
+    // The test file change is committed before beforeSha, so the push below
+    // still touches only the uncited file.
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_TS_V2);
     await writeFile(dir, "docs/notes.md", UNCITED_FILE_V1);
     await commitAll(dir, "docs: add notes");
     const rev = await git(dir, ["rev-parse", "HEAD"]);
@@ -385,6 +404,7 @@ Deno.test("runPrFeedbackDriftCheck - a push that changes an uncited file is clea
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -405,6 +425,7 @@ Deno.test("runPrFeedbackDriftCheck - a summary new in this push is clean even th
   const { dir, beforeSha } = await setupBaselineNoSummary();
   try {
     await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_TS_V2);
     await writeFile(dir, SUMMARY_PATH, SUMMARY_RENUMBERED);
 
     const calls: AgentCall[] = [];
@@ -418,6 +439,7 @@ Deno.test("runPrFeedbackDriftCheck - a summary new in this push is clean even th
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -438,6 +460,7 @@ Deno.test("runPrFeedbackDriftCheck - a failed ls-tree read of the before-run sum
   const { dir, beforeSha } = await setupBaseline(SUMMARY_STALE);
   try {
     await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_TS_V2);
 
     const realRunGit = makeRunGit(dir);
     const runGit: DriftCheckDeps["runGit"] = async (args) => {
@@ -455,7 +478,13 @@ Deno.test("runPrFeedbackDriftCheck - a failed ls-tree read of the before-run sum
 
     const outcome = await runPrFeedbackDriftCheck(
       { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
-      { runGit, runGh: makeRunGh(), runAgent, logger: noopLogger() },
+      {
+        runGit,
+        runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
+        runAgent,
+        logger: noopLogger(),
+      },
     );
 
     assertEquals(calls.length, 1);
@@ -486,6 +515,7 @@ Deno.test("runPrFeedbackDriftCheck - a failed diff read of the cited file is rep
   const { dir, beforeSha } = await setupBaseline(SUMMARY_STALE);
   try {
     await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_TS_V2);
 
     const realRunGit = makeRunGit(dir);
     const runGit: DriftCheckDeps["runGit"] = async (args) => {
@@ -503,7 +533,13 @@ Deno.test("runPrFeedbackDriftCheck - a failed diff read of the cited file is rep
 
     const outcome = await runPrFeedbackDriftCheck(
       { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
-      { runGit, runGh: makeRunGh(), runAgent, logger: noopLogger() },
+      {
+        runGit,
+        runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
+        runAgent,
+        logger: noopLogger(),
+      },
     );
 
     assertEquals(calls.length, 1);
@@ -534,6 +570,7 @@ Deno.test("runPrFeedbackDriftCheck - a failed show read of the before-run summar
   const { dir, beforeSha } = await setupBaseline(SUMMARY_STALE);
   try {
     await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_TS_V2);
 
     const realRunGit = makeRunGit(dir);
     const runGit: DriftCheckDeps["runGit"] = async (args) => {
@@ -551,7 +588,13 @@ Deno.test("runPrFeedbackDriftCheck - a failed show read of the before-run summar
 
     const outcome = await runPrFeedbackDriftCheck(
       { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
-      { runGit, runGh: makeRunGh(), runAgent, logger: noopLogger() },
+      {
+        runGit,
+        runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
+        runAgent,
+        logger: noopLogger(),
+      },
     );
 
     assertEquals(calls.length, 1);
@@ -604,6 +647,7 @@ Deno.test("runPrFeedbackDriftCheck - a cited binary file is reported unavailable
       `${dir}/lib/blob.bin`,
       new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]),
     );
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_TS_V2);
 
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent(
@@ -616,6 +660,7 @@ Deno.test("runPrFeedbackDriftCheck - a cited binary file is reported unavailable
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },

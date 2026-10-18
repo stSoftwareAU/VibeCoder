@@ -32,6 +32,10 @@
 
 import { resolveHostConfigPath } from "./lib/host_config_path.ts";
 import { loadConfig, validateConfig } from "./lib/config.ts";
+import {
+  CLAUDE_MAX_TURNS_ENV,
+  DEFAULT_CLAUDE_MAX_TURNS,
+} from "./lib/claude_turn_limit.ts";
 import { applyServiceAccountEnv } from "./lib/service_account_env.ts";
 import { createLogger } from "./lib/logger.ts";
 import { installConsoleRedaction } from "./lib/console_redaction.ts";
@@ -818,6 +822,23 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       logger.error(`Configuration error: ${(error as Error).message}`);
       Deno.exit(1);
     }
+  }
+
+  // Standalone commands also invoke the agent without runWorker. The loaded
+  // config is authoritative; overwrite stale inherited internal transport.
+  // Read-only commands such as check-mermaid deliberately lack access to this
+  // variable. Preserve their narrow permissions; an agent invocation still
+  // requires that access when its argument builder reads the transported cap.
+  if (
+    (await Deno.permissions.query({
+      name: "env",
+      variable: CLAUDE_MAX_TURNS_ENV,
+    })).state === "granted"
+  ) {
+    Deno.env.set(
+      CLAUDE_MAX_TURNS_ENV,
+      String(config.claudeMaxTurns ?? DEFAULT_CLAUDE_MAX_TURNS),
+    );
   }
 
   // Execute the command

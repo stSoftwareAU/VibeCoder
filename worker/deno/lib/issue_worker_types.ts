@@ -9,7 +9,9 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { RunOutcome } from "./run_outcome.ts";
+import type { RunFailureClassification } from "./run_outcome_classifier.ts";
+import type { FailureCategory } from "./failure_diagnosis.ts";
+import type { RunOutcome, RunTermination } from "./run_outcome.ts";
 import type { IssueComment } from "./issue_data.ts";
 import type { WorkerConfig } from "../types.ts";
 import type { HeartbeatHandle } from "./heartbeat.ts";
@@ -133,6 +135,8 @@ export interface IssueContext {
    * single-issue runs, tests): the shared clone, exactly as before.
    */
   laneId?: string;
+  /** Production releases failures and landed skips after its final merge/failure decision (#3977). */
+  deferTerminalRelease?: boolean;
 }
 
 /** Mutable state set by early phases, consumed by later phases. */
@@ -464,6 +468,7 @@ export type PhaseResult =
   | {
     status: "early_exit";
     reason: string;
+    category: FailureCategory;
     /**
      * The phase ended the run without resolving the issue and without
      * failing (Issue #175) — a bounce. The orchestrator reports it as
@@ -488,11 +493,34 @@ export type PhaseResult =
      */
     claimNotHeld?: true;
   }
-  | { status: "failure"; reason: string };
+  | {
+    status: "failure";
+    reason: string;
+    category: FailureCategory;
+    termination?: RunTermination;
+    classification?: RunFailureClassification;
+    categories?: readonly FailureCategory[];
+  };
 
 /** Result of the full workOnIssue orchestration. */
-export interface WorkOnIssueResult {
-  success: boolean;
+export type WorkOnIssueResult =
+  & WorkOnIssueResultBase
+  & (
+    | { success: true; category?: FailureCategory }
+    | { success: false; category: FailureCategory }
+  );
+
+interface WorkOnIssueResultBase {
+  categories?: readonly FailureCategory[];
+  classification?: RunFailureClassification;
+  termination?: RunTermination;
+  /** Ephemeral branch context for a final read before failure bookkeeping. */
+  branchContext?:
+    & Pick<
+      PhaseState,
+      "branchName" | "repoPath" | "defaultBranch" | "milestoneBranch"
+    >
+    & { reapproved: boolean };
   phase: string;
   reason: string;
   timings: Record<string, number>;

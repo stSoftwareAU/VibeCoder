@@ -1,134 +1,111 @@
 ## Summary
 
-Worker gate markers now live in one registry, `WORKER_GATE_MARKERS` in
-`worker/deno/lib/failure_diagnosis.ts`, which maps each marker to its failure
-category. Every classifier reads that registry first: `detectFailureCategory`,
-`classifyRunFailure`, `classifyCodingFailure`, `detectHostFault`, and both
-label-release sweeps through `isWorkerGateFailureRecord`.
-`shouldRetryInfrastructureFailure` follows through `detectFailureCategory`. A
-new gate is now one registry entry instead of an edit to each classifier. This
-also closes a gap: the host-fault and milestone-refusal sweeps used to
-recognise only `summary-incomplete` records. A posted security-fix-gate or
-pre-push-gate failure comment that quoted `ignoring broken ref` or a `GH013`
-rejection could therefore have its `failed-once`/`failed` label stripped. The
-rule is now written down in `CODING-STANDARDS.md` and restated in
-`prompts/coding_guidelines/prompt.md`. Closes #3735.
+Raw worker-gate reasons use one `WORKER_GATE_MARKERS` registry in
+`worker/deno/lib/failure_diagnosis.ts`. The raw message adapters recognise a
+registered prefix before reading quoted tool or agent text; the outcome and
+coding-failure classifiers recognise the resulting gate category. Registered
+summary, security-fix and pre-push refusals retain their gate verdict, normal
+failure attempt and labels. Closes #3735.
+
+Integration with main preserves #3738's source-declared categories and
+substantive verifier records. A declared cause remains authoritative over a
+quoted marker. Both label-release sweeps retain registered gate records and
+headed `quality-failure` records, including records without repository-quality
+Source lines. The existing marker-anchoring changes for #3696 remain in this
+milestone.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Each new gate marker had to be wired into five classifiers by hand, and
-  #3440 needed a review round for each classifier it missed. A registry lets
-  the classifiers reach a new marker without being edited, and the test that
-  iterates the registry covers each new entry automatically.
-- Guidance alone was not enough. The existing rule "A failure reason names
-  the cause" told authors to quote tool output, which made the
-  misclassification more likely, so the new rule sits directly after it.
+- A gate reason quotes external text. Reading that quotation as infrastructure
+  could suppress a real failure attempt or release its labels.
+- Centralise registered gate recognition while retaining the source-provenance
+  and verifier protections already delivered on main.
 
 ### Essential Design Decisions
 
-- `isWorkerGateCategory` is a type predicate (`category is
-  WorkerGateCategory`), so the exhaustive switch in `classifyRunFailure` still
-  narrows without unreachable arms. A new gate category must be added to the
-  `WorkerGateCategory` union. The compiler enforces this.
-- `PRE_PUSH_LOOKUP_FAILED_MARKER` is deliberately not registered. A failed
-  branch-state lookup is `push_failure` (infrastructure), not an agent
-  outcome.
-- `isWorkerGateFailureRecord` replaces `isSummaryGateFailureRecord`. It reads
-  only the anchored head `**Category:**` line and compares the display name
-  against the registry, so a gate category quoted further down cannot forge
-  it.
+- `workerGateCategoryOf` reads anchored raw prefixes; `isWorkerGateCategory`
+  narrows the existing category union. A new prefix is one registry entry;
+  a new category also extends the existing union.
+- Typed source categories remain authoritative. `classifyCodingFailure` and
+  infrastructure retry use raw diagnosis only without a supplied category;
+  `detectHostFault` preserves declared causes before consulting raw markers.
+- `isWorkerGateFailureRecord` recognises an anchored headed record whose
+  display category belongs to the registry. Both release sweeps also retain
+  `isSummaryOrQualityFailureRecord`, preserving substantive verifier records
+  independently of the registry. A category quoted deeper in a record cannot
+  forge its worker-written head.
+- `PRE_PUSH_LOOKUP_FAILED_MARKER` is not registered: failed branch-state
+  lookup remains infrastructure `push_failure`.
 
 ### Undiscoverable Facts
 
-- None.
+- The verifier regressions use synthetic headed-record fixtures and the real
+  label writers. They do not claim to capture a production incident.
 
 ## Evidence
 
-Backend-only change, with no UI files. Verified by:
+Backend-only change. Registry cases run hostile rate-limit, timeout, signal,
+missing-tool, disk, exception, broken-ref, deadline, scheduled-release and
+milestone-refusal quotations through the actual classifiers, retry decision,
+label writers and release sweeps. Unmarked controls demonstrate that real
+infrastructure and repository refusals retain their original behaviour.
 
-- `worker/deno/tests/worker_gate_markers_3735_test.ts`: for every registry
-  entry, each hostile quote (`rate limit`, `timed out`, `SIGKILL`,
-  `command not found`, `ENOSPC`, `Error:`, `TypeError:`, `ignoring broken ref`,
-  the deadline-bound and scheduled-release markers, a `GH013` refusal) is
-  checked in two forms:
-  - **Raw reason:** gives the gate's own category, an `agent-outcome` class, a
-    `ladder` disposition with `non_transient` cooldown, no host fault, and no
-    infrastructure retry.
-  - **Posted comment:** the comment built by the real `markIssueAsFailedOnce` /
-    `markIssueAsFailed` is a worker gate record (`isWorkerGateFailureRecord`),
-    and both release sweeps leave it alone. The posted body's category and
-    disposition are not asserted separately.
-
-  The positive control (`the quotations are hostile when unmarked`) shows five
-  quotes picking another verdict with the marker missing: the rate-limit quote
-  is a `transient` disposition, `SIGKILL` is `killed`, `ENOSPC` is a
-  `disk-full` host fault, `ignoring broken ref` is a `clone-corrupt` host fault
-  whose unmarked record the sweep releases, and the `GH013` refusal is
-  `repo_config`, its unmarked record counting as the most recent refusal
-  (`refusalIsMostRecentFailure`). For every quote it asserts only that the
-  quote alone is not a gate category.
-- `worker/deno/tests/worker_gate_marker_rule_3735_test.ts`: a
-  documentation-drift test for the new rule in `CODING-STANDARDS.md`, its
-  coding-guidelines restatement, and the rule 5 pointer.
-- Provenance cited by the diff: #3735: Fleet PRs add failure reasons that quote
-  tool or agent output without a leading worker marker every classifier checks
-  first, so the quoted text picks the category (VibeCoder#3440, #3716).
-- Related rules checked: **A failure reason names the cause, not just the
-  failure** (the new bullet follows it and qualifies it), rule 5 of **Writing a
-  gate over text** (#3696, now names the registry), and **A failure-reason test
-  asserts the cause** (no conflict). I applied the new rule to this PR's own
-  diff and found nothing to fix: the diff adds no new failure reason.
+The integration regressions cover declared source causes despite a quoted
+registered marker, and substantive verifier records through both release
+sweeps. A minimal headed-record fixture also exercises the refusal guard
+without the current writer's follow-up advice mentioning quality checks.
+Every earlier assertion remains; the existing raw-classifier call now supplies
+its explicit raw-provenance argument required by main.
 
 ```mermaid
-flowchart LR
-    R[failure reason] --> M{opens with a<br/>WORKER_GATE_MARKERS<br/>marker?}
-    M -- yes --> G[gate category<br/>ladder, agent-outcome,<br/>no host fault, no infra retry]
-    M -- no --> F[free-text rules]
-    C[posted failure comment] --> H{head Category line is a<br/>registered gate display?}
-    H -- yes --> K[release sweeps keep the label]
-    H -- no --> S[sweep classifies the body]
+flowchart TD
+    D{Source category supplied?} -->|yes| S[Keep source cause]
+    D -->|no| R{Registered raw prefix?}
+    R -->|yes| G[Gate category and normal failure attempt]
+    R -->|no| F[Existing raw diagnosis]
+    C[Posted worker failure record] --> H{Registered gate or quality verdict?}
+    H -->|yes| K[Keep labels]
+    H -->|no| L[Existing release rules]
 ```
 
-**Docs sweep**: grep: `isSummaryGateFailureRecord`, `SUMMARY_GATE_RECORD`,
-"no label-release record check", "right after the summary-gate marker",
-"every worker gate prefix", "no classifier names", "checks with `startsWith`";
-section: `docs/INTERNALS.md#worker-gate-markers-are-one-registry-issue-3735`;
+**Docs sweep** — grep: `WORKER_GATE_MARKERS`, `isWorkerGateFailureRecord`,
+`isSummaryOrQualityFailureRecord`; updated: `CODING-STANDARDS.md`,
+`docs/INTERNALS.md`, `docs/workflows/issue-processing.md` and
+`prompts/coding_guidelines/prompt.md`; section:
+`docs/INTERNALS.md#worker-gate-markers-are-one-registry-issue-3735`;
 siblings: `SUMMARY_RULE_GATE_MARKER`, `SECURITY_FIX_GATE_MARKER`,
-`PRE_PUSH_GATE_MARKER`; updated: `CODING-STANDARDS.md`,
-`prompts/coding_guidelines/prompt.md`, `docs/INTERNALS.md`,
-`docs/workflows/issue-processing.md`; no remaining hits outside
-`docs/archive/`.
+`PRE_PUSH_GATE_MARKER` remain the registered gate set; the separate
+`PRE_PUSH_LOOKUP_FAILED_MARKER` retains its infrastructure role.
+Existing source-category guidance and raw-diagnosis compatibility remain valid.
 
 ## Test Plan
 
-- Added `worker/deno/tests/worker_gate_markers_3735_test.ts` and
-  `worker/deno/tests/worker_gate_marker_rule_3735_test.ts`. No existing test
-  was edited.
-- Red checks. Each mutation was made on its own and then restored:
-  - Removing the registry check in `detectHostFault`: 9 tests red.
-  - Removing it in `classifyCodingFailure`: 4 red.
-  - Removing it in `classifyRunFailure`: a compile error from the exhaustive
-    switch. With the switch default also relaxed, 5 red.
-  - Removing it in the host-fault sweep (`classifyFailureRecord`): 4 red.
-  - Removing it in `refusalIsMostRecentFailure`: 4 red.
-  - Dropping the pre-push registry entry: 5 red.
-  - `isWorkerGateFailureRecord` always returning false: 6 red.
-  - `isWorkerGateFailureRecord` with a missing head returning true: the
-    no-heading test went red.
-  - `isWorkerGateFailureRecord` treating any head display as a gate: 3 red.
-  - `workerGateCategoryOf` returning `"pre_push_gate"` instead of null: 4 red.
-- Drift pins: `deno task drift-pins-on-base
-  origin/milestone/failure-classification-worker-markers-and-declared` reports
-  every pinned phrase `absent on base`. Removing the new bullet turns the drift
-  test red.
-- `deno task test:unit` over the 43 test files that import the changed
-  modules: 703 passed, 0 failed.
-- `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped
-  checks)`. Only `config integration` was skipped. The two new test files give
-  19 passed, 0 failed.
+- `worker/deno/tests/worker_gate_markers_3735_test.ts` covers every registry
+  entry, real posted gate/quality records, unmarked controls and declared-source
+  precedence. `worker_gate_marker_rule_3735_test.ts` checks the documented rule.
+- Existing failure-diagnosis, host-fault, both release-sweep, coding-ladder,
+  outcome-classifier and text-matcher suites remain in the focused integration
+  run. No existing test or assertion was removed or weakened.
+- The earlier branch's 703-test focused run and full local quality result are
+  historical evidence. The integrated source is validated separately; no full
+  local quality-gate pass is claimed for this merge.
+- The integrated nine-suite run passes with type checking: 289 tests, no
+  failures. Independently forcing each of the two release-guard operands true
+  and false (eight mutations), plus moving raw marker handling before the
+  declared-source checks, causes behavioural assertion failures. Production
+  sources were restored before the final passing run.
+- PR #4003 CI integration also removes an overwritten empty map in the drift
+  checker and aligns the adoption test fake with its two-argument callback
+  contract. The security
+  sweep baseline narrowly records the deliberate template-interpolation source
+  fixture in `failure_diagnosis_test.ts`; its literal text is parsed, never
+  evaluated. No assertion or scanner rule is removed.
+- Adoption, drift-check and security-sweep regression suites pass: 150 tests.
+  The baseline parser validates every citation; a distant same-rule control
+  remains unbaselined. The module type check, changed-source lint and formatting
+  checks pass.
+- Required hosted checks and independent review remain merge gates.
 
 <!-- vibe-branch-outcomes -->
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)

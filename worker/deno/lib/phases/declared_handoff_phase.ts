@@ -59,7 +59,11 @@ export async function workOnIssueDeclaredHandoff(
       logger,
       deps: { ensureLabelExists: deps.github.ensureLabelExists },
     });
-    return { status: "early_exit", reason: "analysis_only_handed_off" };
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "analysis_only_handed_off",
+    };
   }
 
   return { status: "continue" };

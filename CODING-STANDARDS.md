@@ -96,8 +96,8 @@ the fault immediately rather than swallowing it into a green result.
   (`workerGateCategoryOf`) before their free-text rules; `classifyRunFailure`
   and `classifyCodingFailure` first test the category they classify with
   `isWorkerGateCategory`, a comparison with the registry's categories
-  (`classifyCodingFailure` takes it from `detectFailureCategory`, and
-  `shouldRetryInfrastructureFailure` follows through `detectFailureCategory`);
+  (`classifyCodingFailure` and `shouldRetryInfrastructureFailure` retain a
+  supplied source category and use `detectFailureCategory` for raw reasons);
   the label-release sweeps skip any worker gate record
   (`isWorkerGateFailureRecord`). A new gate refusal is one registry entry,
   which each reader above then sees with no edit of its own.
@@ -113,6 +113,38 @@ the fault immediately rather than swallowing it into a green result.
   and for the posted failure comment that it is a worker gate record
   (`isWorkerGateFailureRecord`) that neither label-release sweep releases
   (Issue #3735).
+
+## Worker failure causes
+
+Worker-written failures declare their existing `FailureCategory` at the source.
+`PhaseResult` failure/early-exit results and unsuccessful `WorkOnIssueResult`
+values require a category. A helper returning both a branch verdict and an
+infrastructure failure exposes the distinction in its result/error type; callers
+map every case explicitly. Do not derive a worker result's category from its own
+reason text. The phase source-scan regression covers direct and assigned result
+objects, nested expressions, comments and literal lookalikes.
+
+Carry the source category through retry, failure bookkeeping and the existing
+outcome/callback. Legacy records and raw external tool/CLI output may use the
+existing text adapter; choosing raw versus declared input to
+`classifyRunFailure` is explicit. Capture a known host refinement at that external
+boundary and retain the existing classification, rather than reparsing quoted
+check output later. Unknown causes remain unknown. Worker-authored kill
+probes remain distinct from agent narration about billing, crashes or memory.
+
+Evidence/documentation-contract findings use `summary_incomplete`; substantive
+implementation or test findings use `quality_check`. Preserve every simultaneous
+cause in the existing diagnostic/event output and select a substantive cause
+when present. Every verifier finding remains blocking; a finding cannot declare
+itself an infrastructure error. Existing PR outcomes keep these diagnostics even
+when they retain their established PR-attached outcome kind.
+
+A scheduled handover remains `scheduled_release`; an exhausted execution budget
+remains a timeout. Retain the runner's known stop fields (raw exit status,
+watchdog reason/lateness, incomplete kill and scheduled/termination flags) in the
+existing outcome/callback. Do not infer a missing cause, exempt all timeouts or
+discard preserved work. Semantic already-landed decisions reuse the existing
+outcome contract and their own provenance checks.
 
 ## Changing the Shape of Persisted Data
 
@@ -749,18 +781,28 @@ a Docs Change** below on a change that alters what an existing state
 means. List the messages checked in the PR summary's Test Plan
 (Issue #3259).
 
-**Narrowing a shared helper changes every caller.** Before a helper that
-other code already calls starts rejecting, throwing on or dropping a value it
-used to accept (a validator, type guard, allowed-value set, required field,
-ref/name check), list its existing callers and the real values each can
-receive. Check those values against the tool or API's actual output, not its
-documentation's happy path (see **Observe the real tool before you rely on
-it**). If any existing caller can legitimately pass a value the new rule
-rejects, keep the shared helper as it was and apply the stricter rule at the
-new call site. Otherwise add a test showing an existing caller still accepts
-its real inputs. List the callers checked in the PR summary. A narrowed shared
-helper with no callers-checked list is a blocking self-review finding
-(Issue #3100).
+**Changing what a shared helper returns, refuses or finds changes every
+caller.** Before a helper that other code already calls starts rejecting,
+refusing, throwing on, dropping, finding or returning something different for
+an input it already handled — a validator, type guard, allowed-value set,
+required field or ref/name check that narrows, a lookup that gains a fallback,
+a routine that gains a refusal or precondition — list its existing callers and
+the real values each can receive. Check those values against the tool or API's
+actual output, not its documentation's happy path (see **Observe the real tool
+before you rely on it**). For each existing caller, decide whether its
+behaviour changes under the new result. When one depends on the old result (it
+passes a value the new rule rejects, reads "nothing found" as "leave it
+alone", or runs where the new refusal fires), keep the shared helper as it was
+and apply the new behaviour at the new call site, or change that caller too.
+Add a test that exercises each existing caller whose behaviour the change
+touches, under the new result; a callers-checked list alone does not count,
+because nothing checks a wrong conclusion in it. List the callers checked in
+the PR summary. When the worker's pre-PR verifier runs, it is also given the
+callers outside the diff of each function whose body the diff changes, found
+by the worker's own word search and capped per function, and a listed caller
+left without a verdict, or reported `regressed`, blocks the PR. A changed
+shared helper with no test through an existing caller whose behaviour it
+touches is a blocking self-review finding (Issues #3100, #3779).
 
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the
@@ -827,8 +869,12 @@ non-empty and at most 1,000 chars. Caps: the raw file at most 100,000 chars
 rule blocks PR creation with the field path and reason (for example
 `branchOutcomes.entries[0].exempt.reason: needs at least 3 words`); it is never
 treated as absent. The worker renders the list at the first
-`<!-- vibe-branch-outcomes -->` marker, appending it when there is none; a facts
-file plus a hand-written `Branch outcomes:` list blocks. The rendered list is
+`<!-- vibe-branch-outcomes -->` marker and owns the block through
+`<!-- /vibe-branch-outcomes -->`. Re-rendering replaces that block idempotently.
+Structured facts are authoritative: safely identified legacy lists are replaced,
+with unrelated narrative preserved. Ambiguous ownership and unreached-outcome
+admissions block rather than being discarded. Write the facts and marker, not a
+second independently maintained list. The rendered list is
 then checked like a prose one, including that each named test exists at the
 head. With no facts file, the `Branch outcomes:` list in the Test Plan is read
 as before.
@@ -1220,7 +1266,10 @@ A unit test is **behavioural**, **self-contained**, **fast** and
   script is a `test-audit` finding (check 13) whatever the test happens to cost
   on your machine — unless the file is **declared**, in the integration
   manifest or in `IN_GATE_SCRIPT_SUITES`, where the spawn is the point and its
-  cost is recorded beside it.
+  cost is recorded beside it. The real signal-cleanup suite also keeps its
+  process and polling assertions in the required serial pass, with its measured
+  reason in `SUBPROCESS_TIMING_TEST_FILES` (see "Real signal cleanup stays in the
+  required gate" below).
 - **Parallel-safe** — it does not mutate process-wide state (`Deno.env.set`,
   `Deno.env.delete`, `Deno.chdir`, or a module-level singleton the rest of the
   suite reads). Take the value as a parameter or an injected seam instead.
@@ -1381,6 +1430,15 @@ at all.
 A benchmark disguised as a unit test is a gate failure, not a style point. The
 benchmark-audit stage scans `worker/deno/tests/` and fails any `Deno.test`
 whose name contains `benchmark` or `bench_` (Issue #583).
+
+### Real signal cleanup stays in the required gate
+
+`worker/deno/tests/run_core_signal_cleanup_test.ts` exercises SIGINT/SIGTERM against a real
+Deno entrypoint and descendant process. It remains in the required serial unit pass,
+with every cleanup assertion intact. Its process startup and graceful-termination
+polling have a named reason in `SUBPROCESS_TIMING_TEST_FILES`, inherited by
+`SLOW_UNIT_TEST_KEEP_FILES`; the one-second mockable
+unit-work budget is not a signal-cleanup performance requirement.
 
 ### When a test does not fit
 
@@ -1818,13 +1876,43 @@ for every PR summary — containing:
 
 In this repository, `deno task pr-summary-check --base <base-branch>
 <summary-file>` from `worker/deno` runs most of the PR-summary gates against a
-draft summary before the PR is raised. A gate it reports as not checked is not
-a pass. For a summary named `pr-summary-<N>.md` it also reads
+summary at either stage: a draft before the PR is raised, or the archived
+summary once it is open. A gate it reports as not checked is not a pass. For a
+summary named `pr-summary-<N>.md` it also reads
 `docs/archive/pr-summaries/pr-summary-<N>.facts.json` under the repository
 root, as the worker does (it takes only `<N>` from the summary's file name):
 the Branch outcomes gate sees the list rendered at the
-`<!-- vibe-branch-outcomes -->` marker, and blocks on an invalid facts file or
-on a facts file beside a hand-written list.
+`<!-- vibe-branch-outcomes -->` marker. It blocks on invalid facts, ambiguous
+block ownership or unresolved evidence; a safely identified legacy duplicate is
+regenerated from the facts.
+
+Pending required CI/quality execution and routine clean code review belong in
+`## Merge verification` on the originating PR, with an honest pending status.
+Waiting for these checks alone is not unfinished implementation and does not
+warrant a partial-delivery follow-up or nested escalation. When the issue
+explicitly states a merge-check criterion, retain its truthful closure entry;
+use a clear pending reason such as `CI not yet verified` or `awaiting code
+review`, without claiming it passed. A mixed criterion whose implementation
+is complete can state its only remainder explicitly:
+`reason: CI not yet verified — remaining: merge-verification-only` (also accepts
+`awaiting code review` or `quality gate not yet run`). Record unavailable local
+tooling and observed results in Evidence. This annotation is not for unfinished
+implementation, absent tests or known failing checks. Failed checks, absent tests,
+known defects and mixed criteria with unfinished product work remain gaps.
+Required CI, review and acceptance gates still apply.
+
+CI runs the same gates on every push to a pull request: the `PR summary
+freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
+`deno task pr-summary-ci --base <base-branch> --head-branch <head-branch>`
+(Issue #3768). On an `issue-<N>-…` head branch whose diff carries
+`pr-summary-<N>.md` (or its facts file), it fails when the PR's newest non-merge
+commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
+commit changing that summary or its facts file. Rewrite the summary for the head
+in that push, whoever makes it. The step then runs the `pr-summary-check` gates
+and fails on a blocked one; gates needing the issue body or labels are reported
+as not checked. A PR carrying no summary passes with a log line. On a head
+branch that is not an `issue-<N>` branch (milestone roll-ups, sync PRs) the
+summary is reported as not checked.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
@@ -1920,6 +2008,17 @@ before the lookup (VibeCoder#3231); a PR summary said "every arm" of three parse
 script's header comments listed "three things" that are deliberately not
 faults when the script skips and allows several more (GRQ-AutoTrader#2479)
 (Issue #3232).
+
+**Project version wording (Issue #3954).** Write the summary's own version-bump
+statement in Summary using durable wording, for example:
+``Version bump: `VERSION` updated for this change; the merged commit records the final version.``
+Do not predict a literal before/after pair that CI can change after your push.
+Name a specific relation to the actual target branch, such as one patch above
+it, only after checking that repository's workflow guarantees that policy.
+Otherwise keep the policy-neutral wording; manual or minor version changes do
+not imply an automatic patch policy. Exact release/build evidence belongs in
+Evidence with its final commit or release provenance. Preserve dependency pins,
+historical reproduction versions, migration examples and changelog entries.
 
 The worker checks this mechanically too (Issues #3347, #3715, #3731).
 Whenever a PR summary was loaded, the first-run claim check asks a read-only

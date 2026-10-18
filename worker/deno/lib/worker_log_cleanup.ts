@@ -36,6 +36,10 @@ export const DEFAULT_MAX_AGE_DAYS = 3;
 /** Hard ceiling on the number of worker-PID.log files retained. */
 export const DEFAULT_HARD_CAP_COUNT = 200;
 
+/** Transcript evidence gets its own age and count policy (Issue #3700). */
+export const DEFAULT_TRANSCRIPT_MAX_AGE_DAYS = 30;
+export const DEFAULT_TRANSCRIPT_HARD_CAP_COUNT = 2000;
+
 /**
  * Age in days after which an unrecognised plain file in the log directory
  * is removed (Issue #4306). `~/logs` is a shared junk drawer: 748
@@ -57,6 +61,8 @@ export interface WorkerLogCleanupOptions {
   maxAgeDays?: number;
   /** Hard cap on retained file count (oldest above the cap are deleted). */
   hardCapCount?: number;
+  /** Transcript cap is separate, so worker restarts cannot evict evidence. */
+  transcriptHardCapCount?: number;
   /** Age in days before an unrecognised plain file is removed (Issue #4306). */
   foreignFileMaxAgeDays?: number;
   /** Override "now" for deterministic tests. */
@@ -82,9 +88,9 @@ const WORKER_LOG_PATTERN = /^worker-\d+(?:-\d+)*\.log(\.gz)?$/;
  * Pattern that matches agent stream-json transcripts (Issue #4169):
  * `agent-<runid>[-<issue>].jsonl`, including log_rotation.ts backups
  * (`.jsonl.N`) and gzipped forms. Transcripts are debug artefacts, so the
- * same age/stub/cap retention applies to them as to the worker logs.
+ * separate 30-day / 2,000-file policy applies; tiny transcripts are retained.
  */
-const AGENT_TRANSCRIPT_PATTERN =
+export const AGENT_TRANSCRIPT_PATTERN =
   /^agent-vibe-[A-Za-z0-9-]+\.jsonl(\.\d+)?(\.gz)?$/;
 
 /**
@@ -133,6 +139,7 @@ interface LogEntry {
   mtimeMs: number;
   /** Whether the entry is a gzipped log (`.log.gz`). */
   gzipped: boolean;
+  transcript: boolean;
 }
 
 /**
@@ -195,6 +202,7 @@ export async function cleanupWorkerLogs(
           size: stat.size,
           mtimeMs,
           gzipped: dirEntry.name.endsWith(".gz"),
+          transcript: AGENT_TRANSCRIPT_PATTERN.test(dirEntry.name),
         });
       } catch {
         // Skip files that vanished between readDir and stat
@@ -214,7 +222,7 @@ export async function cleanupWorkerLogs(
   // Gzipped logs are exempt — their compressed size says nothing about whether
   // the original was a stub (Issue #4027), and stubs are never compressed.
   for (const entry of entries) {
-    if (entry.gzipped) continue;
+    if (entry.gzipped || entry.transcript) continue;
     const ageMs = nowMs - entry.mtimeMs;
     if (entry.size < headerOnlyMaxBytes && ageMs > headerOnlyMinAgeMs) {
       if (await tryRemove(entry.path)) {
@@ -227,25 +235,36 @@ export async function cleanupWorkerLogs(
   for (const entry of entries) {
     if (deleted.includes(entry.path)) continue;
     const ageMs = nowMs - entry.mtimeMs;
-    if (ageMs > maxAgeMs) {
+    const retentionMs = entry.transcript
+      ? DEFAULT_TRANSCRIPT_MAX_AGE_DAYS * 86_400_000
+      : maxAgeMs;
+    if (ageMs > retentionMs) {
       if (await tryRemove(entry.path)) {
         deleted.push(entry.path);
       }
     }
   }
 
+  let transcriptCapRemoved = 0;
+
   // Pass 3: hard cap — if we still have more than hardCapCount files, delete
   // the oldest until we're back under the cap. This protects against
   // pathological cases (e.g. thousands of fresh stubs) while leaving the
   // typical steady-state untouched.
-  const remaining = entries
-    .filter((e) => !deleted.includes(e.path))
-    .sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
-  const excess = remaining.length - hardCapCount;
-  for (let i = 0; i < excess; i++) {
-    const entry = remaining[i]!;
-    if (await tryRemove(entry.path)) {
-      deleted.push(entry.path);
+  for (const transcript of [false, true]) {
+    const remaining = entries
+      .filter((e) => e.transcript === transcript && !deleted.includes(e.path))
+      .sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
+    const cap = transcript
+      ? options.transcriptHardCapCount ?? DEFAULT_TRANSCRIPT_HARD_CAP_COUNT
+      : hardCapCount;
+    const excess = remaining.length - cap;
+    for (let i = 0; i < excess; i++) {
+      const entry = remaining[i]!;
+      if (await tryRemove(entry.path)) {
+        deleted.push(entry.path);
+        if (transcript) transcriptCapRemoved++;
+      }
     }
   }
 
@@ -263,6 +282,9 @@ export async function cleanupWorkerLogs(
     ...(foreignDeleted.length > 0 ? { foreignDeleted } : {}),
     kept,
     message: `worker log cleanup: deleted ${deleted.length}, kept ${kept}` +
+      (transcriptCapRemoved > 0
+        ? `, transcript cap removed ${transcriptCapRemoved} (may shorten 30-day retention)`
+        : "") +
       (foreignDeleted.length > 0
         ? `, foreign debris removed ${foreignDeleted.length}`
         : ""),

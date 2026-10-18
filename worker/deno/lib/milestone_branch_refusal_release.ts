@@ -25,6 +25,7 @@ import {
 } from "./alert_dedup_authors.ts";
 import {
   detectFailureCategory,
+  isSummaryOrQualityFailureRecord,
   isWorkerGateFailureRecord,
 } from "./failure_diagnosis.ts";
 import {
@@ -145,10 +146,9 @@ export function resetMilestoneBranchRefusalSweepsForTest(): void {
  * `quality_check` here, so its label survives — matching the refusal pattern
  * against the comment body alone would have released it.
  *
- * A worker gate record (`isWorkerGateFailureRecord`: any `WORKER_GATE_MARKERS`
- * category, summary, security-fix or pre-push gate) is a gate category at
- * failure time, so it is never the refusal and keeps the labels even when the
- * agent's summary or the branch's output it quotes shows the rejection text.
+ * Registered worker gate records and substantive quality records retain their
+ * declared verdict, even when quoted evidence resembles rejection text
+ * (Issues #3735 and #3738).
  *
  * A newer claim-churn, question-answering-failure or planning-escalation
  * record also keeps the labels: it is a genuine failure record of its own,
@@ -160,9 +160,11 @@ export function refusalIsMostRecentFailure(
   for (let i = commentBodies.length - 1; i >= 0; i--) {
     const body = commentBodies[i];
     if (body === undefined || !FAILURE_RECORD_RE.test(body)) continue;
-    // A worker gate refusal is a gate category at failure time; its quoted
-    // text must not read as the repository's refusal here.
-    if (isWorkerGateFailureRecord(body)) return false;
+    // Preserve both registered gates and substantive quality verdicts before
+    // examining quoted rejection evidence.
+    if (
+      isWorkerGateFailureRecord(body) || isSummaryOrQualityFailureRecord(body)
+    ) return false;
     return REFUSAL_CANDIDATE_RE.test(body) &&
       detectFailureCategory(body) === "repo_config";
   }

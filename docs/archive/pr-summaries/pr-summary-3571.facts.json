@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/idle_decision_census.ts",
+        "line": 1253,
+        "outcome": "claim_refused count: an issue the label-author gate refuses is counted as claim_refused, not claimable",
+        "test": "worker/deno/tests/idle_census_label_author_3571_test.ts",
+        "testName": "census - a top-priority issue the label-author gate refuses is claim_refused, not claimable (Issue #3571)",
+        "flipWentRed": "flipping the claim_refused branch to `if (false) {` turned it red"
+      },
+      {
+        "path": "worker/deno/lib/idle_decision_census.ts",
+        "line": 1207,
+        "outcome": "low-priority tier: an untrusted issue is skipped, so it is not counted claimable there",
+        "test": "worker/deno/tests/idle_census_label_author_3571_test.ts",
+        "testName": "census - an untrusted top-priority issue does not suppress a work-on issue in its stream (Issue #3571)",
+        "flipWentRed": "flipping the skip to `if (false) continue;` turned it red"
+      },
+      {
+        "path": "worker/deno/lib/idle_decision_census.ts",
+        "line": 1187,
+        "outcome": "suppression: untrusted issues are dropped before they can suppress the low-priority backlog",
+        "test": "worker/deno/tests/idle_census_label_author_3571_test.ts",
+        "testName": "census - an untrusted work-on issue does not suppress the low-priority backlog (Issue #3571)",
+        "flipWentRed": "removing the untrustedLabelIssues filter turned it red"
+      },
+      {
+        "path": "worker/deno/lib/census_untrusted_label_issues.ts",
+        "line": 62,
+        "outcome": "an issue with no priority label is skipped without a gh call",
+        "test": "worker/deno/tests/census_untrusted_label_issues_3571_test.ts",
+        "testName": "census untrusted label issues - an issue with no priority label is skipped without a gh call (Issue #3571 d)",
+        "flipWentRed": "flipping the no-label skip to `if (false) continue;` turned it red"
+      },
+      {
+        "path": "worker/deno/lib/census_untrusted_label_issues.ts",
+        "line": 76,
+        "outcome": "a priority label added by an allowed author marks the issue trusted",
+        "test": "worker/deno/tests/census_untrusted_label_issues_3571_test.ts",
+        "testName": "census untrusted label issues - a top-priority add by an allowed author is trusted (Issue #3571 b)",
+        "flipWentRed": "flipping the allowed-author check to `if (false) {` turned it red"
+      },
+      {
+        "path": "worker/deno/lib/census_untrusted_label_issues.ts",
+        "line": 81,
+        "outcome": "a label-gate read failure is trusted and warned, naming the issue",
+        "test": "worker/deno/tests/census_untrusted_label_issues_3571_test.ts",
+        "testName": "census untrusted label issues - a read failure is trusted and warned, naming the issue (Issue #3571 e)",
+        "flipWentRed": "making the catch rethrow turned it red (the HTTP 503 propagated)"
+      },
+      {
+        "path": "worker/deno/lib/census_untrusted_label_issues.ts",
+        "line": 82,
+        "outcome": "read-failure warning: an Error's own message is quoted, not String(err)",
+        "test": "worker/deno/tests/census_untrusted_label_issues_3571_test.ts",
+        "testName": "census untrusted label issues - a read failure is trusted and warned, naming the issue (Issue #3571 e)",
+        "flipWentRed": "negating the ternary to `!(err instanceof Error) ? err.message : String(err)` turned it red"
+      },
+      {
+        "path": "worker/deno/lib/census_untrusted_label_issues.ts",
+        "line": 90,
+        "outcome": "a priority label added by a bot or fleet login with no trusted add marks the issue untrusted",
+        "test": "worker/deno/tests/census_untrusted_label_issues_3571_test.ts",
+        "testName": "census untrusted label issues - a top-priority add by the bot is untrusted (Issue #3571 a)",
+        "flipWentRed": "flipping the marking to `if (trusted) untrusted.add` turned it red"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 5967,
+        "outcome": "production wiring: the untrusted set is computed from the trusted-author rule and passed to the census",
+        "test": "worker/deno/tests/idle_census_label_author_wiring_3571_test.ts",
+        "testName": "production deps - a top-priority add by an untrusted bot is claim_refused, not claimable (Issue #3571)",
+        "flipWentRed": "re-run in this pass: replacing the censusUntrustedLabelIssues call at :5967 with an empty set turned it red (FAILED | 1 passed | 1 failed)"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 5983,
+        "outcome": "production filters assigned, blocked and non-priority issues before timeline batching",
+        "test": "worker/deno/tests/idle_census_label_author_wiring_3571_test.ts",
+        "testName": "production deps - census batches only eligible timelines and reuses them until the iteration resets (PR #3963)",
+        "flipWentRed": "replacing isUnblockedFor with label presence made the wiring test fail: batch numbers unexpectedly included assigned issue 101 and blocked issue 102"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 5985,
+        "outcome": "production reuses the iteration timeline registry instead of issuing fresh timeline reads",
+        "test": "worker/deno/tests/idle_census_label_author_wiring_3571_test.ts",
+        "testName": "production deps - census batches only eligible timelines and reuses them until the iteration resets (PR #3963)",
+        "flipWentRed": "using a new TimelineBatchRegistry for each census made the wiring test fail: the repeated census made four GraphQL calls instead of two"
+      }
+    ]
+  }
+}

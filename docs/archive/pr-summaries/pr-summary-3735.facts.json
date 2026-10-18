@@ -9,7 +9,7 @@
         "outcome": "marker matched: the message opens with a registered marker, so its gate category is returned",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "workerGateCategoryOf - each registered marker maps to its category and a non-gate message maps to null (Issue #3735)",
-        "flipWentRed": "startsWith forced to never match (`&& false`): 7 failed, including workerGateCategoryOf and the summary_incomplete, security_fix_gate and pre_push_gate hostile-quote and posted-record tests"
+        "flipWentRed": "Original implementation red check: startsWith forced to never match (`&& false`); the named behavioural test failed."
       },
       {
         "path": "worker/deno/lib/failure_diagnosis.ts",
@@ -17,7 +17,7 @@
         "outcome": "no marker matched: workerGateCategoryOf returns null, so no gate category",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "workerGateCategoryOf - each registered marker maps to its category and a non-gate message maps to null (Issue #3735)",
-        "flipWentRed": "final return null changed to \"pre_push_gate\": 4 failed, including workerGateCategoryOf, the unmarked-quotation positive control and two WORKER_GATE_MARKERS negative tests"
+        "flipWentRed": "Original implementation red check: final return null changed to \"pre_push_gate\"; the named behavioural test failed."
       },
       {
         "path": "worker/deno/lib/failure_diagnosis.ts",
@@ -25,7 +25,7 @@
         "outcome": "no head (no ## heading and Category line) so the body is not a posted worker gate record (false)",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "isWorkerGateFailureRecord - a raw marked reason with no posted heading and Category head is not a gate record (Issue #3735)",
-        "flipWentRed": "`if (head === null) return false;` changed to `return true`: 1 failed (this test)"
+        "flipWentRed": "Original implementation red check: `if (head === null) return false;` changed to `return true`; the named behavioural test failed."
       },
       {
         "path": "worker/deno/lib/failure_diagnosis.ts",
@@ -33,7 +33,7 @@
         "outcome": "head names a registered gate display, so the body is a worker gate record (true)",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "isWorkerGateFailureRecord - a registered gate category in the head line is a gate record (Issue #3735)",
-        "flipWentRed": "isWorkerGateFailureRecord forced to false: 6 failed, including this test and the three per-gate posted-record tests and the two sweep tests (the forced-false flip covers this comparison, as it sits inside the function)"
+        "flipWentRed": "Original implementation red check: isWorkerGateFailureRecord forced to false; the named behavioural test failed."
       },
       {
         "path": "worker/deno/lib/failure_diagnosis.ts",
@@ -41,47 +41,103 @@
         "outcome": "head names a non-gate display, so the body is not a worker gate record (false)",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "isWorkerGateFailureRecord - a record whose head Category line is timeout is not a gate record (Issue #3735)",
-        "flipWentRed": "comparison replaced with `true` (head present means gate record): 3 failed, including this test, the non-gate head quoting pre-push-gate test and the hostile-quote unmarked test"
+        "flipWentRed": "Original implementation red check: comparison replaced with `true` (head present means gate record); the named behavioural test failed."
       },
       {
         "path": "worker/deno/lib/host_fault.ts",
-        "line": 96,
-        "outcome": "a gate-marked message is never a host fault: detectHostFault returns null",
+        "line": 104,
+        "outcome": "a raw gate-marked message without a declared source cause is not a host fault",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "worker gate pre_push_gate - hostile quotes cannot change its category, disposition, host-fault or retry verdict (Issue #3735)",
-        "flipWentRed": "registry line removed: 9 failed, including this test and the summary and security-fix hostile-quote and posted-record tests"
+        "flipWentRed": "Original implementation red check: registry line removed; the named behavioural test failed."
       },
       {
         "path": "worker/deno/lib/coding_failure_ladder.ts",
-        "line": 167,
+        "line": 177,
         "outcome": "a gate category takes the ladder disposition with cooldownKind non_transient",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "worker gate pre_push_gate - hostile quotes cannot change its category, disposition, host-fault or retry verdict (Issue #3735)",
-        "flipWentRed": "registry branch removed: 4 failed, including this test and classifyCodingFailure pre-push gate test"
+        "flipWentRed": "Original implementation red check: registry branch removed; the named behavioural test failed."
       },
       {
         "path": "worker/deno/lib/run_outcome_classifier.ts",
-        "line": 250,
+        "line": 265,
         "outcome": "a gate category is answered as agent-outcome before any message-pattern rule",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "worker gate pre_push_gate - hostile quotes cannot change its category, disposition, host-fault or retry verdict (Issue #3735)",
-        "flipWentRed": "guard removed: literal removal fails to compile (TS2345, exhaustive switch); diagnostic variant with the switch default set to AGENT_OUTCOME: 5 failed, including this test and classifyRunFailure pre-push gate test"
+        "flipWentRed": "Original implementation red check: guard removed; the named behavioural test failed."
       },
       {
         "path": "worker/deno/lib/host_fault_release.ts",
-        "line": 143,
-        "outcome": "a worker gate record is kept: the host-fault sweep returns null and the failed-once label is not released",
+        "line": 146,
+        "outcome": "worker gate operand is true: preserve the recorded verdict",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "worker gate pre_push_gate - the posted failure record is a worker gate record the label sweeps leave alone (Issue #3735)",
-        "flipWentRed": "gate-record line removed: 4 failed, including this test"
+        "flipWentRed": "Forced only the worker gate operand to false with Boolean(0/1), retaining the other operand; a behavioural assertion failed in the named test."
+      },
+      {
+        "path": "worker/deno/lib/host_fault_release.ts",
+        "line": 146,
+        "outcome": "worker gate operand is false: allow the other operand and ordinary release rules to decide",
+        "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
+        "testName": "worker gate markers (Issue #3735) - the quotations are hostile when unmarked, so the marker is what protects them",
+        "flipWentRed": "Forced only the worker gate operand to true with Boolean(0/1), retaining the other operand; a behavioural assertion failed in the named test."
+      },
+      {
+        "path": "worker/deno/lib/host_fault_release.ts",
+        "line": 146,
+        "outcome": "summary or quality operand is true: preserve the recorded verdict",
+        "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
+        "testName": "declared verifier quality records remain protected alongside registry gates in both release sweeps (Issues #3735 and #3738)",
+        "flipWentRed": "Forced only the summary or quality operand to false with Boolean(0/1), retaining the other operand; a behavioural assertion failed in the named test."
+      },
+      {
+        "path": "worker/deno/lib/host_fault_release.ts",
+        "line": 146,
+        "outcome": "summary or quality operand is false: allow the other operand and ordinary release rules to decide",
+        "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
+        "testName": "worker gate markers (Issue #3735) - the quotations are hostile when unmarked, so the marker is what protects them",
+        "flipWentRed": "Forced only the summary or quality operand to true with Boolean(0/1), retaining the other operand; a behavioural assertion failed in the named test."
       },
       {
         "path": "worker/deno/lib/milestone_branch_refusal_release.ts",
-        "line": 165,
-        "outcome": "a worker gate record is not the repository refusal: refusalIsMostRecentFailure returns false and the labels are kept",
+        "line": 166,
+        "outcome": "worker gate operand is true: preserve the recorded verdict",
         "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
         "testName": "worker gate pre_push_gate - the posted failure record is a worker gate record the label sweeps leave alone (Issue #3735)",
-        "flipWentRed": "gate-record line removed: 4 failed, including this test"
+        "flipWentRed": "Forced only the worker gate operand to false with Boolean(0/1), retaining the other operand; a behavioural assertion failed in the named test."
+      },
+      {
+        "path": "worker/deno/lib/milestone_branch_refusal_release.ts",
+        "line": 166,
+        "outcome": "worker gate operand is false: allow the other operand and ordinary release rules to decide",
+        "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
+        "testName": "worker gate markers (Issue #3735) - the quotations are hostile when unmarked, so the marker is what protects them",
+        "flipWentRed": "Forced only the worker gate operand to true with Boolean(0/1), retaining the other operand; a behavioural assertion failed in the named test."
+      },
+      {
+        "path": "worker/deno/lib/milestone_branch_refusal_release.ts",
+        "line": 166,
+        "outcome": "summary or quality operand is true: preserve the recorded verdict",
+        "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
+        "testName": "declared verifier quality records remain protected alongside registry gates in both release sweeps (Issues #3735 and #3738)",
+        "flipWentRed": "Forced only the summary or quality operand to false with Boolean(0/1), retaining the other operand; a behavioural assertion failed in the named test."
+      },
+      {
+        "path": "worker/deno/lib/milestone_branch_refusal_release.ts",
+        "line": 166,
+        "outcome": "summary or quality operand is false: allow the other operand and ordinary release rules to decide",
+        "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
+        "testName": "worker gate markers (Issue #3735) - the quotations are hostile when unmarked, so the marker is what protects them",
+        "flipWentRed": "Forced only the summary or quality operand to true with Boolean(0/1), retaining the other operand; a behavioural assertion failed in the named test."
+      },
+      {
+        "path": "worker/deno/lib/host_fault.ts",
+        "line": 97,
+        "outcome": "a declared source cause remains authoritative before the raw registry fallback",
+        "test": "worker/deno/tests/worker_gate_markers_3735_test.ts",
+        "testName": "declared source causes outrank quoted registry markers (Issues #3735 and #3738)",
+        "flipWentRed": "Moved the raw registry check before the declared-category checks; the named test failed its clone-corrupt assertion. Restored source ordering."
       }
     ]
   }

@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 359,
+        "outcome": "hunk-shape guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)",
+        "flipWentRed": "Isolated hunk-shape mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 362,
+        "outcome": "old-version guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)",
+        "flipWentRed": "Isolated old-version mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 362,
+        "outcome": "new-version guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)",
+        "flipWentRed": "Isolated new-version mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 365,
+        "outcome": "width guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)",
+        "flipWentRed": "Isolated width mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 367,
+        "outcome": "numeric-change guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version-only increments await the existing fix, including a separate bump commit (Issue #3713)",
+        "flipWentRed": "Isolated numeric-change mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 367,
+        "outcome": "numeric-order guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version-only increments await the existing fix, including a separate bump commit (Issue #3713)",
+        "flipWentRed": "Isolated numeric-order mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 369,
+        "outcome": "numeric-equal guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)",
+        "flipWentRed": "Isolated numeric-equal mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 432,
+        "outcome": "modified-only guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version exception never hides a file addition or rename (Issue #3713)",
+        "flipWentRed": "Isolated modified-only mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 434,
+        "outcome": "finding-exact guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)",
+        "flipWentRed": "Isolated finding-exact mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 434,
+        "outcome": "finding-qualified guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)",
+        "flipWentRed": "Isolated finding-qualified mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 435,
+        "outcome": "findings-missing guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)",
+        "flipWentRed": "Isolated findings-missing mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 436,
+        "outcome": "old-patch guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)",
+        "flipWentRed": "Isolated old-patch mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 437,
+        "outcome": "new-patch guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_gate_2675_test.ts",
+        "testName": "own-diff version exception is conservative about patches, ordering, other files and earlier findings (Issue #3713)",
+        "flipWentRed": "Isolated new-patch mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 832,
+        "outcome": "log-repo guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_upkeep_failure_2891_test.ts",
+        "testName": "pass binds the version exception to findings from this PR's exact sent-back head (Issue #3713)",
+        "flipWentRed": "Isolated log-repo mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 832,
+        "outcome": "log-number guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_upkeep_failure_2891_test.ts",
+        "testName": "pass binds the version exception to findings from this PR's exact sent-back head (Issue #3713)",
+        "flipWentRed": "Isolated log-number mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 833,
+        "outcome": "log-head guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_upkeep_failure_2891_test.ts",
+        "testName": "pass binds the version exception to findings from this PR's exact sent-back head (Issue #3713)",
+        "flipWentRed": "Isolated log-head mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 833,
+        "outcome": "log-outcome guard accepts only a confirmed version increment with matching review context; other inputs get fresh review",
+        "test": "worker/deno/tests/review_fleet_prs_upkeep_failure_2891_test.ts",
+        "testName": "pass binds the version exception to findings from this PR's exact sent-back head (Issue #3713)",
+        "flipWentRed": "Isolated log-outcome mutation caused an assertion failure; restored code passed."
+      }
+    ]
+  }
+}

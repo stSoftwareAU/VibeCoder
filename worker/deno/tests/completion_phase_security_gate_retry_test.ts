@@ -226,6 +226,17 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       },
     },
     quality: {
+      // The cited test goes red on the base and green on the fix (Issue #3659).
+      runSecurityFixDiscrimination: () =>
+        Promise.resolve({
+          kind: "checked" as const,
+          test: {
+            file: "worker/deno/tests/injection_test.ts",
+            name: scenario.testName ?? "rejects_injection",
+          },
+          preFix: "fail" as const,
+          postFix: "pass" as const,
+        }),
       runQualityGate: () => {
         qualityGateRuns++;
         return Promise.resolve({

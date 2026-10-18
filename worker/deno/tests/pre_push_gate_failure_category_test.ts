@@ -74,7 +74,7 @@ Deno.test("classifyCodingFailure - a marked pre-push gate block earns a normal l
 
 Deno.test("classifyRunFailure - a pre-push gate block is an agent-outcome (PR #3716 review)", () => {
   assertEquals(
-    classifyRunFailure("pre_push_gate", gateReason).failureClass,
+    classifyRunFailure("pre_push_gate", gateReason, false).failureClass,
     "agent-outcome",
   );
 });

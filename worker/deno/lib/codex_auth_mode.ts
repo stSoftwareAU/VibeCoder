@@ -162,7 +162,10 @@ export function resolveCodexAuthMode(
  * lets a ChatGPT subscription survive the roughly hourly container refresh.
  *
  * Stated here — beside the auth-mode question it answers — so the routing
- * paths that need it do not each re-derive the path.
+ * paths that need it do not each re-derive the path. The billing probe
+ * (`resolveStoredBilling`) no longer uses this agent-state fallback (Issue
+ * #3955): the child CLI is only given `CODEX_HOME` when the operator set one,
+ * so with it unset the CLI reads `$HOME/.codex`, not this directory.
  *
  * @param workDir - The worker's work directory.
  * @param env - Environment lookup (defaults to the process environment).

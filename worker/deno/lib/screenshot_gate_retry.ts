@@ -67,7 +67,11 @@ export async function applyScreenshotGateFailure(
   await client.addLabel(repo, issueNumber, needsScreenshotLabel);
   await client.postComment(repo, issueNumber, failureMessage);
 
-  return { status: "failure", reason: SCREENSHOT_EVIDENCE_MISSING_REASON };
+  return {
+    category: "evidence_missing",
+    status: "failure",
+    reason: SCREENSHOT_EVIDENCE_MISSING_REASON,
+  };
 }
 
 /**
@@ -103,7 +107,11 @@ export async function recoverFromScreenshotGateBlock(
       "No screenshot-gate block to act on — failing as the gate reported",
       { repo, issueNumber },
     );
-    return { status: "failure", reason: SCREENSHOT_EVIDENCE_MISSING_REASON };
+    return {
+      category: "evidence_missing",
+      status: "failure",
+      reason: SCREENSHOT_EVIDENCE_MISSING_REASON,
+    };
   }
 
   logger.warn(

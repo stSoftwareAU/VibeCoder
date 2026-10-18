@@ -360,6 +360,24 @@ export function isWorkerGateFailureRecord(body: string): boolean {
 }
 
 /**
+ * The worker-written head of a summary or substantive quality failure record.
+ * The Category line immediately follows the heading, before quoted agent text;
+ * a category line deeper in the reason cannot forge this provenance.
+ * The literal newline separates the bounded heading scan from whitespace.
+ */
+const SUMMARY_OR_QUALITY_RECORD_RE =
+  /^##[^\n]*\n\s*\*\*Category:\*\* `(?:summary-incomplete|quality-failure)`/;
+
+/**
+ * Whether a posted failure record declares a summary or quality verdict.
+ * Release sweeps preserve that cause rather than reclassifying quoted text
+ * as a host fault or a repository refusal (Issues #3431 and #3738).
+ */
+export function isSummaryOrQualityFailureRecord(body: string): boolean {
+  return SUMMARY_OR_QUALITY_RECORD_RE.test(body.trimStart());
+}
+
+/**
  * The catch-all `Error:` rule of {@link detectFailureCategory}. A Rust/C++
  * path such as `AppError::X` is not an `Error:` line, so `Error::` is excluded
  * (Issue #3431). The lookahead is a single-character check, so it stays linear.
