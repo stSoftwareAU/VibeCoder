@@ -66,15 +66,15 @@ flowchart LR
 - **met** — Pending required CI/quality execution or the routine clean code review stays visible on the originating PR; waiting for these checks alone does not create a partial/degraded-delivery follow-up or a nested follow-up escalation. — evidence: completion composition regression checks PR creation, retained pending text and absence of follow-up/human escalation writes. — reviewer: met
 - **met** — Update the implementation summary guidance and deterministic follow-up path, including re-synchronisation, so future summaries distinguish mandatory merge verification from actual remaining work. — evidence: shared assessment, issue prompt and standards changes; PR-body sync regression. — reviewer: met
 - **met** — Genuine failed checks, known defects, absent tests, missing implementation and mixed criteria with unfinished product work remain actionable. Do not weaken any CI, review, acceptance or auto-merge gate, or claim a pending check passed. — evidence: real/mixed-gap regressions and existing gap/completion/sync suites; closure statuses and gate implementations are unchanged. — reviewer: met
-- **met** — Regression tests cover healthy/degraded runs, no stated criteria, re-synchronisation and real/mixed gaps. — evidence: the three affected test files. — reviewer: met
+- **met** — Regression tests cover healthy/degraded runs, no stated criteria, re-synchronisation and real/mixed gaps. — evidence: completion, assessment and sync/helper regressions. — reviewer: met
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — Pending wording could hide a failed check — evidence: `worker/deno/lib/degraded_delivery.ts:201` — reason: fixed with narrowly matched pending reasons and current check-result evidence.
-- **violation** — Negated or resolved failure words could create false follow-ups — evidence: `worker/deno/lib/degraded_delivery.ts:170` — reason: fixed by reading declared current results rather than historical criterion wording; later clean results supersede only the same check and suite.
-- **violation** — Test citations used basenames — evidence: `docs/archive/pr-summaries/pr-summary-3961.md:87` — reason: fixed with repository-relative paths.
+- **violation** — Pending wording could hide a failed check — evidence: `worker/deno/lib/degraded_delivery.ts:208` — reason: fixed with narrowly matched pending reasons and current check-result evidence.
+- **violation** — Negated or resolved failure words could create false follow-ups — evidence: `worker/deno/lib/degraded_delivery.ts:184` — reason: fixed by reading declared current results rather than historical criterion wording; later clean results supersede only the same check and suite.
+- **violation** — Test citations used basenames — evidence: `docs/archive/pr-summaries/pr-summary-3961.md:89` — reason: fixed with repository-relative paths.
 - **clean** — Reviewed genuine/negated/resolved failures, supported field separators, per-check and unit/integration identity, Result contracts, Australian English, preserved assertions and unchanged merge protections. No existing assertion or expected value was removed or weakened.
 
 - **violation** — Main's new body-sync path could file an empty follow-up for a newly pending-only summary. — evidence: `worker/deno/lib/pr_body_sync_follow_up.ts:162` and `worker/deno/lib/pr_body_sync_follow_up.ts:204`. — reason: fixed by sharing pending-check classification at discovery and returning the body before filing side effects when no actionable gaps remain.
@@ -93,6 +93,10 @@ flowchart LR
   entry point for healthy and degraded runs, including an existing follow-up.
 - `worker/deno/tests/pr_body_sync_test.ts` drives body refresh and checks that pending status
   survives while the false follow-up banner disappears, with no follow-up write.
+- `worker/deno/tests/pr_body_sync_follow_up_test.ts` checks discovery and the
+  side-effect-free helper result for ordinary and follow-up parents.
+- `worker/deno/tests/pr_body_reconcile_test.ts` retains the existing reconciliation
+  regressions in the five-suite integration run.
 - Refresh with no new closure assessment retains existing follow-up provenance;
   absence of an assessment is not treated as proof of pending-only work.
 - Existing test assertions were retained.
