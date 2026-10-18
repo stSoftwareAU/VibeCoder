@@ -320,12 +320,15 @@ Deno.test("timeline_batch - wrapped gh feeds wasLabelAddedByAllowedAuthor withou
 
 Deno.test("timeline_batch - wrapped gh serves page >= 2 as empty so paginateTimeline stops (Issue #3974)", async () => {
   const events = new Map([
-    [42, Array.from({ length: 100 }, () => ({
-      event: "labeled",
-      label: { name: "work-on" },
-      actor: { login: "alice" },
-      created_at: "2024-04-01T00:00:00Z",
-    }))],
+    [
+      42,
+      Array.from({ length: 100 }, () => ({
+        event: "labeled",
+        label: { name: "work-on" },
+        actor: { login: "alice" },
+        created_at: "2024-04-01T00:00:00Z",
+      })),
+    ],
   ]);
   let baseCalls = 0;
   const baseGh = (_args: string[]): Promise<string> => {
