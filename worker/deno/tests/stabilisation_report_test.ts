@@ -750,7 +750,10 @@ Deno.test("stabilisation CLI entry point emits JSON and a nonzero malformed-inpu
   const root = await Deno.makeTempDir();
   try {
     const snapshot = `${root}/evidence.json`, ledger = `${root}/ledger.jsonl`;
-    await Deno.writeTextFile(snapshot, JSON.stringify(evidence()));
+    const observations = evidence();
+    const secret = "ghp_" + "x".repeat(36);
+    observations.source = secret;
+    await Deno.writeTextFile(snapshot, JSON.stringify(observations));
     await Deno.writeTextFile(
       ledger,
       delivered.map((event) => JSON.stringify(event)).join("\n") + "\n",
@@ -779,6 +782,11 @@ Deno.test("stabilisation CLI entry point emits JSON and a nonzero malformed-inpu
     assertEquals(
       JSON.parse(new TextDecoder().decode(run.stdout)).deliveredIssues,
       1,
+    );
+    assertEquals(
+      JSON.parse(new TextDecoder().decode(run.stdout)).source,
+      "***REDACTED***",
+      "the real CLI applies the shared console redaction to supplied text",
     );
     const bad = await new Deno.Command(Deno.execPath(), {
       args: [

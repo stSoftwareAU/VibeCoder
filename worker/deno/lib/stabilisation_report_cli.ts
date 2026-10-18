@@ -1,5 +1,6 @@
 /** Read-only JSON report over explicitly supplied host ledgers and snapshots. */
 import { readLifecycleLedger } from "./lifecycle_ledger.ts";
+import { installConsoleRedaction } from "./console_redaction.ts";
 import {
   buildStabilisationReport,
   type StabilisationEvidence,
@@ -57,6 +58,7 @@ export async function stabilisationReportCli(args: string[]): Promise<string> {
   );
 }
 if (import.meta.main) {
+  installConsoleRedaction();
   try {
     console.log(await stabilisationReportCli(Deno.args));
   } catch (error) {
