@@ -190,20 +190,21 @@ Beyond "issue in, PR out," the worker supports several higher-level behaviours:
 A single loop checks work in a fixed **priority order** — one work item per
 iteration, then sleep and repeat:
 
-| Priority | Task                           | Description                                                                          |
-| -------- | ------------------------------ | ------------------------------------------------------------------------------------ |
-| 1        | PR feedback and reviews        | Authorised commenters or thumbs-up                                                   |
-| 1.5      | Failed spelling/quality checks | Spelling, shellcheck, Deno quality checks on open PRs                                |
-| 1.55     | Failed CI/integration checks   | Automatic diagnosis and fix of CI failures on open PRs                               |
-| 1.6      | PR branch updates              | Rebase/merge to keep branches current                                                |
-| 1.65     | Auto-merge catch-up            | Enable auto-merge on mergeable PRs                                                   |
-| 1.66     | Branch cleanup                 | Delete branches for merged PRs                                                       |
-| 1.67     | Issue closure                  | Close issues for merged PRs                                                          |
-| 1.7      | Milestone completion           | Final consolidation PR                                                               |
-| 1.75     | Issue refinement               | `refine-issue` label                                                                 |
-| 1.8      | Question answering             | `question` label                                                                     |
-| 1.85     | Planning                       | `planning` label                                                                     |
-| 2        | New implementation issues      | Configured labels e.g. `top-priority` before `work-on`, globally oldest across repos |
+| Priority | Task                           | Description                                                                                                  |
+| -------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| 1        | PR feedback and reviews        | Authorised commenters or thumbs-up                                                                           |
+| 1.5      | Failed spelling/quality checks | Spelling, shellcheck, Deno quality checks on open PRs                                                        |
+| 1.55     | Failed CI/integration checks   | Automatic diagnosis and fix of CI failures on open PRs                                                       |
+| 1.6      | PR branch updates              | Rebase/merge to keep branches current                                                                        |
+| 1.64     | PR body digest reconcile       | Re-sync a PR body whose summary digest differs from the summary at its head (pushes the worker did not make) |
+| 1.65     | Auto-merge catch-up            | Enable auto-merge on mergeable PRs                                                                           |
+| 1.66     | Branch cleanup                 | Delete branches for merged PRs                                                                               |
+| 1.67     | Issue closure                  | Close issues for merged PRs                                                                                  |
+| 1.7      | Milestone completion           | Final consolidation PR                                                                                       |
+| 1.75     | Issue refinement               | `refine-issue` label                                                                                         |
+| 1.8      | Question answering             | `question` label                                                                                             |
+| 1.85     | Planning                       | `planning` label                                                                                             |
+| 2        | New implementation issues      | Configured labels e.g. `top-priority` before `work-on`, globally oldest across repos                         |
 
 ### Workflow modes
 

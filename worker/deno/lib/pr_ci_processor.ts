@@ -97,6 +97,7 @@ import {
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import { assertSafeGitRef } from "./git_ref_args.ts";
 import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
+import type { SyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
 import { getRunId } from "./run_id.ts";
 import {
   buildAutoFixCapSummary,
@@ -429,6 +430,14 @@ export interface CiProcessorDeps {
    * {@link syncPrBodyFromSummary}.
    */
   syncPrBodyFn?: typeof syncPrBodyFromSummary;
+  /**
+   * Files the follow-up a PR-body sync needs when this run's rewritten summary
+   * newly marks a criterion `partial` or `missing` on a body with no leading
+   * section (Issue #3678). Production wiring passes
+   * `buildSyncFollowUpFiling(config, githubUser)`; when absent, such a sync
+   * fails loudly instead of filing.
+   */
+  syncFollowUpFiling?: SyncFollowUpFiling;
   /**
    * Configured worker name, used in the refreshed PR body's footer
    * (Issue #3089). Omitted → empty string.
@@ -2232,6 +2241,7 @@ async function _processCiWithHeartbeat(
         runGhCommand: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
         runGitCommand: deps.git.runGitCommand,
         logger,
+        followUpFiling: processorDeps.syncFollowUpFiling,
       },
       syncFn,
     );

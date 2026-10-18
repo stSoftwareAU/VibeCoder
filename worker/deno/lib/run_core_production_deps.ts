@@ -186,6 +186,8 @@ import { bindConflictTakeoverResolvers } from "./conflict_takeover_resolvers.ts"
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { recordClosedLifecyclePrs } from "./lifecycle_pr_observation.ts";
+import { buildSyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
+import { reconcilePrBodyDigests as runPrBodyDigestReconcile } from "./pr_body_reconcile.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
   mergedReconcileWatermarkPath,
@@ -1027,6 +1029,8 @@ export async function createProductionRunCoreDeps(
   const issueCache = new IssueCache(
     config.workDir ? `${config.workDir}/.gh-scan-cache` : undefined,
   );
+  // Issue #3760: digests already in sync, kept for the whole run (one run per process).
+  const prBodyDigestInSync = new Map<string, string>();
   // Issue #181: a close the worker performs drops that repo's stale scan-cache
   // entries, so the next scan cannot rank an issue this run already closed.
   setScanCacheForCloseInvalidation(issueCache);
@@ -2406,6 +2410,8 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feeds the refreshed PR body's footer.
             workerName: config.workerName,
+            // Issue #3678: files the follow-up for a newly reported gap.
+            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
           },
         );
 
@@ -2653,6 +2659,8 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
+            // Issue #3678: files the follow-up for a newly reported gap.
+            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
           },
         );
@@ -3087,6 +3095,8 @@ export async function createProductionRunCoreDeps(
             trustedAuthors,
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
+            // Issue #3678: files the follow-up for a newly reported gap.
+            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
             // Issue #3031: a milestone head is resolved through the takeover
             // in this same cycle.
@@ -3433,6 +3443,34 @@ export async function createProductionRunCoreDeps(
         });
         return { ok: true, value: undefined };
       }
+    },
+
+    // -- Priority 1.64: Reconcile PR body digests (Issue #3760) --
+    async reconcilePrBodyDigests() {
+      try {
+        await runPrBodyDigestReconcile(
+          {
+            repos: pollRepos,
+            maintenanceAuthors,
+            workerName: config.workerName ?? "",
+            githubUser,
+            runId: getRunId(),
+          },
+          {
+            runGhCommand,
+            runGitCommand,
+            logger,
+            followUpFiling: buildSyncFollowUpFiling(config, githubUser),
+            cache: issueCache,
+            inSync: prBodyDigestInSync,
+          },
+        );
+      } catch (err) {
+        logger.warn("PR body digest reconcile: unexpected error", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return { ok: true, value: undefined };
     },
 
     // -- Priority 1.65: Auto-merge --
