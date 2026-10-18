@@ -109,7 +109,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 2138,
+        "line": 2137,
         "outcome": "gate infrastructure map preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
         "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
@@ -117,7 +117,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 2140,
+        "line": 2139,
         "outcome": "gate verdict map preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
         "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
@@ -133,7 +133,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 732,
+        "line": 731,
         "outcome": "mixed primary quality preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
         "testName": "completion retains evidence, substantive and mixed verifier causes without hiding blockers (Issue #3738)",
@@ -141,7 +141,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 3386,
+        "line": 3383,
         "outcome": "verifier default substantive preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
         "testName": "completion retains evidence, substantive and mixed verifier causes without hiding blockers (Issue #3738)",
@@ -149,7 +149,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 909,
+        "line": 908,
         "outcome": "summary existing pr causes preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
         "testName": "existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)",
@@ -293,7 +293,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 1868,
+        "line": 1867,
         "outcome": "reconcile declared divergence preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_head_reconcile_test.ts",
         "testName": "completion - diverged agent/worker branches fail with the explicit reason, never reaching gh pr create (Issue #4286)",
@@ -301,7 +301,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 1868,
+        "line": 1867,
         "outcome": "reconcile declared infrastructure preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_head_reconcile_test.ts",
         "testName": "completion keeps unreadable reconciliation infrastructure even when its prose mentions divergence (Issue #3738)",
