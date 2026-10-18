@@ -207,6 +207,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // a growth measurement separates its linear separator scan from a
   // backtracking regex (Issue #3381).
   "tests/test_plan_recount_red_on_base_3381_test.ts",
+  // The Test Plan recount reads agent-written prose for partial additions and
+  // "now has N" totals; only a growth measurement separates its linear
+  // scans from a quadratic one on a long hostile line (Issue #3740).
+  "tests/test_plan_recount_partial_3740_test.ts",
   // The change-request quote extractor scans reviewer-written text; only a
   // growth measurement separates its linear hand-written scanners from a
   // backtracking regex (#3244).

@@ -30,7 +30,11 @@ import {
   processPrFeedback,
   summariseLargeComment,
 } from "../lib/pr_feedback_processor.ts";
-import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
+import { buildSyncFollowUpFiling } from "../lib/pr_body_sync_follow_up.ts";
+import {
+  createDefaultDeps,
+  type WorkerDeps,
+} from "../lib/issue_worker_wiring.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -42,13 +46,14 @@ import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
 export { buildFeedbackCommitMessage, decodeCommentBody, summariseLargeComment };
 export type { PrFeedbackResult };
 
-/** The pr-feedback-processor command. */
-export const prFeedbackProcessorCommand: Command = {
+/** The pr-feedback-processor command, using production wiring unless deps are supplied. */
+export const prFeedbackProcessorCommand = {
   name: "pr-feedback-processor",
   description: "Process PR feedback comments (Issue #967, #1230)",
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    workerDeps?: WorkerDeps,
   ): Promise<CommandResult<PrFeedbackResult>> {
     const operation = String(args["operation"] ?? "");
 
@@ -108,7 +113,7 @@ export const prFeedbackProcessorCommand: Command = {
         };
       }
 
-      const deps = createDefaultDeps();
+      const deps = workerDeps ?? createDefaultDeps();
 
       // Top-level try/catch to prevent silent crashes (Issue #1230)
       try {
@@ -184,6 +189,7 @@ export const prFeedbackProcessorCommand: Command = {
           workRoot: config.workDir,
           qualityInstructions,
           customInstructions,
+          repoConfigs: config.repoConfig,
           // Issue #1824: PR feedback uses its own timeout, distinct from
           // the larger issue-work claudeTimeout.
           claudeTimeout: config.prFeedbackTimeout || undefined,
@@ -202,6 +208,11 @@ export const prFeedbackProcessorCommand: Command = {
             allowedAuthors: config.allowedAuthors ?? [],
             authorisedCommenters: config.authorisedCommenters ?? [],
           },
+          // Issue #3678: files the follow-up for a newly reported gap.
+          syncFollowUpFiling: buildSyncFollowUpFiling(
+            config,
+            Deno.env.get("GITHUB_USER") ?? "",
+          ),
         };
 
         const result = await processPrFeedback(input, processorDeps);
@@ -250,4 +261,4 @@ export const prFeedbackProcessorCommand: Command = {
         `Unknown operation: ${operation}. Valid: decode-comment, build-commit-message, process`,
     };
   },
-};
+} satisfies Command;

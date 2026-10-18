@@ -2643,12 +2643,18 @@ flowchart TD
   creation uses. It keeps only what cannot be re-judged after the run: the
   original run's degradation reason and the follow-up number the section
   named. With no shortfall left the section is dropped. If the section named
-  a follow-up, it becomes a `Degraded run — partial delivery` section linking
-  that follow-up and listing the current shortfalls. If a `partial` or
+  a follow-up, a section built from the same shortfalls stays as it is; any
+  other shortfall set is rebuilt by `buildDegradedStaleFollowUpSection`, which
+  keeps the follow-up number but says the worker filed that follow-up when the
+  PR was raised, that a re-sync does not rewrite it, and that it may not list
+  every item below (Issue #3677). The re-sync never edits the follow-up, for
+  the reason the healthy-run re-sync below gives (PR #3676 review). If a
+  `partial` or
   `missing` shortfall remains but no follow-up was filed at PR creation, it
   becomes a `Degraded run — partial delivery` section saying the worker filed
   no follow-up for these items and to check them against the diff; the
-  re-sync files no follow-up itself. If only `unassessed` shortfalls remain,
+  re-sync files no follow-up itself (the fix-run case below applies only to a
+  body with no degraded or partial-delivery section). If only `unassessed` shortfalls remain,
   it becomes the `Degraded run — no follow-up filed` section with its reason
   re-derived, so "the issue states no acceptance criteria" disappears once
   the issue states criteria. If the issue cannot be read, the re-sync fails
@@ -2708,11 +2714,43 @@ run:
   built from the same gaps stays as it is; any other gap set is rebuilt by
   `buildReportedGapStaleFollowUpSection`, which keeps the number but says the
   worker filed that follow-up when the PR was raised, that a re-sync does not
-  rewrite it, and that it may not list every item below. The sync only reads
-  the issue (`gh issue view`) and edits the PR body: it never files, edits or
-  lists the follow-up, because it would copy freshly fetched, unverified issue
-  text into an `idle-task` issue the fleet works as trusted (PR #3676
-  review; THREAT-MODEL AP-7).
+  rewrite it, and that it may not list every item below. Re-deriving a section
+  the body already carries only reads the issue (`gh issue view`) and edits the
+  PR body: it never files, edits or lists the follow-up, because it would copy
+  freshly fetched, unverified issue text into an `idle-task` issue the fleet
+  works as trusted (PR #3676 review; THREAT-MODEL AP-7).
+- **A fix run's new gap (Issue #3678).** A review-fix, CI-fix or merge-conflict
+  run can newly mark a criterion `partial` or `missing` in a summary whose PR
+  body carries no degraded or partial-delivery section yet. When such a sync
+  runs (the summary differs from the recorded digest, the PR is worker-authored,
+  and the checkout is the PR head), and the rebuilt closure block marks any
+  criterion `partial` or `missing`, `syncPrBodyFromSummary` (via
+  `addReportedGapSectionOnSync` in `worker/deno/lib/pr_body_sync_follow_up.ts`):
+  1. reads the parent issue (`gh issue view --json title,body,labels,author,milestone`);
+  2. re-verifies that title and body with `verifyPickupContentIntegrity`
+     (`pickup_content_integrity.ts`, THREAT-MODEL AP-7) before writing any of
+     that text anywhere, because the sync fetched it fresh;
+  3. if the issue is itself a partial-delivery follow-up (its body carries a
+     `degraded-follow-up-<N>` `finding-id` marker), hands it to a human exactly
+     as the completion phase does (`handFollowUpToHuman`: `needs-human` label
+     and comment), and prepends a `Partial delivery — handed to a human` section
+     whose closing keyword for the issue becomes `Part of`;
+  4. otherwise files or reuses (and rewrites) the one `idle-task` follow-up
+     keyed on the parent through `fileDegradedFollowUp`, joining the parent's
+     milestone when newly filed, and prepends a `Partial delivery — follow-up
+     filed` section (`buildReportedGapPrSection`) naming it;
+  5. fails loudly if the issue cannot be read, its content fails verification,
+     the human hand-off or the filing fails, or no filer is wired. The sync then
+     returns an error and the PR body is left as it was. The processor (or the
+     Priority 1.64 reconcile pass, which runs the same sync after a push the
+     worker did not make — Issue #3760) logs the failed sync at warning and the
+     run does not fail, as for any failed sync. A later sync whose summary has
+     changed again retries.
+
+  Once the section exists, later syncs re-derive it as above and never write to
+  the follow-up. The filer reaches the three processors through a
+  `syncFollowUpFiling` processor dependency, which production builds with
+  `buildSyncFollowUpFiling(config, githubUser)`.
 - **No nested follow-up.** When the issue being worked is itself a
   partial-delivery follow-up (its body carries a `degraded-follow-up-<N>`
   `finding-id` marker), a healthy run with a gap files no `Finish #F: Finish

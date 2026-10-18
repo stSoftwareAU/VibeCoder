@@ -725,6 +725,14 @@ export interface RunCoreDeps {
   scanBlockingPrStalls?: () => Promise<Result<void>>;
 
   /**
+   * Priority 1.64: re-sync a PR body whose recorded summary digest no longer
+   * matches the summary at the PR head, whoever pushed it (Issue #3760).
+   *
+   * Optional — when absent the priority is a no-op.
+   */
+  reconcilePrBodyDigests?: () => Promise<Result<void>>;
+
+  /**
    * Priority 1.65: Auto-merge, and the post-scan pass that repeats it once
    * the issue-scan pool has drained (Issue #1136).
    *
@@ -1964,6 +1972,24 @@ export function buildPriorityDispatchTable(
       maintenanceLane: true,
       execute: () =>
         (deps.scanBlockingPrStalls?.() ??
+          Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
+            r.ok
+              ? { ok: true as const, value: { processed: false } }
+              : { ok: false as const, error: r.error }
+          ),
+    },
+    {
+      // Issue #3760: a push made outside the worker never reaches the
+      // post-push sync. This pass compares digests through the contents API
+      // with no checkout, and stays silent when they match. Never claims an
+      // issue. Not in the maintenance lane: it never touches the shared clone
+      // (it uses a disposable clone only on a mismatch). Deferrable because it
+      // is a fixed-cost sweep (Issue #2449).
+      priority: 1.64,
+      name: "Reconcile PR Body Digests",
+      budgetTier: "deferrable",
+      execute: () =>
+        (deps.reconcilePrBodyDigests?.() ??
           Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
             r.ok
               ? { ok: true as const, value: { processed: false } }
