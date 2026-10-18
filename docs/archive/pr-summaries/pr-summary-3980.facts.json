@@ -1,0 +1,792 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 12,
+        "outcome": "decision 1: flag === \"--help\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(flag === \"--help\"); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 15,
+        "outcome": "operand 2: flag !== \"--evidence\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 15,
+        "outcome": "operand 3: !evidencePath retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 15,
+        "outcome": "operand 4: paths.length === 0 retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 24,
+        "outcome": "operand 5: [\"historyComplete\", \"accepted\", \"processGenerated\"].includes(key) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 25,
+        "outcome": "operand 6: typeof value !== \"boolean\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 28,
+        "outcome": "operand 7: [ \"failuresPrevented\", \"extraChecks\", \"extraModelCalls\", \"extraSeconds\", \"residualRecurrence\", ].includes(key) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 34,
+        "outcome": "operand 8: value !== null retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 35,
+        "outcome": "operand 9: !Number.isFinite(value) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 35,
+        "outcome": "operand 10: (value as number) < 0 retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 45,
+        "outcome": "decision 11: ![\"observed\", \"synthetic\"].includes(row.source) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(![\"observed\", \"synthetic\"].includes(row.source)); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report_cli.ts",
+        "line": 60,
+        "outcome": "decision 12: import.meta.main retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI entry point emits JSON and a nonzero malformed-input exit (Issue #3980)",
+        "flipWentRed": "Changed this decision to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 71,
+        "outcome": "operand 13: typeof row.baseBranch === \"string\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation treats missing target names as unknown and compares merge instants (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 71,
+        "outcome": "operand 14: row.baseBranch.length > 0 retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation treats missing target names as unknown and compares merge instants (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 72,
+        "outcome": "operand 15: typeof row.defaultBranch === \"string\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation treats missing target names as unknown and compares merge instants (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 72,
+        "outcome": "operand 16: row.defaultBranch.length > 0 retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation treats missing target names as unknown and compares merge instants (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 88,
+        "outcome": "operand 17: !complete retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation requires accepted scope, matching merge and gated delivery (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 88,
+        "outcome": "operand 18: values.some((value) => value.partial) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves unknown spend, missing build roles and unattributed calls (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 88,
+        "outcome": "decision 19: value.partial retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(value.partial); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 97,
+        "outcome": "operand 20: !complete retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves unknown wasted spend and known lower bounds independently (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 98,
+        "outcome": "operand 21: values.some((value) => value.wastedPartial) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves unknown wasted spend and known lower bounds independently (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 98,
+        "outcome": "decision 22: value.wastedPartial retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation reports actual treatment, every role and known zero separately from unknown spend (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(value.wastedPartial); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 100,
+        "outcome": "operand 23: partial retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation reports actual treatment, every role and known zero separately from unknown spend (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 100,
+        "outcome": "operand 24: known === 0 retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves unknown spend, missing build roles and unattributed calls (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 101,
+        "outcome": "operand 25: wastedPartial retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation reports actual treatment, every role and known zero separately from unknown spend (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 101,
+        "outcome": "operand 26: wasted === 0 retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves unknown wasted spend and known lower bounds independently (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 127,
+        "outcome": "operand 27: (event as Partial<GateEvent>).gate === gate retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 128,
+        "outcome": "operand 28: (event as Partial<GateEvent>).result !== \"skipped\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains simultaneous declared causes and ignores pending gate polls (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 131,
+        "outcome": "operand 29: Date.parse(a.recordedAt) - Date.parse(b.recordedAt) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation first-pass decisions retain chronology, failures and blocking-head dedup (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 132,
+        "outcome": "operand 30: Number(a.result === \"pass\") - Number(b.result === \"pass\") retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation first-pass decisions retain chronology, failures and blocking-head dedup (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 134,
+        "outcome": "decision 31: first?.result === \"pass\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(first?.result === \"pass\"); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 135,
+        "outcome": "decision 32: first?.result === \"fail\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation first-pass decisions retain chronology, failures and blocking-head dedup (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(first?.result === \"fail\"); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 140,
+        "outcome": "decision 33: event.kind === \"assignment\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(event.kind === \"assignment\"); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 146,
+        "outcome": "decision 34: role.role === name retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation reports actual treatment, every role and known zero separately from unknown spend (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(role.role === name); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 170,
+        "outcome": "operand 35: !Number.isFinite(start) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation bounds the window, retains earlier rework and censors later delivery (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 170,
+        "outcome": "operand 36: !Number.isFinite(end) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation bounds the window, retains earlier rework and censors later delivery (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 170,
+        "outcome": "operand 37: start >= end retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation bounds the window, retains earlier rework and censors later delivery (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 177,
+        "outcome": "decision 38: event.kind === \"assignment\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation joins a CI follow-on's assignment before selecting its active issue (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(event.kind === \"assignment\"); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 193,
+        "outcome": "decision 39: (event as Partial<OutcomeEvent>).outcome === \"merged\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to !((event as Partial<OutcomeEvent>).outcome === \"merged\"); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 196,
+        "outcome": "operand 40: row.accepted === true retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation requires accepted scope, matching merge and gated delivery (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 197,
+        "outcome": "operand 41: merged.some((event) => event.repo.toLowerCase() === row.repo.toLowerCase() && event.prNumber === row.prNumber && Date.parse(event.recordedAt) === Date.parse(row.mergedAt) ) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation bounds the window, retains earlier rework and censors later delivery (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 198,
+        "outcome": "operand 42: event.repo.toLowerCase() === row.repo.toLowerCase() retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation receipts require the same repository and PR before retaining old child cost (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 199,
+        "outcome": "operand 43: event.prNumber === row.prNumber retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation receipts require the same repository and PR before retaining old child cost (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 200,
+        "outcome": "operand 44: Date.parse(event.recordedAt) === Date.parse(row.mergedAt) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation requires accepted scope, matching merge and gated delivery (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 204,
+        "outcome": "decision 45: Date.parse(event.recordedAt) >= start retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(Date.parse(event.recordedAt) >= start); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 211,
+        "outcome": "decision 46: Date.parse(row.mergedAt) >= start retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation bounds the window, retains earlier rework and censors later delivery (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(Date.parse(row.mergedAt) >= start); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 215,
+        "outcome": "decision 47: active.has(identity(event)) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(active.has(identity(event))); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 224,
+        "outcome": "decision 48: !evidence.historyComplete retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves unknown wasted spend and known lower bounds independently (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(!evidence.historyComplete); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 240,
+        "outcome": "decision 49: first.issueNumber === undefined retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(first.issueNumber === undefined); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 247,
+        "outcome": "decision 50: identity(event) === identity(first) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(identity(event) === identity(first)); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 250,
+        "outcome": "operand 51: row.repo.toLowerCase() === first.repo.toLowerCase() retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation keeps repository delivery identities separate and does not borrow another PR's proof (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 251,
+        "outcome": "operand 52: row.issueNumber === first.issueNumber retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 255,
+        "outcome": "operand 53: row.baseBranch === row.defaultBranch retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 256,
+        "outcome": "operand 54: Date.parse(row.mergedAt) >= start retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation keeps a pre-window delivery outside the delivery denominator (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 257,
+        "outcome": "operand 55: classifyLifecycleOutcome( bounded.filter((event) => event.repo.toLowerCase() === row.repo.toLowerCase() && (event as Partial<GateEvent>).prNumber === row.prNumber ), evidence.end, ).success retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation requires accepted scope, matching merge and gated delivery (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 259,
+        "outcome": "operand 56: event.repo.toLowerCase() === row.repo.toLowerCase() retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation keeps repository delivery identities separate and does not borrow another PR's proof (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 260,
+        "outcome": "operand 57: (event as Partial<GateEvent>).prNumber === row.prNumber retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation keeps repository delivery identities separate and does not borrow another PR's proof (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 269,
+        "outcome": "decision 58: row.baseBranch !== row.defaultBranch retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(row.baseBranch !== row.defaultBranch); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 275,
+        "outcome": "decision 59: [\"failed\", \"timeout\", \"closed_unmerged\"].includes( (event as Partial<OutcomeEvent>).outcome ?? \"\", ) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this decision to !([\"failed\", \"timeout\", \"closed_unmerged\"].includes( (event as Partial<OutcomeEvent>).outcome ?? \"\", )); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 285,
+        "outcome": "operand 60: event.kind === \"assignment\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation distinguishes terminal failure from each observed way of resuming work (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 285,
+        "outcome": "operand 61: event.kind === \"invocation\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation distinguishes terminal failure from each observed way of resuming work (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 286,
+        "outcome": "operand 62: (event as Partial<OutcomeEvent>).outcome === \"pr_opened\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation distinguishes terminal failure from each observed way of resuming work (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 289,
+        "outcome": "operand 63: failedAt > -Infinity retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation distinguishes terminal failure from each observed way of resuming work (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 289,
+        "outcome": "operand 64: failedAt >= resumedAt retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation distinguishes terminal failure from each observed way of resuming work (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 290,
+        "outcome": "operand 65: current.state === \"closed_unmerged\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 290,
+        "outcome": "operand 66: current.prs.length === 0 retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation distinguishes terminal failure from each observed way of resuming work (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 291,
+        "outcome": "decision 67: delivery retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(delivery); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 293,
+        "outcome": "decision 68: milestone retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(milestone); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 295,
+        "outcome": "operand 69: merges.length retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 295,
+        "outcome": "operand 70: issueReceipts.length retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation reports a child receipt without local merge or target evidence as missing (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 297,
+        "outcome": "decision 71: failed retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(failed); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 300,
+        "outcome": "decision 72: state === \"missing_evidence\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this decision to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 306,
+        "outcome": "decision 73: event.kind === \"assignment\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(event.kind === \"assignment\"); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 310,
+        "outcome": "operand 74: evidence.historyComplete retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation requires accepted scope, matching merge and gated delivery (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 310,
+        "outcome": "operand 75: deliveredAt >= began retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation cannot manufacture elapsed time from an assignment after the merge (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 323,
+        "outcome": "decision 76: event.kind === \"invocation\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(event.kind === \"invocation\"); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 326,
+        "outcome": "decision 77: event.kind === \"follow_on\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(event.kind === \"follow_on\"); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 338,
+        "outcome": "operand 78: !eventKeys.has(cause.eventKey) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation root-cause coverage follows exact observed failed-event identities (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 339,
+        "outcome": "operand 79: seenCauses.has(`${cause.eventKey}:${cause.category}`) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves observed categories and labels synthetic safeguards without a benefit claim (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 351,
+        "outcome": "decision 80: costs.some((event) => event.result !== \"success\" && !evidence.rootCauses.some((cause) => cause.eventKey === event.eventKey) ) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation root-cause coverage follows exact observed failed-event identities (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(costs.some((event) => event.result !== \"success\" && !evidence.rootCauses.some((cause) => cause.eventKey === event.eventKey) )); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 352,
+        "outcome": "operand 81: event.result !== \"success\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation root-cause coverage follows exact observed failed-event identities (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 353,
+        "outcome": "operand 82: !evidence.rootCauses.some((cause) => cause.eventKey === event.eventKey) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation root-cause coverage follows exact observed failed-event identities (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 353,
+        "outcome": "decision 83: cause.eventKey === event.eventKey retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation root-cause coverage follows exact observed failed-event identities (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(cause.eventKey === event.eventKey); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 362,
+        "outcome": "operand 84: builds.length === 0 retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation warns independently about absent builds and incomplete effective roles (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 363,
+        "outcome": "operand 85: builds.some((row) => !row.workerCommit || row.roles.some((role) => role.model === null) ) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves unknown spend, missing build roles and unattributed calls (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 364,
+        "outcome": "operand 86: !row.workerCommit retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation warns independently about absent builds and incomplete effective roles (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 364,
+        "outcome": "operand 87: row.roles.some((role) => role.model === null) retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation warns independently about absent builds and incomplete effective roles (Issue #3980)",
+        "flipWentRed": "Changed this operand to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 364,
+        "outcome": "decision 88: role.model === null retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation reports actual treatment, every role and known zero separately from unknown spend (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(role.model === null); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 373,
+        "outcome": "decision 89: row.state === \"delivered\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(row.state === \"delivered\"); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 376,
+        "outcome": "operand 90: (event as Partial<GateEvent>).gate === \"review\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation separates a failed quality gate from a blocking review and observed prevention from net benefit (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 377,
+        "outcome": "operand 91: (event as Partial<GateEvent>).result === \"fail\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 414,
+        "outcome": "operand 92: deliveredIssues > 0 retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation retains failed, pending, milestone and missing delivery evidence (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 414,
+        "outcome": "operand 93: !spend.partial retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves unknown spend, missing build roles and unattributed calls (Issue #3980)",
+        "flipWentRed": "Changed this operand to true; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 421,
+        "outcome": "decision 94: event.issueNumber === undefined retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves unknown spend, missing build roles and unattributed calls (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(event.issueNumber === undefined); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 423,
+        "outcome": "decision 95: event.result !== \"success\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation counts unique accepted default deliveries and full rework once (Issue #3980)",
+        "flipWentRed": "Changed this decision to false; the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 439,
+        "outcome": "decision 96: row.source === \"synthetic\" retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves observed categories and labels synthetic safeguards without a benefit claim (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(row.source === \"synthetic\"); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 441,
+        "outcome": "decision 97: row.failuresPrevented === 0 retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation preserves observed categories and labels synthetic safeguards without a benefit claim (Issue #3980)",
+        "flipWentRed": "Changed this decision to !(row.failuresPrevented === 0); the named test failed with AssertionError, then passed with the production rule restored."
+      },
+      {
+        "path": "worker/deno/lib/stabilisation_report.ts",
+        "line": 443,
+        "outcome": "decision 98: (row.failuresPrevented ?? 0) > 0 retains its reporting contract",
+        "test": "worker/deno/tests/stabilisation_report_test.ts",
+        "testName": "stabilisation CLI reads real ledger files and refuses corrupt or misleading evidence (Issue #3980)",
+        "flipWentRed": "Changed this decision to !((row.failuresPrevented ?? 0) > 0); the named test failed with AssertionError, then passed with the production rule restored."
+      }
+    ]
+  }
+}
