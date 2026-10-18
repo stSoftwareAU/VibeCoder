@@ -70,22 +70,24 @@ Deno.test("definitionName rejects control words, short names and ordinary calls"
 });
 
 Deno.test("definitionName rejects every control word that can name a definition", () => {
-  for (const word of [
-    "switch",
-    "catch",
-    "return",
-    "function",
-    "else",
-    "try",
-    "with",
-    "elif",
-    "until",
-    "case",
-    "select",
-    "new",
-    "await",
-    "typeof",
-  ]) {
+  for (
+    const word of [
+      "switch",
+      "catch",
+      "return",
+      "function",
+      "else",
+      "try",
+      "with",
+      "elif",
+      "until",
+      "case",
+      "select",
+      "new",
+      "await",
+      "typeof",
+    ]
+  ) {
     assertEquals(definitionName(`${word} (x) {`), null, `word: ${word}`);
   }
 });
@@ -489,7 +491,11 @@ const VERDICT: CallerVerdict = {
 };
 
 Deno.test("CALLER_VERDICTS is exactly unchanged, changed and tested, regressed", () => {
-  assertEquals(CALLER_VERDICTS, ["unchanged", "changed and tested", "regressed"]);
+  assertEquals(CALLER_VERDICTS, [
+    "unchanged",
+    "changed and tested",
+    "regressed",
+  ]);
 });
 
 Deno.test("parseCallerVerdicts accepts an absent list and each valid verdict", () => {
