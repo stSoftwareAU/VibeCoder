@@ -9,9 +9,9 @@
  * defines the outcome that now travels the whole chain, and the one builder
  * that derives it from a `WorkOnIssueResult`.
  *
- * `category` for a failure comes from `detectFailureCategory()` — the single
- * diagnosis path (#4298's corrected timeout messages flow through it) — never
- * from a parallel derivation.
+ * Worker failures carry their source-declared category and any boundary
+ * diagnostic refinement. The existing text diagnosis remains the adapter for
+ * legacy/raw callers; callback and filing consumers retain the source record.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -20,9 +20,28 @@ import {
   detectFailureCategory,
   type FailureCategory,
 } from "./failure_diagnosis.ts";
+import {
+  classifyRunFailure,
+  type RunFailureClassification,
+} from "./run_outcome_classifier.ts";
+import type { ClaudeRunResult } from "./claude_runner.ts";
 import type { ClaimStaleReason, StaleClaim } from "./claim_freshness.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
+
+/** Existing runner diagnostics retained verbatim, without inferring a stop cause. */
+export type RunTermination = Pick<
+  ClaudeRunResult,
+  | "timedOut"
+  | "timeoutReason"
+  | "scheduledRelease"
+  | "terminated"
+  | "killed"
+  | "externalSigterm"
+  | "rawExitCode"
+  | "watchdogLateSeconds"
+  | "killIncompleteSeconds"
+>;
 
 /**
  * Short facts a run wants stated on the release comment alongside whatever it
@@ -44,6 +63,9 @@ export interface RunOutcomeNotes {
  * PR; one finding is outstanding, and both halves are stated.
  */
 export interface PrBlockedAfterRaise {
+  categories?: readonly FailureCategory[];
+  /** Source-declared diagnosis, retained without re-reading quoted prose. */
+  classification?: RunFailureClassification;
   /** Phase the block came from. */
   phase: string;
   /** Diagnosed category of the block — never `unknown` for a worker gate. */
@@ -68,6 +90,10 @@ export type RunOutcome =
     }
     | {
       kind: "no_pr";
+      categories?: readonly FailureCategory[];
+      /** Existing classification retained from a declared source cause. */
+      classification?: RunFailureClassification;
+      termination?: RunTermination;
       /** Failure category from failure_diagnosis.ts (#4298's corrected diagnosis). */
       category: FailureCategory;
       /** Phase that died — the `phase` field of WorkOnIssueResult. */
@@ -123,6 +149,9 @@ export type RunOutcome =
      */
     | {
       kind: "summary_incomplete";
+      category?: FailureCategory;
+      categories?: readonly FailureCategory[];
+      classification?: RunFailureClassification;
       /** Phase that found the shortfall. */
       phase: string;
       prUrl: string;
@@ -195,6 +224,9 @@ export function withRunOutcomeNotes(
 
 /** The subset of a work result the builder reads. */
 export interface RunOutcomeSource {
+  categories?: readonly FailureCategory[];
+  classification?: RunFailureClassification;
+  termination?: RunTermination;
   success: boolean;
   category?: FailureCategory;
   phase: string;
@@ -236,6 +268,10 @@ export function prNumberFromUrl(prUrl: string): number {
  *   `no_pr_expected` with the reason as the summary.
  */
 export function deriveRunOutcome(source: RunOutcomeSource): RunOutcome {
+  const classification = source.classification ??
+    (source.category !== undefined
+      ? classifyRunFailure(source.category, source.reason, true)
+      : undefined);
   if (source.prUrl) {
     return {
       kind: "pr",
@@ -248,6 +284,8 @@ export function deriveRunOutcome(source: RunOutcomeSource): RunOutcome {
       // and reporting only the failure loses the delivered work.
       ...(source.success ? {} : {
         blocked: {
+          ...(classification ? { classification } : {}),
+          ...(source.categories ? { categories: source.categories } : {}),
           phase: source.phase,
           category: source.category ?? detectFailureCategory(source.reason),
           reason: source.reason,
@@ -266,6 +304,9 @@ export function deriveRunOutcome(source: RunOutcomeSource): RunOutcome {
     Object.values(source.timings ?? {}).reduce((a, b) => a + b, 0);
   return {
     kind: "no_pr",
+    ...(source.categories ? { categories: source.categories } : {}),
+    ...(classification ? { classification } : {}),
+    ...(source.termination ? { termination: source.termination } : {}),
     category: source.category ?? detectFailureCategory(source.reason),
     phase: source.phase,
     elapsedSeconds: Math.max(0, Math.round(elapsedSeconds)),
@@ -332,6 +373,8 @@ export function supersededOutcome(options: {
  * commented on the issue.
  */
 export function summaryIncompleteOutcome(options: {
+  category?: FailureCategory;
+  categories?: readonly FailureCategory[];
   phase: string;
   prUrl: string;
   prNumber: number;
@@ -339,6 +382,17 @@ export function summaryIncompleteOutcome(options: {
 }): RunOutcome {
   return {
     kind: "summary_incomplete",
+    ...(options.category
+      ? {
+        category: options.category,
+        classification: classifyRunFailure(
+          options.category,
+          options.problem,
+          true,
+        ),
+      }
+      : {}),
+    ...(options.categories ? { categories: options.categories } : {}),
     phase: options.phase,
     prUrl: options.prUrl,
     prNumber: options.prNumber,

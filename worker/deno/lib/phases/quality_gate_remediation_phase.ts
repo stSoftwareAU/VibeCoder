@@ -168,9 +168,7 @@ export async function workOnIssueQualityGate(
   if (phaseResult.status === "failure") {
     // Only infrastructure-category quality failures qualify for the extra
     // in-process retry — real quality-check failures are not retried.
-    const category = detectFailureCategory(
-      qualityFailureMessage ?? phaseResult.reason,
-    );
+    const category = phaseResult.category;
     if (isInfrastructureFailure(category)) {
       const shouldRetry = await shouldRetryInfrastructureFailure(
         "quality_gate",
@@ -178,6 +176,7 @@ export async function workOnIssueQualityGate(
         state,
         deps.logger,
         {
+          category,
           backoffMs: ctx.config.infraRetryBackoffMs,
           cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs,
         },
@@ -217,6 +216,7 @@ export async function workOnIssueQualityGate(
       failureMessage: qualityFailureMessage,
       // Issue #3445: the gate output is repository-authored, never a host fault.
       qualityGateOutput: true,
+      category: "quality_check",
       labels: {
         failedLabel: ctx.config.failedLabel,
         failedOnceLabel: ctx.config.failedOnceLabel,
@@ -485,6 +485,7 @@ async function runQualityGateBody(
     if (!qualityResult.ok) {
       return {
         phaseResult: {
+          category: "internal_error",
           status: "failure",
           reason: `Quality gate error: ${qualityResult.error.message}`,
         },
@@ -611,6 +612,7 @@ async function runQualityGateBody(
         });
         return {
           phaseResult: {
+            category: "unknown",
             status: "early_exit",
             reason: `pre_existing_gate_failure: ${named}`,
             expectedSkip: true,
@@ -668,7 +670,11 @@ async function runQualityGateBody(
         },
       );
       return {
-        phaseResult: { status: "failure", reason: detailedReason },
+        phaseResult: {
+          category: "quality_check",
+          status: "failure",
+          reason: detailedReason,
+        },
         qualityFailureMessage: failureMessage,
       };
     }
@@ -706,6 +712,10 @@ async function runQualityGateBody(
   }
 
   return {
-    phaseResult: { status: "failure", reason: "Quality gate loop exhausted" },
+    phaseResult: {
+      category: "quality_check",
+      status: "failure",
+      reason: "Quality gate loop exhausted",
+    },
   };
 }

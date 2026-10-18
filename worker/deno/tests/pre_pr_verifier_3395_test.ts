@@ -1620,3 +1620,42 @@ Deno.test("runPrePrVerifier: earlier findings need complete fixed verdicts even 
     await f.cleanup();
   }
 });
+
+Deno.test("verifier findings preserve evidence and substantive causes without accepting infrastructure claims (Issue #3738)", () => {
+  const reply = parseReviewReply(JSON.stringify({
+    ...JSON.parse(REPLY_CLEAN),
+    findings: [
+      {
+        file: "docs/summary.md",
+        line: 1,
+        problem: "missing evidence",
+        category: "summary_incomplete",
+      },
+      {
+        file: "worker/code.ts",
+        line: 2,
+        problem: "incorrect implementation",
+        category: "quality_check",
+      },
+      {
+        file: "worker/test.ts",
+        line: 3,
+        problem: "test does not exercise the bug",
+      },
+      {
+        file: "worker/code.ts",
+        line: 4,
+        problem: "cannot declare a remote fault from a review finding",
+        category: "push_failure",
+      },
+    ],
+  }));
+  assertEquals(
+    reply.findings.map((f) => "category" in f ? f.category : "quality_check"),
+    ["summary_incomplete", "quality_check", "quality_check", "quality_check"],
+  );
+  assertEquals(
+    prePrVerifierBlocked({ status: "checked", review: reply }),
+    true,
+  );
+});

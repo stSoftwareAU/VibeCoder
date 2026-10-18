@@ -43,7 +43,10 @@ import {
   isTimeoutClassFailureReason,
 } from "./failure_diagnosis.ts";
 import { detectHostFault } from "./host_fault.ts";
-import { classifyRunFailure } from "./run_outcome_classifier.ts";
+import {
+  classifyRunFailure,
+  type RunFailureClassification,
+} from "./run_outcome_classifier.ts";
 import type { handleIssueFailure } from "./label_failure.ts";
 import type {
   HandleFailureOptions,
@@ -154,10 +157,15 @@ const RECORD_ONLY_FAILURE_CLASSES: ReadonlySet<string> = new Set([
 export function classifyCodingFailure(
   reason: string | undefined | null,
   declaredCategory?: FailureCategory,
+  classification?: RunFailureClassification,
 ): CodingFailureDecision {
   const message = reason ?? "";
   const category = declaredCategory ?? detectFailureCategory(message);
-  const { failureClass, rationale } = classifyRunFailure(category, message);
+  const { failureClass, rationale } = classification ?? classifyRunFailure(
+    category,
+    message,
+    declaredCategory !== undefined,
+  );
 
   // A PR-summary gate refusal (Issue #3431; PR #3440 review) or a
   // security-fix gate refusal (Issue #3454) is the worker's
@@ -229,6 +237,7 @@ export interface CodingFailureLadderOptions {
   /** The terminal failure reason the run produced. */
   failureReason: string;
   category?: FailureCategory;
+  classification?: RunFailureClassification;
   /** The phase the run died at (`execute`, `quality_gate`, …), if known. */
   failurePhase?: string;
   /** Configured label names; defaults apply when absent. */
@@ -268,6 +277,7 @@ export async function applyCodingFailureLadder(
   const decision = classifyCodingFailure(
     options.failureReason,
     options.category,
+    options.classification,
   );
   if (decision.disposition === "transient") return { decision };
 
@@ -317,6 +327,7 @@ export function isSetupFault(
 export interface CodingRunOutcomeSummary {
   success: boolean;
   category?: FailureCategory;
+  classification?: RunFailureClassification;
   /** A phase declared its own bounce (Issue #175) — not a failure. */
   expectedSkip: boolean;
   /** The terminal failure reason, when the run failed. */
@@ -357,7 +368,11 @@ export function planCodingFailure(
 ): CodingFailurePlan {
   if (run.success || run.expectedSkip) return { applyLadder: false };
 
-  const decision = classifyCodingFailure(run.reason, run.category);
+  const decision = classifyCodingFailure(
+    run.reason,
+    run.category,
+    run.classification,
+  );
   if (run.ladderApplied) {
     return {
       applyLadder: false,

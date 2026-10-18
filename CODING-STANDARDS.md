@@ -87,6 +87,38 @@ the fault immediately rather than swallowing it into a green result.
   claims to tell apart (see **Observe the real tool before you rely on it**),
   and test it as **A failure-reason test asserts the cause** says.
 
+## Worker failure causes
+
+Worker-written failures declare their existing `FailureCategory` at the source.
+`PhaseResult` failure/early-exit results and unsuccessful `WorkOnIssueResult`
+values require a category. A helper returning both a branch verdict and an
+infrastructure failure exposes the distinction in its result/error type; callers
+map every case explicitly. Do not derive a worker result's category from its own
+reason text. The phase source-scan regression covers direct and assigned result
+objects, nested expressions, comments and literal lookalikes.
+
+Carry the source category through retry, failure bookkeeping and the existing
+outcome/callback. Legacy records and raw external tool/CLI output may use the
+existing text adapter; choosing raw versus declared input to
+`classifyRunFailure` is explicit. Capture a known host refinement at that external
+boundary and retain the existing classification, rather than reparsing quoted
+check output later. Unknown causes remain unknown. Worker-authored kill
+probes remain distinct from agent narration about billing, crashes or memory.
+
+Evidence/documentation-contract findings use `summary_incomplete`; substantive
+implementation or test findings use `quality_check`. Preserve every simultaneous
+cause in the existing diagnostic/event output and select a substantive cause
+when present. Every verifier finding remains blocking; a finding cannot declare
+itself an infrastructure error. Existing PR outcomes keep these diagnostics even
+when they retain their established PR-attached outcome kind.
+
+A scheduled handover remains `scheduled_release`; an exhausted execution budget
+remains a timeout. Retain the runner's known stop fields (raw exit status,
+watchdog reason/lateness, incomplete kill and scheduled/termination flags) in the
+existing outcome/callback. Do not infer a missing cause, exempt all timeouts or
+discard preserved work. Semantic already-landed decisions reuse the existing
+outcome contract and their own provenance checks.
+
 ## Changing the Shape of Persisted Data
 
 **Changing the shape of persisted data bumps its key or reads the old shape.**

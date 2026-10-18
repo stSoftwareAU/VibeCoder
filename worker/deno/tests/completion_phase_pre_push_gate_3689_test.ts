@@ -14,6 +14,7 @@ import {
   classifyCodingFailure,
   planCodingFailure,
 } from "../lib/coding_failure_ladder.ts";
+import { callbackOutcomeFromRun } from "../lib/run_callback_context.ts";
 import { deriveRunOutcome } from "../lib/run_outcome.ts";
 import type { FailureCategory } from "../lib/failure_diagnosis.ts";
 import {
@@ -21,6 +22,7 @@ import {
   isInfrastructureFailure,
   PRE_PUSH_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
+import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import { PrePushGateBlockedError } from "../lib/git_push.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
@@ -181,7 +183,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           answer === "pass" ? { ok: true as const, value: undefined } : {
             ok: false as const,
             error: answer instanceof Error
-              ? answer
+              ? new PrePushGateInfrastructureError(answer.message, {
+                cause: answer,
+              })
               : new PrePushGateBlockedError(answer),
           },
         );
@@ -493,7 +497,9 @@ Deno.test({
     for (
       const [answer, category, disposition] of [
         [
-          new Error("Could not resolve host; quoted check: rate limit timeout"),
+          new Error(
+            "Could not resolve host; quoted check: rate limit timeout ENOSPC TypeError: boom",
+          ),
           "push_failure",
           "transient",
         ],
@@ -564,6 +570,19 @@ Deno.test({
       const outcome = deriveRunOutcome(run);
       assertEquals(outcome.kind, "no_pr");
       assertEquals(outcome.kind === "no_pr" && outcome.category, category);
+      const emitted = callbackOutcomeFromRun({
+        repo: "o/r",
+        issueNumber: 10,
+        result: "failure",
+        startedAtEpochMs: 0,
+        finishedAtEpochMs: 1,
+        outcome,
+      });
+      assertEquals(emitted?.category, category);
+      assertEquals(
+        emitted?.failureClass,
+        category === "push_failure" ? "unknown" : "agent-outcome",
+      );
       assertEquals(o.pushes, 0);
     }
   },

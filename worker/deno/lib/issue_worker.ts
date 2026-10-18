@@ -192,6 +192,12 @@ async function workOnIssueRecorded(
     // every terminal return produced — no per-return plumbing to forget.
     outcome = withRunOutcomeNotes(
       result.outcome ?? deriveRunOutcome({
+        category: result.category,
+        ...(result.categories ? { categories: result.categories } : {}),
+        ...(result.termination ? { termination: result.termination } : {}),
+        ...(result.classification
+          ? { classification: result.classification }
+          : {}),
         success: result.success,
         phase: result.phase,
         reason: result.reason,
@@ -254,6 +260,7 @@ async function workOnIssueRecorded(
   } catch (err) {
     outcome = withRunOutcomeNotes(
       deriveRunOutcome({
+        category: "internal_error",
         success: false,
         phase: "unknown",
         reason: err instanceof Error ? err.message : String(err),
@@ -335,6 +342,7 @@ async function workOnIssueCore(
         error: message,
       });
       return {
+        category: "internal_error",
         status: "failure",
         reason: `Unexpected error in ${name}: ${message}`,
       };
@@ -382,6 +390,7 @@ async function workOnIssueCore(
     resetWriteRepoAllowlist();
     resetClaimedIssueGuard();
     return {
+      category: "unknown",
       success: false,
       phase: "idle_task_guard",
       reason: "Issue is an idle-task scan wrapper (title or body match) — " +
@@ -400,6 +409,7 @@ async function workOnIssueCore(
     );
     if (precheckResult.status === "failure") {
       return {
+        category: precheckResult.category,
         success: false,
         phase: "merged_pr_precheck",
         reason: precheckResult.reason,
@@ -413,14 +423,12 @@ async function workOnIssueCore(
       // cooldown and leaves it out of the processed-issue count, instead of
       // freeing the slot for the very same issue on the next scan.
       const expectedSkip = precheckResult.expectedSkip === true;
-      return {
-        success: !expectedSkip,
+      const terminalResult = {
+        category: precheckResult.category,
         ...(expectedSkip ? { expectedSkip: true } : {}),
         phase: "merged_pr_precheck",
         reason: precheckResult.reason,
         timings,
-        // A bounce raised no PR by design — keep it out of the failure
-        // diagnosis so the claim-release comment states it plainly.
         ...(expectedSkip
           ? {
             outcome: expectedNoPrOutcome(
@@ -430,6 +438,9 @@ async function workOnIssueCore(
           }
           : {}),
       };
+      return expectedSkip
+        ? { ...terminalResult, success: false }
+        : { ...terminalResult, success: true };
     }
 
     // Issue #2849 — up-front analysis-only / no-PR hand-off.
@@ -457,7 +468,11 @@ async function workOnIssueCore(
           logger,
           deps: { ensureLabelExists: deps.github.ensureLabelExists },
         });
-        return { status: "early_exit", reason: "analysis_only_marker" };
+        return {
+          category: "unknown",
+          status: "early_exit",
+          reason: "analysis_only_marker",
+        };
       });
       return {
         success: true,
@@ -502,7 +517,11 @@ async function workOnIssueCore(
           },
           logger,
         });
-        return { status: "early_exit", reason: "admin_only_finding" };
+        return {
+          category: "unknown",
+          status: "early_exit",
+          reason: "admin_only_finding",
+        };
       });
       return {
         success: true,
@@ -519,6 +538,7 @@ async function workOnIssueCore(
     );
     if (setupResult.status === "failure") {
       return {
+        category: setupResult.category,
         success: false,
         phase: "setup",
         reason: setupResult.reason,
@@ -527,6 +547,7 @@ async function workOnIssueCore(
     }
     if (setupResult.status === "early_exit") {
       return {
+        category: setupResult.category,
         success: false,
         phase: "setup",
         reason: setupResult.reason,
@@ -560,6 +581,7 @@ async function workOnIssueCore(
     );
     if (clarityResult.status === "failure") {
       return {
+        category: clarityResult.category,
         success: false,
         phase: "clarity",
         reason: clarityResult.reason,
@@ -568,6 +590,7 @@ async function workOnIssueCore(
     }
     if (clarityResult.status === "early_exit") {
       return {
+        category: clarityResult.category,
         success: true,
         phase: "clarity",
         reason: clarityResult.reason,
@@ -582,6 +605,7 @@ async function workOnIssueCore(
     );
     if (baselineResult.status === "failure") {
       return {
+        category: baselineResult.category,
         success: false,
         phase: "baseline_quality",
         reason: baselineResult.reason,
@@ -637,7 +661,11 @@ async function workOnIssueCore(
           logger,
           deps: { ensureLabelExists: deps.github.ensureLabelExists },
         });
-        return { status: "early_exit", reason: "suspicious_image_flagged" };
+        return {
+          category: "unknown",
+          status: "early_exit",
+          reason: "suspicious_image_flagged",
+        };
       });
       return {
         success: true,
@@ -725,6 +753,13 @@ async function workOnIssueCore(
 
     if (executeResult.status === "failure") {
       return {
+        category: executeResult.category,
+        ...(executeResult.classification
+          ? { classification: executeResult.classification }
+          : {}),
+        ...(executeResult.termination
+          ? { termination: executeResult.termination }
+          : {}),
         success: false,
         phase: "execute",
         reason: executeResult.reason,
@@ -740,6 +775,7 @@ async function workOnIssueCore(
         );
         if (noChangesResult.status === "failure") {
           return {
+            category: noChangesResult.category,
             success: false,
             phase: "handle_no_changes",
             reason: noChangesResult.reason,
@@ -757,6 +793,7 @@ async function workOnIssueCore(
         };
       }
       return {
+        category: executeResult.category,
         success: true,
         phase: "execute",
         reason: executeResult.reason,
@@ -783,6 +820,7 @@ async function workOnIssueCore(
     );
     if (declaredHandoffResult.status === "failure") {
       return {
+        category: declaredHandoffResult.category,
         success: false,
         phase: "declared_handoff",
         reason: declaredHandoffResult.reason,
@@ -792,6 +830,7 @@ async function workOnIssueCore(
     if (declaredHandoffResult.status === "early_exit") {
       const expectedSkip = declaredHandoffResult.expectedSkip === true;
       return {
+        category: declaredHandoffResult.category,
         success: true,
         ...(expectedSkip ? { expectedSkip: true } : {}),
         phase: "declared_handoff",
@@ -816,6 +855,7 @@ async function workOnIssueCore(
     );
     if (qualityResult.status === "failure") {
       return {
+        category: qualityResult.category,
         success: false,
         phase: "quality_gate",
         reason: qualityResult.reason,
@@ -835,6 +875,7 @@ async function workOnIssueCore(
     if (qualityResult.status === "early_exit") {
       const expectedSkip = qualityResult.expectedSkip === true;
       return {
+        category: qualityResult.category,
         success: false,
         ...(expectedSkip ? { expectedSkip: true } : {}),
         phase: "quality_gate",
@@ -851,6 +892,10 @@ async function workOnIssueCore(
     );
     if (completionResult.status === "failure") {
       return {
+        category: completionResult.category,
+        ...(completionResult.categories
+          ? { categories: completionResult.categories }
+          : {}),
         success: false,
         phase: "completion",
         reason: completionResult.reason,
@@ -867,8 +912,8 @@ async function workOnIssueCore(
       // surface here too. It declares itself an expected skip; the existing
       // completion bounces do not, and behave exactly as before.
       const expectedSkip = completionResult.expectedSkip === true;
-      return {
-        success: !expectedSkip,
+      const terminalResult = {
+        category: completionResult.category,
         ...(expectedSkip ? { expectedSkip: true } : {}),
         phase: "completion",
         reason: completionResult.reason,
@@ -877,6 +922,9 @@ async function workOnIssueCore(
           ? { outcome: completionResult.outcome }
           : {}),
       };
+      return expectedSkip
+        ? { ...terminalResult, success: false }
+        : { ...terminalResult, success: true };
     }
 
     // The PR exists — the checkpointed work reached its destination, so

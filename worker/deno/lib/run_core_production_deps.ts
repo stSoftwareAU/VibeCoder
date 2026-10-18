@@ -4815,6 +4815,8 @@ export async function createProductionRunCoreDeps(
         success: result.success,
         expectedSkip: isExpectedSkip,
         reason: result.reason,
+        category: result.category,
+        classification: result.classification,
         ...(result.ladderApplied ? { ladderApplied: true } : {}),
         ...(result.phase ? { phase: result.phase } : {}),
       });
@@ -4825,6 +4827,8 @@ export async function createProductionRunCoreDeps(
           issueNumber: issue.issueNumber,
           githubUser,
           failureReason: result.reason,
+          category: result.category,
+          classification: result.classification,
           ...(result.phase ? { failurePhase: result.phase } : {}),
           labels: {
             failedLabel: config.failedLabel,

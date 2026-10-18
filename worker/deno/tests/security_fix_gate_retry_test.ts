@@ -174,7 +174,12 @@ async function recover(launchFails: boolean) {
       ctx,
       state,
       deps,
-      () => Promise.resolve({ status: "failure", reason: "blocked again" }),
+      () =>
+        Promise.resolve({
+          status: "failure",
+          category: "unknown",
+          reason: "blocked again",
+        }),
     );
   } finally {
     await Deno.remove(root, { recursive: true });

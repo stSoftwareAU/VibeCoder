@@ -188,7 +188,7 @@ const ROWS: {
 
 Deno.test("run failure classifier - table: one real-message case per row (Issue #4328)", () => {
   for (const row of ROWS) {
-    const got = classifyRunFailure(row.category, row.message);
+    const got = classifyRunFailure(row.category, row.message, false);
     assertEquals(got.fixability, row.fixability, row.name);
     assertEquals(got.failureClass, row.failureClass, row.name);
     assert(got.rationale.length > 10, `${row.name}: rationale`);
@@ -204,12 +204,14 @@ Deno.test("run failure classifier - precedence: an OOM kill whose message also s
   const oom = classifyRunFailure(
     "killed",
     "Claude was killed (exit 137, SIGKILL — possible out-of-memory in the VM) after the run timed out at 3492s",
+    false,
   );
   assertEquals(oom.failureClass, "oom");
   assertEquals(oom.fixability, "code_fixable");
   const limit = classifyRunFailure(
     "rate_limit",
     "Claude usage limit reached (subscription window)\n    at Object.runClaude (file:///worker/deno/lib/claude_executor.ts:412:9)",
+    false,
   );
   assertEquals(limit.failureClass, "usage-limit");
   assertEquals(limit.fixability, "not_code_fixable");
@@ -217,12 +219,14 @@ Deno.test("run failure classifier - precedence: an OOM kill whose message also s
   const disk = classifyRunFailure(
     "killed",
     "Claude was killed (exit 137, SIGKILL): ENOSPC: no space left on device",
+    false,
   );
   assertEquals(disk.failureClass, "disk-full");
   // Out-of-credit outranks a crash trace.
   const credit = classifyRunFailure(
     "internal_error",
     "Error: Insufficient credit balance\n    at Module.request (file:///x.ts:1:1)",
+    false,
   );
   assertEquals(credit.failureClass, "out-of-credit");
 });
@@ -231,38 +235,45 @@ Deno.test("run failure classifier - a payment refusal categorised rate_limit kee
   const refusal = classifyRunFailure(
     "rate_limit",
     'API Error: 402 {"type":"error","error":{"type":"billing_error"}}',
+    false,
   );
   assertEquals(refusal.failureClass, "out-of-credit");
   assertEquals(refusal.fixability, "not_code_fixable");
   // A plain rate limit still reads as a usage limit.
   assertEquals(
-    classifyRunFailure("rate_limit", "rate limit reached").failureClass,
+    classifyRunFailure("rate_limit", "rate limit reached", false).failureClass,
     "usage-limit",
   );
 });
 
 Deno.test("run failure classifier - case-insensitive message matching per message-matched row (Issue #4328)", () => {
   assertEquals(
-    classifyRunFailure("unknown", "OUT OF CREDIT — Payment Required")
+    classifyRunFailure("unknown", "OUT OF CREDIT — Payment Required", false)
       .failureClass,
     "out-of-credit",
   );
   assertEquals(
-    classifyRunFailure("killed", "KILLED PROCESS 4211 (claude) OUT OF MEMORY")
+    classifyRunFailure(
+      "killed",
+      "KILLED PROCESS 4211 (claude) OUT OF MEMORY",
+      false,
+    )
       .failureClass,
     "oom",
   );
   assertEquals(
-    classifyRunFailure("unknown", "No Space Left On Device").failureClass,
-    "disk-full",
-  );
-  assertEquals(
-    classifyRunFailure("unknown", "Disk Full while writing checkpoint")
+    classifyRunFailure("unknown", "No Space Left On Device", false)
       .failureClass,
     "disk-full",
   );
   assertEquals(
-    classifyRunFailure("unknown", "UNHANDLED EXCEPTION in worker").failureClass,
+    classifyRunFailure("unknown", "Disk Full while writing checkpoint", false)
+      .failureClass,
+    "disk-full",
+  );
+  assertEquals(
+    classifyRunFailure("unknown", "UNHANDLED EXCEPTION in worker", false)
+      .failureClass,
     "worker-crash",
   );
 });
@@ -287,7 +298,7 @@ Deno.test("run failure classifier - every FailureCategory member is covered; a n
   ];
   const seen = new Set<string>();
   for (const category of all) {
-    const got = classifyRunFailure(category, "");
+    const got = classifyRunFailure(category, "", false);
     assert(
       ["code_fixable", "not_code_fixable", "unknown"].includes(got.fixability),
     );
@@ -296,26 +307,27 @@ Deno.test("run failure classifier - every FailureCategory member is covered; a n
   // Round-trip through the detector: every message the detector classifies
   // lands in the switch (no throw from assertNever).
   for (const message of ["", "x", "SIGKILL", "timed out", "rate limit"]) {
-    classifyRunFailure(detectFailureCategory(message), message);
+    classifyRunFailure(detectFailureCategory(message), message, false);
   }
   assertEquals(seen.size, all.length);
 });
 
 Deno.test("run failure classifier - the empty message and the empty/unknown category yield unknown (Issue #4328)", () => {
-  assertEquals(classifyRunFailure("unknown", ""), {
+  assertEquals(classifyRunFailure("unknown", "", false), {
     fixability: "unknown",
     failureClass: "unknown",
     rationale: "No signal in the category or message decides fixability.",
   });
   assertEquals(
-    classifyRunFailure(detectFailureCategory(""), "").fixability,
+    classifyRunFailure(detectFailureCategory(""), "", false).fixability,
     "unknown",
   );
 });
 
 Deno.test("run failure classifier - unknown is not code-fixable for auto-filing; only code_fixable rows are (Issue #4328)", () => {
   const filed = ROWS.filter((r) =>
-    classifyRunFailure(r.category, r.message).fixability === "code_fixable"
+    classifyRunFailure(r.category, r.message, false).fixability ===
+      "code_fixable"
   ).map((r) => r.failureClass);
   assertEquals(
     [...new Set(filed)].sort(),
@@ -327,6 +339,7 @@ Deno.test("classifier - a high probe reading at the kill is named as the OOM evi
   const got = classifyRunFailure(
     "killed",
     "Claude was killed (exit 137, SIGKILL) without creating changes\n### Diagnostics\n- Memory pressure at kill: high (400 MiB of 16.0 GiB available)",
+    false,
   );
   assertEquals(got.failureClass, "oom");
   assert(
@@ -340,6 +353,7 @@ Deno.test("classifyRunFailure - interrupted is not_code_fixable and classed 'int
   const c = classifyRunFailure(
     "interrupted",
     "Run interrupted before completing — the agent was still working",
+    false,
   );
   assertEquals(c.fixability, "not_code_fixable");
   assertEquals(c.failureClass, "interrupted");
@@ -353,6 +367,7 @@ Deno.test("classifyRunFailure - a scheduled release is not_code_fixable and clas
     "Released on schedule: the supervisor's run hard cap was reached — WIP " +
       "preserved, resumes next cycle\n\n### Diagnostics\n- Elapsed: 10800s\n" +
       "- Timeout: 3600s\n- Watchdog: hard-timeout\n- Raw exit code: 143 (SIGTERM)",
+    false,
   );
   assertEquals(c.fixability, "not_code_fixable");
   assertEquals(c.failureClass, "scheduled-release");
@@ -366,6 +381,7 @@ Deno.test("classifyRunFailure - a damaged shared clone is not_code_fixable and c
     "clone_corrupt",
     "Failed to create feature branch: the host's shared clone of this " +
       "repository is damaged — fatal: bad object refs/heads/x",
+    false,
   );
   assertEquals(c.fixability, "not_code_fixable");
   assertEquals(c.failureClass, "clone-corrupt");
@@ -415,7 +431,7 @@ const ISSUE_249_MESSAGE = [
 ].join("\n");
 
 Deno.test("classify #249 - a deadline timeout is not a worker crash because Claude said 'unhandled rejection'", () => {
-  const result = classifyRunFailure("timeout", ISSUE_249_MESSAGE);
+  const result = classifyRunFailure("timeout", ISSUE_249_MESSAGE, false);
   assertEquals(
     result.failureClass,
     "timeout",
@@ -431,6 +447,7 @@ Deno.test("classify #249 - the same prose in the worker's own words IS a crash",
   const result = classifyRunFailure(
     "timeout",
     "Claude timed out after 3600s\nunhandled rejection in the worker loop",
+    false,
   );
   assertEquals(result.failureClass, "worker-crash");
   assertEquals(result.fixability, "code_fixable");
@@ -453,7 +470,7 @@ Deno.test("classify #249 - a real stack frame inside the agent block still count
     "</details>",
   ].join("\n");
   assertEquals(
-    classifyRunFailure("unknown", message).failureClass,
+    classifyRunFailure("unknown", message, false).failureClass,
     "worker-crash",
   );
 });
@@ -479,7 +496,7 @@ Deno.test("classify #249 - prose alone inside the agent block never reaches work
       "</details>",
     ].join("\n");
     assertEquals(
-      classifyRunFailure("timeout", message).failureClass,
+      classifyRunFailure("timeout", message, false).failureClass,
       "timeout",
       `agent prose must not classify as a crash: ${prose}`,
     );
@@ -510,7 +527,7 @@ Deno.test("classify #249 - the 'Processes at the kill' block stays worker eviden
     "</details>",
   ].join("\n");
   assertEquals(
-    classifyRunFailure("unknown", message).failureClass,
+    classifyRunFailure("unknown", message, false).failureClass,
     "worker-crash",
   );
 });
@@ -548,7 +565,7 @@ Deno.test("classify #249 - disk exhaustion in the agent block is still real evid
     "</details>",
   ].join("\n");
   assertEquals(
-    classifyRunFailure("timeout", message).failureClass,
+    classifyRunFailure("timeout", message, false).failureClass,
     "disk-full",
   );
 });
@@ -558,7 +575,7 @@ Deno.test("classify #249 - disk exhaustion in the agent block is still real evid
 // ---------------------------------------------------------------------------
 
 Deno.test("classify #1658 - the squash-lineage refusal is stale-lineage, never disk-full, and never auto-filed", () => {
-  const got = classifyRunFailure("unknown", STALE_LINEAGE_MESSAGE);
+  const got = classifyRunFailure("unknown", STALE_LINEAGE_MESSAGE, false);
   assertEquals(got.failureClass, "stale-lineage");
   assertEquals(got.fixability, "not_code_fixable");
   assert(RUN_FAILURE_CLASSES.includes("stale-lineage"));
@@ -571,16 +588,16 @@ Deno.test("classify #1658 - 'enospc' inside a branch name alone is not disk exha
     .replace("squashed this branch's work", "landed this branch's work");
   assert(message.includes("enospc"), "the slug still carries the token");
   assert(!/Refusing to push/.test(message));
-  const got = classifyRunFailure("unknown", message);
+  const got = classifyRunFailure("unknown", message, false);
   assert(got.failureClass !== "disk-full", `got ${got.failureClass}`);
   // Path- and URL-shaped neighbours are excluded the same way.
   assert(
-    classifyRunFailure("unknown", "see /var/log/ENOSPC/notes.txt")
+    classifyRunFailure("unknown", "see /var/log/ENOSPC/notes.txt", false)
       .failureClass !==
       "disk-full",
   );
   assert(
-    classifyRunFailure("unknown", "https://example.test/ENOSPC-handling")
+    classifyRunFailure("unknown", "https://example.test/ENOSPC-handling", false)
       .failureClass !== "disk-full",
   );
 });
@@ -596,12 +613,16 @@ Deno.test("classify #1658 - genuine ENOSPC still classifies as disk-full", () =>
       "write failed (ENOSPC)",
     ]
   ) {
-    assertEquals(classifyRunFailure("unknown", m).failureClass, "disk-full", m);
+    assertEquals(
+      classifyRunFailure("unknown", m, false).failureClass,
+      "disk-full",
+      m,
+    );
   }
   // Lowercase `enospc` in prose is no longer taken as the errno; the phrase
   // beside it is what decides.
   assertEquals(
-    classifyRunFailure("unknown", "got enospc: no space left on device")
+    classifyRunFailure("unknown", "got enospc: no space left on device", false)
       .failureClass,
     "disk-full",
   );
@@ -611,12 +632,14 @@ Deno.test("classify #1658 - a trigger token inside a branch-name slug is not out
   const credit = classifyRunFailure(
     "unknown",
     "Refusing to update issue-12-quota-exceeded-and-out-of-credit-messaging: branch is behind",
+    false,
   );
   assert(credit.failureClass !== "out-of-credit", credit.failureClass);
 
   const oom = classifyRunFailure(
     "killed",
     "Claude was killed (SIGKILL, no watchdog) on branch issue-77-out-of-memory-oom-kill-detection",
+    false,
   );
   assertEquals(oom.failureClass, "killed-unknown");
   // Prose keeps matching: the hyphenated phrase with spaces either side.
@@ -624,6 +647,7 @@ Deno.test("classify #1658 - a trigger token inside a branch-name slug is not out
     classifyRunFailure(
       "killed",
       "Claude was killed (exit 137, SIGKILL — possible out-of-memory in the VM)",
+      false,
     ).failureClass,
     "oom",
   );
@@ -631,6 +655,7 @@ Deno.test("classify #1658 - a trigger token inside a branch-name slug is not out
   const crash = classifyRunFailure(
     "unknown",
     "branch issue-9-unhandled-rejection-typeerror-referenceerror-in-parser was not brought up to date",
+    false,
   );
   assert(crash.failureClass !== "worker-crash", crash.failureClass);
 });
@@ -640,6 +665,7 @@ Deno.test("classify - GitHub's secondary rate limit is its own class, not a usag
     "rate_limit",
     "PR creation failed: HTTP 403: You have exceeded a secondary rate limit " +
       "and have been temporarily blocked from content creation.",
+    false,
   );
   assertEquals(got.failureClass, "github-abuse-limit");
   assertEquals(got.fixability, "not_code_fixable");
@@ -651,6 +677,7 @@ Deno.test("classify - an account usage limit is still usage-limit (Issue #1951)"
   const got = classifyRunFailure(
     "rate_limit",
     "Claude usage limit reached — resets at 04:00.",
+    false,
   );
   assertEquals(got.failureClass, "usage-limit");
 });
@@ -660,6 +687,7 @@ Deno.test("classify - an abuse-detection refusal in any phase reads as the GitHu
     "internal_error",
     "gh command failed: You have triggered an abuse detection mechanism. " +
       "Please wait a few minutes before you try again.",
+    false,
   );
   assertEquals(got.failureClass, "github-abuse-limit");
 });
@@ -671,7 +699,7 @@ Deno.test("classify - an agent WRITING about the secondary limit is not a GitHub
     "<details>\n<summary>Last output from Claude (tail)</summary>\n\n" +
     "I added isSecondaryRateLimitMessage so a secondary rate limit defers " +
     "the PR instead of failing the run.\n</details>";
-  const got = classifyRunFailure("timeout", message);
+  const got = classifyRunFailure("timeout", message, false);
   assertEquals(got.failureClass, "timeout");
 });
 
@@ -679,6 +707,7 @@ Deno.test("run failure classifier - summary_incomplete is an agent outcome even 
   const got = classifyRunFailure(
     "summary_incomplete",
     "the PR summary did not pass the worker's completion gates: quoted TypeError: x\n    at Object.<anonymous> (file.ts:1:1)",
+    false,
   );
   assertEquals(got.fixability, "not_code_fixable");
   assertEquals(got.failureClass, "agent-outcome");
@@ -692,12 +721,12 @@ Deno.test("classifyRunFailure - a marked security-fix gate refusal is not_code_f
     'Deno.test("rejects a forged token with TypeError: invalid signature after timeout", ...); ENOSPC';
   const category = detectFailureCategory(message);
   assertEquals(category, "security_fix_gate");
-  const c = classifyRunFailure(category, message);
+  const c = classifyRunFailure(category, message, false);
   assertEquals(c.fixability, "not_code_fixable");
   assertEquals(c.failureClass, "agent-outcome");
   // The classifier's own early return, independent of the detector.
   assertEquals(
-    classifyRunFailure("security_fix_gate", message).failureClass,
+    classifyRunFailure("security_fix_gate", message, false).failureClass,
     "agent-outcome",
   );
 });
@@ -740,7 +769,7 @@ Deno.test("classify #3694 - a SIGTERM kill whose agent quoted 'Exit code 137' is
   const message = sigtermKillMessage(SIGTERM_AGENT_TAIL, KERNEL_NO_OOM_LINE);
   const category = detectFailureCategory(message);
   assertEquals(category, "killed");
-  const got = classifyRunFailure(category, message);
+  const got = classifyRunFailure(category, message, false);
   assertEquals(got.failureClass, "killed-unknown");
   assertEquals(got.fixability, "unknown");
 });
@@ -754,7 +783,7 @@ Deno.test("classify #3694 - a kernel OOM line in the worker's Processes block st
   );
   const category = detectFailureCategory(message);
   assertEquals(category, "killed");
-  const got = classifyRunFailure(category, message);
+  const got = classifyRunFailure(category, message, false);
   assertEquals(got.failureClass, "oom");
   assertEquals(got.fixability, "code_fixable");
 });
@@ -766,7 +795,51 @@ Deno.test("classify #3694 - heap-exhaustion prose inside the agent block alone i
   );
   const category = detectFailureCategory(message);
   assertEquals(category, "killed");
-  const got = classifyRunFailure(category, message);
+  const got = classifyRunFailure(category, message, false);
   assertEquals(got.failureClass, "killed-unknown");
   assertEquals(got.fixability, "unknown");
+});
+
+Deno.test("declared causes retain worker diagnosis without accepting quoted billing or crash text (Issue #3738)", () => {
+  assertEquals(
+    classifyRunFailure(
+      "internal_error",
+      "Error: ENOSPC: no space left on device",
+      true,
+    ).failureClass,
+    "disk-full",
+  );
+  const message = formatDetailedFailureMessage("Claude killed by SIGKILL", {
+    elapsedSeconds: 10,
+    clarityStatus: "assessed_clear",
+    lastOutputSnippet: redactedTail(
+      "The failing test printed Credit balance is too low; ENOSPC; TypeError: boom",
+      500,
+    ),
+  });
+  assertEquals(
+    classifyRunFailure("killed", message, true).failureClass,
+    "killed-unknown",
+  );
+  assertEquals(
+    classifyRunFailure("internal_error", message, true).failureClass,
+    "worker-crash",
+  );
+  assertEquals(
+    classifyRunFailure("rate_limit", message, true).failureClass,
+    "usage-limit",
+  );
+  const pressure = message.replace(
+    "Claude killed by SIGKILL",
+    "Claude killed by SIGKILL; memory pressure at kill: high",
+  );
+  assertEquals(
+    classifyRunFailure("killed", pressure, true).failureClass,
+    "oom",
+  );
+  assertEquals(
+    classifyRunFailure("rate_limit", "Credit balance is too low", true)
+      .failureClass,
+    "out-of-credit",
+  );
 });

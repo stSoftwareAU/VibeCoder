@@ -52,8 +52,10 @@ import {
  * fails closed: it is an `Err`, never a pass.
  */
 export class PrePushGateInfrastructureError extends Error {
-  constructor(message: string) {
-    super(message);
+  readonly kind = "infrastructure" as const;
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = "PrePushGateInfrastructureError";
   }
 }

@@ -112,6 +112,8 @@ export function renderReviewBrief(
 }
 
 export interface ReviewFinding {
+  /** Diagnostic only: every finding still blocks; omissions are substantive. */
+  category?: "summary_incomplete" | "quality_check";
   file: string;
   line: number;
   problem: string;
@@ -202,6 +204,9 @@ function parseFinding(raw: unknown): ReviewFinding {
     file: f.file,
     line,
     problem: f.problem,
+    ...(f.category === "summary_incomplete" || f.category === "quality_check"
+      ? { category: f.category }
+      : {}),
     ...(typeof f.fix === "string" ? { fix: f.fix } : {}),
   };
 }
