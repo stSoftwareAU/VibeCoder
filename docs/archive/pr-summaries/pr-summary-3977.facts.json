@@ -5,7 +5,7 @@
     "entries": [
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 1794,
+        "line": 1793,
         "outcome": "already-landed work stops before branch recovery or push",
         "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
         "testName": "completion reconciles merges before recovery and final failure bookkeeping without spending an attempt (Issue #3977)",
@@ -13,7 +13,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 2167,
+        "line": 2166,
         "outcome": "a merge during push stops redundant rebase recovery",
         "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
         "testName": "completion reconciles merges before recovery and final failure bookkeeping without spending an attempt (Issue #3977)",
@@ -21,7 +21,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 1392,
+        "line": 1391,
         "outcome": "a merge during gate checks skips the screenshot recovery agent turn",
         "test": "worker/deno/tests/completion_phase_screenshot_retry_test.ts",
         "testName": "completion skips screenshot recovery when the exact work merges during gate checks (Issue #3977)",
