@@ -784,7 +784,8 @@ async function getCachedOpenNonTrackingIssues(
  * "Nothing to merge" is true when either:
  *   1. the milestone branch does not exist on the remote (the common
  *      issue-only-milestone case), or
- *   2. the branch exists but is 0 commits ahead of the default branch.
+ *   2. the branch exists but is 0 commits ahead of the default branch, or
+ *   3. its comparison reports no changed files, even with commits ahead.
  *
  * When there is genuinely nothing to merge, creating a tracking issue and a
  * summary PR is pointless — and, before this fix, the tracker left open by the
@@ -792,7 +793,8 @@ async function getCachedOpenNonTrackingIssues(
  * milestone directly instead.
  *
  * Fails safe: any ambiguity (branch exists but the compare call fails, or an
- * unparseable `ahead_by`) returns `false` so the normal branch-present flow
+ * unparseable `ahead_by` or missing file list on an ahead branch) returns
+ * `false` so the normal branch-present flow
  * runs and no milestone is closed on incomplete information.
  *
  * @param repo - Repository in "owner/repo" format
@@ -819,22 +821,20 @@ export async function hasNothingToMerge(
     return true;
   }
 
-  // Branch exists — count commits ahead of the default branch. `ahead_by` is
-  // the number of commits the milestone branch has that the default branch
-  // does not.
+  // Sync merge commits can leave the branch ahead after its file changes
+  // reached the default branch by another route (Issue #3910).
   try {
     const out = await ghCommandFn([
       "api",
       `repos/${repo}/compare/${defaultBranch}...${milestoneBranch}`,
       "--jq",
-      ".ahead_by",
+      "{ahead_by, files}",
     ]);
-    const aheadBy = Number(out.trim());
-    if (Number.isFinite(aheadBy)) {
-      return aheadBy === 0;
-    }
-    // Unparseable — fail safe (assume there is work to merge).
-    return false;
+    const comparison = JSON.parse(out);
+    const aheadBy = comparison?.ahead_by;
+    if (!Number.isSafeInteger(aheadBy) || aheadBy < 0) return false;
+    return aheadBy === 0 ||
+      (Array.isArray(comparison.files) && comparison.files.length === 0);
   } catch {
     // Compare failed — fail safe (do not close on incomplete information).
     return false;
@@ -2436,8 +2436,8 @@ async function processRepoMilestones(
     }
 
     // Issue #3214 (scope item 2): check the milestone branch BEFORE creating a
-    // tracker. When there is nothing to merge (branch missing, or 0 commits
-    // ahead of the default branch — the common issue-only-milestone case),
+    // tracker. When there is nothing to merge (branch missing, 0 commits
+    // ahead of the default branch, or no changed files),
     // creating a tracker + summary PR is pointless and, before this fix, left
     // the tracker open forever (the deadlock). Instead close any open trackers
     // and close the milestone directly.
@@ -2472,7 +2472,7 @@ async function processRepoMilestones(
       });
       await closeGitHubMilestone(repo, milestone.number, ghCommandFn, log);
       log(
-        `Milestone '${milestone.title}' in ${repo} is complete with nothing to merge (branch missing or 0 commits ahead) — closed directly, no tracker or summary PR (Issue #3214)`,
+        `Milestone '${milestone.title}' in ${repo} is complete with nothing to merge (branch missing, 0 commits ahead or no changed files) — closed directly, no tracker or summary PR (Issue #3214)`,
       );
       continue;
     }
