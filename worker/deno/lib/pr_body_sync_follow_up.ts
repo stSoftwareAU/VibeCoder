@@ -24,9 +24,11 @@ import {
   assessReportedGaps,
   buildFollowUpChainStopSection,
   buildReportedGapPrSection,
+  degradedNeedsFollowUp,
   fileDegradedFollowUp,
   handFollowUpToHuman,
   isPartialDeliveryFollowUp,
+  isPendingMergeCheck,
 } from "./degraded_delivery.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
@@ -150,13 +152,14 @@ export function buildSyncFollowUpFiling(
 }
 
 /**
- * Whether a PR body's closure block marks any entry `partial` or `missing`.
+ * Whether a PR body reports an actionable partial or missing closure entry.
  *
  * This is the trigger, checked before the parent issue is fetched.
  */
 export function summaryReportsGap(prBody: string): boolean {
   return parseClosureEntries(prBody).some((entry) =>
-    entry.status === "partial" || entry.status === "missing"
+    (entry.status === "partial" || entry.status === "missing") &&
+    !isPendingMergeCheck(entry)
   );
 }
 
@@ -165,8 +168,8 @@ export function summaryReportsGap(prBody: string): boolean {
  * the PR body with a section pointing at it (Issue #3678).
  *
  * Mirrors the completion phase's degraded-delivery guard. The caller calls
- * this only when {@link summaryReportsGap} holds, so every partial or missing
- * closure entry is a shortfall here and no "no gap" branch is needed.
+ * this only when {@link summaryReportsGap} holds. The helper also returns the
+ * unchanged body when no actionable gap remains, before any filing side effect.
  *
  * Never throws. Every failure returns `{ ok: false }` naming the PR, the
  * issue and the cause, so the caller fails loudly rather than rebuild a body
@@ -197,6 +200,9 @@ export async function addReportedGapSectionOnSync(args: {
   } = args;
   const subject = `PR #${prNumber} (issue #${issueNumber})`;
 
+  const verdict = assessReportedGaps(issue.body, body);
+  if (!degradedNeedsFollowUp(verdict)) return { ok: true, value: body };
+
   if (filing === undefined) {
     return {
       ok: false,
@@ -226,8 +232,6 @@ export async function addReportedGapSectionOnSync(args: {
         ),
       };
     }
-
-    const verdict = assessReportedGaps(issue.body, body);
 
     if (isPartialDeliveryFollowUp(issue.body)) {
       // This issue is itself a partial-delivery follow-up: filing another
