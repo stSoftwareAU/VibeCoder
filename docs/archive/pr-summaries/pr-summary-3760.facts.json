@@ -1,0 +1,344 @@
+{
+ "version": 1,
+ "branchOutcomes": {
+  "noneAdded": false,
+  "entries": [
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 84,
+    "outcome": "viewPrBodyAndHead: a failing gh pr view is a read error",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - a gh pr view failure for a bodyless entry is logged with the cause, no checkout, no rebuild",
+    "flipWentRed": "making the catch return a body turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 84,
+    "outcome": "viewPrBodyAndHead: a reply that is not JSON is a read error",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - a gh pr view reply that is not JSON is a read failure: warn with the cause, no contents read, no rebuild",
+    "flipWentRed": "removing the JSON.parse inside the try turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 92,
+    "outcome": "viewPrBodyAndHead: a reply with no string body is a read error",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - a gh pr view reply with no string body is a read failure: warn, no contents read, no rebuild",
+    "flipWentRed": "deleting the body type check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 98,
+    "outcome": "viewPrBodyAndHead: a bodyless listing entry is fetched and a mismatch is still rebuilt",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - a cached listing entry with no body is fetched with gh pr view and a mismatch is still rebuilt",
+    "flipWentRed": "returning an error instead of the view turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 101,
+    "outcome": "viewPrBodyAndHead: a non-string headRefOid becomes empty and the PR is skipped silently",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - a gh pr view reply whose headRefOid is not a string is skipped silently, no contents read",
+    "flipWentRed": "passing the raw headRefOid through turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 139,
+    "outcome": "contents read: a 404 is an absent file (null)",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - facts file absent (404): digest of the summary alone matches, quiet",
+    "flipWentRed": "rethrowing the 404 turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 139,
+    "outcome": "contents read: a non-404 failure is rethrown",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "headSummaryDigest - a non-404 read failure names the path and the cause",
+    "flipWentRed": "returning null for every failure turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 171,
+    "outcome": "headSummaryDigest: a whitespace-only archive summary falls through to the legacy path",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - whitespace-only archive summary falls through to the legacy path",
+    "flipWentRed": "dropping the trim check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 176,
+    "outcome": "headSummaryDigest: no summary at either path is no-summary",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - no summary at either path: quiet, memoised, no checkout",
+    "flipWentRed": "returning a digest of the empty string turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 179,
+    "outcome": "headSummaryDigest: a read failure is an error naming the path and cause",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "headSummaryDigest - the error reason quotes the failure message, not the Error's string form",
+    "flipWentRed": "using String(err) instead of the message turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 185,
+    "outcome": "headSummaryDigest: summary plus facts give a digest result",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "headSummaryDigest - reads the summary and facts as raw content at the ref and returns a digest result",
+    "flipWentRed": "returning no-summary turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 211,
+    "outcome": "checkedGit: a runner failure is an error naming the step",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "checkedGit - a git runner failure is an error naming the step",
+    "flipWentRed": "returning ok on runner failure turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 217,
+    "outcome": "checkedGit: a non-zero exit is an error quoting the code and stderr",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "checkedGit - a non-zero exit is an error quoting the exit code and stderr",
+    "flipWentRed": "deleting the exit-code check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 225,
+    "outcome": "checkedGit: exit 0 returns stdout",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "checkedGit - exit 0 returns the stdout and runs in the given directory",
+    "flipWentRed": "returning an empty string turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 239,
+    "outcome": "disposableHeadCheckout: a non-40-hex SHA is refused with no gh call",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "disposableHeadCheckout - rejects a non-40-hex SHA without calling gh",
+    "flipWentRed": "deleting the SHA check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 254,
+    "outcome": "disposableHeadCheckout: a temp dir that cannot be removed is appended to the failure",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "disposableHeadCheckout - a temp dir that cannot be removed is appended to the original failure",
+    "flipWentRed": "dropping the removal error from the message turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 278,
+    "outcome": "disposableHeadCheckout: a failing clone quotes the message and removes the temp dir",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "disposableHeadCheckout - a failing clone quotes the message and removes its temp dir",
+    "flipWentRed": "skipping the removal in the catch turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 297,
+    "outcome": "disposableHeadCheckout: a failing git step quotes stderr and removes the temp dir",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "disposableHeadCheckout - a failing git fetch quotes stderr and removes its temp dir",
+    "flipWentRed": "ignoring the step result turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 305,
+    "outcome": "disposableHeadCheckout: a failing rev-parse fails the checkout",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "disposableHeadCheckout - a failing rev-parse fails the checkout and removes its temp dir",
+    "flipWentRed": "ignoring the rev-parse result turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 306,
+    "outcome": "disposableHeadCheckout: a checkout at another SHA fails",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "disposableHeadCheckout - a checkout resolving to another SHA fails and removes its temp dir",
+    "flipWentRed": "deleting the SHA comparison turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 312,
+    "outcome": "disposableHeadCheckout: success returns the path and a cleanup that removes it",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "disposableHeadCheckout - success: shallow blobless clone, detached checkout at the SHA, cleanup removes it",
+    "flipWentRed": "returning a failure turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 393,
+    "outcome": "reconcile: a non-fleet author is skipped (isFleetAuthor operand)",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - non-fleet author: skipped, no contents call, no log",
+    "flipWentRed": "dropping the isFleetAuthor operand turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 393,
+    "outcome": "reconcile: an entry with no author is still reconciled (login operand)",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - a listing entry with no author is still reconciled",
+    "flipWentRed": "forcing the login operand true turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 398,
+    "outcome": "reconcile: a bodyless listing entry is fetched with gh pr view",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - a cached listing entry with no body is fetched with gh pr view and a mismatch is still rebuilt",
+    "flipWentRed": "skipping bodyless entries turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 400,
+    "outcome": "reconcile: a gh pr view failure is logged with its cause, no rebuild",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - a gh pr view failure for a bodyless entry is logged with the cause, no checkout, no rebuild",
+    "flipWentRed": "ignoring the view error turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 414,
+    "outcome": "reconcile: a body with no worker marker is skipped",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - body with no worker marker: skipped, no contents call, no log",
+    "flipWentRed": "deleting the marker check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 417,
+    "outcome": "reconcile: a legacy body with no digest marker is skipped",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - legacy body with no digest marker: skipped, no contents call, no log",
+    "flipWentRed": "deleting the digest-marker check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 419,
+    "outcome": "reconcile: an invalid head SHA is skipped",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - invalid head SHA: no contents call, no log",
+    "flipWentRed": "deleting the SHA check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 423,
+    "outcome": "reconcile: a memo hit makes no contents call",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - second pass with a memo hit makes no contents call",
+    "flipWentRed": "deleting the memo check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 432,
+    "outcome": "reconcile: a contents read failure is logged, no rewrite, not memoised",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - contents read failure: warn with the cause, no checkout, no edit, not memoised",
+    "flipWentRed": "ignoring the read error turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 443,
+    "outcome": "reconcile: no summary at the head is quiet (no-summary operand)",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - no summary at either path: quiet, memoised, no checkout",
+    "flipWentRed": "dropping the no-summary operand turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 443,
+    "outcome": "reconcile: a matching digest is left untouched (digest operand)",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - digest matches the head summary: silent, no edit, memo set",
+    "flipWentRed": "dropping the digest operand turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 461,
+    "outcome": "reconcile: a checkout failure is logged and sync is not called",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - prepareCheckout failure: warn with its message, sync not called",
+    "flipWentRed": "ignoring the checkout failure turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 476,
+    "outcome": "reconcile: a mismatch runs one rebuild at the head checkout",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - mismatch: one checkout at the head, one sync at its path, cleaned up",
+    "flipWentRed": "skipping the sync call turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 499,
+    "outcome": "reconcile: a cleanup failure after the rebuild is logged, not thrown",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - a cleanup failure after the rebuild is logged, not thrown",
+    "flipWentRed": "rethrowing from the cleanup catch turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 528,
+    "outcome": "reconcile: an unexpected throw for one PR is logged and the pass moves on",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - an unexpected throw for one PR is logged and the pass moves on to the next",
+    "flipWentRed": "rethrowing from the per-PR catch turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_body_reconcile.ts",
+    "line": 538,
+    "outcome": "reconcile: the memo prunes a PR of this repo that is no longer listed",
+    "test": "worker/deno/tests/pr_body_reconcile_test.ts",
+    "testName": "reconcile - memo prunes a PR of this repo that is no longer listed",
+    "flipWentRed": "deleting the prune turned it red"
+   },
+   {
+    "path": "worker/deno/lib/run_core.ts",
+    "line": 1993,
+    "outcome": "dispatch slot: no handler wired is a no-op success",
+    "test": "worker/deno/tests/pr_body_reconcile_dispatch_test.ts",
+    "testName": "pr body digest reconcile dispatch - the slot is a no-op when the host wires no handler",
+    "flipWentRed": "returning an error for a missing handler turned it red"
+   },
+   {
+    "path": "worker/deno/lib/run_core.ts",
+    "line": 1995,
+    "outcome": "dispatch slot: a successful reconcile reports processed false",
+    "test": "worker/deno/tests/pr_body_reconcile_dispatch_test.ts",
+    "testName": "pr body digest reconcile dispatch - the slot invokes reconcilePrBodyDigests exactly once",
+    "flipWentRed": "not calling the handler turned it red"
+   },
+   {
+    "path": "worker/deno/lib/run_core.ts",
+    "line": 1996,
+    "outcome": "dispatch slot: a failed reconcile propagates its error",
+    "test": "worker/deno/tests/pr_body_reconcile_dispatch_test.ts",
+    "testName": "pr body digest reconcile dispatch - a failed reconcile propagates its error",
+    "flipWentRed": "mapping the error to ok turned it red"
+   },
+   {
+    "path": "worker/deno/lib/run_core_production_deps.ts",
+    "line": 3414,
+    "outcome": "production deps: reconcile reads the digest at the head of the configured repo",
+    "test": "worker/deno/tests/pr_body_reconcile_wiring_test.ts",
+    "testName": "Issue #3760: production reconcile reads the digest at the head of the configured repo",
+    "flipWentRed": "pointing the handler at a no-op turned it red"
+   },
+   {
+    "path": "worker/deno/lib/run_core_production_deps.ts",
+    "line": 3433,
+    "outcome": "production deps: an unexpected error is logged and the slot resolves ok",
+    "test": "worker/deno/tests/pr_body_reconcile_wiring_test.ts",
+    "testName": "Issue #3760: production reconcile resolves ok when the gh listing fails",
+    "flipWentRed": "rethrowing from the catch turned it red"
+   }
+  ]
+ }
+}
