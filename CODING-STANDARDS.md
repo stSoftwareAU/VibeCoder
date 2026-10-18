@@ -186,10 +186,17 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    untrue, recorded in the PR summary. An assertion removed without one is a
    blocking self-review finding: restore it, or move it to a test that still
    covers the behaviour and say where. The worker enforces this at PR
-   creation (`removed_assertion_gate.ts`, Issue #3131): the removed
-   assertion must be named in the summary's Test Plan, and the Standards
-   reviewer is asked to judge each one. The requirement shows the new value
-   is right, not that the edited test still checks anything: each edited
+   creation (`removed_assertion_gate.ts`, Issues #3131, #3739): each removed
+   assertion has its own Test Plan list entry, with `Required by: "<quote>"`
+   quoting at least 5 words verbatim from the linked issue's title or body
+   (not comments), or `Moved to: <path>` naming the file where the same
+   assertion is added with its guards and coverage preserved. A replacement
+   also carries `Replaced by:` naming the new assertions in inline code;
+   each must be added in the same test file. The Standards reviewer identifies replacements from the diff, rejects
+   omitted `Replaced by:` entries, compares each pair and rejects lost
+   checks that still hold. The requirement
+   shows the new value is right, not that the edited test still checks
+   anything: each edited
    expectation also owes the red-check in **An edited expectation must
    still go red without its guard** under **Test coverage expectations**
    below.
@@ -715,18 +722,28 @@ a Docs Change** below on a change that alters what an existing state
 means. List the messages checked in the PR summary's Test Plan
 (Issue #3259).
 
-**Narrowing a shared helper changes every caller.** Before a helper that
-other code already calls starts rejecting, throwing on or dropping a value it
-used to accept (a validator, type guard, allowed-value set, required field,
-ref/name check), list its existing callers and the real values each can
-receive. Check those values against the tool or API's actual output, not its
-documentation's happy path (see **Observe the real tool before you rely on
-it**). If any existing caller can legitimately pass a value the new rule
-rejects, keep the shared helper as it was and apply the stricter rule at the
-new call site. Otherwise add a test showing an existing caller still accepts
-its real inputs. List the callers checked in the PR summary. A narrowed shared
-helper with no callers-checked list is a blocking self-review finding
-(Issue #3100).
+**Changing what a shared helper returns, refuses or finds changes every
+caller.** Before a helper that other code already calls starts rejecting,
+refusing, throwing on, dropping, finding or returning something different for
+an input it already handled — a validator, type guard, allowed-value set,
+required field or ref/name check that narrows, a lookup that gains a fallback,
+a routine that gains a refusal or precondition — list its existing callers and
+the real values each can receive. Check those values against the tool or API's
+actual output, not its documentation's happy path (see **Observe the real tool
+before you rely on it**). For each existing caller, decide whether its
+behaviour changes under the new result. When one depends on the old result (it
+passes a value the new rule rejects, reads "nothing found" as "leave it
+alone", or runs where the new refusal fires), keep the shared helper as it was
+and apply the new behaviour at the new call site, or change that caller too.
+Add a test that exercises each existing caller whose behaviour the change
+touches, under the new result; a callers-checked list alone does not count,
+because nothing checks a wrong conclusion in it. List the callers checked in
+the PR summary. When the worker's pre-PR verifier runs, it is also given the
+callers outside the diff of each function whose body the diff changes, found
+by the worker's own word search and capped per function, and a listed caller
+left without a verdict, or reported `regressed`, blocks the PR. A changed
+shared helper with no test through an existing caller whose behaviour it
+touches is a blocking self-review finding (Issues #3100, #3779).
 
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the
@@ -793,8 +810,12 @@ non-empty and at most 1,000 chars. Caps: the raw file at most 100,000 chars
 rule blocks PR creation with the field path and reason (for example
 `branchOutcomes.entries[0].exempt.reason: needs at least 3 words`); it is never
 treated as absent. The worker renders the list at the first
-`<!-- vibe-branch-outcomes -->` marker, appending it when there is none; a facts
-file plus a hand-written `Branch outcomes:` list blocks. The rendered list is
+`<!-- vibe-branch-outcomes -->` marker and owns the block through
+`<!-- /vibe-branch-outcomes -->`. Re-rendering replaces that block idempotently.
+Structured facts are authoritative: safely identified legacy lists are replaced,
+with unrelated narrative preserved. Ambiguous ownership and unreached-outcome
+admissions block rather than being discarded. Write the facts and marker, not a
+second independently maintained list. The rendered list is
 then checked like a prose one, including that each named test exists at the
 head. With no facts file, the `Branch outcomes:` list in the Test Plan is read
 as before.
@@ -1158,7 +1179,10 @@ A unit test is **behavioural**, **self-contained**, **fast** and
   script is a `test-audit` finding (check 13) whatever the test happens to cost
   on your machine — unless the file is **declared**, in the integration
   manifest or in `IN_GATE_SCRIPT_SUITES`, where the spawn is the point and its
-  cost is recorded beside it.
+  cost is recorded beside it. The real signal-cleanup suite also keeps its
+  process and polling assertions in the required serial pass, with its measured
+  reason in `SUBPROCESS_TIMING_TEST_FILES` (see "Real signal cleanup stays in the
+  required gate" below).
 - **Parallel-safe** — it does not mutate process-wide state (`Deno.env.set`,
   `Deno.env.delete`, `Deno.chdir`, or a module-level singleton the rest of the
   suite reads). Take the value as a parameter or an injected seam instead.
@@ -1319,6 +1343,15 @@ at all.
 A benchmark disguised as a unit test is a gate failure, not a style point. The
 benchmark-audit stage scans `worker/deno/tests/` and fails any `Deno.test`
 whose name contains `benchmark` or `bench_` (Issue #583).
+
+### Real signal cleanup stays in the required gate
+
+`worker/deno/tests/run_core_signal_cleanup_test.ts` exercises SIGINT/SIGTERM against a real
+Deno entrypoint and descendant process. It remains in the required serial unit pass,
+with every cleanup assertion intact. Its process startup and graceful-termination
+polling have a named reason in `SUBPROCESS_TIMING_TEST_FILES`, inherited by
+`SLOW_UNIT_TEST_KEEP_FILES`; the one-second mockable
+unit-work budget is not a signal-cleanup performance requirement.
 
 ### When a test does not fit
 
@@ -1743,7 +1776,8 @@ for every PR summary — containing:
    change adds a member to, or `siblings: none — <why>`), or `no hits` (see
    [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)). The
    worker refuses to raise a PR whose diff changes code with no such line, or
-   whose line has no real `section:` or `siblings:` part. It re-runs the quoted
+   whose line has no real `section:` or `siblings:` part, or whose grep field
+   has no quoted term and no explained `grep: none — <why>` negative. It re-runs the quoted
    sibling terms as it re-runs the grep terms.
    Re-run the grep on the final head and list each hit you leave in place as
    `file:line — still true because …`, so the worker and the reviewer can
@@ -1755,13 +1789,43 @@ for every PR summary — containing:
 
 In this repository, `deno task pr-summary-check --base <base-branch>
 <summary-file>` from `worker/deno` runs most of the PR-summary gates against a
-draft summary before the PR is raised. A gate it reports as not checked is not
-a pass. For a summary named `pr-summary-<N>.md` it also reads
+summary at either stage: a draft before the PR is raised, or the archived
+summary once it is open. A gate it reports as not checked is not a pass. For a
+summary named `pr-summary-<N>.md` it also reads
 `docs/archive/pr-summaries/pr-summary-<N>.facts.json` under the repository
 root, as the worker does (it takes only `<N>` from the summary's file name):
 the Branch outcomes gate sees the list rendered at the
-`<!-- vibe-branch-outcomes -->` marker, and blocks on an invalid facts file or
-on a facts file beside a hand-written list.
+`<!-- vibe-branch-outcomes -->` marker. It blocks on invalid facts, ambiguous
+block ownership or unresolved evidence; a safely identified legacy duplicate is
+regenerated from the facts.
+
+Pending required CI/quality execution and routine clean code review belong in
+`## Merge verification` on the originating PR, with an honest pending status.
+Waiting for these checks alone is not unfinished implementation and does not
+warrant a partial-delivery follow-up or nested escalation. When the issue
+explicitly states a merge-check criterion, retain its truthful closure entry;
+use a clear pending reason such as `CI not yet verified` or `awaiting code
+review`, without claiming it passed. A mixed criterion whose implementation
+is complete can state its only remainder explicitly:
+`reason: CI not yet verified — remaining: merge-verification-only` (also accepts
+`awaiting code review` or `quality gate not yet run`). Record unavailable local
+tooling and observed results in Evidence. This annotation is not for unfinished
+implementation, absent tests or known failing checks. Failed checks, absent tests,
+known defects and mixed criteria with unfinished product work remain gaps.
+Required CI, review and acceptance gates still apply.
+
+CI runs the same gates on every push to a pull request: the `PR summary
+freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
+`deno task pr-summary-ci --base <base-branch> --head-branch <head-branch>`
+(Issue #3768). On an `issue-<N>-…` head branch whose diff carries
+`pr-summary-<N>.md` (or its facts file), it fails when the PR's newest non-merge
+commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
+commit changing that summary or its facts file. Rewrite the summary for the head
+in that push, whoever makes it. The step then runs the `pr-summary-check` gates
+and fails on a blocked one; gates needing the issue body or labels are reported
+as not checked. A PR carrying no summary passes with a log line. On a head
+branch that is not an `issue-<N>` branch (milestone roll-ups, sync PRs) the
+summary is reported as not checked.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
@@ -1858,18 +1922,34 @@ script's header comments listed "three things" that are deliberately not
 faults when the script skips and allows several more (GRQ-AutoTrader#2479)
 (Issue #3232).
 
-The worker checks this mechanically too (Issue #3347). Whenever a PR summary
-was loaded, the first-run claim check asks a read-only model, before the PR is
-raised, whether the head code agrees with such sentences on the lines the
-branch adds or edits in its manual and prompt Markdown (outside
-`docs/archive/pr-summaries/`), for up to 20 files; files past that cap are
-logged as not checked. A confirmed contradiction is a summary-rule block: on
-the run's first summary-rule block the run gets one recovery turn to rewrite
-the sentence, and a block that survives it fails the run or, when a PR already
-exists, finalises it as `summary_incomplete`. On a review-fix push that edits
-such a file, the drift check asks the same question and gives one recovery turn
-before reporting what remains. This enforces the rule above; it does not
-replace it.
+**Project version wording (Issue #3954).** Write the summary's own version-bump
+statement in Summary using durable wording, for example:
+``Version bump: `VERSION` updated for this change; the merged commit records the final version.``
+Do not predict a literal before/after pair that CI can change after your push.
+Name a specific relation to the actual target branch, such as one patch above
+it, only after checking that repository's workflow guarantees that policy.
+Otherwise keep the policy-neutral wording; manual or minor version changes do
+not imply an automatic patch policy. Exact release/build evidence belongs in
+Evidence with its final commit or release provenance. Preserve dependency pins,
+historical reproduction versions, migration examples and changelog entries.
+
+The worker checks this mechanically too (Issues #3347, #3715, #3731).
+Whenever a PR summary was loaded, the first-run claim check asks a read-only
+model, before the PR is raised, about added or edited manual/prompt Markdown,
+changed source comments, and unchanged module headers or doc comments attached
+to changed declarations. It also checks heading-bounded manual sections named
+by the Docs sweep entry or mentioning a changed source path, basename or
+exported declaration; this extra manual scope excludes `docs/archive/`.
+The prose scope is capped at 20 files and 40 affected manual sections; anything
+past a cap is logged as not checked, never passed. For unchanged prose the
+question is whether this change makes it false, and sets without one code list
+require a grep of the whole head tree for other members. A confirmed
+contradiction is a summary-rule block: on the run's first summary-rule block
+the run gets one recovery turn to rewrite the sentence, and a block that
+survives it fails the run or, when a PR already exists, finalises it as
+`summary_incomplete`. On a review-fix push the drift check builds the same
+prose scope and gives one recovery turn before reporting what remains. This
+enforces the rule above; it does not replace it.
 
 **Behaviour another issue delivers is not described as present.** A doc,
 prompt or code comment may name work that another issue owns — a sibling

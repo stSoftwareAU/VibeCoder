@@ -53,6 +53,7 @@ Deno.test("an extra placeholder in the template is caught", () => {
         TEST_CHANGES: "t",
         PREVIOUS_FINDINGS: "p",
         REVIEW_CHECKLISTS: "r",
+        CLOSURE_ENTRIES: "e",
       }),
     Error,
     "EXTRA_FIELD",
@@ -87,6 +88,8 @@ Deno.test("the verifier prompt carries every rule of the brief, fully rendered",
     summaryPath: "docs/archive/pr-summaries/pr-summary-3395.md",
     changedFiles: ["a.ts"],
     reviewChecklists: "",
+    closureItems: [],
+    callerChecks: { expected: [], notes: [] },
   });
   const flatPrompt = flatWholeFile(prompt);
   const missing = RULE_LINES.filter((l) =>
@@ -101,12 +104,13 @@ Deno.test("the verifier prompt carries every rule of the brief, fully rendered",
     TEST_CHANGES: "t",
     PREVIOUS_FINDINGS: "p",
     REVIEW_CHECKLISTS: "r",
+    CLOSURE_ENTRIES: "e",
   });
   assert(!rendered.includes("{{"));
 });
 
-Deno.test("the brief carries five fields including {{REVIEW_CHECKLISTS}}, which the renderer fills", () => {
-  assertEquals(REVIEW_BRIEF_FIELDS.length, 5);
+Deno.test("the brief carries six fields including {{REVIEW_CHECKLISTS}}, which the renderer fills", () => {
+  assertEquals(REVIEW_BRIEF_FIELDS.length, 6);
   assert(TEMPLATE.includes("{{REVIEW_CHECKLISTS}}"));
   const rendered = renderReviewBrief(TEMPLATE, {
     REVIEW_CONTEXT: "c",
@@ -114,8 +118,24 @@ Deno.test("the brief carries five fields including {{REVIEW_CHECKLISTS}}, which 
     TEST_CHANGES: "t",
     PREVIOUS_FINDINGS: "p",
     REVIEW_CHECKLISTS: "CHECKLIST-SENTINEL-3594",
+    CLOSURE_ENTRIES: "e",
   });
   assert(rendered.includes("CHECKLIST-SENTINEL-3594"));
   assert(!rendered.includes("{{REVIEW_CHECKLISTS}}"));
   assert(rendered.includes('"checklist":'));
+});
+
+Deno.test("renderReviewBrief fills {{CLOSURE_ENTRIES}} and the reply shape carries closure", () => {
+  assert(TEMPLATE.includes("{{CLOSURE_ENTRIES}}"));
+  const rendered = renderReviewBrief(TEMPLATE, {
+    REVIEW_CONTEXT: "c",
+    NO_TEST_ADDED_NOTE: "n",
+    TEST_CHANGES: "t",
+    PREVIOUS_FINDINGS: "p",
+    REVIEW_CHECKLISTS: "r",
+    CLOSURE_ENTRIES: "CLOSURE-SENTINEL-3766",
+  });
+  assert(rendered.includes("CLOSURE-SENTINEL-3766"));
+  assert(!rendered.includes("{{CLOSURE_ENTRIES}}"));
+  assert(rendered.includes('"closure":'));
 });

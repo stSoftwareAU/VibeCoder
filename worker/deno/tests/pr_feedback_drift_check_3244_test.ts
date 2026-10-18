@@ -82,6 +82,12 @@ function makeRunGit(dir: string): DriftCheckDeps["runGit"] {
   return async (args: string[]) => await git(dir, args);
 }
 
+/** Fake `runMutationCheck` for tests not about the mutation gate (Issue #3750). */
+const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
+  kind: "not_applicable",
+  reason: "not under test",
+});
+
 /** Fake `runGh` that always answers the `baseRefName` read with `main`. */
 function makeRunGh(): DriftCheckDeps["runGh"] {
   return async () => "main\n";
@@ -183,7 +189,7 @@ Closes #7.
 
 ${SENTENCE}
 
-**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
+**Docs sweep** — grep: \`subject\`; section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -196,7 +202,7 @@ Closes #7.
 
 The lists pin every entry correctly.
 
-**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
+**Docs sweep** — grep: \`subject\`; section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -213,7 +219,7 @@ ${SENTENCE}
 PR-feedback round 2: the drift-pins-on-base behaviour is now covered by a
 third test case.
 
-**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
+**Docs sweep** — grep: \`subject\`; section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -230,7 +236,7 @@ The lists pin each entry, which drift-pins-on-base now confirms.
 PR-feedback round 2: the drift-pins-on-base behaviour is now covered by a
 third test case.
 
-**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
+**Docs sweep** — grep: \`subject\`; section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -306,6 +312,7 @@ Deno.test("runPrFeedbackDriftCheck - a test-only push that leaves a change-reque
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -369,6 +376,7 @@ Deno.test("runPrFeedbackDriftCheck - a recovery turn that rewrites the stale quo
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -409,6 +417,7 @@ Deno.test("runPrFeedbackDriftCheck - a docs-only push with a still-present quote
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -436,8 +445,13 @@ Deno.test("runPrFeedbackDriftCheck - a docs-only push with a still-present quote
 });
 
 Deno.test("runPrFeedbackDriftCheck - a docs-only push where the recovery turn removes the quoted sentence reports recovered", async () => {
-  const { dir, beforeSha } = await setupBaseline(SUMMARY_WITH_SENTENCE);
+  const { dir } = await setupBaseline(SUMMARY_WITH_SENTENCE);
   try {
+    // The third test case is committed before beforeSha, so the push itself
+    // stays docs-only and the "(3 tests)" figure matches the file.
+    await writeFile(dir, "tests/rule_test.ts", RULE_TEST_V2);
+    await commitAll(dir, "test: add third case");
+    const beforeSha = (await git(dir, ["rev-parse", "HEAD"])).stdout.trim();
     await writeFile(dir, SUMMARY_PATH, SUMMARY_WITH_SENTENCE_AND_ROUND2);
 
     const calls: AgentCall[] = [];
@@ -463,6 +477,7 @@ Deno.test("runPrFeedbackDriftCheck - a docs-only push where the recovery turn re
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -496,6 +511,7 @@ Deno.test("runPrFeedbackDriftCheck - a test-only push with no change request sti
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -535,6 +551,7 @@ Deno.test("runPrFeedbackDriftCheck - a change request quoting a sentence already
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -570,6 +587,7 @@ Deno.test("runPrFeedbackDriftCheck - a finding naming a pr-summary that does not
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },

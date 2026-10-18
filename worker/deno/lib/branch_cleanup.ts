@@ -31,6 +31,10 @@ import {
   saveProcessedSweepState,
 } from "./merged_sweep_watermark.ts";
 import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
+import {
+  observedLifecycleTerminalPrs,
+  recordLifecyclePrFromGithub,
+} from "./lifecycle_pr_observation.ts";
 import { recordMergedPr } from "./fleet_telemetry.ts";
 import { defaultLogger } from "./logger.ts";
 import { emitSelfHealEventAuto } from "./self_heal_events.ts";
@@ -193,6 +197,18 @@ export async function cleanupMergedPrBranches(
     ? await loadProcessedSweepState(watermarkPath, logger)
     : undefined;
   let stateDirty = false;
+  let observedTerminalPrs = new Set<string>();
+  if (cleanupOptions.workDir) {
+    try {
+      observedTerminalPrs = await observedLifecycleTerminalPrs(
+        cleanupOptions.workDir,
+      );
+    } catch (error) {
+      defaultLogger.error(
+        `Lifecycle terminal ledger read failed: ${errorMessage(error)}`,
+      );
+    }
+  }
 
   for (const repo of repos) {
     // List merged PRs authored by this user, extracting head branch names.
@@ -210,6 +226,16 @@ export async function cleanupMergedPrBranches(
         ghFn,
       );
       for (const pr of merged) {
+        if (
+          cleanupOptions.workDir && pr.lifecycleAssignmentId !== null &&
+          !observedTerminalPrs.has(`${repo}#${pr.number}:merged`)
+        ) {
+          await recordLifecyclePrFromGithub({
+            workDir: cleanupOptions.workDir,
+            repo,
+            prNumber: pr.number,
+          }, ghFn);
+        }
         // Issue #3404: count the merge by tier before any skip below.
         if (pr.subAgentTier !== undefined) {
           recordMergedPr({

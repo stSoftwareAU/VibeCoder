@@ -754,11 +754,12 @@ The gate now answers from the same `classifyIssues` the idle-detect audit runs
 (restricted to `REAL_WORK_LABELS`), and the filer supplies it the scan's own
 inputs: the fleet identity, the fleet's open and merged PRs — read through the
 shared issue cache the scan populates — and this run's hold set, passed down
-from the worker loop. The issue probe is one unfiltered `gh issue list` per
-repo, because occupancy is a property of the whole work stream and the issue
-that occupies it need carry no discovery label at all; the PR probes run only
-for a repository whose issues survive the cheap gates, so an empty or plainly
-busy repository still costs exactly one call. Any gate whose data is missing
+from the worker loop, which since Issue #3587 also holds the issues of a paced
+milestone. The issue probe is one unfiltered `gh issue list` per repo, because
+occupancy is a property of the whole work stream and the issue that occupies it
+need carry no discovery label at all; the PR probes run only for a repository
+whose issues survive the cheap gates, so an empty or plainly busy repository
+still costs exactly one call. Any gate whose data is missing
 is simply not applied, which leaves that gate's over-count in place — the
 direction that suppresses filing rather than flooding it. It repairs the
 filing half of the idle-vs-work-on inversion, where the per-repo busy check
@@ -841,10 +842,11 @@ read as a disagreement. For every monitored repo the census records:
 "Unblocked" means the issue carries the priority label, carries **no** blocking
 label (`failed`, `needs-revision`, `refine-issue`, `planning`, `question`,
 `needs-human`), has **no assignees**, is not blocked by an open PR in its work
-stream, is not named by a **merged** fleet PR, sits in a work stream this worker
-has **not** already occupied, and is not one this run is already holding back
-— i.e. work the Priority 2 scan could hand a
-worker right now. Crucially, neither
+stream, is not named by a **merged** fleet PR, carries a priority label a
+trusted author applied (`untrustedLabelIssues`, Issue #3571), sits in a work
+stream this worker has **not** already occupied, and is not one this run is
+already holding back — i.e. work the Priority 2 scan could hand a worker right
+now. Crucially, neither
 `degraded-model` nor `lang:*` is a blocking label, so an issue carrying them
 still counts: the census exists precisely to refute the "a `degraded-model`
 filter is hiding the work" hypothesis.
@@ -892,7 +894,9 @@ flowchart LR
     L -- no --> X[not counted]
     L -- yes --> B{Blocking label<br/>or assignee?}
     B -- yes --> X
-    B -- no --> S{"Stream occupied and tier is<br/>low-priority or idle-task,<br/>or blank stream held here?"}
+    B -- no --> LA{"Priority label added by<br/>an untrusted author?"}
+    LA -- yes --> CR["claim_refused+1"]
+    LA -- no --> S{"Stream occupied and tier is<br/>low-priority or idle-task,<br/>or blank stream held here?"}
     S -- yes --> SO["stream_occupied+1"]
     S -- no --> P{Open PR blocks<br/>its stream?}
     P -- yes --> PB["pr_blocked+1"]
@@ -1000,15 +1004,23 @@ cycle for #622 and #623 — both handed back earlier that day, neither carrying 
 single GitHub-visible blocker — and filed VibeCoder#655 against a scan that was
 right. `run_core_production_deps.ts` now resolves the hold set **once** and
 hands the same set to all three readers, and excluded issues are reported as
-`run_local_hold=<n>`. Issue #3464 adds a third source, in the census only: the
-issues whose milestone the persisted pacing ledger
-(`milestone_sync_failures.json`, Issue #1780) holds, which the scan skips as
-`milestone-behind`. The census reads that ledger through the scan's own
-`milestonePacedUntil`, so a persistently paced milestone no longer raises a
-false `inversion_signal`. `idle_detect_diagnostics.ts` and
-`repo_busy_for_idle_task.ts` do not read the ledger yet. The per-cycle adaptive-floor deferral (Issue #245) is the
-one source still unmodelled; it is rebuilt every cycle, so it cannot hold a
-streak open the way the registry did.
+`run_local_hold=<n>`. Issue #3464 adds a third source: the issues whose
+milestone the persisted pacing ledger (`milestone_sync_failures.json`,
+Issue #1780) holds, which the scan skips as `milestone-behind`. The census reads
+that ledger through the scan's own `milestonePacedUntil`, so a persistently
+paced milestone no longer raises a false `inversion_signal`. Issue #3587 applies
+the same read to the idle-detect audit (`idle_detect_diagnostics.ts`) and to the
+idle-task filer's fleet-wide startable-work gate (`repo_busy_for_idle_task.ts`),
+both through the shared `loadIdleDetectionHold` in
+`worker/deno/lib/run_core_production_deps.ts`. A paced issue is reported as
+`run_local_hold` in the audit, so a paced milestone no longer fires `ALERT
+mis_classification`, and is not startable work at the fleet-wide gate, so it
+no longer holds idle-task filing back across the fleet. The filer's per-repo
+busy check (`isRepoBusyForIdleTask`) does not take the hold: it still counts a
+paced issue as unblocked, so filing into the paced repo itself is still blocked
+as `approved_work_in_flight`. The per-cycle adaptive-floor
+deferral (Issue #245) is the one source still unmodelled; it is rebuilt every
+cycle, so it cannot hold a streak open the way the registry did.
 
 **A refused claim is not a finished run (Issue #2405).** The hold records that
 an issue is held, and until #2405 not *why*. A claim the claim path **deferred**
@@ -1028,6 +1040,19 @@ stream_affinity`). A refusal that means someone else holds the issue —
 remains an ordinary `run_local_hold`. `idle_detect_diagnostics.ts` is given the
 same answer through `withholdsFromIdleDetection`, so the two detectors cannot
 disagree about the gate.
+
+The **label-author gate** (Issue #3571) is the other refusal the census now
+models, and it is the opposite case. The claim scan refuses an issue whose
+priority label an untrusted author applied as `label-author-not-allowed`, a
+`human`-clearing gate: nobody else holds the issue, and it stays unclaimable
+until a trusted author applies the label. The census therefore counts it as
+`claim_refused=<n>` ahead of run-local holds and occupancy, does not count it
+as claimable, does not report it as `run_local_hold`, and does not let it
+suppress lower tiers. `untrustedLabelIssues` is the caller-precomputed set; the
+census drops those issues before the tier-3 and work-on suppression checks, as
+the scan drops them. Before checking trust, production applies the census's
+own `isUnblockedFor` label and assignee filter. Assigned issues, issues with a
+blocking label, and issues without a priority label need no trust lookup.
 
 The **work-stream occupancy** gate (Issue #1050) is the fifth instance, and the
 first to be found in the audit rather than the census. `isMilestoneOccupied`
@@ -1066,7 +1091,8 @@ which counted those same two issues for the life of the run — so
 `[idle-detect] ... ALERT mis_classification ...` fired on every tick beside the
 census's inversion alert, and the audit's `claimableTotal` suppressed the
 idle-task filer with it. It now applies the hold as its last gate, reporting
-`reason=run_local_hold` on the per-repo line, exactly as it took the open-PR
+`reason=run_local_hold` on the per-repo line (the hold includes paced
+milestones since Issue #3587), exactly as it took the open-PR
 gate in Issue #4223 and the merged-PR gate in GRQ#4419. A hold source that
 throws falls back to no hold, so a failure restores the old over-count rather
 than reporting a repo as having nothing to do. The audit also reports
@@ -1108,7 +1134,9 @@ _permanently_ as `merged-pr-permanent` because merged PR #49 names it. All 28
 suppression signal, and the census mirrors both carve-outs — a `work-on` issue
 blocked only by an open dependency (Issue #2610) or permanently by a merged PR
 (Issue #499) does not suppress, while every self-clearing blocker (open PR,
-occupied stream, closed-unmerged cooldown) still does.
+occupied stream, closed-unmerged cooldown) still does. An untrusted-author
+priority label (`label-author-not-allowed`, Issue #3571) does not suppress
+either: it is a `human` gate, so the census drops those issues before the check.
 
 The **stream-level work-on suppression** gate (Issue #2922) closes a sibling
 hole in the same rule, running immediately after the tier-3 gate above.
@@ -1160,12 +1188,22 @@ field state under
 so a state that once produced an inversion alert can never produce one silently
 again.
 
-Two deliberate limits keep both instruments cheap probes rather than a second
-scan: only **merged** PRs count (a closed-unmerged PR blocks for a cooldown
-window that clears itself), and the re-label escape hatch is **not** modelled,
-because it needs a per-issue timeline call. Both make the census _under_-count,
-which at worst files an idle-task while work exists — the bounded-harm
-direction.
+Two deliberate limits keep both instruments bounded: only **merged** closed
+PRs count (a closed-unmerged PR blocks for a cooldown window that clears itself),
+and the re-label escape hatch is **not** modelled. Both make the census
+_under_-count, which at worst files an idle-task while work exists — the
+bounded-harm direction.
+
+The census's priority-label trust check shares `TimelineBatchRegistry` with the
+claim scan. Timelines already fetched in this iteration cost no further API
+call; missing eligible issues are fetched in GraphQL batches of at most 25.
+Thus 30 missing issues cost two batch calls, rather than 30 sequential REST
+reads. A repo the scan did not visit may still need those batches. The registry
+resets at the iteration boundary, so a previous iteration's trusted result is
+not reused as live evidence. A failed batch retains the collectors' per-issue
+REST fallback; a failed trust read is logged and treated as trusted by the
+advisory census. This bounds the normal path without claiming that every
+census run makes no timeline calls.
 
 Any monitored repo holding ≥1 unblocked `top-priority` / `work-on` /
 `low-priority` issue at this moment is the **inversion signal**; `idle-task` is

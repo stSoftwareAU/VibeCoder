@@ -1,0 +1,17 @@
+{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
+  {"path":"worker/deno/lib/degraded_delivery.ts","line":814,
+   "outcome":"live section byte-identical to the rebuilt one: kept, still naming the follow-up",
+   "test":"worker/deno/tests/degraded_delivery_test.ts",
+   "testName":"rederiveDegradedSection - keeps the follow-up number and reason",
+   "flipWentRed":"forcing the condition to false turned it red, and also sync - a degraded-run section with the same gaps keeps naming its follow-up (Issue #3677)"},
+  {"path":"worker/deno/lib/degraded_delivery.ts","line":814,
+   "outcome":"rebuilt shortfalls differ: rendered by buildDegradedStaleFollowUpSection",
+   "test":"worker/deno/tests/pr_body_sync_test.ts",
+   "testName":"sync - a degraded-run section whose rebuilt gaps differ never claims they continue in the follow-up (Issue #3677)",
+   "flipWentRed":"returning buildDegradedPrSection unconditionally turned it red, along with the two rederiveDegradedSection #3677 tests"},
+  {"path":"worker/deno/lib/degraded_delivery.ts","line":487,
+   "outcome":"the `filed #N` operand reads the follow-up number back from a stale section",
+   "test":"worker/deno/tests/degraded_delivery_test.ts",
+   "testName":"rederiveDegradedSection - a section already marked stale re-syncs under the same follow-up number (Issue #3677)",
+   "flipWentRed":"deleting the `filed` operand (back to /continue in #(\\d{1,9}):/) turned it red, and the parseDegradedSection round-trip test"}
+]}}

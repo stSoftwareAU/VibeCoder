@@ -443,7 +443,7 @@ excluded from the suppression signal.
 
 The merged-PR carve-out is Issue #499. `stSoftwareAU/NEAT-AI-Rebase#48` carried `work-on` and was named by merged PR #49, so the scan refused it on every cycle while it parked all 28 of the repo's `low-priority` issues indefinitely — neither the suppressing issue nor anything it suppressed could ever be claimed. The idle-decision census, which does model the merged-PR gate, kept reporting those 28 as claimable and escalated the disagreement as "the claim scan keeps refusing this work". The census now mirrors this gate too and reports a suppressed backlog as `low_priority_suppressed=<n>` (see [IDLE-TASK-FRAMEWORK.md](../IDLE-TASK-FRAMEWORK.md#idle-decision-claimable-work-census)).
 
-Issue #655 is the same shape one step later in the pipeline. After every collector has passed a candidate, `find_oldest_issue.ts` drops the ones `isIssueInCooldown` names — the persisted retry cooldown plus this run's processed-issue registry, whose entries live as long as the process. `stSoftwareAU/VibeCoder#622` and `#623` were both handed back earlier the same day, so the scan refused them silently on every later cycle while the census counted them claimable. The hold set is now resolved once and shared by both readers (`run_local_hold=<n>` in the census line), and the cooldown filters record their refusal in `blockedDetails` so the escalation can name the gate instead of listing the issues and nothing else. Issue #3464 adds the issues whose milestone the persisted pacing ledger holds (`milestone-behind`) to that same set, read through the scan's own `milestonePacedUntil`.
+Issue #655 is the same shape one step later in the pipeline. After every collector has passed a candidate, `find_oldest_issue.ts` drops the ones `isIssueInCooldown` names — the persisted retry cooldown plus this run's processed-issue registry, whose entries live as long as the process. `stSoftwareAU/VibeCoder#622` and `#623` were both handed back earlier the same day, so the scan refused them silently on every later cycle while the census counted them claimable. The hold set is now resolved once and shared by both readers (`run_local_hold=<n>` in the census line), and the cooldown filters record their refusal in `blockedDetails` so the escalation can name the gate instead of listing the issues and nothing else. Issue #3464 adds the issues whose milestone the persisted pacing ledger holds (`milestone-behind`) to that same set, read through the scan's own `milestonePacedUntil`. Issue #3587 applies the same read in the idle-detect audit and the idle-task filer's startable gate, through the shared `loadIdleDetectionHold`.
 
 Issue #898 is the same disagreement one level up: not a gate the census missed, but a repository the scan was never shown. `find_oldest_issue.ts` skips every repo in its `excludeRepos` set — since Issue #1091 those the maintenance lane (Issue #213) has leased wholesale — before any collector runs, so it records no skip reason for a single one of their issues. A sibling slot's hold no longer removes a repository: it occupies one work stream (Issue #1091), and the scan refuses that stream through `isMilestoneOccupied` while evaluating the rest of the repository. `stSoftwareAU/VibeCoder` escalated on three consecutive cycles with nine claimable `work-on` issues and an empty "what the claim scan did with them" section, while the lane was busy servicing one of its own PRs. The pool now keeps that exclusion set and hands it to both readers, which report the repo as `skip_reason=repo_held_in_flight` and raise neither the escalation nor the `mis_classification` ALERT for it (see [IDLE-TASK-FRAMEWORK.md](../IDLE-TASK-FRAMEWORK.md#a-repo-the-scan-was-never-shown-issue-898)).
 
@@ -728,6 +728,8 @@ gitGraph
 - **Push rejected:** Pull/rebase and retry push; if conflict, create fresh branch and retry (see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
 - **Timed-out run — WIP preserved, but no half-done PR:** A hard timeout with a dirty tree commits the work as a `wip:` commit on the claim-locked issue branch and pushes it, so the next claim (or a human) resumes from the branch instead of starting from zero; the release comment names the branch. Because that commit leaves the branch *ahead of base*, the completion phase adds a second guard beside the ahead-of-base check: when **every** commit ahead of base is a worker-authored WIP marker (`wip: …` or `WIP checkpoint: …`) **and** the branch tip is exactly where it stood before this run's agent started, no PR is raised — the resume must advance the branch first. Anything the guard cannot determine (the pre-run HEAD was unreadable, the commit log failed) fails open and the PR proceeds. See [`wip_commit_marker.ts`](../../worker/deno/lib/wip_commit_marker.ts) and [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
 - **Preservation runs before the existing-PR lookup:** An interrupted execute (timeout, SIGKILL, external SIGTERM) preserves its work **first**, then asks whether a PR exists. The order matters: the "a PR already exists → treat the run as a success" self-heal used to run first, so *any* PR for the issue — including a sibling host's, and including one already merged — skipped preservation entirely and the run's uncommitted work was discarded. The completion phase's "no commits ahead" bail-out preserves the tree the same way instead of only reporting that uncommitted changes were present. See [`phases/run_wip_preservation.ts`](../../worker/deno/lib/phases/run_wip_preservation.ts).
+- **Already-landed active work (Issue #3977):** before completion recovery and immediately before failure bookkeeping, the worker proves the exact repository, issue, run branch, PR target and merged commit, then checks that the clean local branch and HEAD contain no work outside that PR's head. The existing branch-PR lookup covers milestone merges whose issue-closing connection is empty. Explicit partial criteria, unrelated PRs, untracked work, extra commits, reapproved scope and unavailable evidence stay on the normal path. A plain historical summary still needs an explicit issue-closing contract and the commit proofs. A proved landed run releases with `claim_stale:work_already_merged`, carrying the PR, target, default branch and merge commit; it spends no coding attempt and earns no success/failure callback or default-branch throughput credit. Integration into a milestone therefore stays distinct from default-branch delivery. Production stops a failed run's heartbeat timer but defers its terminal marker until the final reconciliation and claim release, avoiding a provisional false failure tally. Earlier genuine failure records and labels are retained.
+
 - **Portable handover note (Issue #769):** Preservation saves the run's *code*; the note saves its *intent*. Beside the `wip:` commit the worker writes `docs/archive/handover/issue-<N>.md` into the clone **before** the commit runs, so the same `commitAndPushPending` carries it to the issue branch. It names the interruption cause, the branch, what was done (the commits this run added and the files it left uncommitted), what remains, and whether a wind-down notice was delivered — all from what the worker already knows, so it needs no agent call and works on the timeout path where no agent is alive. Everything in it is provider-neutral: no host paths, no session ids, nothing specific to one agent. Each interruption **rewrites** the note and keeps a short "previous attempts" tail, so a third claim can see two prior runs were interrupted. The path is the single constant `handoverFilePath()` in [`preserved_wip_branch.ts`](../../worker/deno/lib/preserved_wip_branch.ts), shared with the release comment that advertises it (Issue #770) and the resuming prompt that reads it (Issue #771) — not the `.vibe/…` the issue sketched, because [`gitignore_enforcer.ts`](../../worker/deno/lib/gitignore_enforcer.ts) ignores every hidden path in a monitored repo and [`pre_commit_safety.ts`](../../worker/deno/lib/pre_commit_safety.ts) refuses to commit one, so `git add -A` would have dropped the note silently; `docs/archive/` is excluded from the markdownlint globs, so free agent prose on a WIP branch cannot trip a docs gate. When the phase-end checkpoint has already left the tree clean, the note alone is committed as `wip: handover note …`, which the #148 WIP-only gate still refuses to build a PR from. A failed write is logged and non-fatal: losing the note never costs the code. See [`handover_note.ts`](../../worker/deno/lib/handover_note.ts).
 - **Superseded by another PR (`superseded:pr#N`):** The existing-PR lookup distinguishes an **open** PR (work in flight — the run continues, as before) from a **merged or closed** one (this run has nothing left to raise). A merged sibling PR stops the run cleanly: the claim releases with a `superseded` outcome naming the PR and the branch any preserved WIP is on, the issue is **not** labelled failed, and no `unknown`-class run-failure issue is filed. Every lookup failure fails safe to "open", so a `gh` hiccup can never invent a superseded stop. See [`superseding_pr.ts`](../../worker/deno/lib/superseding_pr.ts) and [`run_outcome.ts`](../../worker/deno/lib/run_outcome.ts).
 
@@ -989,7 +991,8 @@ inside the existing implementation run rather than as a new loop (see
 [SPEC-KIT-COMPARISON.md](../SPEC-KIT-COMPARISON.md)).
 
 **What the run must produce.** When the issue body carries a
-`## Acceptance Criteria` section, `prompts/issue/` requires the run to walk
+`## Acceptance Criteria` section (or, with none, a `## Definition of done`
+list, Issue #3761), `prompts/issue/` requires the run to walk
 each criterion before writing the PR summary and record the assessment as a
 `## Acceptance Criteria` block in
 `docs/archive/pr-summaries/pr-summary-<issue>.md`:
@@ -1009,7 +1012,8 @@ fewer assessments than criteria, with a `met`/`partial` entry that names no
 evidence, or with a gap that carries no reason — an unexplained gap is a failure
 to surface, not a pass. The gate comments on the issue naming every rule broken
 and the required shape, so the next attempt is productive. Issues with **no**
-acceptance criteria are unaffected: the gate does not apply and nothing changes.
+acceptance criteria (neither list) are unaffected: the gate does not apply and
+nothing changes.
 
 **One shape, both gates.** The remediation comment prints
 [`REVIEW_BLOCK_TEMPLATE`](../../worker/deno/lib/review_block_template.ts) — the
@@ -1075,6 +1079,24 @@ flowchart TD
 
 A `partial` entry is unaffected: the PR still closes the issue and the
 Summary names the gap beside the closing keyword.
+
+## Durable project-version wording
+
+The issue and review-fix templates request durable project-version statements in
+the archived summary. The existing summary loader also narrowly normalises
+standalone `Version bump:` root-manifest version pairs in Summary/Test Plan (or
+an unheaded legacy summary). This runs before existing facts rendering and body
+reconciliation, without another model call or refusal gate. It states that the
+manifest is updated for the change and the merged commit records the final
+value, so it assumes neither automatic patch bumps nor any other bump policy.
+Body digests use that stable rendered content.
+
+The normaliser preserves dependencies, exact release evidence, fenced/inline
+examples, indented code, historical ancestors and release continuations. Nested
+manifest ownership is ambiguous, so those version pairs are preserved. It does
+not rewrite archived history on read; the generator writes durable wording to
+new archived summaries. Exact release numbers remain labelled with their final
+commit/release provenance.
 
 ## 🔍 Independent review on two axes
 
@@ -1147,8 +1169,14 @@ when a `violation` names no evidence or a reason that is neither
 `fixed in this diff` nor a linked follow-up issue, or when either axis carries the
 other's findings — never merged, never reranked, because a change can pass one
 axis and fail the other and reporting them together lets one mask the other.
-Issues with **no** acceptance criteria are unaffected: no reviewers, no blocks,
-no gate.
+Issues with **no** acceptance criteria get no reviewers and no Spec block, and
+the Spec-axis rules and the axis-separation rule do not apply. A `## Standards
+Review` the summary carries anyway is still read (Issue #3761): each `violation`
+in it is held to the reason rules above, a refused one blocks PR creation, and
+the completion phase's standing-violation routing (Issue #3382, below) applies
+to it. Without criteria the gate does not require the Standards section, its
+provenance marker or a finding, and a summary with no `## Standards Review` on
+such an issue is not checked at all.
 
 ```mermaid
 flowchart TD
@@ -1190,8 +1218,10 @@ raised. The agent dispatches nothing for it.
   The reply has the fleet reviewer's JSON shape: `summary`, `findings`,
   `testChanges`, `testChangeNotes` and `unrelatedIssues`, plus a `checklist`
   array when the repository's
-  [review checklists](../review-checklists.md) apply to the changed files. A
-  reply without the array is read as `[]`, but the worker owes a verdict for
+  [review checklists](../review-checklists.md) apply to the changed files. The
+  reply also carries a `callers` array when the worker listed callers (see
+  **Existing callers of changed functions** below). A reply without the
+  checklist array is read as `[]`, but the worker owes a verdict for
   every item the brief rendered: an item with none, a malformed or unreadable
   checklist file (the base copy, unless the change edits the file and its own
   copy is usable or removes it, in which case the change is judged on that
@@ -1200,7 +1230,55 @@ raised. The agent dispatches nothing for it.
   `review-checklists.json` themselves, whatever the model replied. A
   `missing` verdict blocks the PR even with no matching finding. A failed read
   of the base or head ref makes the verifier "not checked" rather than a
-  finding.
+  finding. It also asks for a `closure` array (Issue #3766): the worker parses
+  the summary's `## Acceptance Criteria` closure block and lists every entry
+  the agent marked `met` in the brief, and the reply carries one
+  `{criterion, verdict, note}` per listed entry, `verdict` being `met`,
+  `partial` or `missing`; `met` only when the change delivers every case, path
+  and test the criterion names
+  ([`closure_met_check.ts`](../../worker/deno/lib/closure_met_check.ts)). The
+  worker adds a blocking finding on the PR summary for each listed entry rated
+  `partial` or `missing`, and one for the entries left without a verdict (a
+  reply without the array counts as no verdicts, and a malformed array entry
+  is dropped rather than failing the reply, so it counts as no verdict while the
+  reply's other findings stay), whatever the model's own findings say. Matching
+  accepts either the raw criterion or its rendered form, which applies delimiter
+  scrubbing and secret redaction to each criterion separately inside the shared
+  fence. The verifier's copy is not scrubbed again: a second pass can change it.
+  No scrub runs across the joined entries, so one criterion cannot rewrite or
+  hide a later entry. Verdicts for both forms are considered together, with
+  `missing` or `partial` still blocking even when the other form is rated `met`.
+  Matching ignores all leading list numbers (`1.` or `1)`, followed by
+  whitespace), including a criterion's own numbering, before clipping, so
+  displayed numbering cannot turn a complete verdict into a missing one. The
+  listed criteria are agent-written text copied from the issue, so they are
+  rendered inside the prompt's untrusted fence and named in its
+  boundary-integrity instruction; only the worker's instruction sentence sits
+  outside it. The fleet review gate uses this same renderer for its
+  `closureEntries` field; the orchestrator copies that fenced section verbatim
+  into the shared brief rather than pasting raw PR-body criteria.
+  A summary that marks no entry `met`, or has no closure block,
+  lists none and owes no verdict. The fleet reviewer shares the brief and so
+  the instruction, but its `post.ts` does not check the array.
+- **Existing callers of changed functions (Issue #3779).** Before the
+  verifier runs, the worker lists each function or method whose body the diff
+  changes. It finds them with a language-agnostic definition-line heuristic
+  over the head file, then searches the head's tracked files for each name
+  with `git grep -w`, leaving out the lines the diff changes, test files,
+  docs, comment lines, import-list lines and the definition itself. The list
+  shows at most 10 callers per function, for at most 15 functions that have
+  callers, and searches at most 40 changed functions. Callers beyond 10 and
+  functions not searched are counted in a note to the verifier. A changed file
+  whose path git quotes is not scanned and is also noted. The list is appended
+  to the verifier's prompt as required items
+  ([`caller_checks.ts`](../../worker/deno/lib/caller_checks.ts)). The reply
+  then carries a `callers` array with one entry per listed caller,
+  `{symbol, caller: "file:line", verdict, note}`, where `verdict` is
+  `unchanged`, `changed and tested` or `regressed`. The code adds a blocking
+  finding for every listed caller with no verdict and for every `regressed`
+  verdict, whatever the model's own findings say. A git failure while listing
+  callers, or a malformed `callers` array, makes the pass "not checked". The
+  fleet reviewer does not get this list.
 - **Disposable checkout.** A `git clone --shared` of the issue checkout at the
   head commit, with its `origin` remote removed, holding the exact PR summary
   text the gates read. The verifier may run commands there: tests, flipping a
@@ -1223,7 +1301,8 @@ raised. The agent dispatches nothing for it.
 | Can execute | No (read-only tools) | Yes, in the disposable clone; `gh`, `git push`, `curl`, `wget`, WebFetch/WebSearch and sub-agents denied by a `disallowedTools` denylist (not a network sandbox) |
 | Reads the PR summary | No | Yes |
 
-**What blocks.** Any `findings` entry is a blocking finding, a late
+**What blocks.** Any `findings` entry, including those the worker adds for the
+checklist and closure verdicts above, is a blocking finding, a late
 summary-rule verdict. It is folded into whichever earlier summary gate blocks
 first, or blocks on its own after the summary claim check. It reaches the run's
 single [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn
@@ -1231,11 +1310,17 @@ as its own numbered REQUIRED ITEM. That turn may change code for a verifier item
 (the recovery prompt allows it for this item only), and the quality gate re-runs
 afterwards. Findings still present on the re-run are reported like other
 summary-gate blocks: a `failure` with no PR, or `summary_incomplete` over an
-existing PR, with the comment on the issue thread. `testChanges: meaningful`
+existing PR, with the comment on the issue thread. In the existing-PR case,
+auto-merge is withheld, `standing-violation` is applied and the surviving
+verifier findings are also posted on the PR (Issue #3796). A finding is
+settled by a fix or an evidence-backed dispute naming the finding in the
+final message; marking a criterion partial, listing a known gap or noting a
+test as not red-checked does not settle it (Issue #3797). `testChanges: meaningful`
 is not a finding and does not block.
 
 **When it cannot run.** A pass that cannot run (brief missing, git failure,
-launch error, timeout, unparseable reply) is logged as a warning as "not checked",
+a failed caller listing, launch error, timeout, unparseable reply, or a
+malformed `callers` array) is logged as a warning as "not checked",
 never read as clean, and does not block, as is a summary path that leaves the
 clone. A verifier after which the issue checkout's `git status` (untracked
 files included, ignored files not) or HEAD shows a change, or after which the
@@ -1452,6 +1537,21 @@ actual output; keeping the shared helper as it was and applying the stricter
 rule at the new call site when any caller can pass a rejected value;
 otherwise adding a test that an existing caller still accepts its real
 inputs; and listing the callers checked in the PR summary.
+
+**Changing a shared helper's result changes every caller (Issue #3779).** The
+rule from Issue #3100 read as covering only narrowing, and it accepted a
+callers list the agent wrote itself. VibeCoder#3353 gave
+`syncPrBodyFromSummary` a `headSha !== view.headRefOid` freshness check for
+the no-push feedback path. The CI-fix and merge-conflict callers sync right
+after their own push, while GitHub's `headRefOid` still lags, so they got
+"checkout is not the PR head" and left the description stale. A private fleet
+PR gave a shared record lookup a fallback for one caller. The other caller
+read "nothing" as "leave it alone" and went on to act on a closed record,
+though its PR summary named that caller and called it unchanged. The
+guidelines rule now covers any change to what a shared helper returns, refuses
+or finds, and requires a test through each existing caller whose behaviour the
+change touches. The pre-PR verifier now gets the caller list from the worker
+([pre-PR verifier](#pre-pr-verifier-issue-3395)).
 
 **A new argument or behaviour reaches every caller that needs it (Issue #3253).**
 The changed-call-site rule above covers callers the diff changes; a caller the
@@ -1787,7 +1887,9 @@ a bare placeholder (`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`), or a
 `siblings:` part (Issue #3371) that is missing, a bare placeholder (`none`,
 `n/a`, `tbd`, …), or quotes no backticked or double-quoted term and is not the
 `siblings: none — <reason>` negative. `section: none — <reason>` and `no hits`
-are both accepted, and a bad `section:` and a bad `siblings:` are reported
+are both accepted. The grep field must quote a usable term, or state
+`grep: none — <why no terms apply>`; missing, unquoted or bare-negative grep
+fields are refused too (Issue #3861). A bad `section:` and a bad `siblings:` are reported
 together. The entry is read as one logical unit from the shared
 `markdownLogicalUnits` splitter (Issue #3356), so a hard-wrapped entry is
 joined up to the next blank line, list item, heading, table row, fence or HTML
@@ -1829,7 +1931,12 @@ changed, or when the line names it as `file:line` or `file:start-end`. Any
 other hit is advisory (Issue #3237, because the re-run was failing fleet
 runs): it is posted once, as a PR comment for the reviewer, listing each
 `file:line` and its sentence (at most 20, then "and N more"), and logged at
-WARN. When GitHub's secondary rate limit defers the PR to the next cycle
+WARN. Quoted terms after colonless `grep` or `grep terms` are read too
+(Issue #3861). A semicolon or the next `section:`, `siblings:`, `updated:`,
+`files updated:` or `grep:` field label ends the current field outside
+quotes. A label inside a quoted term stays part of the term. An explained
+`grep: none — <why>` contributes no search terms, even when the explanation
+quotes a name. When GitHub's secondary rate limit defers the PR to the next cycle
 (Issue #1951), the comment is parked with the deferred PR record and the
 drain posts it on the PR it raises. It never blocks the summary and triggers
 no recovery turn — fix it, or
@@ -1994,12 +2101,31 @@ place. If the file changes at or after the line where that literal opened,
 every assertion-shaped line of the old side from that line on is reported.
 A copy on such a new side from that line on cannot vouch for a move.
 
-Each remaining removed assertion must appear, ignoring whitespace, in the
-Test Plan section; otherwise PR creation is blocked and the notice lists
-every unaccounted assertion. The gate checks only that the assertion is
-named — whether the stated requirement truly makes it untrue is left to the
-Standards reviewer, whose brief now asks it to list every assertion the diff
-removes from an existing test and return a `violation` for any that has none.
+Each remaining removed assertion must appear, ignoring whitespace, in its
+own Test Plan list entry. The entry carries exactly one structured reason:
+
+- `Required by: "<quote>"` quotes at least 5 words verbatim from the linked
+  issue's title or body (not comments), ignoring whitespace wrapping. The
+  quote must occur within one of those fields, not across their boundary.
+- `Moved to: <path>` names a file where the same canonical assertion occurs
+  on added lines, with its guards, skips and early exits preserved. The
+  existing scanner still exempts safe moves; any explicit move claim is
+  checked, and a surviving copy cannot account for multiple removals.
+
+A replacement also carries `Replaced by:` with each new assertion in inline
+code. Every named replacement must be added in the same test file as the
+removed assertion. Whether an added assertion replaces a removed one is
+reviewed semantically; an unrelated new test in that file does not establish
+a replacement. A missing or fabricated reason, a wrong destination, or a
+named replacement absent from the added lines blocks PR creation
+(Issue #3739). Reasons on another
+list entry cannot justify a removal. The Standards reviewer still judges
+whether a quoted requirement actually makes the old assertion untrue, and
+identifies replacements from the diff even when `Replaced by:` is omitted.
+A missing replacement entry is a `violation`; comparing each pair also
+returns a `violation` when a value the old assertion checked is no longer
+checked anywhere.
+
 When the test-file patch itself cannot be read, or it reaches the
 8,000,000-character read cap, only the heading rule applies and a warning
 is logged. The patch is not scanned after a silent cut.
@@ -2020,7 +2146,7 @@ flowchart TD
   B -->|No| X["Block PR"]
   B -->|Yes| C["Any assertion edited, deleted, or re-added under a new guard, skip or exit?"]
   C -->|No| Z
-  C -->|Yes| D["Each named in the Test Plan?"]
+  C -->|Yes| D["Each named with a verified reason and replacement evidence?"]
   D -->|Yes| Z
   D -->|No| X
   style Z fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
@@ -2123,11 +2249,16 @@ outcomes list as structured JSON in
 `parseSummaryFacts`. With no facts file the prose gate above is unchanged. An
 unreadable file (any read error other than not-found), malformed JSON or a
 schema-invalid file blocks PR creation with a reason naming the facts file,
-as a summary-rule block that shares the single in-run recovery. A facts file
-alongside a hand-written `Branch outcomes` header in the summary also blocks.
+as a summary-rule block that shares the single in-run recovery.
 A valid file's list is rendered by `renderBranchOutcomes` into the summary,
-at the `<!-- vibe-branch-outcomes -->` marker or appended when the marker is
-absent, before the PR body is assembled. The gate then reads the assembled
+at the `<!-- vibe-branch-outcomes -->` marker, in place of a safely identified
+legacy list, or appended when neither is present, before the PR body is assembled. The block ends at
+`<!-- /vibe-branch-outcomes -->` and is replaced idempotently on refresh.
+Facts are authoritative: the shared renderer replaces safely identified legacy
+lists, preserving unrelated narrative. Duplicate/unmatched ownership markers,
+unowned legacy evidence and unresolved unreached-outcome admissions remain
+blocking; they are never discarded to make rendering succeed. Agents maintain
+facts plus the marker, rather than a second list. The gate then reads the assembled
 body as it reads a prose list: every test path the prose parser names there —
 each entry's declared test, a test-shaped entry `path`, and a test named in
 the text that follows the list's header — is existence-checked at HEAD with the same
@@ -2221,68 +2352,91 @@ takes the one recovery turn, then a further block fails the run (or
 finalises an existing PR as `summary_incomplete`). The claim check runs again
 on the re-run after that turn either way.
 
-**Changed manuals and prompts (Issue #3347).** The one read-only model question
-also covers the manual and prompt files among the branch's changed files (the
-completion phase's `git diff --name-only <base>...HEAD` list, so committed
-changes), up to 20 of them. A file qualifies when
-[`isManualProsePath`](../../worker/deno/lib/doc_prose_claims.ts) accepts it: a
-Markdown path outside `docs/archive/pr-summaries/` that is not a PR summary, a
-test file or a worker state file, and has a safe relative shape. For each, the
-shared question (`docProseClaimInstruction`) asks the model to check only the
-lines the change adds or edits, and only the sentences that say when the new
-behaviour happens, what it refuses, rejects, allows or skips, or that use an
-absolute word ("only", "never", "always", "any", "every", "all", "each",
-"automatically") or a counted or closed list. It opens the head code that
-decides each one (the branch condition, the callers, the list the sentence
-names) and reports the sentence, quoted verbatim, when that code contradicts
-it, naming the contradicting `file:line`. Files past the cap are logged at error
-level and recorded as not checked; a changed file deleted on the branch is
-skipped; one that cannot be read is recorded as not checked. If the
-changed-files list itself could not be read, the doc part is recorded as not
-checked (an error log) and the summary is still questioned. A doc finding is
-confirmed only when it names one of those files and its sentence is found in
-that file's current text; it goes into a separate `docFindings` list and blocks
-like any other claim-check finding, through the same summary-rule block. The
-gate comment names the file and asks for that sentence to be rewritten in that
-file to say what the head code does, or removed — "not the code".
-GRQ-AutoTrader#2609, #2685 and #2699 and VibeCoder#3308 each shipped a manual or
-prompt sentence about the PR's own new behaviour that the head code
-contradicted, after #3120 and #3232 had asked for this care in prose only.
+**Prose affected by the change (Issues #3347, #3715, #3731).** The one
+read-only model question also covers added or edited lines in manual/prompt
+Markdown outside `docs/archive/pr-summaries/`, excluding summaries and tests.
+For changed source files recognised by `isProseSourcePath`, the shared lexer
+selects comment text, excluding executable code and string literals: changed
+comments, module headers, and doc comments attached to changed declarations.
+The recognised extensions cover JavaScript/TypeScript, Rust, shell, Python,
+Ruby, C/C++, Java, Go, C# and SQL; other source formats are outside this scope.
+The question explicitly asks for a grep of the whole head tree when a claim
+names a set without one authoritative list, such as signal senders, result
+readers or files a command reads.
 
-**Issue #3324.** A later block where the claim check is the only gate still
-failing — reached only once every earlier summary gate has passed, and every
-finding it confirmed is in the summary itself — instead gets one summary-only
-correction turn before the ordinary recovery path even
-applies: the claim gate's comment and the current summary, fenced as
-untrusted data, go to a fresh agent invocation with file-writing tools and
-`Bash` denied (`Read`/`Grep`/`Glob` stay), which must reply with the complete
-corrected summary between `<!-- vibe-corrected-summary -->` markers. The
-worker writes only the summary file from that reply, commits it, re-runs the
-quality gate, then re-runs completion; every sentence the claim check had
-confirmed wrong that is still in the summary is carried forward as a finding,
-so a re-run model pass that misses it, or cannot run at all, does not wave it
-through — it blocks exactly as before. A launch failure, an unreadable reply
-or an unchanged summary writes nothing and re-runs completion, which then
-blocks on the carried-forward finding. Two incidents motivated it:
-VibeCoder#3310, where the one in-run recovery turn received several
-`---`-separated gate notices folded together and fixed only one of them, and
-VibeCoder#3322, where the claim check found its wrong sentence only on the re-run
-after recovery — the run's second block, spent with no correction turn left.
-A claim-check block folded with another gate on a later attempt is not this
-case and gets no correction turn — the ordinary recovery (or its absence)
-applies. Neither does a block carrying a doc finding (Issue #3347): the turn can
-only rewrite the summary file, so that block takes the ordinary path (fails the
-run, or finalises an existing PR as `summary_incomplete`).
-A pre-PR verifier block on that same attempt is not folded into the
-correction turn: the claim gate returns first, so the verifier is gated again
-on the re-run that follows.
+The same scope builder, `doc_prose_scope.ts`, adds unchanged manual sections:
+the heading-bounded section named by the summary's Docs sweep `section:` field,
+and sections mentioning a changed source path, basename or exported
+declaration. These extra sections can be in untouched manuals, but never
+under `docs/archive/`. A named parent heading includes its subsections; a
+source-reference match ends at the next heading. The model asks whether
+**this change** makes the sentence false, not whether it was always right.
+Sentences the head still agrees with are not findings.
+
+The combined prose scope is capped at 20 files and the extra manual scope at
+40 sections. The prompt lists selected paths and line ranges inside its
+untrusted-data boundary. Files/sections past a cap, unreadable tracked files,
+unavailable diffs and unterminated source literals/comments are recorded as
+not checked, never passed. The first-run check logs these at error level; the
+review-fix check logs them at warning level. A deleted file has no prose to
+check. If the changed-file list itself is unavailable, the summary is still
+questioned and its prose extension is recorded as not checked.
+
+`docProseClaimInstruction` retains the trigger classes: when behaviour
+happens, what it refuses, rejects, allows or skips, absolute words, and counted
+or closed lists. A reported contradiction quotes the sentence verbatim and
+names the contradicting head `file:line`. Confirmed findings go through the
+existing summary-rule recovery path. First-run `docFindings` carry the
+manual/comment findings separately from summary findings. Markdown findings
+can use the sentence correction below; source comments stay on the ordinary
+recovery and hold path, without granting the narrow turn source-code writes.
+The review-fix check uses the same scope and does not send an unconfirmed
+source/prose finding to its recovery turn. Neither check becomes a general
+manual audit.
+
+**Issues #3324 and #3865.** A later block where the claim check is the only
+earlier summary gate still failing gets one narrow correction turn. This
+covers summary sentences and confirmed `docFindings` in selected manuals or
+prompts, including the affected unchanged sections. A block containing a source
+comment finding follows the ordinary recovery and hold path. File-writing
+tools and `Bash` are denied; `Read`/`Grep`/`Glob` remain available to inspect
+the head code.
+
+The model reads the original files by path; fenced findings are scrubbed
+evidence, never the editable source. When findings are summary-only, the model
+returns the corrected summary between `<!-- vibe-corrected-summary -->`
+markers. When manual or prompt findings are present, it returns an indexed
+replacement string for each
+flagged sentence, including any summary findings in that same block. The
+worker locates each flagged span with the claim check's whitespace-normalised
+matching rules and changes only that span in its own file. Missing or duplicate
+indices, ambiguous or overlapping spans, unsafe paths and symlink aliases are
+refused. Text outside those spans is preserved byte for byte. Both reply
+formats refuse newly introduced prompt-scrubbing artefacts (U+2024, fullwidth
+braces/angle brackets, `author＝` or a redaction placeholder) before writing.
+Completion and the local summary checker also reject scrubbed HTML-comment
+markers, including inside Mermaid or code spans (Issue #3710).
+
+The worker commits changed files, runs the quality gate, then re-runs
+completion once. Confirmed sentences still present are carried forward even
+if the next model check misses them; an unreadable manual does not clear its
+confirmed finding. A failed invocation, malformed reply or unchanged sentence
+therefore cannot silently clear the block. A later block folded with another
+gate does not get this extra turn. A surviving manual or source-comment finding
+holds an existing PR whether the block is claim-check-only or mixed:
+auto-merge is withheld,
+`standing-violation` is applied, and the findings are posted with the existing
+worker repair marker so PR feedback can act on them. With no PR, the run fails.
+
+A pre-PR verifier block on that same attempt is checked again after the claim
+correction: the claim gate returns first and completion rechecks the gates.
 
 ```mermaid
 flowchart TD
     A["Completion phase, summary loaded,<br/>before raising the PR"] --> B["Test Plan backstop:<br/>quoted behaviour vs. named test file"]
     A --> C{"Base ref known?"}
     C -- no --> D["Not checked"]
-    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code,<br/>and changed manual and prompt prose"]
+    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code,<br/>selected comments and manual prose"]
     E --> F["Confirm each finding against<br/>the summary's or the doc's own text"]
     B --> G{"Any confirmed finding<br/>or Test Plan problem?"}
     F --> G
@@ -2291,9 +2445,9 @@ flowchart TD
     G -- no --> I["PR raised"]
     H -- yes --> RT["One recovery turn<br/>(all folded gates, one per item)"]
     RT --> A
-    H -- no --> J{"Claim check the only gate,<br/>summary findings only?"}
+    H -- no --> J{"Claim check the only gate,<br/>summary/manual findings only,<br/>correction turn unused?"}
     J -- no --> K["Fail / finalise<br/>summary_incomplete"]
-    J -- yes --> L["One summary-only<br/>correction turn (Issue #3324)"]
+    J -- yes --> L["One narrow claim<br/>correction turn (#3324, #3865)"]
     L --> M["Re-run: wrong sentences<br/>still present carried forward"]
     M --> N{"Gate satisfied?"}
     N -- yes --> I
@@ -2324,7 +2478,12 @@ plus the two `quality.sh` hygiene rules — and every one of them decides from t
 file text alone: no network, no run history, no repository settings. On the
 branch diff they cost milliseconds. Any finding blocks the PR, and the failure
 names the check id, the file, the line and the detail, so the next attempt fixes
-the file rather than guessing.
+the file rather than guessing. The gate honours no in-file
+`best-practice-ignore` marker — it reads the branch's files without blame, and
+no production path configures a verified commit identity, so every marker is
+rejected — and prose in the PR summary does not clear it either: a finding that
+genuinely does not apply needs a human to review it, or a fix to the scanner
+(Issue #3683).
 
 **Only what the run touched is in scope.** A repository whose *pre-existing*
 workflow files already carry findings is the idle-task audit's business, not this
@@ -2432,10 +2591,11 @@ flowchart TD
     G -- "no — all unassessed" --> N["No follow-up; PR body opens with a<br/>'Degraded run — no follow-up filed'<br/>section saying why"]
 ```
 
-- **The scope** is the issue's `## Acceptance Criteria`, or — for an issue
-  refined by grill-me — its `### Accepted scope so far` list, or its
-  `## Done when` list (Issue #3486). An issue stating none of these is named
-  whole as the one unverified item.
+- **The scope** is the issue's `## Acceptance Criteria`, or — when that
+  heading is absent or lists nothing — its `## Definition of done` list (Issue
+  #3761), or — for an issue refined by grill-me — its
+  `### Accepted scope so far` list, or its `## Done when` list (Issue #3486).
+  An issue stating none of these is named whole as the one unverified item.
 - **Delivered** means the PR summary's closure block marks the item `met`. A
   `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
   is a shortfall. Entries are matched to scope items by their words, not by
@@ -2508,12 +2668,18 @@ flowchart TD
   creation uses. It keeps only what cannot be re-judged after the run: the
   original run's degradation reason and the follow-up number the section
   named. With no shortfall left the section is dropped. If the section named
-  a follow-up, it becomes a `Degraded run — partial delivery` section linking
-  that follow-up and listing the current shortfalls. If a `partial` or
+  a follow-up, a section built from the same shortfalls stays as it is; any
+  other shortfall set is rebuilt by `buildDegradedStaleFollowUpSection`, which
+  keeps the follow-up number but says the worker filed that follow-up when the
+  PR was raised, that a re-sync does not rewrite it, and that it may not list
+  every item below (Issue #3677). The re-sync never edits the follow-up, for
+  the reason the healthy-run re-sync below gives (PR #3676 review). If a
+  `partial` or
   `missing` shortfall remains but no follow-up was filed at PR creation, it
   becomes a `Degraded run — partial delivery` section saying the worker filed
   no follow-up for these items and to check them against the diff; the
-  re-sync files no follow-up itself. If only `unassessed` shortfalls remain,
+  re-sync files no follow-up itself (the fix-run case below applies only to a
+  body with no degraded or partial-delivery section). If only `unassessed` shortfalls remain,
   it becomes the `Degraded run — no follow-up filed` section with its reason
   re-derived, so "the issue states no acceptance criteria" disappears once
   the issue states criteria. If the issue cannot be read, the re-sync fails
@@ -2537,6 +2703,28 @@ flowchart TD
   `completionBody` cases. See "An exception still has to report the PR it
   blocked" below.
 
+### Pending merge verification remains on the originating PR
+
+The shared shortfall assessment excludes narrowly recognised pending required
+CI/quality checks and routine clean code review from follow-up creation. The
+summary retains the original pending entry; it is never counted as delivered.
+This applies to healthy and degraded runs, issues without stated criteria, and
+runs on an existing partial-delivery follow-up. It prevents pending checks alone
+from filing a follow-up or invoking the nested-follow-up human hand-off.
+
+Generation guidance puts pending checks under `## Merge verification`. Legacy
+closure entries with reasons such as `CI not yet verified` or `awaiting code
+review` use the same assessment. A mixed criterion whose product work is
+complete can explicitly state its remainder as
+`reason: CI not yet verified — remaining: merge-verification-only` (also accepts
+`awaiting code review` or `quality gate not yet run`); it retains its closure
+status and is not counted as delivered. Unknown wording stays actionable; failed
+checks, unavailable tools, missing tests and mixed criteria with unfinished
+implementation are not excluded by the legacy wording check. PR-body refresh uses this assessment too: pending-only gap
+banners are removed, while an unassessed scope item in a degraded run can retain
+a no-follow-up banner. Refresh does not close or edit an existing follow-up.
+Required CI, clean review, acceptance checks and merge gates remain enforced.
+
 ### A healthy run's own gaps get a follow-up too (Issue #3506)
 
 A run on its primary model used to be left alone whatever its summary said, so
@@ -2545,8 +2733,8 @@ issue with the residue recorded only in a PR line nobody tracked. The same
 `applyDegradedDeliveryGuard`, at the same two call sites, now handles a healthy
 run:
 
-- **Trigger.** Any `partial` or `missing` entry in the PR summary's closure
-  block. Entries are matched to criteria by words exactly as on the degraded
+- **Trigger.** A `partial` or `missing` implementation gap in the PR's closure
+  block, excluding pending-only merge verification as described above. Entries are matched to criteria by words exactly as on the degraded
   path (`assessReportedGaps` calls `assessScopeShortfalls`); an unmatched
   `partial` or `missing` entry is named by its own subject. `unassessed` items
   file nothing and add nothing to the PR body. An issue that states no criteria
@@ -2573,11 +2761,43 @@ run:
   built from the same gaps stays as it is; any other gap set is rebuilt by
   `buildReportedGapStaleFollowUpSection`, which keeps the number but says the
   worker filed that follow-up when the PR was raised, that a re-sync does not
-  rewrite it, and that it may not list every item below. The sync only reads
-  the issue (`gh issue view`) and edits the PR body: it never files, edits or
-  lists the follow-up, because it would copy freshly fetched, unverified issue
-  text into an `idle-task` issue the fleet works as trusted (PR #3676
-  review; THREAT-MODEL AP-7).
+  rewrite it, and that it may not list every item below. Re-deriving a section
+  the body already carries only reads the issue (`gh issue view`) and edits the
+  PR body: it never files, edits or lists the follow-up, because it would copy
+  freshly fetched, unverified issue text into an `idle-task` issue the fleet
+  works as trusted (PR #3676 review; THREAT-MODEL AP-7).
+- **A fix run's new gap (Issue #3678).** A review-fix, CI-fix or merge-conflict
+  run can newly mark a criterion `partial` or `missing` in a summary whose PR
+  body carries no degraded or partial-delivery section yet. When such a sync
+  runs (the summary differs from the recorded digest, the PR is worker-authored,
+  and the checkout is the PR head), and the rebuilt closure block marks any
+  criterion `partial` or `missing`, `syncPrBodyFromSummary` (via
+  `addReportedGapSectionOnSync` in `worker/deno/lib/pr_body_sync_follow_up.ts`):
+  1. reads the parent issue (`gh issue view --json title,body,labels,author,milestone`);
+  2. re-verifies that title and body with `verifyPickupContentIntegrity`
+     (`pickup_content_integrity.ts`, THREAT-MODEL AP-7) before writing any of
+     that text anywhere, because the sync fetched it fresh;
+  3. if the issue is itself a partial-delivery follow-up (its body carries a
+     `degraded-follow-up-<N>` `finding-id` marker), hands it to a human exactly
+     as the completion phase does (`handFollowUpToHuman`: `needs-human` label
+     and comment), and prepends a `Partial delivery — handed to a human` section
+     whose closing keyword for the issue becomes `Part of`;
+  4. otherwise files or reuses (and rewrites) the one `idle-task` follow-up
+     keyed on the parent through `fileDegradedFollowUp`, joining the parent's
+     milestone when newly filed, and prepends a `Partial delivery — follow-up
+     filed` section (`buildReportedGapPrSection`) naming it;
+  5. fails loudly if the issue cannot be read, its content fails verification,
+     the human hand-off or the filing fails, or no filer is wired. The sync then
+     returns an error and the PR body is left as it was. The processor (or the
+     Priority 1.64 reconcile pass, which runs the same sync after a push the
+     worker did not make — Issue #3760) logs the failed sync at warning and the
+     run does not fail, as for any failed sync. A later sync whose summary has
+     changed again retries.
+
+  Once the section exists, later syncs re-derive it as above and never write to
+  the follow-up. The filer reaches the three processors through a
+  `syncFollowUpFiling` processor dependency, which production builds with
+  `buildSyncFollowUpFiling(config, githubUser)`.
 - **No nested follow-up.** When the issue being worked is itself a
   partial-delivery follow-up (its body carries a `degraded-follow-up-<N>`
   `finding-id` marker), a healthy run with a gap files no `Finish #F: Finish
@@ -2621,7 +2841,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on the summary's own sentences, after the one summary-only correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on summary or manual/prompt sentences, after the one claim correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised; auto-merge withheld for surviving standing violations, verifier findings or manual findings, otherwise armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -2631,9 +2851,9 @@ whether or not the run's branch already carries a PR (Issue #3163) — see
 An existing PR is not finalised, labelled or auto-merged across that turn;
 only a block that survives the recovery (the run's second such block) on an
 existing-PR branch finalises as `summary_incomplete` — except that when the
-claim check alone is still blocking on that second attempt, on the summary's
-own sentences, it first gets
-one summary-only correction turn (Issue #3324), and only a block that
+claim check alone is still blocking on that second attempt, on summary or
+manual/prompt sentences, it first gets
+one claim correction turn (Issue #3324), and only a block that
 survives *that* turn finalises the PR. Either way the gate's
 remediation comment is posted, so the shortfall is on the issue thread rather
 than only in one host's log.
@@ -2733,7 +2953,7 @@ flowchart TD
     R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
     RT --> G
     R -->|no| CC{"Claim check the only gate<br/>still blocking, correction<br/>turn unused this run?"}
-    CC -->|yes| CT["One summary-only correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
+    CC -->|yes| CT["One claim correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
     CT --> G
     CC -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
@@ -2794,9 +3014,9 @@ A run that satisfies the gate on the re-run raises its PR, or, when the run's
 branch already carried a PR from the execute phase, updates and finalises that
 same PR — no second PR is opened. A **second** block in the same run is not
 recovered again, with one exception: when the claim check alone is still
-blocking on the summary's own sentences — every earlier summary gate having
+blocking on summary or manual/prompt sentences — every earlier summary gate having
 passed — the run instead gets
-one summary-only correction turn before it is treated as a second block
+one claim correction turn before it is treated as a second block
 (Issue #3324, [above](#-a-summary-that-describes-named-code-wrongly-blocks-the-pr-issue-3257)).
 Any other second block fails exactly as a block did before, with the
 comment already on the thread; on an existing-PR branch that PR is finalised
@@ -2819,8 +3039,8 @@ the old no-changes deferral in this manual. The run's first block now always
 takes the one recovery turn, whichever kind of branch it is on; a block that
 survives that turn is handled as before — finalised as `summary_incomplete`
 when a PR exists, failed when none does — unless it is the claim check
-alone still blocking on the summary's own sentences, in which case it gets the
-one summary-only correction turn first (Issue #3324).
+alone still blocking on summary or manual/prompt sentences, in which case it gets the
+one claim correction turn first (Issue #3324).
 
 **Issue #3382.** The recovery turn used to be told the code had already
 passed the quality gate and must not change, while the Issue #3196 gate
@@ -2831,11 +3051,17 @@ run, the completion phase now finds each Standards `violation` left standing
 (no reason, or a reason that neither records a fix nor links a filed issue)
 whose `file:line` evidence lies on a line `git diff --unified=0 <base>...HEAD`
 adds or changes; a cited path matches a diff path exactly or as a path
-suffix. A violation whose evidence names no `path:line`, or any standing
-violation when the base ref cannot be resolved or the diff cannot be read, is
-treated as on the branch's own lines (fail closed; the not-checked case is
-logged at error). On the run's first summary-rule block the recovery prompt
-lists those violations as fenced `CODE FIX` items: the turn may edit the cited
+suffix. A violation whose evidence names no `path:line`, a violation none of
+whose cited paths matches a diff path or a file at HEAD (read only when some
+violation cites no diff file, via `git ls-tree -r --name-only HEAD`), or any
+standing violation when the base ref cannot be resolved, the diff cannot be
+read or that HEAD listing cannot be read, is treated as on the branch's own
+lines (fail closed; the not-checked case is logged at error). A path written
+with spaces inside backticks is read whole, so a reworded path such as
+`worker/deno/lib/run callback telemetry.ts` stays unplaceable rather than
+shrinking to a tail (Issue #3613). On the run's first summary-rule block the
+recovery prompt lists those violations as fenced `CODE FIX` items: the turn may
+edit the cited
 files and add the tests the finding or reason names, re-dispatch the Standards
 reviewer over the new diff, and write `reason: fixed in this diff` only for a
 breach it actually fixed. Every other `REQUIRED ITEM` keeps the
@@ -2848,9 +3074,22 @@ still standing, the worker does not arm auto-merge on that PR and labels it
 unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
 skips a PR carrying `standing-violation` and disarms one that is already armed
 (`gh pr merge --disable-auto`), so the sweep never arms a held PR
-(Issue #3517). Only the sweep checks the label: the CI-fix pass still
-re-arms auto-merge after it pushes a fix, without reading it.
-The Issue #3196 gate itself is unchanged; it still cannot see the diff.
+(Issue #3517). The CI-fix pass honours the label too: after it pushes a fix
+it does not re-arm auto-merge on a PR that carried the label when the pass
+claimed it, and logs the hold instead (Issue #3685). Disarming an already
+armed PR is left to the sweep.
+The same hold applies when a pre-PR verifier block survives the recovery
+turn, whether it blocks alone or was folded into an earlier gate's notice
+(Issue #3796). The worker posts those findings on the PR with the leading
+`<!-- vibe-pre-pr-verifier-hold -->` marker. Failure to post is logged at
+error level; it does not arm auto-merge. The feedback scan accepts this
+top-level comment only through the special hold path when its author is a
+fleet login. It can process the host's own hold comment, but skips one with
+a fleet eyes reaction and still skips ordinary own-login comments
+(Issue #3798). Repairing the findings does not itself release the hold.
+The Issue #3196 reason rules still cannot see the diff. This routing runs
+whatever headings the linked issue uses, so an issue that states no criteria
+still has its summary's `## Standards Review` read (Issue #3761, NEAT-AI#4065).
 
 All nine summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073), removed test

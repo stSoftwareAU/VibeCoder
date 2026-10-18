@@ -10,6 +10,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { recordPrFollowOnFromGithub } from "./lifecycle_follow_on.ts";
+
 import {
   createMissingScopeWarner,
   type MissingScopeWarner,
@@ -68,6 +70,12 @@ import {
 } from "./git_pull.ts";
 import { recoverFromPushRejection } from "./git_push_recovery.ts";
 import { validateRepoState } from "./git_repo_validation.ts";
+import {
+  type IssueAssignmentInput,
+  type IssueAssignmentRecord,
+  productionIssueAssignmentSeams,
+  recordIssueAssignment,
+} from "./issue_assignment.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { setupRepo as setupRepoCommand } from "../commands/git_operations.ts";
 import { repairSharedObjectStore } from "./object_store_repair.ts";
@@ -205,6 +213,11 @@ import {
   type CoverageCarryOverInput,
   runCoverageCarryOverCheck,
 } from "./coverage_carryover_runner.ts";
+import {
+  type DiscriminationRunInput,
+  runSecurityFixDiscrimination,
+  type SecurityFixDiscrimination,
+} from "./security_fix_discrimination.ts";
 import {
   fileBaselineCarryoverTracker,
   fileRedCheckTracker,
@@ -450,6 +463,10 @@ export interface CrashHandlingDeps {
 
 /** Infrastructure — file I/O, temp files, disk, logs, prompts, misc. */
 export interface InfrastructureDeps {
+  /** Record a PR follow-on cycle without changing the existing tier counters (Issue #3720). */
+  recordPrFollowOn: (
+    input: Parameters<typeof recordPrFollowOnFromGithub>[0],
+  ) => Promise<void>;
   atomicWrite: typeof atomicWrite;
   safeReadFile: typeof safeReadFile;
   safeMktemp: typeof safeMktemp;
@@ -463,6 +480,13 @@ export interface InfrastructureDeps {
   collectGraftContext: GraftContextCollector;
   /** Generate (or reuse) the per-repo codebase map (Issue #4281). */
   getCodebaseMap: typeof getOrGenerateCodebaseMap;
+  /**
+   * Read or mint the issue's stable lifecycle assignment and append its
+   * assignment event to this host's ledger (Issue #3718), before the agent runs.
+   */
+  recordIssueAssignment: (
+    request: IssueAssignmentInput & { workDir: string },
+  ) => Promise<IssueAssignmentRecord>;
   loadPrompt: typeof loadPrompt;
   shuffleArray: typeof shuffleArray;
   evaluateRunGuard: typeof evaluateRunGuard;
@@ -507,7 +531,8 @@ export interface QualityDeps {
   /** Record a baseline gate outcome for reuse (Issue #4283). */
   writeBaselineQualityCache: typeof writeBaselineQualityCache;
   /**
-   * Run the diff-scoped mutation check over the PR diff (Issue #3393).
+   * Run the diff-scoped mutation check over the PR diff (Issue #3393). Used
+   * by both the PR-raise gate and the review-fix drift check (Issue #3750).
    * Optional: when absent the mutation gate is not applicable and never
    * blocks, so fixtures that build their own deps never run real mutants.
    */
@@ -523,6 +548,15 @@ export interface QualityDeps {
   runCoverageCarryOverCheck?: (
     input: CoverageCarryOverInput,
   ) => Promise<CoverageCarryOverResult>;
+  /**
+   * Run the cited security test red→green: against the base production files,
+   * then against the fix (Issue #3659). Optional: when absent, a security-fix
+   * PR whose discrimination check is due blocks as `discrimination-not-checked`
+   * — it never passes unchecked.
+   */
+  runSecurityFixDiscrimination?: (
+    input: DiscriminationRunInput,
+  ) => Promise<SecurityFixDiscrimination>;
 }
 
 // ---------------------------------------------------------------------------
@@ -777,6 +811,13 @@ export function createDefaultDeps(
       buildPrompt: buildIssuePrompt,
       collectGraftContext,
       getCodebaseMap: getOrGenerateCodebaseMap,
+      recordPrFollowOn: (input) =>
+        recordPrFollowOnFromGithub(input, runGhCommand),
+      recordIssueAssignment: ({ workDir, ...input }) =>
+        recordIssueAssignment(
+          input,
+          productionIssueAssignmentSeams(workDir, runGhCommand),
+        ),
       loadPrompt,
       shuffleArray,
       evaluateRunGuard,
@@ -796,6 +837,8 @@ export function createDefaultDeps(
         runMutationCheck(input, defaultMutationRunnerSeams()),
       runCoverageCarryOverCheck: (input) =>
         runCoverageCarryOverCheck(input, defaultMutationRunnerSeams()),
+      runSecurityFixDiscrimination: (input) =>
+        runSecurityFixDiscrimination(input, defaultMutationRunnerSeams()),
     },
   };
 }
@@ -1243,6 +1286,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
           testChangeNotes: [],
           unrelatedIssues: [],
           checklist: [],
+          closure: [],
         },
       })
     ),
@@ -1437,6 +1481,18 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
           cacheHit: true,
         },
       })
+    ),
+    recordPrFollowOn: mockFn<InfrastructureDeps["recordPrFollowOn"]>(() =>
+      Promise.resolve()
+    ),
+    // Issue #3718: a mocked run posts no assignment marker and writes no ledger.
+    recordIssueAssignment: mockFn<InfrastructureDeps["recordIssueAssignment"]>(
+      () =>
+        Promise.resolve({
+          assignmentId: "00000000-0000-4000-8000-000000000000",
+          cohort: "unassigned",
+          reused: false,
+        }),
     ),
     shuffleArray: mockFn<InfrastructureDeps["shuffleArray"]>(<T>(
       items: readonly T[],

@@ -1,17 +1,128 @@
-{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
-  {"path":"worker/deno/lib/coverage_carryover_gate.ts","line":297,"outcome":"not applicable never blocks","test":"worker/deno/tests/coverage_carryover_gate_test.ts","testName":"evaluateCoverageCarryOverGate - not applicable is not blocked","flipWentRed":"returning blocked for not_applicable turned it red"},
-  {"path":"worker/deno/lib/coverage_carryover_gate.ts","line":306,"outcome":"runner error blocks (fail closed)","test":"worker/deno/tests/coverage_carryover_gate_test.ts","testName":"evaluateCoverageCarryOverGate - error blocks, naming the skip setting","flipWentRed":"returning not blocked for error turned it red"},
-  {"path":"worker/deno/lib/coverage_carryover_gate.ts","line":316,"outcome":"budget exhaustion warns and does not block","test":"worker/deno/tests/coverage_carryover_gate_test.ts","testName":"evaluateCoverageCarryOverGate - budget exhaustion is not blocked and not passed","flipWentRed":"dropping the budget note turned it red"},
-  {"path":"worker/deno/lib/coverage_carryover_gate.ts","line":330,"outcome":"an exemption for the same path:line is exempted","test":"worker/deno/tests/coverage_carryover_gate_test.ts","testName":"evaluateCoverageCarryOverGate - an exemption for another line or file does not match","flipWentRed":"dropping the line comparison turned this test and the split test red"},
-  {"path":"worker/deno/lib/coverage_carryover_gate.ts","line":268,"outcome":"a pure insertion shifts only later lines","test":"worker/deno/tests/coverage_carryover_gate_test.ts","testName":"mapBaseLineToHead - a pure insertion (oc = 0) shifts only lines after it","flipWentRed":"computing the hunk end as os + oc - 1 turned it red"},
-  {"path":"worker/deno/lib/coverage_carryover_runner.ts","line":100,"outcome":"a removed Rust test line is not applicable with the cargo-llvm-cov reason","test":"worker/deno/tests/coverage_carryover_runner_test.ts","testName":"runCoverageCarryOverCheck - a removed Rust test line is not applicable with the cargo-llvm-cov reason","flipWentRed":"swapping the two reasons turned it red"},
-  {"path":"worker/deno/lib/coverage_carryover_runner.ts","line":114,"outcome":"merge-base failure is an error naming the cause","test":"worker/deno/tests/coverage_carryover_runner_test.ts","testName":"runCoverageCarryOverCheck - a merge-base failure is an error naming the cause","flipWentRed":"dropping the timedOut operand turned the timeout variant red"},
-  {"path":"worker/deno/lib/coverage_carryover_runner.ts","line":168,"outcome":"edited tests with no Deno project are not applicable","test":"worker/deno/tests/coverage_carryover_runner_test.ts","testName":"runCoverageCarryOverCheck - edited tests with no Deno project above them are not applicable","flipWentRed":"returning a new Map instead of skipping turned the mixed-project test red"},
-  {"path":"worker/deno/lib/coverage_carryover_runner.ts","line":323,"outcome":"a failing base test is an error carrying the cause line","test":"worker/deno/tests/coverage_carryover_runner_test.ts","testName":"runCoverageCarryOverCheck - a failing base test is an error whose reason carries the cause","flipWentRed":"replacing the cause with a fixed string turned it red"},
-  {"path":"worker/deno/lib/coverage_carryover_runner.ts","line":219,"outcome":"a carried line no head test reaches is reported uncovered","test":"worker/deno/tests/coverage_carryover_runner_test.ts","testName":"runCoverageCarryOverCheck integration - a branch reached only by the removed test is reported uncovered","flipWentRed":"defaulting a missing head count to 1 turned the head-record test red"},
-  {"path":"worker/deno/lib/coverage_carryover_runner.ts","line":237,"outcome":"direct importers run only for files the edited head tests leave with an unexecuted carried line","test":"worker/deno/tests/coverage_carryover_runner_test.ts","testName":"runCoverageCarryOverCheck - the edited head test runs first, and importers run only for files it leaves unreached","flipWentRed":"widening the importer candidates back to every carried file turned it red"},
-  {"path":"worker/deno/lib/phases/completion_phase.ts","line":3235,"outcome":"skip_coverage_carryover_check never calls the runner","test":"worker/deno/tests/completion_phase_coverage_carryover_gate_test.ts","testName":"completion - skip_coverage_carryover_check never calls the runner and raises the PR","flipWentRed":"forcing the skip condition false turned it red"},
-  {"path":"worker/deno/lib/phases/completion_phase.ts","line":3246,"outcome":"an unwired runner does not block","test":"worker/deno/tests/completion_phase_coverage_carryover_gate_test.ts","testName":"completion - an unwired runner does not block","flipWentRed":"the default-wiring test goes red when the createDefaultDeps wiring is removed"},
-  {"path":"worker/deno/lib/phases/completion_phase.ts","line":3759,"outcome":"a blocked verdict stops PR creation and names file:line","test":"worker/deno/tests/completion_phase_coverage_carryover_gate_test.ts","testName":"completion - an uncovered carried line blocks the PR and names file:line","flipWentRed":"deleting the standalone block turned it red"},
-  {"path":"worker/deno/lib/coverage_carryover_runner.ts","line":257,"outcome":"a carried file whose lines are all reached by an earlier importer batch is skipped, so its own importers do not run","test":"worker/deno/tests/coverage_carryover_runner_test.ts","testName":"runCoverageCarryOverCheck - importers run one carried file at a time and a file reached by an earlier batch is skipped","flipWentRed":"running every file's importers regardless pulled the b-only fixture importer into the head run and turned it red"}
-]}}
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/coverage_carryover_gate.ts",
+        "line": 297,
+        "outcome": "not applicable never blocks",
+        "test": "worker/deno/tests/coverage_carryover_gate_test.ts",
+        "testName": "evaluateCoverageCarryOverGate - not applicable is not blocked",
+        "flipWentRed": "returning blocked for not_applicable turned it red"
+      },
+      {
+        "path": "worker/deno/lib/coverage_carryover_gate.ts",
+        "line": 306,
+        "outcome": "runner error blocks (fail closed)",
+        "test": "worker/deno/tests/coverage_carryover_gate_test.ts",
+        "testName": "evaluateCoverageCarryOverGate - error blocks, naming the skip setting",
+        "flipWentRed": "returning not blocked for error turned it red"
+      },
+      {
+        "path": "worker/deno/lib/coverage_carryover_gate.ts",
+        "line": 316,
+        "outcome": "budget exhaustion warns and does not block",
+        "test": "worker/deno/tests/coverage_carryover_gate_test.ts",
+        "testName": "evaluateCoverageCarryOverGate - budget exhaustion is not blocked and not passed",
+        "flipWentRed": "dropping the budget note turned it red"
+      },
+      {
+        "path": "worker/deno/lib/coverage_carryover_gate.ts",
+        "line": 330,
+        "outcome": "an exemption for the same path:line is exempted",
+        "test": "worker/deno/tests/coverage_carryover_gate_test.ts",
+        "testName": "evaluateCoverageCarryOverGate - an exemption for another line or file does not match",
+        "flipWentRed": "dropping the line comparison turned this test and the split test red"
+      },
+      {
+        "path": "worker/deno/lib/coverage_carryover_gate.ts",
+        "line": 268,
+        "outcome": "a pure insertion shifts only later lines",
+        "test": "worker/deno/tests/coverage_carryover_gate_test.ts",
+        "testName": "mapBaseLineToHead - a pure insertion (oc = 0) shifts only lines after it",
+        "flipWentRed": "computing the hunk end as os + oc - 1 turned it red"
+      },
+      {
+        "path": "worker/deno/lib/coverage_carryover_runner.ts",
+        "line": 100,
+        "outcome": "a removed Rust test line is not applicable with the cargo-llvm-cov reason",
+        "test": "worker/deno/tests/coverage_carryover_runner_test.ts",
+        "testName": "runCoverageCarryOverCheck - a removed Rust test line is not applicable with the cargo-llvm-cov reason",
+        "flipWentRed": "swapping the two reasons turned it red"
+      },
+      {
+        "path": "worker/deno/lib/coverage_carryover_runner.ts",
+        "line": 114,
+        "outcome": "merge-base failure is an error naming the cause",
+        "test": "worker/deno/tests/coverage_carryover_runner_test.ts",
+        "testName": "runCoverageCarryOverCheck - a merge-base failure is an error naming the cause",
+        "flipWentRed": "dropping the timedOut operand turned the timeout variant red"
+      },
+      {
+        "path": "worker/deno/lib/coverage_carryover_runner.ts",
+        "line": 168,
+        "outcome": "edited tests with no Deno project are not applicable",
+        "test": "worker/deno/tests/coverage_carryover_runner_test.ts",
+        "testName": "runCoverageCarryOverCheck - edited tests with no Deno project above them are not applicable",
+        "flipWentRed": "returning a new Map instead of skipping turned the mixed-project test red"
+      },
+      {
+        "path": "worker/deno/lib/coverage_carryover_runner.ts",
+        "line": 323,
+        "outcome": "a failing base test is an error carrying the cause line",
+        "test": "worker/deno/tests/coverage_carryover_runner_test.ts",
+        "testName": "runCoverageCarryOverCheck - a failing base test is an error whose reason carries the cause",
+        "flipWentRed": "replacing the cause with a fixed string turned it red"
+      },
+      {
+        "path": "worker/deno/lib/coverage_carryover_runner.ts",
+        "line": 219,
+        "outcome": "a carried line no head test reaches is reported uncovered",
+        "test": "worker/deno/tests/coverage_carryover_runner_test.ts",
+        "testName": "runCoverageCarryOverCheck integration - a branch reached only by the removed test is reported uncovered",
+        "flipWentRed": "defaulting a missing head count to 1 turned the head-record test red"
+      },
+      {
+        "path": "worker/deno/lib/coverage_carryover_runner.ts",
+        "line": 237,
+        "outcome": "direct importers run only for files the edited head tests leave with an unexecuted carried line",
+        "test": "worker/deno/tests/coverage_carryover_runner_test.ts",
+        "testName": "runCoverageCarryOverCheck - the edited head test runs first, and importers run only for files it leaves unreached",
+        "flipWentRed": "widening the importer candidates back to every carried file turned it red"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 3343,
+        "outcome": "skip_coverage_carryover_check never calls the runner",
+        "test": "worker/deno/tests/completion_phase_coverage_carryover_gate_test.ts",
+        "testName": "completion - skip_coverage_carryover_check never calls the runner and raises the PR",
+        "flipWentRed": "forcing the skip condition false turned it red"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 3354,
+        "outcome": "an unwired runner does not block",
+        "test": "worker/deno/tests/completion_phase_coverage_carryover_gate_test.ts",
+        "testName": "completion - an unwired runner does not block",
+        "flipWentRed": "the default-wiring test goes red when the createDefaultDeps wiring is removed"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 3894,
+        "outcome": "a blocked verdict stops PR creation and names file:line",
+        "test": "worker/deno/tests/completion_phase_coverage_carryover_gate_test.ts",
+        "testName": "completion - an uncovered carried line blocks the PR and names file:line",
+        "flipWentRed": "deleting the standalone block turned it red"
+      },
+      {
+        "path": "worker/deno/lib/coverage_carryover_runner.ts",
+        "line": 257,
+        "outcome": "a carried file whose lines are all reached by an earlier importer batch is skipped, so its own importers do not run",
+        "test": "worker/deno/tests/coverage_carryover_runner_test.ts",
+        "testName": "runCoverageCarryOverCheck - importers run one carried file at a time and a file reached by an earlier batch is skipped",
+        "flipWentRed": "running every file's importers regardless pulled the b-only fixture importer into the head run and turned it red"
+      }
+    ]
+  }
+}

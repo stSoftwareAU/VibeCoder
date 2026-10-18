@@ -8,6 +8,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { summaryScrubProblem } from "./summary_scrub_gate.ts";
+
 import type { Result } from "../types.ts";
 import { resolveComparableBaseRef } from "./git_base_ref.ts";
 import type { GitRunner } from "./git_base_ref.ts";
@@ -24,7 +26,6 @@ import {
 } from "./branch_outcomes_gate.ts";
 import {
   applyBranchOutcomesFacts,
-  BRANCH_OUTCOMES_MARKER,
   resolveBranchOutcomesFacts,
 } from "./pr_summary_facts.ts";
 
@@ -94,17 +95,14 @@ export async function runPrSummaryCheck(
   const facts = input.issueNumber === null
     ? ({ kind: "absent" } as const)
     : await resolveBranchOutcomesFacts(repoRoot, input.issueNumber);
-  const summaryContent = facts.kind === "valid"
-    ? applyBranchOutcomesFacts(rawSummary, facts.rendered)
-    : rawSummary;
-  let factsProblem: string | null = null;
-  if (facts.kind === "error") {
-    factsProblem = facts.reason;
-  } else if (
-    facts.kind === "valid" && parseBranchOutcomes(rawSummary).present
-  ) {
-    factsProblem =
-      `Branch outcomes facts file ${facts.relativePath} is present, but the PR summary also carries a hand-written \`Branch outcomes\` list — remove the prose list and leave the \`${BRANCH_OUTCOMES_MARKER}\` marker where the rendered list belongs`;
+  let summaryContent = rawSummary;
+  let factsProblem: string | null = facts.kind === "error"
+    ? facts.reason
+    : null;
+  if (facts.kind === "valid") {
+    const rendered = applyBranchOutcomesFacts(rawSummary, facts.rendered);
+    if (rendered.ok) summaryContent = rendered.value;
+    else factsProblem = rendered.error.message;
   }
 
   const base = await resolveComparableBaseRef(runGit, input.baseBranch, {
@@ -135,7 +133,13 @@ export async function runPrSummaryCheck(
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 
-  const reports: GateReport[] = [];
+  const scrubProblem = summaryScrubProblem(summaryContent);
+  const reports: GateReport[] = [{
+    gate: "Prompt-scrubbed Markdown",
+    issueRef: "#3710",
+    status: scrubProblem === undefined ? "passed" : "blocked",
+    problems: scrubProblem === undefined ? [] : [scrubProblem],
+  }];
 
   reports.push(
     issueBody === null

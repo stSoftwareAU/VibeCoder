@@ -13,12 +13,14 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import { workOnIssueQualityGate } from "../lib/phases/quality_gate_remediation_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { mermaidFinding } from "../lib/baseline_gate.ts";
 import type { CheckResult } from "../lib/quality_helpers.ts";
+import type { LogContext, Logger } from "../types.ts";
 
 function makeContext(): IssueContext {
   return {
@@ -78,9 +80,13 @@ function failedGate() {
  * Deps whose gate returns `outcomes[n]` on the n-th run, and whose Claude fix
  * attempt does nothing but succeed.
  */
-function makeDeps(outcomes: (() => ReturnType<typeof passedGate>)[]) {
+function makeDeps(
+  outcomes: (() => ReturnType<typeof passedGate>)[],
+  logger?: Partial<Logger>,
+) {
   let call = 0;
   return createMockDeps({
+    ...(logger ? { logger } : {}),
     quality: {
       runQualityGate: () => (outcomes[call++] ?? failedGate)(),
       // A failing non-diffable check, so the baseline-aware bypass never fires.
@@ -203,4 +209,172 @@ Deno.test("quality gate - a gate that could not run at all records failed", asyn
   // Absence of a pass is never read as a pass: the gate did not go green, so
   // the report says `failed` rather than staying silent.
   assertEquals(state.qualityGateOutcome, { status: "failed" });
+});
+
+Deno.test("quality gate - records the stage outcomes of the last gate run (Issue #3726)", async () => {
+  const state = makeState({ baselineFailedChecks: [] });
+  const secondRun = () =>
+    Promise.resolve({
+      ok: true as const,
+      value: {
+        checks: [
+          {
+            name: "semgrep",
+            status: "SKIPPED",
+            output: "semgrep: SKIPPED (offline)",
+          },
+          { name: "deno lint", status: "PASSED" },
+        ] as CheckResult[],
+        summary: { text: "passed", passed: true },
+        passed: true,
+        output: "All checks passed",
+      },
+    });
+
+  const infos: { message: string; context?: LogContext }[] = [];
+  const result = await workOnIssueQualityGate(
+    makeContext(),
+    state,
+    makeDeps([failedGate, secondRun], {
+      info: (message: string, context?: LogContext) => {
+        infos.push({ message, context });
+      },
+    }),
+  );
+
+  assertEquals(result.status, "continue");
+  // The worker log carries each attempt's stages, so an audit without the
+  // run-stats comment can still see them.
+  assertEquals(
+    infos
+      .filter((i) => i.message === "Quality gate stage outcomes")
+      .map((i) => i.context),
+    [
+      { attempt: 1, stages: "failed: `deno test`" },
+      {
+        attempt: 2,
+        stages:
+          "passed: `deno lint`; skipped: `semgrep` (`semgrep: SKIPPED (offline)`)",
+      },
+    ],
+  );
+  assertEquals(state.qualityGateStages, [
+    {
+      name: "semgrep",
+      status: "SKIPPED",
+      reason: "semgrep: SKIPPED (offline)",
+    },
+    { name: "deno lint", status: "PASSED" },
+  ]);
+});
+
+Deno.test("quality gate - stale stage outcomes are cleared when the gate errors (Issue #3726)", async () => {
+  const state = makeState({
+    qualityGateStages: [{ name: "semgrep", status: "PASSED" }],
+  });
+  const erroring = () =>
+    Promise.resolve({ ok: false as const, error: new Error("boom") });
+
+  const result = await workOnIssueQualityGate(
+    makeContext(),
+    state,
+    createMockDeps({
+      quality: {
+        runQualityGate: erroring as never,
+        collectDiffableGateFindings: () => Promise.resolve([]),
+      },
+    }),
+  );
+
+  assertEquals(result.status, "failure");
+  assertEquals(state.qualityGateStages, undefined);
+});
+
+Deno.test("quality gate - turn limit stops remediation before a passing retry or bump audit (Issue #3701)", async () => {
+  for (const appliedBump of [false, true]) {
+    const state = makeState({
+      baselineFailedChecks: [],
+      ...(appliedBump
+        ? {
+          bumpInfo: {
+            status: "applied" as const,
+            files: ["package.json"],
+            output: "bumped one dependency",
+            sha: "bump-sha",
+            beforeBumpSha: "before-bump",
+          },
+        }
+        : {}),
+    });
+    const context = makeContext();
+    context.config.infraRetryBackoffMs = 0;
+    let gateCalls = 0;
+    let agentCalls = 0;
+    const gitCalls: string[][] = [];
+    const message = "Claude turn limit reached after a rate limit response";
+    const result = await workOnIssueQualityGate(
+      context,
+      state,
+      createMockDeps({
+        quality: {
+          runQualityGate: () => ++gateCalls === 1 ? failedGate() : passedGate(),
+          collectDiffableGateFindings: () => Promise.resolve([]),
+        },
+        claude: {
+          runClaudeWithRetry: () => {
+            agentCalls++;
+            return Promise.resolve({
+              ok: false as const,
+              error: new AgentTurnLimitError(message),
+            });
+          },
+        },
+        git: {
+          runGitCommand: (args) => {
+            gitCalls.push(args);
+            return Promise.resolve({
+              ok: true as const,
+              value: { stdout: "", stderr: "", code: 0 },
+            });
+          },
+        },
+      }),
+    );
+    assertEquals(result, { status: "failure", reason: message });
+    assertEquals(gateCalls, 1);
+    assertEquals(agentCalls, 1);
+    assertEquals(state.infraRetryCounts?.quality_gate, undefined);
+    assertEquals(state.qualityGateOutcome, { status: "failed" });
+    assertEquals(gitCalls.some((args) => args[0] === "revert"), false);
+    assertEquals(
+      gitCalls.some((args) => args.join(" ") === "rev-parse HEAD"),
+      false,
+    );
+    assertEquals(state.bumpInfo?.status, appliedBump ? "applied" : undefined);
+  }
+});
+
+Deno.test("quality gate - ordinary remediation errors retain the existing gate recheck (Issue #3701)", async () => {
+  const state = makeState({ baselineFailedChecks: [] });
+  let gateCalls = 0;
+  const result = await workOnIssueQualityGate(
+    makeContext(),
+    state,
+    createMockDeps({
+      quality: {
+        runQualityGate: () => ++gateCalls === 1 ? failedGate() : passedGate(),
+        collectDiffableGateFindings: () => Promise.resolve([]),
+      },
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: false as const,
+            error: new Error("spawn failed"),
+          }),
+      },
+    }),
+  );
+  assertEquals(result.status, "continue");
+  assertEquals(gateCalls, 2);
+  assertEquals(state.qualityGateOutcome, { status: "passed", attempt: 2 });
 });

@@ -8,6 +8,11 @@
  * Australian English throughout (behaviour, organisation).
  */
 
+import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import { captureContentSnapshot } from "../lib/content_approval_tracker.ts";
+import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
+import { envFrom } from "./support/env_lookup.ts";
+import type { RunOutcome } from "../lib/run_outcome.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
 import {
@@ -17,7 +22,12 @@ import {
 } from "../lib/failure_diagnosis.ts";
 import { PrePushGateBlockedError } from "../lib/git_push.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
-import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
+import type {
+  IssueContext,
+  PhaseResult,
+  PhaseState,
+  WorkOnIssueResult,
+} from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, Result, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -58,6 +68,12 @@ function stubClient(): GitHubClient {
 type GitResult = Result<{ code: number; stdout: string; stderr: string }>;
 
 interface Scenario {
+  landedWhen?: "before-recovery" | "during-push" | "before-bookkeeping";
+  partialMerged?: boolean;
+  unrelatedMerged?: boolean;
+  extraLocalWork?: boolean;
+  lookupUnavailable?: boolean;
+  landedTarget?: string;
   /** Verdict the launcher recorded; "unknown" models "detection never ran". */
   scope: WorkflowScopeState;
   /** Whether `git diff --name-only` can answer. */
@@ -79,6 +95,10 @@ interface Scenario {
 }
 
 interface Outcome {
+  outcome?: RunOutcome;
+  attempts: number;
+  prCreates: number;
+  preservedWork?: string;
   status: string;
   reason?: string;
   pushes: number;
@@ -99,6 +119,16 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     SUMMARY,
   );
   let pushes = 0;
+  let attempts = 0;
+  let phaseReturned = false;
+  let prCreates = 0;
+  let merged = scenario.landedWhen === "before-recovery";
+  if (scenario.extraLocalWork) {
+    await Deno.writeTextFile(
+      `${repoPath}/unshipped.ts`,
+      "preserve this distinct work",
+    );
+  }
   let recoveries = 0;
   let gateCalls = 0;
   const gateBaseRefs: Array<string | undefined> = [];
@@ -106,6 +136,8 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const config: WorkerConfig = buildDefaultWorkerConfig();
   // The in-run infrastructure retry must not sleep its real backoff.
   config.infraRetryBackoffMs = 1;
+  config.workDir = `${repoPath}/work`;
+  config.allowedAuthors = ["testbot"];
   const ctx: IssueContext = {
     repo: "stSoftwareAU/GRQ-VibeCoder",
     issueNumber: 10,
@@ -121,14 +153,76 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     defaultBranch: "main",
     repoPath,
   } as PhaseState;
+  if (scenario.landedTarget) state.milestoneBranch = scenario.landedTarget;
   const deps = createMockDeps({
     logger: { warn: (message: string) => warnings.push(message) },
     github: {
       createClient: () => stubClient(),
-      runGhCommand: () =>
-        Promise.resolve(
+      handleIssueFailure: () => {
+        attempts++;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            markedAsFailed: false,
+            markedAsFailedOnce: true,
+            failureCategory: "quality_check",
+            isInfrastructure: false,
+          },
+        });
+      },
+      runGhCommand: (args: string[]) => {
+        if (args[0] === "issue" && args[1] === "view") {
+          if (
+            phaseReturned && scenario.landedWhen === "before-bookkeeping" &&
+            args.at(-1) === "labels"
+          ) merged = true;
+          return Promise.resolve(
+            JSON.stringify({
+              number: ctx.issueNumber,
+              title: ctx.issueTitle,
+              body: ctx.issueBody,
+              author: { login: "testbot" },
+              labels: [{ name: "work-on" }],
+              comments: [],
+              state: "OPEN",
+            }),
+          );
+        }
+        if (args[0] === "pr" && args[1] === "list" && args.includes("merged")) {
+          if (scenario.lookupUnavailable) {
+            return Promise.reject(new Error("GitHub unavailable"));
+          }
+          return Promise.resolve(JSON.stringify(
+            merged
+              ? [{
+                number: 99,
+                url: `https://github.com/${ctx.repo}/pull/99`,
+                state: "MERGED",
+                title: "Fixture (#10)",
+                mergedAt: "2026-10-18T01:44:24Z",
+                headRefName: scenario.unrelatedMerged
+                  ? "issue-10-unrelated"
+                  : state.branchName,
+                headRefOid: SHA,
+                headRepository: { name: ctx.repo.split("/")[1] },
+                headRepositoryOwner: { login: ctx.repo.split("/")[0] },
+                baseRefName: state.milestoneBranch ?? "main",
+                mergeCommit: { oid: "2".repeat(40) },
+                body: scenario.partialMerged
+                  ? "Part of #10.\n\n## Acceptance Criteria\n- **partial** — required scope remains — evidence: partial fixture — reason: unfinished"
+                  : SUMMARY,
+              }]
+              : [],
+          ));
+        }
+        if (args[0] === "api" && args[1]?.includes("/compare/")) {
+          return Promise.resolve("behind");
+        }
+        if (args[0] === "pr" && args[1] === "create") prCreates++;
+        return Promise.resolve(
           "https://github.com/stSoftwareAU/GRQ-VibeCoder/pull/99",
-        ),
+        );
+      },
     },
     git: {
       runGitCommand: (cmdArgs: string[]): Promise<GitResult> => {
@@ -150,6 +244,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
               value: { code: 1, stdout: "", stderr: "" },
             });
           }
+        }
+        if (cmdArgs[0] === "status" && scenario.extraLocalWork) {
+          return ok("?? unshipped.ts");
         }
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
@@ -181,6 +278,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       },
       pushUnpushedCommits: () => {
         pushes++;
+        if (scenario.landedWhen === "during-push") merged = true;
         return scenario.pushRefused && pushes === 1
           ? Promise.resolve({
             ok: false as const,
@@ -208,9 +306,88 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     },
   });
   try {
-    const result = await workOnIssueCompletion(ctx, state, deps);
+    let result: PhaseResult = {
+      status: "failure",
+      reason: "phase did not run",
+    };
+    const runPhase = async (): Promise<WorkOnIssueResult> => {
+      result = await workOnIssueCompletion(ctx, state, deps);
+      phaseReturned = true;
+      return {
+        success: result.status === "continue" ||
+          result.status === "early_exit" && !result.expectedSkip,
+        expectedSkip: result.status === "early_exit" &&
+          result.expectedSkip === true,
+        phase: "completion",
+        reason: result.status === "continue"
+          ? "normal completion"
+          : result.reason,
+        timings: {},
+        ...(result.status === "early_exit" && result.outcome
+          ? { outcome: result.outcome }
+          : {}),
+        branchContext: {
+          branchName: state.branchName,
+          repoPath,
+          defaultBranch: state.defaultBranch,
+          milestoneBranch: state.milestoneBranch,
+          reapproved: false,
+        },
+      };
+    };
+    let terminal: WorkOnIssueResult;
+    if (scenario.landedWhen) {
+      const snapshot = await captureContentSnapshot(
+        resolveContentApprovalStateDir(config.workDir),
+        ctx.repo,
+        ctx.issueNumber,
+        ctx.issueTitle,
+        ctx.issueBody,
+        "testbot",
+      );
+      assert(snapshot.ok);
+      const production = await createProductionRunCoreDeps({
+        repoDir: repoPath,
+        workDir: config.workDir,
+        githubUser: ctx.githubUser,
+        config,
+        logger: deps.logger,
+        workerDeps: deps,
+        workOnIssue: runPhase,
+        env: envFrom({ HOME: repoPath }),
+      });
+      try {
+        const processed = await production.deps.processIssue({
+          repo: ctx.repo,
+          issueNumber: ctx.issueNumber,
+          issueTitle: ctx.issueTitle,
+          milestoneTitle: "",
+        });
+        assert(processed.ok);
+        terminal = {
+          success: processed.value.success,
+          expectedSkip: processed.value.skipped,
+          outcome: processed.value.outcome,
+          phase: "completion",
+          reason: "processed completion",
+          timings: {},
+        };
+      } finally {
+        production.cleanup();
+      }
+    } else {
+      terminal = await runPhase();
+    }
     return {
-      status: result.status,
+      outcome: terminal.outcome,
+      attempts,
+      prCreates,
+      ...(scenario.extraLocalWork
+        ? { preservedWork: await Deno.readTextFile(`${repoPath}/unshipped.ts`) }
+        : {}),
+      status: terminal.expectedSkip && terminal.outcome?.kind === "claim_stale"
+        ? "early_exit"
+        : result.status,
       reason: result.status === "failure" ? result.reason : undefined,
       pushes,
       recoveries,
@@ -475,4 +652,75 @@ Deno.test({
     assertStringIncludes(reason, "end of the git output");
     assert(reason.length < 8000, `reason was ${reason.length} characters`);
   },
+});
+
+Deno.test("completion reconciles merges before recovery and final failure bookkeeping without spending an attempt (Issue #3977)", async () => {
+  for (
+    const landedWhen of [
+      "before-recovery",
+      "during-push",
+      "before-bookkeeping",
+    ] as const
+  ) {
+    const o = await runCompletion({
+      ...base,
+      landedWhen,
+      pushRefused: landedWhen === "during-push",
+      gateAnswers: landedWhen === "before-bookkeeping" ? [BLOCK] : ["pass"],
+    });
+    assertEquals(o.status, "early_exit", landedWhen);
+    assertEquals(o.attempts, 0, landedWhen);
+    assertEquals(o.recoveries, 0, landedWhen);
+    assertEquals(o.pushes, landedWhen === "during-push" ? 1 : 0, landedWhen);
+    assertEquals(o.prCreates, 0, landedWhen);
+    assert(o.outcome?.kind === "claim_stale");
+    assertEquals(o.outcome.reason, "work_already_merged");
+    assertEquals(o.outcome.baseBranch, "main");
+    assertEquals(o.outcome.defaultBranch, "main");
+  }
+});
+
+Deno.test("completion keeps partial, unrelated and unavailable merges and distinct local work on the failure path (Issue #3977)", async () => {
+  for (
+    const extra of [{ partialMerged: true }, { unrelatedMerged: true }, {
+      lookupUnavailable: true,
+    }, { extraLocalWork: true }]
+  ) {
+    const o = await runCompletion({
+      ...base,
+      landedWhen: "before-bookkeeping",
+      pushRefused: false,
+      gateAnswers: [BLOCK],
+      ...extra,
+    });
+    assertEquals(o.status, "failure", JSON.stringify(extra));
+    assertEquals(o.attempts, 1, JSON.stringify(extra));
+    assertEquals(o.outcome?.kind === "claim_stale", false);
+    if (extra.extraLocalWork) {
+      assertEquals(o.preservedWork, "preserve this distinct work");
+    }
+  }
+});
+
+Deno.test("completion retains the milestone target and repeated completion produces no failure mutations (Issue #3977)", async () => {
+  const scenario = {
+    ...base,
+    landedWhen: "before-recovery" as const,
+    landedTarget: "milestone/implementation",
+    pushRefused: false,
+    gateAnswers: ["pass" as const],
+  };
+  const outcomes = await Promise.all([
+    runCompletion(scenario),
+    runCompletion(scenario),
+  ]);
+  for (const o of outcomes) {
+    assertEquals(o.attempts, 0);
+    assertEquals(o.recoveries, 0);
+    assertEquals(o.pushes, 0);
+    assertEquals(o.prCreates, 0);
+    assert(o.outcome?.kind === "claim_stale");
+    assertEquals(o.outcome.baseBranch, "milestone/implementation");
+    assertEquals(o.outcome.defaultBranch, "main");
+  }
 });
