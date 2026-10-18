@@ -1,0 +1,164 @@
+{
+  "window": {
+    "start": "2026-10-07T00:00:00.000Z",
+    "end": "2026-10-14T23:59:59.999Z"
+  },
+  "source": "Public #3690 historical baseline; no live host lifecycle ledgers collected for #3980",
+  "coverage": {
+    "activeIssues": 0,
+    "events": 0,
+    "historyComplete": false
+  },
+  "issues": [],
+  "deliveredIssues": 0,
+  "spend": {
+    "estimatedApiEquivalentUsd": null,
+    "wastedEstimatedApiEquivalentUsd": null,
+    "partial": true,
+    "wastedPartial": true,
+    "unknownUsageCount": 0,
+    "unknownPricingCount": 0
+  },
+  "estimatedApiEquivalentUsdPerDeliveredIssue": null,
+  "attempts": 0,
+  "spendByRole": {},
+  "calls": 0,
+  "unattributedCalls": 0,
+  "failedInvocations": 0,
+  "followOns": {},
+  "firstPass": {
+    "quality": {
+      "passed": 0,
+      "failed": 0,
+      "unknown": 0
+    },
+    "review": {
+      "passed": 0,
+      "failed": 0,
+      "unknown": 0
+    }
+  },
+  "blockingReviewHeads": 0,
+  "blockingReviewRounds": null,
+  "deployments": [],
+  "rootCauses": [],
+  "safeguards": [
+    {
+      "id": "identical-sync-3690",
+      "source": "observed",
+      "failuresPrevented": 0,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": 0,
+      "observedBenefit": "none_observed",
+      "netBenefit": "unknown"
+    },
+    {
+      "id": "issue-3976",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null,
+      "observedBenefit": "unknown",
+      "netBenefit": "unknown"
+    },
+    {
+      "id": "issue-3977",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null,
+      "observedBenefit": "unknown",
+      "netBenefit": "unknown"
+    },
+    {
+      "id": "issue-3978",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null,
+      "observedBenefit": "unknown",
+      "netBenefit": "unknown"
+    },
+    {
+      "id": "issue-3979",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null,
+      "observedBenefit": "unknown",
+      "netBenefit": "unknown"
+    },
+    {
+      "id": "issue-3738",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null,
+      "observedBenefit": "unknown",
+      "netBenefit": "unknown"
+    },
+    {
+      "id": "issue-3954",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null,
+      "observedBenefit": "unknown",
+      "netBenefit": "unknown"
+    },
+    {
+      "id": "issue-3910",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null,
+      "observedBenefit": "unknown",
+      "netBenefit": "unknown"
+    },
+    {
+      "id": "issue-3961",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null,
+      "observedBenefit": "unknown",
+      "netBenefit": "unknown"
+    }
+  ],
+  "failureRate": null,
+  "comparativeWinner": null,
+  "missing": [
+    "Accepted implementation/default delivery, all attempts, blocking review rounds and first-pass decisions are unobserved.",
+    "Deployed worker build or effective role configuration is missing for some observed work.",
+    "Deployed worker commits and actual manager/executor/reviewer configuration are unavailable; planned control is not deployment evidence.",
+    "Historical identical-sync observations cover the selected #3690 corpus, not proof of fleet-wide absence or causal benefit.",
+    "Ledger history/host coverage is incomplete; full cost and elapsed delivery remain unknown.",
+    "No linked live root-cause records or safeguard check/call/time measurements were collected.",
+    "No live host lifecycle ledgers were available for this baseline; the empty input represents missing collection, not zero fleet activity."
+  ],
+  "limitations": [
+    "Estimated API-equivalent USD is not a subscription bill; partial spend is a lower bound.",
+    "Cost per delivered issue includes all observed active-cohort attempts, pending/failed work and follow-ons once; invocation calls and follow-ons are separate observations.",
+    "Polling review states identifies blocking heads, not independent review rounds; full rounds are unknown.",
+    "Raw attempt counts have no total-attempt denominator. Unmatched windows and synthetic preventions establish neither causality nor a winner.",
+    "Safeguard checks/calls/time and recurrence are supplied observations, not additional spend; prevented failures alone do not establish net benefit."
+  ]
+}

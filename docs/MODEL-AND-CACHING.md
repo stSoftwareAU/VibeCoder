@@ -2781,6 +2781,14 @@ assign initial issue-run costs to either PR: only the abandoned PR's explicitly
 attributed follow-on costs are counted as wasted. Missing assignment records
 produce an `unknown` cohort; conflicting recorded cohorts are refused.
 
+The read-only `deno task stabilisation-report --evidence <snapshot.json>
+<host-ledger.jsonl> [...]` extends this reconciliation with a bounded operational
+view: unique accepted default-branch deliveries, full active-cohort rework,
+separate milestone/pending/failed work and explicit missing evidence. It adds no
+telemetry store, experiment arm or routing decision. See the
+[stabilisation baseline and comparable follow-up procedure](evidence/stabilisation-2026-10-18.md)
+for snapshot provenance, attribution and limitations.
+
 ### Lifecycle outcomes and gated success
 
 > **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — outcomes depend on the PR's observed state and gates, independently of its coding provider.
