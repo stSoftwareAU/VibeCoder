@@ -81,7 +81,7 @@ missing live evidence explicitly; they establish no fleet improvement or winner.
 
 - **violation** — Redundant kind and cutoff tests obscured independently meaningful report decisions — evidence: `worker/deno/lib/stabilisation_report.ts` — reason: fixed by reusing schema-exclusive fields and matched receipts; tests retain old-child cost when target evidence is absent.
 - **violation** — Missing target names and malformed safeguard provenance could be misrepresented — evidence: `worker/deno/lib/stabilisation_report.ts` and `worker/deno/lib/stabilisation_report_cli.ts` — reason: fixed with independent target/provenance controls; missing measurements remain null and equivalent merge instants compare correctly.
-- **clean** — Independent source/baseline review checked reuse, KISS/DRY, actual producer shapes, truthful evidence, named tests, unknown costs, preserved model roles and merge/security gates. Final evidence review is pending before PR creation.
+- **clean** — Independent source/baseline review checked reuse, KISS/DRY, actual producer shapes, truthful evidence, named tests, unknown costs, preserved model roles and merge/security gates. Final review independently verified all 98 current-source mutation records, named assertion failures and facts mappings; no findings remain.
 
 ## Test Plan
 

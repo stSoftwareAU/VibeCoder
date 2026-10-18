@@ -136,7 +136,7 @@ comparative winner or inferred failure rate.
 
 ## Review
 
-Independent review is recorded in the issue's PR summary once complete. The
+Independent Spec and Standards reviews are recorded in the issue's PR summary. The
 initial review identified real producer-shape gaps: follow-on assignment joins,
 tracking-issue roll-ups, simultaneous causes, pending gate polls and replacement
 PRs after an abandoned attempt. Their regressions now exercise the report. The
