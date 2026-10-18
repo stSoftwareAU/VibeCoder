@@ -14,7 +14,9 @@
  * The head side runs in two steps, so its cost follows what is left to check:
  * first the head versions of the edited tests that still exist, then, only for
  * the files that still have an unreached carried line, the tests that import
- * that file directly.
+ * that file directly, one carried file at a time in its own batch, recomputing
+ * what is left after each batch so a file reached by an earlier batch is
+ * skipped.
  *
  * Known limit: beyond the edited tests, the head side counts only tests that
  * import a module directly. A line reached only indirectly (through another
@@ -231,9 +233,14 @@ async function carryOver(
   if (editedStop !== null) return editedStop;
 
   // Head, then: only for files that still have an unreached carried line, the
-  // tests that import that file directly (within its project).
+  // tests that import that file directly (within its project). Importers run
+  // one carried file at a time, each in its own batch, and what is still
+  // unreached is recomputed after each batch. A file an earlier batch's
+  // importer already reaches (directly, or through that importer's own
+  // imports) is skipped, so a deleted whole test file whose loaded modules
+  // share importers runs only a bounded number of them, not every importer of
+  // every module in one `deno test` call.
   const afterEdited = unreached(carriedLines);
-  const importers = new Map<string, string[]>();
   if (afterEdited.length > 0) {
     const alreadyRun = new Set(editedAtHead);
     const headTests = await seams.listTestFiles(input.repoPath);
@@ -247,26 +254,27 @@ async function carryOver(
     };
     const files = [...new Set(afterEdited.map((c) => c.file))].sort();
     for (const file of files) {
+      if (unreached(afterEdited).every((c) => c.file !== file)) continue;
       const dir = await findDenoConfigDir(input.repoPath, file, seams);
       if (dir === null) continue;
-      const list = importers.get(dir) ?? [];
       const prefix = dirPrefix(dir);
+      const batch: string[] = [];
       for (const t of headTests) {
         if (!t.startsWith(prefix) || alreadyRun.has(t)) continue;
         // SIMPLE-ON-PURPOSE: only direct imports count, with no transitive import graph — upgrade when a line reached only through a helper module is reported uncovered in practice.
         if (importsModule(await readHead(t), dirOf(t), file)) {
-          list.push(t);
+          batch.push(t);
           alreadyRun.add(t);
         }
       }
-      if (list.length > 0) importers.set(dir, list);
+      if (batch.length === 0) continue;
+      const stop = await runUnderCoverage(seams, {
+        ...headRun,
+        groups: new Map([[dir, batch]]),
+      });
+      if (stop !== null) return stop;
     }
   }
-  const importersStop = await runUnderCoverage(seams, {
-    ...headRun,
-    groups: importers,
-  });
-  if (importersStop !== null) return importersStop;
 
   const uncovered = unreached(afterEdited);
   uncovered.sort((a, b) =>

@@ -74,8 +74,11 @@ flowchart TD
    still exist, with coverage. Carried lines they execute are done.
 5. Only for the files that still have an unexecuted carried line, run per Deno
    project the head tests that import that file directly (the edited tests are
-   not run again), with coverage. When every carried line is already executed,
-   this step runs nothing.
+   not run again), with coverage. Importers run one carried file at a time, in
+   its own batch, and what is still unexecuted is recomputed after each batch,
+   so a module an earlier batch's importer already reaches (directly, or
+   through that importer's own imports) is skipped. When every carried line is
+   already executed, this step runs nothing.
 6. Block when a carried line is not executed at head and not exempted. The
    block lists the first 40 such `file:line` locations, then `… and N more`, and
    asks for a test that reaches each one, removal if it is dead code, or an

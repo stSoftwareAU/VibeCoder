@@ -1140,6 +1140,85 @@ Deno.test("runCoverageCarryOverCheck - a failing edited head test stops the chec
   );
 });
 
+Deno.test("runCoverageCarryOverCheck - importers run one carried file at a time and a file reached by an earlier batch is skipped", async () => {
+  // A deleted test file loaded two modules that share importers: running the
+  // importers of the first module also reaches the second, so the second
+  // module's own importer must not run.
+  const base = {
+    "deno.json": DENO_JSON,
+    "lib/a.ts": LIB_BASE,
+    "lib/b.ts": LIB_BASE,
+    "tests/m_test.ts":
+      'import { pick } from "../lib/a.ts";\nimport { pick as bp } from "../lib/b.ts";\nDeno.test("m", () => { pick(true); bp(true); });\n',
+  };
+  const head = {
+    "deno.json": DENO_JSON,
+    "lib/a.ts": LIB_BASE,
+    "lib/b.ts": LIB_BASE,
+    "tests/shared1_test.ts":
+      'import { pick } from "../lib/a.ts";\nimport { pick as bp } from "../lib/b.ts";\nDeno.test("s1", () => { pick(true); bp(true); });\n',
+    "tests/shared2_test.ts":
+      'import { pick } from "../lib/a.ts";\nimport { pick as bp } from "../lib/b.ts";\nDeno.test("s2", () => { pick(true); bp(true); });\n',
+    "tests/a_only_test.ts":
+      'import { pick } from "../lib/a.ts";\nDeno.test("a", () => pick(true));\n',
+    "tests/b_only_test.ts":
+      'import { pick } from "../lib/b.ts";\nDeno.test("b", () => pick(true));\n',
+  };
+  const baseLcov = [
+    `SF:${WT}/lib/a.ts`,
+    "DA:2,1",
+    "DA:3,1",
+    "end_of_record",
+    `SF:${WT}/lib/b.ts`,
+    "DA:2,1",
+    "DA:3,1",
+    "end_of_record",
+    "",
+  ].join("\n");
+  const f = fake({
+    base,
+    head,
+    baseLcov,
+    respond: (cmd, args) => {
+      if (cmd !== "deno" || args[0] !== "coverage") return undefined;
+      // The first importer batch reaches both modules: the shared importers
+      // import both a.ts and b.ts.
+      if (args[2] === `${TMP}/cov-head-0`) {
+        return ok(
+          `SF:${REPO}/lib/a.ts\nDA:2,1\nDA:3,1\nend_of_record\n` +
+            `SF:${REPO}/lib/b.ts\nDA:2,1\nDA:3,1\nend_of_record\n`,
+        );
+      }
+      return undefined;
+    },
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(deletedSection("tests/m_test.ts", [
+      'import { pick } from "../lib/a.ts";',
+      'import { pick as bp } from "../lib/b.ts";',
+      'Deno.test("m", () => { pick(true); bp(true); });',
+    ])),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "completed",
+    changedTests: ["tests/m_test.ts"],
+    carried: 4,
+    uncovered: [],
+  });
+  const headRuns = f.calls.filter((c) =>
+    isCall(c, "deno", "test") && c.args.some((a) => a.includes("cov-head"))
+  );
+  // Only a.ts's importers run; b.ts's own importer is skipped because the
+  // shared importers already reached it.
+  assertEquals(headRuns.length, 1);
+  assertEquals(headRuns[0]!.args.slice(4), [
+    "tests/a_only_test.ts",
+    "tests/shared1_test.ts",
+    "tests/shared2_test.ts",
+  ]);
+});
+
 // ---------------------------------------------------------------------------
 // Cleanup and unexpected errors
 // ---------------------------------------------------------------------------
