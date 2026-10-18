@@ -9,7 +9,7 @@ import {
   type NamespaceEvidence,
 } from "../support/agent_namespace_evidence.ts";
 
-interface Fixture {
+export interface Fixture {
   ipv4: { hostname: string; port: number };
   ipv6: { hostname: string; port: number };
   socket: string;
@@ -20,7 +20,9 @@ function requireFact(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-async function childEvidence(fixture: Fixture): Promise<NamespaceEvidence> {
+export async function childEvidence(
+  fixture: Fixture,
+): Promise<NamespaceEvidence> {
   const status = await Deno.readTextFile("/proc/self/status");
   const field = (name: string) => {
     const value = new RegExp(`^${name}:\\s+(\\w+)$`, "m").exec(status)?.[1];

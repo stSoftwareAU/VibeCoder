@@ -1,4 +1,4 @@
-name: Agent Namespace Prerequisite Probe
+name: Agent Boundary Prerequisite Probes
 
 # Temporary validation branch only. This is neither a deployment nor a
 # production containment claim, and is deliberately outside the PR gate.
@@ -33,6 +33,7 @@ jobs:
           deno-version-file: .deno-version
 
       - name: Build the production image
+        id: build
         run: |
           set -euo pipefail
           deno run --frozen --lock=worker/deno/deno.lock \
@@ -41,13 +42,19 @@ jobs:
           docker build -f /tmp/Containerfile.stripped -t "${IMAGE}" container/
 
       - name: Check probe assertions and broker handlers
+        id: handlers
         working-directory: worker/deno
         run: |
           set -euo pipefail
           deno test --frozen --lock=deno.lock --allow-read --allow-env \
-            tests/agent_namespace_probe_test.ts tests/credential_broker_test.ts
+            tests/agent_namespace_probe_test.ts tests/agent_container_probe_test.ts \
+            tests/credential_broker_test.ts
 
       - name: Exercise real sockets and the unmodified Docker security boundary
+        id: nested
+        # Preserve the refused prerequisite as evidence without skipping the
+        # independent replacement-boundary diagnostic below.
+        continue-on-error: true
         working-directory: worker/deno
         run: |
           set -euo pipefail
@@ -56,12 +63,35 @@ jobs:
             tests/fixtures/agent_namespace_probe_cli.ts "${IMAGE}" \
             2>&1 | tee /tmp/agent-namespace-probe.log
 
-      - name: Retain diagnostic evidence, including a refused namespace
+      - name: Exercise separate hardened broker and network-none agent containers
+        id: separate
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.handlers.outcome == 'success' }}
+        working-directory: worker/deno
+        run: |
+          set -euo pipefail
+          deno run --frozen --lock=deno.lock \
+            --allow-read --allow-write --allow-env --allow-run \
+            tests/fixtures/agent_container_probe_cli.ts "${IMAGE}" \
+            2>&1 | tee /tmp/agent-container-probe.log
+
+      - name: Record the distinct prerequisite outcomes
+        if: always()
+        env:
+          NESTED_OUTCOME: ${{ steps.nested.outcome }}
+          SEPARATE_OUTCOME: ${{ steps.separate.outcome }}
+        run: |
+          printf 'Nested namespace prerequisite: %s\n\nSeparate container prerequisite: %s\n' \
+            "${NESTED_OUTCOME}" "${SEPARATE_OUTCOME}" >> "${GITHUB_STEP_SUMMARY}"
+          printf '\nThese diagnostics do not establish native CLI, OAuth or Apple acceptance.\n' >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Retain both diagnostics, including a refused namespace
         if: always()
         # actions/upload-artifact@v7.0.2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: agent-namespace-prerequisite
-          path: /tmp/agent-namespace-probe.log
+          name: agent-boundary-prerequisites
+          path: |
+            /tmp/agent-namespace-probe.log
+            /tmp/agent-container-probe.log
           if-no-files-found: warn
           retention-days: 7
