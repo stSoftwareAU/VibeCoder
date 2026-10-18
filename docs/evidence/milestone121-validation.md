@@ -95,6 +95,37 @@ three affected test files then passed together: 37 passed, 0 failed.
 The follow-up needs a new unchanged full-gate run against its immutable source.
 Human runbook review remains pending.
 
+## Second hosted gate and standalone test classification
+
+[The second unchanged full gate](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39090393190)
+ran against source `c081a90d81800fea2b9a9a02c103efc135c4e27f`. Both complete
+Deno passes passed: parallel in 9m12s and serial in 2m32s. The required stages
+also passed, apart from the unit-test time budget; config integration retained
+its existing `SKIPPED` result. The sole budget failure was the standalone turn
+limit test, which bundled three independent CLI bootstraps into one 1.55s test.
+
+The follow-up gives each existing scenario its own named test: configured cap,
+default cap over stale ambient transport, and terminal cap exit/logging. All
+previous assertions and real `mod.ts` subprocess launches remain. Each process
+was already independent; no stateful sequence was split. No time threshold,
+manifest exemption or skip changed. The actual `deno task test:unit` runner
+passes all three and its unchanged time budget. A default-cache run with
+`DENO_DIR` unset also passed, with JUnit times of 0.322s, 0.326s and 0.305s before
+the final helper extraction (times are observations, not timing assertions).
+
+Isolated mutations independently break each scenario: replace the configured
+cap with the default (configured scenario fails); suppress default-cap
+propagation (default scenario fails); remove the fallback logger (terminal
+scenario fails). These were assertion failures with the other cases left intact,
+and production source was restored after every probe. Logs are
+`m121-standalone-split-{configured,default,terminal-log}-red.log` and
+`m121-standalone-split-budget-green.log` in the task's temporary evidence folder.
+
+Main `f498bf3bf86d2d78b828ae920a01a7e3117b7ba7` was merged cleanly before this
+follow-up. Its security-fix retry changes retain the existing agent failure
+stop path. This new tree still requires a full unchanged hosted gate; human
+runbook review remains pending.
+
 ## Documentation sweep
 
 Updated `docs/CONFIGURATION.md` Operational Defaults, Agent transcripts and
