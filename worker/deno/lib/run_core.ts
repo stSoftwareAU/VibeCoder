@@ -3034,7 +3034,10 @@ async function runIssueScanLoop(
         deps,
         issue.repo,
         issue.issueNumber,
-        undefined,
+        runOutcome?.kind === "claim_stale" &&
+          runOutcome.reason === "work_already_merged"
+          ? runOutcome
+          : undefined,
         undefined,
         { claimNotHeld },
       );
@@ -4911,7 +4914,10 @@ async function runSlotIssue(
       deps,
       issue.repo,
       issue.issueNumber,
-      undefined,
+      runOutcome?.kind === "claim_stale" &&
+        runOutcome.reason === "work_already_merged"
+        ? runOutcome
+        : undefined,
       undefined,
       { claimNotHeld },
     );

@@ -168,6 +168,10 @@ export type RunOutcome =
      */
     | {
       kind: "claim_stale";
+      /** Proven integration target; a milestone is distinct from default delivery. */
+      baseBranch?: string;
+      defaultBranch?: string;
+      mergeCommit?: string;
       /** Phase that found the claim stale. */
       phase: string;
       /** Which freshness rule fired. */
@@ -474,6 +478,9 @@ export function claimStaleOutcome(options: {
   const { phase, stale, branch } = options;
   return {
     kind: "claim_stale",
+    ...(stale.baseBranch ? { baseBranch: stale.baseBranch } : {}),
+    ...(stale.defaultBranch ? { defaultBranch: stale.defaultBranch } : {}),
+    ...(stale.mergeCommit ? { mergeCommit: stale.mergeCommit } : {}),
     phase,
     reason: stale.reason,
     detail: stale.detail,

@@ -47,6 +47,7 @@ import { formatBaselineCarryoverNote } from "../quality_helpers.ts";
 import { fenceQualityOutput } from "../untrusted_quality_output.ts";
 import { buildBoundaryIntegrityInstruction } from "../prompt_delimiter.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
+import { alreadyLandedPhaseResult } from "../claim_freshness.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
 import { AgentTurnLimitError } from "../claude_turn_limit.ts";
 
@@ -215,27 +216,37 @@ export async function workOnIssueQualityGate(
   }
 
   if (phaseResult.status === "failure" && qualityFailureMessage !== undefined) {
-    await deps.github.handleIssueFailure({
-      repo: ctx.repo,
-      issueNumber: ctx.issueNumber,
-      githubUser: ctx.githubUser,
-      failureMessage: qualityFailureMessage,
-      // Issue #3445: the gate output is repository-authored, never a host fault.
-      qualityGateOutput: true,
-      category: phaseResult.category,
-      labels: {
-        failedLabel: ctx.config.failedLabel,
-        failedOnceLabel: ctx.config.failedOnceLabel,
-        // Issue #2031: clarification handoff is via needs-human.
-        needsHumanLabel: ctx.config.needsHumanLabel,
-        planningLabel: ctx.config.planningLabel,
-        questionLabel: ctx.config.questionLabel,
-      },
-    });
-    // Issue #1949: the main loop now applies the same ladder to every
-    // non-transient coding failure. Tell it this one is already done, so a
-    // single run cannot step the issue twice and land it on `failed`.
-    state.failureLadderApplied = true;
+    const landed = await alreadyLandedPhaseResult(
+      ctx,
+      state,
+      deps,
+      "quality_gate",
+    );
+    if (landed) {
+      phaseResult = landed;
+    } else {
+      await deps.github.handleIssueFailure({
+        repo: ctx.repo,
+        issueNumber: ctx.issueNumber,
+        githubUser: ctx.githubUser,
+        failureMessage: qualityFailureMessage,
+        // Issue #3445: the gate output is repository-authored, never a host fault.
+        qualityGateOutput: true,
+        category: phaseResult.category,
+        labels: {
+          failedLabel: ctx.config.failedLabel,
+          failedOnceLabel: ctx.config.failedOnceLabel,
+          // Issue #2031: clarification handoff is via needs-human.
+          needsHumanLabel: ctx.config.needsHumanLabel,
+          planningLabel: ctx.config.planningLabel,
+          questionLabel: ctx.config.questionLabel,
+        },
+      });
+      // Issue #1949: the main loop now applies the same ladder to every
+      // non-transient coding failure. Tell it this one is already done, so a
+      // single run cannot step the issue twice and land it on `failed`.
+      state.failureLadderApplied = true;
+    }
   }
 
   if (recordedOutcome) state.qualityGateOutcome = recordedOutcome;

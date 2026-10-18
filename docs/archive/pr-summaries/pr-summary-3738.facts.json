@@ -109,7 +109,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 2137,
+        "line": 2154,
         "outcome": "gate infrastructure map preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
         "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
@@ -117,7 +117,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 2139,
+        "line": 2156,
         "outcome": "gate verdict map preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
         "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
@@ -133,7 +133,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 731,
+        "line": 732,
         "outcome": "mixed primary quality preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
         "testName": "completion retains evidence, substantive and mixed verifier causes without hiding blockers (Issue #3738)",
@@ -141,7 +141,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 3383,
+        "line": 3408,
         "outcome": "verifier default substantive preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
         "testName": "completion retains evidence, substantive and mixed verifier causes without hiding blockers (Issue #3738)",
@@ -149,7 +149,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 908,
+        "line": 909,
         "outcome": "summary existing pr causes preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
         "testName": "existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)",
@@ -157,7 +157,7 @@
       },
       {
         "path": "worker/deno/lib/run_outcome.ts",
-        "line": 385,
+        "line": 389,
         "outcome": "summary outcome category preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
         "testName": "existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)",
@@ -165,7 +165,7 @@
       },
       {
         "path": "worker/deno/lib/run_outcome.ts",
-        "line": 395,
+        "line": 399,
         "outcome": "summary outcome causes preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
         "testName": "existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)",
@@ -189,7 +189,7 @@
       },
       {
         "path": "worker/deno/lib/run_outcome.ts",
-        "line": 288,
+        "line": 292,
         "outcome": "outcome blocked causes preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/run_callback_context_test.ts",
         "testName": "callback context retains all declared causes after a PR exists (Issue #3738)",
@@ -197,7 +197,7 @@
       },
       {
         "path": "worker/deno/lib/run_outcome.ts",
-        "line": 310,
+        "line": 314,
         "outcome": "outcome declared category preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
         "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
@@ -277,7 +277,7 @@
       },
       {
         "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
-        "line": 681,
+        "line": 692,
         "outcome": "quality raw infrastructure preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/issue_worker_infra_retry_test.ts",
         "testName": "qualityGate - zero_output failure then success on retry does NOT call handleIssueFailure",
@@ -285,7 +285,7 @@
       },
       {
         "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
-        "line": 225,
+        "line": 226,
         "outcome": "quality label provenance preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/issue_worker_infra_retry_test.ts",
         "testName": "qualityGate - zero_output failure on both attempts invokes handleIssueFailure exactly once",
@@ -293,7 +293,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 1867,
+        "line": 1884,
         "outcome": "reconcile declared divergence preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_head_reconcile_test.ts",
         "testName": "completion - diverged agent/worker branches fail with the explicit reason, never reaching gh pr create (Issue #4286)",
@@ -301,7 +301,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 1867,
+        "line": 1884,
         "outcome": "reconcile declared infrastructure preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/completion_phase_head_reconcile_test.ts",
         "testName": "completion keeps unreadable reconciliation infrastructure even when its prose mentions divergence (Issue #3738)",
@@ -309,7 +309,7 @@
       },
       {
         "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
-        "line": 726,
+        "line": 737,
         "outcome": "quality turn cap declaration preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/quality_gate_attempt_report_test.ts",
         "testName": "quality gate - turn limit stops remediation before a passing retry or bump audit (Issue #3701)",
