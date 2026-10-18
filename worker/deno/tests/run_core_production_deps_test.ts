@@ -25,6 +25,10 @@ import {
   rateLimitSignalPath,
   writeRateLimitSignal,
 } from "../lib/rate_limit_signal.ts";
+import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { isHeartbeatRunning } from "../lib/heartbeat.ts";
+import { captureContentSnapshot } from "../lib/content_approval_tracker.ts";
+import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
@@ -711,5 +715,159 @@ Deno.test("repo failure deps - recordRepoSuccess and resetRepoFailures clear per
     assertEquals(contents.trim(), "");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("production coding dispatch defers actual heartbeat publication through its final landed decision (Issue #3977)", async () => {
+  for (const dirty of [false, true]) {
+    const root = await Deno.makeTempDir();
+    const repo = "org/repo";
+    const title = "Fix login bug";
+    const body = "Fix the handler in src/auth.ts";
+    const branch = "issue-42-exact-implementation";
+    const head = "a".repeat(40);
+    const config = {
+      ...buildDefaultWorkerConfig(),
+      workDir: `${root}/work`,
+      allowedAuthors: ["test-user"],
+      infraRetryBackoffMs: 0,
+    };
+    let merged = false;
+    let clears = 0;
+    let executions = 0;
+    let charges = 0;
+    const worker = createMockDeps({
+      git: {
+        setupRepo: () => Promise.resolve({ ok: true, value: root }),
+        createBranchName: () => branch,
+        createFeatureBranchFromBase: () =>
+          Promise.resolve({ ok: true, value: branch }),
+        runGitCommand: (args: string[]) =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              code: 0,
+              stdout: args[0] === "rev-parse"
+                ? head
+                : args[0] === "status" && dirty
+                ? "?? remaining.ts"
+                : "",
+              stderr: "",
+            },
+          }),
+      },
+      claude: {
+        runClaudeWithRetry: () => {
+          executions++;
+          merged = true;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              exitCode: 1,
+              output: "Implementation failed: behaviour incomplete",
+              timedOut: false,
+            },
+          });
+        },
+      },
+      github: {
+        runGhCommand: (args: string[]) =>
+          Promise.resolve(
+            args[0] === "issue"
+              ? JSON.stringify({
+                number: 42,
+                title,
+                body,
+                author: { login: "test-user" },
+                labels: [{ name: "work-on" }],
+                comments: [],
+                state: "OPEN",
+              })
+              : args[0] === "pr" && args[1] === "list"
+              ? JSON.stringify(
+                merged
+                  ? [{
+                    number: 99,
+                    title: "Fix login bug (#42)",
+                    state: "MERGED",
+                    mergedAt: "2026-10-18T01:44:24Z",
+                    url: `https://github.com/${repo}/pull/99`,
+                    headRefName: branch,
+                    headRefOid: head,
+                    headRepository: { name: "repo" },
+                    headRepositoryOwner: { login: "org" },
+                    baseRefName: "main",
+                    mergeCommit: { oid: "b".repeat(40) },
+                    body:
+                      "Closes #42\n\nThe exact implementation is delivered.",
+                  }]
+                  : [],
+              )
+              : "behind",
+          ),
+        handleIssueFailure: () => {
+          charges++;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              markedAsFailed: false,
+              markedAsFailedOnce: true,
+              failureCategory: "unknown",
+              isInfrastructure: false,
+            },
+          });
+        },
+      },
+      crashHandling: {
+        clearHeartbeat: () => {
+          clears++;
+          return Promise.resolve({ ok: true, value: undefined });
+        },
+      },
+    });
+    const crashPorts = { ...worker.crashHandling };
+    const snapshot = await captureContentSnapshot(
+      resolveContentApprovalStateDir(config.workDir),
+      repo,
+      42,
+      title,
+      body,
+      "test-user",
+    );
+    assertEquals(snapshot.ok, true);
+    const production = await createProductionRunCoreDeps(
+      createTestOptions({
+        repoDir: root,
+        workDir: config.workDir,
+        config,
+        workerDeps: worker,
+        env: envFrom({ HOME: root }),
+      }),
+    );
+    Object.assign(worker.crashHandling, crashPorts);
+    try {
+      const result = await production.deps.processIssue({
+        repo,
+        issueNumber: 42,
+        issueTitle: title,
+        milestoneTitle: "",
+      });
+      assertEquals(result.ok, true);
+      if (!result.ok) throw result.error;
+      assertEquals(executions, 1);
+      assertEquals(result.value.success, false);
+      assertEquals(result.value.skipped, !dirty);
+      assertEquals(result.value.outcome?.kind === "claim_stale", !dirty);
+      assertEquals(charges, dirty ? 1 : 0);
+      assertEquals(
+        clears,
+        0,
+        "the production caller publishes no provisional failure or duplicate landed tally",
+      );
+      assertEquals(isHeartbeatRunning(repo, 42), false);
+    } finally {
+      production.cleanup();
+      await Deno.remove(root, { recursive: true });
+    }
   }
 });

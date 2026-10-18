@@ -424,7 +424,7 @@ export async function checkAlreadyLanded(
         .filter((unit) =>
           unit.kind !== "code" && unit.kind !== "html" &&
           !unit.text.startsWith(">") &&
-          unit.lines.every((index) => !/^(?: {4}|\t)/.test(lines[index]!))
+          unit.lines.every((index) => !/^(?: {4}| {0,3}\t)/.test(lines[index]!))
         )
         .some((unit) =>
           splitMarkdownCode(unit.text).some((segment) =>

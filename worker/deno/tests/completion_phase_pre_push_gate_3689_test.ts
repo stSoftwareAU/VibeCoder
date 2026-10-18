@@ -310,10 +310,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       status: "failure",
       reason: "phase did not run",
     };
-    const runPhase = async (
-      productionCtx?: IssueContext,
-    ): Promise<WorkOnIssueResult> => {
-      if (productionCtx) assertEquals(productionCtx.deferTerminalRelease, true);
+    const runPhase = async (): Promise<WorkOnIssueResult> => {
       result = await workOnIssueCompletion(ctx, state, deps);
       phaseReturned = true;
       return {

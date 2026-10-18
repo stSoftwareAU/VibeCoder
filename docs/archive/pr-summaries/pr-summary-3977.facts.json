@@ -1,0 +1,192 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 1794,
+        "outcome": "already-landed work stops before branch recovery or push",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion reconciles merges before recovery and final failure bookkeeping without spending an attempt (Issue #3977)",
+        "flipWentRed": "completion-entry mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 2167,
+        "outcome": "a merge during push stops redundant rebase recovery",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion reconciles merges before recovery and final failure bookkeeping without spending an attempt (Issue #3977)",
+        "flipWentRed": "push-recovery mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 1392,
+        "outcome": "a merge during gate checks skips the screenshot recovery agent turn",
+        "test": "worker/deno/tests/completion_phase_screenshot_retry_test.ts",
+        "testName": "completion skips screenshot recovery when the exact work merges during gate checks (Issue #3977)",
+        "flipWentRed": "late-recovery mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
+        "line": 220,
+        "outcome": "landed work consumes no quality-failure attempt",
+        "test": "worker/deno/tests/issue_worker_infra_retry_test.ts",
+        "testName": "qualityGate reconciles an exact merge immediately before charging failure (Issue #3977)",
+        "flipWentRed": "quality-bookkeeping mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/issue_worker.ts",
+        "line": 236,
+        "outcome": "the worker reconciles before deriving its terminal outcome",
+        "test": "worker/deno/tests/issue_worker_test.ts",
+        "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
+        "flipWentRed": "worker-wiring mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/issue_worker.ts",
+        "line": 235,
+        "outcome": "a phase-booked failure is visible before wrapper reconciliation",
+        "test": "worker/deno/tests/issue_worker_test.ts",
+        "testName": "workOnIssue retains a genuine quality failure booked before a later merge (Issue #3977)",
+        "flipWentRed": "booked-failure-state mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/issue_worker.ts",
+        "line": 163,
+        "outcome": "a genuine previously booked failure remains visible after a later merge",
+        "test": "worker/deno/tests/issue_worker_test.ts",
+        "testName": "workOnIssue retains a genuine quality failure booked before a later merge (Issue #3977)",
+        "flipWentRed": "booked-failure-guard mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 4789,
+        "outcome": "a merge at the final production boundary consumes no attempt",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion reconciles merges before recovery and final failure bookkeeping without spending an attempt (Issue #3977)",
+        "flipWentRed": "production-wiring mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 4927,
+        "outcome": "the explicit landed outcome survives production skip conversion",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion reconciles merges before recovery and final failure bookkeeping without spending an attempt (Issue #3977)",
+        "flipWentRed": "production-outcome mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/issue_worker.ts",
+        "line": 341,
+        "outcome": "the worker stops its heartbeat without a provisional release",
+        "test": "worker/deno/tests/issue_worker_test.ts",
+        "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
+        "flipWentRed": "worker-defer-clear mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/heartbeat.ts",
+        "line": 288,
+        "outcome": "deferred shutdown stops the interval without publishing a tally",
+        "test": "worker/deno/tests/heartbeat_test.ts",
+        "testName": "heartbeat defers terminal publication while stopping the failed production run (Issue #3977)",
+        "flipWentRed": "heartbeat-defer-clear mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core.ts",
+        "line": 3035,
+        "outcome": "serial dispatch releases the semantic outcome without throughput credit",
+        "test": "worker/deno/tests/run_core_callbacks_test.ts",
+        "testName": "run_core releases already-landed outcomes without failure or throughput credit in both dispatch modes (Issue #3977)",
+        "flipWentRed": "serial-release mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core.ts",
+        "line": 4915,
+        "outcome": "pooled dispatch releases the semantic outcome without throughput credit",
+        "test": "worker/deno/tests/run_core_callbacks_test.ts",
+        "testName": "run_core releases already-landed outcomes without failure or throughput credit in both dispatch modes (Issue #3977)",
+        "flipWentRed": "pool-release mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 405,
+        "outcome": "an unrelated branch never completes this run",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
+        "flipWentRed": "branch-ownership mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 409,
+        "outcome": "a merge into another target never completes this run",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
+        "flipWentRed": "target-identity mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 451,
+        "outcome": "explicit partial scope stays on the normal failure path",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
+        "flipWentRed": "partial-scope mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 485,
+        "outcome": "extra local commits are preserved rather than declared delivered",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
+        "flipWentRed": "local-containment mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 457,
+        "outcome": "a merged change must actually be contained in the intended target",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
+        "flipWentRed": "target-ancestry mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 363,
+        "outcome": "tracked or untracked distinct work prevents an already-landed skip",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
+        "flipWentRed": "dirty-work mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 434,
+        "outcome": "mere mentions and code examples do not establish issue completion",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
+        "flipWentRed": "closing-contract mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 441,
+        "outcome": "an unchecked or unassessed acceptance block preserves remaining work",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
+        "flipWentRed": "unassessed-criteria mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 4762,
+        "outcome": "the actual production worker defers premature terminal marker writes",
+        "test": "worker/deno/tests/run_core_production_deps_test.ts",
+        "testName": "production coding dispatch defers actual heartbeat publication through its final landed decision (Issue #3977)",
+        "flipWentRed": "production-release-ownership mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 427,
+        "outcome": "mixed space and tab code examples cannot supply the closing contract",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
+        "flipWentRed": "mixed-indent mutation failed the named assertion"
+      }
+    ]
+  }
+}

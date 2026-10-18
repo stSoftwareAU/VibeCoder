@@ -2231,8 +2231,8 @@ Deno.test(
         }) as unknown as typeof deps.git.runGitCommand,
       },
       github: {
-        runGhCommand: (() => {
-          ghPrCreateCalled = true;
+        runGhCommand: ((args: string[]) => {
+          if (args[0] === "pr" && args[1] === "create") ghPrCreateCalled = true;
           return Promise.resolve("https://github.com/org/repo/pull/999");
         }) as unknown as typeof deps.github.runGhCommand,
       },

@@ -550,6 +550,9 @@ Deno.test("already-landed proof rejects partial, unrelated and unreadable merge 
       { body: "`Closes #333`" },
       { body: "    Closes #333" },
       { body: "\tCloses #333" },
+      { body: " \tCloses #333" },
+      { body: "  \tCloses #333" },
+      { body: "   \tCloses #333" },
       { body: "Closes `an example` #333" },
       {
         body:
@@ -561,7 +564,8 @@ Deno.test("already-landed proof rejects partial, unrelated and unreadable merge 
     ]
   ) {
     const { options } = landedOptions({
-      runGh: () => Promise.resolve(landedResponse(pr)),
+      runGh: (args: string[]) =>
+        Promise.resolve(args[1] === "list" ? landedResponse(pr) : "behind"),
     });
     assertEquals(
       (await checkAlreadyLanded(options)).kind,
@@ -645,6 +649,7 @@ Deno.test("already-landed proof accepts canonical repo casing, historical summar
   for (
     const body of [
       "Closes #333\n\nThe exact implementation is delivered.",
+      "   Closes #333\n\nThe exact implementation is delivered.",
       landedIssue().body +
       "\n- **unrequested** — Optional documentation cleanup — reason: incidental extra work",
     ]
