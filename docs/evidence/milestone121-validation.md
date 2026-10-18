@@ -187,3 +187,20 @@ that wall-clock time is the only execution bound.
 - `docs/USAGE.md:411` — still describes the wall-clock timeout or its existing consumer.
 - `docs/workflows/ci-fix.md:181` — still describes the wall-clock timeout or its existing consumer.
 - `docs/workflows/issue-processing.md:1192` — still describes the wall-clock timeout or its existing consumer.
+
+## PR CI: narrow environment permissions
+
+The Markdown workflow reached a separate bootstrap path not covered by the
+full local-style gate: `check-mermaid` runs with an explicit environment
+allowlist that excludes agent transport. PR job 117585618638 failed at the
+unconditional turn-cap export. A real child-process regression reproduced
+the same `NotCapable` failure before the fix.
+
+Bootstrap now queries the existing permission before exporting the cap.
+Read-only commands keep their original permissions; agent-capable commands
+still settle the configured cap, and the agent argument builder still
+requires permission to read it. All four standalone cases pass. Forcing
+the guard true breaks the read-only command, and forcing it false breaks
+the configured-cap argv assertion. Neither the workflow permission set nor
+the test budget was broadened. The full hosted gate on `ab2754e1` passed
+before this CI fix; the updated PR checks validate this new source.

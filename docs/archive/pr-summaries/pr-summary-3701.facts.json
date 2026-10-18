@@ -117,7 +117,7 @@
       },
       {
         "path": "worker/deno/mod.ts",
-        "line": 831,
+        "line": 841,
         "outcome": "standalone bootstrap settles the configured cap before invoking commands",
         "test": "worker/deno/tests/standalone_turn_limit_3701_test.ts",
         "testName": "standalone command uses the configured turn cap over stale inherited transport",
@@ -298,6 +298,22 @@
         "test": "worker/deno/tests/planning_processor_test.ts",
         "testName": "planning turn limit is terminal during draft",
         "flipWentRed": "Changed the outer typed handler to TypeError; the named test failed with an uncaught AgentTurnLimitError."
+      },
+      {
+        "path": "worker/deno/mod.ts",
+        "line": 832,
+        "outcome": "read-only commands retain their existing narrow environment permissions",
+        "test": "worker/deno/tests/standalone_turn_limit_3701_test.ts",
+        "testName": "read-only CLI keeps its narrow environment permissions without agent transport access",
+        "flipWentRed": "Forced the permission guard true; the real narrow-permission CLI test failed with NotCapable."
+      },
+      {
+        "path": "worker/deno/mod.ts",
+        "line": 832,
+        "outcome": "agent-capable standalone commands still receive the configured cap",
+        "test": "worker/deno/tests/standalone_turn_limit_3701_test.ts",
+        "testName": "standalone command uses the configured turn cap over stale inherited transport",
+        "flipWentRed": "Forced the permission guard false; the configured-cap argv assertion failed."
       }
     ]
   }

@@ -113,3 +113,35 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   fn: () => assertStandaloneCap(3),
 });
+
+Deno.test("read-only CLI keeps its narrow environment permissions without agent transport access", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-mermaid-env-" });
+  try {
+    await Deno.writeTextFile(`${root}/README.md`, "# Fixture\n");
+    const result = await new Deno.Command(Deno.execPath(), {
+      args: [
+        "run",
+        "--cached-only",
+        "--frozen",
+        "--no-prompt",
+        "--allow-read",
+        "--allow-env=DEBUG,LOG_LEVEL,CONFIG_FILE,CONFIG_PATH,OUTPUT_JSON",
+        "--config",
+        new URL("../deno.json", import.meta.url).pathname,
+        "--lock",
+        new URL("../deno.lock", import.meta.url).pathname,
+        new URL("../mod.ts", import.meta.url).pathname,
+        "check-mermaid",
+        "--script-dir",
+        root,
+      ],
+      cwd: root,
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+    assertStringIncludes(new TextDecoder().decode(result.stdout), "PASSED");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

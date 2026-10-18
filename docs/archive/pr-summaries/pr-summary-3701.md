@@ -55,7 +55,9 @@ wall-clock limits, which this change does not replace.
 - Real stub child processes verify one invocation, distinct cause, cap logging
   and direct callers without the retry wrapper.
 - Standalone `mod.ts` child-process integration and actual shell evaluation
-  verify configured/default caps override stale internal transport.
+  verify configured/default caps override stale internal transport. A real
+  `check-mermaid` child keeps its existing narrow environment permissions;
+  cap transport is written only when that variable is already permitted.
 - Issue phase, initial/quality-retry CI and initial/placeholder/drift/verifier/
   correction/second-verifier/push-recovery/retry-push feedback regressions verify
   no capped partial work reaches publication.

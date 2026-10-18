@@ -826,10 +826,20 @@ export async function main(args: string[] = Deno.args): Promise<void> {
 
   // Standalone commands also invoke the agent without runWorker. The loaded
   // config is authoritative; overwrite stale inherited internal transport.
-  Deno.env.set(
-    CLAUDE_MAX_TURNS_ENV,
-    String(config.claudeMaxTurns ?? DEFAULT_CLAUDE_MAX_TURNS),
-  );
+  // Read-only commands such as check-mermaid deliberately lack access to this
+  // variable. Preserve their narrow permissions; an agent invocation still
+  // requires that access when its argument builder reads the transported cap.
+  if (
+    (await Deno.permissions.query({
+      name: "env",
+      variable: CLAUDE_MAX_TURNS_ENV,
+    })).state === "granted"
+  ) {
+    Deno.env.set(
+      CLAUDE_MAX_TURNS_ENV,
+      String(config.claudeMaxTurns ?? DEFAULT_CLAUDE_MAX_TURNS),
+    );
+  }
 
   // Execute the command
   if (!registry.has(command)) {
