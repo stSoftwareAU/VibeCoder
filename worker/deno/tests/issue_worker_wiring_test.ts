@@ -520,6 +520,28 @@ Deno.test("createDefaultDeps - uses the caller's logger so issue-phase lines rea
   assertEquals(typeof fallback.logger.info, "function");
 });
 
+Deno.test("createDefaultDeps - wires the coverage carry-over runner (Issue #3795)", async () => {
+  const deps = createDefaultDeps();
+  const run = deps.quality.runCoverageCarryOverCheck;
+  assertExists(run, "quality.runCoverageCarryOverCheck must be wired");
+
+  const repoPath = await Deno.makeTempDir();
+  try {
+    const result = await run({
+      repoPath,
+      base: "HEAD",
+      diff: "",
+      budgetSeconds: 1,
+    });
+    assertEquals(result, {
+      kind: "not_applicable",
+      reason: "the diff removes no lines from an existing Deno test file",
+    });
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
 Deno.test("createDefaultDeps - wires the real security-fix discrimination runner (Issue #3659)", async () => {
   const deps = createDefaultDeps();
   const runner = deps.quality.runSecurityFixDiscrimination;

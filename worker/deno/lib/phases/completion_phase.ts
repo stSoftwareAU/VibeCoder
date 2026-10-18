@@ -178,6 +178,12 @@ import {
   type SecurityFixDiffEvidence,
 } from "../security_fix_gate.ts";
 import {
+  buildCoverageCarryOverGateComment,
+  type CoverageCarryOverResult,
+  DEFAULT_COVERAGE_CARRYOVER_BUDGET_SECONDS,
+  evaluateCoverageCarryOverGate,
+} from "../coverage_carryover_gate.ts";
+import {
   buildMutationGateComment,
   evaluateMutationGate,
 } from "../mutation_gate.ts";
@@ -631,7 +637,8 @@ interface SummaryRuleBlock {
   docHoldComment: string;
   /**
    * True when a blocked gate in `sections` is fixed by changing tests (the
-   * mutation gate, Issue #3393), so the recovery prompt allows test changes.
+   * mutation gate, Issue #3393, and the coverage carry-over gate, Issue #3795),
+   * so the recovery prompt allows test changes.
    */
   allowsTestChanges?: boolean;
 }
@@ -910,9 +917,10 @@ async function reportSummaryRuleBlock(
  * #3092 only the docs-sweep gate took this guard on an existing-PR branch,
  * because that gate ran after the guard; the closure, independent-review
  * and reproduction-status gates ran ahead of it and skipped it. The call
- * in `completionBody` runs once all six late-summary gates (Issue #3393
- * added the mutation check as the fifth and Issue #3257 the summary claim
- * check as the sixth) pass, whether the PR is then raised or recovered.
+ * in `completionBody` runs once all seven late-summary gates (Issue #3393
+ * added the mutation check as the fifth, Issue #3795 the coverage carry-over
+ * check as the sixth and Issue #3257 the summary claim check as the seventh)
+ * pass, whether the PR is then raised or recovered.
  *
  * PR #3676 review: a healthy run on an issue that is itself a
  * partial-delivery follow-up files no nested one. It labels the issue
@@ -3200,9 +3208,10 @@ async function completionBody(
   /**
    * The late summary-rule verdicts, in the fixed order they are folded into
    * an earlier gate's block: docs sweep, removed assertions, result
-   * placeholder, branch outcomes, mutation check, the summary claim check,
-   * then the pre-PR verifier (Issue #3147 added branch outcomes; Issue #3393
-   * the mutation check; Issue #3257 the claim check; Issue #3395 added the
+   * placeholder, branch outcomes, mutation check, coverage carry-over, the
+   * summary claim check, then the pre-PR verifier (Issue #3147 added branch
+   * outcomes; Issue #3393 the mutation check; Issue #3795 the coverage
+   * carry-over check; Issue #3257 the claim check; Issue #3395 added the
    * verifier last). One
    * source of truth for both the ordered fold below and the gates' own
    * standalone blocks further down.
@@ -3211,7 +3220,10 @@ async function completionBody(
     blocked: boolean;
     reason: string;
     comment: () => string;
-    /** Only a test change satisfies this verdict (the mutation gate). */
+    /**
+     * Only a test change satisfies this verdict (the mutation gate, Issue
+     * #3393, and the coverage carry-over gate, Issue #3795).
+     */
     needsTestChanges?: boolean;
   }
   const docsSweepVerdict: LateSummaryVerdict = {
@@ -3315,6 +3327,127 @@ async function completionBody(
       needsTestChanges: true,
     };
   }
+  // ---------------------------------------------------------------------
+  // Coverage carry-over verdict (Issue #3795), computed once alongside the
+  // mutation verdict so a summary that fails an earlier gate AND leaves a
+  // line that an edited or removed test used to reach untested is told
+  // about both in the one recovery turn. The runner names each such line no
+  // test covers any more; it blocks unless the summary exempts it. A diff or
+  // runner that cannot answer fails closed (`error`); a runner that is not
+  // wired, or a repo that opts out, never blocks.
+  // ---------------------------------------------------------------------
+  let coverageCarryOverVerdict: LateSummaryVerdict;
+  {
+    let coverageResult: CoverageCarryOverResult | null = null;
+    if (
+      getRepoConfig(config.repoConfig, repo, "skipCoverageCarryOverCheck") ===
+        "true"
+    ) {
+      logger.info(
+        "coverage carry-over check skipped by skip_coverage_carryover_check",
+        { repo },
+      );
+      coverageResult = {
+        kind: "not_applicable",
+        reason: "skipped by skip_coverage_carryover_check",
+      };
+    } else if (!deps.quality.runCoverageCarryOverCheck) {
+      logger.warn(
+        "Coverage carry-over runner not wired — coverage carry-over check not applicable",
+      );
+      coverageResult = {
+        kind: "not_applicable",
+        reason: "coverage carry-over runner not wired",
+      };
+    } else {
+      let coverageDiff: string | null = null;
+      if (comparableBase.ok) {
+        try {
+          coverageDiff = await runGitOrThrow(
+            [
+              "diff",
+              "--unified=0",
+              "--no-renames",
+              `${comparableBase.value}...HEAD`,
+            ],
+            state.repoPath,
+            deps,
+          );
+        } catch (error) {
+          logger.warn(
+            "Could not collect the PR diff for the coverage carry-over check",
+            {
+              base: comparableBase.value,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
+      }
+      if (!comparableBase.ok || coverageDiff === null) {
+        coverageResult = {
+          kind: "error",
+          reason: `could not collect the PR diff against ${baseBranch}`,
+        };
+      } else {
+        // As for the mutation check: the runner's tests need the credentials
+        // this repository declared, and a failed mint is not run without them.
+        const credentials = await resolveRepoCredentials(
+          repo,
+          config.repoConfig?.[repo]?.qualityCredentials,
+        );
+        if (!credentials.ok) {
+          logger.warn(
+            "Could not resolve quality_credentials for the coverage carry-over check",
+            { repo, error: credentials.error.message },
+          );
+          coverageResult = {
+            kind: "not_applicable",
+            reason:
+              `the repository's quality_credentials could not be resolved (${credentials.error.message})`,
+          };
+        } else {
+          try {
+            coverageResult = await deps.quality.runCoverageCarryOverCheck({
+              repoPath: state.repoPath,
+              base: comparableBase.value,
+              diff: coverageDiff,
+              budgetSeconds: DEFAULT_COVERAGE_CARRYOVER_BUDGET_SECONDS,
+              credentialEnv: credentials.value.env,
+            });
+          } catch (error) {
+            coverageResult = {
+              kind: "error",
+              reason: `coverage carry-over runner failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            };
+          }
+        }
+      }
+    }
+    const gate = evaluateCoverageCarryOverGate(coverageResult, prBody);
+    if (coverageResult.kind === "budget_exhausted") {
+      logger.warn(gate.note, { repo, issueNumber });
+    } else if (gate.note !== "") {
+      logger.info(gate.note, { repo, issueNumber });
+    }
+    if (gate.blocked) {
+      logger.warn(
+        "Coverage carry-over check found lines the edited or removed tests reached that no test covers",
+        {
+          uncovered: gate.uncovered.map((l) => `${l.file}:${l.line}`),
+          exempted: gate.exempted.map((l) => `${l.file}:${l.line}`),
+          reason: gate.reason,
+        },
+      );
+    }
+    coverageCarryOverVerdict = {
+      blocked: gate.blocked,
+      reason: gate.reason,
+      comment: () => buildCoverageCarryOverGateComment(gate),
+      needsTestChanges: true,
+    };
+  }
   const claimCheckVerdict: LateSummaryVerdict = {
     blocked: claimCheck !== null && summaryClaimCheckBlocked(claimCheck),
     reason: claimCheck !== null ? summaryClaimBlockReason(claimCheck) : "",
@@ -3344,6 +3477,7 @@ async function completionBody(
     placeholderVerdict,
     branchOutcomesVerdict,
     mutationVerdict,
+    coverageCarryOverVerdict,
     claimCheckVerdict,
     prePrVerifierVerdict,
   ];
@@ -3387,11 +3521,12 @@ async function completionBody(
 
   /**
    * Fold every blocked late verdict (docs sweep, removed assertions, result
-   * placeholder, branch outcomes, mutation check, summary claim check, pre-PR
-   * verifier — in that order) other than those in `skip` into an earlier
-   * gate's block.
+   * placeholder, branch outcomes, mutation check, coverage carry-over, summary
+   * claim check, pre-PR verifier — in that order) other than those in `skip`
+   * into an earlier gate's block.
    * `allowsTestChanges` is set on the result when the block, or any verdict
-   * folded in, is one that only a test change satisfies (the mutation check).
+   * folded in, is one that only a test change satisfies (the mutation check
+   * or the coverage carry-over check).
    */
   function foldInLateSummaryVerdicts(
     reason: string,
@@ -3540,8 +3675,9 @@ async function completionBody(
   // ---------------------------------------------------------------------
   // Late summary gates: docs sweep (Issue #3073), removed assertions
   // (Issue #3131), result placeholder (Issue #3124), branch outcomes
-  // (Issue #3147), the mutation check (Issue #3393), the summary claim check
-  // (Issue #3257), and the pre-PR verifier (Issue #3395) — in that order.
+  // (Issue #3147), the mutation check (Issue #3393), the coverage carry-over
+  // check (Issue #3795), the summary claim check (Issue #3257), and the
+  // pre-PR verifier (Issue #3395) — in that order.
   //
   // The PR-summary contract already asked for a one-line Docs sweep entry
   // and now also a `Branch outcomes:` list, but nothing checked either: a
@@ -3678,9 +3814,9 @@ async function completionBody(
   // list naming, for every new branch, the test that reaches it — but
   // nothing checked it: fleet PRs shipped a new branch with no test
   // reaching it, or named a test that did not exist at the head. Folds in
-  // the mutation check (Issue #3393), the summary claim check (Issue #3257)
-  // and the pre-PR verifier (Issue #3395), the late verdicts still named
-  // below it.
+  // the mutation check (Issue #3393), the coverage carry-over check (Issue
+  // #3795), the summary claim check (Issue #3257) and the pre-PR verifier
+  // (Issue #3395), the late verdicts still named below it.
   // ---------------------------------------------------------------------
   if (branchOutcomesBlocked) {
     logger.warn("Branch-outcomes gate blocked PR creation", {
@@ -3716,8 +3852,9 @@ async function completionBody(
   // change nothing checks. Blocked like the other summary-rule gates so the
   // single recovery turn is told the `file:line` and the mutation and either
   // adds a test that kills it or records an exemption in the summary. Folds
-  // in the summary claim check and the pre-PR verifier (Issue #3395), the late
-  // verdicts still named below it.
+  // in the coverage carry-over check (Issue #3795), the summary claim check
+  // and the pre-PR verifier (Issue #3395), the late verdicts still named
+  // below it.
   // ---------------------------------------------------------------------
   if (mutationVerdict.blocked) {
     logger.warn("Mutation gate blocked PR creation", {
@@ -3732,6 +3869,42 @@ async function completionBody(
         placeholderVerdict,
         branchOutcomesVerdict,
         mutationVerdict,
+      ],
+    );
+    return await reportSummaryRuleBlock(
+      folded,
+      ctx,
+      state,
+      prBody,
+      deps,
+      docsSweepHitsComment,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Coverage carry-over gate (Issue #3795).
+  //
+  // A test the PR edits or removes may have been the only thing reaching a
+  // line; if the PR leaves that line uncovered, nothing checks it any more.
+  // Blocked like the mutation gate so the single recovery turn is told the
+  // `file:line` and either adds a test that reaches it or records an
+  // exemption in the summary. Folds in the summary claim check and the
+  // pre-PR verifier (Issue #3395), the late verdicts still named below it.
+  // ---------------------------------------------------------------------
+  if (coverageCarryOverVerdict.blocked) {
+    logger.warn("Coverage carry-over gate blocked PR creation", {
+      reason: coverageCarryOverVerdict.reason,
+    });
+    const folded = foldInLateSummaryVerdicts(
+      coverageCarryOverVerdict.reason,
+      coverageCarryOverVerdict.comment(),
+      [
+        docsSweepVerdict,
+        removedAssertionsVerdict,
+        placeholderVerdict,
+        branchOutcomesVerdict,
+        mutationVerdict,
+        coverageCarryOverVerdict,
       ],
     );
     return await reportSummaryRuleBlock(
