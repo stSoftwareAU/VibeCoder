@@ -309,12 +309,15 @@ Deno.test("brokered Anthropic environment selects one opaque auth mode and inher
   );
 });
 
-Deno.test("brokered Anthropic environment does not copy unrelated parent values", () => {
-  const name = `VIBE_CONTAINMENT_TEST_${
-    crypto.randomUUID().replaceAll("-", "")
-  }`;
-  Deno.env.set(name, "synthetic-parent-value");
-  try {
+Deno.test({
+  name: "brokered Anthropic environment does not copy unrelated parent values",
+  permissions: { env: false },
+  fn() {
+    // Denying reads proves the builder never inspects ambient values, without
+    // planting a process-wide value that would race other test files.
+    const name = `VIBE_CONTAINMENT_TEST_${
+      crypto.randomUUID().replaceAll("-", "")
+    }`;
     const env = buildBrokeredAnthropicEnvironment({
       service: "claude",
       mode: "subscription",
@@ -324,7 +327,5 @@ Deno.test("brokered Anthropic environment does not copy unrelated parent values"
       configDir: "/state/claude",
     });
     assertEquals(env[name], undefined);
-  } finally {
-    Deno.env.delete(name);
-  }
+  },
 });

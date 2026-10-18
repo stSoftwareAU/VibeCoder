@@ -174,10 +174,14 @@ try {
         "lib/credential_broker.ts",
         "lib/credential_broker_policy.ts",
         "lib/anthropic_agent_gateway.ts",
+        "lib/github_agent_gateway.ts",
+        "lib/gemini_agent_gateway.ts",
         "tests/support/agent_namespace_evidence.ts",
         "tests/support/agent_container_evidence.ts",
         "tests/fixtures/agent_namespace_container_probe.ts",
         "tests/fixtures/agent_container_process_probe.ts",
+        "tests/fixtures/native_github_client_probe.ts",
+        "tests/fixtures/gemini_native_client_probe.ts",
       ]
     ) {
       const target = `${paths.baseDir}/worker/deno/${relative}`;
@@ -294,7 +298,44 @@ try {
     }
     console.log(JSON.stringify({ phase: "native-client", evidence: result }));
   }
+  const github = JSON.parse(
+    await launch(agentPlan, "native-github", [metadata]),
+  );
+  if (
+    github.nativeGitHubCompleted !== true || github.readCompleted !== true ||
+    github.headCompleted !== true || github.deniedRequests !== 4 ||
+    github.localCapabilityOnly !== true ||
+    github.upstreamCredentialVisible !== false
+  ) {
+    throw new Error(
+      "Native GitHub fixture lacked complete read/denial evidence",
+    );
+  }
+  console.log(JSON.stringify({ phase: "native-github", evidence: github }));
+  const geminiPin = manifest.providers.find((provider) =>
+    provider.id === "gemini"
+  );
+  if (!geminiPin) {
+    throw new Error("Native Gemini fixture requires a manifest pin");
+  }
+  const gemini = JSON.parse(
+    await launch(agentPlan, "native-gemini", [metadata, geminiPin.version]),
+  );
+  if (
+    gemini.nativeClientCompleted !== true || gemini.versionMatched !== true ||
+    gemini.upstreamCredentialVisible !== false
+  ) throw new Error("Native Gemini fixture lacked completion evidence");
+  console.log(JSON.stringify({ phase: "native-gemini", evidence: gemini }));
   const nativeWitness = JSON.parse(await inside("witness"));
+  if (
+    nativeWitness.nativeGitHubRequests !== 2 ||
+    !Number.isSafeInteger(nativeWitness.nativeGeminiRequests) ||
+    nativeWitness.nativeGeminiRequests < 1
+  ) {
+    throw new Error(
+      "Native GitHub/Gemini lacked authenticated upstream evidence",
+    );
+  }
   for (const mode of ["api-key", "subscription"]) {
     if (
       !Number.isSafeInteger(nativeWitness.nativeRequests?.[mode]) ||
@@ -308,7 +349,11 @@ try {
   console.log(
     JSON.stringify({
       phase: "native-upstream-witness",
-      evidence: nativeWitness.nativeRequests,
+      evidence: {
+        claude: nativeWitness.nativeRequests,
+        github: nativeWitness.nativeGitHubRequests,
+        gemini: nativeWitness.nativeGeminiRequests,
+      },
     }),
   );
   await runtime(["stop", "--time", "5", brokerPlan.containerName]);
@@ -320,7 +365,7 @@ try {
   }
   console.log(JSON.stringify({ phase: "broker-stopped", evidence: stopped }));
   console.log(
-    `PASS: separate hardened ${descriptor.displayName} containers deny direct IPv4/IPv6 and hide the planted credential while synthetic broker requests and pinned Claude inference work; live OAuth/other providers/Apple acceptance remains unproved`,
+    `PASS: separate hardened ${descriptor.displayName} containers deny direct IPv4/IPv6 and hide the planted credential while pinned Claude/Gemini inference and native gh reads work; live OAuth/remaining providers/Apple acceptance remains unproved`,
   );
 } finally {
   for (const plan of plans) {

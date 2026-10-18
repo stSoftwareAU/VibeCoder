@@ -1,0 +1,18 @@
+{
+  "issue": 3699,
+  "chunk": "top-up-3699",
+  "title": "top-up: credential broker and isolated native transport",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3699",
+  "definition": "Broker command, fixed upstream policy, revocable host grants and Anthropic native transport added after the a900fa7b milestone base; production integration and runtime acceptance remain in progress.",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/commands/credential_broker.ts",
+    "worker/deno/lib/anthropic_agent_gateway.ts",
+    "worker/deno/lib/credential_broker.ts",
+    "worker/deno/lib/credential_broker_lease.ts",
+    "worker/deno/lib/credential_broker_policy.ts",
+    "worker/deno/lib/gemini_agent_gateway.ts",
+    "worker/deno/lib/github_agent_gateway.ts"
+  ],
+  "sweptAt": "a900fa7b68486ab83562887d66675be6d5cc3535"
+}

@@ -13,6 +13,11 @@ import {
   type BrokerWitness,
   countSyntheticCredentialMatches,
 } from "../support/agent_container_evidence.ts";
+import { probeNativeGitHubClient } from "./native_github_client_probe.ts";
+import {
+  geminiNativeFixtureResponse,
+  runGeminiNativeClientProbe,
+} from "./gemini_native_client_probe.ts";
 
 const privateDirectory = "/tmp/vibe-broker-private";
 const metadataPath = `${privateDirectory}/fixture.json`;
@@ -83,6 +88,8 @@ async function broker(credentialRoot: string): Promise<void> {
   const credentialFile = await Deno.open(privatePath, { read: true });
   const witness: BrokerWitness & {
     nativeRequests: Record<"api-key" | "subscription", number>;
+    nativeGitHubRequests: number;
+    nativeGeminiRequests: number;
   } = {
     fileMatches:
       await sha256(await Deno.readTextFile(privatePath)) === secretHash,
@@ -93,6 +100,8 @@ async function broker(credentialRoot: string): Promise<void> {
     descriptorMatches: false,
     authenticatedRequests: 0,
     nativeRequests: { "api-key": 0, subscription: 0 },
+    nativeGitHubRequests: 0,
+    nativeGeminiRequests: 0,
   };
   for await (const entry of Deno.readDir("/proc/self/fd")) {
     const path = `/proc/self/fd/${entry.name}`;
@@ -107,16 +116,41 @@ async function broker(credentialRoot: string): Promise<void> {
   }
   await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
   const fixtureHandler = async (request: Request): Promise<Response> => {
-    const github = new URL(request.url).pathname.startsWith("/repos/");
+    const url = new URL(request.url);
+    const github = url.pathname.startsWith("/repos/");
+    const gemini = url.pathname.startsWith("/v1beta/models/");
     const key = request.headers.get("x-api-key");
     const bearer = request.headers.get("authorization");
     if (
-      github
+      gemini
+        ? request.headers.get("x-goog-api-key") !== secret || bearer !== null
+        : github
         ? bearer !== `Bearer ${secret}`
         : !((key === secret && bearer === null) ||
           (key === null && bearer === `Bearer ${secret}`))
     ) {
       return new Response("Synthetic authentication failed", { status: 401 });
+    }
+    if (gemini) {
+      const body = await request.json();
+      requireFact(
+        Array.isArray(body.contents),
+        "Native Gemini omitted contents",
+      );
+      witness.nativeGeminiRequests++;
+      await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+      return geminiNativeFixtureResponse(
+        url.pathname.endsWith(":streamGenerateContent"),
+      );
+    }
+    if (github && url.searchParams.get("per_page") === "1") {
+      witness.nativeGitHubRequests++;
+      await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+      return request.method === "HEAD"
+        ? new Response(null, {
+          headers: { "content-type": "application/json" },
+        })
+        : Response.json([{ number: 7, title: "fixture-native-gh-complete" }]);
     }
     const body = github ? undefined : await request.json();
     if (typeof body?.model === "string") {
@@ -237,7 +271,7 @@ async function broker(credentialRoot: string): Promise<void> {
     createCredentialBroker({
       capability,
       claudeAuthentication,
-      credentials: { claude: secret, github: secret },
+      credentials: { claude: secret, github: secret, gemini: secret },
       repositories: ["fixture/allowed"],
       // The fixed-origin policy runs first. Only the test forwarding seam
       // substitutes this controlled local HTTP listener; no internet request.
@@ -491,6 +525,17 @@ if (mode === "broker") {
     JSON.parse(Deno.args[1]!),
     Deno.args[2] as "api-key" | "subscription",
   );
+} else if (mode === "native-github") {
+  const fixture = JSON.parse(Deno.args[1]!) as ContainerFixture;
+  console.log(JSON.stringify(await probeNativeGitHubClient(fixture)));
+} else if (mode === "native-gemini") {
+  const fixture = JSON.parse(Deno.args[1]!) as ContainerFixture;
+  console.log(JSON.stringify(
+    await runGeminiNativeClientProbe({
+      ...fixture,
+      expectedVersion: Deno.args[2]!,
+    }),
+  ));
 } else if (mode === "broker-stopped") {
   const fixture = JSON.parse(Deno.args[1]!) as ContainerFixture;
   let refused = false;

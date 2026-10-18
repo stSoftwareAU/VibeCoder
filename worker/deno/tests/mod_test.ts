@@ -233,7 +233,8 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issues #2070–#2073 added `toolchain-selfcheck` (count 150 → 151).
   // Issue #3293 added `review-round` (count 151 → 152).
   // Issue #3744 added `route-issue` (count 152 → 153).
-  assertEquals(commands.length, 153);
+  // Issue #3699 adds the explicitly experimental `credential-broker` command.
+  assertEquals(commands.length, 154);
   assertEquals(commands.includes("route-issue"), true);
   assertEquals(commands.includes("sweep-drift"), true);
   assertEquals(commands.includes("check-resurrected-files"), true);

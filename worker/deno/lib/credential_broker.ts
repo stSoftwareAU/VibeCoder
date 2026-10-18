@@ -13,7 +13,7 @@ import {
   resolveCredentialBrokerRoute,
 } from "./credential_broker_policy.ts";
 
-interface CredentialBrokerOptions {
+export interface CredentialBrokerOptions {
   /** Per-run broker capability; never an upstream provider/GitHub credential. */
   capability: string;
   /**
@@ -23,12 +23,14 @@ interface CredentialBrokerOptions {
   credentials: Partial<Record<BrokerService, string>>;
   /** Trusted selection only; bearer mode never falls back to an API key. */
   claudeAuthentication?: "api-key" | "bearer";
-  /** Repository names supplied by the trusted worker, not by an agent request. */
+  /** Repository names supplied by the trusted supervisor, not by a worker request. */
   repositories: readonly string[];
   /** Production defaults to fetch; tests can observe the outgoing request. */
   fetch?: (request: Request) => Promise<Response>;
   /** Hard request-body bound, including streaming/chunked requests. */
   maxRequestBytes?: number;
+  /** Trusted session lifetime; callers cannot override it in a request. */
+  signal?: AbortSignal;
 }
 
 function failure(status: number, message: string): Response {
@@ -38,17 +40,41 @@ function failure(status: number, message: string): Response {
   });
 }
 
+async function refuseResponse(
+  response: Response,
+  status: number,
+  reason: string,
+): Promise<Response> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The response stays refused; report the cleanup failure without leaking
+    // an upstream exception, which may include an injected credential.
+    return failure(status, `${reason}; upstream cancellation failed`);
+  }
+  return failure(status, reason);
+}
+
 async function boundedBody(
   request: Request,
   maximum: number,
+  signal: AbortSignal,
 ): Promise<Uint8Array<ArrayBuffer> | undefined> {
   if (!request.body) return new Uint8Array();
   const reader = request.body.getReader();
+  const abort = () => {
+    // A rejected underlying cancel still settles pending reads. The signal
+    // check below maps that attempt to a refused request, never a success.
+    void reader.cancel(signal.reason).catch(() => {});
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
   const chunks: Uint8Array[] = [];
   let length = 0;
   try {
     for (;;) {
       const { done, value } = await reader.read();
+      signal.throwIfAborted();
       if (done) break;
       length += value.byteLength;
       if (length > maximum) {
@@ -65,6 +91,7 @@ async function boundedBody(
     }
     return body;
   } finally {
+    signal.removeEventListener("abort", abort);
     reader.releaseLock();
   }
 }
@@ -107,6 +134,9 @@ export function createCredentialBroker(
   const forward = options.fetch ?? fetch;
 
   return async (request) => {
+    if (options.signal?.aborted) {
+      return failure(503, "Broker session is closed");
+    }
     const presented = request.headers.get("authorization") ?? "";
     const actual = new Uint8Array(
       await crypto.subtle.digest(
@@ -125,10 +155,20 @@ export function createCredentialBroker(
     const credential = credentials[route.service];
     if (!credential) return failure(503, "Broker service is not configured");
 
+    const signal = AbortSignal.any([
+      request.signal,
+      AbortSignal.timeout(180_000),
+      ...(options.signal ? [options.signal] : []),
+    ]);
+
     let body: Uint8Array<ArrayBuffer> | undefined;
     try {
-      body = await boundedBody(request, maximum);
+      body = await boundedBody(request, maximum, signal);
     } catch {
+      if (options.signal?.aborted) {
+        return failure(503, "Broker session is closed");
+      }
+      if (signal.aborted) return failure(408, "Broker request was cancelled");
       return failure(400, "Request body could not be read");
     }
     if (!body) return failure(413, "Request body exceeds broker limit");
@@ -159,6 +199,16 @@ export function createCredentialBroker(
     if (route.service === "github") {
       headers.set("x-github-api-version", "2022-11-28");
     }
+    // Authentication/body reads yield. Recheck immediately before crossing
+    // the boundary so even a custom transport cannot start after revocation.
+    if (signal.aborted) {
+      return failure(
+        options.signal?.aborted ? 503 : 408,
+        options.signal?.aborted
+          ? "Broker session is closed"
+          : "Broker request was cancelled",
+      );
+    }
     let response: Response;
     try {
       response = await forward(
@@ -167,18 +217,26 @@ export function createCredentialBroker(
           headers,
           body: request.method === "POST" ? body : undefined,
           redirect: "manual",
-          signal: AbortSignal.any([
-            request.signal,
-            AbortSignal.timeout(180_000),
-          ]),
+          signal,
         }),
       );
     } catch {
+      if (options.signal?.aborted) {
+        return failure(503, "Broker session is closed");
+      }
       return failure(502, "Upstream request failed");
     }
+    if (signal.aborted) {
+      return refuseResponse(
+        response,
+        options.signal?.aborted ? 503 : 408,
+        options.signal?.aborted
+          ? "Broker session is closed"
+          : "Broker request was cancelled",
+      );
+    }
     if (response.status >= 300 && response.status < 400) {
-      await response.body?.cancel();
-      return failure(502, "Upstream redirect refused");
+      return refuseResponse(response, 502, "Upstream redirect refused");
     }
     const responseHeaders = new Headers({ "cache-control": "no-store" });
     // An allowlist keeps auth/cookie/location/debug headers from the agent.
@@ -192,7 +250,12 @@ export function createCredentialBroker(
             name.startsWith("anthropic-ratelimit-unified-")))
       ) responseHeaders.set(name, value);
     }
-    return new Response(response.body, {
+    // Enforce revocation even when a forwarding implementation does not
+    // cancel a response body after its request signal aborts.
+    const stream = response.body?.pipeThrough(new TransformStream(), {
+      signal,
+    });
+    return new Response(stream, {
       status: response.status,
       headers: responseHeaders,
     });

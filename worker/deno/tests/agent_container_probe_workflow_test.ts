@@ -71,7 +71,7 @@ function problems(workflow: unknown): string[] {
   check(
     build.includes("strip-containerfile --out /tmp/Containerfile.stripped") &&
       build.includes(
-        'podman build -f /tmp/Containerfile.stripped -t "${IMAGE}" container/',
+        'podman build --build-arg AGENT_PROVIDERS=claude,gemini -f /tmp/Containerfile.stripped -t "${IMAGE}" container/',
       ),
     "builds production image with Podman",
   );
@@ -79,7 +79,9 @@ function problems(workflow: unknown): string[] {
   check(
     handlers.includes("tests/agent_container_probe_test.ts") &&
       handlers.includes("tests/agent_container_probe_workflow_test.ts") &&
-      handlers.includes("tests/anthropic_agent_gateway_test.ts"),
+      handlers.includes("tests/anthropic_agent_gateway_test.ts") &&
+      handlers.includes("tests/github_agent_gateway_test.ts") &&
+      handlers.includes("tests/gemini_agent_gateway_test.ts"),
     "runs probe and workflow assertions",
   );
   const separate = String(step(workflow, "separate").run);

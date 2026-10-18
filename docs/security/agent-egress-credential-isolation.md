@@ -19,15 +19,26 @@ The real Docker diagnostic below refused that setup under the production
 security flags. It is therefore not the implementation route: access to a
 different development host alone would not establish compatibility.
 
-The replacement candidate gives each invocation its own runtime-created
-container with `--network none`, separate from the trusted worker and broker.
-Only a dedicated broker Unix socket crosses that boundary. Credential mounts,
-staged credentials, worker process memory and its environment must never
-enter the agent container. The host owns container creation and cancellation;
-neither the agent nor its workspace receives the runtime control socket.
-Existing capability drops, `no-new-privileges` and security profiles stay in
-place. Direct TCP, UDP, DNS and VM sockets require explicit negative tests.
-Broker failure must stop the invocation without a network or token fallback.
+The selected replacement puts the **whole worker execution container**,
+including provider CLIs and repository-defined quality commands, behind
+`--network none`. The trusted supervisor and credential broker run outside
+it. This retains the worker's existing worktrees, state volumes and command
+lifecycle while treating all execution beside repository code as untrusted.
+Only a dedicated broker Unix socket crosses the credential boundary. Provider
+mounts, staged credentials and the supervisor's process environment never
+enter the worker. The host owns container creation and cancellation; neither
+the worker nor its workspace receives the runtime control socket. Existing
+capability drops, `no-new-privileges` and security profiles stay in place.
+Direct TCP, UDP, DNS and VM sockets require explicit negative tests. Broker
+failure must stop execution without a network or token fallback.
+
+Authority comes from immutable host-selected accounts and repository policy.
+A request claiming to be the worker, or naming a different repository, cannot
+mint a capability or expand its scope. Agent-readable capabilities must not
+authorise unrestricted GitHub writes or arbitrary host commands. Privileged
+lifecycle transitions need broker-owned state and policy: the agent and
+worker share a container and cannot authenticate different trust levels by
+supplying role names.
 
 Native `gh`, git and model clients need either a TLS-intercepting forwarding
 proxy with opaque credential sentinels or supported endpoint adapters.
@@ -74,7 +85,7 @@ behaviours to silently remove from the worker.
 
 ## Required integration before a milestone PR is ready
 
-1. Implement and prove the separate agent-container lifecycle described
+1. Implement and prove the separate worker/broker lifecycle described
    below, keeping runtime security profiles intact. Pin and verify any proxy
    implementation and its dependency graph. Evaluate the standalone proxy in
    [Anthropic sandbox-runtime v0.0.80](https://github.com/anthropics/sandbox-runtime/releases/tag/v0.0.80),
@@ -82,7 +93,7 @@ behaviours to silently remove from the worker.
    configuration is not proof that native clients, OAuth refresh or the
    container boundary work. Do not enable a weaker nested-sandbox mode or
    disable seccomp to obtain a pass.
-2. Make the runner create and tear down the boundary and broker together.
+2. Make the trusted host launcher create and tear down the boundary and broker together.
    Preserve provider selection, credential-pool isolation, cancellation,
    stdout parsing, the watchdog and run-scoped GitHub policy. A broker that
    survives the invocation must not retain a usable capability.
@@ -147,14 +158,15 @@ This is a source-backed design candidate, not a tested implementation.
   [process defaults](https://github.com/apple/containerization/blob/7800b4642171561c95b5f55500b19e5dce5acd45/Sources/Containerization/LinuxProcessConfiguration.swift).
 
 The current host launcher creates one worker container, and `claude_runner`
-spawns the provider within it. Moving only a flag cannot create the proposed
-trust split. The next integration needs a host-owned invocation supervisor
-that accepts bounded run requests from the trusted worker, resolves approved
-workspace mounts itself, and streams stdin/stdout/cancellation to a disposable
-agent container. A raw Docker socket or arbitrary host-mount request must not
-become part of that interface. The agent receives its workspace, sanitised
-provider state and broker transport only; the worker's credentials, logs and
-private state remain separate.
+spawns the provider within it. The selected design retains that execution
+lifecycle but removes its credentials and external interfaces. A separate
+host-owned supervisor loads account selection and repository policy from
+trusted configuration, starts the broker, and supplies only bounded local
+capabilities to the worker. No runtime control socket or arbitrary host-mount
+request becomes part of the worker interface. Existing work and agent/approval
+state volumes remain separate; none is shared with the credential broker.
+The worker's `sudo` account drop is an internal defence, not the credential
+boundary: its fallback must not reveal any upstream secret.
 
 For native CLIs, sandbox-runtime v0.0.80 documents a standalone TLS proxy with
 an external request decider, inherited listener/lifeline descriptors and
@@ -381,7 +393,7 @@ This proves the recorded Docker construction with synthetic fixtures. Native
 CLIs, live OAuth, TLS, DNS, UDP, VM sockets, GitHub writes, Podman and Apple
 remain separate acceptance requirements, as does production integration.
 
-### Native Anthropic adapter — prepared for runtime validation
+### Native Anthropic adapter — observed on Docker
 
 `anthropic_agent_gateway.ts` provides a fixed Unix-socket forwarder and an
 ephemeral agent-loopback endpoint for the native CLI. Its fresh environment
@@ -405,33 +417,55 @@ states that an explicit `CLAUDE_CODE_OAUTH_TOKEN` lasts for the session and
 requires replacement and restart when expired. This does not establish Codex's
 separate refresh-token contract or validate a live Claude subscription.
 
-The next diagnostic invokes the image's pinned Claude binary twice in fresh,
-network-none containers: API-key mode and subscription-variable mode. Each
-gets an independently configured local capability. The synthetic upstream
-requires the corresponding injected authentication, and requires the native
-OAuth capability header in subscription mode, before returning a complete SSE
-response. The native result and upstream request witnesses must both confirm
-inference. These attempts are **not yet run** and cannot prove live account
-acceptance, billing, token refresh, other providers or production lifecycle.
+[Run 39090767645](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39090767645)
+([job 117566838738](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39090767645/job/117566838738))
+passed at commit `456cb24f430ea311168a04bb311bab5b83a14f22`, tree
+`7f528a22f22e8700f9b989c0a4282d0d9d48caad`, using image
+`sha256:f70a4bfc64e9da2914835e3157e495c26c2d4d27e651b7ba8007b273ee5e2d08`.
+The image's pinned Claude 2.1.293 ran twice in fresh, network-none containers:
+API-key mode and subscription-variable mode. Each received its own local
+capability. Both native clients completed inference, neither exposed the
+synthetic upstream credential, and the trusted fixture witnessed exactly one
+request with the required authentication in each mode. Subscription mode
+also supplied its native OAuth capability header. Before/after IPv4 and IPv6
+controls, credential visibility, unchanged hardening and stopped-broker
+refusal passed again. Nested namespace creation still failed with EPERM.
+
+[Artifact 12122802273](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39090767645/artifacts/12122802273)
+retains the diagnostic logs with digest
+`sha256:7dbe338a6a61bd0d932af8a59e85cc335940f65358fcd26183e1a2fe68229788`.
+This proves pinned-client inference against synthetic upstream responses.
+It does not prove live account acceptance, billing, token refresh, other
+providers, Apple or production lifecycle.
 
 ### Remaining production integration
 
-The host supervisor must create each agent's broker capability, dedicated
-checkout/state scope and container lifecycle without exposing a runtime
-control socket to either the agent or repository code. Reusing the worker's
-whole work volume would expose other checkouts and state. Repository-defined
-quality commands need the same credential-free execution boundary: their
-current optional `sudo` account drop can fall back to the worker account.
-Upstream credentials belong only to the trusted broker, including refresh
-state; agent-writeable code must never execute beside them.
+The smallest production slice is one host-selected Claude account and one
+repository, a trusted broker lease, and the existing whole worker container
+started with `--network none`, no credential mounts and only its broker socket.
+Its startup must launch the native Anthropic adapter and a scoped native `gh`
+read adapter, then preserve normal stdin/stdout, cancellation and worktree
+behaviour. Repository-defined quality commands stay inside the same boundary.
+Worker exit, timeout, broker loss and host cancellation must revoke the lease
+and stop execution before a capability can be reused.
 
-After that boundary, provider-specific adapters must preserve native model,
-subscription, pool and resume behaviour; scoped `gh`/git operations must retain
-the existing write gates without accepting arbitrary trusted-side commands.
-Runner stdin/stdout, cancellation, timeouts, retries and broker expiry then
-need integration tests. Docker, Podman and Apple's VM/socket transport each
-need the full denial and credential-visibility matrix before fail-closed
-launch becomes the default. R9 and R11 remain open until that evidence exists.
+`credential_broker_lease.ts` now creates a random per-session capability from
+trusted in-process options, copies account and repository scope, and enforces
+a finite lifetime of at most 24 hours. There is no HTTP grant or renewal
+endpoint. Closing a lease refuses subsequent requests and cancels unfinished
+request bodies, upstream requests and active response streams. Authentication
+can yield, so the handler checks revocation again immediately before calling
+the transport. A refused upstream response remains refused even if cancelling
+its body throws; only a stable cleanup category crosses the boundary. This
+module is not yet wired into normal startup.
+
+Subsequent slices must preserve all provider, subscription, account-pool and
+resume semantics; broker-owned GitHub/git write policy must preserve reserved
+labels and publication/pre-push checks without accepting caller role claims.
+Dependency downloads require a separately constrained egress policy. Docker,
+Podman and Apple's VM/socket transport each need the full denial and
+credential-visibility matrix before fail-closed launch becomes the default.
+R9 and R11 remain open until that evidence exists.
 
 ### Local evidence
 
@@ -470,9 +504,44 @@ launch becomes the default. R9 and R11 remain open until that evidence exists.
   first failed with a missing forwarded value, then passed after both hops
   preserved the protocol namespace. Fifteen isolated mutations of query,
   service, authentication, header, environment, cancellation and safe-error
-  behaviour were rejected by assertions. Real pinned-client execution remains
-  pending the next branch-only workflow run.
+  behaviour were rejected by assertions. Real pinned-client execution passed
+  on Docker as recorded above; this does not establish live authentication.
+- Eight host-lease tests cover immutable scope, separate grants, finite expiry,
+  bodyless authentication races, request/response cancellation and safe refusal
+  when an upstream body rejects cancellation. The race and cleanup regressions
+  first failed against the preceding implementation; the combined broker,
+  lease and native adapter suite then passed 29 tests. Nine isolated mutations
+  of lifetime, timer, scope, credential copying, body/stream cancellation,
+  pre-forward revocation and refused-response disposal failed assertions.
 
 See the [original gap analysis](agent-containment-gap-analysis.md) and
 [threat model](../THREAT-MODEL.md). Neither existing `gh` write gates nor the
 experimental broker make unrestricted container egress safe on their own.
+
+## Native GitHub and Gemini checkpoint (hosted proof pending)
+
+The diagnostic now builds the manifest-pinned Claude and Gemini providers and
+runs the installed `gh` binary inside the network-none agent. Native `gh`
+uses its `http_unix_socket` configuration to reach an agent-local adapter;
+that adapter can forward only through `/run/broker/broker.sock`. Its environment
+contains an opaque local capability. The fixture requires permitted GET and
+HEAD reads, four broker-enforced refusals, and `gh auth token` returning only
+the capability, with an independent broker-side request witness.
+
+Gemini uses `GOOGLE_GEMINI_BASE_URL`, supported by the pinned
+[CLI v0.55.1 content generator](https://github.com/google-gemini/gemini-cli/blob/v0.55.1/packages/core/src/core/contentGenerator.ts).
+The fresh environment contains an opaque `GEMINI_API_KEY`, an explicit local
+loopback URL and no inherited provider credentials. The adapter selects only
+the broker's Gemini service; the broker still owns the upstream key, path and
+query policy. The native fixture verifies the installed manifest version,
+actual completed JSON output, absence of the planted credential and a separate
+authenticated upstream witness. This slice covers Gemini API-key transport,
+not Google OAuth, Vertex AI, live credentials or refresh.
+
+Local Gemini handler and broker tests passed (20 tests); six isolated route,
+capability, key, hostname, parent-path and cancellation mutations failed their
+assertions. Native GitHub handler tests also pass. The workflow test reproduced
+the absent provider/handler setup before enabling those diagnostic steps. The
+new real native GitHub/Gemini container result remains pending; prior Docker
+and Podman results did not exercise these two clients. Normal worker startup,
+Git writes, GraphQL policy, account pools and Apple remain incomplete.
