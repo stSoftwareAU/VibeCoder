@@ -267,7 +267,8 @@ export async function startHeartbeat(
 /**
  * Stop periodic heartbeat updates and clear the heartbeat.
  *
- * Clears the interval and calls clearFn for a final cleanup.
+ * Clears the interval and releases its lifetime pin. Normally calls clearFn
+ * for final cleanup; deferClear leaves publication to the final release owner.
  * Safe to call even if the heartbeat is not running or has already been stopped.
  */
 export async function stopHeartbeat(
@@ -318,7 +319,7 @@ export async function stopHeartbeat(
     takePendingReleaseOutcome(active.options.repo, active.options.issueNumber);
   }
 
-  // Issue #3760: release the allowlist pin taken by startHeartbeat — after
+  // On the immediate-clear path, release the pin taken by startHeartbeat after
   // clearFn, because the final stale-marker PATCH is itself a GitHub write
   // to this repo and must still be allowed.
   unpinWriteRepo(active.options.repo);

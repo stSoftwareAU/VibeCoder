@@ -11,7 +11,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertExists } from "@std/assert";
+import { assert, assertEquals, assertExists } from "@std/assert";
 import {
   createProductionRunCoreDeps,
   type ProductionDepsOptions,
@@ -32,6 +32,20 @@ import { resolveContentApprovalStateDir } from "../lib/content_approval_state_di
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
+import {
+  appendAttempt,
+  describeAttemptOutcome,
+  renderHeartbeatBody,
+  seedMarkerState,
+} from "../lib/heartbeat_storage.ts";
+import type { RunOutcome } from "../lib/run_outcome.ts";
+import { TOKEN_SCOPE_PARKED_MARKER } from "../lib/token_scope_fleet_bound.ts";
+import {
+  createWriteRepoAllowlistContext,
+  seedWriteRepoAllowlist,
+  withWriteRepoAllowlistContext,
+} from "../lib/write_repo_allowlist.ts";
 
 /** Where the repo failure counters land under a given temporary root. */
 function repoFailureFilePath(tmpDir: string): string {
@@ -846,12 +860,21 @@ Deno.test("production coding dispatch defers actual heartbeat publication throug
     );
     Object.assign(worker.crashHandling, crashPorts);
     try {
-      const result = await production.deps.processIssue({
-        repo,
-        issueNumber: 42,
-        issueTitle: title,
-        milestoneTitle: "",
-      });
+      const observation = await Promise.allSettled([
+        production.deps.processIssue({
+          repo,
+          issueNumber: 42,
+          issueTitle: title,
+          milestoneTitle: "",
+        }),
+      ]);
+      assertEquals(
+        observation[0]!.status,
+        "fulfilled",
+        "valid terminal outcomes do not throw",
+      );
+      assert(observation[0]!.status === "fulfilled");
+      const result = observation[0]!.value;
       assertEquals(result.ok, true);
       if (!result.ok) throw result.error;
       assertEquals(executions, 1);
@@ -865,6 +888,256 @@ Deno.test("production coding dispatch defers actual heartbeat publication throug
         "the production caller publishes no provisional failure or duplicate landed tally",
       );
       assertEquals(isHeartbeatRunning(repo, 42), false);
+    } finally {
+      production.cleanup();
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("production final release checks workflow scope against the durable published tally (Issue #3977)", () =>
+  withWriteRepoAllowlistContext(createWriteRepoAllowlistContext(), async () => {
+    seedWriteRepoAllowlist("org/repo");
+    for (
+      const variant of [
+        "token",
+        "failed-marker",
+        "quality",
+        "no-outcome",
+        "stale",
+      ]
+    ) {
+      const root = await Deno.makeTempDir();
+      const repo = "org/repo";
+      const token: RunOutcome = {
+        kind: "no_pr",
+        category: "token_scope",
+        phase: "completion",
+        elapsedSeconds: 10,
+        message: "Cannot push: the token lacks the workflow scope",
+      };
+      const oldAttempt = {
+        epoch: 100,
+        host: "old-host",
+        text: describeAttemptOutcome(token),
+      };
+      const tally = appendAttempt(appendAttempt(null, oldAttempt), {
+        ...oldAttempt,
+        epoch: 200,
+      });
+      let durableBody = renderHeartbeatBody({
+        machineId: "old-install",
+        epoch: 0,
+        released: true,
+        outcome: token,
+        attempts: tally,
+      });
+      const operations: string[] = [];
+      const logs: string[] = [];
+      let parked = 0;
+      _setGhSpawnRunner((args) => {
+        let stdout = "";
+        if (args[0] === "api" && args.includes("PATCH")) {
+          operations.push("marker-write");
+          if (variant === "failed-marker") {
+            return Promise.resolve({
+              code: 1,
+              success: false,
+              stdout: "",
+              stderr: "simulated marker write failure",
+            });
+          }
+          if (args[1]?.endsWith("/1")) {
+            durableBody = args.find((arg) => arg.startsWith("body="))!.slice(5);
+          }
+          stdout = "1";
+        } else if (args[0] === "api" && args[1]?.endsWith("/comments")) {
+          stdout = JSON.stringify([{
+            id: 1,
+            body: durableBody,
+            author: "test-user",
+          }]);
+        } else if (args[0] === "issue" && args[1] === "view") {
+          operations.push("tally-read");
+          stdout = JSON.stringify({
+            title: "Fix the handler",
+            body: "Existing work",
+            labels: [],
+            author: { login: "test-user" },
+            comments: [{ body: durableBody, author: { login: "test-user" } }],
+          });
+        } else if (
+          args[0] === "issue" && args[1] === "comment" &&
+          args.some((arg) => arg.includes(TOKEN_SCOPE_PARKED_MARKER))
+        ) {
+          operations.push("park");
+          parked++;
+        }
+        return Promise.resolve({ code: 0, success: true, stdout, stderr: "" });
+      });
+      const production = await createProductionRunCoreDeps(createTestOptions({
+        workDir: root,
+        repoDir: root,
+        config: {
+          ...buildDefaultWorkerConfig(),
+          workDir: root,
+          repos: [repo],
+          allowedAuthors: ["test-user"],
+        },
+        env: envFrom({ HOME: root }),
+        logger: createLogger({
+          write: (line) => {
+            logs.push(line);
+          },
+        }),
+      }));
+      try {
+        await seedMarkerState(root, repo, 42, {
+          commentId: 2,
+          lastRefresh: 300,
+        });
+        const outcome: RunOutcome | undefined = variant === "no-outcome"
+          ? undefined
+          : variant === "stale"
+          ? {
+            kind: "claim_stale",
+            phase: "completion",
+            reason: "work_already_merged",
+            detail: "Already landed",
+          }
+          : variant === "quality"
+          ? { ...token, category: "quality_check" }
+          : token;
+        await production.deps.releaseClaim!(repo, 42, outcome);
+        assertEquals(parked, variant === "token" ? 1 : 0, variant);
+        const checks = logs.filter((line) =>
+          line.includes("Workflow-scope refusal recorded")
+        );
+        assertEquals(
+          checks.length,
+          variant === "token" || variant === "failed-marker" ? 1 : 0,
+          variant,
+        );
+        if (variant === "token") {
+          assertEquals(
+            operations.indexOf("marker-write") <
+              operations.indexOf("tally-read"),
+            true,
+          );
+          assertEquals(
+            operations.indexOf("tally-read") < operations.indexOf("park"),
+            true,
+          );
+        }
+      } finally {
+        production.cleanup();
+        _resetGhSpawnRunner();
+        await Deno.remove(root, { recursive: true });
+      }
+    }
+  }));
+
+Deno.test("production forwards genuine failures and only exact landed skip outcomes (Issue #3977)", async () => {
+  const failure: RunOutcome = {
+    kind: "no_pr",
+    category: "quality_check",
+    phase: "completion",
+    elapsedSeconds: 1,
+    message: "quality.sh: 2 tests failed",
+  };
+  const landed: RunOutcome = {
+    kind: "claim_stale",
+    phase: "completion",
+    reason: "work_already_merged",
+    detail: "Exact work landed",
+  };
+  const controls: Array<
+    { skipped: boolean; outcome?: RunOutcome; expected?: RunOutcome }
+  > = [
+    { skipped: false, outcome: failure, expected: failure },
+    { skipped: true, outcome: landed, expected: landed },
+    { skipped: true },
+    { skipped: true, outcome: { ...landed, reason: "issue_closed" } },
+    {
+      skipped: true,
+      outcome: {
+        kind: "pr_deferred",
+        phase: "completion",
+        branch: "issue-42-work",
+        base: "main",
+        reason: "work_already_merged",
+      },
+    },
+  ];
+  for (const row of controls) {
+    const root = await Deno.makeTempDir();
+    const repo = "org/repo", title = "Fix login bug", body = "Fix src/auth.ts";
+    const config = {
+      ...buildDefaultWorkerConfig(),
+      workDir: root,
+      allowedAuthors: ["test-user"],
+    };
+    const snapshot = await captureContentSnapshot(
+      resolveContentApprovalStateDir(root),
+      repo,
+      42,
+      title,
+      body,
+      "test-user",
+    );
+    assertEquals(snapshot.ok, true);
+    const worker = createMockDeps({
+      github: {
+        runGhCommand: () =>
+          Promise.resolve(
+            JSON.stringify({
+              title,
+              body,
+              author: { login: "test-user" },
+              labels: [{ name: "work-on" }],
+              comments: [],
+              state: "OPEN",
+            }),
+          ),
+      },
+    });
+    const production = await createProductionRunCoreDeps(createTestOptions({
+      repoDir: root,
+      workDir: root,
+      config,
+      workerDeps: worker,
+      env: envFrom({ HOME: root }),
+      workOnIssue: () =>
+        Promise.resolve({
+          success: false,
+          category: "quality_check" as const,
+          expectedSkip: row.skipped,
+          phase: "completion",
+          reason: "quality.sh: 2 tests failed",
+          timings: {},
+          outcome: row.outcome,
+        }),
+    }));
+    try {
+      const observation = await Promise.allSettled([
+        production.deps.processIssue({
+          repo,
+          issueNumber: 42,
+          issueTitle: title,
+          milestoneTitle: "",
+        }),
+      ]);
+      assertEquals(
+        observation[0]!.status,
+        "fulfilled",
+        "valid terminal outcomes do not throw",
+      );
+      assert(observation[0]!.status === "fulfilled");
+      const result = observation[0]!.value;
+      assertEquals(result.ok, true);
+      assert(result.ok);
+      assertEquals(result.value.skipped, row.skipped);
+      assertEquals(result.value.outcome, row.expected);
     } finally {
       production.cleanup();
       await Deno.remove(root, { recursive: true });

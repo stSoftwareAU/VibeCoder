@@ -4864,40 +4864,13 @@ export async function createProductionRunCoreDeps(
         }
       }
 
-      // Issue #2689: a workflow-scope refusal is transient — no label, no
-      // attempt — so it owes two bounds instead. This install remembers the
-      // issue and its claim scan skips it; and once the issue's release
-      // tally shows the fleet-wide bound, one comment parks it for hosts
-      // without the scope. The heartbeat's final clear has already written
-      // this run's attempt to the tally (Issue #4330).
+      // Keep this install's refusal memory immediately. The fleet-wide bound
+      // reads the durable attempt tally after final claim release below.
       if (plan.decision?.failureClass === "token-scope") {
         await recordThisHostsWorkflowScopeRefusal(
           issue.repo,
           issue.issueNumber,
         );
-        try {
-          const bound = await enforceTokenScopeFleetBound({
-            repo: issue.repo,
-            issueNumber: issue.issueNumber,
-            fleetAuthors,
-          }, { ghFn: runGhCommand });
-          logger.info("Workflow-scope refusal recorded", {
-            repo: issue.repo,
-            issueNumber: issue.issueNumber,
-            consecutiveRefusals: bound.consecutive,
-            parked: bound.parked,
-            parkedNow: bound.posted,
-          });
-        } catch (err) {
-          logger.warn(
-            "Workflow-scope fleet bound could not be checked (non-fatal)",
-            {
-              repo: issue.repo,
-              issueNumber: issue.issueNumber,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
       }
 
       return {
@@ -5246,10 +5219,37 @@ export async function createProductionRunCoreDeps(
           ...(outcome ? { outcome } : {}),
         });
       } catch { /* best-effort */ }
-      // Code-fixable no-PR failures raise a deduped worker-fault issue
-      // (Issue #4329). Strictly after the claim release and best-effort:
-      // the helper never throws, and nothing here may stop the release.
+      // Existing no-PR follow-up controls run after final claim release.
       if (outcome?.kind === "no_pr") {
+        // Read only durable attempts after trying the final marker write.
+        // A failed write contributes nothing; a later refusal retries.
+        if (outcome.category === "token_scope") {
+          try {
+            const bound = await enforceTokenScopeFleetBound({
+              repo,
+              issueNumber,
+              fleetAuthors,
+            }, { ghFn: runGhCommand });
+            logger.info("Workflow-scope refusal recorded", {
+              repo,
+              issueNumber,
+              consecutiveRefusals: bound.consecutive,
+              parked: bound.parked,
+              parkedNow: bound.posted,
+            });
+          } catch (err) {
+            logger.warn(
+              "Workflow-scope fleet bound could not be checked (non-fatal)",
+              {
+                repo,
+                issueNumber,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          }
+        }
+        // Code-fixable failures raise a deduped worker-fault issue (Issue
+        // #4329), best-effort so this cannot stop claim release.
         try {
           const marker = await readMarkerState(workDir, repo, issueNumber);
           const decision = await fileRunFailureIssue({

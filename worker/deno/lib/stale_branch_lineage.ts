@@ -275,9 +275,7 @@ export async function readMergedHeadRefPrs(
     return {
       ok: false,
       error: new Error(
-        `merged-PR lookup for '${branch}' failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `merged-PR lookup for '${branch}' failed: ${String(error)}`,
       ),
     };
   }

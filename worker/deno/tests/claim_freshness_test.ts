@@ -576,15 +576,29 @@ Deno.test("already-landed proof rejects partial, unrelated and unreadable merge 
       { body: "```\nCloses #333\n```" },
     ]
   ) {
-    const { options } = landedOptions({
-      runGh: (args: string[]) =>
-        Promise.resolve(args[1] === "list" ? landedResponse(pr) : "behind"),
-    });
-    assertEquals(
-      (await checkAlreadyLanded(options)).kind,
-      "fresh",
-      JSON.stringify(pr),
-    );
+    // Evidence is required for the declared issue criterion. Scope-less legacy
+    // issues can instead rely on their exact closing contract and commit proof.
+    const issueBodies = [
+      "## Acceptance Criteria\n- [ ] Fix the requested behaviour",
+    ];
+    if (
+      pr.body !==
+        "Closes #333\n\n## Acceptance Criteria\n- **met** — Fix the requested behaviour"
+    ) {
+      issueBodies.push("Historical issue without declared acceptance criteria");
+    }
+    for (const issueBody of issueBodies) {
+      const { options } = landedOptions({
+        issueBody,
+        runGh: (args: string[]) =>
+          Promise.resolve(args[1] === "list" ? landedResponse(pr) : "behind"),
+      });
+      assertEquals(
+        (await checkAlreadyLanded(options)).kind,
+        "fresh",
+        JSON.stringify(pr),
+      );
+    }
   }
 });
 
@@ -769,12 +783,47 @@ Deno.test("already-landed proof accepts canonical repo casing, historical summar
   ) {
     const { options } = landedOptions({
       repo: REPO.toLowerCase(),
+      issueBody: body.includes("**met**")
+        ? "## Acceptance Criteria\n- [ ] Fix the requested behaviour"
+        : "Historical issue without declared acceptance criteria",
       runGh: (args: string[]) =>
         Promise.resolve(
           args[1] === "list" ? landedResponse({ body }) : "behind",
         ),
     });
     assertEquals((await checkAlreadyLanded(options)).kind, "stale", body);
+  }
+});
+
+Deno.test("already-landed proof requires closure evidence for current declared scope (Issue #3977)", async () => {
+  for (
+    const heading of [
+      "## Acceptance Criteria",
+      "### Accepted scope so far",
+      "## Done when",
+    ]
+  ) {
+    for (
+      const body of [
+        "Closes #333",
+        "Closes #333\n\nPartial API implementation; CLI remains unimplemented",
+        "Closes #333\n\n## Acceptance Criteria\n- **met** — Unrelated documentation cleanup — evidence: page renders",
+      ]
+    ) {
+      const { options, calls } = landedOptions({
+        issueBody: heading + "\n- [ ] Fix the requested behaviour",
+        runGh: (args: string[]) =>
+          Promise.resolve(
+            args[1] === "list" ? landedResponse({ body }) : "behind",
+          ),
+      });
+      assertEquals(
+        (await checkAlreadyLanded(options)).kind,
+        "fresh",
+        heading + body,
+      );
+      assertEquals(calls.some((args) => args[0] === "fetch"), false);
+    }
   }
 });
 
@@ -888,15 +937,22 @@ Deno.test("already-landed proof validates the requested identity and avoids loca
       ),
     );
   }
-  const { options, calls } = landedOptions({
-    runGh: () => Promise.resolve("[]"),
-  });
-  assertEquals((await checkAlreadyLanded(options)).kind, "fresh");
-  assertEquals(
-    calls,
-    [],
-    "no merged candidates means no local or fetch operations",
-  );
+  for (const raw of ["[]", ""]) {
+    const { options, calls, warnings } = landedOptions({
+      runGh: () => Promise.resolve(raw),
+    });
+    assertEquals((await checkAlreadyLanded(options)).kind, "fresh");
+    assertEquals(
+      calls,
+      [],
+      "no merged candidates means no local or fetch operations",
+    );
+    assertEquals(
+      warnings,
+      [],
+      "empty successful lookups are not reported as errors",
+    );
+  }
 });
 
 Deno.test("already-landed proof reports malformed merged-PR collections without observing local work (Issue #3977)", async () => {

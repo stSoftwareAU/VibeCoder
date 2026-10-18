@@ -783,7 +783,8 @@ Deno.test("infra retry - a rate_limit retry with no latched reset keeps the fixe
 Deno.test("qualityGate reconciles an exact merge immediately before charging failure (Issue #3977)", async () => {
   for (const dirty of [false, true]) {
     const ctx = makeContext();
-    const state = makeState();
+    const priorOutcome = { status: "passed", attempt: 7 } as const;
+    const state = makeState({ qualityGateOutcome: priorOutcome });
     let gates = 0;
     let failures = 0;
     const head = "a".repeat(40);
@@ -861,6 +862,7 @@ Deno.test("qualityGate reconciles an exact merge immediately before charging fai
     assertEquals(failures, dirty ? 1 : 0);
     assertEquals(result.status, dirty ? "failure" : "early_exit");
     assertEquals(state.failureLadderApplied, dirty ? true : undefined);
+    assertEquals(state.qualityGateOutcome, priorOutcome);
     if (result.status === "early_exit") {
       assertEquals(result.expectedSkip, true);
       assertEquals(result.outcome?.kind, "claim_stale");

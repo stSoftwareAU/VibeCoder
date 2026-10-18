@@ -37,7 +37,7 @@
       },
       {
         "path": "worker/deno/lib/issue_worker.ts",
-        "line": 236,
+        "line": 234,
         "outcome": "the worker reconciles before deriving its terminal outcome",
         "test": "worker/deno/tests/issue_worker_test.ts",
         "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
@@ -45,7 +45,7 @@
       },
       {
         "path": "worker/deno/lib/issue_worker.ts",
-        "line": 235,
+        "line": 233,
         "outcome": "a phase-booked failure is visible before wrapper reconciliation",
         "test": "worker/deno/tests/issue_worker_test.ts",
         "testName": "workOnIssue retains a genuine quality failure booked before a later merge (Issue #3977)",
@@ -68,16 +68,8 @@
         "flipWentRed": "production-wiring mutation failed the named assertion"
       },
       {
-        "path": "worker/deno/lib/run_core_production_deps.ts",
-        "line": 4929,
-        "outcome": "the explicit landed outcome survives production skip conversion",
-        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
-        "testName": "completion reconciles merges before recovery and final failure bookkeeping without spending an attempt (Issue #3977)",
-        "flipWentRed": "production-outcome mutation failed the named assertion"
-      },
-      {
         "path": "worker/deno/lib/issue_worker.ts",
-        "line": 341,
+        "line": 339,
         "outcome": "the worker stops its heartbeat without a provisional release",
         "test": "worker/deno/tests/issue_worker_test.ts",
         "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
@@ -85,31 +77,15 @@
       },
       {
         "path": "worker/deno/lib/heartbeat.ts",
-        "line": 288,
+        "line": 289,
         "outcome": "deferred shutdown stops the interval without publishing a tally",
         "test": "worker/deno/tests/heartbeat_test.ts",
         "testName": "heartbeat defers terminal publication while stopping the failed production run (Issue #3977)",
         "flipWentRed": "heartbeat-defer-clear mutation failed the named assertion"
       },
       {
-        "path": "worker/deno/lib/run_core.ts",
-        "line": 3037,
-        "outcome": "serial dispatch releases the semantic outcome without throughput credit",
-        "test": "worker/deno/tests/run_core_callbacks_test.ts",
-        "testName": "run_core releases already-landed outcomes without failure or throughput credit in both dispatch modes (Issue #3977)",
-        "flipWentRed": "serial-release mutation failed the named assertion"
-      },
-      {
-        "path": "worker/deno/lib/run_core.ts",
-        "line": 4917,
-        "outcome": "pooled dispatch releases the semantic outcome without throughput credit",
-        "test": "worker/deno/tests/run_core_callbacks_test.ts",
-        "testName": "run_core releases already-landed outcomes without failure or throughput credit in both dispatch modes (Issue #3977)",
-        "flipWentRed": "pool-release mutation failed the named assertion"
-      },
-      {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 405,
+        "line": 407,
         "outcome": "an unrelated branch never completes this run",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -117,7 +93,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 409,
+        "line": 411,
         "outcome": "a merge into another target never completes this run",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -125,7 +101,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 451,
+        "line": 452,
         "outcome": "explicit partial scope stays on the normal failure path",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -133,7 +109,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 485,
+        "line": 489,
         "outcome": "extra local commits are preserved rather than declared delivered",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -141,7 +117,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 457,
+        "line": 461,
         "outcome": "a merged change must actually be contained in the intended target",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -149,7 +125,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 363,
+        "line": 365,
         "outcome": "tracked or untracked distinct work prevents an already-landed skip",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -157,7 +133,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 434,
+        "line": 436,
         "outcome": "mere mentions and code examples do not establish issue completion",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -165,7 +141,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 441,
+        "line": 443,
         "outcome": "an unchecked or unassessed acceptance block preserves remaining work",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -181,7 +157,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 427,
+        "line": 429,
         "outcome": "mixed space and tab code examples cannot supply the closing contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -189,7 +165,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 403,
+        "line": 405,
         "outcome": "merged state preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -197,7 +173,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 403,
+        "line": 405,
         "outcome": "pr number integer preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -205,7 +181,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 404,
+        "line": 406,
         "outcome": "pr number positive preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -213,7 +189,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 406,
+        "line": 408,
         "outcome": "repository identity preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -221,7 +197,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 409,
+        "line": 411,
         "outcome": "pr head identity preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -229,7 +205,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 410,
+        "line": 412,
         "outcome": "merge commit identity preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -237,7 +213,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 411,
+        "line": 413,
         "outcome": "merge date type preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -245,7 +221,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 412,
+        "line": 414,
         "outcome": "merge date value preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -253,7 +229,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 413,
+        "line": 415,
         "outcome": "pr url type preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof skips malformed candidate fields without poisoning a later exact PR (Issue #3977)",
@@ -261,7 +237,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 414,
+        "line": 416,
         "outcome": "pr url identity preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -269,7 +245,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 385,
+        "line": 387,
         "outcome": "null candidate preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof skips malformed candidate fields without poisoning a later exact PR (Issue #3977)",
@@ -277,7 +253,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 434,
+        "line": 436,
         "outcome": "issue link readable preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof skips malformed candidate fields without poisoning a later exact PR (Issue #3977)",
@@ -285,7 +261,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 434,
+        "line": 436,
         "outcome": "issue link identity preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -293,7 +269,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 363,
+        "line": 365,
         "outcome": "initial clean tree preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -301,7 +277,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 487,
+        "line": 491,
         "outcome": "final clean tree preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -309,7 +285,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 488,
+        "line": 492,
         "outcome": "final head identity preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -317,7 +293,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 494,
+        "line": 498,
         "outcome": "final branch identity preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -325,7 +301,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 468,
+        "line": 472,
         "outcome": "immutable pull head preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -333,7 +309,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 381,
+        "line": 383,
         "outcome": "local head readable preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -341,7 +317,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 381,
+        "line": 383,
         "outcome": "local branch readable preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -349,7 +325,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 380,
+        "line": 382,
         "outcome": "sha value type preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -357,7 +333,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 380,
+        "line": 382,
         "outcome": "sha value shape preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -365,7 +341,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 472,
+        "line": 476,
         "outcome": "head containment preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -373,7 +349,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 472,
+        "line": 476,
         "outcome": "branch containment preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -381,7 +357,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 355,
+        "line": 357,
         "outcome": "git status success preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -389,7 +365,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 354,
+        "line": 356,
         "outcome": "git result cause preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -397,7 +373,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 479,
+        "line": 483,
         "outcome": "ancestry result cause preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -405,7 +381,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 480,
+        "line": 484,
         "outcome": "ancestry accepts zero preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof binds the closing issue, exact run branch and merged work (Issue #3977)",
@@ -413,7 +389,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 480,
+        "line": 484,
         "outcome": "ancestry accepts one preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -421,7 +397,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 480,
+        "line": 484,
         "outcome": "ancestry status readable preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -429,7 +405,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 339,
+        "line": 341,
         "outcome": "reapproved scope preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof keeps reapproved scope and distinguishes milestone integration (Issue #3977)",
@@ -448,7 +424,7 @@
         "line": 163,
         "outcome": "terminal skip preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/issue_worker_test.ts",
-        "testName": "terminal reconciliation preserves completed, skipped, booked and branchless outcomes (Issue #3977)",
+        "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
         "flipWentRed": "terminal-skip mutation failed the named assertion"
       },
       {
@@ -461,7 +437,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 345,
+        "line": 347,
         "outcome": "requested repo valid preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof validates the requested identity and avoids local work when no merged PR exists (Issue #3977)",
@@ -469,7 +445,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 345,
+        "line": 347,
         "outcome": "requested issue integer preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof validates the requested identity and avoids local work when no merged PR exists (Issue #3977)",
@@ -477,7 +453,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 346,
+        "line": 348,
         "outcome": "requested issue positive preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof validates the requested identity and avoids local work when no merged PR exists (Issue #3977)",
@@ -485,7 +461,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 361,
+        "line": 363,
         "outcome": "no merged candidates preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof validates the requested identity and avoids local work when no merged PR exists (Issue #3977)",
@@ -493,7 +469,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 351,
+        "line": 353,
         "outcome": "merge evidence cause preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
@@ -509,7 +485,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 416,
+        "line": 418,
         "outcome": "pr body type preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof skips malformed candidate fields without poisoning a later exact PR (Issue #3977)",
@@ -517,7 +493,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 425,
+        "line": 427,
         "outcome": "closing fenced code preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -525,7 +501,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 425,
+        "line": 427,
         "outcome": "closing html preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -533,7 +509,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 426,
+        "line": 428,
         "outcome": "closing quoted prose preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -541,7 +517,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 427,
+        "line": 429,
         "outcome": "closing indentation preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -549,7 +525,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 431,
+        "line": 433,
         "outcome": "closing inline code preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -557,7 +533,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 431,
+        "line": 433,
         "outcome": "closing reference identity preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -565,7 +541,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 441,
+        "line": 443,
         "outcome": "closure entries empty preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof binds the closing issue, exact run branch and merged work (Issue #3977)",
@@ -573,7 +549,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 441,
+        "line": 443,
         "outcome": "closure criteria present preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof accepts canonical repo casing, historical summaries and unrequested extras (Issue #3977)",
@@ -581,23 +557,15 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 443,
-        "outcome": "closure entries present preserves the specific evidence, local-work or terminal-decision contract",
-        "test": "worker/deno/tests/claim_freshness_test.ts",
-        "testName": "already-landed proof accepts canonical repo casing, historical summaries and unrequested extras (Issue #3977)",
-        "flipWentRed": "closure-entries-present mutation failed the named assertion"
-      },
-      {
-        "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 451,
+        "line": 452,
         "outcome": "closure partial status preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
-        "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
+        "testName": "already-landed proof replays public #3740 squash and preserves #3534 partial scope (Issue #3977)",
         "flipWentRed": "closure-partial-status mutation failed the named assertion"
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 449,
+        "line": 450,
         "outcome": "closure validation preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -605,7 +573,7 @@
       },
       {
         "path": "worker/deno/lib/claim_freshness.ts",
-        "line": 451,
+        "line": 452,
         "outcome": "closure missing status preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/claim_freshness_test.ts",
         "testName": "already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)",
@@ -613,7 +581,7 @@
       },
       {
         "path": "worker/deno/lib/issue_worker.ts",
-        "line": 237,
+        "line": 235,
         "outcome": "defer production owner preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/issue_worker_test.ts",
         "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
@@ -621,7 +589,7 @@
       },
       {
         "path": "worker/deno/lib/issue_worker.ts",
-        "line": 238,
+        "line": 236,
         "outcome": "defer unresolved success preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/issue_worker_test.ts",
         "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
@@ -629,7 +597,7 @@
       },
       {
         "path": "worker/deno/lib/issue_worker.ts",
-        "line": 240,
+        "line": 238,
         "outcome": "defer landed reason preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/issue_worker_test.ts",
         "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
@@ -637,7 +605,7 @@
       },
       {
         "path": "worker/deno/lib/issue_worker.ts",
-        "line": 238,
+        "line": 236,
         "outcome": "defer unresolved skip preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/issue_worker_test.ts",
         "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
@@ -645,11 +613,179 @@
       },
       {
         "path": "worker/deno/lib/issue_worker.ts",
-        "line": 239,
+        "line": 237,
         "outcome": "defer landed kind preserves the specific evidence, local-work or terminal-decision contract",
         "test": "worker/deno/tests/issue_worker_test.ts",
         "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
         "flipWentRed": "defer-landed-kind mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 421,
+        "outcome": "title type preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof skips malformed candidate fields without poisoning a later exact PR (Issue #3977)",
+        "flipWentRed": "title-type mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 487,
+        "outcome": "contained status one preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)",
+        "flipWentRed": "contained-status-one mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 546,
+        "outcome": "phase landed dispatch preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion reconciles merges before recovery and final failure bookkeeping without spending an attempt (Issue #3977)",
+        "flipWentRed": "phase-landed-dispatch mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/issue_worker.ts",
+        "line": 178,
+        "outcome": "terminal landed dispatch preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/issue_worker_test.ts",
+        "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
+        "flipWentRed": "terminal-landed-dispatch mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/issue_worker.ts",
+        "line": 219,
+        "outcome": "terminal local context preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/issue_worker_test.ts",
+        "testName": "workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)",
+        "flipWentRed": "terminal-local-context mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 458,
+        "outcome": "current scope presence preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof accepts canonical repo casing, historical summaries and unrequested extras (Issue #3977)",
+        "flipWentRed": "current-scope-presence mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/claim_freshness.ts",
+        "line": 459,
+        "outcome": "current scope shortfalls preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof binds the closing issue, exact run branch and merged work (Issue #3977)",
+        "flipWentRed": "current-scope-shortfalls mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome.ts",
+        "line": 426,
+        "outcome": "landed target baseBranch preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_callbacks_test.ts",
+        "testName": "run_core releases already-landed outcomes without failure or throughput credit in both dispatch modes (Issue #3977)",
+        "flipWentRed": "landed-target-baseBranch mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome.ts",
+        "line": 427,
+        "outcome": "landed target defaultBranch preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_callbacks_test.ts",
+        "testName": "run_core releases already-landed outcomes without failure or throughput credit in both dispatch modes (Issue #3977)",
+        "flipWentRed": "landed-target-defaultBranch mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome.ts",
+        "line": 428,
+        "outcome": "landed target mergeCommit preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_callbacks_test.ts",
+        "testName": "run_core releases already-landed outcomes without failure or throughput credit in both dispatch modes (Issue #3977)",
+        "flipWentRed": "landed-target-mergeCommit mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/stale_branch_lineage.ts",
+        "line": 269,
+        "outcome": "blank merged collection preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/claim_freshness_test.ts",
+        "testName": "already-landed proof validates the requested identity and avoids local work when no merged PR exists (Issue #3977)",
+        "flipWentRed": "blank-merged-collection mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/stale_branch_lineage.ts",
+        "line": 423,
+        "outcome": "lineage reader error preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/stale_branch_lineage_test.ts",
+        "testName": "classifyBranchLineage preserves an unavailable shared lookup as an explicit unknown (Issue #3977)",
+        "flipWentRed": "lineage-reader-error mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core.ts",
+        "line": 3037,
+        "outcome": "serial release kind preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_callbacks_test.ts",
+        "testName": "run_core ordinary skips do not publish a landed outcome in either dispatch mode (Issue #3977)",
+        "flipWentRed": "serial-release-kind mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core.ts",
+        "line": 3037,
+        "outcome": "serial release reason preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_callbacks_test.ts",
+        "testName": "run_core ordinary skips do not publish a landed outcome in either dispatch mode (Issue #3977)",
+        "flipWentRed": "serial-release-reason mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core.ts",
+        "line": 4917,
+        "outcome": "pool release kind preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_callbacks_test.ts",
+        "testName": "run_core ordinary skips do not publish a landed outcome in either dispatch mode (Issue #3977)",
+        "flipWentRed": "pool-release-kind mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core.ts",
+        "line": 4917,
+        "outcome": "pool release reason preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_callbacks_test.ts",
+        "testName": "run_core ordinary skips do not publish a landed outcome in either dispatch mode (Issue #3977)",
+        "flipWentRed": "pool-release-reason mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 4901,
+        "outcome": "production outcome presence preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_production_deps_test.ts",
+        "testName": "production forwards genuine failures and only exact landed skip outcomes (Issue #3977)",
+        "flipWentRed": "production-outcome-presence mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 4901,
+        "outcome": "production ordinary failure preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_production_deps_test.ts",
+        "testName": "production forwards genuine failures and only exact landed skip outcomes (Issue #3977)",
+        "flipWentRed": "production-ordinary-failure mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 4902,
+        "outcome": "production landed kind preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_production_deps_test.ts",
+        "testName": "production forwards genuine failures and only exact landed skip outcomes (Issue #3977)",
+        "flipWentRed": "production-landed-kind mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 4903,
+        "outcome": "production landed reason preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_production_deps_test.ts",
+        "testName": "production forwards genuine failures and only exact landed skip outcomes (Issue #3977)",
+        "flipWentRed": "production-landed-reason mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 5226,
+        "outcome": "token bound after release preserves the specific evidence, local-work or terminal-decision contract",
+        "test": "worker/deno/tests/run_core_production_deps_test.ts",
+        "testName": "production final release checks workflow scope against the durable published tally (Issue #3977)",
+        "flipWentRed": "token-bound-after-release mutation failed the named assertion"
       }
     ]
   }

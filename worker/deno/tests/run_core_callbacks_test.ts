@@ -753,12 +753,66 @@ Deno.test("run_core releases already-landed outcomes without failure or throughp
       await runCycle(deps, slots);
       assertEquals(released, [landed]);
       assertEquals(
+        released[0]?.kind === "claim_stale" ? released[0].baseBranch : null,
+        target,
+      );
+      assertEquals(
+        released[0]?.kind === "claim_stale" ? released[0].defaultBranch : null,
+        "main",
+      );
+      assertEquals(
+        released[0]?.kind === "claim_stale" ? released[0].mergeCommit : null,
+        "b".repeat(40),
+      );
+      assertEquals(
         runs,
         [],
         "a landed skip earns neither success nor failure callback credit",
       );
       assertEquals(failures, 0);
       assertEquals(successes, 0);
+    }
+  }
+});
+
+Deno.test("run_core ordinary skips do not publish a landed outcome in either dispatch mode (Issue #3977)", async () => {
+  const controls: Array<RunOutcome | undefined> = [
+    undefined,
+    {
+      kind: "claim_stale",
+      phase: "completion",
+      reason: "issue_closed",
+      detail: "Closed elsewhere",
+    },
+    {
+      kind: "pr_deferred",
+      phase: "completion",
+      branch: "issue-1-work",
+      base: "main",
+      reason: "work_already_merged",
+    },
+  ];
+  for (const slots of [1, 2]) {
+    for (const outcome of controls) {
+      const time = clock();
+      const released: Array<RunOutcome | undefined> = [];
+      const deps = createMockDeps({
+        ...time,
+        findNextIssue: issueQueue([issue("o/a", 1)]),
+        processIssue: () => {
+          time.burnCycle();
+          return Promise.resolve({
+            ok: true,
+            value: { success: false, skipped: true, outcome },
+          });
+        },
+        releaseClaim: (_repo, _issue, releasedOutcome) => {
+          released.push(releasedOutcome);
+          return Promise.resolve();
+        },
+      });
+      await runCycle(deps, slots);
+      assertEquals(released, [undefined]);
     }
   }
 });

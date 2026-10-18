@@ -224,29 +224,29 @@ export async function workOnIssueQualityGate(
       "quality_gate",
     );
     if (landed) {
-      if (recordedOutcome) state.qualityGateOutcome = recordedOutcome;
-      return landed;
+      phaseResult = landed;
+    } else {
+      await deps.github.handleIssueFailure({
+        repo: ctx.repo,
+        issueNumber: ctx.issueNumber,
+        githubUser: ctx.githubUser,
+        failureMessage: qualityFailureMessage,
+        // Issue #3445: the gate output is repository-authored, never a host fault.
+        qualityGateOutput: true,
+        labels: {
+          failedLabel: ctx.config.failedLabel,
+          failedOnceLabel: ctx.config.failedOnceLabel,
+          // Issue #2031: clarification handoff is via needs-human.
+          needsHumanLabel: ctx.config.needsHumanLabel,
+          planningLabel: ctx.config.planningLabel,
+          questionLabel: ctx.config.questionLabel,
+        },
+      });
+      // Issue #1949: the main loop now applies the same ladder to every
+      // non-transient coding failure. Tell it this one is already done, so a
+      // single run cannot step the issue twice and land it on `failed`.
+      state.failureLadderApplied = true;
     }
-    await deps.github.handleIssueFailure({
-      repo: ctx.repo,
-      issueNumber: ctx.issueNumber,
-      githubUser: ctx.githubUser,
-      failureMessage: qualityFailureMessage,
-      // Issue #3445: the gate output is repository-authored, never a host fault.
-      qualityGateOutput: true,
-      labels: {
-        failedLabel: ctx.config.failedLabel,
-        failedOnceLabel: ctx.config.failedOnceLabel,
-        // Issue #2031: clarification handoff is via needs-human.
-        needsHumanLabel: ctx.config.needsHumanLabel,
-        planningLabel: ctx.config.planningLabel,
-        questionLabel: ctx.config.questionLabel,
-      },
-    });
-    // Issue #1949: the main loop now applies the same ladder to every
-    // non-transient coding failure. Tell it this one is already done, so a
-    // single run cannot step the issue twice and land it on `failed`.
-    state.failureLadderApplied = true;
   }
 
   if (recordedOutcome) state.qualityGateOutcome = recordedOutcome;

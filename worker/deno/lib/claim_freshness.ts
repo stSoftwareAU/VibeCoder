@@ -62,9 +62,11 @@ import {
 import { isValidRepoSlug } from "./repo_slug.ts";
 import {
   extractAcceptanceCriteria,
+  extractAcceptedScope,
   parseClosureEntries,
   validateAcceptanceClosure,
 } from "./acceptance_criteria_gate.ts";
+import { assessScopeShortfalls } from "./degraded_delivery.ts";
 import { assertSafeGitRef, buildFetchArgs } from "./git_ref_args.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import type { GitRunner } from "./git_base_ref.ts";
@@ -434,26 +436,28 @@ export async function checkAlreadyLanded(
       if (!linked?.ok || linked.value !== issueNumber || !closingContract) {
         continue;
       }
-      // Old merged PRs may predate today's closure template. Their explicit
-      // closing contract is usable, but a stated shortfall is never delivery.
+      // Scope-less historical issues may predate today's closure template.
+      // Current declared scope still needs matched delivery evidence.
       const entries = parseClosureEntries(pr.body);
       if (
         entries.length === 0 && extractAcceptanceCriteria(pr.body).length > 0
       ) continue;
-      if (entries.length > 0) {
-        const closure = validateAcceptanceClosure({
-          issueBody: options.issueBody,
-          prSummaryContent: pr.body,
-        });
-        if (
-          !closure.valid ||
-          entries.some((entry) =>
-            entry.status === "partial" || entry.status === "missing"
-          )
-        ) {
-          continue;
-        }
+      const closure = validateAcceptanceClosure({
+        issueBody: options.issueBody,
+        prSummaryContent: pr.body,
+      });
+      if (
+        !closure.valid ||
+        entries.some((entry) =>
+          entry.status === "partial" || entry.status === "missing"
+        )
+      ) {
+        continue;
       }
+      if (
+        extractAcceptedScope(options.issueBody).length > 0 &&
+        assessScopeShortfalls(options.issueBody, pr.body).shortfalls.length > 0
+      ) continue;
       if (!await isAncestorOf(repo, baseBranch, mergedCommit, runGh)) {
         continue;
       }
@@ -513,7 +517,7 @@ export async function checkAlreadyLanded(
   } catch (error) {
     options.warn?.(
       "Already-landed reconciliation did not prove completion: " +
-        redactSecrets(error instanceof Error ? error.message : String(error)),
+        redactSecrets(String(error)),
     );
   }
   return fresh;

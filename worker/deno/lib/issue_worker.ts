@@ -216,16 +216,14 @@ async function workOnIssueRecorded(
   let deferTerminalRelease = false;
   try {
     let result = await workOnIssueCore(ctx, deps, state);
-    if (state.branchName && state.repoPath) {
+    if (state.repoPath) {
       result = {
         ...result,
         branchContext: {
           branchName: state.branchName,
           repoPath: state.repoPath,
           defaultBranch: state.defaultBranch,
-          ...(state.milestoneBranch
-            ? { milestoneBranch: state.milestoneBranch }
-            : {}),
+          milestoneBranch: state.milestoneBranch,
           reapproved: state.postMergeReapproval !== undefined,
         },
       };
@@ -334,8 +332,8 @@ async function workOnIssueRecorded(
     );
     throw err;
   } finally {
-    // The heartbeat's final clear carries the outcome (Issue #4330), so the
-    // release comment states it even before the claim-release path runs.
+    // Immediate cleanup publishes the outcome here. Deferred production
+    // cleanup leaves terminal publication to the final claim-release owner.
     if (state.heartbeatHandle) {
       await stopHeartbeat(state.heartbeatHandle, outcome, {
         deferClear: deferTerminalRelease,
