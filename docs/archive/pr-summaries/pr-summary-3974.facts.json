@@ -6,7 +6,7 @@
       {
         "path": "worker/deno/lib/timeline_batch.ts",
         "line": 310,
-        "outcome": "page >= 2 serves an empty array so paginateTimeline stops on a short page",
+        "outcome": "for a cached issue, page >= 2 serves an empty array so paginateTimeline stops on a short page",
         "test": "worker/deno/tests/timeline_batch_test.ts",
         "testName": "timeline_batch - wrapped gh serves page >= 2 as empty so paginateTimeline stops (Issue #3974)",
         "flipWentRed": "Reverted the page >= 2 branch to always serve the cached batch; the named test failed with the timeline-exceeded throw, then passed with the empty-page guard restored."
@@ -38,7 +38,7 @@
       {
         "path": "worker/deno/lib/collect_idle_task_candidates.ts",
         "line": 293,
-        "outcome": "a throwing label-add trust read is caught and skipped fail-closed (labelAddedByTrusted = false)",
+        "outcome": "a throwing label-add trust read is caught, sets labelAddedByTrusted = false, and skips an issue whose author is also untrusted",
         "test": "worker/deno/tests/collect_idle_task_candidates_test.ts",
         "testName": "collect_idle_task_candidates - Issue #3974: skips an untrusted-author issue when the label-add trust read throws",
         "flipWentRed": "Removed the try/catch so the trust-read throw propagated; the named test failed by rejecting instead of skipping, then passed with the catch restored."

@@ -1721,9 +1721,10 @@ find_oldest_issue(github_user)
    backstop (`verifyOperationalLabels`,). **Cache may deny, never grant:** the
    file-backed timeline cache can short-circuit the gate only to a `false`
    (untrusted) result. A cached entry that _would_ grant trust is re-confirmed
-   against a freshly paginated timeline, so a tampered-with cache file under
-   `TMPDIR` can never make an attacker-applied `work-on` look trusted. The same
-   exhaustive read backs the untrusted-`work-on` hand-off
+   against API-backed timeline data: the current iteration's GraphQL label-add
+   batch, or the paginated REST fallback. A tampered-with file-cache entry under
+   `TMPDIR` cannot by itself make an attacker-applied `work-on` look trusted.
+   The same timeline owner backs the untrusted-`work-on` hand-off
    (`strip_untrusted_work_on.ts`), which adds `needs-human` and names the
    adder publicly, but never removes `work-on` (Issue #2734).
 2b. **Self-scheduled worker diagnostic** — no label at all. An issue the worker

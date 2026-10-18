@@ -2,65 +2,96 @@
 
 Closes #3974.
 
-The batched timeline wrapper served the same prefetched 100-event `LABELED_EVENT`
-batch for every REST page request, so any issue with 100+ label adds made
-`paginateTimeline` loop to page 100 and throw, aborting the whole claim scan. The
-wrapper now serves the batch only for page 1 and an empty array for later pages,
-and each collector catches a label-author trust-read failure per issue and skips
-it fail-closed instead of letting one bad timeline abort the scan.
+The batched timeline wrapper repeated its prefetched 100-event label-add tail
+for every REST-shaped page request. A full batch therefore made the trust
+reader reach its page cap and throw. The wrapper now serves that tail on page
+1 (or without a page parameter) and returns an empty array on page 2 and later,
+so the reader terminates. The four discovery collectors catch a throwing
+label-author read per issue and follow their existing untrusted-result paths.
 
 ## Spec
 
 ### Intent and Rationale
 
-- A single issue with 100+ label adds must not abort the claim scan for every
-  repository, and a possibly-truncated batch entry must not be mistaken for a
-  complete timeline.
+- One busy issue must not abort the claim scan for every repository.
+- Keep the bounded GraphQL tail distinct from exhaustive REST history, and keep
+  the file-cache deny-only trust contract.
 
 ### Essential Design Decisions
 
-- The wrapper serves the batch only when the request has no `?page=` or
-  `page=1`, and returns `[]` for `?page=2+`. A deny-only cache stays safe: a
-  grant re-confirms via REST, and `paginateTimeline` treats the empty short page
-  as "done".
-- Each collector wraps its `wasLabelAddedByAllowedAuthor` trust read in a
-  try/catch and treats a throw as `false` (fail-closed skip), logging a warning,
-  so one bad timeline cannot abort the scan for every repo.
+- For an issue present in the batch map, the wrapper reads `page=` from the
+  timeline URL and returns `[]` when the numeric page is at least 2. Unknown
+  issues and non-timeline calls still reach the supplied base function.
+- The GraphQL query still reads `last: 100` label adds. It does not fetch older
+  GraphQL pages or the full event history. A label absent from that tail cannot
+  grant label-author trust. The newest add remains in the tail.
+- A file-cache entry may deny trust, never grant it alone. A grant requires
+  API-backed data, which can be the current iteration's GraphQL batch rather
+  than a new REST call. The registry resets between iterations.
+- Work-on, configured-label and low-priority collectors substitute `false` on
+  a throwing trust read and take their blocked/skip paths. Work-on retains its
+  existing guarded hand-off for a positively confirmed untrusted adder.
+  Idle-task collection substitutes `false` too, but retains its independent
+  trusted-author origin exception; its regression uses an untrusted author.
 
 ### Undiscoverable Facts
 
-- `last: 100` reads the 100 most-recent labeled events, so a 100-event entry is
-  indistinguishable from a complete timeline for an issue with exactly 100 adds;
-  truncation is only detectable via `pageInfo { hasPreviousPage }`, which the
-  current GraphQL query does not request (Issue #3089).
-- The idle-decision census path (PR #3963) already caught the throw, logged a
-  WARNING and treated the issue as trusted; this change makes the discovery
-  collectors behave consistently by skipping fail-closed instead.
+- A 100-event tail alone cannot distinguish exactly 100 label adds from a
+  truncated history. The issue explicitly permits this page-1/empty-later-page
+  adapter as a solution; it does not add `pageInfo.hasPreviousPage` handling.
 
 ## Evidence
 
-1. `worker/deno/lib/timeline_batch.ts` — `wrapGhWithBatchedTimeline` now serves
-   the cached batch only when the request has no `?page=` or `page=1`, and
-   returns `[]` for `?page=2+`, so `paginateTimeline` sees a short page and
-   stops instead of looping to page 100.
-2. `worker/deno/lib/collect_work_on_candidates.ts`,
-   `worker/deno/lib/collect_low_priority_candidates.ts`,
-   `worker/deno/lib/collect_label_candidates.ts`, and
-   `worker/deno/lib/collect_idle_task_candidates.ts` — each collector now catches
-   a throwing `wasLabelAddedByAllowedAuthor` call, logs a warning, and skips the
-   issue fail-closed (`labelAdded = false` / `labelAddedByTrusted = false`).
-3. Five regression tests cover the wrapper's page-2 empty response and the four
-   collectors' fail-closed throw handling (see Test Plan).
-4. `./quality.sh` passed (only `config integration` skipped).
+- `worker/deno/lib/timeline_batch.ts` supplies the terminating page behaviour.
+  Its regression reads a 100-event batch through the real trust reader and
+  still asserts a trusted decision with no base REST calls.
+- The four collector regressions cover throwing trust reads. The work-on
+  regression also retains every no-label-change/no-comment assertion.
+- Commit `095c80f8` removed overwritten false initialisers from those collectors.
+  This follow-up rechecked the five branch citations and their named tests;
+  the existing false-on-error assignments and assertions remain intact.
+- The old summary's unconditional REST-confirmation claim and the API manual's
+  planned-batching wording did not describe the current head. The API manual
+  and internal trust explanation now distinguish a live iteration batch from
+  file-backed cache data and exhaustive REST fallback.
 
-- Docs sweep — grep: "wrapGhWithBatchedTimeline", "paginateTimeline", "wasLabelAddedByAllowedAuthor"; section: DESIGN-PRINCIPLES.md, SECURITY.md, docs/INTERNALS.md, docs/GH-API-OPTIMISATION.md (all mentions checked, none describe the truncated-batch page-serving or throw-aborts-scan behaviour, so none stale); siblings: none — no existing set gained a member.
+**Docs sweep** — grep: `wrapGhWithBatchedTimeline`, `paginateTimeline`,
+`wasLabelAddedByAllowedAuthor`, `Batch path`, `freshly paginated`;
+section: updated `docs/GH-API-OPTIMISATION.md#batch-path-graphql` and
+`docs/INTERNALS.md` label priority/cache explanation; siblings: none — no
+existing registry gained a member. The remaining advisory hits are still true
+for these reasons:
+
+- `docs/audits/security-sweep-1218-commands-cli.md:306`: the seed route still
+  checks the same label-author gate; this change does not remove that gate.
+- `worker/deno/tests/timeline_batch_test.ts:290`: the section still exercises
+  the wrapper with existing consumers.
+- `worker/deno/lib/issue_query.ts:2862`: exhaustive REST pagination still
+  describes the fallback; the batch adapter supplies a bounded label-add tail.
+- `worker/deno/lib/collect_low_priority_candidates.ts:182` and
+  `worker/deno/lib/collect_work_on_candidates.ts:256`: both still name the
+  shared label-author consumer; the added catch changes error handling only.
+- `worker/deno/lib/timeline_batch.ts:78`, `:124` and `:284`: tail selection,
+  REST-shaped conversion and the named wrapper consumers remain unchanged.
+- The API manual's former `:322` and internal manual's former `:1714` hits
+  are in the corrected batch/trust explanations above.
 
 ## Test Plan
 
-1. `worker/deno/tests/timeline_batch_test.ts` — `timeline_batch - wrapped gh serves page >= 2 as empty so paginateTimeline stops (Issue #3974)` — runs `wasLabelAddedByAllowedAuthor` through `wrapGhWithBatchedTimeline` with a 100-event batched entry and expects a decision, not a throw.
-2. `worker/deno/tests/collect_work_on_candidates_fail_loud_test.ts` — `collectWorkOnCandidates - label-author trust-read failure is a fail-closed skip, not a rejection (Issue #3974)`.
-3. `worker/deno/tests/collect_low_priority_candidates_test.ts` — `collect_low_priority_candidates - skips issue when the label-author trust read throws (Issue #3974)`.
-4. `worker/deno/tests/collect_label_candidates_test.ts` — `collect_label_candidates - a throwing timeline trust read skips the issue fail-closed (does not reject)`.
-5. `worker/deno/tests/collect_idle_task_candidates_test.ts` — `collect_idle_task_candidates - Issue #3974: skips an untrusted-author issue when the label-add trust read throws`.
+- Original regressions retained: `timeline_batch_test.ts` (100-event batch),
+  `collect_work_on_candidates_fail_loud_test.ts`,
+  `collect_low_priority_candidates_test.ts`, `collect_label_candidates_test.ts`
+  and `collect_idle_task_candidates_test.ts` (the four throwing-read paths).
+- Current follow-up validation: those five suites plus
+  `timeline_cache_trust_test.ts`, `timeline_latest_event_pagination_test.ts`,
+  `label_security_test.ts` and `timeline_batch_registry_test.ts` pass through
+  the unit runner: 156 tests, no failures. Paths are under `worker/deno/tests/`.
+  No source behaviour, test or assertion is changed by this follow-up.
+- Repository Markdown lint reports no issues across 230 files; the restricted
+  Mermaid command passes across 1,392 files and 1,305 blocks. Facts formatting,
+  branch line references and named tests were checked against the current tree.
+- The exact hosted `pr-summary-ci` command reproduced the stale-summary block
+  at `095c80f8`; it is re-run on the refreshed commit. A not-checked gate is
+  reported as such, and no full local quality-gate result is claimed here.
 
 <!-- vibe-branch-outcomes -->
