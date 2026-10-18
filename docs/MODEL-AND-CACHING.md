@@ -1735,8 +1735,9 @@ flowchart TD
   run's `modelUsage` breakdown is attributed per served model rather than
   charging the whole invocation to the first one (Issues #2346, #3603). A run
   serving two or more models therefore lists each model's own token counts and
-  its own cost line, and the estimated USD — and so the cumulative issue total
-  and the per-tier fleet telemetry — is their sum; the CLI's own `costUSD`
+  its own cost line, and the estimated USD — and so the cumulative issue total,
+  the per-tier fleet telemetry, and the daily credit log and spend ceiling
+  (Issue #3616) — is their sum; the CLI's own `costUSD`
   figure is never used. The breakdown is trusted whenever every entry reads
   cleanly: on a split run the result's `usage` covers only the main session (or
   is all zero) while `modelUsage` covers every model, so a breakdown larger than
@@ -2780,6 +2781,14 @@ assign initial issue-run costs to either PR: only the abandoned PR's explicitly
 attributed follow-on costs are counted as wasted. Missing assignment records
 produce an `unknown` cohort; conflicting recorded cohorts are refused.
 
+The read-only `deno task stabilisation-report --evidence <snapshot.json>
+<host-ledger.jsonl> [...]` extends this reconciliation with a bounded operational
+view: unique accepted default-branch deliveries, full active-cohort rework,
+separate milestone/pending/failed work and explicit missing evidence. It adds no
+telemetry store, experiment arm or routing decision. See the
+[stabilisation baseline and comparable follow-up procedure](evidence/stabilisation-2026-10-18.md)
+for snapshot provenance, attribution and limitations.
+
 ### Lifecycle outcomes and gated success
 
 > **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — outcomes depend on the PR's observed state and gates, independently of its coding provider.
@@ -3302,6 +3311,12 @@ delimited JSON):
 | `outputTokens` | Output tokens generated |
 | `cacheCreationTokens` | Tokens written to prompt cache |
 | `cacheReadTokens` | Tokens read from prompt cache |
+| `usageByModel` | Per-model counters (`inputTokens`, `outputTokens`, `cacheCreationInputTokens`, `cacheReadInputTokens`) for every model that served the invocation, split-run sub-agents included; present only when the run recorded a `modelUsage` breakdown (Issue #3616) |
+
+The four top-level token fields are the invocation's total across every model
+that served it. On a split run the CLI's top-level `usage` covers only the main
+session, so they are the sum of `usageByModel` when that field is present
+(Issue #3616).
 
 **Log location:** `creditLogDir` (configurable) — files named
 `.credit_log_YYYY-MM-DD.json`, defaulting to the worker-private
@@ -3319,7 +3334,12 @@ Per-phase cost is summed from per-invocation costs, so a phase that spans
 several models (for example an Opus run that fell back to Sonnet) accumulates
 the correct blended cost. Cache-read and cache-write tokens are priced with
 their dedicated rates in every breakdown, so prompt-cache savings are visible
-per phase.
+per phase. Per-model tokens and cost come from `usageByModel`, so a split run's
+executor and reviewer tokens are priced at their own model's rate and counted by
+the spend ceiling (Issue #3616). An entry without the field (written before
+Issue #3616, or by a run with no breakdown) is charged whole to its `model`, and
+a breakdown that does not read cleanly falls back the same way. Credit logs
+written before this fix count the advisor session only.
 
 #### Unpriced model ids
 

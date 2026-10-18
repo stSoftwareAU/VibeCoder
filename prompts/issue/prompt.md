@@ -915,13 +915,28 @@ one is broken:
   is not evidence.
 - **Every `partial` and `missing` carries a one-line reason.** An unexplained gap
   is a failure to surface, not a pass. The worker files (or reuses) one
-  `idle-task` follow-up naming each `partial` or `missing` entry and opens the
+  `idle-task` follow-up naming each implementation shortfall and opens the
   PR body with a section linking it, so the reason should say what is left to
   do (Issue #3506). The exception, for a healthy run only (a degraded run still
   files one): on an issue that is itself a partial-delivery follow-up, the worker
   files no nested follow-up. It labels the issue `needs-human`, opens the PR body
   with a "handed to a human" section that links no follow-up, and the PR says
   `Part of` rather than closing the issue.
+- **Pending merge verification stays on this PR.** Record required CI/quality
+  execution and the routine clean code review under `## Merge verification`
+  as pending until observed. Waiting for those checks alone is not unfinished
+  implementation and must not generate a partial-delivery follow-up or a nested
+  escalation. If an issue explicitly states such a criterion, keep its closure
+  entry truthful and use a clear reason such as `CI not yet verified` or
+  `awaiting code review`; never call a pending check `met`. If completed
+  implementation shares a criterion with pending checks, record the remainder
+  exactly as `reason: CI not yet verified — remaining: merge-verification-only`
+  (or `awaiting code review` / `quality gate not yet run` for the reason).
+  Put local tooling limitations and observed results in Evidence. Use this
+  annotation only when no implementation, test or failed-check repair remains.
+  Failed checks,
+  missing tests, known defects and unfinished product work remain real
+  gaps, including when combined with pending CI in the same criterion.
 - **Name your scope creep.** Add an `unrequested` entry for any change in the
   diff that is not traceable to the issue, carrying **both**
   `reviewer: unrequested` and a one-line `reason:` — copy the `unrequested` line
@@ -1232,6 +1247,17 @@ rewrite it, never append to it:
   the diff adds or edits (see **Check where you insert** in
   `CODING-STANDARDS.md`).
 
+**Project version wording (Issue #3954).** Write the summary's own version-bump
+statement in Summary using durable wording, for example:
+``Version bump: `VERSION` updated for this change; the merged commit records the final version.``
+Do not predict a literal before/after pair that CI can change after your push.
+Name a specific relation to the actual target branch, such as one patch above
+it, only after checking that repository's workflow guarantees that policy.
+Otherwise keep the policy-neutral wording; manual or minor version changes do
+not imply an automatic patch policy. Exact release/build evidence belongs in
+Evidence with its final commit or release provenance. Preserve dependency pins,
+historical reproduction versions, migration examples and changelog entries.
+
 **Run the summary gates before you finish.** When `worker/deno/deno.json`
 defines a `pr-summary-check` task (the Vibe Coder repository), commit your
 changes, write the summary, then run
@@ -1447,9 +1473,12 @@ The file MUST contain:
    When the diff adds no branch, write
    `{"version":1,"branchOutcomes":{"noneAdded":true,"entries":[]}}`. Leave the
    `<!-- vibe-branch-outcomes -->` marker in the Test Plan: the worker renders
-   the `Branch outcomes:` list there. An invalid or unreadable facts file
-   blocks PR creation, and so does a hand-written `Branch outcomes:` list
-   beside the facts file. The schema is in `CODING-STANDARDS.md` under
+   the `Branch outcomes:` list there, inside its owned start/end markers.
+   Maintain the facts and marker only: do not independently write a duplicate
+   list. The renderer replaces safely identified legacy lists and preserves
+   unrelated narrative. Invalid facts, ambiguous block ownership and unresolved
+   evidence still block. Rendering does not prove a claimed flip was executed.
+   The schema is in `CODING-STANDARDS.md` under
    **Branch outcomes facts file**. Without a facts file the worker still reads
    a `Branch outcomes:` list written in the Test Plan — one line per outcome
    naming `path:line`, the outcome, the test that reaches it, and that

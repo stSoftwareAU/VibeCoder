@@ -7,7 +7,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { buildHostFaultMarker, detectHostFault } from "../lib/host_fault.ts";
-import { SUMMARY_RULE_GATE_MARKER } from "../lib/failure_diagnosis.ts";
+import {
+  type FailureCategory,
+  SUMMARY_RULE_GATE_MARKER,
+} from "../lib/failure_diagnosis.ts";
 import {
   markIssueAsFailed,
   markIssueAsFailedOnce,
@@ -523,7 +526,7 @@ const MARKED_REFUSAL_QUOTING_BROKEN_REF = `${SUMMARY_RULE_GATE_MARKER}: ` +
 async function postedRecord(
   write: typeof markIssueAsFailedOnce,
   failureMessage: string,
-  extra: { qualityGateOutput?: boolean } = {},
+  extra: { qualityGateOutput?: boolean; category?: FailureCategory } = {},
 ): Promise<string> {
   let body = "";
   await write({
@@ -632,5 +635,33 @@ Deno.test("releaseHostFaultFailureLabels - a quality-gate record quoting host-lo
   assertEquals(gh.byNumber.get(131)?.labels, ["failed"]);
   assertEquals(gh.byNumber.get(132)?.labels, ["failed-once"]);
   assertEquals(gh.byNumber.get(133)?.labels, ["failed"]);
+  assertEquals(gh.calls.filter((c) => c[1] === "edit"), []);
+});
+
+Deno.test("declared substantive verifier records survive the host-fault release sweep (Issue #3738)", async () => {
+  resetHostFaultReleaseSweepsForTest();
+  const reason =
+    "Verifier found an incorrect implementation; quoted fixture: warning: ignoring broken ref refs/heads/main";
+  const first = await postedRecord(markIssueAsFailedOnce, reason, {
+    category: "quality_check",
+  });
+  const second = await postedRecord(markIssueAsFailed, reason, {
+    category: "quality_check",
+  });
+  assert(first.includes("**Category:** `quality-failure`"));
+  assert(!first.includes("**Source:** quality gate"));
+  assert(!first.includes("<!-- vibe-host-fault"));
+  const gh = fakeGh([{
+    number: 130,
+    labels: ["failed-once"],
+    comments: [first],
+  }, { number: 131, labels: ["failed"], comments: [first, second] }]);
+  const result = await releaseHostFaultFailureLabels({
+    repo: REPO,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+  });
+  assertEquals(result.released, []);
+  assertEquals(result.retained.sort(), [130, 131]);
   assertEquals(gh.calls.filter((c) => c[1] === "edit"), []);
 });

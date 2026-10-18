@@ -15,7 +15,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
 import { createLogger } from "../lib/logger.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -31,6 +31,7 @@ import {
 const REPO = "org/paced-milestone-fixture";
 const WORKER_USER = "worker-bot";
 const MILESTONE = "Paced Milestone";
+const TRUSTED = "alice";
 
 /** The one issue's fields, keyed by gh field name. */
 const FIXTURE_FIELDS: Record<string, unknown> = {
@@ -43,7 +44,10 @@ const FIXTURE_FIELDS: Record<string, unknown> = {
   subIssuesSummary: { total: 0, completed: 0 },
 };
 
-/** Mirrors real `gh issue list --json <fields>`: only requested fields. */
+/**
+ * Mirrors real `gh issue list --json <fields>`: only requested fields. The
+ * timeline answers with a `work-on` add by the trusted author (Issue #3571).
+ */
 function stubGh(args: string[]): Promise<string> {
   if (args[0] === "issue" && args[1] === "list") {
     const requested = new Set(
@@ -54,6 +58,17 @@ function stubGh(args: string[]): Promise<string> {
       if (requested.has(field)) row[field] = FIXTURE_FIELDS[field];
     }
     return Promise.resolve(JSON.stringify([row]));
+  }
+  if (
+    args[0] === "api" && /\/issues\/(\d+)\/timeline/.test(args[1] ?? "")
+  ) {
+    return Promise.resolve(JSON.stringify([{
+      id: 1,
+      event: "labeled",
+      label: { name: "work-on" },
+      actor: { login: TRUSTED },
+      created_at: "2026-01-01T00:00:00Z",
+    }]));
   }
   return Promise.resolve("[]");
 }
@@ -79,8 +94,18 @@ async function idleLines(paced: boolean): Promise<string[]> {
       githubUser: WORKER_USER,
       logger: createLogger({ write: (line: string) => lines.push(line) }),
       config: { ...buildDefaultWorkerConfig(), repos: [REPO], workDir },
+      // Issue #3571: the census models the label-author gate, so trust the adder.
+      resolveTrustedAuthors: () =>
+        Promise.resolve({
+          ok: true,
+          byRepo: new Map([[
+            REPO,
+            { allowedAuthors: [TRUSTED], authorisedCommenters: [TRUSTED] },
+          ]]),
+        }),
       idleDetectGhCommandFn: stubGh,
     });
+    assertEquals((await deps.refreshTrustedAuthors!()).ok, true);
     await deps.runIdleDetectAudit!({
       tick: 1,
       scanFoundClaimable: false,
@@ -110,6 +135,7 @@ Deno.test(
   "production deps - the census holds a paced milestone's issue as run_local_hold, not claimable (Issue #3464)",
   async () => {
     const line = repoLine(await idleLines(true));
+    assert(line.includes("claim_refused=0"), line);
     assert(line.includes("run_local_hold=1"), line);
     assert(line.includes("work_on=0"), line);
     assert(!line.includes("inversion_signal=true"), line);
@@ -120,6 +146,7 @@ Deno.test(
   "production deps - without a ledger entry the same issue is claimable (Issue #3464 negative control)",
   async () => {
     const line = repoLine(await idleLines(false));
+    assert(line.includes("claim_refused=0"), line);
     assert(line.includes("run_local_hold=0"), line);
     assert(line.includes("work_on=1"), line);
   },

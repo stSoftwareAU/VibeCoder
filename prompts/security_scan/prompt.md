@@ -238,15 +238,20 @@ Inventory the codebase and record:
   repo keeps its swept-module list in), and closed
   `security-scan-overflow` issues
   (`gh issue list --label security-scan-overflow --state closed`). For
-  each tree a record names, take the commit the record was written at
-  with `git log -1 --format=%H -- <record>`, then list what moved since
-  with `git diff --name-only <commit> HEAD -- <tree>`. A module a record
+  each tree a record names, use its declared coverage horizon. For this
+  repository's ledger, `sweep-drift` consumes each slice's validated `sweptAt`;
+  do not substitute the last edit to its record. For a record without an
+  explicit horizon, conservatively use its original addition with
+  `git log --diff-filter=A -1 --format=%H -- <record>`. The diagnostic
+  `git log -1 --format=%H -- <record>` identifies the last edit only; never use
+  that commit as the coverage horizon. Then list what moved
+  since with `git diff --name-only <commit> HEAD -- <tree>`. A module a record
   names and that diff does not is **previously swept**; a module the diff
   names, or that no record names at all, is not. Record, per recorded
   tree, the record path, its commit, and the count of modules changed
   since — Phase 2 and Phase 4 both read it. **A git command that cannot
   answer means never recorded, never "unchanged".** The worker's clones
-  are shallow, so `git log -1 --format=%H -- <record>` can come back
+  are shallow, so the original-addition `git log` can come back
   empty and the follow-up diff can fail with `fatal: bad object`. When
   either happens, treat every module of that tree as never-recorded and
   say so in the tracker line — an unanswerable history must not read as a
@@ -255,13 +260,19 @@ Inventory the codebase and record:
   inventories nothing, every module is never-recorded, and the scan
   proceeds unchanged.
 
-  When this run writes or repoints a sweep coverage slice, its `sweptAt`
-  must be a commit on the default branch: the merge-base,
-  `git fetch origin <default>` then `git merge-base HEAD origin/<default>`
-  (e.g. `origin/main`), never a feature-branch commit such as `HEAD`.
-  CI's "Sweep ledger sweptAt ancestry" step and the pre-push gate reject a
-  `sweptAt` that is not an ancestor of `origin/<default>`, and squash-merge
-  would delete a branch commit. Several earlier runs failed exactly this way.
+  For this repository's ledger, create a top-up at list-generation time using
+  the worker's `sweep-drift --repo <repo-root> --record-top-up <payload.json>`
+  command. The payload contains only `issue`, `title`, `ledger`, `definition`,
+  `status` and `paths`; do not copy a SHA or write `chunk`/`sweptAt` yourself.
+  The producer refreshes the actual default branch, deepens missing history,
+  computes its merge-base with HEAD and runs the existing ancestry validator
+  before atomically writing the record. Repeating the same payload preserves
+  the original horizon. After actually reading the slice, `claimed` may become
+  `swept` with the same payload; changing the list requires a new top-up.
+  A failed/unavailable producer is not evidence of coverage. Preserve historical
+  invalid records for the documented repoint procedure in `docs/SECURITY-SCAN.md`;
+  never advance old coverage to today's default tip. CI's existing ancestry
+  guard remains required.
 
 From the inventory, produce a **chunk plan**: a numbered list of focused
 review chunks, each scoped to a single trust boundary or

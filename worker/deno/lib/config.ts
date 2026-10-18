@@ -9,6 +9,10 @@
  * Use setup.sh to configure via .config.json.
  */
 
+import {
+  DEFAULT_CLAUDE_MAX_TURNS,
+  validateClaudeMaxTurns,
+} from "./claude_turn_limit.ts";
 import { registerAgentPreFlightConfigs } from "./agent_pre_flight.ts";
 import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
@@ -200,6 +204,8 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   // Diff-scoped mutation gate (Issue #3393).
   skip_mutation_check: "skipMutationCheck",
   mutation_check_budget_seconds: "mutationCheckBudgetSeconds",
+  // Coverage carry-over gate (Issue #3795).
+  skip_coverage_carryover_check: "skipCoverageCarryOverCheck",
   // Credentials this repository's checks need (Issues #573, #574).
   quality_credentials: "qualityCredentials",
   docker_image: "dockerImage",
@@ -601,6 +607,9 @@ export async function loadConfig(
     DEFAULT_BEST_PLANNING_MODEL;
 
   // Operational settings — all from .config.json with defaults (Issue #277)
+  const claudeMaxTurns = validateClaudeMaxTurns(
+    file.claude_max_turns ?? DEFAULT_CLAUDE_MAX_TURNS,
+  );
   const claudeTimeout = file.claude_timeout ??
     OPERATIONAL_DEFAULTS.claudeTimeout;
   // Claim-runway floor (Issue #289). Config first, then the legacy
@@ -1174,6 +1183,7 @@ export async function loadConfig(
     claudeModel,
     bestPlanningModel,
     claudeTimeout,
+    claudeMaxTurns,
     minClaimRunwaySeconds,
     claimLongJobLabels,
     progressExtensionEnabled,

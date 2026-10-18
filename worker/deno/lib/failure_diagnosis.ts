@@ -341,11 +341,13 @@ const WORKER_GATE_RECORD_HEAD_RE =
   /^##[^\n]*\n\s*\*\*Category:\*\* `([a-z-]+)`/;
 
 /**
- * Whether a posted failure-record comment body records a worker gate refusal:
- * any {@link WORKER_GATE_MARKERS} category (summary, security-fix or pre-push
- * gate; Issues #3431, #3454, PR #3716; Issue #3735). The record embeds the
- * reason under a heading, so the gate marker is no longer at the start of the
- * body. The sweeps that re-classify posted bodies (`host_fault_release.ts`,
+ * Whether a posted failure-record comment body records a worker-authored
+ * verdict the release sweeps must leave alone: any {@link WORKER_GATE_MARKERS}
+ * category (summary, security-fix or pre-push gate; Issues #3431, #3454,
+ * PR #3716; Issue #3735) or a substantive quality failure (`quality-failure`,
+ * Issue #3738). The record embeds the reason under a heading, so the gate
+ * marker is no longer at the start of the body. The sweeps that re-classify
+ * posted bodies (`host_fault_release.ts`,
  * `milestone_branch_refusal_release.ts`) use this to leave such a record
  * alone, because the text it quotes is the agent's, the tools' or the
  * branch's own, not host or repository output.
@@ -354,6 +356,9 @@ export function isWorkerGateFailureRecord(body: string): boolean {
   const head = WORKER_GATE_RECORD_HEAD_RE.exec(body.trimStart());
   if (head === null) return false;
   const display = head[1];
+  // A substantive quality failure is a worker-authored verdict too (Issue
+  // #3738), but it is not a WORKER_GATE_MARKERS entry.
+  if (display === "quality-failure") return true;
   return WORKER_GATE_MARKERS.some((entry) =>
     getFailureCategoryDisplay(entry.category) === display
   );

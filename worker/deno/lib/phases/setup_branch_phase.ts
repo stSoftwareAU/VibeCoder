@@ -173,6 +173,7 @@ export async function workOnIssueSetupBranch(
   });
   if (!claimResult.ok) {
     return {
+      category: "internal_error",
       status: "failure",
       reason: `Failed to claim issue: ${claimResult.error.message}`,
     };
@@ -201,6 +202,7 @@ export async function workOnIssueSetupBranch(
     // here removes the *winner's* assignment and clears its live heartbeat
     // marker — the state Issue #214 describes, reached by a stand-down.
     return {
+      category: "unknown",
       status: "early_exit",
       reason: `Issue not available: ${detail}`,
       claimNotHeld: true,
@@ -219,7 +221,11 @@ export async function workOnIssueSetupBranch(
       repo,
       issueNumber,
     });
-    return { status: "early_exit", reason: "claim_churn_escalation" };
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "claim_churn_escalation",
+    };
   }
 
   // Clone or update the repo into the work directory. With a lane id
@@ -233,6 +239,7 @@ export async function workOnIssueSetupBranch(
   );
   if (!setupResult.ok) {
     return {
+      category: "push_failure",
       status: "failure",
       reason: `Failed to set up repo ${repo}: ${setupResult.error.message}`,
     };
@@ -264,6 +271,7 @@ export async function workOnIssueSetupBranch(
       );
     }
     return {
+      category: "internal_error",
       status: "failure",
       reason: `Failed to start heartbeat: ${heartbeatStart.error.message}`,
     };
@@ -277,6 +285,7 @@ export async function workOnIssueSetupBranch(
   const detectedBranch = await deps.git.getRepoDefaultBranch(repo);
   if (!detectedBranch.ok) {
     return {
+      category: "internal_error",
       status: "failure",
       reason:
         `Could not determine default branch for ${repo}: ${detectedBranch.error.message}`,
@@ -391,6 +400,7 @@ export async function workOnIssueSetupBranch(
           },
         );
         return {
+          category: repoLevel ? "repo_config" : "internal_error",
           status: "failure",
           reason:
             `Failed to ensure milestone branch '${state.milestoneBranch}' for milestone ` +
@@ -427,6 +437,7 @@ export async function workOnIssueSetupBranch(
         });
       }
       return {
+        category: repoLevel ? "repo_config" : "internal_error",
         status: "failure",
         reason:
           `Failed to ensure milestone branch '${state.milestoneBranch}' for milestone ` +
@@ -521,6 +532,7 @@ export async function workOnIssueSetupBranch(
         defaultBranch: state.defaultBranch,
       });
       return {
+        category: "unknown",
         status: "early_exit",
         reason: MILESTONE_BEHIND_DEFER_REASON,
         expectedSkip: true,
@@ -1010,6 +1022,7 @@ export async function workOnIssueSetupBranch(
     if (!branchResult.ok) {
       const msg = branchResult.error.message;
       return {
+        category: isCloneCorruptFailure ? "clone_corrupt" : "internal_error",
         status: "failure",
         reason: isCloneCorruptFailure
           ? `Failed to create feature branch: ${CLONE_CORRUPT_MARKER} (${repo}): ${msg}`

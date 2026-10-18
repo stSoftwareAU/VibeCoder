@@ -43,7 +43,7 @@ ${SENTENCE}
 
 ## Test Plan
 
-- Added \`tests/rule_test.ts\` (2 tests).
+- Added \`tests/rule_test.ts\`.
 `;
 
 const DRIFT_OPEN = "<!-- vibe-drift-verdict -->";

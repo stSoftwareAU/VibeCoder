@@ -17,9 +17,8 @@
  *
  * Modelled on `ci_failure_classifier.ts` (classify, then file, with a stable
  * class slug for dedup). The primary input is the `FailureCategory` from
- * `failure_diagnosis.ts` — `detectFailureCategory()` is the single diagnosis
- * path (#4298's corrected messages flow through it) and this refines it
- * rather than re-deriving it. The raw message is a secondary input only, for
+ * `failure_diagnosis.ts`, declared by new worker results or detected by legacy
+ * raw-output adapters. This refines that category rather than re-deriving it. The raw message is a secondary input only, for
  * signals the category cannot express (OOM evidence, disk exhaustion,
  * out-of-credit).
  *
@@ -83,8 +82,14 @@ export const RUN_FAILURE_CLASSES = [
 /**
  * Memory-pressure evidence beside a kill (Issue #4202).
  *
- * Whole-message, for the same reason as {@link DISK_FULL_RE} — and gated on
- * the `killed` category besides, so agent prose alone cannot reach it.
+ * Read from the worker's own words only (Issue #3694): gated on the `killed`
+ * category and scanned over `splitAgentNarration(...).worker`. The agent's
+ * quoted output carries tool results such as `Error: Exit code 137` from a
+ * command the agent ran, which is not evidence that the agent itself was
+ * OOM-killed. The worker-authored kill-diagnostics block (kernel OOM lines)
+ * and the kill headline stay in scope. The CLI's own V8 heap abort is caught
+ * earlier by the runner's `detectOutOfMemory` (claude_runner.ts) and reaches
+ * the classifier as `buildOutOfMemoryMessage`'s worker-worded headline.
  */
 const OOM_EVIDENCE_RE =
   /(?<![\w/-])out[- ]of[- ]memory(?![\w/-])|(?<![\w/-])oom[- ]?kill|killed process|\bexit(?: code)? 137\b|\(exit 137|heap out of memory|allocation failed|cannot allocate memory/i;
@@ -238,8 +243,18 @@ const AGENT_OUTCOME: RunFailureClassification = {
 export function classifyRunFailure(
   category: FailureCategory,
   failureMessage: string,
+  declaredCategory: boolean,
 ): RunFailureClassification {
-  const message = failureMessage ?? "";
+  // A declared source cause cannot be replaced by quoted git, test or agent
+  // prose. Kills, account limits and internal-tool errors retain their source-specific
+  // diagnostic refinements. Timeout disk evidence has its narrow exception below;
+  // other declared categories do not read a message.
+  const message = declaredCategory
+    ? category === "killed" || category === "rate_limit" ||
+        category === "internal_error"
+      ? splitAgentNarration(failureMessage ?? "").worker
+      : ""
+    : failureMessage ?? "";
 
   // A worker gate refusal (summary, security-fix or pre-push gate) quotes text
   //    the worker did not write, so any message-pattern rule below (secondary
@@ -323,7 +338,14 @@ export function classifyRunFailure(
 
   // 3. Disk exhaustion by message — outranks killed/crash because a full
   //    disk is what killed or crashed the run.
-  if (isDiskFull(message)) {
+  // Existing timeout diagnostics intentionally retain error-shaped disk evidence
+  // from CLI output. That narrow refinement does not grant quoted account,
+  // crash or lineage prose authority over a declared execution timeout.
+  if (
+    isDiskFull(
+      declaredCategory && category === "timeout" ? failureMessage : message,
+    )
+  ) {
     return {
       fixability: "code_fixable",
       failureClass: "disk-full",
@@ -346,7 +368,7 @@ export function classifyRunFailure(
             "The run was killed (SIGKILL) while the memory-pressure probe read high at the kill.",
         };
       }
-      if (OOM_EVIDENCE_RE.test(message)) {
+      if (OOM_EVIDENCE_RE.test(splitAgentNarration(message).worker)) {
         return {
           fixability: "code_fixable",
           failureClass: "oom",

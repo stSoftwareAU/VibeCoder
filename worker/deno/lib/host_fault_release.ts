@@ -127,9 +127,10 @@ function isFailureRecord(body: string): boolean {
  * (Issue #2890); the only pre-change failure this sweep is allowed to treat
  * as a host fault is `clone-corrupt` — a corrupt shared object store or a
  * broken ref, both unambiguous and narrow (`detectHostFault`). A worker gate
- * record (`isWorkerGateFailureRecord`: any `WORKER_GATE_MARKERS` category,
- * summary, security-fix or pre-push gate) is never one: the text it quotes is
- * the agent's, or the branch's own output, not host output. Likewise a
+ * record (`isWorkerGateFailureRecord`: any `WORKER_GATE_MARKERS` category —
+ * summary, security-fix or pre-push gate — or `quality-failure`) is never one:
+ * the text it quotes is the agent's, the verifier's or the branch's own
+ * output, not host output. Likewise a
  * quality-gate record (`isQualityGateFailureRecord`, Issue #3445): its body
  * is the repository's own test output.
  */
@@ -137,9 +138,9 @@ function classifyFailureRecord(body: string): HostFaultKind | null {
   if (!HOST_FAULT_CANDIDATE_RE.test(body.trimStart())) return null;
   const marked = parseHostFaultMarker(body);
   if (marked !== null) return marked;
-  // A worker gate refusal quotes text the worker did not write, so text such
-  // as `ignoring broken ref` in it is not host output (Issues #3431, #3454;
-  // PR #3440, #3716).
+  // A worker gate refusal or substantive quality record quotes text the worker
+  // did not write, so text such as `ignoring broken ref` in it is not host
+  // output (Issues #3431, #3454, #3738; PR #3440, #3716).
   if (isWorkerGateFailureRecord(body)) return null;
   // A quality-gate record is the repository's own test output (Issue #3445).
   if (isQualityGateFailureRecord(body)) return null;
