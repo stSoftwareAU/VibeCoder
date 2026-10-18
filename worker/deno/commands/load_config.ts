@@ -1,3 +1,7 @@
+import {
+  CLAUDE_MAX_TURNS_ENV,
+  DEFAULT_CLAUDE_MAX_TURNS,
+} from "../lib/claude_turn_limit.ts";
 /**
  * Load-config command — loads configuration and outputs shell variable
  * assignments for consumption by shell scripts.
@@ -228,6 +232,12 @@ function buildShellOutput(
 
   // --- Operational timeouts ---
   lines.push(exportScalar("CLAUDE_TIMEOUT", config.claudeTimeout));
+  lines.push(
+    // Internal transport is settled from config, never an operator override.
+    `export ${CLAUDE_MAX_TURNS_ENV}="${
+      config.claudeMaxTurns ?? DEFAULT_CLAUDE_MAX_TURNS
+    }"`,
+  );
   // Re-armable issue-work deadline (Issues #4295, #4296). Exported so bash
   // consumers see the same tunables the Deno runner decides with — an
   // operator reading the shell environment must not have to guess whether

@@ -204,7 +204,7 @@ function dirOf(p: string): string {
 export async function confinePath(
   repoPath: string,
   rel: string,
-  seams: MutationRunnerSeams,
+  seams: Pick<MutationRunnerSeams, "realPath">,
 ): Promise<string | null> {
   if (rel.startsWith("/")) return null;
   const parts: string[] = [];

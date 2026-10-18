@@ -9,8 +9,8 @@
  * partitioned, so a later scan could not tell a swept module from an
  * unread one. A ledger root may also be a single file — the root-level
  * launcher scripts (#2760) are owned as-is rather than walked. Each slice
- * now records `sweptAt` — the commit its written
- * record landed at — so `driftSince` and the `sweep-drift` command can
+ * now records `sweptAt` — the default-branch merge-base at
+ * list-generation time — so `driftSince` and the `sweep-drift` command can
  * list the modules added or rewritten since that read.
  *
  * `diffCoverage` still fails loud on any module that is missing, stale,
@@ -19,6 +19,14 @@
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
+
+import type { Result } from "../types.ts";
+import { redactSecrets } from "./secret_redaction.ts";
+import { ensureHistoryDepth } from "./git_history.ts";
+import { buildFetchTrackingRefArgs } from "./git_ref_args.ts";
+import { confinePath } from "./mutation_runner.ts";
+import { withFileLock } from "./file_lock.ts";
+import { atomicWrite } from "./file_utils.ts";
 
 /** Repo-relative path of the ledger this module reads. */
 export const LIB_SWEEP_LEDGER_PATH = "docs/audits/lib-sweep-coverage.json";
@@ -88,7 +96,7 @@ export interface SweepSlice {
   /** `swept` once the slice has been read; `claimed` while its issue is open. */
   readonly status: SweepSliceStatus;
   /**
-   * Full commit the slice's written record landed at (Issue #1609).
+   * Default-branch merge-base at list-generation time (Issue #3976).
    * Drift is measured from this SHA to HEAD.
    */
   readonly sweptAt: string;
@@ -220,6 +228,183 @@ function parseRoots(raw: unknown): string[] {
  */
 export function topUpChunkId(issue: number): string {
   return `top-up-${issue}`;
+}
+
+/**
+ * Create a top-up through the supported producer, owning its chunk and sweptAt.
+ * Fetch the actual default branch before deriving the list-generation horizon.
+ * Repeated generation preserves that horizon; only claimed → swept may change.
+ * Historical invalid records require the documented repoint procedure.
+ */
+export async function recordSweepTopUp(
+  repoRoot: string,
+  payload: unknown,
+  runGit: SweepGitRunner,
+  requestedDefaultRef = "",
+): Promise<Result<SweepSlice>> {
+  try {
+    if (
+      typeof payload !== "object" || payload === null || Array.isArray(payload)
+    ) {
+      throw new SweepLedgerError("top-up payload must be an object");
+    }
+    const raw = payload as Record<string, unknown>;
+    const fields = [
+      "issue",
+      "title",
+      "ledger",
+      "definition",
+      "status",
+      "paths",
+    ];
+    if (Object.keys(raw).some((key) => !fields.includes(key))) {
+      throw new SweepLedgerError(
+        "top-up payload accepts only issue, title, ledger, definition, status and paths; the producer owns chunk and sweptAt",
+      );
+    }
+    if (
+      !Number.isSafeInteger(raw.issue) ||
+      (raw.issue as number) <= LEDGER_FILE_LAST_TOP_UP_ISSUE
+    ) {
+      throw new SweepLedgerError(
+        `new top-up issue must be a safe integer after ${LEDGER_FILE_LAST_TOP_UP_ISSUE}`,
+      );
+    }
+    const issue = raw.issue as number;
+    const git = async (args: string[]) => {
+      const out = await runGit(args);
+      if (out.code !== 0) {
+        throw new SweepLedgerError(
+          `git ${args[0]} failed: ${out.stderr.trim() || `exit ${out.code}`}`,
+        );
+      }
+      return out.stdout.trim();
+    };
+    // Remote HEAD discovery cannot depend on a local tracking ref: a narrow
+    // feature-only clone has no default ref for `remote set-head --auto` yet.
+    const remoteHead = await git([
+      "ls-remote",
+      "--symref",
+      "--exit-code",
+      "--",
+      "origin",
+      "HEAD",
+    ]);
+    const heads = remoteHead.split("\n").filter((line) =>
+      line.startsWith("ref: refs/heads/") && line.endsWith("\tHEAD")
+    );
+    if (heads.length !== 1) {
+      throw new SweepLedgerError(
+        "remote HEAD does not name exactly one default branch",
+      );
+    }
+    const branch = heads[0]!.slice("ref: refs/heads/".length, -"\tHEAD".length);
+    const defaultRef = `origin/${branch}`;
+    if (requestedDefaultRef && requestedDefaultRef !== defaultRef) {
+      throw new SweepLedgerError(
+        `requested default ref ${requestedDefaultRef} differs from actual ${defaultRef}`,
+      );
+    }
+    await git(
+      buildFetchTrackingRefArgs("origin", defaultRef.slice("origin/".length)),
+    );
+    const history = await ensureHistoryDepth(["HEAD", defaultRef], {
+      cwd: repoRoot,
+      gitRunner: async (args) => ({ ok: true, value: await runGit(args) }),
+    });
+    if (!history.ok) throw history.error;
+    const mergeBase = await git(["merge-base", "HEAD", defaultRef]);
+    if (!SWEPT_AT_RE.test(mergeBase)) {
+      throw new SweepLedgerError("default merge-base is not a full commit");
+    }
+    const gitDir = await Deno.realPath(
+      await git(["rev-parse", "--absolute-git-dir"]),
+    );
+    const value = await withFileLock(
+      `${gitDir}/vibe-sweep-top-up-${issue}.lock`,
+      async () => {
+        const ledger = await readCoverageLedger(repoRoot);
+        const relative = `${LIB_SWEEP_TOP_UP_DIR}/${topUpChunkId(issue)}.json`;
+        const target = await confinePath(repoRoot, relative, {
+          realPath: Deno.realPath,
+        });
+        if (target === null) {
+          throw new SweepLedgerError("top-up output escapes the repository");
+        }
+        try {
+          if (
+            (await Deno.lstat(`${repoRoot}/${relative}`)).isSymlink
+          ) {
+            throw new SweepLedgerError("top-up output must not be a symlink");
+          }
+        } catch (error) {
+          if (!(error instanceof Deno.errors.NotFound)) throw error;
+        }
+        const existing = ledger.slices.find((slice) => slice.issue === issue);
+        const candidate = parseSlice({
+          ...raw,
+          chunk: topUpChunkId(issue),
+          sweptAt: existing?.sweptAt ?? mergeBase,
+        }, 0);
+        for (const path of candidate.paths) {
+          if (
+            path.startsWith("/") || path.split("/").some((part) =>
+              part === ".." || part === "." || part === ""
+            ) ||
+            !ledger.roots.some((root) =>
+              path === root || path.startsWith(root + "/")
+            )
+          ) {
+            throw new SweepLedgerError(
+              `top-up path is outside the ledger roots: ${path}`,
+            );
+          }
+        }
+        if (
+          new Set(candidate.paths).size !== candidate.paths.length
+        ) throw new SweepLedgerError("top-up paths must be unique");
+        if (existing) {
+          const unchanged =
+            JSON.stringify({ ...candidate, status: existing.status }) ===
+              JSON.stringify(existing);
+          if (
+            !unchanged ||
+            (existing.status === "swept" && candidate.status !== "swept")
+          ) {
+            throw new SweepLedgerError(
+              "existing top-up coverage is immutable; create a new top-up for a different list, or use the documented historical repoint procedure",
+            );
+          }
+        }
+        await verifySweptAtsOnDefaultBranch(
+          { ...ledger, slices: [candidate] },
+          defaultRef,
+          runGit,
+        );
+        if (!existing || existing.status !== candidate.status) {
+          await Deno.mkdir(target.slice(0, target.lastIndexOf("/")), {
+            recursive: true,
+          });
+          const written = await atomicWrite({
+            targetFile: target,
+            content: JSON.stringify(candidate, null, 2) + "\n",
+          });
+          if (!written.ok) throw written.error;
+        }
+        return candidate;
+      },
+    );
+    return { ok: true, value };
+  } catch (error) {
+    return {
+      ok: false,
+      error: new SweepLedgerError(redactSecrets(
+        `Sweep record unavailable: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      )),
+    };
+  }
 }
 
 /** A chunk id written in the top-up form, capturing the issue it names. */

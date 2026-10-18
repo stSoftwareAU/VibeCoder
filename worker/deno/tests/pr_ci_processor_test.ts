@@ -19,6 +19,7 @@ import {
   processCiFailure,
   resolveCiCheckStateDir,
 } from "../lib/pr_ci_processor.ts";
+import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import type { SyncFollowUpFiling } from "../lib/pr_body_sync_follow_up.ts";
 import {
   getCiCheckRetryCount,
@@ -2920,5 +2921,73 @@ Deno.test("processCiFailure - a failing PR body sync does not fail the run", asy
     }
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("CI turn limit aborts both initial and quality-retry runs before commit or push", async () => {
+  for (const capAt of [1, 2]) {
+    const dir = await Deno.makeTempDir();
+    try {
+      let calls = 0, pushes = 0, qualityCalls = 0;
+      const git = makeGitMock([" M src/partial.ts\n", " M src/partial.ts\n"]);
+      const deps = createMockDeps({
+        github: { runGhCommand: openPrGh() },
+        claude: {
+          runClaudeWithRetry: async () => {
+            calls++;
+            if (calls >= capAt) {
+              return {
+                ok: false,
+                error: new AgentTurnLimitError("error_max_turns"),
+              };
+            }
+            return {
+              ok: true,
+              value: { output: "partial work", exitCode: 0, timedOut: false },
+            };
+          },
+        },
+        git: {
+          runGitCommand: git.runGitCommand,
+          commitAndPushPending: async () => {
+            pushes++;
+            return {
+              ok: true,
+              value: {
+                committedNewChanges: true,
+                commitsPushed: 1,
+                finalUnpushedCount: 0,
+                finalUnpushedSource: "remote-head",
+              },
+            };
+          },
+        },
+      });
+      const result = await processCiFailure(makeInput(), {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        stateDir: `${dir}/state`,
+        workDir: dir,
+        workRoot: dir,
+        qualityGateFn: () => {
+          qualityCalls++;
+          return Promise.resolve({
+            action: "failed_fixable",
+            qualityOutput: "fixture failure",
+          });
+        },
+      });
+      assertEquals(result.ok, false);
+      if (!result.ok) {
+        assertStringIncludes(result.error.message, "error_max_turns");
+      }
+      assertEquals(calls, capAt);
+      assertEquals(qualityCalls, capAt - 1);
+      assertEquals(pushes, 0);
+      assertEquals(git.calls.some((args) => args[0] === "commit"), false);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
   }
 });

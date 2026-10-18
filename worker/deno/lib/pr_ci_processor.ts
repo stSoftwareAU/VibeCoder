@@ -1,3 +1,4 @@
+import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 /**
  * PR CI fix processor (Issue #967).
  *
@@ -1950,6 +1951,16 @@ async function _processCiWithHeartbeat(
     lifecycleStatsSink,
   );
 
+  if (postQualityResult.turnLimitFailure) {
+    await replyToComment(
+      repo,
+      prNumber,
+      postQualityResult.turnLimitFailure.message,
+      deps,
+    );
+    return { ok: false, error: postQualityResult.turnLimitFailure };
+  }
+
   // Always commit and push any pending work (Issue #1643).
   // Previously this was gated on `claudeOutput.length > 0`, but Claude
   // stdout is not a reliable signal of git state — silent commits or
@@ -2796,6 +2807,8 @@ async function _appendAttemptInPlace(opts: {
 
 /** Result of the post-Claude quality check phase. */
 interface PostClaudeQualityResult {
+  /** A capped retry must not publish its partial work. */
+  turnLimitFailure?: Error;
   /** Whether a new commit was created during the quality phase. */
   committedChanges: boolean;
 }
@@ -2928,6 +2941,9 @@ async function _runPostClaudeQualityCheck(
     if (retryResult.ok) graft.record(retryResult.value.runStats);
     // Re-read against the first baseline, so the figure covers both spawns.
     await rtk.record();
+    if (!retryResult.ok && retryResult.error instanceof AgentTurnLimitError) {
+      return { committedChanges: false, turnLimitFailure: retryResult.error };
+    }
     if (!retryResult.ok) {
       logger.warn(
         "Claude quality retry failed — committing any remaining changes anyway",
