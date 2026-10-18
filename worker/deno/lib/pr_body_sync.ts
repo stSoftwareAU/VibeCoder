@@ -528,14 +528,12 @@ export async function syncPrBodyFromSummary(
   );
   let summaryContent = rawSummary;
   if (factsOutcome.kind === "valid") {
-    try {
-      summaryContent = applyBranchOutcomesFacts(
-        rawSummary,
-        factsOutcome.rendered,
-      );
-    } catch (error) {
-      return { ok: false, error: error as Error };
-    }
+    const rendered = applyBranchOutcomesFacts(
+      rawSummary,
+      factsOutcome.rendered,
+    );
+    if (!rendered.ok) return rendered;
+    summaryContent = rendered.value;
   }
 
   if (recordedDigest !== undefined && recordedDigest === currentDigest) {

@@ -400,7 +400,14 @@ Deno.test("runPrSummaryCheck - authoritative facts replace a legacy list (Issue 
   assert(alone.ok);
   assertEquals(statusOf(alone.value, "#3147"), "passed");
 
-  const r = await runWithFacts(GOOD_SUMMARY, VALID_FACTS);
+  const legacy = GOOD_SUMMARY.replace(
+    TEST_PATH,
+    "worker/deno/tests/stale_test.ts",
+  );
+  const stale = await runWithFacts(legacy);
+  assert(stale.ok);
+  assertEquals(statusOf(stale.value, "#3147"), "blocked");
+  const r = await runWithFacts(legacy, VALID_FACTS);
   assert(r.ok);
   const report = r.value.find((g) => g.issueRef === "#3147")!;
   assertEquals(report.status, "passed");

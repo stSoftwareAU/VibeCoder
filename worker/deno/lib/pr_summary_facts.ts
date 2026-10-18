@@ -17,7 +17,10 @@ import {
   MAX_SCAN_CHARS,
   parseBranchOutcomes,
 } from "./branch_outcomes_gate.ts";
-import { markdownLogicalUnits } from "./markdown_code_spans.ts";
+import {
+  markdownLogicalUnits,
+  maskMarkdownCode,
+} from "./markdown_code_spans.ts";
 
 import {
   parseSummaryFacts,
@@ -63,16 +66,19 @@ export async function loadPrSummaryFacts(
 /**
  * Refresh the renderer-owned block and safely replace legacy outcome lists.
  * Unrelated narrative is retained; ambiguous ownership or an unresolved
- * unreached-outcome admission throws instead of discarding evidence.
+ * unreached-outcome admission returns an error instead of discarding evidence.
  */
 export function applyBranchOutcomesFacts(
   summaryContent: string,
   rendered: string,
-): string {
+): Result<string> {
   if (summaryContent.length > MAX_SCAN_CHARS) {
-    throw new Error(
-      "Branch outcomes ownership is ambiguous: summary exceeds the parser limit",
-    );
+    return {
+      ok: false,
+      error: new Error(
+        "Branch outcomes ownership is ambiguous: summary exceeds the parser limit",
+      ),
+    };
   }
   // Keep original line terminators for text outside the renderer-owned block.
   const chunks = summaryContent.split(/(\r\n|[\n\r\u2028\u2029])/);
@@ -94,17 +100,28 @@ export function applyBranchOutcomesFacts(
     starts.length > 1 || ends.length > 1 ||
     (ends.length === 1 && (starts.length !== 1 || ends[0]! <= starts[0]!))
   ) {
-    throw new Error(
-      "Branch outcomes ownership is ambiguous: duplicate or unmatched renderer markers",
-    );
+    return {
+      ok: false,
+      error: new Error(
+        "Branch outcomes ownership is ambiguous: duplicate or unmatched renderer markers",
+      ),
+    };
   }
-  const visible = lines.map((line, index) => code.has(index) ? "" : line);
+  const visible = lines.map((line, index) =>
+    code.has(index) || line.trim() === BRANCH_OUTCOMES_MARKER ||
+      line.trim() === BRANCH_OUTCOMES_END_MARKER
+      ? ""
+      : line
+  );
   const record = parseBranchOutcomes(visible.join("\n"));
   const admission = checkBranchOutcomeAdmissions(record, visible);
   if (admission.problems.length > 0) {
-    throw new Error(
-      `Branch outcomes evidence is unresolved: ${admission.problems[0]}`,
-    );
+    return {
+      ok: false,
+      error: new Error(
+        `Branch outcomes evidence is unresolved: ${admission.problems[0]}`,
+      ),
+    };
   }
   const removed = new Set<number>();
   const ownedStart = starts[0];
@@ -116,6 +133,7 @@ export function applyBranchOutcomesFacts(
   }
   const legacy = visible.map((line, index) => removed.has(index) ? "" : line);
   const legacyRecord = parseBranchOutcomes(legacy.join("\n"));
+  const legacyProse = maskMarkdownCode(legacy.join("\n")).split("\n");
   if (legacyRecord.present) {
     if (
       legacyRecord.bodyLineIndexGroups.some((indices) =>
@@ -132,20 +150,26 @@ export function applyBranchOutcomesFacts(
         /^[A-Za-z0-9_.\/-]+:\d+/.test(line)
       )
     ) {
-      throw new Error(
-        "Branch outcomes ownership is ambiguous: legacy block contains unowned evidence",
-      );
+      return {
+        ok: false,
+        error: new Error(
+          "Branch outcomes ownership is ambiguous: legacy block contains unowned evidence",
+        ),
+      };
     }
-    legacy.forEach((line, index) => {
+    for (const [index, line] of legacy.entries()) {
       if (parseBranchOutcomes(line).present) {
-        if (line.trimStart().startsWith("`")) {
-          throw new Error(
-            "Branch outcomes ownership is ambiguous: inline-code header may be an example",
-          );
+        if (!parseBranchOutcomes(legacyProse[index] ?? "").present) {
+          return {
+            ok: false,
+            error: new Error(
+              "Branch outcomes ownership is ambiguous: inline-code header may be an example",
+            ),
+          };
         }
         removed.add(index);
       }
-    });
+    }
     for (const indices of legacyRecord.entryLineIndices) {
       for (const index of indices) removed.add(index);
     }
@@ -167,11 +191,14 @@ export function applyBranchOutcomesFacts(
       : result + (lines.at(-1) === "" ? "" : "\n\n") + block + "\n"
     : result;
   if (output.length > MAX_SCAN_CHARS) {
-    throw new Error(
-      "Branch outcomes ownership is ambiguous: rendered summary exceeds the parser limit",
-    );
+    return {
+      ok: false,
+      error: new Error(
+        "Branch outcomes ownership is ambiguous: rendered summary exceeds the parser limit",
+      ),
+    };
   }
-  return output;
+  return { ok: true, value: output };
 }
 
 /**

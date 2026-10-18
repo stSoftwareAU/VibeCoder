@@ -20,7 +20,7 @@ import {
   type SummaryFacts,
 } from "../lib/summary_facts.ts";
 import {
-  applyBranchOutcomesFacts,
+  applyBranchOutcomesFacts as applyFactsResult,
   BRANCH_OUTCOMES_END_MARKER,
   BRANCH_OUTCOMES_MARKER,
   loadPrSummaryFacts,
@@ -28,6 +28,13 @@ import {
   prSummaryFactsPath,
   resolveBranchOutcomesFacts,
 } from "../lib/pr_summary_facts.ts";
+
+/** Unwrap results to compare rendered text and assert specific refusal errors. */
+function applyBranchOutcomesFacts(summary: string, rendered: string): string {
+  const result = applyFactsResult(summary, rendered);
+  if (!result.ok) throw result.error;
+  return result.value;
+}
 
 Deno.test("applyBranchOutcomesFacts refuses duplicate ownership markers (Issue #3979)", () => {
   assertThrows(
@@ -37,7 +44,11 @@ Deno.test("applyBranchOutcomesFacts refuses duplicate ownership markers (Issue #
         "LIST",
       ),
     Error,
-    "ambiguous",
+    "unmatched renderer markers",
+  );
+  assert(
+    applyBranchOutcomesFacts(`a\n${BRANCH_OUTCOMES_MARKER}\nb\n`, "LIST")
+      .includes("b\n"),
   );
 });
 
@@ -151,28 +162,77 @@ Deno.test("facts replace a legacy duplicate once and preserve unrelated narrativ
 });
 
 Deno.test("facts cannot erase ambiguous evidence or an unreached-outcome admission (Issue #3979)", () => {
-  for (
-    const summary of [
-      `${BRANCH_OUTCOMES_END_MARKER}\n`,
-      `${BRANCH_OUTCOMES_MARKER}\n${BRANCH_OUTCOMES_END_MARKER}\n${BRANCH_OUTCOMES_END_MARKER}`,
-      `${BRANCH_OUTCOMES_END_MARKER}\n${BRANCH_OUTCOMES_MARKER}`,
-      `\`Branch outcomes: none added\``,
-      "x".repeat(MAX_SCAN_CHARS + 1),
-      "**Branch outcomes:**\n\n" +
-      Array.from(
-        { length: MAX_ENTRIES + 1 },
-        (_, index) => `- lib/a.ts:${index + 1} — fixture outcome`,
-      ).join("\n"),
-      `**Branch outcomes:**\n\n- A reviewer finding still needs investigation.\n`,
-      `**Branch outcomes:**\n\n- lib/a.ts:9 — no test reaches this outcome\n`,
-      `**Branch outcomes:** unresolved evidence\n`,
-      `**Branch outcomes:**\n\n- lib/a.ts:1 — outcome\nUnrelated deployment note.`,
-    ]
-  ) {
-    assertThrows(
-      () => applyBranchOutcomesFacts(summary, "Branch outcomes: none added"),
-      Error,
-      "Branch outcomes",
+  const none = "Branch outcomes: none added";
+  const owned =
+    `${BRANCH_OUTCOMES_MARKER}\n${none}\n${BRANCH_OUTCOMES_END_MARKER}\n`;
+  const entries = (count: number) =>
+    "**Branch outcomes:**\n\n" + Array.from(
+      { length: count },
+      (_, i) => `- lib/a.ts:${i + 1} — fixture outcome`,
+    ).join("\n");
+  const cases = [
+    {
+      input: `${BRANCH_OUTCOMES_END_MARKER}\n`,
+      cause: "unmatched renderer markers",
+      legal: owned,
+    },
+    {
+      input: owned + BRANCH_OUTCOMES_END_MARKER,
+      cause: "unmatched renderer markers",
+      legal: owned,
+    },
+    {
+      input: `${BRANCH_OUTCOMES_END_MARKER}\n${BRANCH_OUTCOMES_MARKER}`,
+      cause: "unmatched renderer markers",
+      legal: owned,
+    },
+    ...[
+      "`Branch outcomes: none added`",
+      "- `Branch outcomes: none added`",
+      "**`Branch outcomes: none added`**",
+      "`Branch outcomes: none\nadded`",
+      "- `Branch outcomes: none\n  added`",
+    ].map((input) => ({ input, cause: "inline-code header", legal: none })),
+    {
+      input: "x".repeat(MAX_SCAN_CHARS + 1),
+      cause: "summary exceeds the parser limit",
+      legal: "x",
+    },
+    {
+      input: entries(MAX_ENTRIES + 1),
+      cause: "unowned evidence",
+      legal: entries(MAX_ENTRIES),
+    },
+    {
+      input:
+        "**Branch outcomes:**\n\n- A reviewer finding still needs investigation.\n",
+      cause: "unowned evidence",
+      legal: "**Branch outcomes:**\n\n- lib/a.ts:9 — reviewed outcome\n",
+    },
+    {
+      input:
+        "**Branch outcomes:**\n\n- lib/a.ts:9 — no test reaches this outcome\n",
+      cause: "admits no test reaches its outcome",
+      legal:
+        "**Branch outcomes:**\n\n- lib/a.ts:9 — outcome — test tests/a_test.ts\n",
+    },
+    {
+      input: "**Branch outcomes:** unresolved evidence\n",
+      cause: "unowned evidence",
+      legal: "**Branch outcomes:** none added\n",
+    },
+    {
+      input:
+        "**Branch outcomes:**\n\n- lib/a.ts:1 — outcome\nUnrelated deployment note.",
+      cause: "unowned evidence",
+      legal:
+        "**Branch outcomes:**\n\n- lib/a.ts:1 — outcome\n\nUnrelated deployment note.",
+    },
+  ];
+  for (const { input, cause, legal } of cases) {
+    assertThrows(() => applyBranchOutcomesFacts(input, none), Error, cause);
+    assert(
+      applyBranchOutcomesFacts(legal, none).includes(BRANCH_OUTCOMES_MARKER),
     );
   }
 });
@@ -260,4 +320,17 @@ Deno.test("oversized legacy evidence is refused before ownership is inferred fro
     Error,
     "parser limit",
   );
+});
+
+Deno.test("a known renderer marker directly after a legacy entry is a boundary (Issue #3979)", () => {
+  const legacy =
+    "**Branch outcomes:**\n\n- `lib/a.ts:1` — outcome — test `tests/a_test.ts` — flip: went red\n";
+  const rendered = "Branch outcomes: none added";
+  const result = applyBranchOutcomesFacts(
+    legacy + BRANCH_OUTCOMES_MARKER + "\n",
+    rendered,
+  );
+  assert(!result.includes("lib/a.ts"));
+  assertEquals(result.match(/vibe-branch-outcomes -->/g)?.length, 2);
+  assertEquals(applyBranchOutcomesFacts(result, rendered), result);
 });

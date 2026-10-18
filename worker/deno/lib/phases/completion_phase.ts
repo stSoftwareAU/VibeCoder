@@ -2366,14 +2366,12 @@ async function completionBody(
     logger.info("Loaded PR summary facts file", {
       source: branchOutcomesFacts.relativePath,
     });
-    try {
-      summaryContent = applyBranchOutcomesFacts(
-        summaryContent,
-        branchOutcomesFacts.rendered,
-      );
-    } catch (error) {
-      branchOutcomesRenderProblem = (error as Error).message;
-    }
+    const rendered = applyBranchOutcomesFacts(
+      summaryContent,
+      branchOutcomesFacts.rendered,
+    );
+    if (rendered.ok) summaryContent = rendered.value;
+    else branchOutcomesRenderProblem = rendered.error.message;
   } else if (branchOutcomesFacts.kind === "error") {
     logger.warn("PR summary facts file is unusable", {
       error: branchOutcomesFacts.reason,

@@ -100,11 +100,9 @@ export async function runPrSummaryCheck(
     ? facts.reason
     : null;
   if (facts.kind === "valid") {
-    try {
-      summaryContent = applyBranchOutcomesFacts(rawSummary, facts.rendered);
-    } catch (error) {
-      factsProblem = (error as Error).message;
-    }
+    const rendered = applyBranchOutcomesFacts(rawSummary, facts.rendered);
+    if (rendered.ok) summaryContent = rendered.value;
+    else factsProblem = rendered.error.message;
   }
 
   const base = await resolveComparableBaseRef(runGit, input.baseBranch, {

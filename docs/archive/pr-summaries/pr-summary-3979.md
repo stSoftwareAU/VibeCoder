@@ -27,6 +27,14 @@ admissions stay blocking in completion, local validation and body sync.
 
 ## Evidence
 
+- Independent real-corpus run: all 32 pre-existing archived summary/facts pairs
+  rendered successfully and were byte-identical on a second render. False
+  positives: zero in that positive-only corpus. Real-corpus false negatives:
+  unmeasured because it contains no labelled negatives. Synthetic refusal
+  controls below cover the negative shapes.
+
+- #3979: Render Branch outcomes once from existing facts and remove duplicate summary evidence maintenance.
+
 - The legacy duplicate regression failed against base production code.
 - Mutation checks failed when individual ownership, bounds, preservation and
   caller error-handling rules were removed. The original admission validator
@@ -34,28 +42,45 @@ admissions stay blocking in completion, local validation and body sync.
 - Docs sweep — grep: "hand-written", "facts file", "Branch outcomes", "marker";
   updated CODING-STANDARDS.md, docs/workflows/issue-processing.md and the issue,
   coding_guidelines and pr_feedback prompts; section:
-  docs/workflows/issue-processing.md → "The facts file"; siblings: none.
+  docs/workflows/issue-processing.md → "The facts file"; siblings: none — no existing configuration or outcome set gained a member.
 - Removed the completion/local-check categorical facts-plus-prose refusal.
   Templates request facts plus the marker instead of two maintained lists.
 - Private audit examples are not needed to reproduce this change.
 
 ## Acceptance Criteria
 
-- met — Facts plus a legacy duplicate block converge to one correct generated
-  block: completion and local-check regressions exercise the existing sequence.
-- met — Re-running rendering produces no diff: repeated render assertions and
-  narrative/CRLF/fenced-example controls cover ownership and preservation.
-- met — A correction which moves code leaves evidence explicitly unresolved:
-  the changed-head regression retains the old anchor and the existing drift
-  validator reports it.
-- met — Missing facts, fabricated results, ambiguous anchors and substantive
-  defects remain detectable: existing schema/missing-test checks remain active;
-  ambiguity and admissions block callers. Execution verification stays with
-  the existing verification mechanism; facts are not execution evidence.
-- met — Templates and callers share the same renderer contract. Removed the
-  redundant hand-written-list requirement and duplicate refusal paths.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Facts plus a legacy duplicate block converge to one correct generated block without a full implementation retry merely for duplicate formatting. — evidence: `worker/deno/tests/completion_phase_branch_outcomes_facts_3396_test.ts` and `worker/deno/tests/pr_summary_check_test.ts` exercise the production sequence. — reviewer: met
+- **met** — Re-running rendering produces no diff; unrelated summary text survives unchanged. — evidence: `worker/deno/tests/pr_summary_facts_test.ts` covers idempotency, narrative, fenced examples and CRLF preservation. — reviewer: met
+- **met** — A correction which moves code leaves evidence valid for the final head or explicitly unresolved, never silently stale. — evidence: `worker/deno/tests/pr_summary_facts_test.ts` retains the old anchor; `worker/deno/tests/branch_outcome_citations_facts_3396_test.ts` covers production drift/recovery. — reviewer: met
+- **met** — Missing facts, fabricated results, ambiguous anchors and substantive defects remain detectable; no test/verifier result is invented. — evidence: existing schema/missing-test checks and the specific refusal cases in `worker/deno/tests/pr_summary_facts_test.ts`; callers retain blocking errors. — reviewer: met
+- **met** — Templates and callers share the same contract, and the PR names the redundant requirement/path removed. — evidence: shared renderer and issue/coding/feedback prompt changes. — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Expected ambiguity refusals used exceptions — evidence: `worker/deno/lib/pr_summary_facts.ts:75` — reason: fixed with Result and explicit handling in all three callers.
+- **violation** — Decorated/wrapped inline-code examples could be discarded — evidence: `worker/deno/lib/pr_summary_facts.ts:136` — reason: fixed with full-block shared Markdown masking and specific refusal controls.
+- **violation** — Local-check replacement regression could pass without rendering — evidence: `worker/deno/tests/pr_summary_check_test.ts:397` — reason: fixed with a stale named-test citation that only authoritative facts replace.
+- **clean** — Reviewed Result contracts, shared admission reuse, named-test paths, test-only production members, documentation truthfulness and issue-required assertion replacements. No routing or merge protections change.
 
 ## Test Plan
+
+- Labelled synthetic refusal corpus: 14 invalid inputs and 14 paired legal
+  controls; zero false positives and zero false negatives on these fixtures.
+  This is bounded fixture evidence, not an estimate for all archived summaries.
+- Completion valid-facts marker expectation: bypass rendered assignment → red.
+- Completion legacy replacement status, PR count, rendered-list and single-block
+  expectations: remove legacy discovery → red; the completion composition
+  regression also fails when rendered content is bypassed.
+- Body-sync valid-facts marker expectation: bypass rendered assignment → red.
+- Local-check legacy replacement status/problems expectations: bypass rendered
+  assignment → red because the stale named test remains unresolved.
+- Duplicate-start expectation: remove only duplicate-start guard → red.
+- Append expectation: omit the appended block → red. Empty-summary
+  expectation: return an empty string in that arm → red.
 
 - Focused regressions cover rendering, completion, local validation and body
   sync, plus existing admission and head-drift validation.
@@ -98,7 +123,7 @@ admissions stay blocking in completion, local validation and body sync.
 
 - Removed from `worker/deno/tests/pr_summary_facts_test.ts`: ``assertEquals(out, `a\nLIST\nb\n${BRANCH_OUTCOMES_MARKER}\n`);``
   Required by: "preserve unrelated narrative and flag ambiguous ownership explicitly"
-  Replaced by: ``assertThrows(() => applyBranchOutcomesFacts(`a\n${BRANCH_OUTCOMES_MARKER}\nb\n${BRANCH_OUTCOMES_MARKER}\n`, "LIST"), Error, "ambiguous");``
+  Replaced by: ``assertThrows(() => applyBranchOutcomesFacts(`a\n${BRANCH_OUTCOMES_MARKER}\nb\n${BRANCH_OUTCOMES_MARKER}\n`, "LIST"), Error, "unmatched renderer markers");``
 
 - Removed from `worker/deno/tests/pr_summary_facts_test.ts`: ``assertEquals(applyBranchOutcomesFacts("body\n\n", "LIST"), "body\n\nLIST\n");``
   Required by: "Facts plus a legacy duplicate block converge to one correct generated block"
@@ -107,5 +132,9 @@ admissions stay blocking in completion, local validation and body sync.
 - Removed from `worker/deno/tests/pr_summary_facts_test.ts`: ``assertEquals(applyBranchOutcomesFacts("  \n", "LIST"), "LIST\n");``
   Required by: "Facts plus a legacy duplicate block converge to one correct generated block"
   Replaced by: ``assertEquals(applyBranchOutcomesFacts("  \n", "LIST"), `${BRANCH_OUTCOMES_MARKER}\nLIST\n${BRANCH_OUTCOMES_END_MARKER}\n`);``
+
+- Removed from `worker/deno/tests/pr_summary_check_test.ts`: `assertEquals(report.status, "blocked");`
+  Required by: "Facts plus a legacy duplicate block converge to one correct generated block"
+  Replaced by: `assertEquals(report.status, "passed");`
 
 <!-- vibe-branch-outcomes -->
