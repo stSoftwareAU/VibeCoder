@@ -58,6 +58,9 @@ elif args[0] == "run":
             path.unlink(missing_ok=True)
 elif args[0] == "exec":
     path = file_for(args[1])
+    if (root / "fail-readiness-exec").exists():
+        print("Error: can only create exec sessions on running containers: container state improper; synthetic-private-runtime-value", file=sys.stderr)
+        sys.exit(125)
     sys.exit(0 if path.exists() and alive(json.loads(path.read_text())["pid"]) else 1)
 elif args[0] == "ps":
     records = []
@@ -70,7 +73,10 @@ elif args[0] == "inspect":
     path = file_for(args[-1])
     if not path.exists():
         sys.exit(1)
-    print(json.loads(path.read_text())["owner"])
+    if option("--format") == "{{json .State}}":
+        print(json.dumps({"Status": "running", "Running": True, "ExitCode": 0, "Error": "synthetic-private-state-value"}))
+    else:
+        print(json.loads(path.read_text())["owner"])
 elif args[0] in ("stop", "kill"):
     path = file_for(args[-1])
     if not path.exists():

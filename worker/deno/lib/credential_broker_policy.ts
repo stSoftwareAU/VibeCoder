@@ -19,6 +19,9 @@ export const CREDENTIAL_BROKER_AUTH_ENDPOINTS = {
   codex: "https://auth.openai.com/oauth/token",
 } as const;
 
+/** Git smart HTTP has its own closed protocol policy, not a generic API route. */
+export const GITHUB_GIT_UPSTREAM = "https://github.com";
+
 /** The upstream services implemented by the experimental broker. */
 export type BrokerService = keyof typeof CREDENTIAL_BROKER_UPSTREAMS;
 

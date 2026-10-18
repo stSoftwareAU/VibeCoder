@@ -120,9 +120,9 @@ change still requires the repository quality gate and actual runtime acceptance.
    above criteria are met. Preserve build/prune/disk checks and attached-command
    behaviour. Re-run full Docker and rootless Podman proof using this supervisor
    and fixed service, including denial controls, readiness, revocation, process
-   cleanup and secret visibility. In particular, demonstrate private `0600` host
-   configuration readability by the broker under rootless UID mapping; never
-   make upstream credentials world-readable to make a probe pass.
+   cleanup and secret visibility. In particular, demonstrate private `0600`
+   provisioned-volume configuration readability by the broker under rootless UID
+   mapping; never make upstream credentials world-readable to make a probe pass.
 6. Establish an Apple-supported broker transport and actual runtime proof on an
    eligible host, or continue refusing that launch path explicitly. Hosted macOS
    runner availability is not evidence of nested VM support.
@@ -130,3 +130,30 @@ change still requires the repository quality gate and actual runtime acceptance.
 The independent earlier Docker socket/network experiments remain useful
 architecture evidence; they do not prove this newer supervisor integration or
 resolve any of these remaining acceptance criteria.
+
+## Hosted supervisor failure follow-up
+
+The first hosted supervisor run,
+[39100177993](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39100177993),
+tested source `288fadd`. Docker reached the worker fixture, but its granular
+Deno permissions refused the `/proc/self/status` witness. The fixture now uses
+`--allow-all` inside the unchanged hardened container, as the earlier boundary
+probe does. This removes an application permission barrier from a test intended
+to exercise the container boundary; it does not relax the container's network,
+capability, seccomp, root-filesystem or mount settings.
+
+Rootless Podman stopped before starting the worker with a readiness failure. The
+original error discarded the runtime's exit code and stderr meaning. The
+supervisor now reports the failing phase, exit code, a fixed stderr category,
+and a bounded runtime inspection of `Status`, `Running` and `ExitCode`. It never
+prints raw stderr, container names, paths or the inspect `Error` field. Exit 125
+still fails; this change does not infer authenticated readiness from a container
+state or assume an unobserved startup race is retryable. A further hosted run
+must establish the actual Podman cause before changing that decision.
+
+The local focused suite passes 31 tests, including three new behavioural cases
+for scoped diagnostics, malformed state, and the real local subprocess adapter.
+Six independent mutations were killed by assertions after the tests first failed
+against the original implementation. The source was restored before formatting,
+lint and type checks. These local process tests establish diagnostic handling
+and cleanup, not Docker or Podman containment acceptance.

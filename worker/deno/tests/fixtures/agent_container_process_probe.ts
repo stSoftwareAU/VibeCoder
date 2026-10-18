@@ -16,6 +16,9 @@ import {
   countSyntheticCredentialMatches,
 } from "../support/agent_container_evidence.ts";
 import { probeNativeGitHubClient } from "./native_github_client_probe.ts";
+import { probeNativeGitClient } from "./native_git_client_probe.ts";
+import { createNativeGitHttpFixture } from "./native_git_http_fixture.ts";
+import { GITHUB_GIT_UPSTREAM } from "../../lib/credential_broker_policy.ts";
 import {
   geminiNativeFixtureResponse,
   runGeminiNativeClientProbe,
@@ -137,6 +140,11 @@ async function broker(credentialRoot: string): Promise<void> {
     nativeCodexSubscriptionRequests: number;
     nativeCodexRefreshRequests: number;
     nativeCodexPersisted: boolean;
+    nativeGit: {
+      authenticatedRequests: number;
+      discoveries: number;
+      fetches: number;
+    };
     nativeGitHubReads: {
       identity: number;
       quota: number;
@@ -163,6 +171,7 @@ async function broker(credentialRoot: string): Promise<void> {
     nativeCodexSubscriptionRequests: 0,
     nativeCodexRefreshRequests: 0,
     nativeCodexPersisted: false,
+    nativeGit: { authenticatedRequests: 0, discoveries: 0, fetches: 0 },
     nativeGitHubReads: {
       identity: 0,
       quota: 0,
@@ -172,6 +181,14 @@ async function broker(credentialRoot: string): Promise<void> {
       repo: 0,
     },
   };
+  const gitFixture = await createNativeGitHttpFixture({
+    rootDir: `${privateDirectory}/git-upstream`,
+    upstreamToken: secret,
+    async onRequest() {
+      witness.nativeGit = { ...gitFixture.witness };
+      await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+    },
+  });
   for await (const entry of Deno.readDir("/proc/self/fd")) {
     const path = `/proc/self/fd/${entry.name}`;
     try {
@@ -505,6 +522,7 @@ async function broker(credentialRoot: string): Promise<void> {
         openai: secret,
       },
       repositories: ["fixture/allowed"],
+      gitReads: true,
       ...(capability === fixture.capability
         ? {
           codexSubscription: {
@@ -529,6 +547,9 @@ async function broker(credentialRoot: string): Promise<void> {
       // substitutes this controlled local HTTP listener; no internet request.
       fetch(request) {
         const url = new URL(request.url);
+        if (url.origin === GITHUB_GIT_UPSTREAM) {
+          return gitFixture.handle(request);
+        }
         const forwarded = new Request(
           `http://127.0.0.1:${ipv4.addr.port}${url.pathname}${url.search}`,
           request,
@@ -780,6 +801,9 @@ if (mode === "broker") {
 } else if (mode === "native-github") {
   const fixture = JSON.parse(Deno.args[1]!) as ContainerFixture;
   console.log(JSON.stringify(await probeNativeGitHubClient(fixture)));
+} else if (mode === "native-git") {
+  const fixture = JSON.parse(Deno.args[1]!) as ContainerFixture;
+  console.log(JSON.stringify(await probeNativeGitClient(fixture)));
 } else if (mode === "native-gemini") {
   const fixture = JSON.parse(Deno.args[1]!) as ContainerFixture;
   console.log(JSON.stringify(

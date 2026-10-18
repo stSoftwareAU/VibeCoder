@@ -58,6 +58,7 @@ jobs:
             tests/anthropic_agent_gateway_test.ts tests/github_agent_gateway_test.ts tests/github_broker_reads_test.ts tests/credential_broker_github_reads_test.ts \
             tests/gemini_agent_gateway_test.ts tests/codex_agent_gateway_test.ts \
             tests/github_broker_writes_test.ts tests/credential_broker_github_writes_test.ts \
+            tests/credential_broker_git_reads_test.ts tests/git_broker_transport_test.ts \
             tests/credential_broker_codex_subscription_test.ts tests/codex_subscription_transport_test.ts
 
       - name: Check private provisioning and supervisor lifecycle
@@ -68,6 +69,7 @@ jobs:
             --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname \
             tests/broker_isolation_plan_test.ts tests/broker_session_provision_test.ts \
             tests/broker_supervisor_test.ts tests/broker_supervisor_probe_test.ts \
+            tests/git_agent_gateway_test.ts tests/git_http_fixture_test.ts tests/broker_provider_selection_test.ts \
             tests/broker_service_test.ts tests/codex_subscription_persistence_test.ts
 
       - name: Exercise actual Docker supervisor and private-volume provisioning
@@ -111,7 +113,7 @@ jobs:
         run: |
           printf 'Nested namespace prerequisite: %s\n\nSeparate container prerequisite: %s\n' \
             "${NESTED_OUTCOME}" "${SEPARATE_OUTCOME}" >> "${GITHUB_STEP_SUMMARY}"
-          printf '\nThese diagnostics do not establish native CLI, OAuth or Apple acceptance.\n' >> "${GITHUB_STEP_SUMMARY}"
+          printf '\nNative clients use controlled upstreams. Production integration, Git push and Apple acceptance remain unproved.\n' >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Retain both diagnostics, including a refused namespace
         if: always()
@@ -178,6 +180,7 @@ jobs:
             tests/anthropic_agent_gateway_test.ts tests/credential_broker_lease_test.ts \
             tests/github_agent_gateway_test.ts tests/github_broker_reads_test.ts tests/credential_broker_github_reads_test.ts tests/gemini_agent_gateway_test.ts tests/codex_agent_gateway_test.ts \
             tests/github_broker_writes_test.ts tests/credential_broker_github_writes_test.ts \
+            tests/credential_broker_git_reads_test.ts tests/git_broker_transport_test.ts \
             tests/credential_broker_codex_subscription_test.ts tests/codex_subscription_transport_test.ts
 
       - name: Check private provisioning and supervisor lifecycle
@@ -188,6 +191,7 @@ jobs:
             --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname \
             tests/broker_isolation_plan_test.ts tests/broker_session_provision_test.ts \
             tests/broker_supervisor_test.ts tests/broker_supervisor_probe_test.ts \
+            tests/git_agent_gateway_test.ts tests/git_http_fixture_test.ts tests/broker_provider_selection_test.ts \
             tests/broker_service_test.ts tests/codex_subscription_persistence_test.ts
 
       - name: Exercise actual Podman supervisor and private-volume provisioning
@@ -217,7 +221,7 @@ jobs:
         run: |
           printf 'Rootless Podman prerequisite: %s\n\nSeparate container probe: %s\n' \
             "${PREREQUISITE_OUTCOME}" "${SEPARATE_OUTCOME}" >> "${GITHUB_STEP_SUMMARY}"
-          printf '\nNo rootful fallback, host sysctl or security-profile changes. Live OAuth, other providers and Apple acceptance remain unproved.\n' >> "${GITHUB_STEP_SUMMARY}"
+          printf '\nNo rootful fallback, host sysctl or security-profile changes. Native clients use controlled upstreams; production integration, Git push and Apple acceptance remain unproved.\n' >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Retain rootless Podman evidence, including refused prerequisites
         if: always()

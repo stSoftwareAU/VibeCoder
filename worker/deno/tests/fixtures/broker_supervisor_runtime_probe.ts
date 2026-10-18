@@ -171,10 +171,9 @@ for (const ending of ["success", "cancel", "broker-loss"] as const) {
       "run",
       "--no-config",
       "--no-remote",
-      "--allow-read",
-      "--allow-write",
-      "--allow-env",
-      "--allow-net",
+      // This adversarial fixture tests the container boundary, including
+      // /proc. Deno's own permission gate must not substitute for that proof.
+      "--allow-all",
       "/workspace/worker/deno/tests/fixtures/broker_supervisor_worker_probe.ts",
       artifact,
       release,

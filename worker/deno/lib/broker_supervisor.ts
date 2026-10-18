@@ -24,7 +24,9 @@ interface RuntimeChild {
 
 export interface BrokerSupervisorDeps {
   /** Bounded runtime calls; production uses the existing watchdog runner. */
-  run: (args: string[]) => Promise<{ code: number; stdout: string }>;
+  run: (
+    args: string[],
+  ) => Promise<{ code: number; stdout: string; stderr?: string }>;
   start: (args: string[], input?: Uint8Array) => RuntimeChild;
   /** True only when the existing reaper verifies the container/client gone. */
   reap: (
@@ -32,6 +34,70 @@ export interface BrokerSupervisorDeps {
     pid: number | undefined,
     owner: string,
   ) => Promise<boolean>;
+}
+
+/** Classify runtime failures without printing names, paths or private values. */
+function readinessDiagnostic(stderr: string | undefined): string {
+  if (
+    /can only create exec sessions on running containers|container .* is not running/i
+      .test(stderr ?? "")
+  ) {
+    return "container-not-running";
+  }
+  if (/no such container|no container with name or ID/i.test(stderr ?? "")) {
+    return "container-not-found";
+  }
+  if (
+    /permission denied|operation not permitted|NotCapable/i.test(stderr ?? "")
+  ) {
+    return "permission-denied";
+  }
+  if (/timed? ?out|TimeoutError/i.test(stderr ?? "")) return "runtime-timeout";
+  return "unclassified";
+}
+
+/** Only fixed state fields enter diagnostics; never echo the inspect payload. */
+function readinessState(code: number, stdout: string): string {
+  if (code !== 0) {
+    return "state=unavailable, running=unknown, containerExit=unknown";
+  }
+  let value: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    if (
+      parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+    ) {
+      value = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Inspection is diagnostic only: malformed data cannot enable a retry.
+  }
+  const states = [
+    "configured",
+    "created",
+    "initialized",
+    "running",
+    "paused",
+    "restarting",
+    "stopping",
+    "stopped",
+    "exited",
+    "removing",
+    "dead",
+  ];
+  const status =
+    typeof value.Status === "string" && states.includes(value.Status)
+      ? value.Status
+      : "unknown";
+  const running = typeof value.Running === "boolean"
+    ? String(value.Running)
+    : "unknown";
+  const exit = typeof value.ExitCode === "number" &&
+      Number.isSafeInteger(value.ExitCode) &&
+      value.ExitCode >= 0 && value.ExitCode <= 255
+    ? String(value.ExitCode)
+    : "unknown";
+  return `state=${status}, running=${running}, containerExit=${exit}`;
 }
 
 function productionDeps(plan: BrokerIsolationPlan): BrokerSupervisorDeps {
@@ -315,7 +381,23 @@ export async function superviseBrokeredWorker(
         throw new Error("Broker readiness deadline expired");
       }
       if (result.code === 0) break;
-      if (result.code !== 1) throw new Error("Broker readiness probe failed");
+      if (result.code !== 1) {
+        // A runtime's exec error is not authenticated readiness. Record its
+        // observed state before deciding whether a future fix may retry it.
+        const state = await deps.run([
+          "inspect",
+          "--format",
+          "{{json .State}}",
+          plan.broker.name,
+        ]);
+        throw new Error(
+          `Broker readiness probe failed (phase=${
+            identity.code === 0 ? "exec" : "identity"
+          }, exit=${result.code}, diagnostic=${
+            readinessDiagnostic(result.stderr)
+          }, ${readinessState(state.code, state.stdout)})`,
+        );
+      }
       let pollTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([

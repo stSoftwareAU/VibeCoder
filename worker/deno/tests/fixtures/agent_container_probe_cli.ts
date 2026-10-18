@@ -191,6 +191,8 @@ try {
         "tests/fixtures/agent_namespace_container_probe.ts",
         "tests/fixtures/agent_container_process_probe.ts",
         "tests/fixtures/native_github_client_probe.ts",
+        "tests/fixtures/native_git_client_probe.ts",
+        "tests/fixtures/native_git_http_fixture.ts",
         "tests/fixtures/gemini_native_client_probe.ts",
         "tests/fixtures/native_codex_client_probe.ts",
         "tests/support/codex_native_evidence.ts",
@@ -330,6 +332,14 @@ try {
     );
   }
   console.log(JSON.stringify({ phase: "native-github", evidence: github }));
+  const git = JSON.parse(await launch(agentPlan, "native-git", [metadata]));
+  if (
+    git.nativeGitCompleted !== true || git.cloneCompleted !== true ||
+    git.shallowClone !== true || git.fetchCompleted !== true ||
+    git.deniedRepository !== true || git.deniedPush !== true ||
+    git.credentialFreeConfig !== true || git.upstreamCredentialVisible !== false
+  ) throw new Error("Native Git fixture lacked clone/fetch/denial evidence");
+  console.log(JSON.stringify({ phase: "native-git", evidence: git }));
   const geminiPin = manifest.providers.find((provider) =>
     provider.id === "gemini"
   );
@@ -368,6 +378,14 @@ try {
     console.log(JSON.stringify({ phase: "native-codex", evidence: codex }));
   }
   const nativeWitness = JSON.parse(await inside("witness"));
+  if (
+    !Number.isSafeInteger(nativeWitness.nativeGit?.discoveries) ||
+    nativeWitness.nativeGit.discoveries < 2 ||
+    !Number.isSafeInteger(nativeWitness.nativeGit?.fetches) ||
+    nativeWitness.nativeGit.fetches < 2 ||
+    nativeWitness.nativeGit.authenticatedRequests !==
+      nativeWitness.nativeGit.discoveries + nativeWitness.nativeGit.fetches
+  ) throw new Error("Native Git lacked authenticated upstream evidence");
   if (
     nativeWitness.nativeGitHubRequests !== 2 ||
     nativeWitness.nativeCodexRequests !== 1 ||
@@ -408,6 +426,7 @@ try {
         githubReads: nativeWitness.nativeGitHubReads,
         githubWrites: nativeWitness.nativeGitHubWrites,
         githubWriteAudits: nativeWitness.nativeGitHubWriteAudits,
+        git: nativeWitness.nativeGit,
         gemini: nativeWitness.nativeGeminiRequests,
         codex: nativeWitness.nativeCodexRequests,
         codexSubscription: nativeWitness.nativeCodexSubscriptionRequests,
@@ -425,7 +444,7 @@ try {
   }
   console.log(JSON.stringify({ phase: "broker-stopped", evidence: stopped }));
   console.log(
-    `PASS: separate hardened ${descriptor.displayName} containers deny direct IPv4/IPv6 and hide the planted credential while pinned Claude/Gemini inference and native gh reads work; live OAuth/remaining providers/Apple acceptance remains unproved`,
+    `PASS: separate hardened ${descriptor.displayName} containers deny direct IPv4/IPv6 and hide planted credentials while native Claude/Gemini/Codex, gh reads/writes and Git clone/fetch work against controlled upstreams; production integration, Git push and Apple acceptance remain unproved`,
   );
 } finally {
   for (const plan of plans) {

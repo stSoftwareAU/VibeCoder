@@ -25,6 +25,7 @@ import {
 import type { MutationInfo } from "./audit_mutation_classifier.ts";
 import { createCodexSubscriptionTransport } from "./codex_subscription_transport.ts";
 import { CODEX_SUBSCRIPTION_METADATA_HEADERS } from "./codex_transport_headers.ts";
+import { resolveGitBrokerRequest } from "./git_broker_transport.ts";
 
 export interface CredentialBrokerOptions {
   /** Per-run broker capability; never an upstream provider/GitHub credential. */
@@ -43,6 +44,8 @@ export interface CredentialBrokerOptions {
   >;
   /** Repository names supplied by the trusted supervisor, not by a worker request. */
   repositories: readonly string[];
+  /** Host opt-in to scoped upload-pack only; this never grants Git writes. */
+  gitReads?: boolean;
   /** Explicit host grant; no agent request can select a claim or audit target. */
   githubWrites?: {
     claimedIssue?: GitHubBrokerWriteContext["claimedIssue"];
@@ -174,6 +177,26 @@ export function createCredentialBroker(
       : {}),
   };
   const auditWrite = writes?.audit;
+  const gitReads = options.gitReads === true;
+  const gitContext = {
+    repositories: [...repositories].map((repo) => ({
+      repo,
+      defaultBranch: "",
+      protectedBranches: [],
+    })),
+    transactions: [],
+  };
+  const gitRead = (request: Request, bytes = new Uint8Array()) => {
+    if (!gitReads) return;
+    const decision = resolveGitBrokerRequest(request, gitContext, bytes);
+    if (
+      decision.allowed &&
+      (decision.kind === "fetch" ||
+        (decision.kind === "discovery" &&
+          decision.upstream.search === "?service=git-upload-pack"))
+    ) return decision;
+    return undefined;
+  };
 
   return async (request) => {
     if (options.signal?.aborted) {
@@ -192,8 +215,27 @@ export function createCredentialBroker(
       difference |= expected[index]! ^ actual[index]!;
     }
     if (difference !== 0) return failure(401, "Broker capability required");
-    let route = resolveCredentialBrokerRoute(request, repositories);
+    let route: { service: BrokerService | "git"; upstream: URL } | undefined =
+      resolveCredentialBrokerRoute(request, repositories);
     const url = new URL(request.url);
+    let gitRequest = request;
+    const compressedGit = url.pathname.startsWith("/git/") &&
+      request.method === "POST" &&
+      request.headers.get("content-encoding") === "gzip";
+    if (compressedGit) {
+      const headers = new Headers(request.headers);
+      headers.delete("content-encoding");
+      // Policy sees the eventual uncompressed metadata. Body validation below
+      // separately bounds wire bytes and inflated bytes before any forwarding.
+      gitRequest = new Request(request.url, {
+        method: request.method,
+        headers,
+      });
+    }
+    if (url.pathname.startsWith("/git/")) {
+      const read = gitRead(gitRequest);
+      route = read ? { service: "git", upstream: read.upstream } : undefined;
+    }
     if (url.pathname.startsWith("/github/")) {
       const read = resolveGitHubBrokerRead(request, repositories);
       if (read) route = { service: "github", upstream: read.upstream };
@@ -220,7 +262,9 @@ export function createCredentialBroker(
       }
     }
     if (!route) return failure(403, "Broker route denied");
-    const credential = credentials[route.service];
+    const credential = credentials[
+      route.service === "git" ? "github" : route.service
+    ];
     if (route.service === "codex-subscription" ? !subscription : !credential) {
       return failure(503, "Broker service is not configured");
     }
@@ -234,6 +278,18 @@ export function createCredentialBroker(
     let body: Uint8Array<ArrayBuffer> | undefined;
     try {
       body = await boundedBody(request, maximum, signal);
+      if (body && compressedGit) {
+        body = await boundedBody(
+          new Request(request.url, {
+            method: "POST",
+            body: new Blob([body]).stream().pipeThrough(
+              new DecompressionStream("gzip"),
+            ),
+          }),
+          maximum,
+          signal,
+        );
+      }
     } catch {
       if (options.signal?.aborted) {
         return failure(503, "Broker session is closed");
@@ -259,9 +315,17 @@ export function createCredentialBroker(
         mutation = write.mutation;
       }
     }
-    const headers = new Headers();
-    headers.set("accept", "application/json, text/event-stream");
-    if (body.byteLength > 0) headers.set("content-type", "application/json");
+    let headers = new Headers();
+    if (route.service === "git") {
+      const read = gitRead(gitRequest, body);
+      if (!read) return failure(403, "Broker route denied");
+      route = { service: "git", upstream: read.upstream };
+      body = read.body;
+      headers = read.headers;
+    } else {
+      headers.set("accept", "application/json, text/event-stream");
+      if (body.byteLength > 0) headers.set("content-type", "application/json");
+    }
     if (route.service === "codex-subscription") {
       for (const name of CODEX_SUBSCRIPTION_METADATA_HEADERS) {
         const value = request.headers.get(name);
@@ -286,6 +350,11 @@ export function createCredentialBroker(
       headers.set("x-api-key", credential!);
     } else if (route.service === "gemini") {
       headers.set("x-goog-api-key", credential!);
+    } else if (route.service === "git") {
+      headers.set(
+        "authorization",
+        `Basic ${btoa(`x-access-token:${credential}`)}`,
+      );
     } else if (route.service !== "codex-subscription") {
       headers.set("authorization", `Bearer ${credential}`);
     }

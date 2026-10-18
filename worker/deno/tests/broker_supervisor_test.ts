@@ -148,6 +148,142 @@ Deno.test("supervisor readiness timeout prevents worker launch and cleans only i
   }
 });
 
+Deno.test("supervisor diagnoses runtime readiness failure without exposing stderr or accepting exec 125", async () => {
+  const h = await harness();
+  let probes = 0;
+  let stateInspections = 0;
+  try {
+    const run = h.deps.run;
+    h.deps.run = (args) => {
+      if (args[0] === "exec") {
+        probes++;
+        return Promise.resolve({
+          code: 125,
+          stdout: "synthetic-private-stdout",
+          stderr:
+            "Error: can only create exec sessions on running containers: container state improper; synthetic-private-stderr",
+        });
+      }
+      if (args[0] === "inspect" && args[2] === "{{json .State}}") {
+        stateInspections++;
+        return Promise.resolve({
+          code: 0,
+          stdout: JSON.stringify({
+            Status: "created",
+            Running: false,
+            ExitCode: 0,
+            Error: "synthetic-private-state-error",
+          }),
+        });
+      }
+      return run(args);
+    };
+    const failure = await assertRejects(
+      () => superviseBrokeredWorker(h.plan, {}, h.deps),
+      Error,
+      "Broker readiness probe failed (phase=exec, exit=125, diagnostic=container-not-running, state=created, running=false, containerExit=0)",
+    );
+    assertEquals(failure.message.includes("synthetic-private"), false);
+    assertEquals(probes, 1);
+    assertEquals(stateInspections, 1);
+    assertEquals(h.events.includes("start-worker"), false);
+    assert(h.events.includes(`reap:${h.plan.broker.name}`));
+    assertEquals(h.events.at(-1), "remove-socket");
+  } finally {
+    await h.fixture.close();
+  }
+});
+
+Deno.test("supervisor diagnoses failed identity lookup and malformed state without trusting runtime text", async () => {
+  const h = await harness();
+  let probes = 0;
+  try {
+    const run = h.deps.run;
+    h.deps.run = (args) => {
+      if (args[0] === "inspect") {
+        return Promise.resolve(
+          args[2] === "{{json .State}}"
+            ? {
+              code: 0,
+              stdout: JSON.stringify({
+                Status: "synthetic-private-state",
+                Running: "true",
+                ExitCode: "0",
+              }),
+            }
+            : {
+              code: 125,
+              stdout: "",
+              stderr:
+                "Error: no container with name or ID synthetic-private-name found: no such container",
+            },
+        );
+      }
+      if (args[0] === "exec") probes++;
+      return run(args);
+    };
+    const failure = await assertRejects(
+      () => superviseBrokeredWorker(h.plan, {}, h.deps),
+      Error,
+      "Broker readiness probe failed (phase=identity, exit=125, diagnostic=container-not-found, state=unknown, running=unknown, containerExit=unknown)",
+    );
+    assertEquals(failure.message.includes("synthetic-private"), false);
+    assertEquals(probes, 0);
+    assertEquals(h.events.includes("start-worker"), false);
+  } finally {
+    await h.fixture.close();
+  }
+});
+
+Deno.test({
+  name:
+    "supervisor production adapter retains scrubbed exec failure diagnostics and reaps the broker",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const h = await harness();
+    try {
+      const executable = `${h.fixture.root}/podman`;
+      await Deno.copyFile(
+        new URL("./fixtures/broker_fake_runtime.py", import.meta.url),
+        executable,
+      );
+      await Deno.chmod(executable, 0o700);
+      await Deno.writeTextFile(
+        `${h.fixture.root}/fail-readiness-exec`,
+        "fixture",
+      );
+      h.plan.runtime = executable;
+      const failure = await assertRejects(
+        () => superviseBrokeredWorker(h.plan, { readinessTimeoutMs: 3000 }),
+        Error,
+        "Broker readiness probe failed (phase=exec, exit=125, diagnostic=container-not-running, state=running, running=true, containerExit=0)",
+      );
+      assertEquals(failure.message.includes("synthetic-private"), false);
+      const calls = (await Deno.readTextFile(`${h.fixture.root}/calls.log`))
+        .trim().split("\n").map((line) => JSON.parse(line) as string[]);
+      assert(
+        calls.some((args) =>
+          args[0] === "inspect" && args[2] === "{{json .State}}"
+        ),
+      );
+      assertEquals(
+        calls.some((args) =>
+          args[0] === "run" &&
+          args[args.indexOf("--name") + 1] === h.plan.worker.containerName
+        ),
+        false,
+      );
+      const entries = Array.from(Deno.readDirSync(h.fixture.root)).map((
+        entry,
+      ) => entry.name);
+      assertEquals(entries.some((name) => name.endsWith(".container")), false);
+      assertEquals(entries.some((name) => name.endsWith(".volume")), false);
+    } finally {
+      await h.fixture.close();
+    }
+  },
+});
+
 Deno.test("supervisor broker loss stops a running worker and external cancellation revokes both roles", async () => {
   for (const cause of ["broker", "cancel"] as const) {
     const h = await harness();
