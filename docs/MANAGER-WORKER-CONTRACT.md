@@ -2,12 +2,15 @@
 
 **Issue:** [#3641](https://github.com/stSoftwareAU/VibeCoder/issues/3641)
 
+The original audit below predates the opt-in implementation.
+[Role configuration](ROLE-CONFIGURATION.md) documents the runtime delivered
+for independent role selection, its supported adapters and rollback.
+
 This page is the design contract for how a manager (the advisor that plans an
 `issue`-phase run) hands work to executor and reviewer sub-agents, and how that
 hand-off must stay the same whichever provider CLI runs the phase. It records
 what the worker does today with citations, names the target contract, and sets
-the order in which the pieces should land. It changes no runtime behaviour and
-no default.
+the order in which the pieces should land. The original contract changed no runtime behaviour or default.
 
 ## 1. Purpose and scope
 
@@ -43,7 +46,7 @@ phases, except where they share the provider seam; the billing policy itself
   and the account is entitled. It is never assumed. Until a host is validated,
   no routing changes for it.
 
-## 3. Existing behaviour audit
+## 3. Original behaviour audit (before independent role dispatch)
 
 Each row cites the file and line that was opened to verify it. Paths are
 relative to the repository root.
@@ -117,8 +120,8 @@ records the intent.
 ## 4. Target contract
 
 The target is a provider-neutral contract between the manager and each
-sub-agent. It is described below and sketched in TypeScript. Nothing in this
-section exists in the worker yet.
+sub-agent. It is described below and sketched in TypeScript. This section records the original target rather than the current runtime API;
+see [Role configuration](ROLE-CONFIGURATION.md) for the implementation.
 
 ### Role contracts
 
@@ -136,11 +139,10 @@ The manager sends one `TaskEnvelope` per unit of work. The worker returns one
 `StructuredResult`. Both are plain data, so any provider can carry them. The
 result must be checked by the host before the manager acts on it.
 
-The shapes below are the *target* shape. They are not code that exists today.
+The shapes below are the original target sketch, not the runtime API.
 
 ```ts
-// Target, not implemented. Sketch only (Issue #3641).
-// No file under worker/deno/lib defines these names yet.
+// Original contract sketch (Issue #3641); runtime types live under lib/orchestration/.
 
 export type TargetRole =
   | "manager"
@@ -203,7 +205,7 @@ export interface ProviderCapabilities {
 
 ## 5. Lifecycle
 
-### Exists today
+### Original native path
 
 The diagram below shows the path a Claude `issue` run takes today. It reads
 from the claim through the advisor and its sub-agents to the result.

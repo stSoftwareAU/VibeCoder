@@ -12,6 +12,7 @@ import {
   KNOWN_CONFIG_KEYS,
   suggestSimilarKey,
 } from "../lib/config_unknown_keys.ts";
+import { loadConfig } from "../lib/config.ts";
 import { validateConfigFileJson } from "../lib/validation.ts";
 
 // --- Known keys completeness ---
@@ -382,4 +383,42 @@ Deno.test("config_unknown_keys - a non-object codegraph_context block yields no 
 
 Deno.test("config_unknown_keys - codeowners_owners is a known key (Issue #2627)", () => {
   assertEquals(KNOWN_CONFIG_KEYS.has("codeowners_owners"), true);
+});
+
+Deno.test("config_unknown_keys - a misspelt external_orchestration key is flagged with a suggestion (Issue #3642)", () => {
+  const warnings = detectUnknownConfigKeys({ external_orchestraton: true });
+
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0]?.field, "external_orchestraton");
+  assertEquals(warnings[0]?.suggestion, "external_orchestration");
+});
+
+Deno.test("config_unknown_keys - the two external orchestration keys produce no warnings (Issue #3642)", () => {
+  assertEquals(
+    detectUnknownConfigKeys({
+      external_orchestration: true,
+      external_orchestration_settings: { max_retries: 1 },
+    }),
+    [],
+  );
+});
+
+Deno.test("config_unknown_keys - loadConfig defaults external orchestration to off with empty settings (Issue #3642)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const configPath = `${tempDir}/.config.json`;
+    await Deno.writeTextFile(
+      configPath,
+      JSON.stringify({
+        allowed_authors: ["testuser"],
+        repos: ["org/repo1"],
+      }),
+    );
+    const config = await loadConfig(configPath);
+
+    assertEquals(config.externalOrchestration, false);
+    assertEquals(config.externalOrchestrationSettings, {});
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
 });

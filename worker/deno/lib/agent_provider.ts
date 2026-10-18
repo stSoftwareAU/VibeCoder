@@ -346,6 +346,8 @@ export interface AgentDefinition {
 
 /** One invocation of the provider's CLI. */
 export interface AgentInvocationRequest {
+  /** Enforced sandbox for orchestrator-owned Codex role calls. */
+  orchestrationRole?: "manager" | "executor" | "reviewer";
   /** The user prompt. */
   prompt: string;
   /** Static system prompt passed separately so the CLI can cache it. */
@@ -884,6 +886,7 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     }
     return buildCodexArgs({
       prompt: request.prompt,
+      orchestrationRole: request.orchestrationRole,
       systemPrompt: request.systemPrompt,
       disallowedTools: request.disallowedTools,
       model: routing.model,

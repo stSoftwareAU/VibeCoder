@@ -1,3 +1,7 @@
+import {
+  effectiveRoleSelections,
+  resolveOrchestrationSettings,
+} from "../orchestration/role_config.ts";
 import { classifyRunFailure } from "../run_outcome_classifier.ts";
 /**
  * Phase 3 — Execute Claude.
@@ -16,7 +20,11 @@ import { classifyRunFailure } from "../run_outcome_classifier.ts";
 import { redactSecrets } from "../secret_redaction.ts";
 import { activateLifecycleAssignment } from "../lifecycle_recording.ts";
 
-import type { IssueSubAgentTier, Logger } from "../../types.ts";
+import type {
+  ExternalOrchestrationSettings,
+  IssueSubAgentTier,
+  Logger,
+} from "../../types.ts";
 import { browserGranted } from "../browser_grant.ts";
 import {
   type IssueContext,
@@ -522,6 +530,7 @@ async function recordRunAssignment(
   state: PhaseState,
   deps: WorkerDeps,
   agents: ReturnType<typeof buildIssueRunAgents>,
+  orchestration?: ExternalOrchestrationSettings,
 ): Promise<void> {
   const { repo, issueNumber, config } = ctx;
   try {
@@ -530,11 +539,20 @@ async function recordRunAssignment(
       fleetPrAuthors: config.fleetPrAuthors,
       serviceAccounts: config.serviceAccounts,
     });
-    const roles = issueRunRoleTreatments({
-      provider: selectAgentProvider(),
-      claudeModel: config.claudeModel || undefined,
-      agents,
-    });
+    const roles = orchestration
+      ? Object.entries(effectiveRoleSelections(orchestration)).map((
+        [role, value],
+      ) => ({
+        role: role as "manager" | "executor" | "reviewer",
+        provider: value.provider,
+        ...(value.model ? { model: value.model } : {}),
+        ...(value.effort ? { effort: value.effort } : {}),
+      }))
+      : issueRunRoleTreatments({
+        provider: selectAgentProvider(),
+        claudeModel: config.claudeModel || undefined,
+        agents,
+      });
     const assignment = await deps.infrastructure.recordIssueAssignment({
       workDir: config.workDir,
       repo,
@@ -733,11 +751,19 @@ async function executeClaudeBody(
   // so the prompt and the argv cannot disagree. Wired here as well as
   // on the standalone command path, or the key would be inert on exactly the
   // runs the fleet actually makes.
-  const issueExecutorSplit = isIssueExecutorSplitEnabled(
-    "issue",
-    config.repoConfig?.[repo],
-    config,
+  const externalOrchestration =
+    (config.repoConfig?.[repo]?.externalOrchestration ??
+      config.externalOrchestration) === true;
+  const effectiveOrchestrationSettings = resolveOrchestrationSettings(
+    config.externalOrchestrationSettings ?? {},
+    config.repoConfig?.[repo]?.externalOrchestrationSettings,
   );
+  const issueExecutorSplit = !externalOrchestration &&
+    isIssueExecutorSplitEnabled(
+      "issue",
+      config.repoConfig?.[repo],
+      config,
+    );
   // The sub-agent tier (Issue #3402): host-wide `config.issueSubAgentTier`,
   // with the repository's own `repo_config` override layered over it.
   // Resolved and logged unconditionally, every issue run.
@@ -748,11 +774,13 @@ async function executeClaudeBody(
   );
   // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
   // #2812); `issue_reviewer_agents: false` opts out.
-  const issueRunAgents = buildIssueRunAgents({
-    executorSplit: issueExecutorSplit,
-    reviewerAgents: config.issueReviewerAgents === true,
-    subAgentTier: issueSubAgentTier,
-  });
+  const issueRunAgents = externalOrchestration
+    ? undefined
+    : buildIssueRunAgents({
+      executorSplit: issueExecutorSplit,
+      reviewerAgents: config.issueReviewerAgents === true,
+      subAgentTier: issueSubAgentTier,
+    });
   if (issueExecutorSplit) {
     const executorModel = issueSubAgentTier === "haiku"
       ? HAIKU_ISSUE_EXECUTOR_MODEL
@@ -1089,7 +1117,27 @@ async function executeClaudeBody(
   ) => {
     const checkpoints = startCheckpoints();
     try {
-      return await deps.claude.runClaudeWithRetry(
+      const run = async (
+        runOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[0],
+        retryOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[1],
+      ) =>
+        externalOrchestration
+          ? await deps.claude.runOrchestratedIssueRun({
+            claudeOptions: runOptions,
+            retryOptions: retryOptions ?? {},
+            workDir: config.workDir,
+            repo,
+            issueNumber,
+            branch: state.branchName,
+            workspaceDir: state.repoPath,
+            brief: userPrompt,
+            settings: effectiveOrchestrationSettings,
+          }, {
+            runClaudeWithRetry: deps.claude.runClaudeWithRetry,
+            log: (message) => logger.info(message),
+          })
+          : await deps.claude.runClaudeWithRetry(runOptions, retryOptions);
+      return await run(
         {
           prompt: userPrompt,
           systemPrompt,
@@ -1162,7 +1210,13 @@ async function executeClaudeBody(
   // invocation by design, so the event exists before any billed work it
   // describes. It sits after every early exit, so only a run that actually
   // invokes the agent records one.
-  await recordRunAssignment(ctx, state, deps, issueRunAgents);
+  await recordRunAssignment(
+    ctx,
+    state,
+    deps,
+    issueRunAgents,
+    externalOrchestration ? effectiveOrchestrationSettings : undefined,
+  );
 
   let claudeResult = await invokeAgent(executeTimeoutSeconds);
   /** What the usage-limit checkpoint preserved, when one ran (Issue #1670). */
