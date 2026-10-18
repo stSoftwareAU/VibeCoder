@@ -176,12 +176,15 @@ try {
         "lib/anthropic_agent_gateway.ts",
         "lib/github_agent_gateway.ts",
         "lib/gemini_agent_gateway.ts",
+        "lib/codex_agent_gateway.ts",
         "tests/support/agent_namespace_evidence.ts",
         "tests/support/agent_container_evidence.ts",
         "tests/fixtures/agent_namespace_container_probe.ts",
         "tests/fixtures/agent_container_process_probe.ts",
         "tests/fixtures/native_github_client_probe.ts",
         "tests/fixtures/gemini_native_client_probe.ts",
+        "tests/fixtures/native_codex_client_probe.ts",
+        "tests/support/codex_native_evidence.ts",
       ]
     ) {
       const target = `${paths.baseDir}/worker/deno/${relative}`;
@@ -326,14 +329,32 @@ try {
     gemini.upstreamCredentialVisible !== false
   ) throw new Error("Native Gemini fixture lacked completion evidence");
   console.log(JSON.stringify({ phase: "native-gemini", evidence: gemini }));
+  const codexPin = manifest.providers.find((provider) =>
+    provider.id === "codex"
+  );
+  if (!codexPin) {
+    throw new Error("Native Codex fixture requires a manifest pin");
+  }
+  const codex = JSON.parse(
+    await launch(agentPlan, "native-codex", [metadata, codexPin.version]),
+  );
+  if (
+    codex.nativeClientCompleted !== true || codex.versionMatched !== true ||
+    codex.upstreamCredentialVisible !== false ||
+    codex.authenticationMode !== "api-key"
+  ) {
+    throw new Error("Native Codex fixture lacked completion evidence");
+  }
+  console.log(JSON.stringify({ phase: "native-codex", evidence: codex }));
   const nativeWitness = JSON.parse(await inside("witness"));
   if (
     nativeWitness.nativeGitHubRequests !== 2 ||
+    nativeWitness.nativeCodexRequests !== 1 ||
     !Number.isSafeInteger(nativeWitness.nativeGeminiRequests) ||
     nativeWitness.nativeGeminiRequests < 1
   ) {
     throw new Error(
-      "Native GitHub/Gemini lacked authenticated upstream evidence",
+      "Native GitHub/Gemini/Codex lacked authenticated upstream evidence",
     );
   }
   for (const mode of ["api-key", "subscription"]) {
@@ -353,6 +374,7 @@ try {
         claude: nativeWitness.nativeRequests,
         github: nativeWitness.nativeGitHubRequests,
         gemini: nativeWitness.nativeGeminiRequests,
+        codex: nativeWitness.nativeCodexRequests,
       },
     }),
   );

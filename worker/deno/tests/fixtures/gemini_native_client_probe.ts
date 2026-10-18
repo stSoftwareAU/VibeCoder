@@ -99,6 +99,9 @@ export async function runGeminiNativeClientProbe(options: {
       );
     }
     const result = await invoke([
+      // This is the newly-created empty synthetic workspace above; no user
+      // checkout, project settings or hooks are present to approve.
+      "--skip-trust",
       "--model",
       "gemini-2.5-flash",
       "--prompt",
@@ -106,16 +109,19 @@ export async function runGeminiNativeClientProbe(options: {
       "--output-format",
       "json",
     ]);
-    if (!result.success) {
-      throw new Error(`Native Gemini fixture failed with exit ${result.code}`);
-    }
+    const output = new TextDecoder().decode(result.stdout);
+    const diagnostic = new TextDecoder().decode(result.stderr);
     if (
       await countSyntheticCredentialMatches(
-        new TextDecoder().decode(result.stdout) +
-          new TextDecoder().decode(result.stderr),
+        output + diagnostic,
         options.secretHash,
       ) !== 0
     ) throw new Error("Native Gemini output contains the upstream credential");
+    if (!result.success) {
+      // Synthetic fixture only; never print a planted upstream credential.
+      console.error(diagnostic.slice(0, 4000));
+      throw new Error(`Native Gemini fixture failed with exit ${result.code}`);
+    }
     let parsed: { response?: unknown };
     try {
       parsed = JSON.parse(new TextDecoder().decode(result.stdout));

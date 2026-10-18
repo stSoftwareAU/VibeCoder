@@ -8,6 +8,7 @@
   "paths": [
     "worker/deno/commands/credential_broker.ts",
     "worker/deno/lib/anthropic_agent_gateway.ts",
+    "worker/deno/lib/codex_agent_gateway.ts",
     "worker/deno/lib/credential_broker.ts",
     "worker/deno/lib/credential_broker_lease.ts",
     "worker/deno/lib/credential_broker_policy.ts",

@@ -20,6 +20,7 @@ today.
 | **[Agent containment gap analysis](agent-containment-gap-analysis.md)** | Gap analysis of Anthropic's agent containment best practices against the run boundary: sandbox, egress, credentials, permissions, run limits, transcript monitoring and incident response, with seven verdicts and follow-ups #3698–#3703 |
 | **[Agent egress and credential isolation](agent-egress-credential-isolation.md)** | Milestone 122 architecture, observed Docker boundary probes, native transport experiments and remaining acceptance gaps for #3698–#3699 |
 | **[Rootless Podman agent boundary diagnostic](agent-podman-probe-evidence.md)** | Prepared prerequisite diagnostic for Issues #3698/#3699; local assertion evidence and pending hosted rootless execution, without a production containment claim |
+| **[Codex broker transport](codex-agent-transport-evidence.md)** | API-key transport tests and native fixture; hosted proof and subscription integration remain pending |
 
 Related index entries outside this directory:
 

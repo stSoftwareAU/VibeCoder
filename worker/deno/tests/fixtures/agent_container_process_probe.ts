@@ -19,6 +19,11 @@ import {
   runGeminiNativeClientProbe,
 } from "./gemini_native_client_probe.ts";
 
+import {
+  codexNativeFixtureResponse,
+  runCodexNativeClientProbe,
+} from "./native_codex_client_probe.ts";
+
 const privateDirectory = "/tmp/vibe-broker-private";
 const metadataPath = `${privateDirectory}/fixture.json`;
 const witnessPath = `${privateDirectory}/witness.json`;
@@ -90,6 +95,7 @@ async function broker(credentialRoot: string): Promise<void> {
     nativeRequests: Record<"api-key" | "subscription", number>;
     nativeGitHubRequests: number;
     nativeGeminiRequests: number;
+    nativeCodexRequests: number;
   } = {
     fileMatches:
       await sha256(await Deno.readTextFile(privatePath)) === secretHash,
@@ -102,6 +108,7 @@ async function broker(credentialRoot: string): Promise<void> {
     nativeRequests: { "api-key": 0, subscription: 0 },
     nativeGitHubRequests: 0,
     nativeGeminiRequests: 0,
+    nativeCodexRequests: 0,
   };
   for await (const entry of Deno.readDir("/proc/self/fd")) {
     const path = `/proc/self/fd/${entry.name}`;
@@ -130,6 +137,23 @@ async function broker(credentialRoot: string): Promise<void> {
           (key === null && bearer === `Bearer ${secret}`))
     ) {
       return new Response("Synthetic authentication failed", { status: 401 });
+    }
+    if (
+      request.headers.get("x-fixture-upstream-origin") ===
+        "https://api.openai.com" && url.pathname === "/v1/responses"
+    ) {
+      requireFact(
+        request.method === "POST" && bearer === `Bearer ${secret}`,
+        "Native Codex used an invalid authenticated route",
+      );
+      const body = await request.json();
+      requireFact(
+        body.stream === true && Array.isArray(body.input),
+        "Native Codex omitted streamed Responses input",
+      );
+      witness.nativeCodexRequests++;
+      await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+      return codexNativeFixtureResponse();
     }
     if (gemini) {
       const body = await request.json();
@@ -271,18 +295,23 @@ async function broker(credentialRoot: string): Promise<void> {
     createCredentialBroker({
       capability,
       claudeAuthentication,
-      credentials: { claude: secret, github: secret, gemini: secret },
+      credentials: {
+        claude: secret,
+        github: secret,
+        gemini: secret,
+        openai: secret,
+      },
       repositories: ["fixture/allowed"],
       // The fixed-origin policy runs first. Only the test forwarding seam
       // substitutes this controlled local HTTP listener; no internet request.
       fetch(request) {
         const url = new URL(request.url);
-        return fetch(
-          new Request(
-            `http://127.0.0.1:${ipv4.addr.port}${url.pathname}${url.search}`,
-            request,
-          ),
+        const forwarded = new Request(
+          `http://127.0.0.1:${ipv4.addr.port}${url.pathname}${url.search}`,
+          request,
         );
+        forwarded.headers.set("x-fixture-upstream-origin", url.origin);
+        return fetch(forwarded);
       },
     });
   const ordinaryHandler = createHandler(fixture.capability, "api-key");
@@ -532,6 +561,14 @@ if (mode === "broker") {
   const fixture = JSON.parse(Deno.args[1]!) as ContainerFixture;
   console.log(JSON.stringify(
     await runGeminiNativeClientProbe({
+      ...fixture,
+      expectedVersion: Deno.args[2]!,
+    }),
+  ));
+} else if (mode === "native-codex") {
+  const fixture = JSON.parse(Deno.args[1]!) as ContainerFixture;
+  console.log(JSON.stringify(
+    await runCodexNativeClientProbe({
       ...fixture,
       expectedVersion: Deno.args[2]!,
     }),

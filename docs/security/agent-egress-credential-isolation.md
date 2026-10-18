@@ -564,3 +564,24 @@ rejects that selected authentication type. The fixture now explicitly selects
 a fixture correction for the API-key mode; Google subscription/OAuth support
 remains unimplemented. Successful native Gemini inference and the final combined
 upstream witness still require a new hosted run.
+
+### Empty native fixture workspace and Codex API-key probe
+
+The API-key selection corrected Gemini authentication in run
+[39097988478](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39097988478)
+(source `bdd2cf4193dfe94b029987bc7bb4f4264e689480`). Both engines then refused
+its fresh workspace with exit 55, the pinned CLI's
+`FatalUntrustedWorkspaceError`. The fixture now passes `--skip-trust` for only
+its freshly created empty temporary directory, containing its own synthetic
+settings. No user checkout, project hooks or extension settings are present.
+The normal worker gateway environment does not grant workspace trust. Native
+Gemini completion still awaits the next hosted result.
+
+That next run also installs manifest-pinned Codex `0.147.0` and executes its
+native API-key fixture. The independent upstream must authenticate exactly one
+Responses request; client output, manifest version, mode and secret-visibility
+assertions must all pass. The trusted forwarding seam records the original
+fixed upstream origin before substituting the synthetic listener, so a
+response-shaped request to another provider cannot satisfy the Codex witness.
+The [Codex transport evidence](codex-agent-transport-evidence.md) distinguishes
+these API-key checks from the still-incomplete ChatGPT subscription integration.

@@ -45,7 +45,7 @@ jobs:
           deno run --frozen --lock=worker/deno/deno.lock \
             --allow-read --allow-write --allow-env \
             worker/deno/mod.ts strip-containerfile --out /tmp/Containerfile.stripped
-          docker build --build-arg AGENT_PROVIDERS=claude,gemini -f /tmp/Containerfile.stripped -t "${IMAGE}" container/
+          docker build --build-arg AGENT_PROVIDERS=claude,codex,gemini -f /tmp/Containerfile.stripped -t "${IMAGE}" container/
 
       - name: Check probe assertions and broker handlers
         id: handlers
@@ -56,7 +56,7 @@ jobs:
             tests/agent_namespace_probe_test.ts tests/agent_container_probe_test.ts \
             tests/credential_broker_test.ts tests/credential_broker_lease_test.ts \
             tests/anthropic_agent_gateway_test.ts tests/github_agent_gateway_test.ts \
-            tests/gemini_agent_gateway_test.ts
+            tests/gemini_agent_gateway_test.ts tests/codex_agent_gateway_test.ts
 
       - name: Exercise real sockets and the unmodified Docker security boundary
         id: nested
@@ -143,7 +143,7 @@ jobs:
           deno run --frozen --lock=worker/deno/deno.lock \
             --allow-read --allow-write --allow-env \
             worker/deno/mod.ts strip-containerfile --out /tmp/Containerfile.stripped
-          podman build --build-arg AGENT_PROVIDERS=claude,gemini -f /tmp/Containerfile.stripped -t "${IMAGE}" container/
+          podman build --build-arg AGENT_PROVIDERS=claude,codex,gemini -f /tmp/Containerfile.stripped -t "${IMAGE}" container/
 
       - name: Check shared probe assertions and broker handlers
         id: handlers
@@ -154,7 +154,7 @@ jobs:
             tests/agent_namespace_probe_test.ts tests/agent_container_probe_test.ts \
             tests/agent_container_probe_workflow_test.ts tests/credential_broker_test.ts \
             tests/anthropic_agent_gateway_test.ts tests/credential_broker_lease_test.ts \
-            tests/github_agent_gateway_test.ts tests/gemini_agent_gateway_test.ts
+            tests/github_agent_gateway_test.ts tests/gemini_agent_gateway_test.ts tests/codex_agent_gateway_test.ts
 
       - name: Exercise separate hardened rootless Podman containers
         id: separate
