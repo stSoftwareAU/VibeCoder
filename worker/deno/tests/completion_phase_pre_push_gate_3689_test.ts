@@ -538,3 +538,29 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name:
+    "completion - a no-op gate on an unresolvable base logs nothing unpushed, never as a pass (Issue #3770)",
+  permissions: { read: true, write: true },
+  async fn() {
+    // The unresolvable base fails the branch-outcomes gate closed (the diff
+    // could not be read), so the summary-rule recovery re-runs completion and
+    // the gate is asked again. Both gate calls answer "noop" so neither is
+    // ever logged as a pass.
+    const o = await runCompletion({
+      ...base,
+      baseUnresolvable: true,
+      pushRefused: false,
+      gateAnswers: ["noop", "noop"],
+    });
+    assert(
+      o.infos.includes("Pre-push gate: nothing unpushed"),
+      `expected a nothing-unpushed line, got: ${JSON.stringify(o.infos)}`,
+    );
+    assert(
+      !o.infos.some((line) => line.startsWith("Pre-push gate passed")),
+      `a no-op must not log as a pass, got: ${JSON.stringify(o.infos)}`,
+    );
+  },
+});
