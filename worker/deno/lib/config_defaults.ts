@@ -14,6 +14,7 @@ import { DEFAULT_CLAUDE_MAX_TURNS } from "./claude_turn_limit.ts";
 
 import type {
   CopilotCodeReviewMode,
+  ExternalOrchestrationSettings,
   IssueSubAgentTier,
   UpdateMode,
   WorkerConfig,
@@ -521,6 +522,17 @@ export const OPERATIONAL_DEFAULTS = {
    * `issue_reviewer_agents: false` opts out, and they inherit the phase model.
    */
   issueReviewerAgents: true,
+  /**
+   * Whether `issue`-phase runs go through the external orchestrator (Issue
+   * #3642) instead of Claude-native `--agents`. Off by default;
+   * `external_orchestration: true` opts in. Host-wide only.
+   */
+  externalOrchestration: false,
+  /**
+   * Optional provider, model, effort and bounds for the orchestrated path
+   * (Issue #3642). Empty by default, so the built-in role defaults apply.
+   */
+  externalOrchestrationSettings: {} as ExternalOrchestrationSettings,
   /** Maximum session store size in bytes before compaction (50 MB) (Issue #1328). */
   maxSessionSizeBytes: 50 * 1024 * 1024,
   /** Maximum session age in days before cleanup (Issue #1328). */
@@ -1648,6 +1660,8 @@ export function buildDefaultWorkerConfig(
     issueExecutorSplit: OPERATIONAL_DEFAULTS.issueExecutorSplit,
     issueSubAgentTier: OPERATIONAL_DEFAULTS.issueSubAgentTier,
     issueReviewerAgents: OPERATIONAL_DEFAULTS.issueReviewerAgents,
+    externalOrchestration: OPERATIONAL_DEFAULTS.externalOrchestration,
+    externalOrchestrationSettings: {},
     includeRecentActivity: OPERATIONAL_DEFAULTS.includeRecentActivity,
     recentActivityMergedPrLimit:
       OPERATIONAL_DEFAULTS.recentActivityMergedPrLimit,

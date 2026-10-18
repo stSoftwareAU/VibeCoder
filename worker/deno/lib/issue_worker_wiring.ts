@@ -130,6 +130,7 @@ import {
 import { checkCiStatus, directMergePr } from "./direct_merge.ts";
 
 // Claude operations
+import { runOrchestratedIssueRun } from "./orchestration/issue_run_gate.ts";
 import { checkClaudeHealth, runClaudeWithRetry } from "./claude_runner.ts";
 import { prepareCodegraphContext } from "./codegraph_context.ts";
 import { prepareRtkRun, rtkProviderId } from "./rtk_output.ts";
@@ -352,6 +353,7 @@ export interface PrDeps {
 
 /** Claude operations — runner, executor, auth, health. */
 export interface ClaudeDeps {
+  runOrchestratedIssueRun: typeof runOrchestratedIssueRun;
   runClaudeWithRetry: typeof runClaudeWithRetry;
   /**
    * The read-only question the completion phase asks about the PR summary's
@@ -756,6 +758,7 @@ export function createDefaultDeps(
     },
 
     claude: {
+      runOrchestratedIssueRun,
       runClaudeWithRetry,
       runSummaryClaimQuestion: runClaudeWithRetry,
       runPrePrVerifier: (input) => runPrePrVerifier(input),
@@ -1252,6 +1255,10 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
   };
 
   const mockClaude: ClaudeDeps = {
+    runOrchestratedIssueRun: async () => ({
+      ok: true,
+      value: { output: "mock orchestrated", exitCode: 0, timedOut: false },
+    }),
     runClaudeWithRetry: mockFn<ClaudeDeps["runClaudeWithRetry"]>(() =>
       Promise.resolve({
         ok: true,

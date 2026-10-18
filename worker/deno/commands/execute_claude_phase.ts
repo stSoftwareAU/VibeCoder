@@ -177,6 +177,10 @@ export const executeClaudePhaseCommand: Command = {
       // The host-wide sub-agent tier (Issue #3402); the repo override is
       // layered over it inside the phase.
       issueSubAgentTier: config.issueSubAgentTier,
+      // The external orchestrator switch and its validated settings (Issue
+      // #3642); off on every host that has not opted in.
+      externalOrchestration: config.externalOrchestration,
+      externalOrchestrationSettings: config.externalOrchestrationSettings,
       // Issue #2930: this host's operator-configured fleet run archive.
       fleetRunArchive: config.fleetRunArchive,
       // Context budget thresholds, including the hard ceiling (Issue #3713)

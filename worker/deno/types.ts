@@ -40,6 +40,40 @@ export type CopilotCodeReviewMode = "on" | "off" | "leave";
 /** Model tier of the `issue`-phase executor sub-agents (Issue #3401). */
 export type IssueSubAgentTier = "sonnet" | "haiku";
 
+/** One role's provider selection for the external orchestrator (Issue #3642). */
+export interface ExternalOrchestrationRoleSettings {
+  /** Registered CLI adapter; when named it must match the provider. */
+  cliAdapter?: string;
+  /** Provider id: `claude`, `codex`, `gemini` or `deepseek` (Issue #3642). */
+  provider?: string;
+  /** Model id for the role. Absent takes the role default. */
+  model?: string;
+  /** Reasoning effort: `low`, `medium` or `high`. */
+  effort?: string;
+}
+
+/**
+ * Host-wide settings for the external orchestrator (Issue #3642). Every field
+ * is optional; an absent field takes the orchestrator default. Validated at
+ * load by `config.ts`.
+ */
+export interface ExternalOrchestrationSettings {
+  /** Independent read-only review selection. */
+  reviewer?: ExternalOrchestrationRoleSettings;
+  /** Manager (plan and review) selection. */
+  manager?: ExternalOrchestrationRoleSettings;
+  /** Executor selection. */
+  executor?: ExternalOrchestrationRoleSettings;
+  /** Retries allowed per unit of work (Issue #3642). */
+  maxRetries?: number;
+  /** Maximum concurrent executor dispatches (Issue #3642). */
+  maxConcurrency?: number;
+  /** Maximum billed agent invocations per orchestrated run (Issue #3642). */
+  maxInvocations?: number;
+  /** Maximum USD spend per orchestrated run; absent means no cap (Issue #3642). */
+  maxCostUsd?: number;
+}
+
 /**
  * Exact tool versions a frozen host installs (Issue #622, part of #583).
  *
@@ -510,6 +544,13 @@ export interface WorkerConfig {
    * defined cheaper sub-agents (Issue #2575). Host-wide only. Default `false`.
    */
   issueReviewerAgents: boolean;
+  /**
+   * Whether `issue`-phase runs go through the external orchestrator (Issue
+   * #3642) instead of Claude-native `--agents`. Host-wide only. Default `false`.
+   */
+  externalOrchestration: boolean;
+  /** Validated `external_orchestration_settings` (Issue #3642). Host-wide only. */
+  externalOrchestrationSettings: ExternalOrchestrationSettings;
   /** Fleet-wide run archive repo slug for measurement issues (Issue #2930). Unset = feature off. */
   fleetRunArchive?: string;
   /**
@@ -976,6 +1017,10 @@ export interface CiProviderConfig {
  * Repository configuration for per-repo settings.
  */
 export interface RepoConfig {
+  /** Per-repository opt-in or rollback of external role dispatch. */
+  externalOrchestration?: boolean;
+  /** Validated role and limit overrides, layered over host settings. */
+  externalOrchestrationSettings?: ExternalOrchestrationSettings;
   /** Command to run before Claude starts working */
   preSetupCommand?: string;
   /** When true, skips running quality checks */
@@ -1511,6 +1556,10 @@ export interface ConfigFile {
   issue_sub_agent_tier?: string;
   /** Whether `issue` runs use the defined reviewer sub-agents (Issue #2575) */
   issue_reviewer_agents?: boolean;
+  /** Whether `issue` runs use the external orchestrator (Issue #3642) */
+  external_orchestration?: boolean;
+  /** Provider, model, effort and bounds for the external orchestrator (Issue #3642) */
+  external_orchestration_settings?: Record<string, unknown>;
   /** Fleet-wide run archive repo slug for measurement issues (Issue #2930) */
   fleet_run_archive?: string;
   /**
