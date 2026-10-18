@@ -480,7 +480,7 @@ export interface FormatterFix {
   dir: string;
   /** Argv, run without a shell. */
   cmd: string[];
-  /** Repo-relative pathspecs the formatter may rewrite (for staging). */
+  /** Repo-relative pathspecs staged after the formatter runs. */
   paths: string[];
 }
 
