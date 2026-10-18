@@ -545,3 +545,22 @@ the absent provider/handler setup before enabling those diagnostic steps. The
 new real native GitHub/Gemini container result remains pending; prior Docker
 and Podman results did not exercise these two clients. Normal worker startup,
 Git writes, GraphQL policy, account pools and Apple remain incomplete.
+
+### Native GitHub passed; Gemini authentication fixture correction
+
+On source `d4c7736aafaef217491d6ec65f3aeed9287ce353`, hosted run
+[39097626224](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39097626224)
+passed the separate-container boundary, both native Claude modes and native
+GitHub checks in Docker and rootless Podman. The installed GitHub CLI reported
+`2.97.0`, matching the checked-in manifest. Allowed GET and HEAD completed, four
+forbidden requests were refused, token display exposed only the capability and
+the upstream credential was absent from the agent environment and output.
+
+Both jobs then failed the native Gemini fixture with authentication exit 41. The
+pinned v0.55.1 core understands `gateway`, but its
+[CLI authentication validator](https://github.com/google-gemini/gemini-cli/blob/v0.55.1/packages/cli/src/config/auth.ts)
+rejects that selected authentication type. The fixture now explicitly selects
+`gemini-api-key`, retaining its opaque capability and loopback base URL. This is
+a fixture correction for the API-key mode; Google subscription/OAuth support
+remains unimplemented. Successful native Gemini inference and the final combined
+upstream witness still require a new hosted run.

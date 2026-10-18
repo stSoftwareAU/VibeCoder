@@ -70,7 +70,9 @@ export async function runGeminiNativeClientProbe(options: {
     await Deno.writeTextFile(
       `${root}/.gemini/settings.json`,
       JSON.stringify({
-        security: { auth: { selectedType: "gateway" } },
+        // v0.55.1 recognises gateway in core but its CLI validator refuses it.
+        // Explicit API-key auth keeps the opaque key and the local base URL.
+        security: { auth: { selectedType: "gemini-api-key" } },
         telemetry: { enabled: false },
         general: { disableAutoUpdate: true, disableUpdateNag: true },
       }),

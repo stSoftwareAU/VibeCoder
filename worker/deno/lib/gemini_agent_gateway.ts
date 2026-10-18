@@ -3,7 +3,7 @@
  *
  * The local adapter is untrusted. The isolated broker owns route policy and
  * credentials. This API-key slice does not implement Google OAuth or Vertex.
- * Pinned CLI v0.55.1 uses GOOGLE_GEMINI_BASE_URL with gateway authentication:
+ * Pinned CLI v0.55.1 supports GOOGLE_GEMINI_BASE_URL with API-key authentication:
  * https://github.com/google-gemini/gemini-cli/blob/v0.55.1/packages/core/src/core/contentGenerator.ts
  */
 import { assertBrokerCapability } from "./credential_broker_policy.ts";
