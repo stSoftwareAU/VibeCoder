@@ -49,11 +49,8 @@ missing live evidence explicitly; they establish no fleet improvement or winner.
 - The checked-in report is byte-identical to the real CLI output for that
   snapshot. It preserves unknown cost, actual build/role gaps and safeguard
   measurements; no synthetic activity is presented as live fleet evidence.
-- Docs sweep — grep: "improvement", "stabilisation", "lifecycle"; updated
-  `.claude/skills/review-fleet-prs/SKILL.md` and `docs/MODEL-AND-CACHING.md`;
-  added the baseline and follow-up manual. Sections: review-fleet-prs principle
-  7 and MODEL-AND-CACHING lifecycle reporting. Siblings: no routing, role,
-  allocation or configuration set gained a member.
+- Docs sweep — grep: "improvement", "stabilisation", "lifecycle"; updated `.claude/skills/review-fleet-prs/SKILL.md`, `docs/MODEL-AND-CACHING.md` and the baseline manual; section: MODEL-AND-CACHING lifecycle reporting and review-fleet-prs principle 7; siblings: none — no existing routing, role, allocation or configuration set gained a member.
+
 
 ## Acceptance Criteria
 
