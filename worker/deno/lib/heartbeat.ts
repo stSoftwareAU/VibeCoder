@@ -273,6 +273,7 @@ export async function startHeartbeat(
 export async function stopHeartbeat(
   handle: HeartbeatHandle,
   outcome?: RunOutcome,
+  options: { deferClear?: boolean } = {},
 ): Promise<void> {
   const active = activeHeartbeats.get(handle.id);
   if (!active) {
@@ -281,6 +282,13 @@ export async function stopHeartbeat(
 
   if (active.intervalId !== null) clearInterval(active.intervalId);
   activeHeartbeats.delete(handle.id);
+
+  // Production still owns this claim until its final failure reconciliation.
+  // Stop the timer and release its pin; the caller publishes exactly once.
+  if (options.deferClear) {
+    unpinWriteRepo(active.options.repo);
+    return;
+  }
 
   // The run outcome rides the final clear (Issue #4330): parked for the
   // marker path, whatever `clearFn` wiring the caller supplied, so the

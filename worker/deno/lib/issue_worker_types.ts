@@ -133,6 +133,8 @@ export interface IssueContext {
    * single-issue runs, tests): the shared clone, exactly as before.
    */
   laneId?: string;
+  /** Production releases failures and landed skips after its final merge/failure decision (#3977). */
+  deferTerminalRelease?: boolean;
 }
 
 /** Mutable state set by early phases, consumed by later phases. */
@@ -492,6 +494,13 @@ export type PhaseResult =
 
 /** Result of the full workOnIssue orchestration. */
 export interface WorkOnIssueResult {
+  /** Ephemeral branch context for a final read before failure bookkeeping. */
+  branchContext?:
+    & Pick<
+      PhaseState,
+      "branchName" | "repoPath" | "defaultBranch" | "milestoneBranch"
+    >
+    & { reapproved: boolean };
   success: boolean;
   phase: string;
   reason: string;

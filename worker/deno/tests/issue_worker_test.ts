@@ -4475,3 +4475,202 @@ Deno.test({
     assertEquals(result.codegraph?.relationshipCount, 9_004);
   },
 });
+
+Deno.test("workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)", async () => {
+  for (const dirty of [false, true]) {
+    const root = await Deno.makeTempDir();
+    let merged = false;
+    let clears = 0;
+    let executions = 0;
+    const branch = "issue-42-exact-implementation";
+    const head = "a".repeat(40);
+    const ctx = makeContext({
+      config: makeConfig({ workDir: `${root}/work`, infraRetryBackoffMs: 0 }),
+      deferTerminalRelease: true,
+    });
+    const deps = createMockDeps({
+      git: {
+        setupRepo: () => Promise.resolve({ ok: true, value: root }),
+        createBranchName: () => branch,
+        createFeatureBranchFromBase: () =>
+          Promise.resolve({ ok: true, value: branch }),
+        runGitCommand: (args: string[]) =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              code: 0,
+              stdout: args[0] === "rev-parse"
+                ? head
+                : args[0] === "status" && dirty
+                ? "?? remaining.ts"
+                : "",
+              stderr: "",
+            },
+          }),
+      },
+      claude: {
+        runClaudeWithRetry: () => {
+          executions++;
+          merged = true;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              exitCode: 1,
+              output:
+                "Implementation failed: requested behaviour is incomplete",
+              timedOut: false,
+            },
+          });
+        },
+      },
+      github: {
+        runGhCommand: (args: string[]) =>
+          Promise.resolve(
+            args[0] === "pr" && args[1] === "list"
+              ? JSON.stringify(
+                merged
+                  ? [{
+                    number: 99,
+                    title: "Fix login bug (#42)",
+                    state: "MERGED",
+                    mergedAt: "2026-10-18T01:44:24Z",
+                    url: `https://github.com/${ctx.repo}/pull/99`,
+                    headRefName: branch,
+                    headRefOid: head,
+                    headRepository: { name: "repo" },
+                    headRepositoryOwner: { login: "org" },
+                    baseRefName: "main",
+                    mergeCommit: { oid: "b".repeat(40) },
+                    body:
+                      "Closes #42\n\nThe exact implementation is delivered.",
+                  }]
+                  : [],
+              )
+              : args[0] === "issue"
+              ? JSON.stringify({ state: "OPEN" })
+              : "behind",
+          ),
+      },
+      crashHandling: {
+        clearHeartbeat: () => {
+          clears++;
+          return Promise.resolve({ ok: true, value: undefined });
+        },
+      },
+    });
+    try {
+      const result = await workOnIssue(ctx, deps);
+      assertEquals(executions, 1);
+      assertEquals(result.success, false);
+      assertEquals(result.expectedSkip === true, !dirty);
+      assertEquals(result.outcome?.kind === "claim_stale", !dirty);
+      assertEquals(
+        clears,
+        0,
+        "production publishes neither a provisional failure nor a duplicate landed release before its final decision",
+      );
+      assertEquals(result.branchContext?.branchName, branch);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("workOnIssue retains a genuine quality failure booked before a later merge (Issue #3977)", async () => {
+  const root = await Deno.makeTempDir();
+  const branch = "issue-42-exact-implementation";
+  const head = "a".repeat(40);
+  let merged = false;
+  let charges = 0;
+  let gates = 0;
+  const ctx = makeContext({
+    config: makeConfig({ workDir: `${root}/work`, infraRetryBackoffMs: 0 }),
+    deferTerminalRelease: true,
+  });
+  const deps = createMockDeps({
+    git: {
+      setupRepo: () => Promise.resolve({ ok: true, value: root }),
+      createBranchName: () => branch,
+      createFeatureBranchFromBase: () =>
+        Promise.resolve({ ok: true, value: branch }),
+      runGitCommand: (args: string[]) =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            code: 0,
+            stdout: args[0] === "rev-parse"
+              ? head
+              : args[0] === "log"
+              ? "a implementation"
+              : "",
+            stderr: "",
+          },
+        }),
+    },
+    quality: {
+      runQualityGate: () => {
+        const passed = gates++ === 0;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            checks: [],
+            summary: { text: passed ? "passed" : "failed", passed },
+            passed,
+            output: passed ? "passed" : "quality.sh: 2 tests failed",
+          },
+        });
+      },
+    },
+    github: {
+      runGhCommand: (args: string[]) =>
+        Promise.resolve(
+          args[0] === "pr" && args[1] === "list"
+            ? JSON.stringify(
+              merged
+                ? [{
+                  number: 99,
+                  title: "Fix login bug (#42)",
+                  state: "MERGED",
+                  mergedAt: "2026-10-18T01:44:24Z",
+                  url: `https://github.com/${ctx.repo}/pull/99`,
+                  headRefName: branch,
+                  headRefOid: head,
+                  headRepository: { name: "repo" },
+                  headRepositoryOwner: { login: "org" },
+                  baseRefName: "main",
+                  mergeCommit: { oid: "b".repeat(40) },
+                  body: "Closes #42\n\nThe exact implementation is delivered.",
+                }]
+                : [],
+            )
+            : args[0] === "issue"
+            ? JSON.stringify({ state: "OPEN" })
+            : "behind",
+        ),
+      handleIssueFailure: () => {
+        charges++;
+        merged = true;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            markedAsFailed: false,
+            markedAsFailedOnce: true,
+            failureCategory: "quality_check",
+            isInfrastructure: false,
+          },
+        });
+      },
+    },
+  });
+  try {
+    const result = await workOnIssue(ctx, deps);
+    assertEquals(gates, 3);
+    assertEquals(charges, 1);
+    assertEquals(result.success, false);
+    assertEquals(result.expectedSkip === true, false);
+    assertEquals(result.ladderApplied, true);
+    assertEquals(result.outcome?.kind, "no_pr");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

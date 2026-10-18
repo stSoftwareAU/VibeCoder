@@ -19,6 +19,11 @@
  */
 
 import {
+  checkAlreadyLanded,
+  formatStaleClaimReason,
+} from "./claim_freshness.ts";
+import { claimStaleOutcome } from "./run_outcome.ts";
+import {
   lifecycleRecordingContext,
   withLifecycleRecording,
 } from "./lifecycle_recording.ts";
@@ -147,6 +152,49 @@ export async function workOnIssue(
   );
 }
 
+/** Re-read completion evidence immediately before a failure can consume an attempt. */
+export async function reconcileAlreadyLandedFailure(
+  result: WorkOnIssueResult,
+  ctx: Pick<IssueContext, "repo" | "issueNumber" | "issueBody">,
+  deps: Pick<WorkerDeps, "git" | "github" | "logger">,
+): Promise<WorkOnIssueResult> {
+  const branch = result.branchContext;
+  if (
+    result.success || result.expectedSkip || result.ladderApplied || !branch
+  ) return result;
+  const landed = await checkAlreadyLanded({
+    repo: ctx.repo,
+    issueNumber: ctx.issueNumber,
+    issueBody: ctx.issueBody,
+    runBranch: branch.branchName,
+    baseBranch: branch.milestoneBranch ?? branch.defaultBranch,
+    defaultBranch: branch.defaultBranch,
+    cwd: branch.repoPath,
+    reapproved: branch.reapproved,
+    runGit: deps.git.runGitCommand,
+    runGh: deps.github.runGhCommand,
+    warn: (message) => deps.logger.warn(message),
+  });
+  if (landed.kind !== "stale") return result;
+  deps.logger.info("Run work already landed; no failure attempt recorded", {
+    repo: ctx.repo,
+    issueNumber: ctx.issueNumber,
+    prNumber: landed.prNumber,
+    baseBranch: landed.baseBranch,
+  });
+  return {
+    ...result,
+    success: false,
+    expectedSkip: true,
+    reason: formatStaleClaimReason(landed),
+    outcome: claimStaleOutcome({
+      phase: result.phase,
+      stale: landed,
+      branch: branch.branchName,
+    }),
+  };
+}
+
 async function workOnIssueRecorded(
   ctx: IssueContext,
   deps: WorkerDeps,
@@ -165,8 +213,31 @@ async function workOnIssueRecorded(
     baselineQualityOutput: "",
   };
   let outcome: RunOutcome | undefined;
+  let deferTerminalRelease = false;
   try {
-    const result = await workOnIssueCore(ctx, deps, state);
+    let result = await workOnIssueCore(ctx, deps, state);
+    if (state.branchName && state.repoPath) {
+      result = {
+        ...result,
+        branchContext: {
+          branchName: state.branchName,
+          repoPath: state.repoPath,
+          defaultBranch: state.defaultBranch,
+          ...(state.milestoneBranch
+            ? { milestoneBranch: state.milestoneBranch }
+            : {}),
+          reapproved: state.postMergeReapproval !== undefined,
+        },
+      };
+    }
+    // Preserve a failure already booked by a phase; a later merge must not
+    // relabel that recorded decision as an uncharged skip.
+    if (state.failureLadderApplied) result = { ...result, ladderApplied: true };
+    result = await reconcileAlreadyLandedFailure(result, ctx, deps);
+    deferTerminalRelease = ctx.deferTerminalRelease === true &&
+      ((!result.success && !result.expectedSkip) ||
+        (result.outcome?.kind === "claim_stale" &&
+          result.outcome.reason === "work_already_merged"));
     // Issue #1862: the one point that sees both halves of the loop — a
     // post-merge re-approval the pre-check honoured, and a run that then
     // ended superseded because the merged PR already satisfies the original
@@ -266,7 +337,9 @@ async function workOnIssueRecorded(
     // The heartbeat's final clear carries the outcome (Issue #4330), so the
     // release comment states it even before the claim-release path runs.
     if (state.heartbeatHandle) {
-      await stopHeartbeat(state.heartbeatHandle, outcome);
+      await stopHeartbeat(state.heartbeatHandle, outcome, {
+        deferClear: deferTerminalRelease,
+      });
     }
     // Issue #1677: release the lane worktree's hold on the feature branch.
     // Branches are shared between the worktrees of one clone, and a lane

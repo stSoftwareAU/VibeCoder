@@ -15,6 +15,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  checkAlreadyLanded,
   checkClaimFreshness,
   decideClaimFreshness,
   formatStaleClaimComment,
@@ -424,4 +425,304 @@ Deno.test("claim freshness #344 - the attempt tally reads as a stale claim, not 
 
   assertStringIncludes(text, "claim went stale");
   assertStringIncludes(text, "issue_closed");
+});
+
+const LANDED_HEAD = "a".repeat(40);
+const LANDED_MERGE = "b".repeat(40);
+
+function landedIssue(overrides: Record<string, unknown> = {}) {
+  return {
+    number: 339,
+    url: PR_URL,
+    state: "MERGED",
+    title: "Fix the requested behaviour (#333)",
+    mergedAt: "2026-10-18T01:44:24Z",
+    headRefName: BRANCH,
+    headRefOid: LANDED_HEAD,
+    headRepository: { name: "VibeCoder" },
+    headRepositoryOwner: { login: "stSoftwareAU" },
+    baseRefName: "main",
+    mergeCommit: { oid: LANDED_MERGE },
+    body:
+      "Closes #333.\n\n## Acceptance Criteria\n- **met** — Fix the requested behaviour — evidence: test passes",
+    ...overrides,
+  };
+}
+
+function landedOptions(overrides: Record<string, unknown> = {}) {
+  const calls: string[][] = [];
+  const warnings: string[] = [];
+  const options = {
+    repo: REPO,
+    issueNumber: 333,
+    issueBody: "## Acceptance Criteria\n- [ ] Fix the requested behaviour",
+    runBranch: BRANCH,
+    baseBranch: "main",
+    defaultBranch: "main",
+    cwd: "/tmp/test-repo",
+    warn: (message: string) => warnings.push(message),
+    runGh: (args: string[]) => {
+      calls.push(args);
+      if (args[0] === "pr" && args[1] === "list") {
+        return Promise.resolve(
+          JSON.stringify([landedIssue()]),
+        );
+      }
+      return Promise.resolve("behind");
+    },
+    runGit: (args: string[]) => {
+      calls.push(args);
+      return Promise.resolve({
+        ok: true as const,
+        value: {
+          code: 0,
+          stdout: args[0] === "rev-parse" ? LANDED_HEAD : "",
+          stderr: "",
+        },
+      });
+    },
+    ...overrides,
+  };
+  return { options, calls, warnings };
+}
+
+Deno.test("already-landed proof binds the closing issue, exact run branch and merged work (Issue #3977)", async () => {
+  const { options, calls } = landedOptions();
+  const result = await checkAlreadyLanded(options);
+  assertEquals(result.kind, "stale");
+  assert(result.kind === "stale");
+  assertEquals(result.reason, "work_already_merged");
+  assertEquals(result.prNumber, 339);
+  assertEquals(result.prUrl, PR_URL);
+  assert(
+    calls.every((args) =>
+      !["rebase", "merge", "push", "reset", "checkout", "issue"].includes(
+        args[0]!,
+      )
+    ),
+    "proof must not recover, rewrite branches or mutate issues",
+  );
+});
+
+function landedResponse(pr: Record<string, unknown> = {}) {
+  return JSON.stringify([landedIssue(pr)]);
+}
+
+Deno.test("already-landed proof rejects partial, unrelated and unreadable merge evidence (Issue #3977)", async () => {
+  for (
+    const pr of [
+      { state: "OPEN" },
+      { number: 0 },
+      { url: "https://github.com/Other/Repo/pull/339" },
+      { headRefName: OTHER_BRANCH },
+      { headRepositoryOwner: { login: "Other" } },
+      { baseRefName: "milestone/other" },
+      { headRefOid: undefined },
+      { headRefOid: [LANDED_HEAD] },
+      { mergeCommit: null },
+      { mergeCommit: { oid: "not-a-sha" } },
+      { mergedAt: null },
+      {
+        body:
+          "Closes #333.\n\n## Acceptance Criteria\n- **partial** — Fix the requested behaviour — evidence: only one path — reason: more scope remains",
+      },
+    ]
+  ) {
+    const { options, calls } = landedOptions({
+      runGh: (args: string[]) =>
+        Promise.resolve(args[1] === "list" ? landedResponse(pr) : "behind"),
+    });
+    assertEquals(
+      (await checkAlreadyLanded(options)).kind,
+      "fresh",
+      JSON.stringify(pr),
+    );
+    assertEquals(
+      calls.some((args) => args[0] === "fetch"),
+      false,
+      "invalid evidence must not fetch a PR head",
+    );
+  }
+  for (
+    const pr of [
+      { title: "Unrelated (#334)" },
+      { body: "Mentions #333" },
+      { body: "`Closes #333`" },
+      { body: "    Closes #333" },
+      { body: "\tCloses #333" },
+      { body: "Closes `an example` #333" },
+      {
+        body:
+          "## Acceptance Criteria\n- [x] Completed portion\n- [ ] Remaining work\n\nCloses #333",
+      },
+      { body: "> Closes #333" },
+      { body: "<!-- Closes #333 -->" },
+      { body: "```\nCloses #333\n```" },
+    ]
+  ) {
+    const { options } = landedOptions({
+      runGh: () => Promise.resolve(landedResponse(pr)),
+    });
+    assertEquals(
+      (await checkAlreadyLanded(options)).kind,
+      "fresh",
+      JSON.stringify(pr),
+    );
+  }
+});
+
+Deno.test("already-landed proof preserves local work and refuses unavailable comparisons (Issue #3977)", async () => {
+  for (
+    const mode of [
+      "dirty",
+      "extra-commit",
+      "lookup-failed",
+      "changed-during-proof",
+    ] as const
+  ) {
+    let proved = false;
+    const { options } = landedOptions({
+      runGit: (args: string[]) => {
+        if (mode === "lookup-failed") {
+          return Promise.resolve({
+            ok: false as const,
+            error: new Error("network unavailable"),
+          });
+        }
+        if (args[0] === "merge-base") proved = true;
+        const code = args[0] === "merge-base" && mode === "extra-commit"
+          ? 1
+          : 0;
+        const stdout = args[0] === "status" && mode === "dirty"
+          ? "?? unshipped.ts"
+          : args[0] === "rev-parse"
+          ? (mode === "changed-during-proof" && proved
+            ? "c".repeat(40)
+            : LANDED_HEAD)
+          : "";
+        return Promise.resolve({
+          ok: true as const,
+          value: { code, stdout, stderr: "" },
+        });
+      },
+    });
+    assertEquals((await checkAlreadyLanded(options)).kind, "fresh", mode);
+  }
+  for (const status of ["ahead", "diverged", "unknown"]) {
+    const { options } = landedOptions({
+      runGh: (args: string[]) =>
+        Promise.resolve(args[1] === "list" ? landedResponse() : status),
+    });
+    assertEquals((await checkAlreadyLanded(options)).kind, "fresh", status);
+  }
+  const { options, warnings } = landedOptions({
+    runGh: () => Promise.reject(new Error("GitHub unavailable")),
+  });
+  assertEquals((await checkAlreadyLanded(options)).kind, "fresh");
+  assert(warnings.some((text) => text.includes("unavailable")));
+});
+
+Deno.test("already-landed proof keeps reapproved scope and distinguishes milestone integration (Issue #3977)", async () => {
+  const reapproved = landedOptions({ reapproved: true });
+  assertEquals((await checkAlreadyLanded(reapproved.options)).kind, "fresh");
+  assertEquals(reapproved.calls, []);
+  const branch = "milestone/requested-scope";
+  const { options } = landedOptions({
+    baseBranch: branch,
+    runGh: (args: string[]) =>
+      Promise.resolve(
+        args[1] === "list" ? landedResponse({ baseRefName: branch }) : "behind",
+      ),
+  });
+  const result = await checkAlreadyLanded(options);
+  assert(result.kind === "stale");
+  assertEquals(result.baseBranch, branch);
+  assertEquals(result.defaultBranch, "main");
+  assertEquals(result.mergeCommit, LANDED_MERGE);
+});
+
+Deno.test("already-landed proof accepts canonical repo casing, historical summaries and unrequested extras (Issue #3977)", async () => {
+  for (
+    const body of [
+      "Closes #333\n\nThe exact implementation is delivered.",
+      landedIssue().body +
+      "\n- **unrequested** — Optional documentation cleanup — reason: incidental extra work",
+    ]
+  ) {
+    const { options } = landedOptions({
+      repo: REPO.toLowerCase(),
+      runGh: (args: string[]) =>
+        Promise.resolve(
+          args[1] === "list" ? landedResponse({ body }) : "behind",
+        ),
+    });
+    assertEquals((await checkAlreadyLanded(options)).kind, "stale", body);
+  }
+});
+
+Deno.test("already-landed proof replays public #3740 squash and preserves #3534 partial scope (Issue #3977)", async () => {
+  const rows = JSON.parse(
+    await Deno.readTextFile(
+      new URL("./fixtures/already_landed_3977.json", import.meta.url),
+    ),
+  ) as Array<
+    {
+      issueNumber: number;
+      firstReplayedCommit: string;
+      pr: {
+        headRefName: string;
+        headRefOid: string;
+        baseRefName: string;
+        number: number;
+        body: string;
+      };
+    }
+  >;
+  for (const row of rows) {
+    const { options, calls } = landedOptions({
+      issueNumber: row.issueNumber,
+      issueBody: "Historical issue scope",
+      runBranch: row.pr.headRefName,
+      baseBranch: row.pr.baseRefName,
+      runGh: (args: string[]) =>
+        Promise.resolve(
+          args[1] === "list" ? JSON.stringify([row.pr]) : "behind",
+        ),
+      runGit: (args: string[]) => {
+        calls.push(args);
+        return Promise.resolve({
+          ok: true as const,
+          value: {
+            code: 0,
+            stdout: args[0] === "rev-parse"
+              ? args.at(-1) === "FETCH_HEAD^{commit}"
+                ? row.pr.headRefOid
+                : row.firstReplayedCommit
+              : "",
+            stderr: "",
+          },
+        });
+      },
+    });
+    const result = await checkAlreadyLanded(options);
+    assertEquals(result.kind, row.issueNumber === 3740 ? "stale" : "fresh");
+    if (result.kind === "stale") {
+      assertEquals(result.prNumber, 3959);
+      assertEquals(
+        result.baseBranch,
+        "milestone/review-fix-and-foreign-push-drift",
+      );
+      assert(
+        calls.some((args) =>
+          args[0] === "merge-base" && args.includes(row.firstReplayedCommit)
+        ),
+      );
+    } else {
+      assert(
+        row.pr.body.includes("**partial**"),
+        "the historical partial verdict must remain visible",
+      );
+      assertEquals(calls.some((args) => args[0] === "fetch"), false);
+    }
+  }
 });

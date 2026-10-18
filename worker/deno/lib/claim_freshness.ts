@@ -44,6 +44,30 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type {
+  IssueContext,
+  PhaseResult,
+  PhaseState,
+} from "./issue_worker_types.ts";
+import type { WorkerDeps } from "./issue_worker_wiring.ts";
+import { claimStaleOutcome } from "./run_outcome.ts";
+import { isAncestorOf } from "./dependency_landed.ts";
+import { readMergedHeadRefPrs } from "./stale_branch_lineage.ts";
+import { extractIssueNumberFromPrTitle, hasClosingKeyword } from "./pr_body.ts";
+import {
+  markdownLogicalUnits,
+  splitMarkdownCode,
+  splitMarkdownLines,
+} from "./markdown_code_spans.ts";
+import { isValidRepoSlug } from "./repo_slug.ts";
+import {
+  extractAcceptanceCriteria,
+  parseClosureEntries,
+  validateAcceptanceClosure,
+} from "./acceptance_criteria_gate.ts";
+import { assertSafeGitRef, buildFetchArgs } from "./git_ref_args.ts";
+import { redactSecrets } from "./secret_redaction.ts";
+import type { GitRunner } from "./git_base_ref.ts";
 import { mergedPrCompletesThisRun } from "./pr_run_provenance.ts";
 import {
   type ClassifyExistingPrDeps,
@@ -66,6 +90,10 @@ export interface StaleClaim {
   /** The PR that made the claim stale, when one did. */
   prUrl?: string;
   prNumber?: number;
+  /** Proven delivery target for an active run's already-landed result. */
+  baseBranch?: string;
+  defaultBranch?: string;
+  mergeCommit?: string;
 }
 
 /** The verdict: keep going, or stop cleanly. */
@@ -277,4 +305,258 @@ export function formatStaleClaimComment(options: {
     `If that branch is still wanted, re-label the issue and the next claim ` +
     `resumes it; if it is not, the branch can be deleted.`,
   ].join("\n");
+}
+
+/** Read-only proof before recovery or failure bookkeeping (Issue #3977). */
+export interface CheckAlreadyLandedOptions {
+  repo: string;
+  issueNumber: number;
+  issueBody: string;
+  runBranch: string;
+  baseBranch: string;
+  defaultBranch: string;
+  cwd: string;
+  reapproved?: boolean;
+  runGit: GitRunner;
+  runGh: (args: string[]) => Promise<string>;
+  warn?: (message: string) => void;
+}
+
+export async function checkAlreadyLanded(
+  options: CheckAlreadyLandedOptions,
+): Promise<ClaimFreshness> {
+  const {
+    repo,
+    issueNumber,
+    runBranch,
+    baseBranch,
+    defaultBranch,
+    runGh,
+    runGit,
+    cwd,
+  } = options;
+  const fresh = { kind: "fresh" } as const;
+  if (options.reapproved) return fresh;
+  try {
+    assertSafeGitRef(runBranch, "already-landed run branch");
+    assertSafeGitRef(baseBranch, "already-landed target branch");
+    assertSafeGitRef(defaultBranch, "already-landed default branch");
+    if (
+      !isValidRepoSlug(repo) || !Number.isSafeInteger(issueNumber) ||
+      issueNumber <= 0
+    ) {
+      throw new Error("Invalid repository or issue for merged-work evidence");
+    }
+    const evidence = await readMergedHeadRefPrs(repo, runBranch, runGh);
+    if (!evidence.ok) throw evidence.error;
+    const git = async (args: string[]) => {
+      const result = await runGit(args, { cwd });
+      if (!result.ok) throw result.error;
+      if (result.value.code !== 0) {
+        throw new Error(`git ${args[0]} failed: ${result.value.stderr}`);
+      }
+      return result.value.stdout.trim();
+    };
+    const prs = evidence.value;
+    if (prs.length === 0) return fresh;
+    // Untracked and tracked work both belong to the run; never hide either.
+    if (await git(["status", "--porcelain", "--untracked-files=all"])) {
+      return fresh;
+    }
+    const head = await git([
+      "rev-parse",
+      "--verify",
+      "--end-of-options",
+      "HEAD^{commit}",
+    ]);
+    const branch = await git([
+      "rev-parse",
+      "--verify",
+      "--end-of-options",
+      `${runBranch}^{commit}`,
+    ]);
+    const sha = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+    const fullSha = (value: unknown): value is string =>
+      typeof value === "string" && sha.test(value);
+    if (!fullSha(head) || !fullSha(branch)) {
+      throw new Error("Unreadable local commit identity");
+    }
+    for (const candidate of prs) {
+      if (candidate === null || typeof candidate !== "object") continue;
+      const pr = candidate as {
+        number?: number;
+        title?: string;
+        url?: string;
+        body?: string;
+        state?: string;
+        mergedAt?: string;
+        headRefName?: string;
+        headRefOid?: string;
+        baseRefName?: string;
+        headRepository?: { name?: string };
+        headRepositoryOwner?: { login?: string };
+        mergeCommit?: { oid?: string };
+      };
+      const prHead = pr.headRefOid;
+      const mergedCommit = pr.mergeCommit?.oid;
+      if (
+        pr.state !== "MERGED" || !Number.isSafeInteger(pr.number) ||
+        pr.number! <= 0 ||
+        !mergedPrCompletesThisRun(pr.headRefName, runBranch) ||
+        `${pr.headRepositoryOwner?.login}/${pr.headRepository?.name}`
+            .toLowerCase() !==
+          repo.toLowerCase() ||
+        pr.baseRefName !== baseBranch || !fullSha(prHead) ||
+        !fullSha(mergedCommit) ||
+        typeof pr.mergedAt !== "string" ||
+        !Number.isFinite(Date.parse(pr.mergedAt)) ||
+        typeof pr.url !== "string" ||
+        pr.url.toLowerCase() !==
+          `https://github.com/${repo}/pull/${pr.number}`.toLowerCase() ||
+        typeof pr.body !== "string"
+      ) continue;
+      // A same-branch PR must explicitly claim this issue, not merely mention it.
+      const linked = typeof pr.title === "string"
+        ? extractIssueNumberFromPrTitle(pr.title)
+        : undefined;
+      const lines = splitMarkdownLines(pr.body);
+      const closingContract = markdownLogicalUnits(lines)
+        .filter((unit) =>
+          unit.kind !== "code" && unit.kind !== "html" &&
+          !unit.text.startsWith(">") &&
+          unit.lines.every((index) => !/^(?: {4}|\t)/.test(lines[index]!))
+        )
+        .some((unit) =>
+          splitMarkdownCode(unit.text).some((segment) =>
+            !segment.inCode && hasClosingKeyword(segment.value, issueNumber)
+          )
+        );
+      if (!linked?.ok || linked.value !== issueNumber || !closingContract) {
+        continue;
+      }
+      // Old merged PRs may predate today's closure template. Their explicit
+      // closing contract is usable, but a stated shortfall is never delivery.
+      const entries = parseClosureEntries(pr.body);
+      if (
+        entries.length === 0 && extractAcceptanceCriteria(pr.body).length > 0
+      ) continue;
+      if (entries.length > 0) {
+        const closure = validateAcceptanceClosure({
+          issueBody: options.issueBody,
+          prSummaryContent: pr.body,
+        });
+        if (
+          !closure.valid ||
+          entries.some((entry) =>
+            entry.status === "partial" || entry.status === "missing"
+          )
+        ) {
+          continue;
+        }
+      }
+      if (!await isAncestorOf(repo, baseBranch, mergedCommit, runGh)) {
+        continue;
+      }
+      // Fetching the immutable pull ref learns objects without moving a branch.
+      await git(buildFetchArgs("origin", `refs/pull/${pr.number}/head`));
+      const fetchedHead = await git([
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        "FETCH_HEAD^{commit}",
+      ]);
+      if (fetchedHead !== prHead) {
+        throw new Error("Merged PR head changed while proving completion");
+      }
+      let contained = true;
+      for (const local of new Set([head, branch])) {
+        const result = await runGit([
+          "merge-base",
+          "--is-ancestor",
+          local,
+          prHead,
+        ], { cwd });
+        if (!result.ok) throw result.error;
+        if (result.value.code !== 0 && result.value.code !== 1) {
+          throw new Error("Cannot compare local work with merged PR");
+        }
+        if (result.value.code === 1) contained = false;
+      }
+      if (!contained) continue;
+      if (
+        await git(["status", "--porcelain", "--untracked-files=all"]) ||
+        await git([
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            "HEAD^{commit}",
+          ]) !== head ||
+        await git([
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            `${runBranch}^{commit}`,
+          ]) !== branch
+      ) return fresh;
+      return {
+        kind: "stale",
+        reason: "work_already_merged",
+        prNumber: pr.number,
+        prUrl: pr.url,
+        baseBranch,
+        defaultBranch,
+        mergeCommit: mergedCommit,
+        detail:
+          `already landed: PR #${pr.number} contains this run's work on \`${baseBranch}\`; no distinct local work remains`,
+      };
+    }
+  } catch (error) {
+    options.warn?.(
+      "Already-landed reconciliation did not prove completion: " +
+        redactSecrets(error instanceof Error ? error.message : String(error)),
+    );
+  }
+  return fresh;
+}
+
+/** Stop only on proved merged work; this path writes no completion/failure comment. */
+export async function alreadyLandedPhaseResult(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+  phase: string,
+): Promise<PhaseResult | undefined> {
+  const landed = await checkAlreadyLanded({
+    repo: ctx.repo,
+    issueNumber: ctx.issueNumber,
+    issueBody: ctx.issueBody,
+    runBranch: state.branchName,
+    baseBranch: state.milestoneBranch ?? state.defaultBranch,
+    defaultBranch: state.defaultBranch,
+    cwd: state.repoPath,
+    reapproved: state.postMergeReapproval !== undefined,
+    runGit: deps.git.runGitCommand,
+    runGh: deps.github.runGhCommand,
+    warn: (message) => deps.logger.warn(message),
+  });
+  if (landed.kind !== "stale") return undefined;
+  deps.logger.info(
+    "Run work already landed; skipping recovery and failure recording",
+    {
+      repo: ctx.repo,
+      issueNumber: ctx.issueNumber,
+      prNumber: landed.prNumber,
+      baseBranch: landed.baseBranch,
+    },
+  );
+  return {
+    status: "early_exit",
+    expectedSkip: true,
+    reason: formatStaleClaimReason(landed),
+    outcome: claimStaleOutcome({
+      phase,
+      stale: landed,
+      branch: state.branchName,
+    }),
+  };
 }

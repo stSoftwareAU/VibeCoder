@@ -19,6 +19,7 @@ import {
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
+import { claimStaleOutcome, type RunOutcome } from "../lib/run_outcome.ts";
 import type { TerminalIssueRun } from "../lib/run_callbacks.ts";
 
 function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
@@ -702,4 +703,62 @@ Deno.test("run_core callbacks - a run that reported no RTK outcome carries none 
   await runCycle(deps);
 
   assertEquals(runs[0]?.rtk, undefined);
+});
+
+Deno.test("run_core releases already-landed outcomes without failure or throughput credit in both dispatch modes (Issue #3977)", async () => {
+  for (const slots of [1, 2]) {
+    for (const target of ["main", "milestone/remaining-integration"]) {
+      const { runs, runIssueCallbacks } = recorder();
+      const time = clock();
+      const released: Array<RunOutcome | undefined> = [];
+      let failures = 0;
+      let successes = 0;
+      const landed = claimStaleOutcome({
+        phase: "completion",
+        branch: "issue-1-exact-work",
+        stale: {
+          reason: "work_already_merged",
+          detail: "already landed",
+          prNumber: 99,
+          prUrl: "https://github.com/o/a/pull/99",
+          baseBranch: target,
+          defaultBranch: "main",
+          mergeCommit: "b".repeat(40),
+        },
+      });
+      const deps = createMockDeps({
+        ...time,
+        runIssueCallbacks,
+        findNextIssue: issueQueue([issue("o/a", 1)]),
+        processIssue: () => {
+          time.burnCycle();
+          return Promise.resolve({
+            ok: true,
+            value: { success: false, skipped: true, outcome: landed },
+          });
+        },
+        releaseClaim: (_repo, _issue, outcome) => {
+          released.push(outcome);
+          return Promise.resolve();
+        },
+        trackFailure: () => {
+          failures++;
+          return Promise.resolve();
+        },
+        recordRepoSuccess: () => {
+          successes++;
+          return Promise.resolve();
+        },
+      });
+      await runCycle(deps, slots);
+      assertEquals(released, [landed]);
+      assertEquals(
+        runs,
+        [],
+        "a landed skip earns neither success nor failure callback credit",
+      );
+      assertEquals(failures, 0);
+      assertEquals(successes, 0);
+    }
+  }
 });

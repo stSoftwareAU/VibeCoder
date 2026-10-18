@@ -47,6 +47,7 @@ import { formatBaselineCarryoverNote } from "../quality_helpers.ts";
 import { fenceQualityOutput } from "../untrusted_quality_output.ts";
 import { buildBoundaryIntegrityInstruction } from "../prompt_delimiter.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
+import { alreadyLandedPhaseResult } from "../claim_freshness.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
 
 /**
@@ -210,6 +211,16 @@ export async function workOnIssueQualityGate(
   }
 
   if (phaseResult.status === "failure" && qualityFailureMessage !== undefined) {
+    const landed = await alreadyLandedPhaseResult(
+      ctx,
+      state,
+      deps,
+      "quality_gate",
+    );
+    if (landed) {
+      if (recordedOutcome) state.qualityGateOutcome = recordedOutcome;
+      return landed;
+    }
     await deps.github.handleIssueFailure({
       repo: ctx.repo,
       issueNumber: ctx.issueNumber,
