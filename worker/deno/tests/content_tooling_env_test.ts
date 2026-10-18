@@ -11,21 +11,36 @@
  * credential the run held.
  *
  * These tests drive the real spawn paths with a stub binary that reports the
- * environment it was given, and compare that against the worker's own
- * environment: any name outside the allowlist that reaches the child was
+ * environment it was given, and compare that against the names the runner's
+ * process was handed: any name outside the allowlist that reaches the child was
  * inherited. They fail against the unfixed code and pass once each site
  * builds its environment.
+ *
+ * How the comparison is made (Issue #880). Each runner reads the environment
+ * of the deno process it runs in, so each check runs the real runner in a
+ * child `deno eval` process. That child's environment is the worker's own
+ * environment plus CANARY, a credential-shaped name the allowlist does not
+ * name. The child reports every name it was handed, so the positive control
+ * (something outside the allowlist must be available to inherit) holds
+ * whether or not the worker's own environment is cleared, as it is under the
+ * mutation gate's `env -i`. Only the child's environment is set; this process's
+ * environment is never written.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { detectMarkdownlintRunner } from "../lib/markdownlint_check.ts";
-import { createDefaultSweepDeps } from "../lib/security_tree_sweep.ts";
 import {
   ALLOWED_ENV_NAMES,
   isCredentialVariableName,
 } from "../lib/untrusted_command_env.ts";
+
+/**
+ * A name the allowlist does not name, shaped like a credential, set on the
+ * CHILD process only. It is always present in the child's environment, so the
+ * positive control holds by construction in any parent environment.
+ */
+const CANARY = "CONTENT_TOOLING_ENV_CANARY_TOKEN";
 
 /**
  * Names a shell sets for itself, whatever environment it was handed.
@@ -34,6 +49,14 @@ import {
  * not evidence of inheritance.
  */
 const SHELL_SET_NAMES = new Set(["PWD", "SHLVL", "_", "OLDPWD"]);
+
+/** The modules under test, as URLs the child process can import. */
+const MARKDOWNLINT_MODULE = new URL(
+  "../lib/markdownlint_check.ts",
+  import.meta.url,
+).href;
+const SWEEP_MODULE = new URL("../lib/security_tree_sweep.ts", import.meta.url)
+  .href;
 
 /** Write an executable stub at `path` with the given shell body. */
 async function writeStub(path: string, body: string): Promise<void> {
@@ -52,29 +75,68 @@ function namesIn(envDump: string): Set<string> {
 }
 
 /**
+ * Run `body` in a child deno process and return what it resolved to, plus the
+ * names the child process was handed.
+ *
+ * `body` is the statements of an async function; its return value is reported
+ * back as JSON. The child inherits the worker's environment (Deno.Command's
+ * default) with CANARY added, so the runner under test sees the same names the
+ * worker would hand it.
+ */
+async function runInChild<T extends object>(
+  body: string,
+): Promise<T & { handed: string[] }> {
+  const source = [
+    "const handed = Object.keys(Deno.env.toObject());",
+    `const report = await (async () => {\n${body}\n})();`,
+    "console.log(JSON.stringify({ ...report, handed }));",
+  ].join("\n");
+  const output = await new Deno.Command(Deno.execPath(), {
+    args: ["eval", "--no-check", "-A", source],
+    env: { [CANARY]: "1" },
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  const decoder = new TextDecoder();
+  assert(
+    output.success,
+    `the child deno process failed: ${decoder.decode(output.stderr)}`,
+  );
+  const report = JSON.parse(decoder.decode(output.stdout)) as
+    & T
+    & { handed: string[] };
+  assert(
+    report.handed.includes(CANARY),
+    "the canary did not reach the child, so the positive control cannot hold",
+  );
+  return report;
+}
+
+/**
  * Assert that a child's environment was BUILT, not inherited.
  *
- * The discriminator is the worker's own environment: every name it carries
- * that the allowlist does not name must be absent from the child. Against the
+ * `handed` is every name the runner's process was given. Every name in it that
+ * the allowlist does not name must be absent from the child. Against the
  * unfixed code the child inherits the lot — `CLAUDE_CODE_OAUTH_TOKEN`,
- * `GH_TOKEN` and the rest — and every one of those names is reported here.
+ * `GH_TOKEN`, CANARY and the rest — and every one of those names is reported
+ * here.
  *
  * No test mutates the process environment to prove this (Issue #880): the
- * worker's real environment is the input, read rather than written.
+ * names come from a child process that was given them.
  */
 function assertBuiltEnvironment(
   envDump: string,
+  handed: readonly string[],
   site: string,
   extraNames: readonly string[] = [],
 ): void {
   const allowed = new Set<string>([...ALLOWED_ENV_NAMES, ...extraNames]);
-  const inheritable = Object.keys(Deno.env.toObject())
+  const inheritable = handed
     .filter((name) => !allowed.has(name) && !SHELL_SET_NAMES.has(name));
   assert(
     inheritable.length > 0,
-    `${site}: the worker's own environment carries nothing outside the ` +
-      "allowlist, so this test cannot tell a built environment from an " +
-      "inherited one",
+    `${site}: the runner was handed nothing outside the allowlist, so this ` +
+      "test cannot tell a built environment from an inherited one",
   );
 
   const childNames = namesIn(envDump);
@@ -109,13 +171,21 @@ Deno.test("markdownlint - the linter runs with a built environment, not the work
       `env >> "${capture}"\nenv\n`,
     );
 
-    const runner = await detectMarkdownlintRunner(dir);
-    assert(runner !== null, "the stub binary must be detected");
-    const result = await runner(dir);
+    const report = await runInChild<{ stdout: string | null }>(`
+const { detectMarkdownlintRunner } = await import(${
+      JSON.stringify(MARKDOWNLINT_MODULE)
+    });
+const runner = await detectMarkdownlintRunner(${JSON.stringify(dir)});
+if (runner === null) return { stdout: null };
+const result = await runner(${JSON.stringify(dir)});
+return { stdout: result.stdout };
+`);
 
-    assertBuiltEnvironment(result.stdout, "markdownlint runner");
+    assert(report.stdout !== null, "the stub binary must be detected");
+    assertBuiltEnvironment(report.stdout, report.handed, "markdownlint runner");
     assertBuiltEnvironment(
       await Deno.readTextFile(capture),
+      report.handed,
       "markdownlint probe",
     );
   } finally {
@@ -129,16 +199,29 @@ Deno.test("security tree sweep - scanners run with a built environment, not the 
     const stub = `${dir}/fake-semgrep`;
     await writeStub(stub, "env");
 
-    const deps = createDefaultSweepDeps();
-    const result = await deps.runner({ bin: stub, args: ["scan"] }, dir);
+    const report = await runInChild<{ code: number; stdout: string }>(`
+const { createDefaultSweepDeps } = await import(${
+      JSON.stringify(SWEEP_MODULE)
+    });
+const deps = createDefaultSweepDeps();
+const result = await deps.runner({ bin: ${
+      JSON.stringify(stub)
+    }, args: ["scan"] }, ${JSON.stringify(dir)});
+return { code: result.code, stdout: result.stdout };
+`);
 
-    assertEquals(result.code, 0);
+    assertEquals(report.code, 0);
     // The container-runtime names are the sweep's declared additions, so they
     // are not evidence of inheritance.
-    assertBuiltEnvironment(result.stdout, "security tree sweep runner", [
-      "DOCKER_HOST",
-      "XDG_RUNTIME_DIR",
-    ]);
+    assertBuiltEnvironment(
+      report.stdout,
+      report.handed,
+      "security tree sweep runner",
+      [
+        "DOCKER_HOST",
+        "XDG_RUNTIME_DIR",
+      ],
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
