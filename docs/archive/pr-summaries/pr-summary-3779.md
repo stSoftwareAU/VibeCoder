@@ -103,6 +103,12 @@ tests: `caller_checks_3779_test.ts` (39), `pre_pr_verifier_3395_test.ts`
 (69, including the retained earlier-findings regression), `narrowing_shared_helper_3100_test.ts`
 (1) and `pr_review_brief_shared_3395_test.ts` (7).
 
+CI refresh for PR #3985: commit `b1367d8` only reformatted the control-word
+loop and verdict-array assertion in `caller_checks_3779_test.ts`. The test
+declarations and assertions are unchanged. The focused suites were re-run on
+this head, and the Branch outcomes facts and production path:line citations
+were rechecked; the formatter changed no production branch or cited location.
+
 The new "a git failure listing callers makes the verifier not checked" test
 reaches the `!callers.ok` wiring branch. Flipping that guard to `false` broke
 type-checking across the suite (the `callers.state` / `callers.reason`
@@ -124,6 +130,10 @@ flowchart LR
 
 ## Test Plan
 
+- PR #3985 formatting push (`b1367d8`): re-ran the four focused suites listed
+  in Evidence and checked the formatted test file. No test assertion was
+  removed or weakened, and the existing Branch outcomes facts still describe
+  the head's production code.
 - `worker/deno/tests/caller_checks_3779_test.ts` (39 tests) covers the gate in
   isolation against real git:
   - `definitionName` across each supported language, and its rejection of
