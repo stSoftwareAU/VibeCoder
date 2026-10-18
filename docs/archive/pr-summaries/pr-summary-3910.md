@@ -38,13 +38,22 @@ milestone. Zero commits ahead still establishes that there is nothing to merge.
 - Manifest completeness checks pass: 687 passed, one existing ignored test.
 - Docs sweep — grep: "0 commits ahead", "nothing to merge", "ahead_by";
   updated `docs/workflows/milestones.md`, `docs/INTERNALS.md` and completion
-  comments/logging; section: `docs/workflows/milestones.md` → "Decision points
+  comments/logging and the required-gate signal-suite rationale in
+  `CODING-STANDARDS.md`; section: `docs/workflows/milestones.md` → "Decision points
   and exceptions"; siblings: none — extends an existing decision, with no new
   member of a documented set. `docs/INTERNALS.md:4477` still describes the
   separate sync-PR retirement decision, whose commit-ancestry requirement is
   unchanged.
 
 ## Test Plan
+
+- Full local quality passed both functional test passes and all static checks,
+  then failed only the unit-time budget for the existing real-signal suite.
+  Classified it in the existing subprocess-timing manifest, with the measured
+  parallel/isolated times and its real process startup/termination purpose.
+  Both signal tests now run in the required serial pass with their original
+  assertions; no
+  integration exclusion or timing threshold changed.
 
 - Added the ahead-with-empty-files regression and an end-to-end completion
   regression that asserts the milestone closes without creating an issue or PR.
