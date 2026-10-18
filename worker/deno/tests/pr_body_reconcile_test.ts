@@ -182,13 +182,14 @@ function passDeps(
   };
 }
 
-/** The listing entry `gh pr list --json number,headRefOid,body,author` returns. */
+/** The listing entry `gh pr list --json number,headRefName,headRefOid,body,author` returns. */
 function prEntry(
   body: string,
   opts: { headRefOid?: string; login?: string } = {},
 ): unknown {
   return {
     number: PR_NUMBER,
+    headRefName: "issue-42-fix-thing",
     headRefOid: opts.headRefOid ?? HEAD_SHA,
     body,
     author: { login: opts.login ?? FLEET_LOGIN },
@@ -323,6 +324,16 @@ Deno.test("reconcile - mismatch: one checkout at the head, one sync at its path,
   assertEquals(syncInputs[0]?.repoPath, "/tmp/fake-pr-head-checkout");
   assertEquals(syncInputs[0]?.beforeSha, undefined);
   assertEquals(syncInputs[0]?.prNumber, PR_NUMBER);
+  assertEquals(syncInputs[0]?.branchName, "issue-42-fix-thing");
+  assert(
+    h.calls.some((args) =>
+      args[0] === "pr" && args[1] === "list" &&
+      (args[args.indexOf("--json") + 1] ?? "").split(",").includes(
+        "headRefName",
+      )
+    ),
+    "the real listing must request the branch passed to body sync",
+  );
   assertEquals(cleaned, 1);
   assertEquals(inSync.size, 0, "a rebuild is not memoised");
 });

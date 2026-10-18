@@ -67,6 +67,8 @@ const PR_NUMBER = 7;
 const ISSUE_NUMBER = 42;
 const BEFORE_SHA = "beforesha0000000000000000000000000000000";
 const HEAD_SHA = "headsha00000000000000000000000000000000";
+/** The run's own worker branch — also the PR head the fixtures report. */
+const BRANCH = "issue-42-fix-thing";
 
 function marker(issueNumber: number): string {
   return `${WORKER_PR_MARKER_PREFIX}${issueNumber} -->`;
@@ -195,11 +197,13 @@ function viewJson(
   body: string,
   files: string[] = [],
   headRefOid: string = HEAD_SHA,
+  headRefName: string = BRANCH,
 ): string {
   return JSON.stringify({
     body,
     files: files.map((path) => ({ path })),
     headRefOid,
+    headRefName,
   });
 }
 
@@ -376,6 +380,7 @@ Deno.test("sync - summary changed: edits the PR once with the refreshed body", a
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -431,6 +436,7 @@ Deno.test("sync - a legacy body with no tier marker gets none added (Issue #3403
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -476,6 +482,7 @@ Deno.test("sync - a live body carrying the haiku tier marker rebuilds with exact
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -516,6 +523,7 @@ Deno.test("sync - summary unchanged: skips without editing", async () => {
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -544,7 +552,14 @@ Deno.test("sync - no worker marker: skips without editing or diffing", async () 
       runGhCommand: (args) => {
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(
-            viewJson("## Summary\n\nA PR nobody authored with the worker."),
+            // Not the run's branch: a PR nobody authored with the worker
+            // stays skipped even though its body is marker-less (Issue #3804).
+            viewJson(
+              "## Summary\n\nA PR nobody authored with the worker.",
+              [],
+              HEAD_SHA,
+              "feature/hand-raised",
+            ),
           );
         }
         return stubGh(ghCalls)(args);
@@ -560,6 +575,7 @@ Deno.test("sync - no worker marker: skips without editing or diffing", async () 
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -575,6 +591,218 @@ Deno.test("sync - no worker marker: skips without editing or diffing", async () 
     }
     assertEquals(ghCalls.length, 0);
     assertEquals(gitCalls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+// --- Issue #3804: adopting an agent-raised PR on the run's own branch -------
+
+/** An agent's own draft: marker-less, closing the issue, with a closure block. */
+const AGENT_DRAFT = "## Summary\n\nAgent draft. Closes #42.\n\n" +
+  "## Test Plan\n\n- ran the tests\n\nCloses #42\n";
+
+Deno.test("syncPrBodyFromSummary - Issue #3804: adopts a marker-less agent draft on the run's own branch", async () => {
+  const repoPath = await makeRepo({
+    summary: criterionSummary("missing", "missing"),
+  });
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const issueCalls: string[][] = [];
+    const filer = fakeFiling();
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(AGENT_DRAFT, ["src/a.ts"]));
+        }
+        if (args[0] === "issue") {
+          issueCalls.push(args);
+          if (args[1] === "view") return Promise.resolve(GAP_ISSUE_JSON);
+          if (args[1] === "list") return Promise.resolve("[]");
+          if (args[1] === "create") {
+            return Promise.resolve("https://github.com/owner/repo/issues/99\n");
+          }
+          return Promise.resolve("");
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls),
+      logger,
+      followUpFiling: filer.filing,
+    };
+
+    // No beforeSha: adoption must not need the before-push SHA.
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: undefined,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+        branchName: BRANCH,
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "updated",
+        issueNumber: ISSUE_NUMBER,
+      });
+    }
+    assertEquals(ghCalls.length, 1);
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assertStringIncludes(newBody, marker(ISSUE_NUMBER));
+    assert(
+      summaryDigestFromBody(newBody) !== undefined,
+      "expected the summary-digest marker in the adopted body",
+    );
+    assertStringIncludes(newBody, `Part of #${ISSUE_NUMBER}`);
+    assertStringIncludes(newBody, `## Not closing #${ISSUE_NUMBER}`);
+    assertEquals(newBody.includes(`Closes #${ISSUE_NUMBER}`), false);
+    assertEquals(filer.verified.length, 1);
+    assertEquals(issueCalls.filter((args) => args[1] === "create").length, 1);
+    assertStringIncludes(newBody, "continue in #99:");
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - Issue #3804: does not adopt when the head is another worker branch", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(
+            viewJson(AGENT_DRAFT, [], HEAD_SHA, "issue-42-fix-thing"),
+          );
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit([]),
+      logger,
+      followUpFiling: undefined,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: undefined,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+        branchName: "issue-99-other",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "no worker marker",
+      });
+    }
+    assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - Issue #3804: does not adopt a marker-less PR on a non-worker branch", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(
+            viewJson(
+              AGENT_DRAFT,
+              [],
+              HEAD_SHA,
+              "feature/not-a-worker-branch",
+            ),
+          );
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit([]),
+      logger,
+      followUpFiling: undefined,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: undefined,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+        branchName: "feature/not-a-worker-branch",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "no worker marker",
+      });
+    }
+    assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - Issue #3804: adoptOnly leaves a body that already carries the marker", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          // A stale digest: a rebuild would edit this body, adoptOnly must not.
+          return Promise.resolve(viewJson(bodyRecording("0".repeat(64))));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit([]),
+      logger,
+      followUpFiling: undefined,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: undefined,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+        branchName: BRANCH,
+        adoptOnly: true,
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "worker marker present",
+      });
+    }
+    assertEquals(ghCalls.length, 0);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }
@@ -609,6 +837,7 @@ Deno.test("sync - a summary quoting an earlier numeric worker marker is not mist
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -661,6 +890,7 @@ Deno.test("sync - a non-numeric placeholder marker in the summary does not block
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -722,6 +952,7 @@ Deno.test("sync - checkout HEAD differs from the PR's remote head: skips without
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -782,6 +1013,7 @@ Deno.test("sync - PR's reported head lags behind this checkout's own verified pu
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -836,6 +1068,7 @@ Deno.test("sync - merge-base itself fails: skips without editing (PR #3353 revie
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -878,6 +1111,7 @@ Deno.test("sync - no before-push SHA: skips without editing", async () => {
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: undefined,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -923,6 +1157,7 @@ Deno.test("sync - gh pr edit throws: returns an error Result", async () => {
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -961,6 +1196,7 @@ Deno.test("sync - git diff fails: returns an error Result", async () => {
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -1007,6 +1243,7 @@ Deno.test("sync - carries over the milestone section and bump-skip note from the
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -1046,6 +1283,7 @@ Deno.test("sync - empty repoPath: returns an error without calling gh", async ()
       prNumber: PR_NUMBER,
       repoPath: "",
       beforeSha: BEFORE_SHA,
+      branchName: BRANCH,
       workerName: "worker-a",
       githubUser: "ghuser",
     },
@@ -1083,6 +1321,7 @@ Deno.test("sync - summary file deleted: skips without editing", async () => {
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -1160,6 +1399,7 @@ Deno.test("sync - keeps a leading degraded-run section (Issue #2562)", async () 
       prNumber: PR_NUMBER,
       repoPath,
       beforeSha: BEFORE_SHA,
+      branchName: BRANCH,
       workerName: "worker-a",
       githubUser: "ghuser",
     };
@@ -1235,6 +1475,7 @@ Deno.test("sync - recorded digest of an OLDER summary, no before-push SHA, git s
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: undefined,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -1296,6 +1537,7 @@ Deno.test("sync - recorded digest equals the current summary's digest: skips eve
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: BEFORE_SHA,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -1340,6 +1582,7 @@ Deno.test("sync - round trip: a body produced by one sync is skipped as unchange
       prNumber: PR_NUMBER,
       repoPath,
       beforeSha: BEFORE_SHA,
+      branchName: BRANCH,
       workerName: "worker-a",
       githubUser: "ghuser",
     };
@@ -1390,6 +1633,7 @@ Deno.test("sync - recorded digest present and summary file deleted: skips withou
         prNumber: PR_NUMBER,
         repoPath,
         beforeSha: undefined,
+        branchName: BRANCH,
         workerName: "worker-a",
         githubUser: "ghuser",
       },
@@ -1423,6 +1667,7 @@ Deno.test("runPrBodySync - a failed sync warns once and does not fail the caller
       prNumber: PR_NUMBER,
       repoPath: "/tmp/unused",
       beforeSha: BEFORE_SHA,
+      branchName: BRANCH,
       workerName: "worker-a",
       githubUser: "ghuser",
     },
@@ -1507,6 +1752,7 @@ Deno.test("sync - re-derives a stale degraded-run section from the current issue
       prNumber: PR_NUMBER,
       repoPath,
       beforeSha: BEFORE_SHA,
+      branchName: BRANCH,
       workerName: "worker-a",
       githubUser: "ghuser",
     }, deps);
@@ -1554,6 +1800,7 @@ async function syncWithDegradedLive(opts: {
       prNumber: PR_NUMBER,
       repoPath,
       beforeSha: BEFORE_SHA,
+      branchName: BRANCH,
       workerName: "worker-a",
       githubUser: "ghuser",
     }, deps);
@@ -1600,6 +1847,7 @@ Deno.test("sync - makes no issue call when the body carries no degraded-run sect
       prNumber: PR_NUMBER,
       repoPath,
       beforeSha: BEFORE_SHA,
+      branchName: BRANCH,
       workerName: "worker-a",
       githubUser: "ghuser",
     }, deps);
@@ -1962,6 +2210,7 @@ const SYNC_INPUT = {
   repo: REPO,
   prNumber: PR_NUMBER,
   beforeSha: BEFORE_SHA,
+  branchName: BRANCH,
   workerName: "worker-a",
   githubUser: "ghuser",
 };
@@ -1990,6 +2239,7 @@ async function syncFactsCase(opts: {
       ...SYNC_INPUT,
       repoPath: opts.repoPath,
       beforeSha: "beforeSha" in opts ? opts.beforeSha : BEFORE_SHA,
+      branchName: BRANCH,
     },
     deps,
   );
@@ -2212,6 +2462,7 @@ async function runGapSync(opts: GapRunOptions) {
     const result = await syncPrBodyFromSummary({
       repo: REPO,
       prNumber: PR_NUMBER,
+      branchName: BRANCH,
       repoPath,
       beforeSha: BEFORE_SHA,
       workerName: "worker-a",
@@ -2508,6 +2759,7 @@ Deno.test("Issue #3720: summary refresh preserves the originating assignment", a
     const result = await syncPrBodyFromSummary({
       repo: REPO,
       prNumber: PR_NUMBER,
+      branchName: BRANCH,
       repoPath,
       beforeSha: BEFORE_SHA,
       workerName: "worker-a",

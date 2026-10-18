@@ -479,6 +479,7 @@ export async function reconcilePrBodyDigests(
           repo,
           prNumber: pr.number,
           repoPath: checkout.value.path,
+          branchName: pr.headRefName,
           beforeSha: undefined,
           workerName: opts.workerName,
           githubUser: opts.githubUser,
@@ -516,7 +517,7 @@ export async function reconcilePrBodyDigests(
     const prs = await listOpenPrs(
       repo,
       opts.maintenanceAuthors,
-      "number,headRefOid,body,author",
+      "number,headRefName,headRefOid,body,author",
       deps.runGhCommand,
       deps.cache,
     );

@@ -2247,6 +2247,7 @@ async function _processCiWithHeartbeat(
         githubUser: processorDeps.githubUser ??
           Deno.env.get("GITHUB_USER") ?? "",
         runId: getRunId(),
+        branchName: input.branchName,
       },
       {
         runGhCommand: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
