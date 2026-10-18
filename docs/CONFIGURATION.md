@@ -1795,6 +1795,7 @@ unless explicitly overridden.
 | Setting                        | Config Key                       | Default    | Description                                                                                                                                                                                          |
 | ------------------------------ | -------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude timeout | `claude_timeout` | `3600` | Safety-net ceiling for Claude CLI (1 hour) — real stuck detection uses no-output timeout. Lowered from 4 hours by so one wedged run cannot starve every other repository. |
+| Claude turn cap | `claude_max_turns` | `100` | Positive integer agentic turns per Claude Code invocation (including the Claude-compatible DeepSeek CLI). Passed as `--max-turns`; reaching it logs `AGENT_TURN_LIMIT` / `error_max_turns` and ends that invocation without a retry. Issue, PR-feedback and CI-fix processing stop before publishing partial work, including capped recovery/verifier calls. The config value overrides stale internal shell transport. Each phase/resume has its own cap; this does not impose a total issue-wide token budget or a cap on Codex/Gemini. |
 | Progress extension enabled | `progress_extension_enabled` | `true` | Extend the **issue-work** hard deadline while the run is demonstrably progressing. On by default (Issue #422) and bounded by the run hard cap; set it to `false` for the flat one-shot kill. The same settings re-arm a maintenance handler's watchdog while its own agent is still producing output, up to one agent budget from dispatch (Issue #2720). See [Progress-extended deadline](#-progress-extended-deadline). |
 | Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
 | Progress extension stall window | `progress_extension_stall_seconds` | `300` | The agent is judged stalled only when **both** its last tool call and its last stdout chunk are older than this (Issue #767). Must be at least `progress_extension_check_seconds`. |
@@ -2091,20 +2092,56 @@ redaction and the read access that follow. See
 
 #### Local retention
 
-Transcripts are bounded by the housekeeping every run already performs, with
-no operator action:
+Transcripts have a **30-day** default age window, separate from the worker
+logs' 3-day policy. Tiny transcripts are evidence, so the worker-log stub
+rule does not delete them early. Plain, rotated and gzipped transcripts share
+a separate **2,000-file hard cap**, oldest first; reaching that cap can shorten
+the window and the cleanup summary reports the number removed by the cap.
+Worker restart logs cannot evict transcripts from that separate allowance.
 
-- `log-rotation` size-rotates `agent-*.jsonl` transcripts into `.jsonl.N`
-  backups. It rotates only the worker's own log names (Issue #1267) — a
-  third-party `.log` or `.jsonl` sharing the log directory is left alone.
-- `worker-log-cleanup` then applies the worker-log retention policy to
-  `agent-*.jsonl` and its rotated and gzipped forms: deleted after **3 days**,
-  with a hard cap of **200** retained files, oldest deleted first.
+`log-rotation` still size-rotates the worker's `agent-*.jsonl` files, with its
+configured backup cap, and the writer stops capturing an invocation at
+100 MiB. Neither a time window nor a scan restores data lost to these caps.
+Archive evidence off the worker before pruning when a longer guarantee is
+needed. Copies made by callback hooks have their own retention policy.
 
-Nothing else sweeps them — the session sweeper covers `.claude-sessions/`, not
-transcripts — and nothing prunes a transcript a hook has copied elsewhere. On
-a busy host the practical retention is the 3-day age limit; on a host running
-more than 200 agent invocations inside that window it is the file cap.
+#### Scheduled security scan
+
+At the first idle-work hook, then at the first idle hook at least **six hours**
+after the previous scan, the worker scans changed retained transcripts. The
+schedule and file size/mtime cursor live in
+`~/logs/.agent-transcript-scan-v1.json`, so restarting does not immediately
+repeat unchanged findings. This local task runs before the GitHub idle-task
+filing gates and needs no GitHub quota or agent call. A continuously busy
+worker waits until its next idle hook; this is not a real-time detector.
+
+The scan recognises Claude/DeepSeek stream-json, Codex `item.started` /
+`item.completed` command execution records, and Gemini `tool_use` / `tool_result`
+records. It flags tool records for shell egress commands
+(`curl`, `wget`, `ssh`, `scp`, `sftp`, `nc`, `ncat`, `netcat`) and `WebFetch`,
+credential paths in `Read` or `Bash`, and permission denials or the worker's
+disallowed planning tools. Quoted assistant prose is not a tool attempt.
+These are investigation signals, not proof of compromise: a legitimate
+network fetch is flagged too, and custom tools, encoded commands and future
+provider event formats can evade these heuristics. Gemini shell/read/web tools
+and structured permission denials are matched alongside their Claude equivalents.
+
+Each signal kind in a file appears at WARNING in the worker log as
+`[AGENT_TRANSCRIPT_SIGNAL] <file>:<first-line> signal=<kind> occurrences=<count>`.
+Repeated records are counted in that finding, bounding alerts and memory to
+three findings per file. This gives an operator a
+local evidence pointer without copying commands, URLs, credential paths or
+outputs into the alert. The `[agent-transcript-scan]` summary reports scanned
+files, findings, malformed lines and failed files. An unreadable or oversized
+file does not prevent other files being scanned, and is retried on the next
+scheduled pass. Malformed transcripts are also retried rather than recorded
+as fully scanned. The scan bounds decompressed input at 100 MiB per file.
+
+Capture remains opt-in through `agent_transcript_enabled`; an empty or disabled
+capture is not evidence that the agent was safe. The scan reads existing
+transcripts even when capture has since been switched off. Follow the
+[agent-incident runbook](../SECURITY.md#agent-incident-runbook) for a suspicious
+finding and preserve local evidence before any cleanup.
 
 ### 🧭 Adaptive claim floor
 

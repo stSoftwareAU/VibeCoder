@@ -265,6 +265,8 @@ export interface WorkerConfig {
   lowPriorityLabel: string;
   /** Timeout in seconds for Claude CLI (default: 3600 = 1 hour, Issue #1824) */
   claudeTimeout: number;
+  /** Positive per-invocation Claude Code turn cap; defaults to 100. */
+  claudeMaxTurns?: number;
   /**
    * Seconds of runway to the supervisor hard cap a new implementation claim
    * must have (`.config.json` `min_claim_runway_seconds`, Issues #289/#425).
@@ -1344,6 +1346,8 @@ export interface ConfigFile {
   best_planning_model?: string;
   /** Operational settings (Issue #277) — only overrides stored */
   claude_timeout?: number;
+  /** Positive per-invocation Claude Code turn cap; defaults to 100. */
+  claude_max_turns?: number;
   min_claim_runway_seconds?: number;
   /** Labels marking an issue as a long job (Issue #245) */
   claim_long_job_labels?: string[];

@@ -1,3 +1,5 @@
+import { agentTranscriptDir } from "./agent_transcript.ts";
+import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
 /**
  * Production dependency wiring for the run-core main event loop.
  *
@@ -5692,6 +5694,18 @@ export async function createProductionRunCoreDeps(
         return pollingGateVerdict(0, reading, thresholds).deferIdle
           ? `remaining=${reading.remaining}/${reading.limit} below idle_floor=${thresholds.idleFloor}`
           : null;
+      }),
+
+    runTranscriptScan: homeDirectory(env) === undefined
+      ? async () => {
+        logger.warn(
+          "[agent-transcript-scan] no home directory; scan unavailable",
+        );
+      }
+      : createScheduledTranscriptScan({
+        logDir: agentTranscriptDir(homeDirectory(env)!),
+        warn: (message) => logger.warn(message),
+        info: (message) => logger.info(message),
       }),
 
     runIdleTaskFiler: async () => {

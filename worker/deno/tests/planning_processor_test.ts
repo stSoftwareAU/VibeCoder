@@ -50,11 +50,108 @@ import {
   saveStreamSession,
 } from "../lib/resume_state_store.ts";
 import { resolveStreamId } from "../lib/stream_identity.ts";
+import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
 // host's overrides from the shared process environment (Issue #1024).
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
+
+for (
+  const stage of [
+    "draft",
+    "publish",
+    "retry",
+    "failure-detection-batch",
+    "failure-detection-fallback",
+    "coverage",
+  ]
+) {
+  Deno.test(`planning turn limit is terminal during ${stage}`, async () => {
+    const capAt = stage === "draft"
+      ? 1
+      : stage === "retry" || stage === "failure-detection-fallback"
+      ? 3
+      : 2;
+    const repairing = stage.startsWith("failure-detection") ||
+      stage === "coverage";
+    const failure = new AgentTurnLimitError("error_max_turns");
+    let calls = 0, closes = 0, edits = 0, failures = 0;
+    const record = { comments: [] as string[] };
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: async () => {
+          calls++;
+          if (calls === capAt) return { ok: false, error: failure };
+          const output = repairing && calls === 1
+            ? "Created https://github.com/org/repo/issues/301" +
+              (stage === "coverage"
+                ? ""
+                : " and https://github.com/org/repo/issues/302")
+            : "A draft without published sub-issues or parseable repair blocks.";
+          return {
+            ok: true,
+            value: { output, exitCode: 0, timedOut: false },
+          };
+        },
+      },
+      github: {
+        handleIssueFailure: async (input) => {
+          failures++;
+          assertStringIncludes(input.failureMessage, "error_max_turns");
+          return {
+            ok: true,
+            value: {
+              markedAsFailed: false,
+              markedAsFailedOnce: true,
+              failureCategory: "unknown",
+              isInfrastructure: false,
+            },
+          };
+        },
+        runGhCommand: async (args) => {
+          if (isCoverageRead(args)) {
+            return JSON.stringify({ body: "Parent", comments: [] });
+          }
+          if (args[0] === "issue" && args[1] === "view") {
+            return JSON.stringify({
+              number: Number(args[2]),
+              title: "Sub-issue",
+              state: "OPEN",
+              body: stage === "coverage"
+                ? "## Failure Detection\n\nA unit test detects a regression."
+                : "A sub-issue missing failure detection.",
+            });
+          }
+          if (args.includes("close")) closes++;
+          if (args[0] === "issue" && args[1] === "edit") edits++;
+          return "";
+        },
+      },
+    });
+    const result = await processIssuePlanning(makeContext(), {
+      promptsDir: PROMPTS_DIR,
+      ghClient: {
+        ...makeRecordingGhClient(record),
+        closeIssue: async () => {
+          closes++;
+        },
+      },
+      logger: deps.logger,
+      deps,
+    });
+    assertEquals(result.ok, false, stage);
+    if (!result.ok) assertEquals(result.error, failure);
+    assertEquals(calls, capAt, "No later publish, retry or repair invocation");
+    assertEquals(closes, 0, "The planning parent remains open");
+    assertEquals(edits, 0, "No partial repair is applied after the cap");
+    assertEquals(
+      failures,
+      1,
+      "The terminal cause reaches planning failure handling",
+    );
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Plan-coverage gate fixtures (Issue #520)

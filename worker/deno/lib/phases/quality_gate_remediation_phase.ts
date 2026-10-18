@@ -49,6 +49,7 @@ import { buildBoundaryIntegrityInstruction } from "../prompt_delimiter.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { alreadyLandedPhaseResult } from "../claim_freshness.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
+import { AgentTurnLimitError } from "../claude_turn_limit.ts";
 
 /**
  * Result of a single quality-gate body pass — see `runQualityGateBody`.
@@ -59,6 +60,8 @@ import { formatBeforeGate } from "../repo_formatters.ts";
  */
 interface QualityGateBodyResult {
   phaseResult: PhaseResult;
+  /** A policy stop cannot be converted into success by another gate or audit. */
+  agentTurnLimit?: true;
   /**
    * If the quality gate ultimately failed, this is the raw quality-output
    * failure message (not the formatted reason) that should be passed to
@@ -160,13 +163,14 @@ export async function workOnIssueQualityGate(
   // outcome is restored below rather than overwritten by a later gate.
   const recordedOutcome = state.qualityGateOutcome;
 
-  let { phaseResult, qualityFailureMessage } = await runQualityGateBody(
-    ctx,
-    state,
-    deps,
-  );
+  let { phaseResult, qualityFailureMessage, agentTurnLimit } =
+    await runQualityGateBody(
+      ctx,
+      state,
+      deps,
+    );
 
-  if (phaseResult.status === "failure") {
+  if (phaseResult.status === "failure" && !agentTurnLimit) {
     // Only infrastructure-category quality failures qualify for the extra
     // in-process retry — real quality-check failures are not retried.
     const category = detectFailureCategory(
@@ -184,11 +188,12 @@ export async function workOnIssueQualityGate(
         },
       );
       if (shouldRetry) {
-        ({ phaseResult, qualityFailureMessage } = await runQualityGateBody(
-          ctx,
-          state,
-          deps,
-        ));
+        ({ phaseResult, qualityFailureMessage, agentTurnLimit } =
+          await runQualityGateBody(
+            ctx,
+            state,
+            deps,
+          ));
       }
     }
   }
@@ -201,6 +206,7 @@ export async function workOnIssueQualityGate(
   // via PR comment.
   if (
     phaseResult.status === "failure" &&
+    !agentTurnLimit &&
     state.bumpInfo?.status === "applied"
   ) {
     const auditResult = await attemptBumpAudit(state, deps);
@@ -713,6 +719,12 @@ async function runQualityGateBody(
       logger.warn("Claude fix attempt failed", {
         error: fixResult.error.message,
       });
+      if (fixResult.error instanceof AgentTurnLimitError) {
+        return {
+          phaseResult: { status: "failure", reason: fixResult.error.message },
+          agentTurnLimit: true,
+        };
+      }
     }
   }
 

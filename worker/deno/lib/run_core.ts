@@ -1473,6 +1473,8 @@ export interface RunCoreDeps {
    * test deps can omit it.
    */
   runIdleTaskFiler?: () => Promise<void>;
+  /** Scheduled local security scan, independent of GitHub filing gates. */
+  runTranscriptScan?: () => Promise<void>;
 
   /**
    * Whether the weekly-quota pace guard is engaged right now (Issues #1885,
@@ -5239,6 +5241,7 @@ function runIdleWorkHooks(
   // from outside priority dispatch — attribute them to the hooks.
   return withPriorityContext("Idle Work Hooks", async () => {
     const outcome: IdleHookOutcome = { filed: false };
+    await deps.runTranscriptScan?.();
     const flagFragment =
       `foundClaimableIssue=${req.scanFoundClaimable} scanHadSuccess=${req.scanHadSuccess}`;
     // Issue #2106: run the idle-detect audit at the same gate
