@@ -45,6 +45,14 @@ const FORMATTED_TS = "export const x = 1;\n";
 const LINT_FAILING_TS = "let   y = 1\nexport { y };\n";
 /** Markdown `deno fmt` would rewrite (`*` bullets become `-`). */
 const UNFORMATTED_MD = "# Guide\n\n*   one\n*   two\n";
+/** Rust `cargo fmt` would rewrite (no space after `fn`, unspaced `->`). */
+const UNFORMATTED_RS = "pub fn   add(a:i32,b:i32)->i32 {\n    return a+b;\n}\n";
+const FORMATTED_RS =
+  "pub fn add(a: i32, b: i32) -> i32 {\n    return a + b;\n}\n";
+/** Nested-Deno JSON `deno fmt` would rewrite (collapsed to two-space indent). */
+const UNFORMATTED_JSON = '{"a":  1, "b": [1,2,  3], "c": {\n  "d": "e"\n}}\n';
+const CARGO_TOML =
+  `[package]\nname = "probe"\nversion = "0.1.0"\nedition = "2021"\n\n[workspace]\n`;
 
 const SUMMARY = `## Summary
 Tidied the worker. Closes #10.
@@ -108,6 +116,62 @@ async function makeRepo(
     `${repo}/docs/archive/pr-summaries/pr-summary-10.md`,
     SUMMARY,
   );
+  return { tmp, repo };
+}
+
+/** True when `cargo` and `rustfmt` are both runnable; the Rust tests skip otherwise. */
+async function hasCargo(): Promise<boolean> {
+  for (
+    const [bin, flag] of [["cargo", "--version"], [
+      "rustfmt",
+      "--version",
+    ]] as const
+  ) {
+    try {
+      const out = await new Deno.Command(bin, {
+        args: [flag],
+        stdin: "null",
+        stdout: "null",
+        stderr: "null",
+      }).output();
+      if (out.code !== 0) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * A Rust-workspace repository at the root (no deno root), with one branch
+ * commit carrying `branchFiles` over a formatted `src/lib.rs` seed.
+ */
+async function makeCargoRepo(
+  branchFiles: Record<string, string>,
+): Promise<{ tmp: string; repo: string }> {
+  const tmp = await Deno.makeTempDir({ prefix: "completion_cargo_fmt_" });
+  const upstream = `${tmp}/upstream.git`;
+  const repo = `${tmp}/repo`;
+  await git(["init", "--bare", "-b", "main", upstream], tmp);
+  await git(["clone", upstream, repo], tmp);
+  await setIdentity(repo);
+  await Deno.mkdir(`${repo}/src`, { recursive: true });
+  await Deno.writeTextFile(`${repo}/Cargo.toml`, CARGO_TOML);
+  await Deno.writeTextFile(`${repo}/src/lib.rs`, FORMATTED_RS);
+  await Deno.writeTextFile(`${repo}/README.md`, "# probe\n");
+  await git(["add", "."], repo);
+  await git(["commit", "-m", "seed"], repo);
+  await git(["push", "origin", "main"], repo);
+  await git(["checkout", "-b", BRANCH], repo);
+  for (const [path, content] of Object.entries(branchFiles)) {
+    const slash = path.lastIndexOf("/");
+    if (slash > 0) {
+      await Deno.mkdir(`${repo}/${path.slice(0, slash)}`, { recursive: true });
+    }
+    await Deno.writeTextFile(`${repo}/${path}`, content);
+  }
+  await git(["add", "."], repo);
+  await git(["commit", "-m", "Agent work"], repo);
   return { tmp, repo };
 }
 
@@ -407,6 +471,136 @@ Deno.test({
       });
       assertEquals(o.order.slice(0, 2), ["format", "gate"]);
       assertEquals(o.pushes, 1, `gate should pass: ${o.reason ?? ""}`);
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "completion - an unformatted Rust change is formatted and committed, then passes the gate",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    if (!await hasCargo()) {
+      console.warn("skipping Rust formatter test: cargo/rustfmt not installed");
+      return;
+    }
+    const { tmp, repo } = await makeCargoRepo({ "src/lib.rs": UNFORMATTED_RS });
+    try {
+      const before = await gateUnpushedCommits(
+        BRANCH,
+        { cwd: repo, env: NO_HOST_GIT_CONFIG },
+        { commands: [] },
+        false,
+        "origin/main",
+      );
+      assert(!before.ok, "the unformatted Rust change must fail the bare gate");
+
+      const result = await formatBranchChanges(
+        repo,
+        "origin/main",
+        realFormatterDeps(),
+      );
+      assert(
+        result.committed,
+        result.gitError ?? "formatter should commit the Rust fix",
+      );
+      assertEquals(await Deno.readTextFile(`${repo}/src/lib.rs`), FORMATTED_RS);
+
+      const after = await gateUnpushedCommits(
+        BRANCH,
+        { cwd: repo, env: NO_HOST_GIT_CONFIG },
+        { commands: [] },
+        false,
+        "origin/main",
+      );
+      assert(after.ok, after.ok ? "" : after.error.message);
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "completion - an unformatted nested-Deno JSON change is formatted and committed, then passes the gate",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const { tmp, repo } = await makeRepo({
+      "worker/deno/data.json": UNFORMATTED_JSON,
+    });
+    try {
+      const before = await gateUnpushedCommits(
+        BRANCH,
+        { cwd: repo, env: NO_HOST_GIT_CONFIG },
+        { commands: [] },
+        false,
+        "origin/main",
+      );
+      assert(!before.ok, "the unformatted JSON change must fail the bare gate");
+
+      const result = await formatBranchChanges(
+        repo,
+        "origin/main",
+        realFormatterDeps(),
+      );
+      assert(
+        result.committed,
+        result.gitError ?? "formatter should commit the JSON fix",
+      );
+
+      const after = await gateUnpushedCommits(
+        BRANCH,
+        { cwd: repo, env: NO_HOST_GIT_CONFIG },
+        { commands: [] },
+        false,
+        "origin/main",
+      );
+      assert(after.ok, after.ok ? "" : after.error.message);
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "completion - cargo fmt stages only the branch's .rs files, not an unrelated uncommitted edit",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    if (!await hasCargo()) {
+      console.warn("skipping cargo staging test: cargo/rustfmt not installed");
+      return;
+    }
+    const { tmp, repo } = await makeCargoRepo({ "src/lib.rs": UNFORMATTED_RS });
+    try {
+      // An unrelated, uncommitted edit to a tracked non-Rust file, left in the
+      // working tree exactly as the agent would leave it.
+      await Deno.writeTextFile(
+        `${repo}/README.md`,
+        "# probe (edited, uncommitted)\n",
+      );
+
+      const result = await formatBranchChanges(
+        repo,
+        "origin/main",
+        realFormatterDeps(),
+      );
+      assert(
+        result.committed,
+        result.gitError ?? "formatter should commit the Rust fix",
+      );
+
+      const touched = (await git(
+        ["show", "--name-only", "--format=", "HEAD"],
+        repo,
+      )).trim();
+      assertEquals(touched, "src/lib.rs");
+      assert(
+        (await git(["status", "--porcelain"], repo)).includes("README.md"),
+        "the unrelated README edit must stay uncommitted",
+      );
     } finally {
       await Deno.remove(tmp, { recursive: true });
     }
