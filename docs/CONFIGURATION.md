@@ -1795,6 +1795,7 @@ unless explicitly overridden.
 | Setting                        | Config Key                       | Default    | Description                                                                                                                                                                                          |
 | ------------------------------ | -------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude timeout | `claude_timeout` | `3600` | Safety-net ceiling for Claude CLI (1 hour) — real stuck detection uses no-output timeout. Lowered from 4 hours by so one wedged run cannot starve every other repository. |
+| Claude turn cap | `claude_max_turns` | `100` | Positive integer agentic turns per Claude Code invocation (including the Claude-compatible DeepSeek CLI). Passed as `--max-turns`; reaching it logs `AGENT_TURN_LIMIT` / `error_max_turns` and ends that invocation without a retry. Issue, PR-feedback and CI-fix processing stop before publishing partial work, including capped recovery/verifier calls. The config value overrides stale internal shell transport. Each phase/resume has its own cap; this does not impose a total issue-wide token budget or a cap on Codex/Gemini. |
 | Progress extension enabled | `progress_extension_enabled` | `true` | Extend the **issue-work** hard deadline while the run is demonstrably progressing. On by default (Issue #422) and bounded by the run hard cap; set it to `false` for the flat one-shot kill. The same settings re-arm a maintenance handler's watchdog while its own agent is still producing output, up to one agent budget from dispatch (Issue #2720). See [Progress-extended deadline](#-progress-extended-deadline). |
 | Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
 | Progress extension stall window | `progress_extension_stall_seconds` | `300` | The agent is judged stalled only when **both** its last tool call and its last stdout chunk are older than this (Issue #767). Must be at least `progress_extension_check_seconds`. |
@@ -2091,20 +2092,56 @@ redaction and the read access that follow. See
 
 #### Local retention
 
-Transcripts are bounded by the housekeeping every run already performs, with
-no operator action:
+Transcripts have a **30-day** default age window, separate from the worker
+logs' 3-day policy. Tiny transcripts are evidence, so the worker-log stub
+rule does not delete them early. Plain, rotated and gzipped transcripts share
+a separate **2,000-file hard cap**, oldest first; reaching that cap can shorten
+the window and the cleanup summary reports the number removed by the cap.
+Worker restart logs cannot evict transcripts from that separate allowance.
 
-- `log-rotation` size-rotates `agent-*.jsonl` transcripts into `.jsonl.N`
-  backups. It rotates only the worker's own log names (Issue #1267) — a
-  third-party `.log` or `.jsonl` sharing the log directory is left alone.
-- `worker-log-cleanup` then applies the worker-log retention policy to
-  `agent-*.jsonl` and its rotated and gzipped forms: deleted after **3 days**,
-  with a hard cap of **200** retained files, oldest deleted first.
+`log-rotation` still size-rotates the worker's `agent-*.jsonl` files, with its
+configured backup cap, and the writer stops capturing an invocation at
+100 MiB. Neither a time window nor a scan restores data lost to these caps.
+Archive evidence off the worker before pruning when a longer guarantee is
+needed. Copies made by callback hooks have their own retention policy.
 
-Nothing else sweeps them — the session sweeper covers `.claude-sessions/`, not
-transcripts — and nothing prunes a transcript a hook has copied elsewhere. On
-a busy host the practical retention is the 3-day age limit; on a host running
-more than 200 agent invocations inside that window it is the file cap.
+#### Scheduled security scan
+
+At the first idle-work hook, then at the first idle hook at least **six hours**
+after the previous scan, the worker scans changed retained transcripts. The
+schedule and file size/mtime cursor live in
+`~/logs/.agent-transcript-scan-v1.json`, so restarting does not immediately
+repeat unchanged findings. This local task runs before the GitHub idle-task
+filing gates and needs no GitHub quota or agent call. A continuously busy
+worker waits until its next idle hook; this is not a real-time detector.
+
+The scan recognises Claude/DeepSeek stream-json, Codex `item.started` /
+`item.completed` command execution records, and Gemini `tool_use` / `tool_result`
+records. It flags tool records for shell egress commands
+(`curl`, `wget`, `ssh`, `scp`, `sftp`, `nc`, `ncat`, `netcat`) and `WebFetch`,
+credential paths in `Read` or `Bash`, and permission denials or the worker's
+disallowed planning tools. Quoted assistant prose is not a tool attempt.
+These are investigation signals, not proof of compromise: a legitimate
+network fetch is flagged too, and custom tools, encoded commands and future
+provider event formats can evade these heuristics. Gemini shell/read/web tools
+and structured permission denials are matched alongside their Claude equivalents.
+
+Each signal kind in a file appears at WARNING in the worker log as
+`[AGENT_TRANSCRIPT_SIGNAL] <file>:<first-line> signal=<kind> occurrences=<count>`.
+Repeated records are counted in that finding, bounding alerts and memory to
+three findings per file. This gives an operator a
+local evidence pointer without copying commands, URLs, credential paths or
+outputs into the alert. The `[agent-transcript-scan]` summary reports scanned
+files, findings, malformed lines and failed files. An unreadable or oversized
+file does not prevent other files being scanned, and is retried on the next
+scheduled pass. Malformed transcripts are also retried rather than recorded
+as fully scanned. The scan bounds decompressed input at 100 MiB per file.
+
+Capture remains opt-in through `agent_transcript_enabled`; an empty or disabled
+capture is not evidence that the agent was safe. The scan reads existing
+transcripts even when capture has since been switched off. Follow the
+[agent-incident runbook](../SECURITY.md#agent-incident-runbook) for a suspicious
+finding and preserve local evidence before any cleanup.
 
 ### 🧭 Adaptive claim floor
 
@@ -4572,9 +4609,9 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `docker_image`          | string  | Docker image to run quality checks in (e.g., `node:20`, `eclipse-temurin:21`). See [Docker-Based Quality Checks](#-docker-based-quality-checks).                                                                                                                                                                                                                           |
 | `requires_screenshots`  | boolean | When `true`, always injects the screenshot retry notice into Claude's prompt. The Playwright MCP browser itself is handed to every run unless `skip_screenshot_check` is set (Issue #2925), so this is no longer needed to get the browser. Use for UI/frontend repositories. Overridden by `skip_screenshot_check: true` (Issue #1584).                                                                                                                                                                                                                                                               |
 | `skip_screenshot_check` | boolean | When `true`, skips screenshot validation in PR completion **and** disables the Playwright MCP browser: no Chromium and no MCP server are started for this repository (Issue #1584). It wins over both screenshot triggers — `requires_screenshots: true` and the `needs-screenshot` label — and the override is logged at info level, naming the repository. Use for non-UI repositories to prevent false positives. |
-| `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, and additionally that the summary shows a regression test (fails unfixed, passes fixed) and that the original trigger is closed with no trivial bypass. A diff that cannot be computed blocks the PR rather than passing it. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
-| `skip_mutation_check` | boolean | When `true`, skips the diff-scoped mutation check that runs before the PR is raised and on review-fix pushes. The check mutates only the lines the PR adds or changes and blocks the PR when a mutation survives the covering tests at PR raise; on a review-fix push the survivors are reported in the PR reply rather than blocking. Defaults to `false`. See [Diff-scoped mutation check](mutation-check.md). |
-| `mutation_check_budget_seconds` | integer | Time budget in seconds for one mutation-check run: a positive integer, default `300`, maximum `3600`. On exhaustion the gate warns that the remaining mutants are untested (never a pass); survivors found earlier still block at PR raise, and on a review-fix push they are reported in the PR reply rather than blocking. The check also runs on review-fix pushes. See [Diff-scoped mutation check](mutation-check.md). |
+| `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, that the named test, run by the worker in a disposable checkout, passes at the head and fails with the merge-base versions of the changed non-test files restored (only Deno and Rust tests can be executed today, so a security fix whose cited test is in another language blocks as not checked), and additionally that the summary states the original trigger is closed with no trivial bypass. A diff that cannot be computed, or a discrimination run that cannot execute, blocks the PR rather than passing it. Opting out also skips the executed check. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
+| `skip_mutation_check` | boolean | When `true`, skips the diff-scoped mutation check that runs before the PR is raised. The check mutates only the lines the PR adds or changes and blocks the PR when a mutation survives the covering tests. Defaults to `false`. See [Diff-scoped mutation check](mutation-check.md). |
+| `mutation_check_budget_seconds` | integer | Time budget in seconds for one mutation-check run: a positive integer, default `300`, maximum `3600`. On exhaustion the gate warns that the remaining mutants are untested (never a pass); survivors found earlier still block. See [Diff-scoped mutation check](mutation-check.md). |
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
 | `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                     |

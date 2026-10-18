@@ -35,6 +35,8 @@ import {
   probeHostMemoryPressure,
 } from "./memory_pressure.ts";
 import type { Logger, Result } from "../types.ts";
+import { createLogger } from "./logger.ts";
+import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import {
   captureTimeoutDiagnostics,
   type ClaudeExecutionResult,
@@ -1395,6 +1397,11 @@ async function runClaudeWithTimeoutBody(
       // Name the provider that is about to run (Issue #4109) so a Quorum
       // run's interleaved log lines attribute to the agent that produced them.
       `Running ${provider.displayName} with ${timeoutSeconds}s timeout (${killAfterSeconds}s grace period)` +
+        (args.includes("--max-turns")
+          ? ` claude_timeout=${timeoutSeconds} claude_max_turns=${
+            args[args.indexOf("--max-turns") + 1]
+          }`
+          : "") +
         (noOutputMs > 0 ? `, no-output watchdog ${noOutputTimeout}s` : "") +
         "...",
     );
@@ -2522,6 +2529,13 @@ async function runClaudeWithTimeoutBody(
         nowMs: clock.now(),
       }, agentOutput)
       : undefined;
+    if (normalisedFailure?.category === "turn-limit") {
+      const failureLogger = logger ?? createLogger();
+      failureLogger.error(
+        normalisedFailure.message + " — invocation stopped at its turn cap.",
+      );
+      failureLogger.security?.("AGENT_TURN_LIMIT", "reason=error_max_turns");
+    }
     if (
       normalisedFailure?.category === "authentication" ||
       normalisedFailure?.category === "quota-exhausted"
@@ -3084,6 +3098,16 @@ async function runRetryLadder(
     // Cleared, not carried, when this invocation did not fail: a stale
     // failure from a previous attempt must never describe a later success.
     invokedAgentFailure = result.value.agentFailure;
+
+    if (invokedAgentFailure?.category === "turn-limit") {
+      return {
+        ok: false,
+        error: new AgentTurnLimitError(
+          invokedAgentFailure.message,
+          withPreflight(result.value),
+        ),
+      };
+    }
 
     // Out of memory (Issue #2741, parent #2721) — TERMINAL. Checked first,
     // before the timeout and rate-limit paths, for two reasons:

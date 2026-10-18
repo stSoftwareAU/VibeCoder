@@ -304,6 +304,7 @@ Deno.test("runWorker - proceed runs the full sequence in order", async () => {
   assertEquals(rec.setEnv["NO_COLOR"], "true");
   assertEquals(rec.setEnv["GIT_TERMINAL_PROMPT"], "0");
   assertEquals(rec.setEnv["CONFIG_PATH"], "/repo/.config.json");
+  assertEquals(rec.setEnv["VIBE_CLAUDE_MAX_TURNS"], "100");
 });
 
 Deno.test("runWorker - applies the optional-feature settings of .config.json before the bootstrap (Issue #535 keys)", async () => {
@@ -1132,4 +1133,16 @@ Deno.test("worker start records no credential label when the variable was alread
   } finally {
     resetHeldProviderCredentials();
   }
+});
+
+Deno.test("runWorker passes configured turn cap to the actual provider builder", async () => {
+  const rec = newRecorder();
+  const options = baseOptions();
+  options.config.claudeMaxTurns = 7;
+  await runWorker(options, stubDeps(rec));
+  const args = resolveAgentProvider("claude").buildInvocation({
+    prompt: "test",
+    env: (key) => rec.setEnv[key],
+  });
+  assertEquals(args[args.indexOf("--max-turns") + 1], "7");
 });

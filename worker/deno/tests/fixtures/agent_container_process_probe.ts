@@ -96,6 +96,14 @@ async function broker(credentialRoot: string): Promise<void> {
     nativeGitHubRequests: number;
     nativeGeminiRequests: number;
     nativeCodexRequests: number;
+    nativeGitHubReads: {
+      identity: number;
+      quota: number;
+      root: number;
+      graphql: number;
+      pages: number;
+      repo: number;
+    };
   } = {
     fileMatches:
       await sha256(await Deno.readTextFile(privatePath)) === secretHash,
@@ -109,6 +117,14 @@ async function broker(credentialRoot: string): Promise<void> {
     nativeGitHubRequests: 0,
     nativeGeminiRequests: 0,
     nativeCodexRequests: 0,
+    nativeGitHubReads: {
+      identity: 0,
+      quota: 0,
+      root: 0,
+      graphql: 0,
+      pages: 0,
+      repo: 0,
+    },
   };
   for await (const entry of Deno.readDir("/proc/self/fd")) {
     const path = `/proc/self/fd/${entry.name}`;
@@ -124,7 +140,8 @@ async function broker(credentialRoot: string): Promise<void> {
   await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
   const fixtureHandler = async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
-    const github = url.pathname.startsWith("/repos/");
+    const github = request.headers.get("x-fixture-upstream-origin") ===
+      "https://api.github.com";
     const gemini = url.pathname.startsWith("/v1beta/models/");
     const key = request.headers.get("x-api-key");
     const bearer = request.headers.get("authorization");
@@ -166,6 +183,67 @@ async function broker(credentialRoot: string): Promise<void> {
       return geminiNativeFixtureResponse(
         url.pathname.endsWith(":streamGenerateContent"),
       );
+    }
+    if (
+      github && ["/", "/user", "/rate_limit", "/graphql"].includes(url.pathname)
+    ) {
+      let response: Response;
+      if (url.pathname === "/") {
+        witness.nativeGitHubReads.root++;
+        response = Response.json({}, {
+          headers: { "x-oauth-scopes": "gist, read:org, repo, workflow" },
+        });
+      } else if (url.pathname === "/user") {
+        witness.nativeGitHubReads.identity++;
+        response = Response.json({ login: "fixture-user" });
+      } else if (url.pathname === "/rate_limit") {
+        witness.nativeGitHubReads.quota++;
+        response = Response.json({ resources: { core: { remaining: 4999 } } });
+      } else {
+        const body = await request.json();
+        requireFact(
+          typeof body.query === "string",
+          "Native GitHub omitted its query",
+        );
+        if (body.query.includes("UserCurrent")) {
+          witness.nativeGitHubReads.graphql++;
+          response = Response.json({
+            data: { viewer: { login: "fixture-user" } },
+          });
+        } else {
+          requireFact(
+            body.query.includes("RepositoryInfo") &&
+              body.variables.owner === "fixture" &&
+              body.variables.name === "allowed",
+            "Native GitHub used unexpected repository query variables",
+          );
+          witness.nativeGitHubReads.repo++;
+          response = Response.json({
+            data: {
+              repository: {
+                viewerPermission: "WRITE",
+                defaultBranchRef: { name: "main" },
+              },
+            },
+          });
+        }
+      }
+      await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+      return response;
+    }
+    if (
+      github && url.pathname === "/repos/fixture/allowed/issues" &&
+      url.searchParams.get("per_page") === "2"
+    ) {
+      witness.nativeGitHubReads.pages++;
+      await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+      const second = url.searchParams.get("page") === "2";
+      return Response.json([{ number: second ? 12 : 11 }], {
+        headers: second ? {} : {
+          link:
+            '<https://api.github.com/repos/fixture/allowed/issues?per_page=2&page=2>; rel="next"',
+        },
+      });
     }
     if (github && url.searchParams.get("per_page") === "1") {
       witness.nativeGitHubRequests++;

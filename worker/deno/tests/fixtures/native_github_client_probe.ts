@@ -14,6 +14,9 @@ export interface NativeGitHubEvidence {
   localCapabilityOnly: boolean;
   upstreamCredentialVisible: boolean;
   ghVersion: string;
+  startupCompleted: boolean;
+  paginationCompleted: boolean;
+  repositoryReadsCompleted: boolean;
 }
 
 function requireFact(value: unknown, message: string): asserts value {
@@ -101,6 +104,58 @@ export async function probeNativeGitHubClient(options: {
       "--silent",
     ]);
     requireFact(head.success, `Native gh HEAD failed: ${head.stderr}`);
+    const identity = await run(["api", "user", "--jq", ".login"]);
+    requireFact(
+      identity.success && identity.stdout.trim() === "fixture-user",
+      "Native gh startup identity failed",
+    );
+    const quota = await run([
+      "api",
+      "rate_limit",
+      "--jq",
+      ".resources.core.remaining",
+    ]);
+    requireFact(
+      quota.success && quota.stdout.trim() === "4999",
+      "Native gh quota read failed",
+    );
+    const auth = await run(["auth", "status", "--hostname", "github.com"]);
+    requireFact(auth.success, `Native gh auth status failed: ${auth.stderr}`);
+    const paged = await run([
+      "api",
+      "repos/fixture/allowed/issues?per_page=2",
+      "--paginate",
+      "--slurp",
+    ]);
+    requireFact(paged.success, `Native gh pagination failed: ${paged.stderr}`);
+    requireFact(
+      JSON.stringify(JSON.parse(paged.stdout)) ===
+        JSON.stringify([[{ number: 11 }], [{ number: 12 }]]),
+      "Native gh pagination silently omitted or changed a page",
+    );
+    for (
+      const [field, expected] of [["viewerPermission", "WRITE"], [
+        "defaultBranchRef",
+        { name: "main" },
+      ]] as const
+    ) {
+      const repo = await run([
+        "repo",
+        "view",
+        "fixture/allowed",
+        "--json",
+        field,
+      ]);
+      requireFact(
+        repo.success,
+        `Native gh repository read failed: ${repo.stderr}`,
+      );
+      requireFact(
+        JSON.stringify(JSON.parse(repo.stdout)) ===
+          JSON.stringify({ [field]: expected }),
+        "Native gh repository result differed from the fixture",
+      );
+    }
     const deniedRequests = [
       ["api", "repos/fixture/allowed/issues", "--method", "POST"],
       ["api", "repos/fixture/other/issues", "--method", "GET"],
@@ -129,6 +184,9 @@ export async function probeNativeGitHubClient(options: {
       localCapabilityOnly: true,
       upstreamCredentialVisible: false,
       ghVersion: version.stdout.split("\n")[0]!,
+      startupCompleted: true,
+      paginationCompleted: true,
+      repositoryReadsCompleted: true,
     };
   } finally {
     try {

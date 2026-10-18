@@ -40,9 +40,9 @@ import {
 function createTestConfig(
   overrides?: Partial<QualityGateConfig>,
 ): QualityGateConfig {
-  // Use a nonexistent directory to ensure checks skip/fail predictably
+  // An empty repository makes missing-input checks skip/fail predictably.
   const tmpDir = Deno.makeTempDirSync();
-  return {
+  const config: QualityGateConfig = {
     scriptDir: tmpDir,
     denoDir: `${tmpDir}/worker/deno`,
     options: {
@@ -52,6 +52,17 @@ function createTestConfig(
     },
     ...overrides,
   };
+  // These tests exercise orchestration, not a host's Node installation.
+  // Use the real local-binary discovery path with a fixture-owned runner.
+  const binDir = `${config.scriptDir}/node_modules/.bin`;
+  Deno.mkdirSync(binDir, { recursive: true });
+  const markdownlint = `${binDir}/markdownlint-cli2`;
+  Deno.writeTextFileSync(
+    markdownlint,
+    "#!/bin/sh\nprintf 'Linting: 0 file(s)\\nSummary: 0 error(s)\\n'\n",
+  );
+  Deno.chmodSync(markdownlint, 0o755);
+  return config;
 }
 
 // =============================================================================
@@ -799,6 +810,11 @@ Deno.test("runQualityGate - never records a shellcheck check (Issue #3129)", asy
       shellcheckCheck,
       undefined,
       "the gate must not run or record any shellcheck check",
+    );
+    assertEquals(
+      result.value.checks.find((c) => c.name === "markdownlint")?.status,
+      "PASSED",
+      "the orchestration fixture must provide its own Markdown runner",
     );
   }
 

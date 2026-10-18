@@ -204,7 +204,7 @@ function dirOf(p: string): string {
 export async function confinePath(
   repoPath: string,
   rel: string,
-  seams: MutationRunnerSeams,
+  seams: Pick<MutationRunnerSeams, "realPath">,
 ): Promise<string | null> {
   if (rel.startsWith("/")) return null;
   const parts: string[] = [];
@@ -594,6 +594,32 @@ async function touchedPackages(
     }
   }
   return [...names];
+}
+
+/**
+ * Repo-relative directory of the nearest ancestor of `file` whose `Cargo.toml`
+ * declares a `[package]` (a virtual workspace manifest does not count), `""` for
+ * the repository root, or null when none does. A manifest that resolves outside
+ * the repository does not count.
+ */
+export async function findCargoPackageDir(
+  repoPath: string,
+  file: string,
+  seams: MutationRunnerSeams,
+): Promise<string | null> {
+  let dir = dirOf(normalisePath(file));
+  for (;;) {
+    const manifest = dir === "" ? "Cargo.toml" : `${dir}/Cargo.toml`;
+    const abs = await confinePath(repoPath, manifest, seams);
+    if (
+      abs !== null && await seams.exists(abs) &&
+      packageNameOf(await seams.readTextFile(abs)) !== null
+    ) {
+      return dir;
+    }
+    if (dir === "") return null;
+    dir = dirOf(dir);
+  }
 }
 
 async function runRust(

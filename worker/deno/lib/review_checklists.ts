@@ -253,7 +253,7 @@ const MAX_REASON = 300;
 const MAX_MATCHED_SHOWN = 10;
 
 /** One line, no backticks, bounded: safe inside a markdown code span. */
-function inlineSafe(text: string, max = MAX_REASON): string {
+export function inlineSafe(text: string, max = MAX_REASON): string {
   const flat = text.replace(/\s+/g, " ").replace(/`/g, "'").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }

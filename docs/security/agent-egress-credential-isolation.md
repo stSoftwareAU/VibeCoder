@@ -585,3 +585,65 @@ fixed upstream origin before substituting the synthetic listener, so a
 response-shaped request to another provider cannot satisfy the Codex witness.
 The [Codex transport evidence](codex-agent-transport-evidence.md) distinguishes
 these API-key checks from the still-incomplete ChatGPT subscription integration.
+
+### Native model and GitHub proof completed on both OCI engines
+
+Run [39098480148](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39098480148),
+source `210e4f8b4ee197a667ac5d252df25b10e477458d`, passed the separate-container
+checks in Docker job `117589712287` and rootless Podman job `117589712443`.
+The earlier nested-namespace candidate still reported `EPERM`; its
+`continue-on-error` result is not counted as a passed boundary proof. Neither
+engine's security profile was relaxed.
+
+Both separate-container runs recorded manifest-matched native Gemini `0.55.1`
+and Codex `0.147.0` API-key completion, both native Claude authentication modes,
+and native `gh 2.97.0` reads, four forbidden requests and capability-only token
+display. The independent authenticated upstream witnesses were identical:
+Claude API-key one, Claude subscription one, GitHub two, Gemini one and Codex
+one. Agent IPv4/IPv6 TCP remained denied between successful broker controls;
+private credential file/environment/descriptor scans found no secret; broker
+shutdown made the transport unavailable. These are synthetic credential and
+response proofs, not live account refresh or normal worker startup evidence.
+
+- Docker image: `sha256:201e85661665c8eab34ecfecb6389419c1a68fe29fc28500cd6519ebd7711eb9`.
+  Artifact `12125776751`, SHA-256
+  `972cd575544f071462946bded68c08bb8cc27fd0e38d5c38e61ba775d0079941`.
+- Rootless Podman image: `beab13a599d7eb3603460a8f60ce5274b255f947c286a46f33568e8cd5e0294d`.
+  Artifact `12126140339`, SHA-256
+  `1e225a709c706954e9545b48b0d2ed541fcd8dc81d289b8da84f9390d2f5b703`.
+
+### Production integration checkpoint after milestones 121 and 124 merged
+
+The integration branch now includes main `340af77df37aec6c299bdb58858569ff9840508f`,
+including merged PRs #3990 and #3987. The explicit worker-config projection
+retains recognised behaviour settings, including the configured Claude turn
+cap, and separates credential paths, app keys and opaque commands/hooks into
+host-only configuration. Unknown keys/shapes and duplicate aliases are refused.
+Pre-flight commands follow that same host-only rule for all three existing
+spellings. The launcher must handle the private fields or explicitly refuse an
+unsupported configuration; projection alone does not preserve those features.
+
+The legacy-state guard checks known retained GitHub, Claude, Codex and Gemini
+auth locations without reading contents or deleting files. A credential file,
+symlink ancestor or unreadable path blocks reuse; worktrees and transcripts stay
+untouched. Host-configured custom auth paths must also be supplied. This is a
+known-location check, not a claim to find arbitrary secrets in all repository
+files. Thirteen focused config/legacy tests pass; eleven independent guard
+mutations were rejected before the pre-flight and turn-cap follow-up regressions.
+
+The broker now integrates the closed GitHub read policy: exact identity/quota
+routes, registered native GraphQL documents with trusted repository variables,
+canonical outgoing JSON and same-scope pagination. Invalid pagination refuses
+and cancels the whole response instead of silently truncating it. Four new
+integration regressions went red to green; 66 broker/client tests pass, including
+existing lease revocation and native-adapter callers. The earlier `/user` denial
+fixture now checks `/user/repos`, because identity alone is intentionally
+authorised while account subresources remain refused.
+
+A new hosted native fixture will exercise `gh auth status`, identity, quota,
+two-page REST reads and both registered repository-view fields. Those additional
+wire behaviours are pending. Ordinary writes, git transport, production account
+selection/refresh, private-volume provisioning and Apple boundary proof remain
+incomplete. The [supervisor checkpoint](broker-supervisor-checkpoint.md) and
+[Codex transport evidence](codex-agent-transport-evidence.md) record their own
+limits; none of these modules enables normal isolated startup yet.

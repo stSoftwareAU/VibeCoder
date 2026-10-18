@@ -21,6 +21,7 @@ today.
 | **[Agent egress and credential isolation](agent-egress-credential-isolation.md)** | Milestone 122 architecture, observed Docker boundary probes, native transport experiments and remaining acceptance gaps for #3698–#3699 |
 | **[Rootless Podman agent boundary diagnostic](agent-podman-probe-evidence.md)** | Prepared prerequisite diagnostic for Issues #3698/#3699; local assertion evidence and pending hosted rootless execution, without a production containment claim |
 | **[Codex broker transport](codex-agent-transport-evidence.md)** | API-key transport tests and native fixture; hosted proof and subscription integration remain pending |
+| **[Broker supervisor checkpoint](broker-supervisor-checkpoint.md)** | Host-owned isolated lifecycle, mount separation, readiness and cleanup tests; normal startup remains unconnected |
 
 Related index entries outside this directory:
 

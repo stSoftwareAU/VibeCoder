@@ -91,7 +91,8 @@ Deno.test("native gh cannot select another service, repository, method or query 
       ["DELETE", "/repos/fixture/allowed/issues/1"],
       ["GET", "/repos/fixture/other/issues"],
       ["POST", "/graphql"],
-      ["GET", "/user"],
+      // Identity itself is an explicit startup read; account subresources are not.
+      ["GET", "/user/repos"],
       ["GET", "/repos/fixture/allowed/issues?access_token=untrusted"],
       ["POST", "/claude/v1/messages"],
       ["GET", "//attacker.invalid/repos/fixture/allowed/issues"],

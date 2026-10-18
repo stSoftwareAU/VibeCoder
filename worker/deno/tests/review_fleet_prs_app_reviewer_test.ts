@@ -65,7 +65,7 @@ Deno.test("dependabotAction arms auto-merge once the App has approved the head",
     },
     repository: { autoMergeAllowed: true, squashMergeAllowed: true },
   } as unknown as SearchPr;
-  assertEquals(dependabotAction(pr, BOT, undefined).kind, "auto-merge");
+  assertEquals(dependabotAction(pr, BOT).kind, "auto-merge");
 });
 
 Deno.test("reviewerApp reads pr_reviewer_app, and is null when it is not set", () => {

@@ -10,8 +10,13 @@
 import {
   assertBrokerCapability,
   type BrokerService,
+  CREDENTIAL_BROKER_UPSTREAMS,
   resolveCredentialBrokerRoute,
 } from "./credential_broker_policy.ts";
+import {
+  githubBrokerReadHeaders,
+  resolveGitHubBrokerRead,
+} from "./github_broker_reads.ts";
 
 export interface CredentialBrokerOptions {
   /** Per-run broker capability; never an upstream provider/GitHub credential. */
@@ -150,7 +155,23 @@ export function createCredentialBroker(
       difference |= expected[index]! ^ actual[index]!;
     }
     if (difference !== 0) return failure(401, "Broker capability required");
-    const route = resolveCredentialBrokerRoute(request, repositories);
+    let route = resolveCredentialBrokerRoute(request, repositories);
+    const url = new URL(request.url);
+    if (url.pathname.startsWith("/github/")) {
+      const read = resolveGitHubBrokerRead(request, repositories);
+      if (read) route = { service: "github", upstream: read.upstream };
+      else if (
+        request.method === "POST" && url.pathname === "/github/graphql" &&
+        !url.search
+      ) {
+        // Only this exact endpoint may await bounded body validation below.
+        // Authentication has already run; no unknown GraphQL is forwarded.
+        route = {
+          service: "github",
+          upstream: new URL("/graphql", CREDENTIAL_BROKER_UPSTREAMS.github),
+        };
+      }
+    }
     if (!route) return failure(403, "Broker route denied");
     const credential = credentials[route.service];
     if (!credential) return failure(503, "Broker service is not configured");
@@ -172,6 +193,12 @@ export function createCredentialBroker(
       return failure(400, "Request body could not be read");
     }
     if (!body) return failure(413, "Request body exceeds broker limit");
+    if (route.service === "github") {
+      const read = resolveGitHubBrokerRead(request, repositories, body);
+      if (!read) return failure(403, "Broker route denied");
+      route = { service: "github", upstream: read.upstream };
+      body = read.body ?? body;
+    }
     const headers = new Headers();
     headers.set("accept", "application/json, text/event-stream");
     if (body.byteLength > 0) headers.set("content-type", "application/json");
@@ -249,6 +276,19 @@ export function createCredentialBroker(
           (name === "x-should-retry" ||
             name.startsWith("anthropic-ratelimit-unified-")))
       ) responseHeaders.set(name, value);
+    }
+    if (route.service === "github") {
+      try {
+        for (
+          const [name, value] of githubBrokerReadHeaders(
+            route.upstream,
+            response.headers,
+            repositories,
+          )
+        ) responseHeaders.set(name, value);
+      } catch {
+        return refuseResponse(response, 502, "GitHub pagination refused");
+      }
     }
     // Enforce revocation even when a forwarding implementation does not
     // cancel a response body after its request signal aborts.

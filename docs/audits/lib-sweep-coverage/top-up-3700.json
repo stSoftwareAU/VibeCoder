@@ -1,0 +1,12 @@
+{
+  "issue": 3700,
+  "chunk": "top-up-3700",
+  "title": "top-up: agent_transcript_scan",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3700",
+  "definition": "Containment module agent_transcript_scan.ts",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/agent_transcript_scan.ts"
+  ],
+  "sweptAt": "a900fa7b68486ab83562887d66675be6d5cc3535"
+}

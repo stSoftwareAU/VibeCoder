@@ -173,6 +173,7 @@ try {
       const relative of [
         "lib/credential_broker.ts",
         "lib/credential_broker_policy.ts",
+        "lib/github_broker_reads.ts",
         "lib/anthropic_agent_gateway.ts",
         "lib/github_agent_gateway.ts",
         "lib/gemini_agent_gateway.ts",
@@ -308,7 +309,9 @@ try {
     github.nativeGitHubCompleted !== true || github.readCompleted !== true ||
     github.headCompleted !== true || github.deniedRequests !== 4 ||
     github.localCapabilityOnly !== true ||
-    github.upstreamCredentialVisible !== false
+    github.upstreamCredentialVisible !== false ||
+    github.startupCompleted !== true || github.paginationCompleted !== true ||
+    github.repositoryReadsCompleted !== true
   ) {
     throw new Error(
       "Native GitHub fixture lacked complete read/denial evidence",
@@ -350,6 +353,12 @@ try {
   if (
     nativeWitness.nativeGitHubRequests !== 2 ||
     nativeWitness.nativeCodexRequests !== 1 ||
+    nativeWitness.nativeGitHubReads?.identity !== 1 ||
+    nativeWitness.nativeGitHubReads?.quota !== 1 ||
+    nativeWitness.nativeGitHubReads?.root !== 1 ||
+    nativeWitness.nativeGitHubReads?.graphql !== 1 ||
+    nativeWitness.nativeGitHubReads?.pages !== 2 ||
+    nativeWitness.nativeGitHubReads?.repo !== 2 ||
     !Number.isSafeInteger(nativeWitness.nativeGeminiRequests) ||
     nativeWitness.nativeGeminiRequests < 1
   ) {
@@ -373,6 +382,7 @@ try {
       evidence: {
         claude: nativeWitness.nativeRequests,
         github: nativeWitness.nativeGitHubRequests,
+        githubReads: nativeWitness.nativeGitHubReads,
         gemini: nativeWitness.nativeGeminiRequests,
         codex: nativeWitness.nativeCodexRequests,
       },

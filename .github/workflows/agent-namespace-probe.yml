@@ -55,7 +55,7 @@ jobs:
           deno test --reporter=dot --frozen --lock=deno.lock --allow-read --allow-env \
             tests/agent_namespace_probe_test.ts tests/agent_container_probe_test.ts \
             tests/credential_broker_test.ts tests/credential_broker_lease_test.ts \
-            tests/anthropic_agent_gateway_test.ts tests/github_agent_gateway_test.ts \
+            tests/anthropic_agent_gateway_test.ts tests/github_agent_gateway_test.ts tests/github_broker_reads_test.ts tests/credential_broker_github_reads_test.ts \
             tests/gemini_agent_gateway_test.ts tests/codex_agent_gateway_test.ts
 
       - name: Exercise real sockets and the unmodified Docker security boundary
@@ -154,7 +154,7 @@ jobs:
             tests/agent_namespace_probe_test.ts tests/agent_container_probe_test.ts \
             tests/agent_container_probe_workflow_test.ts tests/credential_broker_test.ts \
             tests/anthropic_agent_gateway_test.ts tests/credential_broker_lease_test.ts \
-            tests/github_agent_gateway_test.ts tests/gemini_agent_gateway_test.ts tests/codex_agent_gateway_test.ts
+            tests/github_agent_gateway_test.ts tests/github_broker_reads_test.ts tests/credential_broker_github_reads_test.ts tests/gemini_agent_gateway_test.ts tests/codex_agent_gateway_test.ts
 
       - name: Exercise separate hardened rootless Podman containers
         id: separate

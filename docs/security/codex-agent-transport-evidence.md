@@ -3,11 +3,13 @@
 ## Status and scope
 
 This is an experimental API-key adapter for Issues #3698 and #3699. It is
-not wired into the normal worker launcher. Local contract tests pass; the
-actual pinned Codex client in the isolated Docker and Podman containers has
-not yet been exercised. ChatGPT subscription mode is explicitly refused,
-without falling back to an API key. This checkpoint does not resolve the
-milestone's containment or subscription acceptance criteria.
+not wired into the normal worker launcher. The pinned API-key native fixture
+passed on Docker and rootless Podman; see the observed run below. The separate
+trusted ChatGPT subscription transport has local tests, but has not been
+proved with the actual native client. The API-key gateway still refuses a
+subscription selection rather than silently changing billing mode. This
+checkpoint does not resolve the milestone's full containment or subscription
+acceptance criteria.
 
 The shared broker already permits OpenAI API-key Responses requests. The
 new agent-local adapter accepts only `POST /v1/responses` and forwards it
@@ -73,11 +75,24 @@ The launch test runs with environment permission denied, so reading ambient
 secrets is an immediate test failure. No production account or live OpenAI
 endpoint is used by these tests.
 
-Native JSONL expectations derive from the pinned source rather than an
-observed 0.147.0 run. Hosted native-client evidence is still required before
-claiming the CLI configuration and SSE are accepted together. Passing these
-unit tests does not establish real API billing, model entitlement, ChatGPT
-subscription compatibility, token refresh or the container boundary.
+The native JSONL expectations were first derived from pinned source and then
+exercised by the hosted API-key run below. Unit tests alone do not establish
+real API billing, model entitlement, ChatGPT subscription compatibility,
+token refresh or the container boundary.
+
+## Observed API-key native result
+
+[Run 39098480148](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39098480148)
+tested source `210e4f8b` with the actual installed Codex 0.147.0 client.
+Both [Docker](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39098480148/job/117589712287)
+and [rootless Podman](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39098480148/job/117589712443)
+completed the synthetic response, matched the installed version, reported
+API-key mode and found no planted upstream credential in the native output.
+Each broker recorded exactly one authenticated Codex request. The combined
+probe also recorded one Gemini request, two native GitHub requests and one
+request for each Claude authentication mode; broker shutdown refused further
+transport. These are synthetic fixture results, not live provider requests
+or ChatGPT subscription evidence.
 
 ## Required separate ChatGPT subscription contract
 
@@ -97,5 +112,64 @@ tokens and retains account binding. A broker implementation must own this
 operation and persistence entirely outside the agent, reject account
 changes and authentication failures, and never expose the token endpoint
 or refresh response through an agent route. A synthetic forced-refresh
-test and an actual pinned native-client subscription fixture are required;
-neither is supplied by this API-key checkpoint.
+test and an actual pinned native-client subscription fixture are required.
+
+## Trusted subscription transport checkpoint
+
+`worker/deno/lib/codex_subscription_transport.ts` implements only the trusted
+forwarding and refresh half. Its `createCodexSubscriptionTransport` accepts a
+host-selected auth JSON string, immutable expected account ID, session abort
+signal and persistence callback. The outer broker must first enforce its
+run capability, lease and request-body limit. The transport additionally
+accepts only a POST to the fixed ChatGPT Responses URL, caps buffered request
+bodies at 16 MiB, and refuses redirects. It has no API-key option or fallback.
+
+The parser supports file-backed `chatgpt` state and its legacy omitted mode,
+with `OPENAI_API_KEY` absent/null. Competing authentication modes are refused.
+`tokens.account_id` and the account claims in both access and ID JWTs must
+match the selected account. Missing account claims, malformed token/date
+fields and snapshots over 128 KiB fail closed. These are consistency checks
+on state obtained by the trusted host and fixed HTTPS refresh endpoint; they
+are not JWT signature verification or a general-purpose login verifier.
+The narrower supported subset does not include externally refreshed
+`chatgptauthtokens`, device identity, personal access tokens or keyring loading.
+
+Refresh follows the pinned client's five-minute access-token expiry window,
+or its eight-day age threshold when the token has no expiry. One pending
+refresh is shared by concurrent requests; a late 401 for an old snapshot
+uses the already-persisted replacement. A request retries authentication at
+most once. Refresh responses are bounded to 128 KiB and must contain a valid,
+same-account replacement access token. Optional ID/refresh tokens rotate when
+present and retain their previous values when absent. The trusted selected
+account's FedRAMP claim controls its routing header.
+
+The persistence callback receives `{ expectedAuthJson, authJson, signal }`.
+The host must serialise writers to one account store, atomically compare the
+expected snapshot, and replace it only while that signal remains live.
+Returning success means the replacement is durable. The transport waits for
+that result before publishing its new immutable snapshot. It rechecks
+cancellation after persistence; a late callback completion after shutdown
+cannot start an inference request. A refresh or persistence failure latches
+the transport closed and aborts other request bodies and response streams.
+The callback contract is not itself a disk-persistence implementation.
+
+Pinned [default client headers](https://github.com/openai/codex/blob/be6e8eac029b183056b7e4402879f15d2c85f61b/codex-rs/login/src/auth/default_client.rs),
+[session headers](https://github.com/openai/codex/blob/be6e8eac029b183056b7e4402879f15d2c85f61b/codex-rs/codex-api/src/requests/headers.rs)
+and [Responses metadata](https://github.com/openai/codex/blob/be6e8eac029b183056b7e4402879f15d2c85f61b/codex-rs/core/src/responses_metadata.rs)
+define `CODEX_SUBSCRIPTION_METADATA_HEADERS`. Outer adapters must preserve
+this exact HTTP metadata set, including originator, User-Agent, version and
+session/turn identity. Returned `x-codex-turn-state` survives for sticky
+routing. Authentication, account/organisation/project selection, actor
+authorisation, proxy and residency headers are not taken from the agent.
+The pinned client's `OpenAI-Beta` value belongs to its WebSocket handshake;
+this HTTP-only checkpoint does not enable that transport or header.
+
+Local tests cover selected-account routing, fixed refresh payloads, rotated
+state, simultaneous and late 401 responses, persistence failure, cancellation
+during refresh/persistence, pending-request cancellation, size bounds,
+protocol metadata and refused token-bearing errors. Deliberately breaking
+the account, refresh, persistence, routing, metadata or size guards makes
+the relevant tests fail. Native ChatGPT configuration, authenticated outer
+broker dispatch, atomic host persistence and synthetic forced-refresh proof
+remain integration requirements. Subscription support must not be claimed
+from the API-key native result.
