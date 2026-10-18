@@ -303,7 +303,7 @@ Deno.test(
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.prCreateCalls, 1);
     assertStringIncludes(outcome.prBodies[0]!, renderBranchOutcomes(facts));
-    assertEquals(outcome.prBodies[0]!.includes(BRANCH_OUTCOMES_MARKER), false);
+    assertEquals(outcome.prBodies[0]!.includes(BRANCH_OUTCOMES_MARKER), true);
     assert(
       outcome.logs.some((log) =>
         log.level === "info" &&
@@ -417,7 +417,7 @@ Deno.test(
 );
 
 Deno.test(
-  "completion facts - a facts file beside a hand-written Branch outcomes list blocks (Issue #3535)",
+  "completion facts - authoritative facts replace a legacy list (Issue #3979)",
   async () => {
     const outcome = await runCompletion({
       summary: summaryWith(
@@ -428,10 +428,16 @@ Deno.test(
       existingTestsAtHead: [EXISTING_TEST],
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0);
-    assertStringIncludes(blockedText(outcome), FACTS_FILE);
-    assertStringIncludes(blockedText(outcome), "hand-written");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertStringIncludes(
+      outcome.prBodies[0]!,
+      renderBranchOutcomes(factsFor(EXISTING_TEST)),
+    );
+    assertEquals(
+      outcome.prBodies[0]!.match(/\*\*Branch outcomes:\*\*/g)?.length,
+      1,
+    );
   },
 );
 
@@ -456,3 +462,25 @@ Deno.test(
     assertEquals(outcome.prCreateCalls, 1);
   },
 );
+
+Deno.test("completion facts - ambiguous ownership and unresolved evidence remain blocking (Issue #3979)", async () => {
+  for (
+    const [block, cause] of [
+      [`${BRANCH_OUTCOMES_MARKER}\n${BRANCH_OUTCOMES_MARKER}`, "ambiguous"],
+      [
+        `**Branch outcomes:**\n\n- ${CHANGED}:42 — no test reaches this outcome`,
+        "unresolved",
+      ],
+    ]
+  ) {
+    const outcome = await runCompletion({
+      summary: summaryWith(block!),
+      facts: JSON.stringify(factsFor(EXISTING_TEST)),
+      changedFiles: CHANGED,
+      existingTestsAtHead: [EXISTING_TEST],
+    });
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertStringIncludes(blockedText(outcome), cause!);
+  }
+});

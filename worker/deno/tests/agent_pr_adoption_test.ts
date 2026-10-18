@@ -135,6 +135,7 @@ function deps(
       remote: opts.remote,
     }),
     logger,
+    followUpFiling: undefined,
     ...overrides,
   };
 }
@@ -142,10 +143,21 @@ function deps(
 Deno.test("adoptAgentRaisedPrBody - Issue #3804: syncs the PR on the run's own branch once HEAD is pushed", async () => {
   const gitCalls: string[][] = [];
   const syncCalls: SyncPrBodyInput[] = [];
+  const followUpFiling = {
+    verifyIssueContent: () => Promise.resolve({ blocked: false as const }),
+    ensureLabelExists: () =>
+      Promise.resolve({ ok: true as const, value: undefined }),
+    fleetAuthors: ["ghuser"],
+  };
   await adoptAgentRaisedPrBody(
     input(),
-    deps({ head: SHA, remote: SHA, prUrl: PR_URL, gitCalls }),
-    recordingSync(syncCalls),
+    deps({ head: SHA, remote: SHA, prUrl: PR_URL, gitCalls }, {
+      followUpFiling,
+    }),
+    (input, syncDeps) => {
+      assertEquals(syncDeps.followUpFiling, followUpFiling);
+      return recordingSync(syncCalls)(input, syncDeps);
+    },
   );
 
   assertEquals(gitCalls, [

@@ -25,6 +25,10 @@ import {
   GATE_EXCERPT_TAIL_CHARS,
 } from "../quality_helpers.ts";
 import { formatDetailedFailureMessage } from "../failure_message.ts";
+import {
+  formatGateStageOutcomes,
+  stageOutcomesFrom,
+} from "../gate_stage_outcome.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
 import {
   detectFailureCategory,
@@ -43,7 +47,9 @@ import { formatBaselineCarryoverNote } from "../quality_helpers.ts";
 import { fenceQualityOutput } from "../untrusted_quality_output.ts";
 import { buildBoundaryIntegrityInstruction } from "../prompt_delimiter.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
+import { alreadyLandedPhaseResult } from "../claim_freshness.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
+import { AgentTurnLimitError } from "../claude_turn_limit.ts";
 
 /**
  * Result of a single quality-gate body pass — see `runQualityGateBody`.
@@ -54,6 +60,8 @@ import { formatBeforeGate } from "../repo_formatters.ts";
  */
 interface QualityGateBodyResult {
   phaseResult: PhaseResult;
+  /** A policy stop cannot be converted into success by another gate or audit. */
+  agentTurnLimit?: true;
   /**
    * If the quality gate ultimately failed, this is the raw quality-output
    * failure message (not the formatted reason) that should be passed to
@@ -155,13 +163,14 @@ export async function workOnIssueQualityGate(
   // outcome is restored below rather than overwritten by a later gate.
   const recordedOutcome = state.qualityGateOutcome;
 
-  let { phaseResult, qualityFailureMessage } = await runQualityGateBody(
-    ctx,
-    state,
-    deps,
-  );
+  let { phaseResult, qualityFailureMessage, agentTurnLimit } =
+    await runQualityGateBody(
+      ctx,
+      state,
+      deps,
+    );
 
-  if (phaseResult.status === "failure") {
+  if (phaseResult.status === "failure" && !agentTurnLimit) {
     // Only infrastructure-category quality failures qualify for the extra
     // in-process retry — real quality-check failures are not retried.
     const category = detectFailureCategory(
@@ -179,11 +188,12 @@ export async function workOnIssueQualityGate(
         },
       );
       if (shouldRetry) {
-        ({ phaseResult, qualityFailureMessage } = await runQualityGateBody(
-          ctx,
-          state,
-          deps,
-        ));
+        ({ phaseResult, qualityFailureMessage, agentTurnLimit } =
+          await runQualityGateBody(
+            ctx,
+            state,
+            deps,
+          ));
       }
     }
   }
@@ -196,6 +206,7 @@ export async function workOnIssueQualityGate(
   // via PR comment.
   if (
     phaseResult.status === "failure" &&
+    !agentTurnLimit &&
     state.bumpInfo?.status === "applied"
   ) {
     const auditResult = await attemptBumpAudit(state, deps);
@@ -206,26 +217,36 @@ export async function workOnIssueQualityGate(
   }
 
   if (phaseResult.status === "failure" && qualityFailureMessage !== undefined) {
-    await deps.github.handleIssueFailure({
-      repo: ctx.repo,
-      issueNumber: ctx.issueNumber,
-      githubUser: ctx.githubUser,
-      failureMessage: qualityFailureMessage,
-      // Issue #3445: the gate output is repository-authored, never a host fault.
-      qualityGateOutput: true,
-      labels: {
-        failedLabel: ctx.config.failedLabel,
-        failedOnceLabel: ctx.config.failedOnceLabel,
-        // Issue #2031: clarification handoff is via needs-human.
-        needsHumanLabel: ctx.config.needsHumanLabel,
-        planningLabel: ctx.config.planningLabel,
-        questionLabel: ctx.config.questionLabel,
-      },
-    });
-    // Issue #1949: the main loop now applies the same ladder to every
-    // non-transient coding failure. Tell it this one is already done, so a
-    // single run cannot step the issue twice and land it on `failed`.
-    state.failureLadderApplied = true;
+    const landed = await alreadyLandedPhaseResult(
+      ctx,
+      state,
+      deps,
+      "quality_gate",
+    );
+    if (landed) {
+      phaseResult = landed;
+    } else {
+      await deps.github.handleIssueFailure({
+        repo: ctx.repo,
+        issueNumber: ctx.issueNumber,
+        githubUser: ctx.githubUser,
+        failureMessage: qualityFailureMessage,
+        // Issue #3445: the gate output is repository-authored, never a host fault.
+        qualityGateOutput: true,
+        labels: {
+          failedLabel: ctx.config.failedLabel,
+          failedOnceLabel: ctx.config.failedOnceLabel,
+          // Issue #2031: clarification handoff is via needs-human.
+          needsHumanLabel: ctx.config.needsHumanLabel,
+          planningLabel: ctx.config.planningLabel,
+          questionLabel: ctx.config.questionLabel,
+        },
+      });
+      // Issue #1949: the main loop now applies the same ladder to every
+      // non-transient coding failure. Tell it this one is already done, so a
+      // single run cannot step the issue twice and land it on `failed`.
+      state.failureLadderApplied = true;
+    }
   }
 
   if (recordedOutcome) state.qualityGateOutcome = recordedOutcome;
@@ -460,6 +481,9 @@ async function runQualityGateBody(
   // rather than leaving the run-stats comment silent about a gate that ran.
   // The two passing exits overwrite it with the attempt they passed on.
   state.qualityGateOutcome = { status: "failed" };
+  // Issue #3726: stages from an earlier run must not outlive a gate that
+  // errors before reporting its own.
+  delete state.qualityGateStages;
 
   // The repo's own formatters first, before every attempt (part of #2932):
   // a formatting-only miss is fixed and committed rather than spending the
@@ -483,6 +507,14 @@ async function runQualityGateBody(
         },
       };
     }
+
+    // Issue #3726: what each stage did, so an audit can tell a skipped stage
+    // from a passed one.
+    state.qualityGateStages = stageOutcomesFrom(qualityResult.value.checks);
+    logger.info("Quality gate stage outcomes", {
+      attempt,
+      stages: formatGateStageOutcomes(state.qualityGateStages),
+    });
 
     if (qualityResult.value.passed) {
       logger.info("Quality gate passed", { attempt });
@@ -687,6 +719,12 @@ async function runQualityGateBody(
       logger.warn("Claude fix attempt failed", {
         error: fixResult.error.message,
       });
+      if (fixResult.error instanceof AgentTurnLimitError) {
+        return {
+          phaseResult: { status: "failure", reason: fixResult.error.message },
+          agentTurnLimit: true,
+        };
+      }
     }
   }
 

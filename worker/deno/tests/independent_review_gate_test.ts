@@ -18,6 +18,7 @@ import {
   buildIndependentReviewComment,
   parseStandardsEntries,
   validateIndependentReview,
+  VIOLATION_REASON_LINES,
 } from "../lib/independent_review_gate.ts";
 
 const ISSUE_WITH_CRITERIA = [
@@ -73,6 +74,68 @@ Deno.test("independent review - does not apply when the issue states no criteria
   const result = validateIndependentReview({
     issueBody: ISSUE_WITHOUT_CRITERIA,
     prSummaryContent: summary(["## Evidence", "", "- tests pass"]),
+  });
+  assertEquals(result.applicable, false);
+  assertEquals(result.valid, true);
+  assertEquals(result.problems, []);
+});
+
+/** A summary whose only Standards finding is one `violation` with `reason`. */
+function noCriteriaViolationSummary(reason: string): string {
+  return summary([
+    "## Standards Review",
+    "",
+    STANDARDS_MARKER,
+    "",
+    "- **violation** — x — evidence: `src/creature/EvolveTeardown.ts:103` — " +
+    `reason: ${reason}`,
+  ]);
+}
+
+Deno.test("independent review - an issue with no criteria still refuses a standing Standards violation (Issue #3761)", () => {
+  const result = validateIndependentReview({
+    issueBody: ISSUE_WITHOUT_CRITERIA,
+    prSummaryContent: noCriteriaViolationSummary("not fixed in this diff"),
+  });
+  assertEquals(result.applicable, true);
+  assertEquals(result.criteriaStated, false);
+  assertEquals(result.valid, false);
+  assertEquals(result.standardsEntries.length, 1);
+  assertEquals(result.problems.length, 1);
+  assertStringIncludes(result.problems[0]!, "neither fixed nor filed");
+});
+
+Deno.test("independent review - an issue with no criteria passes a violation fixed in this diff (Issue #3761)", () => {
+  const result = validateIndependentReview({
+    issueBody: ISSUE_WITHOUT_CRITERIA,
+    prSummaryContent: noCriteriaViolationSummary("fixed in this diff"),
+  });
+  assertEquals(result.applicable, true);
+  assertEquals(result.criteriaStated, false);
+  assertEquals(result.valid, true);
+  assertEquals(result.problems, []);
+});
+
+Deno.test("independent review - no criteria does not require standards provenance or a finding (Issue #3761)", () => {
+  const result = validateIndependentReview({
+    issueBody: ISSUE_WITHOUT_CRITERIA,
+    prSummaryContent: summary([
+      "## Standards Review",
+      "",
+      "- **clean** — Australian English, KISS/DRY",
+    ]),
+  });
+  assertEquals(result.applicable, true);
+  assertEquals(result.standardsProvenance, false);
+  assertEquals(result.valid, true);
+  assertEquals(result.problems, []);
+});
+
+Deno.test("independent review - no criteria keeps the Spec rules gated (Issue #3761)", () => {
+  const unsourcedSpec = GOOD_SPEC_BLOCK.filter((l) => l !== SPEC_MARKER);
+  const result = validateIndependentReview({
+    issueBody: ISSUE_WITHOUT_CRITERIA,
+    prSummaryContent: summary(unsourcedSpec),
   });
   assertEquals(result.applicable, false);
   assertEquals(result.valid, true);
@@ -446,4 +509,42 @@ Deno.test("buildIndependentReviewComment - names every problem and the shape", (
   assertStringIncludes(comment, "vibe-standards-review");
   assertStringIncludes(comment, "## Standards Review");
   assertStringIncludes(comment, "reviewer:");
+});
+
+Deno.test("buildIndependentReviewComment - a no-criteria refusal gets the Standards-only comment (Issue #3761)", () => {
+  const refused = validateIndependentReview({
+    issueBody: ISSUE_WITHOUT_CRITERIA,
+    prSummaryContent: noCriteriaViolationSummary("not fixed in this diff"),
+  });
+  assertEquals(refused.valid, false, "the refusal must be a blocked result");
+  const comment = buildIndependentReviewComment(refused);
+  assertStringIncludes(comment, "Standards violation left standing");
+  assert(
+    !comment.includes("This issue states acceptance criteria"),
+    `the criteria opener must not appear, got ${comment}`,
+  );
+  // The layout is pinned line by line: the opener, a blank line, every
+  // problem, a blank line, then the reason forms the violation must take.
+  assert(refused.problems.length > 0, "the refusal must name its problems");
+  const [opener, ...rest] = comment.split("\n");
+  assertStringIncludes(opener ?? "", "Standards violation left standing");
+  assertEquals(
+    rest.join("\n"),
+    [
+      "",
+      ...refused.problems.map((p) => `- ${p}`),
+      "",
+      "Each `violation` names its `file:line` evidence and one of:",
+      ...VIOLATION_REASON_LINES.map((line) => `- ${line}`),
+    ].join("\n"),
+  );
+
+  const criteriaBlocked = validateIndependentReview({
+    issueBody: ISSUE_WITH_CRITERIA,
+    prSummaryContent: summary(["## Acceptance Criteria", "", "- **met** — x"]),
+  });
+  assertStringIncludes(
+    buildIndependentReviewComment(criteriaBlocked),
+    "Independent review missing",
+  );
 });

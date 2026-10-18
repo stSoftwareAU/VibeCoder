@@ -231,7 +231,9 @@ guessing — the analysis-only hand-off then routes it to a human.
    that still covers the behaviour and say where. The worker checks this: a
    summary with no `## Test Plan` heading when the diff touches a test, or a
    Test Plan that does not name each removed assertion as it appears in the
-   diff, blocks the PR.
+   diff with a verified `Required by:` quote or `Moved to:` path, blocks the
+   PR. Use the structured entry under **Test Plan** below; replacements also
+   need `Replaced by:` assertions added in that test file.
    An issue requirement shows a new expected value is right, not that the
    edited test still guards anything: break the code the test's name says
    it guards, confirm the edited test goes red, then restore it (see **An
@@ -728,9 +730,10 @@ reference in someone else's CI. So:
 
 You wrote the code, so you are the worst-placed reader of it: the context that
 produced a change is the context most likely to believe it. When the issue body
-carries acceptance criteria, **before you write the PR summary**, dispatch **two
-reviewer sub-agents in parallel** (one `Agent` message, two tool calls) and let
-their verdicts — not your recollection — populate the summary.
+carries acceptance criteria (an `## Acceptance Criteria` or `## Definition of
+done` list), **before you write the PR summary**, dispatch **two reviewer
+sub-agents in parallel** (one `Agent` message, two tool calls) and let their
+verdicts — not your recollection — populate the summary.
 
 Each reviewer gets the finished diff and nothing else from your context. Do not
 pass your implementation transcript, your reasoning, or your own assessment: a
@@ -758,7 +761,9 @@ reviewer its path.
   question: where does the diff depart from a documented standard in a way that
   affects correctness, security or the stated requirements? Ask it to return
   one `violation` entry per such departure, with the `file:line` it saw, and the
-  `clean` areas it checked and found compliant. A rule the target
+  `clean` areas it checked and found compliant. Ask it to name each `file:line`
+  with the repo-relative path exactly as `git diff --name-only` prints it, in
+  backticks, never reworded. A rule the target
   repository's standards say is **enforced by review** — no lint, formatter or
   CI check catches it, in words such as "by review only" or "a finding a
   reader has to raise" — is the exception to that question: there the review
@@ -770,7 +775,10 @@ reviewer its path.
   Ask it also to list every assertion the diff removes from an existing test
   and say, for each, whether an issue requirement makes it untrue — returning
   a `violation` (with the `file:line` it saw) for any removed assertion that
-  has none.
+  has none. Identify replacements from the diff even when the summary omits
+  `Replaced by:`, and return a `violation` for a missing replacement entry.
+  Compare each `Replaced by:` pair and return a `violation` when a value the
+  old assertion checked is no longer checked anywhere.
   Ask it too, for each expected value or behaviour the diff changes in an
   existing test, whether that test still fails without the code it is named
   for — returning a `violation` (with the `file:line` it saw) when the new
@@ -824,6 +832,11 @@ the summary says who judged it:
   `file:line`, then `reason: fixed in this diff`, or, only for a breach the
   Standards reviewer saw in unchanged context already on the base branch,
   `reason: pre-existing, filed #<n>` linking the follow-up issue you filed.
+  The evidence names the repo-relative path exactly as `git diff --name-only`
+  prints it, in backticks, with no prose rewording (no spaces for underscores,
+  no shortened directory): the worker places the breach against the diff by
+  that path, and one it cannot match to a changed file or a file at HEAD is
+  treated as on the branch's own lines and holds auto-merge (Issue #3613).
   A breach in a line this diff adds or changes may not be deferred: "stands",
   "left for a follow-up" and "out of scope" are not reasons, and the gate
   blocks PR creation on any reason that neither records a fix nor links an
@@ -834,7 +847,9 @@ the summary says who judged it:
   marker for a review you did not run is the over-claim this gate exists to
   prevent.
 - **Issues with no acceptance criteria are unaffected** — no reviewers, neither
-  block.
+  block. A `## Standards Review` the summary carries anyway is still read: each
+  `violation` in it is held to the reason rules above, so an own-line breach
+  left standing blocks the PR and holds auto-merge (Issue #3761).
 
 A gate reads both blocks before the PR is raised and blocks PR creation when one
 of these rules is broken, commenting on the issue with every rule it found
@@ -854,13 +869,18 @@ completion attempt that has a PR summary to read, whether or not the issue
 carries acceptance criteria. You dispatch nothing for it. Its blocking findings
 come back as a REQUIRED ITEM in the one recovery turn and, unlike the other
 items, may need a code change: fix the code and its tests, then make the
-summary match.
+summary match. It is also handed every closure entry you marked `met` and
+judges each against the head: an entry it rates `partial` or `missing`, or
+leaves without a verdict, is a blocking finding. Mark `met` only when the diff
+delivers every case the criterion names.
 
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
 If the issue body carries a `## Acceptance Criteria` (or `## Acceptance
 criteria`) section, those criteria are the target this run is measured against.
-The `## Acceptance Criteria` block inside
+A `## Definition of done` list counts the same way when the issue has no
+Acceptance Criteria list (Issue #3761). The `## Acceptance Criteria` block
+inside
 `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` records the Spec
 reviewer's verdict on each one — one entry per stated criterion, in this shape:
 
@@ -889,13 +909,28 @@ one is broken:
   is not evidence.
 - **Every `partial` and `missing` carries a one-line reason.** An unexplained gap
   is a failure to surface, not a pass. The worker files (or reuses) one
-  `idle-task` follow-up naming each `partial` or `missing` entry and opens the
+  `idle-task` follow-up naming each implementation shortfall and opens the
   PR body with a section linking it, so the reason should say what is left to
   do (Issue #3506). The exception, for a healthy run only (a degraded run still
   files one): on an issue that is itself a partial-delivery follow-up, the worker
   files no nested follow-up. It labels the issue `needs-human`, opens the PR body
   with a "handed to a human" section that links no follow-up, and the PR says
   `Part of` rather than closing the issue.
+- **Pending merge verification stays on this PR.** Record required CI/quality
+  execution and the routine clean code review under `## Merge verification`
+  as pending until observed. Waiting for those checks alone is not unfinished
+  implementation and must not generate a partial-delivery follow-up or a nested
+  escalation. If an issue explicitly states such a criterion, keep its closure
+  entry truthful and use a clear reason such as `CI not yet verified` or
+  `awaiting code review`; never call a pending check `met`. If completed
+  implementation shares a criterion with pending checks, record the remainder
+  exactly as `reason: CI not yet verified — remaining: merge-verification-only`
+  (or `awaiting code review` / `quality gate not yet run` for the reason).
+  Put local tooling limitations and observed results in Evidence. Use this
+  annotation only when no implementation, test or failed-check repair remains.
+  Failed checks,
+  missing tests, known defects and unfinished product work remain real
+  gaps, including when combined with pending CI in the same criterion.
 - **Name your scope creep.** Add an `unrequested` entry for any change in the
   diff that is not traceable to the issue, carrying **both**
   `reviewer: unrequested` and a one-line `reason:` — copy the `unrequested` line
@@ -906,9 +941,11 @@ one is broken:
   by code in this diff; when in doubt, use `partial` and say what is left. The
   independent Spec reviewer above is the structural half of this rule — where
   your status differs from its verdict, the departure is recorded, never
-  silent.
+  silent — and the pre-PR verifier then re-judges each `met` entry; a `partial`,
+  `missing` or absent verdict from it blocks.
 - **Issues with no acceptance criteria are unaffected** — emit the block only
-  when the issue states criteria.
+  when the issue states criteria (an Acceptance Criteria or Definition of done
+  list).
 
 One more rule no gate parses — a reviewer sends the PR back for it:
 
@@ -1204,6 +1241,17 @@ rewrite it, never append to it:
   the diff adds or edits (see **Check where you insert** in
   `CODING-STANDARDS.md`).
 
+**Project version wording (Issue #3954).** Write the summary's own version-bump
+statement in Summary using durable wording, for example:
+``Version bump: `VERSION` updated for this change; the merged commit records the final version.``
+Do not predict a literal before/after pair that CI can change after your push.
+Name a specific relation to the actual target branch, such as one patch above
+it, only after checking that repository's workflow guarantees that policy.
+Otherwise keep the policy-neutral wording; manual or minor version changes do
+not imply an automatic patch policy. Exact release/build evidence belongs in
+Evidence with its final commit or release provenance. Preserve dependency pins,
+historical reproduction versions, migration examples and changelog entries.
+
 **Run the summary gates before you finish.** When `worker/deno/deno.json`
 defines a `pr-summary-check` task (the Vibe Coder repository), commit your
 changes, write the summary, then run
@@ -1256,7 +1304,8 @@ The file MUST contain:
    reviewer's block described in [Independent Review Before the PR](#independent-review-before-the-pr--spec-and-standards-on-separate-axes)
    — its provenance marker, then each `violation` with evidence and outcome, and
    the `clean` areas it checked. Kept on its own heading: the two axes are never
-   merged or reranked
+   merged or reranked. A Standards Review included for an issue without criteria
+   is still checked for `violation` reasons (Issue #3761)
 7. **Test Plan**: List the tests added or modified. Write a result line only
    after the command has run on the final head, and state the actual outcome
    (passed, or failed with its first error) — never write a placeholder token
@@ -1282,8 +1331,16 @@ The file MUST contain:
    assertion it removes with the issue requirement that makes it untrue; an
    assertion removed with no such requirement is a blocking self-review
    finding — restore it, or move it to a test that still covers the behaviour
-   and name that test. Copy each removed assertion as it appears in the diff —
-   the worker matches it there — and include a `## Test Plan` heading whenever
+   and name that test. Give each removal its own list entry: `Removed from
+   <path>: <assertion>`, copying the assertion as it appears in the diff, then
+   an indented `Required by: "<quote>"` or `Moved to: <path>`. The quote must
+   contain at least 5 words verbatim from the linked issue's title or body,
+   not comments; the move must name a file where the same assertion is added
+   with its original guards and coverage preserved. For a replacement, also
+   add `Replaced by:` and name each new assertion in inline code; each must
+   be added in the same test file. The Standards reviewer
+   compares the old and new checks for lost coverage. Include a `## Test Plan`
+   heading whenever
    the diff touches a test; it is required. The worker counts as removed a
    multi-line assertion with any line changed, and an assertion re-added under
    a new condition, loop or callback, into a skipped or ignored test, or after
@@ -1410,9 +1467,12 @@ The file MUST contain:
    When the diff adds no branch, write
    `{"version":1,"branchOutcomes":{"noneAdded":true,"entries":[]}}`. Leave the
    `<!-- vibe-branch-outcomes -->` marker in the Test Plan: the worker renders
-   the `Branch outcomes:` list there. An invalid or unreadable facts file
-   blocks PR creation, and so does a hand-written `Branch outcomes:` list
-   beside the facts file. The schema is in `CODING-STANDARDS.md` under
+   the `Branch outcomes:` list there, inside its owned start/end markers.
+   Maintain the facts and marker only: do not independently write a duplicate
+   list. The renderer replaces safely identified legacy lists and preserves
+   unrelated narrative. Invalid facts, ambiguous block ownership and unresolved
+   evidence still block. Rendering does not prove a claimed flip was executed.
+   The schema is in `CODING-STANDARDS.md` under
    **Branch outcomes facts file**. Without a facts file the worker still reads
    a `Branch outcomes:` list written in the Test Plan — one line per outcome
    naming `path:line`, the outcome, the test that reaches it, and that

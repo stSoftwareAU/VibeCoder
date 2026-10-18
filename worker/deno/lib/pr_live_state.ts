@@ -72,7 +72,8 @@ export type PrNotOpenReading =
  * write. `readPrLiveState` always sets them from the parsed payload.
  *
  * Issue #3517: `labels` rides the same round trip, so the auto-merge sweep can
- * hold a `standing-violation` PR without a second `gh` call.
+ * hold a `standing-violation` PR, and the CI-fix pass (Issue #3685) can skip
+ * re-arming one, without a second `gh` call.
  */
 export type PrLiveStateReading =
   | {

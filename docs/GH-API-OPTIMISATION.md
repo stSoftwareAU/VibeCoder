@@ -687,11 +687,12 @@ every deferrable handler while the previous cycle's reading put the
 window at or below its reserve — `isInReserve(limit, remaining)`, the
 same `remaining ≤ limit·reserve` rule the pacing decision reports.
 
-Exactly four handlers are tiered, all of them sweeps whose work keeps
+Exactly five handlers are tiered, all of them sweeps whose work keeps
 until the next cycle:
 
 | Priority | Handler                            |
 | -------- | ---------------------------------- |
+| 1.64     | Reconcile PR Body Digests          |
 | 1.67     | Close Issues for Merged PRs        |
 | 1.68     | Recover Assigned with Closed PRs   |
 | 1.7      | Milestone Completions              |
@@ -700,13 +701,15 @@ until the next cycle:
 Nothing that services in-flight work is tiered — Issue Scanning, PR
 Feedback, CI Fix and Auto-Merge always run — and neither is the
 local-only Closed Milestone Housekeeping, which spends no GraphQL
-budget to skip.
+budget to skip. The reconcile pass (1.64) is tiered as well: it services no
+in-flight run, and a body it skips in the reserve stays as it is until a cycle
+outside the reserve reads it.
 
 A cycle that skips says so once, at WARNING beside the pacing line that
 set the flag:
 
 ```
-budget-pacing: in reserve — skipped deferrable sweeps: Close Issues for Merged PRs, Recover Assigned with Closed PRs, Milestone Completions, Failure-Detection Repair Resume
+budget-pacing: in reserve — skipped deferrable sweeps: Reconcile PR Body Digests, Close Issues for Merged PRs, Recover Assigned with Closed PRs, Milestone Completions, Failure-Detection Repair Resume
 ```
 
 No reading is no evidence. The flag is **consumed** by the cycle that

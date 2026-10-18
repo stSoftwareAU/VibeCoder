@@ -35,8 +35,9 @@ function stubClient(): GitHubClient {
 
 /** True when these argv are the guard's merged-PR lookup. */
 function isMergedPrLookup(args: string[]): boolean {
+  const fields = args[args.indexOf("--json") + 1]?.split(",") ?? [];
   return args[0] === "pr" && args[1] === "list" &&
-    args.includes("number,mergeCommit");
+    fields.includes("number") && fields.includes("mergeCommit");
 }
 
 /**

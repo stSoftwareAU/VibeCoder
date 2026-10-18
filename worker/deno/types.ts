@@ -265,6 +265,8 @@ export interface WorkerConfig {
   lowPriorityLabel: string;
   /** Timeout in seconds for Claude CLI (default: 3600 = 1 hour, Issue #1824) */
   claudeTimeout: number;
+  /** Positive per-invocation Claude Code turn cap; defaults to 100. */
+  claudeMaxTurns?: number;
   /**
    * Seconds of runway to the supervisor hard cap a new implementation claim
    * must have (`.config.json` `min_claim_runway_seconds`, Issues #289/#425).
@@ -510,6 +512,13 @@ export interface WorkerConfig {
   issueReviewerAgents: boolean;
   /** Fleet-wide run archive repo slug for measurement issues (Issue #2930). Unset = feature off. */
   fleetRunArchive?: string;
+  /**
+   * Operator-configured label naming the subscription allocation this host's
+   * runs draw on, recorded on each issue's lifecycle-ledger assignment event
+   * (Issue #3718). A label only — never an account email, ID or fee. Unset =
+   * no label recorded.
+   */
+  subscriptionAllocationLabel?: string;
   /** Whether to include recent repo activity in prompts (Issue #1326, default: true) */
   includeRecentActivity: boolean;
   /** Maximum number of merged PRs to include in activity summary (Issue #1326) */
@@ -1337,6 +1346,8 @@ export interface ConfigFile {
   best_planning_model?: string;
   /** Operational settings (Issue #277) — only overrides stored */
   claude_timeout?: number;
+  /** Positive per-invocation Claude Code turn cap; defaults to 100. */
+  claude_max_turns?: number;
   min_claim_runway_seconds?: number;
   /** Labels marking an issue as a long job (Issue #245) */
   claim_long_job_labels?: string[];
@@ -1500,6 +1511,12 @@ export interface ConfigFile {
   issue_reviewer_agents?: boolean;
   /** Fleet-wide run archive repo slug for measurement issues (Issue #2930) */
   fleet_run_archive?: string;
+  /**
+   * Operator label naming this host's subscription allocation, recorded on each
+   * issue's lifecycle-ledger assignment event (Issue #3718). A label only, never
+   * an account email, ID or fee.
+   */
+  subscription_allocation_label?: string;
   /** Whether to include recent repo activity in prompts (Issue #1326) */
   include_recent_activity?: boolean;
   /** Maximum merged PRs in activity summary (Issue #1326) */

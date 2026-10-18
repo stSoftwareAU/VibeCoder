@@ -68,6 +68,12 @@ function makeRunGit(dir: string): DriftCheckDeps["runGit"] {
   return async (args: string[]) => await git(dir, args);
 }
 
+/** Fake `runMutationCheck` for tests not about the mutation gate (Issue #3750). */
+const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
+  kind: "not_applicable",
+  reason: "not under test",
+});
+
 function makeRunGh(): DriftCheckDeps["runGh"] {
   return async () => "main\n";
 }
@@ -108,7 +114,7 @@ function verdictBlock(findings: DriftFinding[]): string {
 
 const SUMMARY_PATH = "docs/archive/pr-summaries/pr-summary-7.md";
 const MANUAL_PATH = "docs/manual.md";
-const DOC_PHRASE = "check only the lines this push's change adds or edits";
+const DOC_PHRASE = "check the lines this push's change adds or edits";
 const ADDED = "The rule only ever rejects a subjectless entry.";
 const DEFAULT_INPUT = { repo: "org/repo", prNumber: 7 };
 
@@ -155,6 +161,7 @@ Deno.test("runPrFeedbackDriftCheck - a push that edits only a manual makes one r
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent([{ ok: true, output: verdictBlock([]) }], calls),
         logger: noopLogger(),
       },
@@ -180,6 +187,7 @@ Deno.test("runPrFeedbackDriftCheck - a manual sentence the verdict reports drive
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent(
           [
             {
@@ -223,6 +231,7 @@ Deno.test("runPrFeedbackDriftCheck - a push that edits only the PR summary still
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent([], calls),
         logger: noopLogger(),
       },
@@ -278,6 +287,7 @@ Deno.test("runPrFeedbackDriftCheck - a pushed manual is still questioned when th
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent([{ ok: true, output: verdictBlock([]) }], calls),
         logger: {
           info: () => {},
@@ -291,6 +301,147 @@ Deno.test("runPrFeedbackDriftCheck - a pushed manual is still questioned when th
     assertStringIncludes(calls[0]!.prompt, MANUAL_PATH);
     assertEquals(outcome.status, "clean");
     assert(warnings.some((w) => w.includes("over the 40-file cap")));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runPrFeedbackDriftCheck - an unchanged comment and untouched related manual drive recovery after a code push", async () => {
+  const { dir } = await setupBaseline();
+  const comment = "Entries record only one field.";
+  const stale = "The gate runs at two points.";
+  try {
+    await writeFile(
+      dir,
+      "lib/rule.ts",
+      `/** ${comment} */\nexport interface Rule {\n  first: string;\n}\n`,
+    );
+    await writeFile(
+      dir,
+      MANUAL_PATH,
+      `# Manual\n## Gate points\n${stale}\nEvery failure is refused.\n`,
+    );
+    await writeFile(
+      dir,
+      "docs/operator.md",
+      "# Operator\n## Invocation\n`rule.ts` runs only twice.\n",
+    );
+    await writeFile(
+      dir,
+      SUMMARY_PATH,
+      SUMMARY.replace(
+        "section: none — nothing documented",
+        "grep: `rule`; section: docs/manual.md#gate-points; siblings: none — no member added",
+      ),
+    );
+    await commitAll(dir, "baseline prose");
+    const beforeSha = (await git(dir, ["rev-parse", "HEAD"])).stdout.trim();
+    await writeFile(
+      dir,
+      "lib/rule.ts",
+      `/** ${comment} */\nexport interface Rule {\n  first: string;\n  second: string;\n}\n`,
+    );
+    const calls: AgentCall[] = [];
+    const result = await runPrFeedbackDriftCheck({
+      ...DEFAULT_INPUT,
+      repoPath: dir,
+      beforeSha,
+    }, {
+      runGit: makeRunGit(dir),
+      runGh: makeRunGh(),
+      runMutationCheck: notMutationChecked,
+      logger: noopLogger(),
+      runAgent: makeRunAgent([
+        {
+          ok: true,
+          output: verdictBlock([
+            {
+              file: "lib/rule.ts",
+              sentence: comment,
+              reason: "lib/rule.ts:4 adds a second field",
+            },
+            {
+              file: MANUAL_PATH,
+              sentence: stale,
+              reason: "lib/rule.ts:4 adds a third gate point",
+            },
+          ]),
+        },
+        { ok: true, output: "left unchanged" },
+      ], calls),
+    });
+    assertStringIncludes(calls[0]!.prompt, "lib/rule.ts:1-1 — source comment");
+    assertStringIncludes(
+      calls[0]!.prompt,
+      "docs/manual.md:2-5 — affected manual section",
+    );
+    assertStringIncludes(
+      calls[0]!.prompt,
+      "docs/operator.md:2-4 — affected manual section",
+    );
+    assertEquals(result.status, "reported");
+    if (result.status === "reported") {
+      assertEquals(result.residual.findings.map((f) => f.sentence), [
+        comment,
+        stale,
+      ]);
+    }
+    assertEquals(calls.length, 2);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runPrFeedbackDriftCheck - source under docs is checked but an executable sentence never drives recovery", async () => {
+  const { dir } = await setupBaseline();
+  try {
+    await writeFile(
+      dir,
+      "docs/generate.ts",
+      'const label = "Every file is scanned.";\n// Only Markdown is read.\nexport const limit = 1;\n',
+    );
+    await commitAll(dir, "baseline generator");
+    const beforeSha = (await git(dir, ["rev-parse", "HEAD"])).stdout.trim();
+    await writeFile(
+      dir,
+      "docs/generate.ts",
+      'const label = "Every file is scanned.";\n// Only Markdown is read.\nexport const limit = 2;\n',
+    );
+    const calls: AgentCall[] = [];
+    const warnings: string[] = [];
+    const result = await runPrFeedbackDriftCheck({
+      ...DEFAULT_INPUT,
+      repoPath: dir,
+      beforeSha,
+    }, {
+      runGit: makeRunGit(dir),
+      runGh: makeRunGh(),
+      runMutationCheck: notMutationChecked,
+      logger: {
+        info: () => {},
+        error: () => {},
+        warn: (m) => warnings.push(m),
+      },
+      runAgent: makeRunAgent([{
+        ok: true,
+        output: verdictBlock([{
+          file: "docs/generate.ts",
+          sentence: "Every file is scanned.",
+          reason: "only Markdown is read",
+        }]),
+      }], calls),
+    });
+    assertEquals(calls.length, 1);
+    assertStringIncludes(
+      calls[0]!.prompt,
+      "docs/generate.ts:2-2 — source comment",
+    );
+    assertEquals(result.status, "clean");
+    assert(
+      warnings.some((m) =>
+        m.includes("unconfirmed model finding outside selected prose")
+      ),
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

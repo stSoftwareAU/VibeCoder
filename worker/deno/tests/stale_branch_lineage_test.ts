@@ -22,6 +22,23 @@ import {
   unexplainedDeletions,
 } from "../lib/stale_branch_lineage.ts";
 
+Deno.test("classifyBranchLineage preserves an unavailable shared lookup as an explicit unknown (Issue #3977)", async () => {
+  const observation = await Promise.allSettled([classifyBranchLineage({
+    repo: "org/repo",
+    branch: "issue-42-work",
+    baseRef: "origin/main",
+    runGh: () => Promise.resolve("not JSON"),
+    runGit: () =>
+      Promise.reject(
+        new Error("an unavailable lookup must not inspect local work"),
+      ),
+  })]);
+  assertEquals(observation[0]!.status, "fulfilled");
+  assert(observation[0]!.status === "fulfilled");
+  assertEquals(observation[0]!.value.kind, "unknown");
+  assertStringIncludes(observation[0]!.value.detail, "merged-PR lookup");
+});
+
 // ---------------------------------------------------------------------------
 // decideLineage — the rules, with no IO
 // ---------------------------------------------------------------------------

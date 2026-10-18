@@ -1,0 +1,12 @@
+{
+  "issue": 3659,
+  "chunk": "top-up-3659",
+  "title": "top-up: security-fix discrimination runner",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3659",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: security_fix_discrimination.ts (#3659)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/security_fix_discrimination.ts"
+  ],
+  "sweptAt": "e5928f0ad2cef334ce571a378adc6d6de729b5a5"
+}

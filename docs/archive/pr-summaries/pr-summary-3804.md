@@ -44,7 +44,9 @@ and the other early exits. Closes #3804.
   refs/heads/<branch>`). The fix-run sync's ancestor allowance would otherwise
   let it describe a local summary that is not yet on the remote.
 - `branchName` is a required field on `SyncPrBodyInput`, so the type checker
-  names any caller that does not pass it.
+  names any caller that does not pass it. The completion hook passes the shared
+  content-verified follow-up filer, so adopting a draft that reports a missing
+  criterion records the follow-up before editing the PR body.
 
 ### Undiscoverable Facts
 
@@ -81,7 +83,8 @@ Callers of `syncPrBodyFromSummary` / `runPrBodySync` checked, each passing
 `branchName`: `lib/pr_feedback_processor.ts` (`input.branchName`),
 `lib/pr_ci_processor.ts` (`input.branchName`),
 `lib/pr_merge_conflict_processor.ts` (`branchName` in `resolveConflict`),
-`lib/agent_pr_adoption.ts` (the completion hook).
+`lib/agent_pr_adoption.ts` (the completion hook), and
+`lib/pr_body_reconcile.ts` (`pr.headRefName`, requested in the live listing).
 
 Issue numbers cited: #3804: Agent-raised fleet PRs keep the agent's draft
 body; #3177: missing-criterion close guard.
@@ -137,10 +140,16 @@ degraded/partial-delivery section, which adoption leaves unchanged.
   - `adoptOnly: false` passed by the hook → the hook's sync test red
 - Targeted run: the new and edited test files, plus the 45 test files that
   reference `workOnIssueCompletion` or `syncPrBodyFn`, all passed.
-- `./quality.sh` on the final code: the first run failed only on
-  `tests/lib_sweep_coverage_test.ts`, because the new module was claimed by no
-  sweep slice. Adding `docs/audits/lib-sweep-coverage/top-up-3804.json` fixed
-  it, and the re-run reports `Result: PASSED (with skipped checks)`. Only
-  `config integration` was skipped.
+- Before integration, `./quality.sh` passed after adding the new module to
+  `docs/audits/lib-sweep-coverage/top-up-3804.json`; optional config integration
+  was skipped. This is historical validation of the earlier branch.
+- Integration with main `ec79d58b` preserves the existing digest reconciliation
+  and gap follow-up paths. The live reconcile listing requests and forwards the
+  branch, and completion adoption receives the shared content-verified filer.
+  The seven focused adoption/body-sync/reconciliation/completion suites pass
+  with type checking: 156 tests, no failures. The missing-criterion adoption
+  test retains every previous body assertion and also verifies content checking
+  and one follow-up creation. No existing assertion was removed or weakened.
+  The subsequent main `3b6cc28f` summary integration also passes the body-sync, summary-loader and facts suites with type checking. Required hosted checks validate the pushed head.
 
 <!-- vibe-branch-outcomes -->

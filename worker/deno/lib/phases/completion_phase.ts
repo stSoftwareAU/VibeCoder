@@ -12,6 +12,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { summaryScrubProblem } from "../summary_scrub_gate.ts";
+
 import {
   PRE_PUSH_GATE_MARKER,
   PRE_PUSH_LOOKUP_FAILED_MARKER,
@@ -35,12 +37,12 @@ import {
   prSummaryDigest,
 } from "../pr_body_sync.ts";
 import { adoptAgentRaisedPrBody } from "../agent_pr_adoption.ts";
+import { buildSyncFollowUpFiling } from "../pr_body_sync_follow_up.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import {
   applyBranchOutcomesFacts,
-  BRANCH_OUTCOMES_MARKER,
   prSummaryDigestInput,
   resolveBranchOutcomesFacts,
 } from "../pr_summary_facts.ts";
@@ -51,6 +53,7 @@ import {
   summaryClaimCheckBlocked,
 } from "../summary_claim_check.ts";
 import { DRIFT_CHECK_DISALLOWED_TOOLS } from "../pr_feedback_drift_check.ts";
+import { isManualProsePath } from "../doc_prose_claims.ts";
 import {
   buildPrePrVerifierGateComment,
   prePrVerifierBlocked,
@@ -59,6 +62,7 @@ import {
 } from "../pre_pr_verifier.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
+import { resolveRepoCredentials } from "../repo_credentials.ts";
 import {
   PRE_PUSH_GATE_REASON_HEAD_CHARS,
   PRE_PUSH_GATE_REASON_TAIL_CHARS,
@@ -67,9 +71,8 @@ import {
 } from "../git_push.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
-import { resolveRepoCredentials } from "../repo_credentials.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
-import type { WorkerConfig } from "../../types.ts";
+import type { Result, WorkerConfig } from "../../types.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
   findBranchEvidenceImages,
@@ -167,18 +170,20 @@ import {
 } from "../issue_sub_agent_degradation.ts";
 import {
   buildSecurityFixGateMessage,
+  citedSecurityTests,
+  citedTestIdentifierInDiff,
   evaluateSecurityFixGate,
   hasSecurityLabel,
   isTestFilePath,
   matchedTestDeclarations,
   referencesFindingId,
+  type SecurityFixDiffEvidence,
 } from "../security_fix_gate.ts";
 import {
   buildMutationGateComment,
-  DEFAULT_MUTATION_BUDGET_SECONDS,
   evaluateMutationGate,
-  type MutationCheckResult,
 } from "../mutation_gate.ts";
+import { invokeMutationCheck } from "../mutation_check_invocation.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
 import { preserveRunWip } from "./run_wip_preservation.ts";
 import {
@@ -214,6 +219,7 @@ import {
 import { isSecondaryRateLimitMessage } from "../secondary_rate_limit.ts";
 import { healStaleBranchLineage } from "../stale_branch_lineage.ts";
 import {
+  alreadyLandedPhaseResult,
   checkClaimFreshness,
   type ClaimFreshness,
   formatStaleClaimComment,
@@ -223,15 +229,21 @@ import {
   clearSecurityFixGateBlock,
   resolveSecurityGateStateDir,
 } from "../security_fix_gate_feedback.ts";
+import {
+  DEFAULT_DISCRIMINATION_BUDGET_SECONDS,
+  type SecurityFixDiscrimination,
+} from "../security_fix_discrimination.ts";
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
   findOwnLineStandingViolations,
+  PRE_PR_VERIFIER_HOLD_MARKER,
   STANDING_VIOLATION_LABEL,
   type StandingViolation,
 } from "../standing_violation_routing.ts";
 import {
   carryForwardCorrectedClaims,
+  carryForwardManualClaims,
   correctSummaryClaimsInRun,
   shouldOfferClaimCorrection,
 } from "../summary_claim_correction.ts";
@@ -314,6 +326,78 @@ async function lookupPrState(
 }
 
 /**
+ * Execute the cited security test red→green (Issue #3659). Never throws: any
+ * failure to run is reported as `not_checked`, which the pure gate blocks on,
+ * so an unrunnable check can never read as a pass.
+ */
+async function runSecurityDiscrimination(input: {
+  comparableBase: Awaited<ReturnType<typeof resolveComparableBaseRef>>;
+  securityDiff: SecurityFixDiffEvidence;
+  prBody: string;
+  repo: string;
+  repoPath: string;
+  qualityCredentials: Parameters<typeof resolveRepoCredentials>[1];
+  deps: WorkerDeps;
+}): Promise<SecurityFixDiscrimination> {
+  const { comparableBase, securityDiff, prBody, repo, repoPath, deps } = input;
+  const logger = deps.logger;
+  const notChecked = (reason: string): SecurityFixDiscrimination => {
+    logger.warn("Security-fix discrimination check did not run", { reason });
+    return { kind: "not_checked", reason };
+  };
+  if (!comparableBase.ok) {
+    return notChecked(
+      `the base ref is unresolvable: ${comparableBase.error.message}`,
+    );
+  }
+  const runner = deps.quality.runSecurityFixDiscrimination;
+  if (!runner) {
+    return notChecked("the security-fix discrimination runner is not wired");
+  }
+  try {
+    const credentials = await resolveRepoCredentials(
+      repo,
+      input.qualityCredentials,
+    );
+    if (!credentials.ok) {
+      return notChecked(
+        `the repository's quality_credentials could not be resolved (${credentials.error.message})`,
+      );
+    }
+    const result = await runner({
+      repoPath,
+      baseRef: comparableBase.value,
+      productionFiles: securityDiff.changedFiles.filter((f) =>
+        !isTestFilePath(f)
+      ),
+      tests: citedSecurityTests(prBody, securityDiff.testDiffText),
+      budgetSeconds: DEFAULT_DISCRIMINATION_BUDGET_SECONDS,
+      credentialEnv: credentials.value.env,
+    });
+    if (result.kind === "checked") {
+      logger.info("Security-fix discrimination check ran", {
+        test: result.test,
+        preFix: result.preFix,
+        postFix: result.postFix,
+        others: result.others,
+        notRun: result.notRun,
+      });
+    } else {
+      logger.warn("Security-fix discrimination check did not run", {
+        reason: result.reason,
+      });
+    }
+    return result;
+  } catch (error) {
+    return notChecked(
+      `discrimination runner failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
  * Run a git command and return its stdout, throwing on any failure.
  *
  * `deps.git.runGitCommand` reports a non-zero exit as `ok: true` with the exit
@@ -337,35 +421,6 @@ async function runGitOrThrow(
     );
   }
   return result.value.stdout;
-}
-
-/** Upper bound on `mutation_check_budget_seconds` (Issue #3393). */
-export const MAX_MUTATION_BUDGET_SECONDS = 3600;
-
-/**
- * Resolve the mutation gate's wall-clock budget from the per-repo
- * `mutation_check_budget_seconds` value (Issue #3393). A missing value is the
- * default; a value that is not a positive integer no greater than
- * {@link MAX_MUTATION_BUDGET_SECONDS} is refused loudly through `warn` and
- * the default applies, as the other untrusted per-repo numbers do.
- */
-export function resolveMutationBudgetSeconds(
-  raw: string,
-  warn: (message: string, context?: Record<string, unknown>) => void,
-): number {
-  if (raw === "") return DEFAULT_MUTATION_BUDGET_SECONDS;
-  const parsed = Number(raw);
-  if (
-    !Number.isInteger(parsed) || parsed <= 0 ||
-    parsed > MAX_MUTATION_BUDGET_SECONDS
-  ) {
-    warn(
-      "Ignoring invalid mutation_check_budget_seconds — using the default",
-      { value: raw, default: DEFAULT_MUTATION_BUDGET_SECONDS },
-    );
-    return DEFAULT_MUTATION_BUDGET_SECONDS;
-  }
-  return parsed;
 }
 
 /**
@@ -572,6 +627,10 @@ interface SummaryRuleBlock {
    * the PR is labelled and auto-merge withheld.
    */
   standingViolations: readonly StandingViolation[];
+  /** Surviving verifier findings; empty when the verifier did not block. */
+  verifierHoldComment: string;
+  /** Confirmed manual/prompt claims that must not ship armed. */
+  docHoldComment: string;
   /**
    * True when a blocked gate in `sections` is fixed by changing tests (the
    * mutation gate, Issue #3393), so the recovery prompt allows test changes.
@@ -808,7 +867,10 @@ async function reportSummaryRuleBlock(
     deps,
     {
       docsSweepHitsComment,
-      holdAutoMerge: block.standingViolations.length > 0,
+      holdAutoMerge: block.standingViolations.length > 0 ||
+        block.verifierHoldComment.length > 0 || block.docHoldComment.length > 0,
+      verifierHoldComment: [block.verifierHoldComment, block.docHoldComment]
+        .filter(Boolean).join("\n\n"),
     },
   );
   if (recovered.status !== "continue") return recovered;
@@ -1041,7 +1103,8 @@ async function postDocsSweepHitsComment(
  * the recovered PR once — advisory, best-effort, never affects the result.
  *
  * Issue #3382: `finalise.holdAutoMerge` is set when a Standards violation is
- * still standing on the branch's own lines after the recovery turn. Auto-merge
+ * still standing on the branch's own lines, or a pre-PR verifier block survives
+ * the recovery turn. Auto-merge
  * is then NOT armed and the PR is labelled `standing-violation` for the next
  * run to fix. The flag has no default: every caller states it.
  *
@@ -1054,7 +1117,11 @@ export async function recoverAndFinaliseExistingPr(
   state: PhaseState,
   prBody: string,
   deps: WorkerDeps,
-  finalise: { docsSweepHitsComment: string; holdAutoMerge: boolean },
+  finalise: {
+    docsSweepHitsComment: string;
+    holdAutoMerge: boolean;
+    verifierHoldComment?: string;
+  },
 ): Promise<PhaseResult> {
   const { docsSweepHitsComment, holdAutoMerge } = finalise;
   const { repo, issueNumber, githubUser, milestoneTitle, issueLabels } = ctx;
@@ -1111,14 +1178,19 @@ export async function recoverAndFinaliseExistingPr(
     // Issue #1136: arm auto-merge here, on the recovery path too — see the
     // note on the creation path below.
     if (prNumber > 0 && holdAutoMerge) {
-      // Issue #3382: a standing violation on this branch's own lines — hold
+      // Issues #3382, #3796: a standing violation or verifier block — hold
       // the merge and make the hold visible on the PR. The label is also what
       // the Priority 1.65 sweep reads to keep it held (Issue #3517).
       logger.warn(
-        "Auto-merge NOT armed: a Standards violation is still standing on " +
-          "this branch's own lines — PR labelled standing-violation for the " +
-          "next run to fix (Issue #3382)",
-        { repo, prNumber },
+        "Auto-merge NOT armed: unresolved blocking findings — PR labelled " +
+          "standing-violation for the next run to fix",
+        {
+          repo,
+          prNumber,
+          reason: finalise.verifierHoldComment
+            ? "pre-PR verifier block (and any standing Standards violations)"
+            : "standing Standards violation",
+        },
       );
       const ensured = await deps.github.ensureLabelExists(
         repo,
@@ -1138,6 +1210,25 @@ export async function recoverAndFinaliseExistingPr(
             "is not visible on the PR (Issue #3382)",
           { repo, prNumber, error: held.error.message },
         );
+      }
+      if (finalise.verifierHoldComment) {
+        try {
+          await deps.github.createClient(logger).postComment(
+            repo,
+            prNumber,
+            `${PRE_PR_VERIFIER_HOLD_MARKER}\n\n` +
+              "Auto-merge withheld: blocking pre-PR findings " +
+              "survived the recovery turn. Fix or dispute each finding with " +
+              "evidence before the hold is released.\n\n" +
+              finalise.verifierHoldComment,
+          );
+        } catch (error) {
+          logger.error("Could not post the pre-PR verifier hold comment", {
+            repo,
+            prNumber,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     } else if (prNumber > 0) {
       await armAutoMergeAtCreation(ctx, state, prNumber, deps);
@@ -1229,7 +1320,7 @@ export async function workOnIssueCompletion(
   // documentation shortfall on a pushed, quality-gated branch used to cost the
   // whole run. Entered once per run — a block on the re-run is the second. A
   // second block the standalone claim-check gate alone raised instead defers
-  // to the one summary-only correction turn below (Issue #3324); any other
+  // to the one narrow claim correction turn below (Issue #3324); any other
   // second block fails as before.
   if (
     result.status === "failure" && (state.summaryRuleBlocks?.length ?? 0) === 1
@@ -1243,7 +1334,7 @@ export async function workOnIssueCompletion(
     );
   }
 
-  // Summary-only claim correction turn (Issue #3324): the recovery turn above
+  // Claim-sentence correction turn (Issue #3324): the recovery turn above
   // has already been spent, and the completion attempt deferred a
   // claim-check-only later block here rather than failing or finalising the
   // PR immediately — see `shouldOfferClaimCorrection`.
@@ -1284,6 +1375,7 @@ export async function workOnIssueCompletion(
       runGhCommand: (a) => deps.github.runGhCommand(a),
       runGitCommand: deps.git.runGitCommand,
       logger: deps.logger,
+      followUpFiling: buildSyncFollowUpFiling(ctx.config, ctx.githubUser),
     },
   );
 
@@ -1314,6 +1406,15 @@ async function runCompletionAttempt(
   const blocksBefore = state.securityGateBlocks?.length ?? 0;
   const summaryBlocksBefore = state.summaryRuleBlocks?.length ?? 0;
   const result = await completionBody(ctx, state, deps);
+  if (result.status === "failure") {
+    const landed = await alreadyLandedPhaseResult(
+      ctx,
+      state,
+      deps,
+      "completion",
+    );
+    if (landed) return landed;
+  }
 
   // Issue #2960: a screenshot block gets one extra agent turn and one re-run
   // before it fails the run.
@@ -1434,6 +1535,10 @@ export async function postWorkOnRunStats(
     // renders no line at all.
     ...(state.qualityGateOutcome
       ? { qualityGate: state.qualityGateOutcome }
+      : {}),
+    // Each gate stage's outcome, so a skipped stage is visible (Issue #3726).
+    ...(state.qualityGateStages
+      ? { qualityGateStages: state.qualityGateStages }
       : {}),
     // …and so does its RTK status, `off` included (Issue #2385).
     ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
@@ -1704,6 +1809,13 @@ async function completionBody(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
+  const alreadyLanded = await alreadyLandedPhaseResult(
+    ctx,
+    state,
+    deps,
+    "completion",
+  );
+  if (alreadyLanded) return alreadyLanded;
   const { repo, issueNumber, issueTitle, githubUser, config, milestoneTitle } =
     ctx;
   const logger = deps.logger;
@@ -2069,6 +2181,14 @@ async function completionBody(
       logger.info(reason);
       return { status: "failure", reason };
     }
+    // Another worker may have merged while this run was pushing.
+    const landedDuringPush = await alreadyLandedPhaseResult(
+      ctx,
+      state,
+      deps,
+      "completion",
+    );
+    if (landedDuringPush) return landedDuringPush;
     // Attempt push rejection recovery (Issue #423)
     logger.warn("Push failed, attempting recovery");
     const recoveryResult = await deps.git.recoverFromPushRejection(
@@ -2330,7 +2450,7 @@ async function completionBody(
   }
 
   // Issue #3535: a structured facts file renders the Branch outcomes list
-  // into the summary. The digest and the hand-written-list check use the raw
+  // into the summary. The digest uses the raw
   // file content, so keep it before rendering.
   const rawSummaryContent = summaryContent;
   const branchOutcomesFacts = await resolveBranchOutcomesFacts(
@@ -2340,14 +2460,17 @@ async function completionBody(
   const factsContent = branchOutcomesFacts.kind === "absent"
     ? null
     : branchOutcomesFacts.content;
+  let branchOutcomesRenderProblem: string | null = null;
   if (branchOutcomesFacts.kind === "valid") {
     logger.info("Loaded PR summary facts file", {
       source: branchOutcomesFacts.relativePath,
     });
-    summaryContent = applyBranchOutcomesFacts(
+    const rendered = applyBranchOutcomesFacts(
       summaryContent,
       branchOutcomesFacts.rendered,
     );
+    if (rendered.ok) summaryContent = rendered.value;
+    else branchOutcomesRenderProblem = rendered.error.message;
   } else if (branchOutcomesFacts.kind === "error") {
     logger.warn("PR summary facts file is unusable", {
       error: branchOutcomesFacts.reason,
@@ -2409,6 +2532,7 @@ async function completionBody(
       prSummaryDigestInput(rawSummaryContent, factsContent),
     ),
     subAgentTier: prSubAgentTier,
+    assignmentId: state.assignmentId,
     ensureReferences: deps.pr.ensurePrReferencesIssue,
   });
   // Issue #3177: `assemblePrBody` withholds the closing keyword when the
@@ -2502,10 +2626,11 @@ async function completionBody(
   // `SEC-<hex>` finding id) must demonstrate that the fault is genuinely
   // closed. The decisive evidence is machine-checkable against the branch
   // diff — a test file is changed, and the test identifier the summary names
-  // really appears in that diff — with the prose linkage kept as a secondary
-  // human-review aid. Fail loud rather than mask a fault as success (Issue
-  // #3234). Per-repo only (Issue #3239); opt out with the
-  // `skip_security_fix_check` repo config.
+  // really appears in that diff — and that test is then executed red→green
+  // against the base and the fix (Issue #3659). The prose regression linkage
+  // was dropped: a sentence cannot show a test discriminates. Fail loud rather
+  // than mask a fault as success (Issue #3234). Per-repo only (Issue #3239);
+  // opt out with the `skip_security_fix_check` repo config.
   //
   // It runs **first** of the five PR gates (Issue #1140). The three summary
   // gates below stop being a hard failure once the run has raised its PR, and
@@ -2533,10 +2658,30 @@ async function completionBody(
       });
     }
 
+    // Execute the cited test red→green only when the pure gate will want the
+    // record. securityDiff is non-null only when the gate is active, and its
+    // testDiffText is empty unless a test file changed, so these two suffice.
+    let discrimination: SecurityFixDiscrimination | null = null;
+    if (
+      securityDiff &&
+      citedTestIdentifierInDiff(prBody, securityDiff.testDiffText)
+    ) {
+      discrimination = await runSecurityDiscrimination({
+        comparableBase,
+        securityDiff,
+        prBody,
+        repo,
+        repoPath: state.repoPath,
+        qualityCredentials: config.repoConfig?.[repo]?.qualityCredentials,
+        deps,
+      });
+    }
+
     const securityGate = evaluateSecurityFixGate({
       prSummaryContent: prBody,
       issueLabels,
       diff: securityDiff,
+      discrimination,
     });
     // The verdict is carried in worker run state so the next attempt reads it
     // from a trusted channel (Issue #4057). The gate's issue comment cannot
@@ -2560,11 +2705,15 @@ async function completionBody(
       // owns the persistence, the comment and any escalation (Issue #1575).
       state.securityGateBlocks = [
         ...(state.securityGateBlocks ?? []),
-        { missing: securityGate.missing, declarations },
+        { missing: securityGate.missing, declarations, discrimination },
       ];
       return {
         status: "failure",
-        reason: buildSecurityFixGateMessage(securityGate.missing, declarations),
+        reason: buildSecurityFixGateMessage(
+          securityGate.missing,
+          declarations,
+          discrimination,
+        ),
       };
     }
 
@@ -2739,7 +2888,7 @@ async function completionBody(
   }
   const removedAssertionGateCouldApply = !changedFilesKnown ||
     removedAssertionTestFiles.length > 0 ||
-    (changedFilesKnown && changedFiles.some((file) => isTestFilePath(file)));
+    changedFiles.some((file) => isTestFilePath(file));
   let testDiff: string | null = null;
   if (
     comparableBase.ok && removedAssertionGateCouldApply &&
@@ -2865,6 +3014,8 @@ async function completionBody(
       : null,
     testDiff,
     prSummaryContent: prBody,
+    issueTitle: ctx.issueTitle,
+    issueBody: ctx.issueBody,
   });
   const removedAssertionsBlocked = removedAssertions.applicable &&
     !removedAssertions.valid;
@@ -2908,8 +3059,8 @@ async function completionBody(
   // prose parser over `prBody` — the same paths `validateBranchOutcomes`
   // checks, so a test-shaped entry `path` or a test named in prose after the
   // marker is looked up too. A facts file that cannot be read or does
-  // not validate, or that sits beside a hand-written Branch outcomes list in
-  // the summary, blocks whether or not the gate is otherwise applicable: a
+  // not validate, or whose block ownership is ambiguous, blocks whether
+  // or not the gate is otherwise applicable: a
   // broken facts file is a fault, not an absent list.
   // ---------------------------------------------------------------------
   // The not-applicable `: []` arm and the empty-list `new Set()` arm both
@@ -2926,16 +3077,11 @@ async function completionBody(
     prSummaryContent: prBody,
     testsAtHead,
   });
-  let branchOutcomesFactsProblem: string | null = null;
+  let branchOutcomesFactsProblem: string | null = branchOutcomesRenderProblem;
   if (branchOutcomesFacts.kind === "error") {
     branchOutcomesFactsProblem = branchOutcomesFacts.reason;
-  } else if (
-    branchOutcomesFacts.kind === "valid" &&
-    parseBranchOutcomes(rawSummaryContent).present
-  ) {
-    branchOutcomesFactsProblem =
-      `Branch outcomes facts file ${branchOutcomesFacts.relativePath} is present, but the PR summary also carries a hand-written \`Branch outcomes\` list — remove the prose list and leave the \`${BRANCH_OUTCOMES_MARKER}\` marker where the rendered list belongs`;
   }
+
   const branchOutcomesBlocked = branchOutcomesFactsProblem !== null ||
     (branchOutcomes.applicable && !branchOutcomes.valid);
   const branchOutcomesReason =
@@ -3015,10 +3161,14 @@ async function completionBody(
   // misses it — the gate is never loosened by a flaky re-run.
   const claimCheck = rawClaimCheck === null
     ? null
-    : carryForwardCorrectedClaims(
-      rawClaimCheck,
+    : await carryForwardManualClaims(
+      carryForwardCorrectedClaims(
+        rawClaimCheck,
+        state.summaryClaimCorrection,
+        summaryContent,
+      ),
       state.summaryClaimCorrection,
-      summaryContent,
+      state.repoPath,
     );
   if (claimCheck === null) {
     logger.info(
@@ -3130,84 +3280,44 @@ async function completionBody(
   // ---------------------------------------------------------------------
   let mutationVerdict: LateSummaryVerdict;
   {
-    let mutationResult: MutationCheckResult | null = null;
-    if (
-      getRepoConfig(config.repoConfig, repo, "skipMutationCheck") === "true"
-    ) {
-      logger.info("mutation check skipped by skip_mutation_check", { repo });
-      mutationResult = {
-        kind: "not_applicable",
-        reason: "skipped by skip_mutation_check",
-      };
-    } else if (!deps.quality.runMutationCheck) {
-      logger.warn("Mutation runner not wired — mutation check not applicable");
-      mutationResult = {
-        kind: "not_applicable",
-        reason: "mutation runner not wired",
-      };
-    } else {
-      const budgetSeconds = resolveMutationBudgetSeconds(
-        getRepoConfig(config.repoConfig, repo, "mutationCheckBudgetSeconds"),
-        (message, context) => logger.warn(message, context),
-      );
-      let mutationDiff: string | null = null;
-      if (comparableBase.ok) {
+    const mutationResult = await invokeMutationCheck({
+      repo,
+      repoPath: state.repoPath,
+      repoConfigs: config.repoConfig,
+      runner: deps.quality.runMutationCheck,
+      logger,
+      collectDiff: async (): Promise<Result<string>> => {
+        if (!comparableBase.ok) {
+          return {
+            ok: false,
+            error: new Error(
+              `could not collect the PR diff against ${baseBranch}`,
+            ),
+          };
+        }
         try {
-          mutationDiff = await runGitOrThrow(
-            ["diff", "--unified=0", `${comparableBase.value}...HEAD`],
-            state.repoPath,
-            deps,
-          );
+          return {
+            ok: true,
+            value: await runGitOrThrow(
+              ["diff", "--unified=0", `${comparableBase.value}...HEAD`],
+              state.repoPath,
+              deps,
+            ),
+          };
         } catch (error) {
           logger.warn("Could not collect the PR diff for the mutation check", {
             base: comparableBase.value,
             error: error instanceof Error ? error.message : String(error),
           });
-        }
-      }
-      if (mutationDiff === null) {
-        mutationResult = {
-          kind: "error",
-          reason: `could not collect the PR diff against ${baseBranch}`,
-        };
-      } else {
-        // The quality gate's child gets the credentials this repository
-        // declared, and its tests need them here too or the baseline fails
-        // before mutation. A failed mint is not run without them: that would
-        // block the PR on a fault that is not its code.
-        const credentials = await resolveRepoCredentials(
-          repo,
-          config.repoConfig?.[repo]?.qualityCredentials,
-        );
-        if (!credentials.ok) {
-          logger.warn(
-            "Could not resolve quality_credentials for the mutation check",
-            { repo, error: credentials.error.message },
-          );
-          mutationResult = {
-            kind: "not_applicable",
-            reason:
-              `the repository's quality_credentials could not be resolved (${credentials.error.message})`,
+          return {
+            ok: false,
+            error: new Error(
+              `could not collect the PR diff against ${baseBranch}`,
+            ),
           };
-        } else {
-          try {
-            mutationResult = await deps.quality.runMutationCheck({
-              repoPath: state.repoPath,
-              diff: mutationDiff,
-              budgetSeconds,
-              credentialEnv: credentials.value.env,
-            });
-          } catch (error) {
-            mutationResult = {
-              kind: "error",
-              reason: `mutation runner failed: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            };
-          }
         }
-      }
-    }
+      },
+    });
     const gate = evaluateMutationGate(mutationResult, prBody);
     if (gate.budgetExhausted) {
       logger.warn(gate.note, { repo, issueNumber });
@@ -3246,7 +3356,14 @@ async function completionBody(
         ? buildPrePrVerifierGateComment(prePrVerifier.review)
         : "",
   };
+  const scrubProblem = summaryScrubProblem(prBody);
+  const scrubVerdict: LateSummaryVerdict = {
+    blocked: scrubProblem !== undefined,
+    reason: scrubProblem ?? "",
+    comment: () => scrubProblem ?? "",
+  };
   const lateSummaryVerdicts: LateSummaryVerdict[] = [
+    scrubVerdict,
     docsSweepVerdict,
     removedAssertionsVerdict,
     placeholderVerdict,
@@ -3325,6 +3442,12 @@ async function completionBody(
       comment: foldedComment,
       sections,
       standingViolations,
+      docHoldComment: (claimCheck?.docFindings.length ?? 0) > 0
+        ? claimCheckVerdict.comment()
+        : "",
+      verifierHoldComment: prePrVerifierVerdict.blocked
+        ? prePrVerifierVerdict.comment()
+        : "",
       ...(allowsTestChanges ? { allowsTestChanges } : {}),
     };
   }
@@ -3373,7 +3496,8 @@ async function completionBody(
   // verdict, with any departure from that verdict recorded out loud. The
   // Standards axis is reported under its own heading: a change can pass one
   // axis and fail the other, and merging them lets one mask the other.
-  // Issues with no criteria are unaffected.
+  // An issue with no criteria skips the Spec axis, but a `## Standards Review`
+  // the summary carries is still held to the violation rules (Issue #3761).
   // ---------------------------------------------------------------------
   const review = validateIndependentReview({
     issueBody: ctx.issueBody,
@@ -3540,6 +3664,19 @@ async function completionBody(
   // recovers and finalises that PR, so this gate does not need to run after
   // the guard either.
   // ---------------------------------------------------------------------
+  if (scrubVerdict.blocked) {
+    return await reportSummaryRuleBlock(
+      foldInLateSummaryVerdicts(scrubVerdict.reason, scrubVerdict.comment(), [
+        scrubVerdict,
+      ]),
+      ctx,
+      state,
+      prBody,
+      deps,
+      docsSweepHitsComment,
+    );
+  }
+
   if (placeholderBlocked) {
     logger.warn("Result-placeholder gate blocked PR creation", {
       tokens: placeholderTokens,
@@ -3652,20 +3789,19 @@ async function completionBody(
     // passed, so the claim check and (Issue #3395) the pre-PR verifier are
     // the only verdicts that can block here; the verifier folds into this
     // gate's block below. A later block of this same gate (the recovery turn
-    // already spent) gets one summary-only correction turn
+    // already spent) gets one narrow claim correction turn
     // (`summary_claim_correction.ts`, Issue #3324) instead of failing the run
     // immediately: the state is recorded as `pending` and no comment is
     // posted yet, because the correction turn may yet clear the finding
     // before anything reaches the thread. The re-run posts the comment via
     // this same gate if the sentence survives.
     //
-    // Issue #3347: the correction turn rewrites only the PR summary, so a
-    // block that carries a finding in a changed manual or prompt
-    // (`docFindings`) can never be cleared by it — that goes to
-    // `reportSummaryRuleBlock` like any other later block.
+    // Issue #3865: manual findings get the same bounded turn, using indexed
+    // sentence replacements written by the worker rather than full-file edits.
+    // Source comments need normal recovery; the narrow writer accepts Markdown only.
     if (
       summarySource !== null && shouldOfferClaimCorrection(state) &&
-      claimCheck.docFindings.length === 0
+      claimCheck.docFindings.every((finding) => isManualProsePath(finding.file))
     ) {
       state.summaryClaimCorrection = {
         status: "pending",
@@ -3673,10 +3809,11 @@ async function completionBody(
         comment: claimCheckVerdict.comment(),
         summaryPath: summarySource,
         findings: claimCheck.findings,
+        docFindings: claimCheck.docFindings,
       };
       logger.warn(
         "PR-summary claim check blocked a later attempt — deferring to the " +
-          "one summary-only correction turn (Issue #3324)",
+          "one narrow claim correction turn (Issues #3324, #3865)",
         { repo, issueNumber, reason: claimCheckVerdict.reason },
       );
       return { status: "failure", reason: claimCheckVerdict.reason };
@@ -3724,6 +3861,8 @@ async function completionBody(
         comment,
         sections: [comment],
         standingViolations,
+        verifierHoldComment: comment,
+        docHoldComment: "",
       },
       ctx,
       state,

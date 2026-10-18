@@ -394,17 +394,24 @@ Deno.test("runPrSummaryCheck - an invalid facts file blocks and names the file",
   );
 });
 
-Deno.test("runPrSummaryCheck - a valid facts file beside a hand-written list blocks", async () => {
+Deno.test("runPrSummaryCheck - authoritative facts replace a legacy list (Issue #3979)", async () => {
   // GOOD_SUMMARY is itself valid, so only the facts-plus-prose rule can block.
   const alone = await runWithFacts(GOOD_SUMMARY);
   assert(alone.ok);
   assertEquals(statusOf(alone.value, "#3147"), "passed");
 
-  const r = await runWithFacts(GOOD_SUMMARY, VALID_FACTS);
+  const legacy = GOOD_SUMMARY.replace(
+    TEST_PATH,
+    "worker/deno/tests/stale_test.ts",
+  );
+  const stale = await runWithFacts(legacy);
+  assert(stale.ok);
+  assertEquals(statusOf(stale.value, "#3147"), "blocked");
+  const r = await runWithFacts(legacy, VALID_FACTS);
   assert(r.ok);
   const report = r.value.find((g) => g.issueRef === "#3147")!;
-  assertEquals(report.status, "blocked");
-  assertStringIncludes(report.problems.join("\n"), "hand-written");
+  assertEquals(report.status, "passed");
+  assertEquals(report.problems, []);
 });
 
 Deno.test("runPrSummaryCheck - a facts file is ignored when the summary name carries no issue number", async () => {
@@ -441,4 +448,38 @@ Deno.test("main - reads the facts file named by the summary path", async () => {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("runPrSummaryCheck - scrubbed markers block even inside Mermaid or code spans", async () => {
+  for (
+    const suffix of [
+      "\n```mermaid\nsequenceDiagram\nA--․>>B: hello\n```",
+      "\n`<․!-- hidden --․>`",
+    ]
+  ) {
+    const r = await run(GOOD_SUMMARY + suffix);
+    assert(r.ok);
+    assertEquals(statusOf(r.value, "#3710"), "blocked");
+    assertStringIncludes(
+      r.value.find((g) => g.issueRef === "#3710")!.problems[0]!,
+      "U+2024",
+    );
+  }
+  const clean = await run(
+    GOOD_SUMMARY +
+      "\n<!-- hidden -->\n```mermaid\nsequenceDiagram\nA-->>B: hello\n```\n",
+  );
+  assert(clean.ok);
+  assertEquals(statusOf(clean.value, "#3710"), "passed");
+});
+
+Deno.test("runPrSummaryCheck - ambiguous outcome ownership names the blocker (Issue #3979)", async () => {
+  const result = await runWithFacts(
+    `${MARKER_ONLY_SUMMARY}\n${BRANCH_OUTCOMES_MARKER}`,
+    VALID_FACTS,
+  );
+  assert(result.ok);
+  const report = result.value.find((gate) => gate.issueRef === "#3147")!;
+  assertEquals(report.status, "blocked");
+  assertStringIncludes(report.problems.join("\n"), "ambiguous");
 });

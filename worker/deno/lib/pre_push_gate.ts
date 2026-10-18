@@ -480,7 +480,7 @@ export interface FormatterFix {
   dir: string;
   /** Argv, run without a shell. */
   cmd: string[];
-  /** Repo-relative pathspecs the formatter may rewrite (for staging). */
+  /** Repo-relative pathspecs staged after the formatter runs. */
   paths: string[];
 }
 
@@ -524,15 +524,15 @@ export function planFormatterFixes(
     });
   }
   for (const root of outermostConfigDirs(tracked, ["Cargo.toml"])) {
-    const touched = changed.some((p) =>
+    const changedRs = changed.filter((p) =>
       hasExtension(p, [".rs"]) && (root === "." || p.startsWith(`${root}/`))
     );
-    if (!touched) continue;
+    if (changedRs.length === 0) continue;
     fixes.push({
       tool: "cargo fmt",
       dir: root,
       cmd: ["cargo", "fmt", "--all"],
-      paths: [root],
+      paths: changedRs,
     });
   }
   return fixes;

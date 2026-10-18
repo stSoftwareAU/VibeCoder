@@ -15,6 +15,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { withLifecycleInvocation } from "./lifecycle_recording.ts";
+
 import type { AgentDecodedOutput, AgentFailure } from "./agent_output.ts";
 import {
   type AgentMcpServerRequest,
@@ -33,6 +35,8 @@ import {
   probeHostMemoryPressure,
 } from "./memory_pressure.ts";
 import type { Logger, Result } from "../types.ts";
+import { createLogger } from "./logger.ts";
+import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import {
   captureTimeoutDiagnostics,
   type ClaudeExecutionResult,
@@ -232,6 +236,8 @@ const DEFAULT_ERROR_SCAN_TAIL_LINES = 30;
 
 /** Result from a Claude run with retry. */
 export interface ClaudeRunResult {
+  /** Per-attempt usage retained for lifecycle follow-on costs (Issue #3720). */
+  invocationStats?: (RunStats | undefined)[];
   /**
    * Exit code (0 = success, 124 = timeout, 2 = rate limit exhaustion,
    * 137 = out of memory or killed — see {@link outOfMemory} and
@@ -445,6 +451,10 @@ export interface ClaudeRunResult {
 
 /** Options for running Claude with timeout. */
 export interface RunClaudeOptions {
+  /** Retain each retry's usage for lifecycle follow-on attribution (Issue #3720). */
+  captureInvocationStats?: boolean;
+  /** Explicit observable role for lifecycle telemetry (Issue #3719). */
+  lifecycleRole?: import("./lifecycle_ledger.ts").LifecycleRole;
   /** The prompt to send to Claude. */
   prompt: string;
   /**
@@ -1126,6 +1136,15 @@ export function killCompletionCapMs(killAfterSeconds: number): number {
 export async function runClaudeWithTimeout(
   options: RunClaudeOptions,
 ): Promise<Result<ClaudeExecutionResult>> {
+  return await withLifecycleInvocation(
+    options,
+    () => runClaudeWithTimeoutBody(options),
+  );
+}
+
+async function runClaudeWithTimeoutBody(
+  options: RunClaudeOptions,
+): Promise<Result<ClaudeExecutionResult>> {
   const {
     prompt,
     systemPrompt,
@@ -1378,6 +1397,11 @@ export async function runClaudeWithTimeout(
       // Name the provider that is about to run (Issue #4109) so a Quorum
       // run's interleaved log lines attribute to the agent that produced them.
       `Running ${provider.displayName} with ${timeoutSeconds}s timeout (${killAfterSeconds}s grace period)` +
+        (args.includes("--max-turns")
+          ? ` claude_timeout=${timeoutSeconds} claude_max_turns=${
+            args[args.indexOf("--max-turns") + 1]
+          }`
+          : "") +
         (noOutputMs > 0 ? `, no-output watchdog ${noOutputTimeout}s` : "") +
         "...",
     );
@@ -2458,6 +2482,8 @@ export async function runClaudeWithTimeout(
         ...(resolvedEffort ? { effort: resolvedEffort } : {}),
         ...(usageUnknown ? { usageUnknown: true } : {}),
         tokenUsage,
+        // Issue #3616: a split run's sub-agent tokens are only in `modelUsage`.
+        modelUsage: runStats.modelUsage,
       }).catch((err: unknown) => {
         // Credit logging must never fail the main flow — but it must never be
         // silent either (Issue #1239). A refused append means the log was
@@ -2503,6 +2529,13 @@ export async function runClaudeWithTimeout(
         nowMs: clock.now(),
       }, agentOutput)
       : undefined;
+    if (normalisedFailure?.category === "turn-limit") {
+      const failureLogger = logger ?? createLogger();
+      failureLogger.error(
+        normalisedFailure.message + " — invocation stopped at its turn cap.",
+      );
+      failureLogger.security?.("AGENT_TURN_LIMIT", "reason=error_max_turns");
+    }
     if (
       normalisedFailure?.category === "authentication" ||
       normalisedFailure?.category === "quota-exhausted"
@@ -2895,6 +2928,7 @@ async function runRetryLadder(
   // phase's credential switch, Issue #1670 — can spend what is left of the
   // budget rather than a fresh one.
   let totalInvocations = 0;
+  const invocationStats: (RunStats | undefined)[] = [];
 
   /**
    * The last invocation's normalised decode and classification (Issue #1695),
@@ -2918,6 +2952,7 @@ async function runRetryLadder(
     ...(invokedAgentFailure ? { agentFailure: invokedAgentFailure } : {}),
     ...value,
     invocationsBilled: totalInvocations,
+    ...(options.captureInvocationStats ? { invocationStats } : {}),
     ...(invokedProvider ? { provider: invokedProvider } : {}),
     ...(invokedExtensions ? { extensions: invokedExtensions } : {}),
     ...(preflightDegraded
@@ -2995,6 +3030,9 @@ async function runRetryLadder(
     }
     totalInvocations++;
     const result = await runClaudeWithTimeout(currentOptions);
+    if (options.captureInvocationStats) {
+      invocationStats.push(result.ok ? result.value.runStats : undefined);
+    }
 
     if (!result.ok) {
       return {
@@ -3060,6 +3098,16 @@ async function runRetryLadder(
     // Cleared, not carried, when this invocation did not fail: a stale
     // failure from a previous attempt must never describe a later success.
     invokedAgentFailure = result.value.agentFailure;
+
+    if (invokedAgentFailure?.category === "turn-limit") {
+      return {
+        ok: false,
+        error: new AgentTurnLimitError(
+          invokedAgentFailure.message,
+          withPreflight(result.value),
+        ),
+      };
+    }
 
     // Out of memory (Issue #2741, parent #2721) — TERMINAL. Checked first,
     // before the timeout and rate-limit paths, for two reasons:
