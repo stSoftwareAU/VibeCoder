@@ -216,7 +216,7 @@ export async function workOnIssueQualityGate(
       failureMessage: qualityFailureMessage,
       // Issue #3445: the gate output is repository-authored, never a host fault.
       qualityGateOutput: true,
-      category: "quality_check",
+      category: phaseResult.category,
       labels: {
         failedLabel: ctx.config.failedLabel,
         failedOnceLabel: ctx.config.failedOnceLabel,
@@ -669,9 +669,15 @@ async function runQualityGateBody(
           lastOutputSnippet: snippet || undefined,
         },
       );
+      // This is the raw external gate output, not the worker's wrapper prose.
+      // Preserve its established infrastructure adapter once at this boundary.
+      const rawCategory = detectFailureCategory(qualityResult.value.output);
+      const category = isInfrastructureFailure(rawCategory)
+        ? rawCategory
+        : "quality_check";
       return {
         phaseResult: {
-          category: "quality_check",
+          category,
           status: "failure",
           reason: detailedReason,
         },

@@ -1,0 +1,296 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/infra_retry.ts",
+        "line": 130,
+        "outcome": "retry declaration preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/issue_worker_infra_retry_test.ts",
+        "testName": "infra retry honours a declared cause over a contradictory wrapper (Issue #3738)",
+        "flipWentRed": "retry-declaration mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/coding_failure_ladder.ts",
+        "line": 163,
+        "outcome": "ladder declaration preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
+        "flipWentRed": "ladder-declaration mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/coding_failure_ladder.ts",
+        "line": 207,
+        "outcome": "ladder infrastructure preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
+        "flipWentRed": "ladder-infrastructure mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/coding_failure_ladder.ts",
+        "line": 194,
+        "outcome": "ladder deadline preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/coding_failure_ladder_test.ts",
+        "testName": "declared failure causes outrank quoted deadline and timeout wording (Issue #3738)",
+        "flipWentRed": "ladder-deadline mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/coding_failure_ladder.ts",
+        "line": 223,
+        "outcome": "ladder timeout kind preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/coding_failure_ladder_test.ts",
+        "testName": "declared failure causes outrank quoted deadline and timeout wording (Issue #3738)",
+        "flipWentRed": "ladder-timeout-kind mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/host_fault.ts",
+        "line": 99,
+        "outcome": "host clone declaration preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/host_fault_test.ts",
+        "testName": "host diagnosis honours declared causes and retains raw internal diagnostics (Issue #3738)",
+        "flipWentRed": "host-clone-declaration mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/host_fault.ts",
+        "line": 100,
+        "outcome": "host declared verdict preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/host_fault_test.ts",
+        "testName": "host diagnosis honours declared causes and retains raw internal diagnostics (Issue #3738)",
+        "flipWentRed": "host-declared-verdict mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/host_fault.ts",
+        "line": 100,
+        "outcome": "host raw diagnostics preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/host_fault_test.ts",
+        "testName": "host diagnosis honours declared causes and retains raw internal diagnostics (Issue #3738)",
+        "flipWentRed": "host-raw-diagnostics mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/label_failure.ts",
+        "line": 490,
+        "outcome": "label handler declaration preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/label_manager_test.ts",
+        "testName": "failure label handler retains declared substantive cause despite quoted host and rate text (Issue #3738)",
+        "flipWentRed": "label-handler-declaration mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/failure_diagnosis.ts",
+        "line": 287,
+        "outcome": "host record category preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/host_fault_release_test.ts",
+        "testName": "declared substantive verifier records survive the host-fault release sweep (Issue #3738)",
+        "flipWentRed": "host-record-category mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/declared_handoff.ts",
+        "line": 131,
+        "outcome": "handoff network category preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/declared_handoff_phase_3088_test.ts",
+        "testName": "declared handoff retains network and token causes through the failure decision and callback (Issue #3738)",
+        "flipWentRed": "handoff-network-category mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/declared_handoff.ts",
+        "line": 125,
+        "outcome": "handoff token category preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/declared_handoff_phase_3088_test.ts",
+        "testName": "declared handoff retains network and token causes through the failure decision and callback (Issue #3738)",
+        "flipWentRed": "handoff-token-category mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/git_push.ts",
+        "line": 553,
+        "outcome": "gate error verdict kind preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
+        "flipWentRed": "gate-error-verdict-kind mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 2058,
+        "outcome": "gate infrastructure map preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
+        "flipWentRed": "gate-infrastructure-map mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 2060,
+        "outcome": "gate verdict map preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
+        "flipWentRed": "gate-verdict-map mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 207,
+        "outcome": "verifier evidence tag preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
+        "testName": "verifier findings preserve evidence and substantive causes without accepting infrastructure claims (Issue #3738)",
+        "flipWentRed": "verifier-evidence-tag mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 652,
+        "outcome": "mixed primary quality preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
+        "testName": "completion retains evidence, substantive and mixed verifier causes without hiding blockers (Issue #3738)",
+        "flipWentRed": "mixed-primary-quality mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 3281,
+        "outcome": "verifier default substantive preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
+        "testName": "completion retains evidence, substantive and mixed verifier causes without hiding blockers (Issue #3738)",
+        "flipWentRed": "verifier-default-substantive mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 829,
+        "outcome": "summary existing pr causes preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
+        "testName": "existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)",
+        "flipWentRed": "summary-existing-pr-causes mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome.ts",
+        "line": 385,
+        "outcome": "summary outcome category preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
+        "testName": "existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)",
+        "flipWentRed": "summary-outcome-category mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome.ts",
+        "line": 395,
+        "outcome": "summary outcome causes preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
+        "testName": "existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)",
+        "flipWentRed": "summary-outcome-causes mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_callback_context.ts",
+        "line": 157,
+        "outcome": "callback primary category preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts",
+        "testName": "existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)",
+        "flipWentRed": "callback-primary-category mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_callback_context.ts",
+        "line": 179,
+        "outcome": "callback blocked causes preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/run_callback_context_test.ts",
+        "testName": "callback context retains all declared causes after a PR exists (Issue #3738)",
+        "flipWentRed": "callback-blocked-causes mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome.ts",
+        "line": 288,
+        "outcome": "outcome blocked causes preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/run_callback_context_test.ts",
+        "testName": "callback context retains all declared causes after a PR exists (Issue #3738)",
+        "flipWentRed": "outcome-blocked-causes mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome.ts",
+        "line": 310,
+        "outcome": "outcome declared category preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
+        "flipWentRed": "outcome-declared-category mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/execute_phase.ts",
+        "line": 1451,
+        "outcome": "execute source classification preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/execute_phase_scheduled_release_424_test.ts",
+        "testName": "execute timeout keeps its known cause when agent output quotes billing text (Issue #3738)",
+        "flipWentRed": "execute-source-classification mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome_classifier.ts",
+        "line": 250,
+        "outcome": "classifier declared provenance preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/run_outcome_classifier_test.ts",
+        "testName": "declared causes retain worker diagnosis without accepting quoted billing or crash text (Issue #3738)",
+        "flipWentRed": "classifier-declared-provenance mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome_classifier.ts",
+        "line": 251,
+        "outcome": "classifier kill refinement preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/run_outcome_classifier_test.ts",
+        "testName": "declared causes retain worker diagnosis without accepting quoted billing or crash text (Issue #3738)",
+        "flipWentRed": "classifier-kill-refinement mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome_classifier.ts",
+        "line": 251,
+        "outcome": "classifier rate refinement preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/run_outcome_classifier_test.ts",
+        "testName": "declared causes retain worker diagnosis without accepting quoted billing or crash text (Issue #3738)",
+        "flipWentRed": "classifier-rate-refinement mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome_classifier.ts",
+        "line": 253,
+        "outcome": "classifier agent mask preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/run_outcome_classifier_test.ts",
+        "testName": "declared causes retain worker diagnosis without accepting quoted billing or crash text (Issue #3738)",
+        "flipWentRed": "classifier-agent-mask mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome_classifier.ts",
+        "line": 349,
+        "outcome": "classifier disk preservation preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/execute_phase_scheduled_release_424_test.ts",
+        "testName": "execute retains a known disk fault from the CLI boundary through failure bookkeeping (Issue #3738)",
+        "flipWentRed": "classifier-disk-preservation mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/coding_failure_ladder.ts",
+        "line": 224,
+        "outcome": "ladder quoted timeout preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/coding_failure_ladder_test.ts",
+        "testName": "declared failure causes outrank quoted deadline and timeout wording (Issue #3738)",
+        "flipWentRed": "ladder-quoted-timeout mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/run_outcome_classifier.ts",
+        "line": 252,
+        "outcome": "classifier internal refinement preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/run_outcome_classifier_test.ts",
+        "testName": "declared causes retain worker diagnosis without accepting quoted billing or crash text (Issue #3738)",
+        "flipWentRed": "classifier-internal-refinement mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 207,
+        "outcome": "verifier quality tag preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/pre_pr_verifier_3395_test.ts",
+        "testName": "verifier findings preserve evidence and substantive causes without accepting infrastructure claims (Issue #3738)",
+        "flipWentRed": "verifier-quality-tag mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
+        "line": 675,
+        "outcome": "quality raw infrastructure preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/issue_worker_infra_retry_test.ts",
+        "testName": "qualityGate - zero_output failure then success on retry does NOT call handleIssueFailure",
+        "flipWentRed": "quality-raw-infrastructure mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
+        "line": 219,
+        "outcome": "quality label provenance preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/issue_worker_infra_retry_test.ts",
+        "testName": "qualityGate - zero_output failure on both attempts invokes handleIssueFailure exactly once",
+        "flipWentRed": "quality-label-provenance mutation failed the named assertion"
+      }
+    ]
+  }
+}

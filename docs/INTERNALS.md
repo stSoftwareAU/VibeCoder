@@ -3647,7 +3647,7 @@ those matters most: a host that cannot find `deno` fails the baseline and the
 post-change gate with byte-identical output, so without that guard a broken host
 would read as a broken repository — silencing the health failure an operator
 needs and filing a tracker on an innocent repo. The class comes from
-`detectFailureCategory`, the single diagnosis path.
+`detectFailureCategory` applied to the raw quality-gate output.
 
 ```mermaid
 flowchart TD

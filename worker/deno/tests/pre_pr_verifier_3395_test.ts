@@ -1650,6 +1650,10 @@ Deno.test("verifier findings preserve evidence and substantive causes without ac
       },
     ],
   }));
+  assertEquals(reply.findings.slice(0, 2).map((f) => f.category), [
+    "summary_incomplete",
+    "quality_check",
+  ]);
   assertEquals(
     reply.findings.map((f) => "category" in f ? f.category : "quality_check"),
     ["summary_incomplete", "quality_check", "quality_check", "quality_check"],

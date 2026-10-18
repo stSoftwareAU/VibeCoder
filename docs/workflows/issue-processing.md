@@ -3318,13 +3318,13 @@ once. Retry/label decisions and emitted outcomes retain that diagnosis rather
 than letting later quoted text replace it. Known scheduled releases, execution
 timeouts, watchdog lateness and incomplete termination retain their runner
 fields. Absent evidence does not acquire an inferred cause. Existing already-landed
-outcomes retain their own meaning and delivery target; this classification change
-does not decide that work has landed.
+outcomes keep their semantics; this classification change does not decide
+completion or delivery target.
 
 The marker rules below remain the compatibility path for legacy text and posted
 records. New worker-written results carry their category explicitly.
 
-A run refused by the PR-summary gates is categorised `summary_incomplete`
+For legacy text diagnosis, a PR-summary-gate refusal is `summary_incomplete`
 (display `summary-incomplete`, Issue #3431): the worker prefixes the failure
 reason with its own marker, and a message that starts with it is classified
 before the free-text scheduled-release, timeout, kill, rate-limit and disk-full rules, so the

@@ -18,6 +18,7 @@ import {
   resetInfraRetryCount,
   shouldRetryInfrastructureFailure,
 } from "../lib/infra_retry.ts";
+import type { HandleFailureOptions } from "../lib/label_types.ts";
 import type { PhaseState } from "../lib/issue_worker_types.ts";
 import type { Logger } from "../types.ts";
 import {
@@ -437,7 +438,8 @@ Deno.test(
           }),
       },
       github: {
-        handleIssueFailure: (() => {
+        handleIssueFailure: ((options: HandleFailureOptions) => {
+          assertEquals(options.category, "zero_output");
           handleFailureCalls++;
           return Promise.resolve({
             ok: true,
@@ -455,6 +457,9 @@ Deno.test(
     const result = await workOnIssueQualityGate(ctx, state, deps);
 
     assertEquals(result.status, "failure");
+    if (result.status === "failure") {
+      assertEquals(result.category, "zero_output");
+    }
     assertEquals(
       handleFailureCalls,
       1,
