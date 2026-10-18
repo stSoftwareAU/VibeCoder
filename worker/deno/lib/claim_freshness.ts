@@ -382,7 +382,7 @@ export async function checkAlreadyLanded(
       throw new Error("Unreadable local commit identity");
     }
     for (const candidate of prs) {
-      if (candidate === null || typeof candidate !== "object") continue;
+      if (candidate === null) continue;
       const pr = candidate as {
         number?: number;
         title?: string;

@@ -512,7 +512,9 @@ Deno.test("already-landed proof rejects partial, unrelated and unreadable merge 
   for (
     const pr of [
       { state: "OPEN" },
-      { number: 0 },
+      { number: 0, url: `https://github.com/${REPO}/pull/0` },
+      { number: 339.5, url: `https://github.com/${REPO}/pull/339.5` },
+      { number: undefined },
       { url: "https://github.com/Other/Repo/pull/339" },
       { headRefName: OTHER_BRANCH },
       { headRepositoryOwner: { login: "Other" } },
@@ -522,6 +524,9 @@ Deno.test("already-landed proof rejects partial, unrelated and unreadable merge 
       { mergeCommit: null },
       { mergeCommit: { oid: "not-a-sha" } },
       { mergedAt: null },
+      { mergedAt: 0 },
+      { mergedAt: "not-a-date" },
+      { mergeCommit: { oid: [LANDED_MERGE] } },
       {
         body:
           "Closes #333.\n\n## Acceptance Criteria\n- **partial** — Fix the requested behaviour — evidence: only one path — reason: more scope remains",
@@ -556,6 +561,14 @@ Deno.test("already-landed proof rejects partial, unrelated and unreadable merge 
       { body: "Closes `an example` #333" },
       {
         body:
+          "Closes #333\n\n## Acceptance Criteria\n- **met** — Fix the requested behaviour",
+      },
+      {
+        body:
+          "Closes #333\n\n## Acceptance Criteria\n- **missing** — Fix the requested behaviour — reason: requested behaviour is not implemented",
+      },
+      {
+        body:
           "## Acceptance Criteria\n- [x] Completed portion\n- [ ] Remaining work\n\nCloses #333",
       },
       { body: "> Closes #333" },
@@ -582,35 +595,135 @@ Deno.test("already-landed proof preserves local work and refuses unavailable com
       "extra-commit",
       "lookup-failed",
       "changed-during-proof",
+      "late-dirty",
+      "changed-head",
+      "changed-branch",
+      "changed-pr-head",
+      "status-unreadable",
+      "ancestry-unreadable",
+      "ancestry-error",
+      "head-unreadable",
+      "branch-unreadable",
+      "head-extra-commit",
+      "branch-extra-commit",
     ] as const
   ) {
     let proved = false;
-    const { options } = landedOptions({
+    const { options, warnings, calls } = landedOptions({
       runGit: (args: string[]) => {
+        calls.push(args);
         if (mode === "lookup-failed") {
           return Promise.resolve({
             ok: false as const,
             error: new Error("network unavailable"),
           });
         }
+        if (args[0] === "merge-base" && mode === "ancestry-error") {
+          return Promise.resolve({
+            ok: false as const,
+            error: new Error("ancestry observation unavailable"),
+          });
+        }
         if (args[0] === "merge-base") proved = true;
-        const code = args[0] === "merge-base" && mode === "extra-commit"
+        const code = args[0] === "merge-base" &&
+            (mode === "extra-commit" ||
+              (mode === "head-extra-commit" ||
+                  mode === "branch-extra-commit") && args[2] === "c".repeat(40))
           ? 1
+          : args[0] === "status" && mode === "status-unreadable"
+          ? 128
+          : args[0] === "merge-base" && mode === "ancestry-unreadable"
+          ? 128
           : 0;
-        const stdout = args[0] === "status" && mode === "dirty"
-          ? "?? unshipped.ts"
-          : args[0] === "rev-parse"
-          ? (mode === "changed-during-proof" && proved
-            ? "c".repeat(40)
-            : LANDED_HEAD)
-          : "";
+        let stdout = "";
+        if (
+          args[0] === "status" &&
+          (mode === "dirty" || mode === "late-dirty" && proved)
+        ) stdout = "?? unshipped.ts";
+        if (args[0] === "rev-parse") {
+          const ref = args.at(-1);
+          const changed = (mode === "changed-during-proof" && proved) ||
+            (mode === "changed-head" && proved && ref === "HEAD^{commit}") ||
+            (mode === "changed-branch" && proved &&
+              ref === `${BRANCH}^{commit}`) ||
+            (mode === "changed-pr-head" && ref === "FETCH_HEAD^{commit}");
+          stdout = changed ? "c".repeat(40) : LANDED_HEAD;
+          if (
+            mode === "head-unreadable" && ref === "HEAD^{commit}" ||
+            mode === "branch-unreadable" && ref === `${BRANCH}^{commit}`
+          ) stdout = "not-a-commit";
+          if (
+            mode === "head-extra-commit" && ref === "HEAD^{commit}" ||
+            mode === "branch-extra-commit" && ref === `${BRANCH}^{commit}`
+          ) stdout = "c".repeat(40);
+        }
         return Promise.resolve({
           ok: true as const,
-          value: { code, stdout, stderr: "" },
+          value: {
+            code,
+            stdout,
+            stderr: code === 128 ? "git observation unavailable" : "",
+          },
         });
       },
     });
     assertEquals((await checkAlreadyLanded(options)).kind, "fresh", mode);
+    if (mode === "ancestry-error") {
+      assert(
+        warnings.some((message) =>
+          message.includes("ancestry observation unavailable")
+        ),
+        "the original ancestry failure remains diagnosable",
+      );
+    }
+    if (
+      mode === "extra-commit" || mode === "head-extra-commit" ||
+      mode === "branch-extra-commit"
+    ) {
+      assertEquals(
+        warnings,
+        [],
+        "ordinary distinct work is not an unreadable ancestry check",
+      );
+    }
+
+    if (
+      mode === "dirty" || mode === "head-unreadable" ||
+      mode === "branch-unreadable"
+    ) {
+      assertEquals(
+        calls.some((args) => args[0] === "fetch"),
+        false,
+        "already invalid local work does not trigger a pull-ref fetch",
+      );
+    }
+    if (
+      mode === "late-dirty" || mode === "changed-head" ||
+      mode === "changed-branch"
+    ) {
+      assert(
+        calls.some((args) => args[0] === "fetch"),
+        "the final observation is tested after initially valid local work",
+      );
+    }
+    if (mode === "lookup-failed") {
+      assert(
+        warnings.some((message) => message.includes("network unavailable")),
+        "the original Git failure remains diagnosable",
+      );
+    }
+    if (mode === "status-unreadable" || mode === "ancestry-unreadable") {
+      assert(
+        warnings.some((message) =>
+          message.includes(
+            mode === "status-unreadable"
+              ? "git status failed"
+              : "Cannot compare local work",
+          )
+        ),
+        "the specific unreadable observation remains diagnosable",
+      );
+    }
   }
   for (const status of ["ahead", "diverged", "unknown"]) {
     const { options } = landedOptions({
@@ -729,5 +842,77 @@ Deno.test("already-landed proof replays public #3740 squash and preserves #3534 
       );
       assertEquals(calls.some((args) => args[0] === "fetch"), false);
     }
+  }
+});
+
+Deno.test("already-landed proof skips malformed candidate fields without poisoning a later exact PR (Issue #3977)", async () => {
+  for (
+    const malformed of [
+      null,
+      23,
+      "not a PR",
+      landedIssue({ url: undefined }),
+      landedIssue({ body: undefined }),
+      landedIssue({ body: 23 }),
+      landedIssue({ title: undefined }),
+    ]
+  ) {
+    const { options } = landedOptions({
+      runGh: (args: string[]) =>
+        Promise.resolve(
+          args[1] === "list"
+            ? JSON.stringify([malformed, landedIssue()])
+            : "behind",
+        ),
+    });
+    assertEquals(
+      (await checkAlreadyLanded(options)).kind,
+      "stale",
+      JSON.stringify(malformed),
+    );
+  }
+});
+
+Deno.test("already-landed proof validates the requested identity and avoids local work when no merged PR exists (Issue #3977)", async () => {
+  for (
+    const extra of [{ repo: "--invalid" }, { issueNumber: 0 }, {
+      issueNumber: 333.5,
+    }]
+  ) {
+    const { options, calls, warnings } = landedOptions(extra);
+    assertEquals((await checkAlreadyLanded(options)).kind, "fresh");
+    assertEquals(calls, []);
+    assert(
+      warnings.some((message) =>
+        message.includes("Invalid repository or issue")
+      ),
+    );
+  }
+  const { options, calls } = landedOptions({
+    runGh: () => Promise.resolve("[]"),
+  });
+  assertEquals((await checkAlreadyLanded(options)).kind, "fresh");
+  assertEquals(
+    calls,
+    [],
+    "no merged candidates means no local or fetch operations",
+  );
+});
+
+Deno.test("already-landed proof reports malformed merged-PR collections without observing local work (Issue #3977)", async () => {
+  for (const raw of ["{}", "null", "[", "23"]) {
+    const { options, calls, warnings } = landedOptions({
+      runGh: () => Promise.resolve(raw),
+    });
+    assertEquals((await checkAlreadyLanded(options)).kind, "fresh");
+    assertEquals(
+      calls,
+      [],
+      "unreadable merge collections do not trigger local/fetch commands",
+    );
+    assert(
+      warnings.some((message) => message.includes("merged-PR lookup")),
+      "the collection reader names the failed evidence read",
+    );
   }
 });

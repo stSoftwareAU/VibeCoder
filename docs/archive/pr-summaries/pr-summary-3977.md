@@ -64,11 +64,11 @@ flowchart LR
   negative, both correctly classified. Synthetic refusal cases cover malformed
   metadata and unavailable evidence. This small selected corpus establishes no
   general recall estimate; unobserved false negatives remain unknown.
-- 23 individual mutations produced assertion failures in the named regressions,
+- 81 individual mutations produced assertion failures in the named regressions,
   including actual production worker dispatch, every new bookkeeping caller,
   both core release arms and deferred heartbeat publication. The facts companion
   records the source anchors and tests. No type failure counts as a red test.
-- Twelve focused suites passed: 325 tests, no failures. The repository quality
+- Twelve focused suites passed: 329 tests, no failures. The repository quality
   gate is recorded separately when complete. No deployed-worker or fleet-wide
   recurrence improvement is claimed from these fixtures.
 - Docs sweep — grep: "claim freshness", "already-landed", "Preservation runs
@@ -95,6 +95,10 @@ flowchart LR
 - **violation** — A provisional heartbeat failure could remain in the tally after late reconciliation. — evidence: `worker/deno/lib/issue_worker.ts:237` and `worker/deno/lib/heartbeat.ts:288`. — reason: fixed by deferring the first terminal publication to the final production release, without rewriting history.
 - **violation** — Code examples or an unassessed criteria block could falsely establish delivery. — evidence: `worker/deno/lib/claim_freshness.ts:425`. — reason: fixed using shared code segments, conservative indentation eligibility and the existing criteria extractor; refusal and legal controls pass.
 - **violation** — The production release-ownership test only asserted an internal flag. — evidence: `worker/deno/tests/run_core_production_deps_test.ts:721`. — reason: fixed with actual workOnIssue dispatch through production and observable heartbeat-clear, interval and failure-handler assertions.
+
+- **violation** — Whole-path mutations did not establish each provenance operand or the final local-state observations. — evidence: `worker/deno/lib/claim_freshness.ts:403`, `worker/deno/lib/claim_freshness.ts:487` and `worker/deno/lib/issue_worker.ts:163`. — reason: fixed with independent metadata operands, late-only dirty/HEAD/branch changes, separate local commit containment and terminal eligibility controls; all 81 recorded mutations fail assertions.
+- **violation** — Markdown, closure and heartbeat decisions needed operand-specific accountability. — evidence: `worker/deno/lib/claim_freshness.ts:425` and `worker/deno/lib/issue_worker.ts:237`. — reason: fixed with 17 additional independent flips, incomplete-closure controls and actual worker publication controls for standalone, ordinary success, other stale reasons and ordinary pre-existing gate skips. The expanded 12-suite run passed all 329 tests again.
+- **clean** — Final independent review verified all 81 neutralising operand mutations, source anchors and named tests with no remaining blocking Standards finding. Earlier independent source review checked shared helper reuse, preserved existing assertions, qualified deployment evidence, specific source citations, indentation refusals and observable production publication. No additional concrete runtime blocker was found.
 
 ## Test Plan
 
