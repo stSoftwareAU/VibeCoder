@@ -1,0 +1,168 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/pr_body_sync.ts",
+        "line": 736,
+        "outcome": "the rebuilt summary marks a criterion partial or missing and the live body has no leading section: the gap branch runs and files or reuses the follow-up",
+        "test": "worker/deno/tests/pr_body_sync_test.ts",
+        "testName": "sync - a fix run's newly reported partial criterion files a follow-up (Issue #3678)",
+        "flipWentRed": "disabling the whole branch turned it red, with the other named Issue #3678 sync tests for reuse, blocked content, filing failure, no filer, partial-delivery hand-off, unreadable issue and idle-task label"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync.ts",
+        "line": 736,
+        "outcome": "the rebuilt summary marks no criterion partial or missing: the branch is skipped and the issue is never read",
+        "test": "worker/deno/tests/pr_body_sync_test.ts",
+        "testName": "sync - a rebuilt summary with no gap makes no issue call and never checks the issue (Issue #3678)",
+        "flipWentRed": "forcing the trigger to true turned it red (the forced branch read the issue and the sync returned not ok), along with 14 existing sync tests"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync.ts",
+        "line": 754,
+        "outcome": "the parent issue cannot be read or parsed: the sync fails naming the issue",
+        "test": "worker/deno/tests/pr_body_sync_test.ts",
+        "testName": "sync - an issue that cannot be read fails the sync naming the issue (Issue #3678)",
+        "flipWentRed": "disabling the whole branch turned it red, with the other named Issue #3678 sync tests that reach the branch"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync.ts",
+        "line": 775,
+        "outcome": "the follow-up cannot be filed: the sync fails and names the cause rather than rebuilding the body with the gap unrecorded",
+        "test": "worker/deno/tests/pr_body_sync_test.ts",
+        "testName": "sync - a follow-up that cannot be filed fails the sync and names the cause (Issue #3678)",
+        "flipWentRed": "deleting the early return turned it red with a TypeError on the undefined body rather than the named cause; the content-integrity and no-filer sync tests also went red"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 72,
+        "outcome": "gh output that is not a JSON object throws naming it",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "parseSyncParentIssue - throws when the output is not a JSON object (Issue #3678)",
+        "flipWentRed": "dropping the null check turned it red: the parser threw a TypeError about reading title from null, not the named error"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 75,
+        "outcome": "a title that is not a string throws naming the title",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "parseSyncParentIssue - throws naming the title when it is not a string (Issue #3678)",
+        "flipWentRed": "disabling the title check turned it red: no error was thrown"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 78,
+        "outcome": "a missing body throws naming the body",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "parseSyncParentIssue - throws naming the body when it is missing (Issue #3678)",
+        "flipWentRed": "disabling the body check turned it red: no error was thrown"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 83,
+        "outcome": "labels that are not an array read as no labels",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "parseSyncParentIssue - reads no labels when labels is not an array (Issue #3678)",
+        "flipWentRed": "replacing the Array.isArray check with a defined-check (cast so it type-checks) turned it red: TypeError, parsed.labels is not iterable"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 86,
+        "outcome": "a label entry whose name is not a string is dropped",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "parseSyncParentIssue - keeps only label entries whose name is a string (Issue #3678)",
+        "flipWentRed": "changing the name check to name !== undefined turned only this test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 98,
+        "outcome": "an absent author is the empty login",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "parseSyncParentIssue - an absent author is the empty login (Issue #3678)",
+        "flipWentRed": "returning the raw author login turned it red (author undefined, not the empty string); the null-milestone test also went red"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 99,
+        "outcome": "a null milestone is no milestone and adds no milestoneTitle key",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "parseSyncParentIssue - a null milestone is no milestone (Issue #3678)",
+        "flipWentRed": "spreading milestoneTitle unconditionally turned it red (the key is present with an undefined value)"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 200,
+        "outcome": "no follow-up filer wired: the sync fails loudly and files nothing",
+        "test": "worker/deno/tests/pr_body_sync_test.ts",
+        "testName": "sync - a sync with no follow-up filer wired fails loudly rather than filing nothing (Issue #3678)",
+        "flipWentRed": "forcing the no-filer check off turned it red: a TypeError inside the try replaced the named message (a non-null assertion was added for the type check)"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 220,
+        "outcome": "the parent issue fails the pickup content-integrity check: the sync files nothing",
+        "test": "worker/deno/tests/pr_body_sync_test.ts",
+        "testName": "sync - a parent issue that fails the content-integrity check files nothing (Issue #3678)",
+        "flipWentRed": "forcing the blocked check off turned it red: the sync returned ok true on a blocked verdict"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 232,
+        "outcome": "the parent is itself a partial-delivery follow-up: the gap is handed to a human and not filed again",
+        "test": "worker/deno/tests/pr_body_sync_test.ts",
+        "testName": "sync - a gap on a partial-delivery follow-up is handed to a human, not filed again (Issue #3678)",
+        "flipWentRed": "forcing the partial-delivery check off turned it red: the follow-up was not labelled for a human"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 243,
+        "outcome": "the human hand-off fails: the sync fails loudly and adds no section",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "addReportedGapSectionOnSync - a failed human hand-off fails loudly and adds no section (Issue #3678)",
+        "flipWentRed": "forcing the hand-off failure check off turned only this test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 264,
+        "outcome": "the idle-task label cannot be ensured: the follow-up is still filed",
+        "test": "worker/deno/tests/pr_body_sync_test.ts",
+        "testName": "sync - a follow-up is still filed when the idle-task label cannot be ensured (Issue #3678)",
+        "flipWentRed": "making the not-ok path return the label error turned it red (expected ok, got an error)"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 284,
+        "outcome": "a parent with no milestone files the follow-up without one",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "addReportedGapSectionOnSync - a parent with no milestone files the follow-up without one (Issue #3678)",
+        "flipWentRed": "the unconditional milestone spread turned only this test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 284,
+        "outcome": "a parent with a milestone files the follow-up on that milestone",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "addReportedGapSectionOnSync - a parent with a milestone files the follow-up on it (Issue #3678)",
+        "flipWentRed": "dropping the milestone spread turned it red: the gh issue create call carried no --milestone"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 286,
+        "outcome": "the follow-up cannot be filed: the sync fails and names the cause",
+        "test": "worker/deno/tests/pr_body_sync_test.ts",
+        "testName": "sync - a follow-up that cannot be filed fails the sync and names the cause (Issue #3678)",
+        "flipWentRed": "forcing the failure check off turned it red: the message named a TypeError on the follow-up number, not the gh cause"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 310,
+        "outcome": "a verifier that throws: the sync fails loudly naming the cause",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "addReportedGapSectionOnSync - a verifier that throws fails loudly naming the cause (Issue #3678)",
+        "flipWentRed": "rethrowing from the catch turned only this test red"
+      }
+    ]
+  }
+}

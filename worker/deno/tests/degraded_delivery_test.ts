@@ -28,6 +28,7 @@ import {
   buildDegradedFollowUpIssue,
   buildDegradedNoFollowUpSection,
   buildDegradedPrSection,
+  buildDegradedStaleFollowUpSection,
   buildDegradedUnfiledGapSection,
   buildReportedGapPrSection,
   buildReportedGapStaleFollowUpSection,
@@ -901,6 +902,10 @@ Deno.test("parseDegradedSection - round-trips a reason with parentheses from eac
     reason: PAREN_REASON,
     followUpNumber: 77,
   });
+  assertEquals(
+    parseDegradedSection(buildDegradedStaleFollowUpSection(verdict, 77)),
+    { reason: PAREN_REASON, followUpNumber: 77 },
+  );
 });
 
 Deno.test("parseDegradedSection - shortfall bullets never supply a follow-up number", () => {
@@ -931,6 +936,27 @@ Deno.test("buildDegradedUnfiledGapSection - throws on an all-unassessed verdict"
   );
 });
 
+Deno.test("buildDegradedStaleFollowUpSection - renders the heading, the stale follow-up line and the bullets (Issue #3677)", () => {
+  assertEquals(
+    buildDegradedStaleFollowUpSection({
+      degraded: true,
+      reason: PAREN_REASON,
+      delivered: [],
+      shortfalls: [...PARTIAL_SHORTFALL],
+    }, 77),
+    "## ⚠️ Degraded run — partial delivery\n" +
+      "\n" +
+      `This run was degraded (${PAREN_REASON}) and did not show every ` +
+      "accepted scope item as met, or reported a gap of its own. The worker " +
+      "filed #77 for the outstanding items when the PR was raised and a " +
+      "re-sync does not rewrite it, so it may not list every item below — " +
+      "check them against the diff before merging:\n" +
+      "\n" +
+      "- **partial** — the export\n" +
+      "\n",
+  );
+});
+
 Deno.test("rederiveDegradedSection - empty when every item is now met", () => {
   const liveSection = buildDegradedPrSection({
     degraded: true,
@@ -952,6 +978,46 @@ Deno.test("rederiveDegradedSection - keeps the follow-up number and reason", () 
     degraded: true,
     reason: PAREN_REASON,
     delivered: [],
+    shortfalls: [{ criterion: "the export works", status: "partial" as const }],
+  }, 77);
+  const out = rederiveDegradedSection({
+    liveSection,
+    issueBody: EXPORT_ISSUE,
+    prBody: PARTIAL_SUMMARY,
+  });
+  assertEquals(out, liveSection);
+  assertStringIncludes(out, "continue in #77:");
+  assertStringIncludes(out, PAREN_REASON);
+  assertStringIncludes(out, "**partial** — the export works");
+});
+
+Deno.test("rederiveDegradedSection - changed shortfalls no longer claim to continue in the follow-up (Issue #3677)", () => {
+  const liveSection = buildDegradedPrSection({
+    degraded: true,
+    reason: PAREN_REASON,
+    delivered: [],
+    shortfalls: [{ criterion: "the export works", status: "partial" }],
+  }, 77);
+  const issueBody =
+    "## Acceptance Criteria\n\n- the export works\n- the import works\n";
+  const prBody = `## Acceptance Criteria
+
+- **met** — the export works — evidence: \`x_test.ts\` — reviewer: met
+- **partial** — the import works — reviewer: partial
+`;
+  const out = rederiveDegradedSection({ liveSection, issueBody, prBody });
+  assertStringIncludes(out, "The worker filed #77 for the outstanding items");
+  assertStringIncludes(out, "**partial** — the import works");
+  assertStringIncludes(out, PAREN_REASON);
+  assert(!out.includes("continue in #77:"));
+  assert(!out.includes("the export works"));
+});
+
+Deno.test("rederiveDegradedSection - a section already marked stale re-syncs under the same follow-up number (Issue #3677)", () => {
+  const liveSection = buildDegradedStaleFollowUpSection({
+    degraded: true,
+    reason: PAREN_REASON,
+    delivered: [],
     shortfalls: [...PARTIAL_SHORTFALL],
   }, 77);
   const out = rederiveDegradedSection({
@@ -959,8 +1025,7 @@ Deno.test("rederiveDegradedSection - keeps the follow-up number and reason", () 
     issueBody: EXPORT_ISSUE,
     prBody: PARTIAL_SUMMARY,
   });
-  assertStringIncludes(out, "continue in #77:");
-  assertStringIncludes(out, PAREN_REASON);
+  assertStringIncludes(out, "The worker filed #77 for the outstanding items");
   assertStringIncludes(out, "**partial** — the export works");
 });
 

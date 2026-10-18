@@ -106,10 +106,15 @@ re-syncs under the same condition, and also when it pushed nothing and has no
 commits left unpushed, so a feedback run that only answers a finding still
 refreshes a stale body. A body raised before this digest marker existed keeps
 the older rule: rebuilt only when this run's own push changed the summary
-file or its facts file. So the description never drifts from a summary rewritten after
-creation, for as long as that run's conditions are met. A re-sync
+file or its facts file. So the description never drifts from a summary rewritten
+after creation, for as long as that run's conditions are met. Priority 1.64 also
+catches a push the worker did not make (Issue #3760), such as a review-fix
+commit pushed by hand: each cycle it re-syncs, in the repos due that cycle, an
+open fleet-authored PR whose recorded digest differs from the summary at its
+head (see [the PR feedback workflow](workflows/pr-feedback.md)). A re-sync
 re-derives a leading `Degraded run` section from the issue's current body and
-the rebuilt summary rather than copying it, keeping only the original run's
+the rebuilt summary
+rather than copying it, keeping only the original run's
 reason and follow-up number (Issue #3350). A leading `Partial delivery —
 follow-up filed` section is re-derived from the same inputs (Issue #3506): it is
 dropped, with no call to the follow-up, when no gap remains; kept as it is when
@@ -120,9 +125,15 @@ every item. A leading `Partial delivery — handed to a human` section, which a
 healthy run on a partial-delivery follow-up carries instead of filing a nested
 one (PR #3676 review; a degraded run still files one), is rebuilt from the current gaps and dropped when none
 remains.
-A re-sync only reads the issue; it never edits or files the follow-up. See the
-degraded-run section of
-[issue-processing.md](workflows/issue-processing.md).
+Re-deriving a section the body already carries only reads the issue; it never
+edits or files the follow-up. The one case where a sync files or reuses the
+follow-up is a body with no such section whose rebuilt summary newly marks a
+criterion `partial` or `missing` (Issue #3678): the sync re-verifies the
+issue's content, then files or reuses the `idle-task` follow-up and prepends a
+`Partial delivery — follow-up filed` section, or hands a partial-delivery
+follow-up to a human. If the issue cannot be read or verified, or the filing
+fails, the sync fails and leaves the body as it was. See the degraded-run
+section of [issue-processing.md](workflows/issue-processing.md).
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale
@@ -827,6 +838,7 @@ flowchart TD
     P161["🟡 Priority 1.61 — Resolve PR Merge Conflicts"]
     P162["🟡 Priority 1.62 — Nudge Stalled CI"]
     P163["🟡 Priority 1.63 — Blocking-PR Stall Repair"]
+    P164["🟡 Priority 1.64 — Reconcile PR Body Digests"]
     P165["🟡 Priority 1.65 — Auto-merge Catch-up"]
     P166["🟡 Priority 1.66 — Branch Cleanup (merged PRs, once at start-up)"]
     P167["🟡 Priority 1.67 — Issue Closure (merged PRs)"]
@@ -848,7 +860,7 @@ flowchart TD
     P25["🟤 Priority 2.5 — `low-priority` label (fallback when no eligible higher-tier candidate exists in any repo)"]
     P29["⚪ Priority 2.9 — `idle-task` label (worker-filed busywork; only self-appliable label)"]
 
-    P09 --> P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P165 --> P166 --> P167 --> P168 --> P17 --> P171 --> P172 --> P173 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P187 --> P19 --> P2 --> P25 --> P29
+    P09 --> P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P164 --> P165 --> P166 --> P167 --> P168 --> P17 --> P171 --> P172 --> P173 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P187 --> P19 --> P2 --> P25 --> P29
 
     style P09 fill:#d00000,stroke:#9d0208,color:#fff
     style P1 fill:#d00000,stroke:#9d0208,color:#fff
@@ -858,6 +870,7 @@ flowchart TD
     style P161 fill:#f48c06,stroke:#e85d04,color:#000
     style P162 fill:#f48c06,stroke:#e85d04,color:#000
     style P163 fill:#f48c06,stroke:#e85d04,color:#000
+    style P164 fill:#f48c06,stroke:#e85d04,color:#000
     style P165 fill:#faa307,stroke:#f48c06,color:#000
     style P166 fill:#ffba08,stroke:#faa307,color:#000
     style P167 fill:#ffdd00,stroke:#ffba08,color:#000
@@ -877,11 +890,12 @@ flowchart TD
     style P29 fill:#909090,stroke:,color:#fff
 ```
 
-Four rungs are skipped for a cycle when the previous cycle's GraphQL quota
-reading put the window at or below its reserve: Priorities 1.67, 1.68, 1.7 and
-1.81 carry `budgetTier: "deferrable"`, so what is left of the window goes to
-issue work and the sweeps run a cycle later (Issue #2449). The cycle logs one
-`budget-pacing: in reserve — skipped deferrable sweeps: …` line naming them. See
+Five rungs are skipped for a cycle when the previous cycle's GraphQL quota
+reading put the window at or below its reserve: Priorities 1.64, 1.67, 1.68,
+1.7 and 1.81 carry `budgetTier: "deferrable"`, so what is left of the window
+goes to issue work and the sweeps run a cycle later (Issue #2449). The cycle
+logs one `budget-pacing: in reserve — skipped deferrable sweeps: …` line naming
+them. See
 [The `deferrable` tier](GH-API-OPTIMISATION.md#the-deferrable-tier--the-sweeps-that-stand-down-in-the-reserve).
 
 The ladder is otherwise serial, with one exception: when `max_concurrent_issues`

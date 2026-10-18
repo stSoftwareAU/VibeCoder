@@ -16,7 +16,12 @@
  * vibe-allow-conflict-markers
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStrictEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   buildAttemptComment,
   buildFailedComment,
@@ -31,6 +36,7 @@ import {
   parseUnmergedPaths,
   processMergeConflict,
 } from "../lib/pr_merge_conflict_processor.ts";
+import type { SyncFollowUpFiling } from "../lib/pr_body_sync_follow_up.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
@@ -3282,6 +3288,40 @@ Deno.test("processMergeConflict - syncs the PR body once after a verified push",
   assertEquals(calls[0]?.prNumber, 48);
   assertEquals(calls[0]?.repo, "org/repo");
   assertEquals(calls[0]?.beforeSha, "1111111111111111111111111111111111111111");
+});
+
+Deno.test("processMergeConflict - forwards the sync follow-up filer to the PR body sync (Issue #3678)", async () => {
+  const sentinel: SyncFollowUpFiling = {
+    verifyIssueContent: () =>
+      Promise.reject(new Error("sentinel filer must not be called")),
+    ensureLabelExists: () =>
+      Promise.reject(new Error("sentinel filer must not be called")),
+    fleetAuthors: [],
+  };
+  let syncCalls = 0;
+  let forwarded: SyncFollowUpFiling | undefined;
+  const syncPrBodyFn: MergeConflictProcessorDeps["syncPrBodyFn"] = (
+    _input,
+    deps,
+  ) => {
+    syncCalls++;
+    forwarded = deps.followUpFiling;
+    return Promise.resolve({
+      ok: true,
+      value: { status: "updated", issueNumber: 42 },
+    });
+  };
+
+  const { result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    { syncPrBodyFn, syncFollowUpFiling: sentinel },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+  assertEquals(syncCalls, 1);
+  assertStrictEquals(forwarded, sentinel);
 });
 
 Deno.test("processMergeConflict - does not sync the PR body when nothing was merged", async () => {
