@@ -14,6 +14,8 @@ import {
   refreshSubscriptionAllocation,
 } from "../lib/subscription_allocation_runtime.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import { createLogger } from "../lib/logger.ts";
 import {
   type AssignmentMarkerComment,
   recordIssueAssignment,
@@ -148,6 +150,33 @@ Deno.test("allocation defaults to dry-run and refuses financial commitments, Fab
     policy({
       arms: raw.arms.map((arm) => ({
         ...arm,
+        manager: { provider: "claude", model: "opus" },
+      })),
+    })
+  );
+  assertThrows(() =>
+    policy({
+      arms: raw.arms.map((arm) => ({
+        ...arm,
+        reviewer: { provider: "claude", model: "fable" },
+      })),
+    })
+  );
+  assertThrows(() =>
+    policy({
+      providers: {
+        claude: {
+          estimated_budget_usd: 100,
+          max_parallelism: 1,
+          purchase_seats: true,
+        },
+      },
+    })
+  );
+  assertThrows(() =>
+    policy({
+      arms: raw.arms.map((arm) => ({
+        ...arm,
         executor: { provider: "claude", model: "Fable" },
       })),
     })
@@ -163,7 +192,12 @@ Deno.test("allocation moves gradually toward proven efficiency while preserving 
       Date.parse(report.generatedAt) + step * 3_600_000,
     ).toISOString();
     const plan = recommendAllocation(config, state, report);
-    assertEquals(plan.action, "shift");
+    assertEquals(
+      plan.action,
+      state.weights["sonnet-haiku"]! > config.controlFloor + 1e-12
+        ? "shift"
+        : "hold",
+    );
     assert(
       plan.weights.candidate! - state.weights.candidate! <=
         config.maxShift + 1e-12,
@@ -174,7 +208,6 @@ Deno.test("allocation moves gradually toward proven efficiency while preserving 
       plan.intervals.candidate!.low > plan.intervals["sonnet-haiku"]!.high,
     );
     state = plan.nextState;
-    if (state.weights["sonnet-haiku"]! <= config.controlFloor + 1e-12) break;
   }
   assert(state.weights.candidate! > 0.5);
   assert(state.weights["sonnet-haiku"]! >= config.controlFloor);
@@ -299,6 +332,23 @@ Deno.test("automatic routing needs opt-in, a recorded dry-run and live quota/cap
     await selectAllocationArm(policy(), state, "org/repo", 1, "test", status),
     null,
   );
+  for (
+    const unavailable of [{ subscription: false }, { costKnown: false }, {
+      inFlight: 1,
+    }, { hostSpentUsd: 100000 }]
+  ) {
+    assertEquals(
+      await selectAllocationArm(config, state, "org/repo", 1, "test", {
+        claude: { ...status.claude, ...unavailable },
+      }),
+      null,
+    );
+  }
+  state.paused = true;
+  assertEquals(
+    await selectAllocationArm(config, state, "org/repo", 1, "test", status),
+    "sonnet-haiku",
+  );
 });
 
 Deno.test("dry-run state survives restart, requires explicit opt-in, and refuses old or corrupt state", async () => {
@@ -387,6 +437,70 @@ Deno.test("outcome refresh leaves unconfigured workers and preview-only policy u
     undefined,
   );
   assertEquals(messages, []);
+});
+
+Deno.test("production terminal issue callback refreshes allocation even without operator callbacks", async () => {
+  const dir = await Deno.makeTempDir();
+  const originalInterval = globalThis.setInterval;
+  let tick: (() => Promise<void>) | undefined;
+  let cleanup: (() => void) | undefined;
+  try {
+    globalThis.setInterval =
+      ((callback: () => Promise<void>, delay: number) => {
+        assertEquals(delay, 60_000);
+        tick = callback;
+        return originalInterval(() => {}, delay);
+      }) as typeof setInterval;
+    const ledger = `${dir}/ledger.jsonl`;
+    await Deno.writeTextFile(ledger, "");
+    const config = buildDefaultWorkerConfig({
+      workDir: `${dir}/work`,
+      repos: [],
+      subscriptionAllocation: policy({
+        ledger_paths: [ledger],
+        auto_routing: true,
+      }),
+    });
+    await evaluateSubscriptionAllocation(config);
+    const messages: string[] = [];
+    const production = await createProductionRunCoreDeps({
+      repoDir: dir,
+      workDir: config.workDir,
+      githubUser: "worker",
+      config,
+      logger: createLogger({ write: (message) => messages.push(message) }),
+    });
+    cleanup = production.cleanup;
+    const { deps } = production;
+    await deps.runIssueCallbacks!({
+      repo: "org/repo",
+      issueNumber: 1,
+      result: "success",
+      startedAtEpochMs: 1,
+      finishedAtEpochMs: 2,
+    });
+    assert(
+      messages.some((message) =>
+        message.includes("[subscription-allocation] hold:")
+      ),
+    );
+    assert(tick);
+    messages.length = 0;
+    await tick();
+    assert(
+      messages.some((message) =>
+        message.includes("[subscription-allocation] hold:")
+      ),
+    );
+    cleanup();
+    messages.length = 0;
+    await tick();
+    assertEquals(messages, []);
+  } finally {
+    cleanup?.();
+    globalThis.setInterval = originalInterval;
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("a cohort is assigned once and survives retries under another treatment", async () => {

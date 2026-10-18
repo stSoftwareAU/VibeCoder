@@ -766,6 +766,7 @@ export function recommendAllocation(
       remaining,
       Math.max(0, plan.weights[arm.id]! - floor),
     );
+    if (transfer <= 1e-12) continue;
     plan.weights[arm.id]! -= transfer;
     plan.weights[winner.id]! += transfer;
     remaining -= transfer;

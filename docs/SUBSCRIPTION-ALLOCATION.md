@@ -107,9 +107,10 @@ discovery, CI, review and merge gates continue to apply.
 ## Evidence and gradual decisions
 
 The controller refreshes after terminal issue callbacks, after observing closed
-or merged PRs, at completed scan cycles, and before issue admission. Scan
-frequency follows the existing worker loop; no fixed 30-day wait or additional
-background timer is introduced. Changes are limited to one decision per
+or merged PRs, at completed scan cycles, and before issue admission. A one-minute
+timer also evaluates while long issues occupy the loop; overlapping timer
+ticks are skipped and worker cleanup stops it. No fixed 30-day wait is imposed.
+Changes are limited to one decision per
 `min_decision_seconds` (default 900), and unchanged outcome evidence cannot
 compound shifts. Quality and reliability rollback bypass this cadence.
 
@@ -189,8 +190,10 @@ invalid evidence or state.
 `fleet-experiment-report` reads lifecycle ledgers without changing allocation.
 It supports `--ledger a.jsonl,b.jsonl`, `--window 30`, `--horizon 1`,
 `--format json` or `csv`, and `--covariates covariates.json`. Covariates map
-`repo#issue` to string-valued attributes. Its default follow-up horizon is 14
-days. Text breakdowns distinguish all merges from mature merges and use mature
+`repo#issue` to string-valued attributes. It uses the configured allocation
+arms, ledger paths and horizons when present; explicit ledger/window/horizon
+arguments override those defaults. Without allocation configuration its default
+follow-up horizon is 14 days. Text breakdowns distinguish all merges from mature merges and use mature
 costs, avoiding an immature numerator against a mature denominator.
 
 `--synthetic 42` produces repeatable artificial history and is explicitly

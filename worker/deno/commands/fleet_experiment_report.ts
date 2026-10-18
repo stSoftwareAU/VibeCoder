@@ -329,12 +329,17 @@ export const fleetExperimentReportCommand: Command = {
     args: Record<string, unknown>,
     config: WorkerConfig,
   ): Promise<CommandResult<FleetExperimentReportData>> {
-    const windowArg = parseDays("window", args["window"], DEFAULT_WINDOW_DAYS);
+    const policy = config.subscriptionAllocation;
+    const windowArg = parseDays(
+      "window",
+      args["window"],
+      policy?.windowDays ?? DEFAULT_WINDOW_DAYS,
+    );
     if (!windowArg.ok) return { success: false, message: windowArg.message };
     const horizonArg = parseDays(
       "horizon",
       args["horizon"],
-      DEFAULT_HORIZON_DAYS,
+      policy?.horizonDays ?? DEFAULT_HORIZON_DAYS,
     );
     if (!horizonArg.ok) return { success: false, message: horizonArg.message };
     const formatArg = parseFormat(args["format"]);
@@ -398,7 +403,10 @@ export const fleetExperimentReportCommand: Command = {
         };
       }
 
-      const paths = await resolveLedgerPaths(ledgerArg.value, config.workDir);
+      const paths = await resolveLedgerPaths(
+        ledgerArg.value ?? policy?.ledgerPaths,
+        config.workDir,
+      );
       if (!paths.ok) return { success: false, message: paths.message };
       const events = await readAllLedgers(paths.value);
       if (!events.ok) return { success: false, message: events.message };
@@ -408,6 +416,7 @@ export const fleetExperimentReportCommand: Command = {
         windowDays,
         horizonDays,
         covariates: fileCovariates,
+        arms: policy?.arms,
       });
       return {
         success: true,

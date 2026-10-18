@@ -11,16 +11,73 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { fleetExperimentReportCommand } from "../commands/fleet_experiment_report.ts";
 import { CONTROL_ARM_ID } from "../lib/fleet_experiment_arms.ts";
-import { experimentRecordsCsv } from "../lib/fleet_experiment_report.ts";
+import {
+  experimentRecordsCsv,
+  type ExperimentReport,
+} from "../lib/fleet_experiment_report.ts";
 import {
   buildLifecycleEvent,
   type LifecycleEvent,
   serialiseLifecycleEvent,
 } from "../lib/lifecycle_ledger.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { parseAllocationPolicy } from "../lib/subscription_allocation.ts";
 import type { CommandResult, WorkerConfig } from "../types.ts";
 
 const DAY_MS = 86_400_000;
+
+Deno.test("fleet-experiment-report uses the configured allocation ledgers, arms and maturity", async () => {
+  await withWorkDir(async (dir) => {
+    const ledger = `${dir}/trial.jsonl`;
+    const intent = assignment("host-a", ASSIGNMENT_IDS[0], 1, 2);
+    assert(intent.kind === "assignment");
+    await writeLedger(ledger, [buildLifecycleEvent({
+      ...intent,
+      cohort: "custom-candidate",
+    })]);
+    const policy = parseAllocationPolicy({
+      seed: "report-trial",
+      ledger_paths: [ledger],
+      horizon_days: 0.5,
+      window_days: 7,
+      providers: { claude: { estimated_budget_usd: 100, max_parallelism: 1 } },
+      hosts: { "host-a": { providers: ["claude"], capacity: 1 } },
+      arms: [{
+        id: "sonnet-haiku",
+        label: "Control",
+        control: true,
+        status: "active",
+        weight: 1,
+        manager: { provider: "claude", model: "sonnet" },
+        executor: { provider: "claude", model: "haiku" },
+      }, {
+        id: "custom-candidate",
+        label: "Custom",
+        control: false,
+        status: "active",
+        weight: 1,
+        manager: { provider: "claude", model: "sonnet" },
+        executor: { provider: "claude", model: "sonnet" },
+      }],
+    });
+    const result = await fleetExperimentReportCommand.execute(
+      { format: "json" },
+      buildDefaultWorkerConfig({
+        workDir: dir,
+        subscriptionAllocation: policy,
+      }),
+    );
+    assertEquals(result.success, true);
+    const report: ExperimentReport = JSON.parse(result.message);
+    assertEquals(report.horizonDays, 0.5);
+    assertEquals(report.windowDays, 7);
+    const candidate = report.arms.find((arm) =>
+      arm.armId === "custom-candidate"
+    );
+    assertEquals(candidate?.known, true);
+    assertEquals(candidate?.mature, 1);
+  });
+});
 
 /** Fixed UUIDs in the lowercase form the ledger accepts as assignment ids. */
 const ASSIGNMENT_IDS = [

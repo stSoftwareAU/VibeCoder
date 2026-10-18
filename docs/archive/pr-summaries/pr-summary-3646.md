@@ -41,6 +41,14 @@ existing lifecycle ledger; report mature merges against mature costs.
 
 ## Evidence
 
+- The full local gate passed completeness, type checking, lint and formatting;
+  its parallel pass had 29,348 passes and two process-tree failures reproduced
+  on the base. The serial pass did not run after that failure. A final focused
+  run covers the timer, floor and configured-report refinements. Local
+  markdownlint and semgrep are unavailable; required CI runs both.
+- Deliberately disabling subscription admission, quality rollback and the
+  control floor made their behavioural assertions fail. The floor check
+  exposed a test that stopped too early; it now continues beyond saturation.
 - The allocation simulation shows gradual shifts with preserved control and
   exploration floors; immature, missing-cost, uncertain, biased, capacity-limited
   and correlated-outage evidence cannot justify a shift.
@@ -70,7 +78,8 @@ existing lifecycle ledger; report mature merges against mature costs.
   `worker/deno/tests/mod_test.ts`. Required by: "Configurable per-provider estimated API-equivalent cost budgets and host/capacity limits". Replaced by: `assertEquals(commands.length, 156)` in the same test, accounting for the report and allocation commands; command-file registration and description assertions remain.
 - Standalone role dispatch remains independent of allocation; the main-loop
   production seam is `resolveIssueAllocation` in `issue_worker_wiring.ts`.
-  Terminal issue, closed-PR and scan callbacks call the guarded refresh helper.
+  Terminal issue, closed-PR and scan callbacks call the guarded refresh helper;
+  a one-minute timer continues during long work and stops on worker cleanup.
   The existing mock infrastructure returns no selection when allocation is off.
 
 ## Branch outcomes
@@ -83,5 +92,6 @@ existing lifecycle ledger; report mature merges against mature costs.
 
 ## Merge verification
 
-Full local quality execution and required CI are being completed before merge.
+Required CI is pending. The local gate result and host limitation are recorded
+above; all implementation and operator documentation are complete.
 No live subscription feasibility or performance advantage is claimed.

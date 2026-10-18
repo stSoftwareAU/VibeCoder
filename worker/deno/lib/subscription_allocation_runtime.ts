@@ -160,6 +160,31 @@ export async function refreshSubscriptionAllocation(
     return undefined;
   }
 }
+/** Keep evaluating while a long issue occupies the loop; stop with the worker. */
+export function startSubscriptionAllocationRefresh(
+  config: WorkerConfig,
+  log: (message: string) => void,
+): () => void {
+  if (!config.subscriptionAllocation?.autoRouting) return () => {};
+  let stopped = false;
+  let inFlight = false;
+  const timer = setInterval(async () => {
+    if (stopped || inFlight) return;
+    inFlight = true;
+    try {
+      await refreshSubscriptionAllocation(config, (message) => {
+        if (!stopped) log(message);
+      });
+    } finally {
+      inFlight = false;
+    }
+  }, 60_000);
+  Deno.unrefTimer(timer);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
 /** Recompute before admission, without changing issue discovery. */
 export async function resolveIssueAllocation(
   config: WorkerConfig,
