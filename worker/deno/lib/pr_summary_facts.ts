@@ -28,8 +28,6 @@ import {
   type SummaryFacts,
 } from "./summary_facts.ts";
 
-import { markdownLogicalUnits } from "./markdown_code_spans.ts";
-
 /**
  * Render an unambiguous standalone root-manifest bump without predicting the
  * final version. Historical ancestors, release continuations, nested manifests
