@@ -1466,10 +1466,7 @@ per outcome naming `path:line`, the outcome, the test that reaches it, and that
 flipping it went red, or `"noneAdded": true` when the diff adds no branch — and
 leave the `<!-- vibe-branch-outcomes -->` marker in its
 Test Plan, where the worker renders that record as the `Branch outcomes:` list
-(`CODING-STANDARDS.md` → **Branch outcomes facts file** gives the schema).
-The facts are authoritative: maintain them and the marker, not a second prose
-list. The worker refreshes its owned block and replaces safely identified legacy
-lists while preserving unrelated narrative. Every
+(`CODING-STANDARDS.md` → **Branch outcomes facts file** gives the schema); every
 test it names must exist at the head (see **A named test must exist**). Without
 a facts file, the worker still reads a `Branch outcomes:` list written in the
 Test Plan, or `Branch outcomes: none added`. A `Branch outcomes:` line for a
