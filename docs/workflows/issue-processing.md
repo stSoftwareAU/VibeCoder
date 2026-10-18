@@ -1080,6 +1080,24 @@ flowchart TD
 A `partial` entry is unaffected: the PR still closes the issue and the
 Summary names the gap beside the closing keyword.
 
+## Durable project-version wording
+
+The issue and review-fix templates request durable project-version statements in
+the archived summary. The existing summary loader also narrowly normalises
+standalone `Version bump:` root-manifest version pairs in Summary/Test Plan (or
+an unheaded legacy summary). This runs before existing facts rendering and body
+reconciliation, without another model call or refusal gate. It states that the
+manifest is updated for the change and the merged commit records the final
+value, so it assumes neither automatic patch bumps nor any other bump policy.
+Body digests use that stable rendered content.
+
+The normaliser preserves dependencies, exact release evidence, fenced/inline
+examples, indented code, historical ancestors and release continuations. Nested
+manifest ownership is ambiguous, so those version pairs are preserved. It does
+not rewrite archived history on read; the generator writes durable wording to
+new archived summaries. Exact release numbers remain labelled with their final
+commit/release provenance.
+
 ## 🔍 Independent review on two axes
 
 The closure block above says **which** criteria were met; Issue #663 added **who
