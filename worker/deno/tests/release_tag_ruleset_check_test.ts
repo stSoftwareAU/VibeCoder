@@ -242,6 +242,20 @@ Deno.test("checkReleaseTagRuleset - an unexpected failure is never swallowed", a
   );
 });
 
+Deno.test("checkReleaseTagRuleset - gh's connection diagnostic reports unavailable evidence as SKIPPED", async () => {
+  const message =
+    "gh command failed (exit 1): error connecting to api.github.com\n" +
+    "check your internet connection or https://githubstatus.com";
+  const result = await checkReleaseTagRuleset({
+    repo: REPO,
+    ghExec: () => Promise.reject(new Error(message)),
+  });
+  assertEquals(result.status, "skipped");
+  assertEquals(result.findings, []);
+  assertStringIncludes(result.message, "SKIPPED");
+  assertStringIncludes(result.message, "error connecting to api.github.com");
+});
+
 Deno.test("checkReleaseTagRuleset - unreadable JSON fails loud", async () => {
   await assertRejects(
     () =>

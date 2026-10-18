@@ -1,0 +1,304 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/claude_turn_limit.ts",
+        "line": 11,
+        "outcome": "turn cap rejects fractional values",
+        "test": "worker/deno/tests/agent_containment_limits_3701_test.ts",
+        "testName": "config defaults and validates claude_max_turns",
+        "flipWentRed": "Changed '!Number.isSafeInteger(value)' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/claude_turn_limit.ts",
+        "line": 11,
+        "outcome": "turn cap rejects zero and negative values",
+        "test": "worker/deno/tests/agent_containment_limits_3701_test.ts",
+        "testName": "Claude invocation always carries a positive turn cap, including DeepSeek",
+        "flipWentRed": "Changed '(value as number) < 1' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/claude_turn_limit.ts",
+        "line": 22,
+        "outcome": "unset invocation transport uses the safe default",
+        "test": "worker/deno/tests/agent_containment_limits_3701_test.ts",
+        "testName": "Claude invocation always carries a positive turn cap, including DeepSeek",
+        "flipWentRed": "Changed 'value === undefined' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/claude_runner.ts",
+        "line": 2532,
+        "outcome": "direct runner logs the turn-limit failure",
+        "test": "worker/deno/tests/agent_containment_limits_3701_test.ts",
+        "testName": "turn-limit runner logs cause and cap and never retries or waits",
+        "flipWentRed": "Changed 'if (normalisedFailure?.category === \"turn-limit\")' to 'if (false)'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/claude_runner.ts",
+        "line": 3102,
+        "outcome": "turn-limit failure bypasses retry and rate-limit matching",
+        "test": "worker/deno/tests/agent_containment_limits_3701_test.ts",
+        "testName": "turn-limit runner logs cause and cap and never retries or waits",
+        "flipWentRed": "Changed 'if (invokedAgentFailure?.category === \"turn-limit\")' to 'if (false)'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "line": 1614,
+        "outcome": "turn cap cannot credit partial implementation as successful",
+        "test": "worker/deno/tests/execute_claude_phase_test.ts",
+        "testName": "runExecuteClaudePhase - turn limit never credits partial changes or self-heals",
+        "flipWentRed": "Changed 'claudeResult.error instanceof AgentTurnLimitError' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/claude_output_adapter.ts",
+        "line": 261,
+        "outcome": "turn-limit subtype must come from the result error record",
+        "test": "worker/deno/tests/agent_containment_limits_3701_test.ts",
+        "testName": "turn-limit classifier requires its result subtype, not another error code or source",
+        "flipWentRed": "Changed 'error.source === \"result\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/claude_output_adapter.ts",
+        "line": 261,
+        "outcome": "other result errors are not turn-limit failures",
+        "test": "worker/deno/tests/agent_containment_limits_3701_test.ts",
+        "testName": "turn-limit classifier requires its result subtype, not another error code or source",
+        "flipWentRed": "Changed 'error.code === \"error_max_turns\"' to 'true'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/claude_runner.ts",
+        "line": 1400,
+        "outcome": "run log pairs the configured cap with claude_timeout",
+        "test": "worker/deno/tests/agent_containment_limits_3701_test.ts",
+        "testName": "turn-limit runner logs cause and cap and never retries or waits",
+        "flipWentRed": "Changed 'args.includes(\"--max-turns\")' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/claude_runner.ts",
+        "line": 2533,
+        "outcome": "logger-free standalone callers still emit the terminal security event",
+        "test": "worker/deno/tests/standalone_turn_limit_3701_test.ts",
+        "testName": "standalone command settles configured and default turn caps over stale inherited transport",
+        "flipWentRed": "Changed 'logger ?? createLogger()' to 'logger!'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_provider.ts",
+        "line": 607,
+        "outcome": "every Claude-compatible argument builder emits the turn cap",
+        "test": "worker/deno/tests/agent_containment_limits_3701_test.ts",
+        "testName": "Claude invocation always carries a positive turn cap, including DeepSeek",
+        "flipWentRed": "Changed 'args.push(\"--max-turns\", String(resolveClaudeMaxTurns(request.env)));' to ''; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/config.ts",
+        "line": 609,
+        "outcome": "configured cap overrides the default",
+        "test": "worker/deno/tests/agent_containment_limits_3701_test.ts",
+        "testName": "config defaults and validates claude_max_turns",
+        "flipWentRed": "Changed 'file.claude_max_turns ?? DEFAULT_CLAUDE_MAX_TURNS' to 'DEFAULT_CLAUDE_MAX_TURNS'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/run_worker.ts",
+        "line": 646,
+        "outcome": "driver transports the configured cap to real provider argv",
+        "test": "worker/deno/tests/run_worker_test.ts",
+        "testName": "runWorker passes configured turn cap to the actual provider builder",
+        "flipWentRed": "Changed 'String(options.config.claudeMaxTurns ?? DEFAULT_CLAUDE_MAX_TURNS)' to 'String(DEFAULT_CLAUDE_MAX_TURNS)'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/commands/load_config.ts",
+        "line": 238,
+        "outcome": "shell export carries the authoritative configured cap",
+        "test": "worker/deno/tests/load_config_test.ts",
+        "testName": "load-config - turn cap overrides stale internal shell transport",
+        "flipWentRed": "Changed 'config.claudeMaxTurns ?? DEFAULT_CLAUDE_MAX_TURNS' to 'DEFAULT_CLAUDE_MAX_TURNS'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/mod.ts",
+        "line": 831,
+        "outcome": "standalone bootstrap settles the configured cap before invoking commands",
+        "test": "worker/deno/tests/standalone_turn_limit_3701_test.ts",
+        "testName": "standalone command settles configured and default turn caps over stale inherited transport",
+        "flipWentRed": "Changed 'String(config.claudeMaxTurns ?? DEFAULT_CLAUDE_MAX_TURNS)' to 'String(DEFAULT_CLAUDE_MAX_TURNS)'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1234,
+        "outcome": "a capped helper cannot launch another agent invocation",
+        "test": "worker/deno/tests/pr_feedback_processor_test.ts",
+        "testName": "feedback turn limit stops drift and verifier recovery before publishing",
+        "flipWentRed": "Changed 'if (turnLimit.failure) return { ok: false, error: turnLimit.failure };' to 'if (false) return { ok: false, error: turnLimit.failure };'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1264,
+        "outcome": "feedback converts a capped invocation to a terminal workflow failure",
+        "test": "worker/deno/tests/pr_feedback_processor_test.ts",
+        "testName": "feedback turn limit aborts initial and placeholder recovery before settlement or push",
+        "flipWentRed": "Changed 'invocation.error instanceof AgentTurnLimitError' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1419,
+        "outcome": "terminal cap is carried across review re-run",
+        "test": "worker/deno/tests/pr_feedback_processor_test.ts",
+        "testName": "feedback turn limit aborts initial and placeholder recovery before settlement or push",
+        "flipWentRed": "Changed 'if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);' to 'if (!turnLimit.failure) return await failTurnLimit(turnLimit.failure);'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1462,
+        "outcome": "terminal cap is carried across placeholder repair",
+        "test": "worker/deno/tests/pr_feedback_processor_test.ts",
+        "testName": "feedback turn limit aborts initial and placeholder recovery before settlement or push",
+        "flipWentRed": "Changed 'if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);' to 'if (false) return await failTurnLimit(turnLimit.failure);'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1547,
+        "outcome": "terminal cap is carried across drift review",
+        "test": "worker/deno/tests/pr_feedback_processor_test.ts",
+        "testName": "feedback turn limit stops drift and verifier recovery before publishing",
+        "flipWentRed": "Changed 'if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);' to 'if (false) return await failTurnLimit(turnLimit.failure);'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1617,
+        "outcome": "terminal cap is carried across initial verification",
+        "test": "worker/deno/tests/pr_feedback_processor_test.ts",
+        "testName": "feedback turn limit stops drift and verifier recovery before publishing",
+        "flipWentRed": "Changed 'if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);' to 'if (false) return await failTurnLimit(turnLimit.failure);'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1632,
+        "outcome": "terminal cap is carried across verifier correction",
+        "test": "worker/deno/tests/pr_feedback_processor_test.ts",
+        "testName": "feedback turn limit stops drift and verifier recovery before publishing",
+        "flipWentRed": "Changed 'if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);' to 'if (false) return await failTurnLimit(turnLimit.failure);'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1635,
+        "outcome": "terminal cap is carried across second verification",
+        "test": "worker/deno/tests/pr_feedback_processor_test.ts",
+        "testName": "feedback turn limit stops drift and verifier recovery before publishing",
+        "flipWentRed": "Changed 'if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);' to 'if (false) return await failTurnLimit(turnLimit.failure);'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1709,
+        "outcome": "terminal cap is carried across push recovery verification",
+        "test": "worker/deno/tests/pr_feedback_processor_test.ts",
+        "testName": "feedback turn limit stops drift and verifier recovery before publishing",
+        "flipWentRed": "Changed 'if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);' to 'if (false) return await failTurnLimit(turnLimit.failure);'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1729,
+        "outcome": "terminal cap is carried across retry-push verification",
+        "test": "worker/deno/tests/pr_feedback_processor_test.ts",
+        "testName": "feedback turn limit stops drift and verifier recovery before publishing",
+        "flipWentRed": "Changed 'if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);' to 'if (false) return await failTurnLimit(turnLimit.failure);'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1595,
+        "outcome": "a verifier callback cannot approve a run after its agent hit the cap",
+        "test": "worker/deno/tests/pr_feedback_processor_test.ts",
+        "testName": "feedback turn limit stops drift and verifier recovery before publishing",
+        "flipWentRed": "Changed 'if (turnLimit.failure) {\\n        return {' to 'if (false) {\\n        return {'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_ci_processor.ts",
+        "line": 1954,
+        "outcome": "CI quality retry cap stops before final publication",
+        "test": "worker/deno/tests/pr_ci_processor_test.ts",
+        "testName": "CI turn limit aborts both initial and quality-retry runs before commit or push",
+        "flipWentRed": "Changed 'if (postQualityResult.turnLimitFailure)' to 'if (false)'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_ci_processor.ts",
+        "line": 2944,
+        "outcome": "quality helper returns a capped retry before committing",
+        "test": "worker/deno/tests/pr_ci_processor_test.ts",
+        "testName": "CI turn limit aborts both initial and quality-retry runs before commit or push",
+        "flipWentRed": "Changed 'retryResult.error instanceof AgentTurnLimitError' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
+        "line": 711,
+        "outcome": "typed turn limit stops the quality remediation loop",
+        "test": "worker/deno/tests/quality_gate_attempt_report_test.ts",
+        "testName": "quality gate - turn limit stops remediation before a passing retry or bump audit (Issue #3701)",
+        "flipWentRed": "Inverted the AgentTurnLimitError guard; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
+        "line": 172,
+        "outcome": "terminal cap cannot trigger an infrastructure retry",
+        "test": "worker/deno/tests/quality_gate_attempt_report_test.ts",
+        "testName": "quality gate - turn limit stops remediation before a passing retry or bump audit (Issue #3701)",
+        "flipWentRed": "Removed !agentTurnLimit from the infrastructure guard; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
+        "line": 208,
+        "outcome": "terminal cap cannot trigger a bump audit and another gate run",
+        "test": "worker/deno/tests/quality_gate_attempt_report_test.ts",
+        "testName": "quality gate - turn limit stops remediation before a passing retry or bump audit (Issue #3701)",
+        "flipWentRed": "Removed !agentTurnLimit from the bump-audit guard; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/planning_processor.ts",
+        "line": 1775,
+        "outcome": "terminal cap stops planning during draft",
+        "test": "worker/deno/tests/planning_processor_test.ts",
+        "testName": "planning turn limit is terminal during draft",
+        "flipWentRed": "Removed stopAtPlanningTurnLimit(draftResult);; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/planning_processor.ts",
+        "line": 1938,
+        "outcome": "terminal cap stops planning during publish",
+        "test": "worker/deno/tests/planning_processor_test.ts",
+        "testName": "planning turn limit is terminal during publish",
+        "flipWentRed": "Removed stopAtPlanningTurnLimit(claudeResult);; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/planning_processor.ts",
+        "line": 2101,
+        "outcome": "terminal cap stops planning during retry",
+        "test": "worker/deno/tests/planning_processor_test.ts",
+        "testName": "planning turn limit is terminal during retry",
+        "flipWentRed": "Removed stopAtPlanningTurnLimit(retryResult);; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/planning_processor.ts",
+        "line": 2419,
+        "outcome": "terminal cap stops planning during failure-detection-batch",
+        "test": "worker/deno/tests/planning_processor_test.ts",
+        "testName": "planning turn limit is terminal during failure-detection-batch",
+        "flipWentRed": "Removed stopAtPlanningTurnLimit(repairResult);; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/planning_processor.ts",
+        "line": 1400,
+        "outcome": "planning recognises the typed terminal error",
+        "test": "worker/deno/tests/planning_processor_test.ts",
+        "testName": "planning turn limit is terminal during draft",
+        "flipWentRed": "Changed the AgentTurnLimitError operand to TypeError; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/planning_processor.ts",
+        "line": 1367,
+        "outcome": "planning reports a terminal failure once and returns its original typed error",
+        "test": "worker/deno/tests/planning_processor_test.ts",
+        "testName": "planning turn limit is terminal during draft",
+        "flipWentRed": "Changed the outer typed handler to TypeError; the named test failed with an uncaught AgentTurnLimitError."
+      }
+    ]
+  }
+}

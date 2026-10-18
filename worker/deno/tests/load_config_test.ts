@@ -624,3 +624,24 @@ Deno.test("load-config - the progress-extension defaults are exported when unset
     );
   });
 });
+
+Deno.test("load-config - turn cap overrides stale internal shell transport", async () => {
+  await withTempConfig({
+    repos: ["org/repo"],
+    fleet_pr_authors: ["test-bot"],
+    claude_max_turns: 7,
+  }, async (configPath) => {
+    const result = await loadConfigCommand.execute({
+      "config-path": configPath,
+    }, buildDefaultWorkerConfig());
+    assertEquals(result.success, true, result.message);
+    const shell = await new Deno.Command("bash", {
+      args: ["-c", result.message + '\nprintf "%s" "$VIBE_CLAUDE_MAX_TURNS"'],
+      env: { VIBE_CLAUDE_MAX_TURNS: "999" },
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(shell.code, 0);
+    assertEquals(new TextDecoder().decode(shell.stdout), "7");
+  });
+});
