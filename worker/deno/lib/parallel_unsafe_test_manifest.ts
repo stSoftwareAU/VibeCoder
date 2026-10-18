@@ -50,7 +50,7 @@
  * change. {@link WALL_CLOCK_TEST_FILES} carries those. A third, narrower
  * reason showed up in the trial after: two suites that spawn something real —
  * a container runtime, `run.sh` — and then race it, which nine competing
- * workers win. {@link SUBPROCESS_TIMING_TEST_FILES} carries those two, with
+ * workers win. {@link SUBPROCESS_TIMING_TEST_FILES} carries these suites, with
  * the measurement that put them there.
  *
  * {@link PARALLEL_UNSAFE_TEST_FILES} is the union the gate actually ignores.
@@ -461,17 +461,21 @@ const ELAPSED_BOUND =
  * Test files that race a real subprocess against the clock (Issue #940).
  *
  * The other two categories are classifier-backed, because the signal is in
- * the source. These two were found by running the split and reading what
+ * the source. These suites were found by running the split and reading what
  * broke, and no honest regex claims them: what makes them unsafe is that they
  * spawn something real and then depend on it being scheduled promptly.
  *
- * Both failed under `--parallel` and passed in the same sequential run, so
+ * They failed under `--parallel` and passed in the same sequential run, so
  * the entry carries the measurement rather than a hunch. A reason is required
  * for the same purpose it is in `SCRIPT_READING_UNIT_TESTS`: an exemption
  * nobody had to justify is an exemption nobody can retire.
  */
 export const SUBPROCESS_TIMING_TEST_FILES: ReadonlyMap<string, string> =
   new Map([
+    [
+      "tests/run_core_signal_cleanup_test.ts",
+      "Real SIGINT/SIGTERM entrypoint and descendant cleanup. Full --parallel pass: both tests exceeded 1s (2.38s total); isolated: 887ms and 820ms. Process startup and graceful termination contend with parallel workers. Keep every assertion in the required serial pass.",
+    ],
     [
       "tests/container_containment_test.ts",
       "builds a real container and bounds `<runtime> volume create` with " +
