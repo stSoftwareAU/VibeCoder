@@ -69,6 +69,9 @@ admissions stay blocking in completion, local validation and body sync.
 
 ## Test Plan
 
+- `./quality.sh --sequential < /dev/null` passed on implementation head `39154562` with `DENO_JOBS=1`, including both required unit passes, unchanged timing budgets, lint, type checking, formatting and available security checks. Optional config integration was skipped because no runtime configuration was supplied.
+- After the clean merge of default head `b5a3fd09`, six affected summary, body-sync and formatter suites pass: 150 tests, no failures. The removed-assertion gate remains valid; source anchors are unchanged.
+
 - Labelled synthetic refusal corpus: 14 invalid inputs and 14 paired legal
   controls; zero false positives and zero false negatives on these fixtures.
   This is bounded fixture evidence, not an estimate for all archived summaries.
