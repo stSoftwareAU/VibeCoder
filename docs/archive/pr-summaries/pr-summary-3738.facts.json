@@ -285,7 +285,7 @@
       },
       {
         "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
-        "line": 226,
+        "line": 235,
         "outcome": "quality label provenance preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/issue_worker_infra_retry_test.ts",
         "testName": "qualityGate - zero_output failure on both attempts invokes handleIssueFailure exactly once",
