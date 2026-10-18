@@ -26,6 +26,7 @@ import type {
   WorkerConfig,
 } from "../types.ts";
 import { maybeCreatePlanningMilestone } from "./planning_milestone.ts";
+import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import { promptOverrideMappings } from "./custom_label_prompts_config.ts";
 import { refuseFallbackPastOverride } from "./prompt_override_resolver.ts";
 import { fetchNativeSubIssueNumbers } from "./native_sub_issues.ts";
@@ -1325,7 +1326,7 @@ export async function processIssuePlanning(
   // The body returns from a dozen places; the CodeGraph outcome is attached
   // here instead, so every one of them carries it (Issue #2159).
   // The RTK outcome rides the same carrier (Issue #2384).
-  const codegraphCarrier: PlanningRunCarrier = {};
+  const codegraphCarrier: PlanningRunCarrier = { invocations: [] };
   try {
     const result = await _processPlanningWithHeartbeat(
       ctx,
@@ -1363,6 +1364,23 @@ export async function processIssuePlanning(
       err,
       (Date.now() - runStartedAtMs) / 1000,
     );
+    if (err instanceof AgentTurnLimitError) {
+      await handlePlanningFailure(
+        repo,
+        issueNumber,
+        githubUser,
+        err.message,
+        config,
+        deps,
+        logger,
+        ghClient,
+        codegraphCarrier.invocations,
+        codegraphCarrier.rtkOutput,
+        graftSlot.result,
+        codegraphCarrier.codegraphContext,
+      );
+      return { ok: false, error: err };
+    }
     throw err;
   } finally {
     await stopHeartbeat(heartbeatHandle, runOutcome);
@@ -1371,9 +1389,17 @@ export async function processIssuePlanning(
 
 /** What the body hands back to every one of its return paths. */
 interface PlanningRunCarrier {
+  invocations: PlanningInvocationStats[];
   codegraphContext?: CodegraphContextResult;
   /** Issue #2384: `record()` writes `savedTokens` into this same object. */
   rtkOutput?: RtkOutputResult;
+}
+
+/** A cap ends the whole planning round, including helper-owned repair loops. */
+function stopAtPlanningTurnLimit(result: Result<unknown>): void {
+  if (!result.ok && result.error instanceof AgentTurnLimitError) {
+    throw result.error;
+  }
 }
 
 /**
@@ -1676,7 +1702,7 @@ async function _processPlanningWithHeartbeat(
   // #2649). Designed for a list — draft + critique (#2648), plus the #1219
   // retry. Used to post a per-run stats comment and compute the degraded-model
   // verdict on the parent issue.
-  const invocations: PlanningInvocationStats[] = [];
+  const invocations = codegraphCarrier.invocations;
 
   // --- CodeGraph repo-context index (Issue #2159, part of #2145) ---
   // Prepared ONCE for the whole round: planning makes several invocations
@@ -1745,6 +1771,8 @@ async function _processPlanningWithHeartbeat(
   // Issue #2384: re-read after every invocation, success or not — the hook
   // ran either way — so the figure covers the whole round. Never throws.
   await rtk.record();
+
+  stopAtPlanningTurnLimit(draftResult);
 
   // Determine whether the draft stage produced a usable draft. A failure,
   // timeout, or empty draft is non-fatal: the publish stage falls back to a
@@ -1907,6 +1935,7 @@ async function _processPlanningWithHeartbeat(
   );
   await rtk.record();
 
+  stopAtPlanningTurnLimit(claudeResult);
   if (!claudeResult.ok) {
     // Handle failure — post feedback and manage labels
     await handlePlanningFailure(
@@ -2069,6 +2098,7 @@ async function _processPlanningWithHeartbeat(
     );
     await rtk.record();
 
+    stopAtPlanningTurnLimit(retryResult);
     if (retryResult.ok) {
       recordInvocation(invocations, retryResult.value, codegraph, graft);
     }
@@ -2386,6 +2416,7 @@ async function closePlanningIssue(
       { maxRetries: config.maxRateLimitRetries },
     );
     await rtk?.record();
+    stopAtPlanningTurnLimit(repairResult);
     return repairResult;
   };
   // Sub-issue numbers the run created — resolved once and reused below.

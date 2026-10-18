@@ -14,6 +14,7 @@ import {
   DEFAULT_HEADER_ONLY_MAX_BYTES,
   DEFAULT_HEADER_ONLY_MIN_AGE_MINUTES,
   DEFAULT_MAX_AGE_DAYS,
+  DEFAULT_TRANSCRIPT_MAX_AGE_DAYS,
 } from "../lib/worker_log_cleanup.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -293,7 +294,7 @@ Deno.test("cleanupWorkerLogs - ignores gzip temporary files", async () => {
   }
 });
 
-Deno.test("cleanupWorkerLogs - ages out agent transcripts with the worker logs (Issue #4169)", async () => {
+Deno.test("cleanupWorkerLogs - ages out agent transcripts after their evidence window (Issue #4169)", async () => {
   const tmpDir = await Deno.makeTempDir();
   const now = Date.now();
   try {
@@ -302,14 +303,30 @@ Deno.test("cleanupWorkerLogs - ages out agent transcripts with the worker logs (
     await writeLog(fresh, 4096, now - 2 * HOUR_MS);
     // Old transcript, rotated backup, and gzipped rotation: all age out.
     const old = `${tmpDir}/agent-vibe-old111-222222-7.jsonl`;
-    await writeLog(old, 4096, now - (DEFAULT_MAX_AGE_DAYS + 1) * DAY_MS);
+    await writeLog(
+      old,
+      4096,
+      now - (DEFAULT_TRANSCRIPT_MAX_AGE_DAYS + 1) * DAY_MS,
+    );
     const rotated = `${tmpDir}/agent-vibe-old111-222222-7.jsonl.2`;
-    await writeLog(rotated, 4096, now - (DEFAULT_MAX_AGE_DAYS + 1) * DAY_MS);
+    await writeLog(
+      rotated,
+      4096,
+      now - (DEFAULT_TRANSCRIPT_MAX_AGE_DAYS + 1) * DAY_MS,
+    );
     const gzipped = `${tmpDir}/agent-vibe-old111-222222-7.jsonl.gz`;
-    await writeLog(gzipped, 512, now - (DEFAULT_MAX_AGE_DAYS + 1) * DAY_MS);
+    await writeLog(
+      gzipped,
+      512,
+      now - (DEFAULT_TRANSCRIPT_MAX_AGE_DAYS + 1) * DAY_MS,
+    );
     // Unrelated jsonl (self-heal events): never touched.
     const unrelated = `${tmpDir}/self-heal.jsonl`;
-    await writeLog(unrelated, 64, now - (DEFAULT_MAX_AGE_DAYS + 5) * DAY_MS);
+    await writeLog(
+      unrelated,
+      64,
+      now - (DEFAULT_TRANSCRIPT_MAX_AGE_DAYS + 5) * DAY_MS,
+    );
 
     const result = await cleanupWorkerLogs(tmpDir, { now: new Date(now) });
 

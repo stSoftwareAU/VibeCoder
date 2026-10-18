@@ -13,6 +13,7 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import { workOnIssueQualityGate } from "../lib/phases/quality_gate_remediation_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -287,4 +288,93 @@ Deno.test("quality gate - stale stage outcomes are cleared when the gate errors 
 
   assertEquals(result.status, "failure");
   assertEquals(state.qualityGateStages, undefined);
+});
+
+Deno.test("quality gate - turn limit stops remediation before a passing retry or bump audit (Issue #3701)", async () => {
+  for (const appliedBump of [false, true]) {
+    const state = makeState({
+      baselineFailedChecks: [],
+      ...(appliedBump
+        ? {
+          bumpInfo: {
+            status: "applied" as const,
+            files: ["package.json"],
+            output: "bumped one dependency",
+            sha: "bump-sha",
+            beforeBumpSha: "before-bump",
+          },
+        }
+        : {}),
+    });
+    const context = makeContext();
+    context.config.infraRetryBackoffMs = 0;
+    let gateCalls = 0;
+    let agentCalls = 0;
+    const gitCalls: string[][] = [];
+    const message = "Claude turn limit reached after a rate limit response";
+    const result = await workOnIssueQualityGate(
+      context,
+      state,
+      createMockDeps({
+        quality: {
+          runQualityGate: () => ++gateCalls === 1 ? failedGate() : passedGate(),
+          collectDiffableGateFindings: () => Promise.resolve([]),
+        },
+        claude: {
+          runClaudeWithRetry: () => {
+            agentCalls++;
+            return Promise.resolve({
+              ok: false as const,
+              error: new AgentTurnLimitError(message),
+            });
+          },
+        },
+        git: {
+          runGitCommand: (args) => {
+            gitCalls.push(args);
+            return Promise.resolve({
+              ok: true as const,
+              value: { stdout: "", stderr: "", code: 0 },
+            });
+          },
+        },
+      }),
+    );
+    assertEquals(result, { status: "failure", reason: message });
+    assertEquals(gateCalls, 1);
+    assertEquals(agentCalls, 1);
+    assertEquals(state.infraRetryCounts?.quality_gate, undefined);
+    assertEquals(state.qualityGateOutcome, { status: "failed" });
+    assertEquals(gitCalls.some((args) => args[0] === "revert"), false);
+    assertEquals(
+      gitCalls.some((args) => args.join(" ") === "rev-parse HEAD"),
+      false,
+    );
+    assertEquals(state.bumpInfo?.status, appliedBump ? "applied" : undefined);
+  }
+});
+
+Deno.test("quality gate - ordinary remediation errors retain the existing gate recheck (Issue #3701)", async () => {
+  const state = makeState({ baselineFailedChecks: [] });
+  let gateCalls = 0;
+  const result = await workOnIssueQualityGate(
+    makeContext(),
+    state,
+    createMockDeps({
+      quality: {
+        runQualityGate: () => ++gateCalls === 1 ? failedGate() : passedGate(),
+        collectDiffableGateFindings: () => Promise.resolve([]),
+      },
+      claude: {
+        runClaudeWithRetry: () =>
+          Promise.resolve({
+            ok: false as const,
+            error: new Error("spawn failed"),
+          }),
+      },
+    }),
+  );
+  assertEquals(result.status, "continue");
+  assertEquals(gateCalls, 2);
+  assertEquals(state.qualityGateOutcome, { status: "passed", attempt: 2 });
 });

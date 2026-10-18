@@ -1,3 +1,4 @@
+import { DEFAULT_CLAUDE_MAX_TURNS } from "./claude_turn_limit.ts";
 /**
  * Configuration defaults — single source of truth for TypeScript.
  *
@@ -203,6 +204,7 @@ export const OPERATIONAL_DEFAULTS = {
   // and starved other repositories. If issue work genuinely needs more
   // than an hour, the escape hatch should raise a sub-issue.
   claudeTimeout: 3600,
+  claudeMaxTurns: DEFAULT_CLAUDE_MAX_TURNS,
   /**
    * Claim-runway floor in seconds (Issue #289). Five minutes: enough to rule
    * out a claim that cannot finish setup, small enough that a run keeps
@@ -1561,6 +1563,7 @@ export function buildDefaultWorkerConfig(
     // Issue #2654: configured best planning model for degraded-model detection.
     bestPlanningModel: DEFAULT_BEST_PLANNING_MODEL,
     claudeTimeout: OPERATIONAL_DEFAULTS.claudeTimeout,
+    claudeMaxTurns: OPERATIONAL_DEFAULTS.claudeMaxTurns,
     minClaimRunwaySeconds: OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
     // Adaptive claim floor (Issue #245): the labels that mark a long job.
     claimLongJobLabels: [...DEFAULT_LONG_JOB_LABELS],

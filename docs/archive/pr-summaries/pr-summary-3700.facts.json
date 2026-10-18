@@ -1,0 +1,594 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 27,
+        "outcome": "accepts only JSON object records",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scan flags actual tool attempts and credential reads, but ignores clean text and redacts findings",
+        "flipWentRed": "Changed 'Object.prototype.toString.call(value) === \"[object Object]\"' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 34,
+        "outcome": "ignores primitive and null events",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed 'if (!root) return [];' to 'if (false) return [];'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 37,
+        "outcome": "permission-denial array belongs to a result event",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'root.type === \"result\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 37,
+        "outcome": "permission denials must be an array",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed 'Array.isArray(root.permission_denials) &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 38,
+        "outcome": "empty permission-denial array is clean",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed 'root.permission_denials.length > 0' to 'true'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 45,
+        "outcome": "Codex item.started command records are scanned",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "native Codex and Gemini streams expose egress, credential paths and permission denials",
+        "flipWentRed": "Changed 'root.type === \"item.started\" ||' to 'false ||'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 45,
+        "outcome": "Codex item.completed command records are scanned",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "native Codex and Gemini streams expose egress, credential paths and permission denials",
+        "flipWentRed": "Changed 'root.type === \"item.completed\")' to 'false)'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 46,
+        "outcome": "Codex other item types are not executable commands",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'item?.type === \"command_execution\"' to 'true'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 48,
+        "outcome": "Codex command egress is flagged",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "native Codex and Gemini streams expose egress, credential paths and permission denials",
+        "flipWentRed": "Changed 'EGRESS_COMMAND.test(item.command)' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 52,
+        "outcome": "Codex command credential access is flagged",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "native Codex and Gemini streams expose egress, credential paths and permission denials",
+        "flipWentRed": "Changed 'CREDENTIAL_PATH.test(item.command)' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 55,
+        "outcome": "Gemini tools require tool_use event type",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'if (root.type === \"tool_use\")' to 'if (true)'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 58,
+        "outcome": "Gemini web_fetch is egress",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed 'root.tool_name === \"web_fetch\" ||' to 'false ||'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 58,
+        "outcome": "Gemini google_web_search is egress",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed 'root.tool_name === \"google_web_search\"' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 61,
+        "outcome": "Gemini other tool names do not execute command fields",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'root.tool_name === \"run_shell_command\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 64,
+        "outcome": "Gemini shell egress is flagged",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "native Codex and Gemini streams expose egress, credential paths and permission denials",
+        "flipWentRed": "Changed 'EGRESS_COMMAND.test(parameters.command)' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 65,
+        "outcome": "Gemini shell credential access is flagged",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed 'CREDENTIAL_PATH.test(parameters.command)' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 70,
+        "outcome": "Gemini credential file reads require read_file tool",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'root.tool_name === \"read_file\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 72,
+        "outcome": "Gemini credential file reads are flagged",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "native Codex and Gemini streams expose egress, credential paths and permission denials",
+        "flipWentRed": "Changed 'CREDENTIAL_PATH.test(parameters.file_path)' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 76,
+        "outcome": "Gemini permission errors require tool_result type",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'root.type === \"tool_result\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 76,
+        "outcome": "Gemini successful results are not permission failures",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed 'root.status === \"error\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 77,
+        "outcome": "Gemini ordinary failures are not permission failures",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed '/permission|denied|disallowed/i.test(String(record(root.error)?.type ?? \"\"))' to 'true'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 80,
+        "outcome": "Claude executable tool blocks require assistant event",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'root.type === \"assistant\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 83,
+        "outcome": "Claude non-tool blocks are ignored",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'if (block?.type !== \"tool_use\") continue;' to 'if (false) continue;'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 88,
+        "outcome": "Claude WebFetch is egress",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan emits operator findings once per changed file and survives restart",
+        "flipWentRed": "Changed 'block.name === \"WebFetch\" ||' to 'false ||'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 89,
+        "outcome": "Claude egress command fields require Bash",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed '(block.name === \"Bash\" && EGRESS_COMMAND.test(command))' to '(true && EGRESS_COMMAND.test(command))'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 89,
+        "outcome": "Claude Bash egress is flagged",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scan flags actual tool attempts and credential reads, but ignores clean text and redacts findings",
+        "flipWentRed": "Changed 'EGRESS_COMMAND.test(command)' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 92,
+        "outcome": "Claude credential file paths require Read",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed '(block.name === \"Read\" && CREDENTIAL_PATH.test(path))' to '(true && CREDENTIAL_PATH.test(path))'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 92,
+        "outcome": "Claude credential Read is flagged",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scan flags actual tool attempts and credential reads, but ignores clean text and redacts findings",
+        "flipWentRed": "Changed 'CREDENTIAL_PATH.test(path)' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 93,
+        "outcome": "Claude credential commands require Bash",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed '(block.name === \"Bash\" && CREDENTIAL_PATH.test(command))' to '(true && CREDENTIAL_PATH.test(command))'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 93,
+        "outcome": "Claude Bash credential access is flagged",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scan reads retained gzip and rotation files, skips symlinks, and reports malformed lines",
+        "flipWentRed": "Changed 'CREDENTIAL_PATH.test(command)' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 95,
+        "outcome": "Claude EnterPlanMode is disallowed",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'block.name === \"EnterPlanMode\" ||' to 'false ||'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 95,
+        "outcome": "Claude ExitPlanMode is disallowed",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'block.name === \"ExitPlanMode\"' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 100,
+        "outcome": "Claude tool-result errors require user event",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'root.type === \"user\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 104,
+        "outcome": "Claude other blocks cannot claim tool permission failure",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'block?.type === \"tool_result\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 104,
+        "outcome": "Claude successful tool results are clean",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'block.is_error === true &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 142,
+        "outcome": "directory entries and symlinks are not scanned as transcript files",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scan reads retained gzip and rotation files, skips symlinks, and reports malformed lines",
+        "flipWentRed": "Changed 'if (!stat.isFile) continue;' to 'if (false) continue;'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 130,
+        "outcome": "unrelated files are not scanned",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed 'AGENT_TRANSCRIPT_PATTERN.test(entry.name)' to 'true'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 135,
+        "outcome": "missing transcript directory yields an empty scan",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "missing directory is empty, while inaccessible scan location warns and can recover",
+        "flipWentRed": "Changed 'if (err instanceof Deno.errors.NotFound) return result;' to 'if (false) return result;'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 144,
+        "outcome": "unchanged files retain their cursor without repeated findings",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan emits operator findings once per changed file and survives restart",
+        "flipWentRed": "Changed 'previous[name] === fingerprint' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 151,
+        "outcome": "compressed retained transcripts are decompressed",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scan reads retained gzip and rotation files, skips symlinks, and reports malformed lines",
+        "flipWentRed": "Changed 'name.endsWith(\".gz\")' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 159,
+        "outcome": "decompressed input is bounded and oversized files remain retryable",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "oversized transcript is retried and does not hide other files",
+        "flipWentRed": "Changed 'bytes > maxBytes' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 171,
+        "outcome": "blank JSONL lines do not count as malformed",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed 'if (!line.trim()) return;' to 'if (false) return;'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 181,
+        "outcome": "repeated signals aggregate with an occurrence count",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "native Codex and Gemini streams expose egress, credential paths and permission denials",
+        "flipWentRed": "Changed 'if (existing) existing.occurrences++;' to 'if (false) existing.occurrences++;'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 199,
+        "outcome": "unterminated final JSONL records are scanned",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan emits operator findings once per changed file and survives restart",
+        "flipWentRed": "Changed 'if (carry) consumeLine(carry);' to 'if (false) consumeLine(carry);'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 201,
+        "outcome": "malformed files are not marked fully scanned",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scan reads retained gzip and rotation files, skips symlinks, and reports malformed lines",
+        "flipWentRed": "Changed 'result.malformedLines === malformedBefore' to 'true'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 220,
+        "outcome": "concurrent idle invocations are serialised",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan repairs invalid state, handles future clocks, and serialises concurrent hooks",
+        "flipWentRed": "Changed 'if (running) return;' to 'if (false) return;'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 229,
+        "outcome": "invalid last-scan timestamp triggers a warning and rescan",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan repairs invalid state, handles future clocks, and serialises concurrent hooks",
+        "flipWentRed": "Changed 'typeof state.lastScan !== \"number\"' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 229,
+        "outcome": "invalid fingerprint map triggers a warning and rescan",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan repairs invalid state, handles future clocks, and serialises concurrent hooks",
+        "flipWentRed": "Changed '!record(state.fingerprints)' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 230,
+        "outcome": "non-string fingerprint values trigger a warning and rescan",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan repairs invalid state, handles future clocks, and serialises concurrent hooks",
+        "flipWentRed": "Changed 'typeof v !== \"string\"' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 232,
+        "outcome": "backwards clock movement permits a fresh scan",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan repairs invalid state, handles future clocks, and serialises concurrent hooks",
+        "flipWentRed": "Changed 'now >= state.lastScan &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 232,
+        "outcome": "scan schedule persists across hook recreation",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan emits operator findings once per changed file and survives restart",
+        "flipWentRed": "Changed 'now - state.lastScan < SCAN_INTERVAL_MS' to 'false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/worker_log_cleanup.ts",
+        "line": 225,
+        "outcome": "tiny transcript evidence bypasses worker stub pruning",
+        "test": "worker/deno/tests/agent_transcript_retention_3700_test.ts",
+        "testName": "transcripts survive 30 days even when tiny, rotated or beside capped worker logs",
+        "flipWentRed": "Changed 'entry.gzipped || entry.transcript' to 'entry.gzipped || false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/worker_log_cleanup.ts",
+        "line": 238,
+        "outcome": "transcripts use independent thirty-day retention",
+        "test": "worker/deno/tests/agent_transcript_retention_3700_test.ts",
+        "testName": "transcripts survive 30 days even when tiny, rotated or beside capped worker logs",
+        "flipWentRed": "Changed 'const retentionMs = entry.transcript' to 'const retentionMs = false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/worker_log_cleanup.ts",
+        "line": 256,
+        "outcome": "worker and transcript caps cannot evict each other",
+        "test": "worker/deno/tests/agent_transcript_retention_3700_test.ts",
+        "testName": "transcripts survive 30 days even when tiny, rotated or beside capped worker logs",
+        "flipWentRed": "Changed 'e.transcript === transcript &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/worker_log_cleanup.ts",
+        "line": 258,
+        "outcome": "transcript cap is independently configurable",
+        "test": "worker/deno/tests/agent_transcript_retention_3700_test.ts",
+        "testName": "transcripts survive 30 days even when tiny, rotated or beside capped worker logs",
+        "flipWentRed": "Changed 'const cap = transcript' to 'const cap = false'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/worker_log_cleanup.ts",
+        "line": 266,
+        "outcome": "early transcript cap eviction is reported",
+        "test": "worker/deno/tests/agent_transcript_retention_3700_test.ts",
+        "testName": "transcript cap evicts oldest evidence separately and reports shortened retention",
+        "flipWentRed": "Changed 'if (transcript) transcriptCapRemoved++;' to 'if (false) transcriptCapRemoved++;'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 48,
+        "outcome": "Codex egress ignores non-string command values",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'typeof item.command === \"string\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 52,
+        "outcome": "Codex credential matching ignores non-string command values",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'typeof item.command === \"string\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 62,
+        "outcome": "Gemini shell ignores non-string commands",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'typeof parameters?.command === \"string\"' to 'true'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 71,
+        "outcome": "Gemini read ignores non-string file paths",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'typeof parameters?.file_path === \"string\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 85,
+        "outcome": "Claude shell ignores non-string command fields",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed 'typeof input?.command === \"string\"' to 'true'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 86,
+        "outcome": "Claude read ignores non-string file paths",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner distinguishes permission signals from clean and malformed event shapes",
+        "flipWentRed": "Changed 'typeof input?.file_path === \"string\"' to 'true'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 105,
+        "outcome": "Claude denial ignores non-string tool result content",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'typeof block.content === \"string\" &&' to 'true &&'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 80,
+        "outcome": "Claude assistant content must be an array",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'root.type === \"assistant\" && Array.isArray(content)' to 'root.type === \"assistant\" && true'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 100,
+        "outcome": "Claude user content must be an array",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scanner gates every provider signal on its native event and executable field",
+        "flipWentRed": "Changed 'root.type === \"user\" && Array.isArray(content)' to 'root.type === \"user\" && true'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 237,
+        "outcome": "invalid saved scan state warns before rescanning",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan repairs invalid state, handles future clocks, and serialises concurrent hooks",
+        "flipWentRed": "Changed 'if (!(err instanceof Deno.errors.NotFound)) {' to 'if (false) {'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 257,
+        "outcome": "malformed coverage is reported at warning severity",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan warns separately for incomplete files and scrubs unexpected thrown values",
+        "flipWentRed": "Changed 'result.malformedLines > 0 ||' to 'false ||'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 257,
+        "outcome": "failed-file coverage is reported at warning severity",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan warns separately for incomplete files and scrubs unexpected thrown values",
+        "flipWentRed": "Changed 'result.failedFiles.length > 0\\n' to 'false\\n'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 286,
+        "outcome": "unexpected thrown values are scrubbed in scan-failure logs",
+        "test": "worker/deno/tests/agent_transcript_scan_3700_test.ts",
+        "testName": "scheduled scan warns separately for incomplete files and scrubs unexpected thrown values",
+        "flipWentRed": "Changed 'err instanceof Error ? err.name : \"unknown error\"' to 'true ? err.name : \"unknown error\"'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/run_core.ts",
+        "line": 5238,
+        "outcome": "idle loop actually invokes the scheduled scan",
+        "test": "worker/deno/tests/run_core_idle_hooks_visibility_test.ts",
+        "testName": "idle loop and production dependency run the scheduled transcript scan",
+        "flipWentRed": "Changed 'await deps.runTranscriptScan?.();' to '/* disabled scan hook */'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/run_core_production_deps.ts",
+        "line": 5690,
+        "outcome": "missing home directory is diagnosed without scanning an invented path",
+        "test": "worker/deno/tests/run_core_idle_hooks_visibility_test.ts",
+        "testName": "production transcript scan warns when no home directory is available",
+        "flipWentRed": "Changed 'homeDirectory(env) === undefined\\n' to 'false\\n'; the named behavioural test failed."
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 143,
+        "outcome": "Production filesystem failure/metadata fallback is reported without leaking evidence",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "Deno may omit filesystem modification metadata on a supported platform; local temporary files always expose it. Harness search: worker/deno/tests/agent_transcript_scan_3700_test.ts calls scanAgentTranscripts with real files and worker/deno/tests/run_core_idle_hooks_visibility_test.ts reaches it through production wiring; neither can portably remove stat metadata without replacing the runtime filesystem API."
+        }
+      },
+      {
+        "path": "worker/deno/lib/agent_transcript_scan.ts",
+        "line": 277,
+        "outcome": "Production filesystem failure/metadata fallback is reported without leaking evidence",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "A permission failure while deleting an already-renamed temporary state file needs a concurrent directory permission or rename race. Harness search: worker/deno/tests/agent_transcript_scan_3700_test.ts exercises real files and directory-read failures; worker/deno/tests/run_core_idle_hooks_visibility_test.ts invokes production scheduling. Neither stages this permission race deterministically across platforms; both cover normal atomic rename and NotFound cleanup."
+        }
+      }
+    ]
+  }
+}
