@@ -302,6 +302,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // separates its linear declaration scan from a backtracking one on an
   // unclosed quote run (Issue #3659).
   "tests/security_fix_gate_growth_test.ts",
+  // The caller checks' definition and diff-header regexes run over untrusted
+  // source lines and diffs; only a growth measurement separates their linear
+  // patterns from a backtracking one (Issue #3779).
+  "tests/caller_checks_3779_test.ts",
 ];
 
 /**
