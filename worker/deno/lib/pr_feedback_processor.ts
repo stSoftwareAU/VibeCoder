@@ -1,3 +1,4 @@
+import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 /**
  * PR feedback processor (Issue #967).
  *
@@ -1219,10 +1220,18 @@ async function _processFeedbackWithHeartbeat(
   const agentStartMs = Date.now();
   // Issue #3404: every agent invocation of this run goes through here, so the
   // run's stats are collected in one place whichever helper retries it.
+  const turnLimit: { failure?: Error } = {};
+  const failTurnLimit = async (
+    error: Error,
+  ): Promise<Result<PrFeedbackResult>> => {
+    await chargeReviewFailure(error.message);
+    return { ok: false, error };
+  };
   const runAgentTracked: typeof deps.claude.runClaudeWithRetry = async (
     request,
     options,
   ) => {
+    if (turnLimit.failure) return { ok: false, error: turnLimit.failure };
     carrier.agentRan = true;
     const invocation = await deps.claude.runClaudeWithRetry(
       {
@@ -1252,6 +1261,9 @@ async function _processFeedbackWithHeartbeat(
       );
     }
     if (!invocation.ok) (carrier.lifecycleStats ??= []).push(undefined);
+    if (!invocation.ok && invocation.error instanceof AgentTurnLimitError) {
+      turnLimit.failure = invocation.error;
+    }
     return invocation;
   };
   const agentRequest = {
@@ -1404,6 +1416,8 @@ async function _processFeedbackWithHeartbeat(
     }
   }
 
+  if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
+
   // Result-placeholder reply recovery (Issue #3124): one in-run retry when
   // Claude's own `.pr_response_message` still carries a bare fill-in-later
   // token where a command's result belongs. Peeking here — before the file
@@ -1444,6 +1458,8 @@ async function _processFeedbackWithHeartbeat(
       logger,
     },
   );
+
+  if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
 
   // Post-agent drift check (Issue #3143): review-fix pushes have kept
   // leaving the PR summary (or a manual) contradicting the code they just
@@ -1528,6 +1544,8 @@ async function _processFeedbackWithHeartbeat(
     );
   }
 
+  if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
+
   // Mark comment as processed — for every type except `pr_review`. A
   // `pr_review` is dismissed only once the run's outcome is known, further
   // down this function (Issue #3383): dismissing it here, before the push
@@ -1574,6 +1592,12 @@ async function _processFeedbackWithHeartbeat(
           runGh: (args) => deps.github.runGhCommand(args),
           ask: runAgentTracked,
         });
+      if (turnLimit.failure) {
+        return {
+          ok: false as const,
+          error: turnLimit.failure,
+        };
+      }
       verifierFailure = checked.ok ? undefined : checked.error;
       return checked;
     }
@@ -1590,6 +1614,7 @@ async function _processFeedbackWithHeartbeat(
       verifyBeforePush,
     );
   let finaliseResult = await finalise();
+  if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
   if (verifierFailure) {
     // One code-capable correction only. The next finalise commits and checks
     // the new head from scratch, including a head changed by push recovery.
@@ -1604,8 +1629,10 @@ async function _processFeedbackWithHeartbeat(
           ).join("\n")
         }`,
     }, { maxRetries: maxRateLimitRetries });
+    if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
     if (recovery.ok && !recovery.value.timedOut) {
       finaliseResult = await finalise();
+      if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
     }
   }
   const holdUnverifiedReview = async (failure: Error) => {
@@ -1679,6 +1706,7 @@ async function _processFeedbackWithHeartbeat(
         undefined,
         verifyBeforePush,
       );
+      if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
       if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
       // Issue #211: keep the reason the recovery failed — it names the step
       // (fetch, merge conflict, rejected retry push, unconfirmed push)
@@ -1698,6 +1726,7 @@ async function _processFeedbackWithHeartbeat(
           formatRound,
           verifyBeforePush,
         );
+        if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
         if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
         if (retryFinalise.ok) {
           finalUnpushedCount = retryFinalise.value.finalUnpushedCount;

@@ -51,6 +51,8 @@ const ROUTED_PHASES: string[] = [
 
 /** The Claude argv tail that follows the model/effort flags. */
 const CLAUDE_TAIL = [
+  "--max-turns",
+  "100",
   "--dangerously-skip-permissions",
   "--verbose",
   "--output-format",
