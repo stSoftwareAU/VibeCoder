@@ -43,6 +43,19 @@ missing live evidence explicitly; they establish no fleet improvement or winner.
 
 ## Evidence
 
+- #3980: Measure stabilization by default-branch delivery and full rework cost using the existing lifecycle ledger
+- #3644: Record end-to-end issue lifecycle, cohort attribution and fully loaded cost
+- #3645: Run randomized fleet experiments and report merged issues per dollar
+- #3690: Quantify and reduce avoidable milestone sync/conflict PR cycles without bypassing branch protection
+- #3976: Prevent recurring branch-only sweptAt records at the audit-record producer
+- #3977: Reconcile already-merged work before push recovery and failure labelling
+- #3978: Stop formatting-only failures escaping the existing formatter-before-gate path
+- #3979: Render Branch outcomes once from existing facts and remove duplicate summary evidence maintenance
+- #3738: Fleet PRs add failure paths whose git or network errors classify as the branch's fault, so an outage uses a ladder attempt (VibeCoder#3095, #3716)
+- #3954: Generate version-bump summaries that stay correct after CI auto-bumps
+- #3910: Milestone completion raises an empty roll-up PR when the milestone branch is ahead only by main-sync merge commits
+- #3961: Keep pending required CI and clean code review out of partial-delivery follow-ups
+
 - The reproducible report, source snapshot, empty collection placeholder and
   eight-day comparable follow-up procedure are recorded in
   `docs/evidence/stabilisation-2026-10-18.md` and its adjacent JSON files.
