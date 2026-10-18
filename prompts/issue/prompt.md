@@ -1456,9 +1456,12 @@ The file MUST contain:
    When the diff adds no branch, write
    `{"version":1,"branchOutcomes":{"noneAdded":true,"entries":[]}}`. Leave the
    `<!-- vibe-branch-outcomes -->` marker in the Test Plan: the worker renders
-   the `Branch outcomes:` list there. An invalid or unreadable facts file
-   blocks PR creation, and so does a hand-written `Branch outcomes:` list
-   beside the facts file. The schema is in `CODING-STANDARDS.md` under
+   the `Branch outcomes:` list there, inside its owned start/end markers.
+   Maintain the facts and marker only: do not independently write a duplicate
+   list. The renderer replaces safely identified legacy lists and preserves
+   unrelated narrative. Invalid facts, ambiguous block ownership and unresolved
+   evidence still block. Rendering does not prove a claimed flip was executed.
+   The schema is in `CODING-STANDARDS.md` under
    **Branch outcomes facts file**. Without a facts file the worker still reads
    a `Branch outcomes:` list written in the Test Plan — one line per outcome
    naming `path:line`, the outcome, the test that reaches it, and that

@@ -842,8 +842,12 @@ non-empty and at most 1,000 chars. Caps: the raw file at most 100,000 chars
 rule blocks PR creation with the field path and reason (for example
 `branchOutcomes.entries[0].exempt.reason: needs at least 3 words`); it is never
 treated as absent. The worker renders the list at the first
-`<!-- vibe-branch-outcomes -->` marker, appending it when there is none; a facts
-file plus a hand-written `Branch outcomes:` list blocks. The rendered list is
+`<!-- vibe-branch-outcomes -->` marker and owns the block through
+`<!-- /vibe-branch-outcomes -->`. Re-rendering replaces that block idempotently.
+Structured facts are authoritative: safely identified legacy lists are replaced,
+with unrelated narrative preserved. Ambiguous ownership and unreached-outcome
+admissions block rather than being discarded. Write the facts and marker, not a
+second independently maintained list. The rendered list is
 then checked like a prose one, including that each named test exists at the
 head. With no facts file, the `Branch outcomes:` list in the Test Plan is read
 as before.
@@ -1823,8 +1827,9 @@ summary named `pr-summary-<N>.md` it also reads
 `docs/archive/pr-summaries/pr-summary-<N>.facts.json` under the repository
 root, as the worker does (it takes only `<N>` from the summary's file name):
 the Branch outcomes gate sees the list rendered at the
-`<!-- vibe-branch-outcomes -->` marker, and blocks on an invalid facts file or
-on a facts file beside a hand-written list.
+`<!-- vibe-branch-outcomes -->` marker. It blocks on invalid facts, ambiguous
+block ownership or unresolved evidence; a safely identified legacy duplicate is
+regenerated from the facts.
 
 Pending required CI/quality execution and routine clean code review belong in
 `## Merge verification` on the originating PR, with an honest pending status.
