@@ -360,23 +360,28 @@ VibeCoder's own guidance:
 
 1. For each blocking finding, identify the **root mistake**, not merely its
    wording or file. Compare it with `<logs>/review-fleet-prs/log.jsonl` and the
-   recent review history it records. A recurrence means the same preventable
+   recent review history it records. A concrete correctness/security risk can
+   justify a one-off safety proposal; state the risk rather than inventing
+   recurrence or measured savings. A recurrence means the same preventable
    mistake has appeared in at least **two independent PRs**; repeated comments
    on one PR or one head commit count once. When the finding matches the
    target pattern of guidance already filed (the `pattern` slugs in
    `guidance.ts due`'s output), record it with
    `guidance.ts hit --pattern=<slug> --pr=<owner/repo#n>`.
-2. First assess a deterministic check: something that catches the mistake
-   mechanically, every time, whether or not the agent remembers a rule.
-   Consider, in this order:
+2. First find the existing producer, check or guidance that owns the mistake.
+   Propose the smallest repair there; extend or retire overlapping checks before
+   adding another gate. Assess a deterministic check that catches the mistake
+   mechanically, whether or not the agent remembers a rule. Consider:
    - a worker gate (the worker refuses the PR or the push);
    - a test or lint rule;
    - a Semgrep rule;
    - a script or deno task the agent or the gate runs.
 
-   Prose rules alone keep being broken, and each one added makes the
-   guidance longer without reducing the mistake, so a feasible check is
-   always the proposal.
+   Explain the expected prevented failures and added checks, model calls or
+   elapsed time. Unknown costs or benefits stay unknown. A speculative gate
+   expansion is not a measured throughput improvement. A concrete correctness
+   or security risk can justify a safety fix without a financial ROI estimate;
+   name that risk instead of inventing recurrence or a saving.
 3. Propose prose guidance only when none of these checks is feasible: ask
    whether a concrete change to VibeCoder's prompt, a skill,
    `CODING-STANDARDS.md`, templates, or similar worker guidance would likely
@@ -391,13 +396,16 @@ VibeCoder's own guidance:
    do not create another one.
 5. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
    - the recurring failure pattern and why it is preventable;
-   - at least two independent PR/review examples: a link for each one in a
-     public repo, and a concept-level description, with no name, number or
-     link, for each one in a private repo (see
+   - at least two independent PR/review examples for recurrence, or the
+     concrete correctness/security risk for a one-off safety fix: links for
+     public evidence and concept-level descriptions, with no name, number or
+     link, for private evidence (see
      [Keeping private repos private](#keeping-private-repos-private));
    - the VibeCoder prompt/skill/guidance that should change, when identifiable;
-   - the proposed guidance or guardrail and how future reviews can verify it
-     worked;
+   - the smallest existing-path repair, expected cost/benefit and missing data;
+   - the proposed verification method, including a comparable follow-up window
+     for any throughput claim (see the stabilisation baseline in
+     `docs/evidence/stabilisation-2026-10-18.md`);
    - a `## Deterministic check assessment` section naming the checks
      considered, and the check proposed or why none is feasible;
    - a `## Target pattern` section naming one lower-case slug for the root
@@ -416,7 +424,9 @@ VibeCoder's own guidance:
    record it with `guidance.ts retire --issue=<n> --by=<new issue>`. See
    [references/guidance-ledger.md](references/guidance-ledger.md).
 7. Keep the threshold evidence-based. Similar symptoms with different causes
-   are not a recurrence. Never create an issue solely to make a review pass,
+   are not a recurrence. A one-off proposal needs a concrete correctness or
+   security risk; ordinary guidance expansion needs observed recurrence. Never
+   create an issue solely to make a review pass,
    and never relax safety, testing or correctness guidance as the cure.
 
 Include any self-improvement issue created in the round report. Failure to
