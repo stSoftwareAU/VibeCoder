@@ -73,12 +73,12 @@ flowchart LR
   blocked-PR and source-scan edge regressions each produced assertion failures
   during development, then passed after repair.
 - The original twenty-two changed test suites pass: 627 tests, no failures. Their imports
-  and fixtures type-check. The required full quality gate remains pending.
+  and fixtures type-check.
 - Thirty-nine retained production mutations each fail a named regression
   assertion. An unobservable secondary category-selection branch was removed;
   no surviving mutation is represented as red.
-- Latest-main integration covers the real typed divergence refusal, a generic git error with divergence-like prose, and the terminal turn-limit quality stop: 18 tests pass. The initial full run had 28,811 passes and one stale plain-error divergence fixture; its existing assertions remain intact with the real production error class. The full gate is being repeated.
-- After integration of main `60392646`, five completion/quality/summary suites pass: 115 tests with type checking enabled. The assertion ledger remains valid with all 22 replacements accounted for. The previous full rerun passed both unit passes and static checks but failed unchanged timing budgets; isolated rechecks passed without changing budgets. A sole full rerun is pending.
+- Integration with main `60392646` passes five completion/quality/summary suites: 115 tests with type checking enabled, including typed divergence, generic git-error and terminal turn-limit controls. The assertion ledger accounts for all 22 replacements.
+- Foreground `./quality.sh --sequential < /dev/null` passed at implementation head `74bdb230dbac4e26bace51fd98254cdcb5f305f3`: both unit passes, completeness, lint, type check, format, Markdown/Mermaid, Semgrep and the repository static/security checks. Optional local configuration integration was skipped because `.config.json` is absent. Required CI and merge protections remain in force.
 - Independent Spec and Standards source reviews found no remaining material
   findings. Their earlier findings drove the source-provenance, callback and
   lexer fixes described here.
