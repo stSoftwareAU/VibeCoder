@@ -1331,6 +1331,15 @@ A benchmark disguised as a unit test is a gate failure, not a style point. The
 benchmark-audit stage scans `worker/deno/tests/` and fails any `Deno.test`
 whose name contains `benchmark` or `bench_` (Issue #583).
 
+### Real signal cleanup stays in the required gate
+
+`tests/run_core_signal_cleanup_test.ts` exercises SIGINT/SIGTERM against a real
+Deno entrypoint and descendant process. It remains in the required serial unit pass,
+with every cleanup assertion intact. Its process startup and graceful-termination
+polling have a named reason in `SUBPROCESS_TIMING_TEST_FILES`, inherited by
+`SLOW_UNIT_TEST_KEEP_FILES`; the one-second mockable
+unit-work budget is not a signal-cleanup performance requirement.
+
 ### When a test does not fit
 
 Take the seam, do not reclassify. A slow unit test is fixed with an injected
