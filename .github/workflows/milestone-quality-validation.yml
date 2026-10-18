@@ -1,0 +1,56 @@
+name: Milestone Quality Validation
+
+on:
+  push:
+    branches: [codex/milestone124-validation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout the immutable milestone source tree
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 754aa0ada96f806235f310f72f4a9fec9e9d6e17
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install pinned Deno
+        # denoland/setup-deno@v2.0.5
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          deno-version-file: .deno-version
+
+      - name: Install pinned Node
+        # actions/setup-node@v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .node-version
+
+      - name: Install the existing pinned Markdown linter
+        # zizmor: ignore[adhoc-packages] -- identical exact pin and --ignore-scripts used by markdown-lint.yml; this temporary validation workflow is excluded from the source tree under test.
+        run: npm install -g --ignore-scripts markdownlint-cli2@0.23.2
+
+      - name: Run the unchanged full repository quality gate
+        run: |
+          set -euo pipefail
+          ./quality.sh < /dev/null 2>&1 | tee /tmp/milestone-quality.log
+
+      - name: Retain quality evidence
+        if: always()
+        # actions/upload-artifact@v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: milestone-quality-evidence
+          path: /tmp/milestone-quality.log
+          if-no-files-found: warn
+          retention-days: 7
