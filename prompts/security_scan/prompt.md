@@ -242,7 +242,9 @@ Inventory the codebase and record:
   repository's ledger, `sweep-drift` consumes each slice's validated `sweptAt`;
   do not substitute the last edit to its record. For a record without an
   explicit horizon, conservatively use its original addition with
-  `git log --diff-filter=A -1 --format=%H -- <record>`, then list what moved
+  `git log --diff-filter=A -1 --format=%H -- <record>`. The diagnostic
+  `git log -1 --format=%H -- <record>` identifies the last edit only; never use
+  that commit as the coverage horizon. Then list what moved
   since with `git diff --name-only <commit> HEAD -- <tree>`. A module a record
   names and that diff does not is **previously swept**; a module the diff
   names, or that no record names at all, is not. Record, per recorded

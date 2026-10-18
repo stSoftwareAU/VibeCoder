@@ -61,6 +61,9 @@ flowchart LR
 - The real Git fixture exercises feature work, squash integration, later default
   commits, repeat generation and the existing ancestry guard. Separate fixtures
   exercise shallow feature-only clones and unavailable history/default refs.
+- The full-suite prompt regression caught a removed read-only last-edit
+  inventory command. It is retained as a diagnostic, explicitly separated from
+  the original coverage horizon; the existing assertion remains unchanged.
 - Docs sweep — grep: "sweptAt", "merge-base", "top-up", "last modified";
   updated `docs/SECURITY-SCAN.md` and `prompts/security_scan/prompt.md`;
   section: `docs/SECURITY-SCAN.md` → "Create top-ups with the existing sweep-drift command";
