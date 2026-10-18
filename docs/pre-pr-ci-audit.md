@@ -297,10 +297,11 @@ private-repo-A, one in private-repo-C), and none logged
 `Pre-push gate blocked the push`. One of the private-repo-A runs reached PR
 recovery
 (`IDEMPOTENT: recovering the PR`) at 03:06Z; `completionBody` gets there only
-after `gateBeforePush()` returns no block. The gate logs nothing when it
-passes, so the log cannot show which checks it reached on a live run. The
-replay above is the evidence for its checks, and #3770 tracks a log line for
-a pass.
+after `gateBeforePush()` returns no block. Since #3770 the gate logs one INFO
+line per run — `Pre-push gate passed checks=[...]` naming the checks, or
+`Pre-push gate: nothing ahead of <base>` for a no-op — so the log now shows
+which checks a live run reached. The replay above is the evidence for which
+checks the gate runs.
 
 ## Checks the worker cannot run
 
@@ -362,8 +363,9 @@ a pass.
   label mixing unquoted text with a quoted string (found by a private-repo-A
   review); VibeCoder's own validator passed it. Fixed by #3769, which adds
   that check to the validator.
-- The pre-push gate logs nothing on a pass, so its checks on live runs are not
-  observable in the worker log. Tracked in #3770.
+- The pre-push gate used to log nothing on a pass, so its checks on live runs
+  were not observable in the worker log. #3770 now logs one INFO line per gate
+  run naming the checks reached (or `nothing ahead of <base>` for a no-op).
 
 CI still runs every required check independently after PR creation. Nothing in
 Issue #3689 weakens or removes a CI, review or security gate.
@@ -379,8 +381,9 @@ Issue #3689 weakens or removes a CI, review or security gate.
   checkouts (see Unattended worker path).
 - The unattended worker path is verified by unit tests of Step 1b and
   `gateBeforePush()`, by the disposable-checkout replay, and by this host's
-  worker logs (see Unattended worker path). No live run on this host has yet
-  logged a pre-push gate block, and the gate logs nothing on a pass (#3770).
+  worker logs (see Unattended worker path). No live run on this host had yet
+  logged a pre-push gate block at audit time; #3770 added a per-run pass/no-op
+  INFO line so later logs record which checks the gate reached.
 - #3644 consumes two kinds of evidence. The CI tables have one row per failing
   run. VibeCoder rows give the check name, first failing SHA, run link, local,
   network or GitHub-exclusive class, and whether pre-flight ran an equivalent.

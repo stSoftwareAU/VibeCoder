@@ -87,6 +87,8 @@ interface Outcome {
   /** The `baseRef` each gate call received (5th argument). */
   gateBaseRefs: Array<string | undefined>;
   warnings: string[];
+  /** INFO lines the completion phase logged (Issue #3770). */
+  infos: string[];
 }
 
 async function runCompletion(scenario: Scenario): Promise<Outcome> {
@@ -103,6 +105,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let gateCalls = 0;
   const gateBaseRefs: Array<string | undefined> = [];
   const warnings: string[] = [];
+  const infos: string[] = [];
   const config: WorkerConfig = buildDefaultWorkerConfig();
   // The in-run infrastructure retry must not sleep its real backoff.
   config.infraRetryBackoffMs = 1;
@@ -122,7 +125,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     repoPath,
   } as PhaseState;
   const deps = createMockDeps({
-    logger: { warn: (message: string) => warnings.push(message) },
+    logger: {
+      info: (message: string) => infos.push(message),
+      warn: (message: string) => warnings.push(message),
+    },
     github: {
       createClient: () => stubClient(),
       runGhCommand: () =>
@@ -170,14 +176,24 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       gateUnpushedCommits: (_branch, _opts, _spec, _ran, baseRef) => {
         gateBaseRefs.push(baseRef);
         const answer = scenario.gateAnswers[gateCalls++] ?? "pass";
-        return Promise.resolve(
-          answer === "pass" ? { ok: true as const, value: undefined } : {
-            ok: false as const,
-            error: answer instanceof Error
-              ? answer
-              : new PrePushGateBlockedError(answer),
-          },
-        );
+        if (answer === "pass") {
+          return Promise.resolve({
+            ok: true as const,
+            value: { kind: "passed" as const, checksRun: GATE_CHECKS },
+          });
+        }
+        if (answer === "noop") {
+          return Promise.resolve({
+            ok: true as const,
+            value: { kind: "noop" as const },
+          });
+        }
+        return Promise.resolve({
+          ok: false as const,
+          error: answer instanceof Error
+            ? answer
+            : new PrePushGateBlockedError(answer),
+        });
       },
       pushUnpushedCommits: () => {
         pushes++;
@@ -217,11 +233,15 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       gateCalls,
       gateBaseRefs,
       warnings,
+      infos,
     };
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }
 }
+
+/** The checks the pass stub reports, to assert the pass line names them. */
+const GATE_CHECKS = ["deno fmt", "markdownlint"];
 
 const BLOCK = "[PRE_PUSH_BLOCKED] docs/USAGE.md:117 MD018";
 const base = {
@@ -474,5 +494,47 @@ Deno.test({
     assertStringIncludes(reason, "Could not resolve host");
     assertStringIncludes(reason, "end of the git output");
     assert(reason.length < 8000, `reason was ${reason.length} characters`);
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a passing pre-push gate logs the checks it ran (Issue #3770)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: ["pass"],
+    });
+    assert(
+      o.infos.includes(
+        `Pre-push gate passed checks=[${GATE_CHECKS.join(", ")}]`,
+      ),
+      `expected a pass line naming the checks, got: ${JSON.stringify(o.infos)}`,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a no-op pre-push gate logs nothing ahead, never as a pass (Issue #3770)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: ["noop"],
+    });
+    assert(
+      o.infos.some((line) =>
+        line.startsWith("Pre-push gate: nothing ahead of ")
+      ),
+      `expected a nothing-ahead line, got: ${JSON.stringify(o.infos)}`,
+    );
+    assert(
+      !o.infos.some((line) => line.startsWith("Pre-push gate passed")),
+      `a no-op must not log as a pass, got: ${JSON.stringify(o.infos)}`,
+    );
   },
 });
