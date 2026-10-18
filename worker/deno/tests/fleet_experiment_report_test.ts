@@ -264,6 +264,8 @@ function followOn(
     recordedAt: ago(0),
     followOn: followOnKind,
     attempt,
+    usage: usd === undefined ? "unknown" : "known",
+    pricing: usd === undefined ? "unknown" : "known",
     ...(usd === undefined ? {} : { estimatedApiEquivalentUsd: usd }),
   });
 }
@@ -642,6 +644,27 @@ Deno.test("fleet experiment report - an early merge younger than the horizon is 
   assertEquals(control.pending, 1);
   assertEquals(control.censoredAtHorizon, 1);
   assertEquals(control.mergeRate, 0);
+  const breakdown = report.breakdowns.find((row) =>
+    row.dimension === "repo" && row.arm === "sonnet-haiku"
+  )!;
+  assertEquals(breakdown.merged, 1);
+  assertEquals(breakdown.matureMerged, 0);
+  assertEquals(breakdown.mature, 1);
+});
+
+Deno.test("fleet experiment report - duplicate events and future outcomes cannot inflate cost or merges", () => {
+  const events = [
+    assignment(1, "sonnet-haiku", ago(20)),
+    invocation(1, { recordedAt: ago(19), usd: 2 }),
+  ];
+  const clean = buildExperimentReport(events, options());
+  const repeated = buildExperimentReport([
+    ...events,
+    ...events,
+    ...verifiedMerge(1, ago(-1)),
+  ], options());
+  assertEquals(repeated.records, clean.records);
+  assertEquals(armOf(repeated, "sonnet-haiku").merged, 0);
 });
 
 Deno.test("fleet experiment report - a single active arm gives no decision, even with merged data", () => {
@@ -679,7 +702,7 @@ Deno.test("fleet experiment report - the formatted text lists weekly and breakdo
   );
   assertStringIncludes(
     text,
-    "| host | host-a | sonnet-haiku | 1 | 1 | 1 | 0.50 | 0 |",
+    "| host | host-a | sonnet-haiku | 1 | 1 | 1 | 1 | 0.50 | 0 |",
   );
 });
 

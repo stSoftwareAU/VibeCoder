@@ -47,7 +47,11 @@ import {
   type ExperimentArm,
   isExcludedModel,
 } from "./fleet_experiment_arms.ts";
-import { classifyLifecycleOutcome } from "./lifecycle_outcomes.ts";
+import { reconcileLifecycleEvents } from "./lifecycle_reconcile.ts";
+import {
+  classifyLifecycleOutcome,
+  lifecycleEventsAtCutoff,
+} from "./lifecycle_outcomes.ts";
 
 /** Milliseconds in one day. */
 const DAY_MS = 86_400_000;
@@ -146,6 +150,10 @@ export interface AssignmentRecord {
   /** For example "manager:claude/sonnet+executor:claude/haiku". */
   roleCombination: string;
   assignedAt: string;
+  /** Latest observed event, used for prompt quality-regression detection. */
+  lastObservedAt?: string;
+  /** Original treatment, retained across later fallback attempts. */
+  roles?: RoleTreatment[];
   /** Sum of KNOWN estimated USD over every invocation and follow-on attempt. */
   costUsd: number;
   /** Invocation and follow-on events with no estimated USD. */
@@ -420,15 +428,14 @@ function buildRecord(
     event.kind === "outcome"
   );
 
-  let costUsd = 0;
-  let costUnknownCount = 0;
-  for (const event of [...invocations, ...followOns]) {
-    if (event.estimatedApiEquivalentUsd === undefined) {
-      costUnknownCount++;
-    } else {
-      costUsd += event.estimatedApiEquivalentUsd;
-    }
-  }
+  const reconciliation = reconcileLifecycleEvents(
+    group.filter((event) => event.kind !== "assignment" || event === intent),
+  ).assignments[0]!.totals;
+  const costUsd = reconciliation.estimatedApiEquivalentUsd ?? 0;
+  const costUnknownCount =
+    [...invocations, ...followOns].filter((event) =>
+      reconcileLifecycleEvents([event]).assignments[0]!.totals.partial
+    ).length + (invocations.length + followOns.length === 0 ? 1 : 0);
 
   const failedInvocations =
     invocations.filter((event) => event.result !== "success").length;
@@ -486,6 +493,9 @@ function buildRecord(
     managerProvider: manager?.provider ?? "unknown",
     roleCombination: roleCombination(intent.treatment.roles),
     assignedAt: intent.assignedAt,
+    roles: intent.treatment.roles,
+    lastObservedAt: group.map((event) => event.recordedAt).sort().at(-1) ??
+      intent.assignedAt,
     costUsd,
     costUnknownCount,
     invocations: invocations.length,
@@ -527,14 +537,15 @@ export function buildAssignmentRecords(
 ): { records: AssignmentRecord[]; unattributedEvents: number } {
   const groups = new Map<string, LifecycleEvent[]>();
   let unattributedEvents = 0;
-  for (const event of events) {
+  for (const event of lifecycleEventsAtCutoff(events, opts.now.toISOString())) {
     if (event.assignmentId === UNATTRIBUTED_ID) {
       unattributedEvents++;
       continue;
     }
-    const group = groups.get(event.assignmentId);
+    const key = `${event.repo}:${event.assignmentId}`;
+    const group = groups.get(key);
     if (group === undefined) {
-      groups.set(event.assignmentId, [event]);
+      groups.set(key, [event]);
     } else {
       group.push(event);
     }
@@ -543,7 +554,7 @@ export function buildAssignmentRecords(
   const nowMs = opts.now.getTime();
   const windowStartMs = nowMs - opts.windowDays * DAY_MS;
   const records: AssignmentRecord[] = [];
-  for (const [assignmentId, group] of groups) {
+  for (const group of groups.values()) {
     const assignments = group.filter(
       (event): event is AssignmentEvent => event.kind === "assignment",
     );
@@ -554,7 +565,7 @@ export function buildAssignmentRecords(
     }
     const assignedMs = Date.parse(intent.assignedAt);
     if (assignedMs <= windowStartMs || assignedMs > nowMs) continue;
-    records.push(buildRecord(assignmentId, intent, group, opts));
+    records.push(buildRecord(intent.assignmentId, intent, group, opts));
   }
 
   records.sort((a, b) =>
@@ -1243,11 +1254,12 @@ export function formatExperimentReport(report: ExperimentReport): string {
         "Arm",
         "Assigned",
         "Mature",
-        "Merged",
+        "Merged (all)",
+        "Mature merged",
         "Cost (USD)",
         "Unknown-cost assignments",
       ],
-      ["---", "---", "---", "---:", "---:", "---:", "---:", "---:"],
+      ["---", "---", "---", "---:", "---:", "---:", "---:", "---:", "---:"],
       report.breakdowns.map((row) => [
         row.dimension,
         row.key,
@@ -1255,6 +1267,7 @@ export function formatExperimentReport(report: ExperimentReport): string {
         String(row.assigned),
         String(row.mature),
         String(row.merged),
+        String(row.matureMerged),
         row.costUsd.toFixed(2),
         String(row.costUnknownAssignments),
       ]),

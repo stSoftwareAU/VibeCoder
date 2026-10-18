@@ -235,9 +235,10 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #3744 added `route-issue` (count 152 → 153).
   // Provider feasibility and fleet experiment reporting add two commands.
 
-  assertEquals(commands.length, 155);
+  assertEquals(commands.length, 156);
   assertEquals(commands.includes("route-issue"), true);
   assertEquals(commands.includes("fleet-experiment-report"), true);
+  assertEquals(commands.includes("subscription-allocation"), true);
   assertEquals(commands.includes("sweep-drift"), true);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);

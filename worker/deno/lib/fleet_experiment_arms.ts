@@ -4,10 +4,9 @@
  *
  * assignExperimentArm draws one experiment arm for an issue. The draw is a
  * pure function of a seed, the repository and the issue number, so the same
- * issue always lands in the same arm, and a rerun never re-draws it. Only the
- * synthetic generator calls it today: the execute phase still records cohort
- * `unassigned` until per-role host configuration (#3643) lets an arm be
- * enacted.
+ * seed/issue pair always lands in the same arm. The allocation runtime also
+ * supplies a decision epoch and live eligible set; durable issue markers
+ * preserve original cohort attribution across later retries and fallbacks.
  *
  * Fable models are excluded from every arm and from every fallback.
  *
@@ -43,8 +42,8 @@ export const CONTROL_ARM_ID = "sonnet-haiku";
  * The arms the fleet experiment runs by default.
  *
  * The control is Sonnet manager with Haiku executor, the incumbent. There are
- * no Opus-manager arms, as the incumbent control is Sonnet plus Haiku and the
- * Opus arms were dropped. The Astra and Sol candidates await a feasibility
+ * no Opus-manager arms in this default set; operators may define other
+ * supported candidates. The Astra and Sol candidates await a feasibility
  * check: subscription-only feasibility is tracked in #3647, and Astra and Sol
  * CLI availability is not assumed here.
  */
@@ -220,9 +219,15 @@ export async function assignExperimentArm(
   repo: string,
   issueNumber: number,
   arms: readonly ExperimentArm[],
+  eligible?: ReadonlySet<string>,
 ): Promise<string> {
   validateExperimentArms(arms);
-  const active = arms.filter((arm) => arm.status === "active");
+  const active = arms.filter((arm) =>
+    arm.status === "active" && (eligible === undefined || eligible.has(arm.id))
+  );
+  if (active.length === 0) {
+    throw new ExperimentArmError("no-capacity", "no eligible arm has capacity");
+  }
   const total = active.reduce((sum, arm) => sum + arm.weight, 0);
   const target = (await unitInterval(seed, repo, issueNumber)) * total;
 

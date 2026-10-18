@@ -1,4 +1,8 @@
 import {
+  AllocationAdmissionError,
+  type IssueAllocationSelection,
+} from "../subscription_allocation_runtime.ts";
+import {
   effectiveRoleSelections,
   resolveOrchestrationSettings,
 } from "../orchestration/role_config.ts";
@@ -77,7 +81,7 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "../fleet_authors.ts";
 import { issueRunRoleTreatments } from "../issue_assignment.ts";
-import { selectAgentProvider } from "../agent_provider.ts";
+import { agentProviderById, selectAgentProvider } from "../agent_provider.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
 import {
   buildInterruptedWipCommitMessage,
@@ -531,6 +535,7 @@ async function recordRunAssignment(
   deps: WorkerDeps,
   agents: ReturnType<typeof buildIssueRunAgents>,
   orchestration?: ExternalOrchestrationSettings,
+  cohort?: string,
 ): Promise<void> {
   const { repo, issueNumber, config } = ctx;
   try {
@@ -549,8 +554,8 @@ async function recordRunAssignment(
         ...(value.effort ? { effort: value.effort } : {}),
       }))
       : issueRunRoleTreatments({
-        provider: selectAgentProvider(),
-        claudeModel: config.claudeModel || undefined,
+        provider: cohort ? agentProviderById("claude")! : selectAgentProvider(),
+        claudeModel: cohort ? "sonnet" : config.claudeModel || undefined,
         agents,
       });
     const assignment = await deps.infrastructure.recordIssueAssignment({
@@ -558,6 +563,7 @@ async function recordRunAssignment(
       repo,
       issueNumber,
       trustedAuthors,
+      ...(cohort ? { cohort } : {}),
       roles,
       ...(config.subscriptionAllocationLabel
         ? { subscriptionAllocation: config.subscriptionAllocationLabel }
@@ -751,13 +757,42 @@ async function executeClaudeBody(
   // so the prompt and the argv cannot disagree. Wired here as well as
   // on the standalone command path, or the key would be inert on exactly the
   // runs the fleet actually makes.
-  const externalOrchestration =
-    (config.repoConfig?.[repo]?.externalOrchestration ??
-      config.externalOrchestration) === true;
-  const effectiveOrchestrationSettings = resolveOrchestrationSettings(
-    config.externalOrchestrationSettings ?? {},
-    config.repoConfig?.[repo]?.externalOrchestrationSettings,
-  );
+  let allocation: IssueAllocationSelection | undefined;
+  try {
+    allocation = await deps.infrastructure.resolveIssueAllocation(
+      config,
+      repo,
+      issueNumber,
+    );
+  } catch (error) {
+    logger.error("Subscription allocation blocked this run", {
+      error: redactSecrets(
+        error instanceof Error ? error.message : String(error),
+      ),
+    });
+    return {
+      status: "failure",
+      category: error instanceof AllocationAdmissionError
+        ? "rate_limit"
+        : "repo_config",
+      reason: error instanceof AllocationAdmissionError
+        ? "Subscription allocation has no eligible provider capacity."
+        : "Subscription allocation configuration or evidence is unavailable; see allocation diagnostics.",
+    };
+  }
+  if (allocation) {
+    logger.info(
+      `Subscription allocation ${allocation.cohort} selected for ${repo}#${issueNumber}`,
+    );
+  }
+  const externalOrchestration = allocation?.external ??
+    ((config.repoConfig?.[repo]?.externalOrchestration ??
+      config.externalOrchestration) === true);
+  const effectiveOrchestrationSettings = allocation?.settings ??
+    resolveOrchestrationSettings(
+      config.externalOrchestrationSettings ?? {},
+      config.repoConfig?.[repo]?.externalOrchestrationSettings,
+    );
   const issueExecutorSplit = !externalOrchestration &&
     isIssueExecutorSplitEnabled(
       "issue",
@@ -767,7 +802,9 @@ async function executeClaudeBody(
   // The sub-agent tier (Issue #3402): host-wide `config.issueSubAgentTier`,
   // with the repository's own `repo_config` override layered over it.
   // Resolved and logged unconditionally, every issue run.
-  const issueSubAgentTier = runSubAgentTier(config, repo, state, logger);
+  const issueSubAgentTier = allocation && !allocation.external
+    ? "haiku"
+    : runSubAgentTier(config, repo, state, logger);
   logger.info(
     `Issue sub-agent tier resolved to '${issueSubAgentTier}' for ${repo} ` +
       `(Issue #3402)`,
@@ -1151,7 +1188,16 @@ async function executeClaudeBody(
           repo,
           timeoutSeconds,
           killAfterSeconds: config.claudeKillAfter,
-          model: config.claudeModel || undefined,
+          model: allocation && !allocation.external
+            ? "sonnet"
+            : config.claudeModel || undefined,
+          ...(allocation && !allocation.external
+            ? {
+              agentProvider: "claude",
+              effort: "high",
+              enableModelFallback: false,
+            }
+            : {}),
           cwd: state.repoPath,
           // The browser on every run unless `skip_screenshot_check`
           // (Issue #2925). Issue #2159 layers the `codegraph` server beside
@@ -1216,6 +1262,7 @@ async function executeClaudeBody(
     deps,
     issueRunAgents,
     externalOrchestration ? effectiveOrchestrationSettings : undefined,
+    allocation?.cohort,
   );
 
   let claudeResult = await invokeAgent(executeTimeoutSeconds);

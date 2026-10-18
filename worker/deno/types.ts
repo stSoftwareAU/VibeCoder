@@ -94,6 +94,9 @@ export interface PinnedToolVersions {
  * Worker configuration loaded from .config.json.
  */
 export interface WorkerConfig {
+  /** Opt-in evidence-based subscription routing; absent preserves native dispatch. */
+  subscriptionAllocation?:
+    import("./lib/subscription_allocation.ts").AllocationPolicy;
   /**
    * **Axis 1 — who may direct work** (raise, label, schedule): the logins
    * resolved from repository permissions this cycle (Issue #1066).
@@ -1274,6 +1277,8 @@ export interface RepoConfig {
  * Only values that differ from built-in defaults need to be present.
  */
 export interface ConfigFile {
+  /** Validated operator allocation policy; no billing or subscription purchase fields. */
+  subscription_allocation?: unknown;
   /**
    * @deprecated No longer a trust grant (Issue #1066). Kept only as the
    * default PR reviewer / assignee when `pr_reviewers` is unset; who may

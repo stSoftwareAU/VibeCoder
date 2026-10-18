@@ -1,3 +1,4 @@
+import { resolveIssueAllocation } from "./subscription_allocation_runtime.ts";
 /**
  * Dependency injection and module wiring for the issue worker.
  *
@@ -465,6 +466,7 @@ export interface CrashHandlingDeps {
 
 /** Infrastructure — file I/O, temp files, disk, logs, prompts, misc. */
 export interface InfrastructureDeps {
+  resolveIssueAllocation: typeof resolveIssueAllocation;
   /** Record a PR follow-on cycle without changing the existing tier counters (Issue #3720). */
   recordPrFollowOn: (
     input: Parameters<typeof recordPrFollowOnFromGithub>[0],
@@ -814,6 +816,7 @@ export function createDefaultDeps(
       buildPrompt: buildIssuePrompt,
       collectGraftContext,
       getCodebaseMap: getOrGenerateCodebaseMap,
+      resolveIssueAllocation,
       recordPrFollowOn: (input) =>
         recordPrFollowOnFromGithub(input, runGhCommand),
       recordIssueAssignment: ({ workDir, ...input }) =>
@@ -1492,6 +1495,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     recordPrFollowOn: mockFn<InfrastructureDeps["recordPrFollowOn"]>(() =>
       Promise.resolve()
     ),
+    resolveIssueAllocation: async () => undefined,
     // Issue #3718: a mocked run posts no assignment marker and writes no ledger.
     recordIssueAssignment: mockFn<InfrastructureDeps["recordIssueAssignment"]>(
       () =>
