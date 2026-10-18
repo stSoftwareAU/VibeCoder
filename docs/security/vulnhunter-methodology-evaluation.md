@@ -53,16 +53,19 @@ The three follow-ups are open issues in this repository:
 [stSoftwareAU/VibeCoder#3659](https://github.com/stSoftwareAU/VibeCoder/issues/3659)
 (security-fix gate: execute the named test red→green). Older code comments
 cite the same numbers from an earlier tracker; those are unrelated. The
-diagram shows the planned flow once all three land; none of it exists yet.
+diagram shows the planned flow once all three land. #3658's baseline check now
+ships (parse-time `evidence` and line/snippet validation in
+`worker/deno/lib/security_tree_sweep.ts`) and #3659 has landed (see section 5);
+only #3657 is still planned.
 
 ```mermaid
 flowchart LR
     S[Sweep / code-scanning<br/>finding] --> I[security issue]
     I --> W[worker fix run]
     W --> G{security_fix_gate}
-    G -->|"planned #3659: test red<br/>on base, green at head"| G2{verifier verdict}
+    G -->|"#3659: test red<br/>on base, green at head"| G2{verifier verdict}
     G2 -->|"planned #3657: FIXED only"| PR[PR raised]
-    S -.->|"planned #3658: false positive<br/>must cite a resolvable path:line"| B[baseline entry]
+    S -.->|"#3658: false positive<br/>must cite a resolvable path:line"| B[baseline entry]
 ```
 
 ## 1. Falsification engine — Skip
@@ -121,11 +124,10 @@ that an independent verifier for the *hunt* phase is still on its roadmap
 ("Falsification Engine" bullet). The fix verifier is the one that ships.
 
 **What VibeCoder has today.** `evaluateSecurityFixGate`
-(`security_fix_gate.ts:399`) has a machine-checked half: a test file changed
-(`:416`), and a named test declared in the added lines
-(`citedTestIdentifierInDiff`, `security_fix_gate.ts:363`, called at `:419`).
-The "original trigger is closed" evidence is the `TRIGGER_CLOSED` regex
-(`security_fix_gate.ts:114`) matched against the PR summary. The agent whose
+(`security_fix_gate.ts`) has a machine-checked half: a test file changed, a
+named test declared in the added lines (`citedTestIdentifierInDiff`) and, since #3659,
+that test discriminating when executed (section 5). The "original trigger is
+closed" evidence is the `TRIGGER_CLOSED` regex matched against the PR summary. The agent whose
 fix is being judged writes that summary.
 
 **Gap.** The fixer judges its own fix. Writing "no bypass exists" satisfies
@@ -153,23 +155,24 @@ specific code location, the finding is not eliminated"
 downgrade a finding until every call site of the sink has been checked
 ("Downgrade discipline"). README.md, "The Closed Loop" → "Capability Filter".
 
-**What VibeCoder has today.** A sweep `falsePositives` entry needs a `path`, a
-`rule` and a `reason` of at least `MIN_REASON_LENGTH` (10) characters
-(`validateEntry`, `security_tree_sweep.ts:1105`; constant at `:366`). Nothing
-asks where the defence is. An entry with neither `line` nor `snippet` matches
-every finding of that rule anywhere in the file (`entryMatches`,
+**What VibeCoder had at evaluation time (before #3658).** A sweep
+`falsePositives` entry needed a `path`, a `rule` and a `reason` of at least
+`MIN_REASON_LENGTH` (10) characters (at the evaluated revision:
+`validateEntry`, `security_tree_sweep.ts:1105`; constant at `:366`). Nothing
+asked where the defence was. An entry with neither `line` nor `snippet`
+matched every finding of that rule anywhere in the file (`entryMatches`,
 `security_tree_sweep.ts:1229`, at `:1244`). The template the filed issue
-offers asks only for `reason: "<why this is benign>"` (`buildSweepIssueBody`,
+offered asked only for `reason: "<why this is benign>"` (`buildSweepIssueBody`,
 `security_tree_sweep.ts:1741`). On a pull request,
-`.github/workflows/security-tree-sweep.yml` runs the sweep against the PR's
-own checkout and blocks on findings in its changed files
+`.github/workflows/security-tree-sweep.yml` ran the sweep against the PR's
+own checkout and blocked on findings in its changed files
 (`splitByChangedFiles`, `security_tree_sweep.ts:2089`). The code-scanning
-feed filters on the tool's severity alone (`code_scanning_alerts.ts:176`).
+feed filtered on the tool's severity alone (`code_scanning_alerts.ts:176`).
 
-**Gap.** A run blocked by a sweep finding in its own changed file can add a
+**Gap.** A run blocked by a sweep finding in its own changed file could add a
 10-character `falsePositives` entry in the same PR and turn the gate green.
-No evidence is needed, and a line-less entry suppresses the whole file. That
-is #3512's "loosen the check" route.
+No evidence was needed, and a line-less entry suppressed the whole file. That
+was #3512's "loosen the check" route.
 
 **Verdict: Adopt — #3658.** Require each `falsePositives` entry to cite the
 eliminating defence as a `path:line` that resolves in the tree, and reject
@@ -177,7 +180,8 @@ line-less, snippet-less entries. **Closes #3512:** no, but it closes that
 issue's sweep-baseline route. **Closes #3615:** no. #3658 makes a citation
 that resolves to nothing a baseline error. That applies the #3613 lesson (a
 cited path that matches no file must fail closed) so the new rule is not
-itself a #3615 instance.
+itself a #3615 instance. That check landed via #3658 (parse-time `evidence` and
+line/snippet validation in `worker/deno/lib/security_tree_sweep.ts`).
 
 ## 4. Evidence-backed remediation mapping — Skip
 
@@ -224,24 +228,45 @@ run it again (expect PASS). "If `pre_fix_result != "fail"` OR
 Record Discrimination Evidence"; `vulnhunter-fix/references/remediation-rigor.md`,
 "Step E.5 — discrimination evidence").
 
-**What VibeCoder has today.** The gate checks statically that a test file
-changed (`security_fix_gate.ts:416`) and that the summary names a test
-declared in the added lines (`:419`). The fail-before/pass-after linkage is
-summary prose matched by `REGRESSION_TEST_REFERENCE` and
-`BEFORE_AFTER_LINKAGE` (`security_fix_gate.ts:99`, `:107`). The block message
-built by `buildSecurityFixGateMessage` (`security_fix_gate.ts:482`) says "No
-execution is required" (`:500`).
+**What VibeCoder has today (#3659 implemented).** The gate still checks
+statically that a test file changed and that the summary names a test declared
+in the added lines. It then executes that test: when the gate is active, the
+diff was collected, a test file changed and the cited test is declared in the
+diff's added lines, the completion phase (the worker, not the agent) runs each
+named test (up to ten, in turn under one budget) twice in a disposable checkout
+(`runSecurityFixDiscrimination` in `security_fix_discrimination.ts`; a `git clone --shared` of the issue checkout,
+detached at the head commit, no remote, deleted afterwards). It runs once at
+the head (expect pass) and once with the merge-base versions of the branch's
+changed non-test files restored (expect fail); files the branch added stay at
+head. It uses the mutation gate's runner seams and runs
+`deno test --no-check -A --filter <name> <file>` from the test's nearest
+`deno.json`, `deno.jsonc` or `deno.lock` directory, counting an outcome only
+when deno reports the named test's own `<name> ... ok` or `<name> ... FAILED`
+line. A Rust `#[test] fn` runs `cargo test --no-fail-fast [--test <stem>]
+<name>` from the nearest `Cargo.toml` package, counting only cargo's
+`test <path> ... ok` or `... FAILED` line for that test. Red then green passes; green then green, red then red and green then red
+block with the evidence kind `test-discriminates`. The prose
+`regression-test` evidence (`REGRESSION_TEST_REFERENCE` and
+`BEFORE_AFTER_LINKAGE`) was removed, and `buildSecurityFixGateMessage` no
+longer says "No execution is required". Both outcomes are recorded on the block
+verdict (`SecurityGateRunVerdict.discrimination`) and rendered as "Recorded
+discrimination runs".
 
-**Gap.** A test that already passes on the vulnerable code satisfies the gate,
-because nothing runs it against the unfixed code. Only the agent's own
-sentence says it fails before the fix.
+**Gap (closed by #3659).** Before #3659 a test that already passed on the
+vulnerable code satisfied the gate, because nothing ran it against the unfixed
+code and only the agent's own sentence said it failed before the fix.
 
-**Verdict: Adopt — #3659.** The worker, not the agent, runs the named test
-against the base branch's production files (expect red) and at the head
-(expect green), and records both results. **Closes #3512:** no. It removes a
-self-reported claim on the security-fix surface only. **Closes #3615:** no. The
-follow-up #3659 requires a run that could not execute to block as "not
-checked", never to count as the red run, so the check does not fail open.
+**Verdict: Adopt — #3659 (implemented).** The worker, not the agent, runs the
+named test against the base branch's production files (expect red) and at the
+head (expect green), and records both results. **Closes #3512:** no. It removes
+a self-reported claim on the security-fix surface only. **Closes #3615:** no,
+and it does not add an instance. A run that cannot execute (runner error,
+unresolvable base ref or merge base, timeout, the 600 s budget exhausted, cited
+test not reported, no Deno or Rust test cited, runner not wired) blocks
+with the evidence kind `discrimination-not-checked`, never counting as the red
+run, so the check does not fail open. Only Deno and Rust tests can be executed
+today, so a security fix whose cited test is in another language blocks as not
+checked unless the repo sets `skip_security_fix_check`.
 
 ## Deliberately excluded
 
