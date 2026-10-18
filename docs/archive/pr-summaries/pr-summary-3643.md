@@ -43,8 +43,9 @@ subscription, CLI and observed quota failures stop external dispatch.
   recorded treatment, and repository rollback to native dispatch.
 - The full local gate passed completeness, type checking, lint and formatting.
   Its parallel test pass had 29,241 passes and three host-related failures:
-  two process-tree cleanup assertions and PowerShell startup under the
-  sanitised test environment. Those failures are being checked on the base.
+  two process-tree cleanup assertions also reproduced on the milestone base.
+  PowerShell startup was fixed locally with a cache-directory wrapper; the
+  separate serial test pass is running.
   Local markdownlint and semgrep are unavailable; required CI runs those checks. No live subscription-model turn
   was purchased or used to claim host entitlement.
 - #3643: Configure manager, executor and reviewer independently per host and repository.
