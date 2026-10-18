@@ -71,6 +71,11 @@ elif args[0] == "ps":
     print(json.dumps(records))
 elif args[0] == "inspect":
     path = file_for(args[-1])
+    identity_miss = root / "miss-first-identity"
+    if identity_miss.exists() and option("--format") != "{{json .State}}":
+        identity_miss.unlink()
+        print(f'Error: no such object: "{args[-1]}"', file=sys.stderr)
+        sys.exit(125)
     if not path.exists():
         sys.exit(1)
     if option("--format") == "{{json .State}}":

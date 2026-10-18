@@ -69,7 +69,7 @@ jobs:
             --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname \
             tests/broker_isolation_plan_test.ts tests/broker_session_provision_test.ts \
             tests/broker_supervisor_test.ts tests/broker_supervisor_probe_test.ts \
-            tests/git_agent_gateway_test.ts tests/git_http_fixture_test.ts tests/broker_provider_selection_test.ts \
+            tests/git_agent_gateway_test.ts tests/git_http_fixture_test.ts tests/broker_provider_selection_test.ts tests/brokered_job_environment_test.ts \
             tests/broker_service_test.ts tests/codex_subscription_persistence_test.ts
 
       - name: Exercise actual Docker supervisor and private-volume provisioning
@@ -191,7 +191,7 @@ jobs:
             --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname \
             tests/broker_isolation_plan_test.ts tests/broker_session_provision_test.ts \
             tests/broker_supervisor_test.ts tests/broker_supervisor_probe_test.ts \
-            tests/git_agent_gateway_test.ts tests/git_http_fixture_test.ts tests/broker_provider_selection_test.ts \
+            tests/git_agent_gateway_test.ts tests/git_http_fixture_test.ts tests/broker_provider_selection_test.ts tests/brokered_job_environment_test.ts \
             tests/broker_service_test.ts tests/codex_subscription_persistence_test.ts
 
       - name: Exercise actual Podman supervisor and private-volume provisioning

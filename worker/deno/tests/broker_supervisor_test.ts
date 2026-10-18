@@ -235,6 +235,179 @@ Deno.test("supervisor diagnoses failed identity lookup and malformed state witho
   }
 });
 
+Deno.test("supervisor retries only the exact Podman startup identity miss and rechecks ownership", async () => {
+  for (const foreign of [false, true]) {
+    const h = await harness();
+    h.plan.runtime = "/fixture/bin/podman";
+    let identities = 0;
+    const run = h.deps.run;
+    h.deps.run = (args) => {
+      if (args[0] === "inspect" && args[2] !== "{{json .State}}") {
+        identities++;
+        if (identities === 1) {
+          return Promise.resolve({
+            code: 125,
+            stdout: "",
+            stderr: `Error: no such object: "${h.plan.broker.name}"\n`,
+          });
+        }
+        if (foreign) {
+          return Promise.resolve({ code: 0, stdout: "another-session" });
+        }
+      }
+      return run(args);
+    };
+    h.ready();
+    h.worker.resolve(7);
+    try {
+      if (foreign) {
+        await assertRejects(
+          () =>
+            superviseBrokeredWorker(h.plan, {
+              pollMs: 1,
+              readinessTimeoutMs: 200,
+            }, h.deps),
+          Error,
+          "Broker container ownership changed",
+        );
+        assertEquals(h.events.includes("probe"), false);
+        assertEquals(h.events.includes("start-worker"), false);
+      } else {
+        assertEquals(
+          await superviseBrokeredWorker(h.plan, {
+            pollMs: 1,
+            readinessTimeoutMs: 200,
+          }, h.deps),
+          7,
+        );
+        assertEquals(h.events.filter((event) => event === "probe").length, 1);
+        assertEquals(h.events.includes("start-worker"), true);
+      }
+      assertEquals(identities, 2);
+    } finally {
+      await h.fixture.close();
+    }
+  }
+});
+
+Deno.test("supervisor refuses similar identity errors and never retries an exec miss", async () => {
+  for (const variant of ["runtime", "name", "extra", "code", "phase"]) {
+    const h = await harness();
+    h.plan.runtime = variant === "runtime" ? "docker" : "podman";
+    let failures = 0;
+    const run = h.deps.run;
+    h.deps.run = (args) => {
+      const phase = variant === "phase" ? "exec" : "inspect";
+      if (args[0] === phase && args[2] !== "{{json .State}}") {
+        failures++;
+        return Promise.resolve({
+          code: variant === "code" ? 2 : 125,
+          stdout: "",
+          stderr: `Error: no such object: "${
+            variant === "name" ? "foreign-name" : h.plan.broker.name
+          }"${variant === "extra" ? "\nError: permission denied" : ""}`,
+        });
+      }
+      return run(args);
+    };
+    try {
+      await assertRejects(
+        () =>
+          superviseBrokeredWorker(h.plan, {
+            pollMs: 1,
+            readinessTimeoutMs: 200,
+          }, h.deps),
+        Error,
+        "Broker readiness probe failed",
+      );
+      assertEquals(failures, 1, variant);
+      assertEquals(h.events.includes("start-worker"), false);
+    } finally {
+      await h.fixture.close();
+    }
+  }
+});
+
+Deno.test("supervisor bounds repeated exact Podman identity misses by its readiness deadline", async () => {
+  const h = await harness();
+  h.plan.runtime = "podman";
+  const run = h.deps.run;
+  h.deps.run = (args) =>
+    args[0] === "inspect"
+      ? Promise.resolve({
+        code: 125,
+        stdout: "",
+        stderr: `Error: no such object: "${h.plan.broker.name}"`,
+      })
+      : run(args);
+  try {
+    await assertRejects(
+      () =>
+        superviseBrokeredWorker(
+          h.plan,
+          { pollMs: 1, readinessTimeoutMs: 8 },
+          h.deps,
+        ),
+      Error,
+      "Broker readiness deadline expired",
+    );
+    assertEquals(h.events.includes("probe"), false);
+    assertEquals(h.events.includes("start-worker"), false);
+    assert(h.events.includes(`reap:${h.plan.broker.name}`));
+  } finally {
+    await h.fixture.close();
+  }
+});
+
+Deno.test({
+  name:
+    "supervisor production adapter retries the exact Podman identity miss before starting its worker",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const h = await harness();
+    try {
+      const executable = `${h.fixture.root}/podman`;
+      await Deno.copyFile(
+        new URL("./fixtures/broker_fake_runtime.py", import.meta.url),
+        executable,
+      );
+      await Deno.chmod(executable, 0o700);
+      await Deno.writeTextFile(
+        `${h.fixture.root}/miss-first-identity`,
+        "fixture",
+      );
+      h.plan.runtime = executable;
+      assertEquals(
+        await superviseBrokeredWorker(h.plan, {
+          readinessTimeoutMs: 3000,
+          pollMs: 1,
+        }),
+        7,
+      );
+      const calls = (await Deno.readTextFile(`${h.fixture.root}/calls.log`))
+        .trim().split("\n").map((line) => JSON.parse(line) as string[]);
+      const firstExec = calls.findIndex((args) => args[0] === "exec");
+      assert(firstExec > 0);
+      assertEquals(
+        calls.slice(0, firstExec).filter((args) => args[0] === "inspect")
+          .length,
+        2,
+      );
+      const entries = Array.from(Deno.readDirSync(h.fixture.root)).map((
+        entry,
+      ) => entry.name);
+      assertEquals(
+        entries.some((name) =>
+          name.endsWith(".container") || name.endsWith(".volume")
+        ),
+        false,
+      );
+    } finally {
+      await h.fixture.close();
+    }
+  },
+});
+
 Deno.test({
   name:
     "supervisor production adapter retains scrubbed exec failure diagnostics and reaps the broker",

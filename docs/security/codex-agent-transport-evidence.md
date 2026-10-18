@@ -4,9 +4,9 @@
 
 This is an experimental native Codex adapter for Issues #3698 and #3699. It is
 not wired into the normal worker launcher. The pinned API-key native fixture
-passed on Docker and rootless Podman; see the observed run below. The separate
-trusted ChatGPT subscription transport has local tests, but has not been
-proved with the actual native client. The native gateway now accepts an
+passed on Docker and rootless Podman; see the observed runs below. Docker also
+passed the actual native client's ChatGPT-mode fixture, including a synthetic
+401, trusted refresh and private durable persistence. The native gateway accepts an
 explicit ChatGPT selection and fixes its broker route to
 `/codex-subscription/responses`; unknown modes fail instead of changing billing. This
 checkpoint does not resolve the milestone's full containment or subscription
@@ -104,6 +104,36 @@ request for each Claude authentication mode; broker shutdown refused further
 transport. These are synthetic fixture results, not live provider requests
 or ChatGPT subscription evidence.
 
+## Observed Docker subscription and Git result
+
+[Run 39101004969](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39101004969),
+source `654159a51c8a44bfcc1e168a6da7a63eede601b0`, passed the
+[Docker job](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39101004969/job/117597086084).
+Codex 0.147.0 completed in both explicit modes. The trusted witness recorded
+two subscription Responses attempts, one refresh and a verified private
+0600 auth-file replacement preserving unrelated metadata. The second attempt
+required the rotated credential. The upstream and token endpoint were
+controlled synthetic fixtures; this does not establish live account billing
+or model entitlement.
+
+That job also passed actual supervisor provisioning, native Git shallow clone
+and a separate-branch fetch (two discoveries and four upload-pack requests),
+two redacted GitHub writes with audit witnesses, and existing Claude/Gemini
+checks. Git push discovery and off-repository access were refused. Direct
+IPv4/IPv6, credential visibility and post-shutdown controls remained enforced.
+The image was
+`sha256:f0a8d9345d2d6d6566dfce9e7529e82cbf4e2f25aff3299470706247c740be01`;
+artifact `12126273977` has digest
+`sha256:189e0c7ab3c3b77af8f4ff6501b5556230203347b34e34dbfa742bce76289e44`.
+
+The independent nested-namespace experiment was refused as expected. Podman
+failed during the supervisor's initial identity inspection, before native
+fixtures ran, so this run establishes neither Podman subscription nor Git
+acceptance. The failed Podman artifact is `12126513095`, digest
+`sha256:76e1831ddb1e4b12de7db3a90a2cf87f606ab6d02a0cb2884e17f835a6c6b1f5`.
+Production launch integration, trusted Git push and Apple acceptance remain
+open.
+
 ## Required separate ChatGPT subscription contract
 
 The pinned [provider configuration](https://github.com/openai/codex/blob/be6e8eac029b183056b7e4402879f15d2c85f61b/codex-rs/model-provider-info/src/lib.rs)
@@ -179,11 +209,11 @@ state, simultaneous and late 401 responses, persistence failure, cancellation
 during refresh/persistence, pending-request cancellation, size bounds,
 protocol metadata and refused token-bearing errors. Deliberately breaking
 the account, refresh, persistence, routing, metadata or size guards makes
-the relevant tests fail. Actual native ChatGPT execution, authenticated outer
-broker dispatch and synthetic forced-refresh proof remain integration
-requirements. Atomic host persistence now has local actual-file/lock tests,
-but is not yet wired into the native hosted fixture. Subscription support must not be claimed
-from the API-key native result.
+the relevant tests fail. The Docker run above now connects actual native
+ChatGPT-mode execution, authenticated outer broker dispatch, synthetic forced
+refresh and atomic persistence. Other dialects and normal worker integration
+still need their own evidence; these results cannot be inferred from the
+API-key fixture.
 
 
 ## Host account transaction and durable persistence

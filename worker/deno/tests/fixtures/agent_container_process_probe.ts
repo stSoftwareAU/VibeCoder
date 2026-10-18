@@ -559,6 +559,14 @@ async function broker(credentialRoot: string): Promise<void> {
       },
     });
   const ordinaryHandler = createHandler(fixture.capability, "api-key");
+  await Deno.writeTextFile(
+    "/run/broker/session.json",
+    JSON.stringify({
+      version: 1,
+      capability: fixture.capability,
+    }),
+    { createNew: true, mode: 0o600 },
+  );
   const nativeApiHandler = createHandler(
     fixture.nativeCapabilities["api-key"],
     "api-key",

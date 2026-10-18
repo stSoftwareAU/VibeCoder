@@ -14,6 +14,7 @@ import {
 } from "./container_watchdog.ts";
 
 import { parseBrokerSessionConfig } from "./broker_session_config.ts";
+import { CONTAINER_RUNTIMES } from "./container_runtime.ts";
 
 const OWNER_LABEL = "io.vibecoder.broker-session";
 
@@ -381,7 +382,15 @@ export async function superviseBrokeredWorker(
         throw new Error("Broker readiness deadline expired");
       }
       if (result.code === 0) break;
-      if (result.code !== 1) {
+      // Podman 4.9.3's default inspect tries each object kind before reporting
+      // this exact startup miss. Retry identity only; the next iteration must
+      // establish our label before any authenticated readiness exec may run.
+      const pendingPodmanIdentity = identity.code === 125 &&
+        dialectForExecutable(plan.runtime) ===
+          CONTAINER_RUNTIMES.podman.dialect &&
+        identity.stderr?.trim() ===
+          `Error: no such object: "${plan.broker.name}"`;
+      if (result.code !== 1 && !pendingPodmanIdentity) {
         // A runtime's exec error is not authenticated readiness. Record its
         // observed state before deciding whether a future fix may retry it.
         const state = await deps.run([

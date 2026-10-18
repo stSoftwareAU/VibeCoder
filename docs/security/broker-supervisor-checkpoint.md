@@ -157,3 +157,25 @@ Six independent mutations were killed by assertions after the tests first failed
 against the original implementation. The source was restored before formatting,
 lint and type checks. These local process tests establish diagnostic handling
 and cleanup, not Docker or Podman containment acceptance.
+
+The follow-up hosted run
+[39101004969](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39101004969)
+at `654159a` passed the complete Docker supervisor fixture. Podman reported an
+identity lookup exit 125 with an unclassified diagnostic, followed by a running
+container state. This is evidence of the failing phase, not captured proof of
+the missing-object stderr. The pinned
+[Podman 4.9.3 inspect implementation](https://github.com/containers/podman/blob/v4.9.3/cmd/podman/inspect/inspect.go#L197-L243)
+uses `no such object` after its default multi-kind lookup misses. The supervisor
+now permits a bounded retry only when Podman's identity lookup exits 125 and its
+entire stderr is the exact expected missing-object error for this broker. The
+next attempt must recheck the session ownership label before readiness exec.
+Other runtimes, names, additional errors, exit codes and all exec failures
+remain fatal. Existing cancellation, broker-exit and deadline bounds still
+apply.
+
+The local suite passes 23 supervisor tests, including an actual local process
+fixture for the exact stderr, ownership recheck, negative lookalikes and bounded
+repeated misses. Six independent mutations were killed by assertions and the
+source restored (`/private/tmp/m122-identity-mutations.json`). The hosted Podman
+supervisor must still pass; this source-backed retry does not itself establish
+that runtime result.

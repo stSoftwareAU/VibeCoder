@@ -186,6 +186,8 @@ try {
     for (
       const relative of [
         ...librarySources,
+        "brokered_job.ts",
+        "tests/fixtures/brokered_job_client_probe.ts",
         "tests/support/agent_namespace_evidence.ts",
         "tests/support/agent_container_evidence.ts",
         "tests/fixtures/agent_namespace_container_probe.ts",
@@ -340,6 +342,40 @@ try {
     git.credentialFreeConfig !== true || git.upstreamCredentialVisible !== false
   ) throw new Error("Native Git fixture lacked clone/fetch/denial evidence");
   console.log(JSON.stringify({ phase: "native-git", evidence: git }));
+  const job = JSON.parse(decode(
+    await runtime(attemptRunArgs(
+      agentPlan,
+      agentPlan.containerName,
+      [],
+      [
+        "-c",
+        'exec "$@"',
+        "probe",
+        "deno",
+        "run",
+        "--no-config",
+        "--no-remote",
+        "--allow-all",
+        "/workspace/worker/deno/brokered_job.ts",
+        "--",
+        "deno",
+        "run",
+        "--no-config",
+        "--no-remote",
+        "--allow-all",
+        "/workspace/worker/deno/tests/fixtures/brokered_job_client_probe.ts",
+        JSON.parse(metadata).secretHash,
+      ],
+    )),
+  ));
+  if (
+    job.nativeEntrypointCompleted !== true ||
+    job.githubReadCompleted !== true ||
+    job.gitReadCompleted !== true || job.upstreamCredentialVisible !== false
+  ) {
+    throw new Error("Isolated job entrypoint lacked native client evidence");
+  }
+  console.log(JSON.stringify({ phase: "native-entrypoint", evidence: job }));
   const geminiPin = manifest.providers.find((provider) =>
     provider.id === "gemini"
   );
@@ -394,7 +430,7 @@ try {
     nativeWitness.nativeCodexPersisted !== true ||
     nativeWitness.nativeGitHubWrites !== 2 ||
     nativeWitness.nativeGitHubWriteAudits !== 2 ||
-    nativeWitness.nativeGitHubReads?.identity !== 1 ||
+    nativeWitness.nativeGitHubReads?.identity !== 2 ||
     nativeWitness.nativeGitHubReads?.quota !== 1 ||
     nativeWitness.nativeGitHubReads?.root !== 1 ||
     nativeWitness.nativeGitHubReads?.graphql !== 1 ||
