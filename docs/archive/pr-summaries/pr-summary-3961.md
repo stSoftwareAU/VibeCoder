@@ -48,7 +48,7 @@ flowchart LR
 - #3961: Keep pending required CI and clean code review out of partial-delivery
   follow-ups.
 - The pending-only regressions failed against unchanged base production code.
-- Three focused suites pass: 170 tests, no failures.
+- Five focused suites pass: 246 tests, no failures.
 - Individual mutations of filtering, explicit remainder handling, legacy subject
   and pending-state checks, current-result provenance, criterion matching, and refresh
   handling made regression tests fail. Logs were retained during local checks.
@@ -76,6 +76,8 @@ flowchart LR
 - **violation** — Negated or resolved failure words could create false follow-ups — evidence: `worker/deno/lib/degraded_delivery.ts:170` — reason: fixed by reading declared current results rather than historical criterion wording; later clean results supersede only the same check and suite.
 - **violation** — Test citations used basenames — evidence: `docs/archive/pr-summaries/pr-summary-3961.md:87` — reason: fixed with repository-relative paths.
 - **clean** — Reviewed genuine/negated/resolved failures, supported field separators, per-check and unit/integration identity, Result contracts, Australian English, preserved assertions and unchanged merge protections. No existing assertion or expected value was removed or weakened.
+
+- **violation** — Main's new body-sync path could file an empty follow-up for a newly pending-only summary. — evidence: `worker/deno/lib/pr_body_sync_follow_up.ts:162` and `worker/deno/lib/pr_body_sync_follow_up.ts:204`. — reason: fixed by sharing pending-check classification at discovery and returning the body before filing side effects when no actionable gaps remain.
 
 ## Test Plan
 

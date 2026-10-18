@@ -5,7 +5,7 @@
     "entries": [
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 165,
+        "line": 172,
         "outcome": "legacy subject identifies a merge check",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending CI cannot hide real or mixed implementation gaps (Issue #3961)",
@@ -13,7 +13,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 166,
+        "line": 173,
         "outcome": "unknown subject words keep real or mixed scope actionable",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending CI cannot hide real or mixed implementation gaps (Issue #3961)",
@@ -21,7 +21,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 197,
+        "line": 204,
         "outcome": "met results remain delivered",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "observed CI remains delivered while the separate code review is pending (Issue #3961)",
@@ -29,7 +29,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 201,
+        "line": 208,
         "outcome": "a current failed check cannot be hidden by pending wording",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending wording cannot suppress failed checks in reasons or evidence (Issue #3961)",
@@ -37,7 +37,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 187,
+        "line": 194,
         "outcome": "a later clean result supersedes the same check failure",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "supported evidence labels preserve current check failures and later clean results (Issue #3961)",
@@ -45,7 +45,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 177,
+        "line": 184,
         "outcome": "a clean result never clears another check failure",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "a clean result only supersedes a failure of the same merge check (Issue #3961)",
@@ -53,7 +53,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 198,
+        "line": 205,
         "outcome": "supported evidence label separators retain failure evidence",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "supported evidence labels preserve current check failures and later clean results (Issue #3961)",
@@ -61,7 +61,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 206,
+        "line": 213,
         "outcome": "explicit verification-only remainder stays pending without claiming delivery",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "an explicit verification-only remainder preserves mixed criteria without inventing a product gap (Issue #3961)",
@@ -69,7 +69,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 213,
+        "line": 220,
         "outcome": "legacy reason must contain only a recognised pending state",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending CI cannot hide real or mixed implementation gaps (Issue #3961)",
@@ -77,7 +77,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 227,
+        "line": 234,
         "outcome": "pending assessments remain available for stated-scope matching",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending merge checks alone do not request follow-ups for healthy or degraded runs (Issue #3961)",
@@ -85,7 +85,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 228,
+        "line": 235,
         "outcome": "pending entries do not become implementation shortfalls",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending merge checks alone do not request follow-ups for healthy or degraded runs (Issue #3961)",
@@ -93,7 +93,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 268,
+        "line": 275,
         "outcome": "only matching verification-only scope is omitted from unassessed items",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending merge checks alone do not request follow-ups for healthy or degraded runs (Issue #3961)",
@@ -101,7 +101,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 269,
+        "line": 276,
         "outcome": "unreported checks remain unassessed",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "unreported required checks remain unassessed rather than implicitly pending (Issue #3961)",
@@ -109,7 +109,7 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 854,
+        "line": 895,
         "outcome": "an absent closure block preserves follow-up provenance",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "refresh without a closure assessment preserves the existing follow-up provenance (Issue #3961)",
@@ -117,11 +117,27 @@
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 855,
+        "line": 896,
         "outcome": "pending-only refresh removes false follow-up provenance",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "re-synchronisation removes pending-only follow-up and chain-stop sections (Issue #3961)",
         "flipWentRed": "refresh-pending mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 162,
+        "outcome": "pending sync trigger prevents follow-up work for pending verification",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "pending-only sync gaps do not trigger follow-up discovery or side effects (Issue #3961)",
+        "flipWentRed": "pending-sync-trigger mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync_follow_up.ts",
+        "line": 204,
+        "outcome": "pending sync no side effect prevents follow-up work for pending verification",
+        "test": "worker/deno/tests/pr_body_sync_follow_up_test.ts",
+        "testName": "pending-only sync gaps do not trigger follow-up discovery or side effects (Issue #3961)",
+        "flipWentRed": "pending-sync-no-side-effect mutation failed the named regression assertion"
       }
     ]
   }

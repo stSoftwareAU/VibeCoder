@@ -1578,7 +1578,7 @@ Deno.test("refresh without a closure assessment preserves the existing follow-up
   const liveSection = buildDegradedPrSection({
     degraded: true,
     delivered: [],
-    shortfalls: [...PARTIAL_SHORTFALL],
+    shortfalls: [{ criterion: "the export works", status: "unassessed" }],
   }, 77);
   const result = rederiveDegradedSection({
     liveSection,

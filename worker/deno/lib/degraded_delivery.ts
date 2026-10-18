@@ -200,7 +200,7 @@ function hasFailedMergeCheck(evidence: string): boolean {
 }
 
 /** Pending merge checks are visible in the summary, not unfinished work. */
-function isPendingMergeCheck(entry: ClosureEntry): boolean {
+export function isPendingMergeCheck(entry: ClosureEntry): boolean {
   if (entry.status !== "partial" && entry.status !== "missing") return false;
   const evidence = entry.text.match(
     /\bevidence\s*[:—-]\s*([\s\S]*?)(?:\s+[—-]\s+(?:reviewer|reason|remaining)\s*[:—-]|$)/i,

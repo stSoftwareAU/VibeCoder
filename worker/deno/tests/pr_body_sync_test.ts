@@ -2562,3 +2562,21 @@ Deno.test("sync - pending verification stays visible without a partial-delivery 
     [],
   );
 });
+
+Deno.test("sync - newly pending-only verification does not discover or file a follow-up (Issue #3961)", async () => {
+  const summary =
+    `## Summary\n\nCloses #${ISSUE_NUMBER}.\n\n## Acceptance Criteria\n\n- **partial** — required CI — evidence: PR checks pending — reviewer: partial — reason: CI not yet verified\n`;
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary,
+    live: OLD_SUMMARY_WITH_FOOTER,
+    issueView: () => {
+      throw new Error("pending-only sync must not fetch the issue");
+    },
+  });
+  assert(result.ok, result.ok ? "" : result.error.message);
+  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
+    ?.bodyFileContent ?? "";
+  assertStringIncludes(synced, "CI not yet verified");
+  assert(!synced.includes("Partial delivery —"));
+  assertEquals(ghCalls.filter((c) => c.args[0] === "issue"), []);
+});
