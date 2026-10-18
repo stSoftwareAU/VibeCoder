@@ -26,6 +26,7 @@ import {
   classifyClusters,
   type CommandOutcome,
   computeSweepId,
+  countTreeLines,
   dedupeFindings,
   normaliseSnippet,
   parseCodeqlAlerts,
@@ -42,6 +43,7 @@ import {
   type SweepDeps,
   type SweepFinding,
   type SweepRunResult,
+  type TreeLineCounter,
 } from "../lib/security_tree_sweep.ts";
 import {
   createSecurityTreeSweepCommand,
@@ -214,6 +216,10 @@ const SARIF_JSON = JSON.stringify({
 /** Baseline that names nothing — every finding is new. */
 const EMPTY_BASELINE = JSON.stringify({ falsePositives: [], accepted: [] });
 
+/** Line counts for the fixture tree: only `worker/lib/guard.ts` exists. */
+const FIXTURE_TREE: TreeLineCounter = (p) =>
+  p === "worker/lib/guard.ts" ? 20 : null;
+
 // ---------------------------------------------------------------------------
 // Stub plumbing
 // ---------------------------------------------------------------------------
@@ -335,6 +341,12 @@ async function tempRepo(baselineJson: string): Promise<{
   const repoDir = await Deno.makeTempDir({ prefix: "sweep-" });
   await Deno.mkdir(`${repoDir}/docs/audits`, { recursive: true });
   await Deno.mkdir(`${repoDir}/.github`, { recursive: true });
+  // The evidence citation the falsePositives fixtures point at (Issue #3658).
+  await Deno.mkdir(`${repoDir}/worker/lib`, { recursive: true });
+  await Deno.writeTextFile(
+    `${repoDir}/worker/lib/guard.ts`,
+    "// guard\nexport const a = 1;\nexport const b = 2;\nexport const c = 3;\n",
+  );
   const baselinePath = `${repoDir}/.github/security-tree-sweep-baseline.json`;
   await Deno.writeTextFile(baselinePath, baselineJson);
   return {
@@ -615,33 +627,40 @@ Deno.test("dedupeFindings collapses the planted pattern from three sources into 
 });
 
 Deno.test("parseSweepBaseline enforces reasons and rejects malformed entries", () => {
-  const good = parseSweepBaseline(JSON.stringify({
-    note: "x",
-    falsePositives: [{
-      path: "a.ts",
-      rule: "xss",
-      line: 4,
-      reason: "Test fixture — output is never rendered to a browser.",
-    }],
-    accepted: [{
-      path: "b.ts",
-      rule: "unsafe-regex",
-      reason: "Input is bounded to 64 chars by the caller.",
-      issue: 12,
-    }],
-  }));
+  const good = parseSweepBaseline(
+    JSON.stringify({
+      note: "x",
+      falsePositives: [{
+        path: "a.ts",
+        rule: "xss",
+        line: 4,
+        reason: "Test fixture — output is never rendered to a browser.",
+        evidence: ["worker/lib/guard.ts:3"],
+      }],
+      accepted: [{
+        path: "b.ts",
+        rule: "unsafe-regex",
+        reason: "Input is bounded to 64 chars by the caller.",
+        issue: 12,
+      }],
+    }),
+    FIXTURE_TREE,
+  );
   assertEquals(good.errors, []);
   assertEquals(good.baseline.falsePositives.length, 1);
   assertEquals(good.baseline.accepted[0]?.issue, 12);
 
-  const bad = parseSweepBaseline(JSON.stringify({
-    falsePositives: [{ path: "a.ts", rule: "xss", reason: "ok" }],
-    accepted: [{ rule: "xss", reason: "long enough reason here" }],
-  }));
+  const bad = parseSweepBaseline(
+    JSON.stringify({
+      falsePositives: [{ path: "a.ts", rule: "xss", reason: "ok" }],
+      accepted: [{ rule: "xss", reason: "long enough reason here" }],
+    }),
+    FIXTURE_TREE,
+  );
   assert(bad.errors.some((e) => e.includes("reason")));
   assert(bad.errors.some((e) => e.includes("path")));
 
-  const notJson = parseSweepBaseline("{nope");
+  const notJson = parseSweepBaseline("{nope", FIXTURE_TREE);
   assertEquals(notJson.errors.length, 1);
 });
 
@@ -651,29 +670,35 @@ Deno.test("classifyClusters marks baselined, new and stale entries", async () =>
     ...parseCodeqlAlerts(CODEQL_ALERTS_JSON),
   ];
   const clusters = await dedupeFindings(findings);
-  const { baseline } = parseSweepBaseline(JSON.stringify({
-    falsePositives: [
-      {
-        path: "worker/lib/files.ts",
-        rule: "path-traversal",
-        line: 41,
-        reason: "Path is validated by resolveInside() two lines earlier.",
-      },
-      {
-        path: "gone/away.ts",
-        rule: "xss",
-        reason: "This file was deleted — the entry is now stale.",
-      },
-    ],
-    accepted: [
-      {
-        path: "worker/lib/token.ts",
-        rule: "js/insecure-randomness",
-        reason: "Token is a display nonce, not a credential (accepted).",
-        issue: 77,
-      },
-    ],
-  }));
+  const { baseline } = parseSweepBaseline(
+    JSON.stringify({
+      falsePositives: [
+        {
+          path: "worker/lib/files.ts",
+          rule: "path-traversal",
+          line: 41,
+          reason: "Path is validated by resolveInside() two lines earlier.",
+          evidence: ["worker/lib/guard.ts:3"],
+        },
+        {
+          path: "gone/away.ts",
+          rule: "xss",
+          line: 1,
+          reason: "This file was deleted — the entry is now stale.",
+          evidence: ["worker/lib/guard.ts:3"],
+        },
+      ],
+      accepted: [
+        {
+          path: "worker/lib/token.ts",
+          rule: "js/insecure-randomness",
+          reason: "Token is a display nonce, not a credential (accepted).",
+          issue: 77,
+        },
+      ],
+    }),
+    FIXTURE_TREE,
+  );
   const classified = classifyClusters(clusters, baseline);
   const byPath = new Map(classified.rows.map((r) => [r.path, r]));
   assertEquals(byPath.get("worker/lib/files.ts")?.status, "false-positive");
@@ -763,20 +788,43 @@ Deno.test("baselining one unlocated finding leaves the others reported (Issue #1
   const fixed = clusters.find((c) =>
     c.findings.some((f) => f.ruleId === "SEC-8d02435d8683")
   )!;
+  const fixedBody = buildSweepIssueBody(
+    fixed,
+    ".github/security-tree-sweep-baseline.json",
+  );
   assertStringIncludes(
-    buildSweepIssueBody(fixed, ".github/security-tree-sweep-baseline.json"),
+    fixedBody,
     '"rule": "SEC-8d02435d8683"',
     "an unlocated finding must be triaged by its own id, not by its family",
   );
-  const { baseline, errors } = parseSweepBaseline(JSON.stringify({
-    falsePositives: [
-      {
-        path: "unknown",
-        rule: "SEC-8d02435d8683",
-        reason: "Fixed and merged in #1434 — this finding no longer exists.",
-      },
-    ],
-  }));
+  // Issue #3658: an unlocated finding has no line or snippet to anchor a
+  // falsePositives entry, so the body sends it to `accepted` instead.
+  assertStringIncludes(
+    fixedBody,
+    "goes under `accepted`",
+    "an unlocated finding must be told to use accepted, not falsePositives",
+  );
+  // The whole note, set off from the JSON block by a blank line.
+  assertStringIncludes(
+    fixedBody,
+    "   ```\n\n" +
+      "   An unlocated finding has no `line` or `snippet` to anchor a\n" +
+      "   `falsePositives` entry, so it goes under `accepted`.\n",
+  );
+  // Issue #1473 is about the baseline entry, so it moves to `accepted`:
+  // an unlocated finding can no longer be a false positive (Issue #3658).
+  const { baseline, errors } = parseSweepBaseline(
+    JSON.stringify({
+      accepted: [
+        {
+          path: "unknown",
+          rule: "SEC-8d02435d8683",
+          reason: "Fixed and merged in #1434 — this finding no longer exists.",
+        },
+      ],
+    }),
+    FIXTURE_TREE,
+  );
   assertEquals(errors, []);
   const { rows, newRows, trackedRows } = classifyClusters(clusters, baseline);
   assertEquals(rows.length, 3);
@@ -807,7 +855,7 @@ Deno.test("classifyClusters - an open security issue is tracked, never unbaselin
   const clusters = await dedupeFindings(
     parseWorkerScanIssues(UNLOCATED_WORKER_ISSUES_JSON),
   );
-  const { baseline, errors } = parseSweepBaseline("{}");
+  const { baseline, errors } = parseSweepBaseline("{}", FIXTURE_TREE);
   assertEquals(errors, []);
   const { rows, newRows, trackedRows } = classifyClusters(clusters, baseline);
   assertEquals(rows.length, 3);
@@ -835,7 +883,7 @@ Deno.test("classifyClusters - a scanner that saw the same site keeps it new (Iss
     ...parseSemgrepJson(SEMGREP_JSON),
     ...parseCodeqlAlerts(CODEQL_ALERTS_JSON),
   ]);
-  const { baseline } = parseSweepBaseline("{}");
+  const { baseline } = parseSweepBaseline("{}", FIXTURE_TREE);
   const { rows, newRows } = classifyClusters(clusters, baseline);
   const planted = rows.find((r) => r.path === PLANTED_PATH)!;
   assertEquals(
@@ -856,7 +904,7 @@ Deno.test("renderSweepReport - tracked findings are reported and the verdict sta
   const clusters = await dedupeFindings(
     parseWorkerScanIssues(UNLOCATED_WORKER_ISSUES_JSON),
   );
-  const { baseline } = parseSweepBaseline("{}");
+  const { baseline } = parseSweepBaseline("{}", FIXTURE_TREE);
   const { rows, newRows, trackedRows } = classifyClusters(clusters, baseline);
   const report = renderSweepReport({
     repoDir: "/tmp/VibeCoder",
@@ -952,16 +1000,21 @@ Deno.test("sweep: a fully baselined tree is clean and files nothing", async () =
         rule: "command-injection",
         line: PLANTED_LINE,
         reason: "Planted fixture for the sweep tests — not shipped code.",
+        evidence: ["worker/lib/guard.ts:3"],
       },
       {
         path: "worker/lib/files.ts",
         rule: "path-traversal",
+        line: 40,
         reason: "Path is validated by resolveInside() before use.",
+        evidence: ["worker/lib/guard.ts:3"],
       },
       {
         path: ".github/workflows/ci.yml",
         rule: "yaml.github-actions.security.run-shell-injection",
+        line: 7,
         reason: "Interpolated value is a workflow constant, not an input.",
+        evidence: ["worker/lib/guard.ts:3"],
       },
     ],
     accepted: [
@@ -1348,17 +1401,21 @@ Deno.test("classifyClusters - a fingerprinted entry survives a line shift larger
   const drifted = clusters.find((c) => c.path.endsWith("files.ts"));
   assert(drifted?.lineStart);
 
-  const { baseline } = parseSweepBaseline(JSON.stringify({
-    falsePositives: [{
-      path: drifted.path,
-      rule: "path-traversal",
-      // Deliberately far from the truth — this is what an unrelated edit does.
-      line: drifted.lineStart + 500,
-      snippet: "const urlPattern = /https:/g;",
-      reason: "Fingerprinted, so the stale line anchor does not matter.",
-    }],
-    accepted: [],
-  }));
+  const { baseline } = parseSweepBaseline(
+    JSON.stringify({
+      falsePositives: [{
+        path: drifted.path,
+        rule: "path-traversal",
+        // Deliberately far from the truth — this is what an unrelated edit does.
+        line: drifted.lineStart + 500,
+        snippet: "const urlPattern = /https:/g;",
+        reason: "Fingerprinted, so the stale line anchor does not matter.",
+        evidence: ["worker/lib/guard.ts:3"],
+      }],
+      accepted: [],
+    }),
+    FIXTURE_TREE,
+  );
 
   const classified = classifyClusters(clusters, baseline);
   const row = classified.rows.find((r) => r.path === drifted.path);
@@ -1379,16 +1436,20 @@ Deno.test("classifyClusters - a fingerprint that no longer matches goes stale, a
   const target = clusters.find((c) => c.path.endsWith("files.ts"));
   assert(target);
 
-  const { baseline } = parseSweepBaseline(JSON.stringify({
-    falsePositives: [{
-      path: target.path,
-      rule: "path-traversal",
-      line: target.lineStart ?? 1,
-      snippet: "const urlPattern = /https:/g;",
-      reason: "The code this covered is gone.",
-    }],
-    accepted: [],
-  }));
+  const { baseline } = parseSweepBaseline(
+    JSON.stringify({
+      falsePositives: [{
+        path: target.path,
+        rule: "path-traversal",
+        line: target.lineStart ?? 1,
+        snippet: "const urlPattern = /https:/g;",
+        reason: "The code this covered is gone.",
+        evidence: ["worker/lib/guard.ts:3"],
+      }],
+      accepted: [],
+    }),
+    FIXTURE_TREE,
+  );
 
   const classified = classifyClusters(clusters, baseline);
   assertEquals(
@@ -1405,15 +1466,19 @@ Deno.test("classifyClusters - an entry with no snippet keeps the line-window beh
   const target = clusters.find((c) => c.path.endsWith("files.ts"));
   assert(target?.lineStart);
 
-  const { baseline } = parseSweepBaseline(JSON.stringify({
-    falsePositives: [{
-      path: target.path,
-      rule: "path-traversal",
-      line: target.lineStart + 2,
-      reason: "Within the window, no fingerprint.",
-    }],
-    accepted: [],
-  }));
+  const { baseline } = parseSweepBaseline(
+    JSON.stringify({
+      falsePositives: [{
+        path: target.path,
+        rule: "path-traversal",
+        line: target.lineStart + 2,
+        reason: "Within the window, no fingerprint.",
+        evidence: ["worker/lib/guard.ts:3"],
+      }],
+      accepted: [],
+    }),
+    FIXTURE_TREE,
+  );
 
   assertEquals(
     classifyClusters(clusters, baseline).rows.find((r) =>
@@ -1590,5 +1655,412 @@ Deno.test("sweep: an unbaselined finding IN the changed files still fails", asyn
     result.newRows.every((r) => r.path === PLANTED_PATH),
     true,
     "only in-set findings block",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Baseline evidence and anchors (Issue #3658). A falsePositives entry must
+// cite the defence that eliminates the finding and anchor to a line or a
+// snippet, so no entry can suppress a whole file. `accepted` is unchanged.
+// ---------------------------------------------------------------------------
+
+/** A falsePositives entry that passes every Issue #3658 rule; overrides win. */
+function validFalsePositive(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    path: "worker/lib/files.ts",
+    rule: "path-traversal",
+    line: 40,
+    reason: "Path is validated by resolveInside() before use.",
+    evidence: ["worker/lib/guard.ts:3"],
+    ...overrides,
+  };
+}
+
+/** Parse a baseline holding one falsePositives entry. */
+function parseOneFalsePositive(
+  entry: Record<string, unknown>,
+  countLines: TreeLineCounter = FIXTURE_TREE,
+): ReturnType<typeof parseSweepBaseline> {
+  return parseSweepBaseline(
+    JSON.stringify({ falsePositives: [entry] }),
+    countLines,
+  );
+}
+
+Deno.test("falsePositives - an entry without evidence is refused (Issue #3658)", () => {
+  // `undefined` is dropped by JSON.stringify, so the key is simply absent.
+  const refused = parseOneFalsePositive(
+    validFalsePositive({ evidence: undefined }),
+  );
+  assert(
+    refused.errors.some((e) => e.includes('"evidence"')),
+    refused.errors.join("\n"),
+  );
+  assertEquals(refused.baseline.falsePositives.length, 0);
+
+  const control = parseOneFalsePositive(validFalsePositive());
+  assertEquals(control.errors, []);
+  assertEquals(control.baseline.falsePositives.length, 1);
+});
+
+Deno.test("falsePositives - evidence that does not resolve in the tree is refused (Issue #3658)", () => {
+  const refused = parseOneFalsePositive(
+    validFalsePositive({ evidence: ["worker/lib/gone.ts:3"] }),
+  );
+  assert(
+    refused.errors.some((e) => e.includes("does not resolve")),
+    refused.errors.join("\n"),
+  );
+  assertEquals(refused.baseline.falsePositives.length, 0);
+
+  const control = parseOneFalsePositive(validFalsePositive());
+  assertEquals(control.errors, []);
+});
+
+Deno.test("falsePositives - a citation error quotes the citation, truncating a long one (Issue #3658)", () => {
+  const short = "worker/lib/gone.ts:3";
+  const shortErrors = parseOneFalsePositive(
+    validFalsePositive({ evidence: [short] }),
+  ).errors;
+  assert(
+    shortErrors.some((e) =>
+      e.includes(`evidence "${short}" does not resolve to a file in the tree`)
+    ),
+    shortErrors.join("\n"),
+  );
+
+  // A well-formed citation longer than the 120-character quote limit.
+  const long = `${"a".repeat(200)}.ts:1`;
+  const longErrors = parseOneFalsePositive(
+    validFalsePositive({ evidence: [long] }),
+  ).errors;
+  assert(
+    longErrors.some((e) =>
+      e.includes(`evidence "${long.slice(0, 120)}..." does not resolve`)
+    ),
+    longErrors.join("\n"),
+  );
+  assert(
+    longErrors.every((e) => !e.includes(long)),
+    "a long citation must not be quoted in full",
+  );
+});
+
+Deno.test("falsePositives - a cited line past the end of the file is refused (Issue #3658)", () => {
+  // guard.ts counts 20 lines in FIXTURE_TREE.
+  const refused = parseOneFalsePositive(
+    validFalsePositive({ evidence: ["worker/lib/guard.ts:21"] }),
+  );
+  assert(
+    refused.errors.some((e) => e.includes("past the end")),
+    refused.errors.join("\n"),
+  );
+  assertEquals(refused.baseline.falsePositives.length, 0);
+
+  const boundary = parseOneFalsePositive(
+    validFalsePositive({ evidence: ["worker/lib/guard.ts:20"] }),
+  );
+  assertEquals(boundary.errors, []);
+  assertEquals(boundary.baseline.falsePositives.length, 1);
+});
+
+Deno.test("falsePositives - a malformed evidence citation is refused before the tree is read (Issue #3658)", () => {
+  const calls: string[] = [];
+  const recording: TreeLineCounter = (path) => {
+    calls.push(path);
+    return 20;
+  };
+  const malformed: unknown[] = [
+    ["worker/lib/guard.ts"],
+    [":3"],
+    ["worker/lib/guard.ts:0"],
+    ["worker/lib/guard.ts:abc"],
+    ["/etc/passwd:1"],
+    ["../outside.ts:1"],
+    ["worker/../guard.ts:1"],
+    ["a/./b.ts:1"],
+    ["a//b.ts:1"],
+    [],
+    "worker/lib/guard.ts:3",
+    [3],
+    [":".repeat(100_000)],
+    ["42"],
+    ["worker\\lib\\guard.ts:3"],
+    ["worker/lib/gu\u0000ard.ts:3"],
+  ];
+  for (const evidence of malformed) {
+    const { baseline, errors } = parseOneFalsePositive(
+      validFalsePositive({ evidence }),
+      recording,
+    );
+    assert(
+      errors.some((e) => e.includes('"path:line"')),
+      `no citation error for ${JSON.stringify(evidence).slice(0, 40)}`,
+    );
+    assert(
+      errors.every((e) => e.length < 400),
+      "a long citation must be truncated in the error",
+    );
+    assertEquals(baseline.falsePositives.length, 0);
+    // Asserted per case, so each refusal operand is shown to stop the
+    // citation before the counter, independently of the others.
+    assertEquals(
+      calls,
+      [],
+      `malformed citation reached the counter: ${
+        JSON.stringify(evidence).slice(0, 40)
+      }`,
+    );
+  }
+
+  const control = parseOneFalsePositive(validFalsePositive(), recording);
+  assertEquals(control.errors, []);
+  assertEquals(calls, ["worker/lib/guard.ts"]);
+});
+
+Deno.test("falsePositives - an entry with neither a line nor a snippet is refused (Issue #3658)", () => {
+  const refused = parseOneFalsePositive(
+    validFalsePositive({ line: undefined }),
+  );
+  assert(
+    refused.errors.some((e) => e.includes('"line" or a "snippet"')),
+    refused.errors.join("\n"),
+  );
+  assertEquals(refused.baseline.falsePositives.length, 0);
+
+  // A whitespace-only snippet is no anchor: validateEntry drops it.
+  const blank = parseOneFalsePositive(
+    validFalsePositive({ line: undefined, snippet: "   " }),
+  );
+  assert(
+    blank.errors.some((e) => e.includes('"line" or a "snippet"')),
+    blank.errors.join("\n"),
+  );
+  assertEquals(blank.baseline.falsePositives.length, 0);
+
+  // Controls: either anchor on its own is enough.
+  const snippetOnly = parseOneFalsePositive(
+    validFalsePositive({ line: undefined, snippet: "const x = 1;" }),
+  );
+  assertEquals(snippetOnly.errors, []);
+  assertEquals(snippetOnly.baseline.falsePositives.length, 1);
+  const lineOnly = parseOneFalsePositive(validFalsePositive());
+  assertEquals(lineOnly.errors, []);
+  assertEquals(lineOnly.baseline.falsePositives.length, 1);
+});
+
+Deno.test("falsePositives - a snippet-only entry never suppresses a finding with no snippet (Issue #3658)", async () => {
+  // Without a line, entryMatches compares snippets only when BOTH sides carry
+  // one. A cluster with no snippet (unreadable or past EOF) used to fall
+  // through to the line check, which passes for an entry with no line.
+  const clusters = await dedupeFindings(parseSemgrepJson(SEMGREP_JSON));
+  const target = clusters.find((c) => c.path.endsWith("files.ts"));
+  assert(target);
+  assertEquals(target.snippet, undefined, "the fixture cluster has no snippet");
+  const snippetOnly = {
+    path: target.path,
+    rule: "path-traversal",
+    snippet: "const urlPattern = /https:/g;",
+    reason: "Snippet-only anchor, no line.",
+    evidence: ["worker/lib/guard.ts:3"],
+  };
+  const { baseline, errors } = parseSweepBaseline(
+    JSON.stringify({ falsePositives: [snippetOnly], accepted: [] }),
+    FIXTURE_TREE,
+  );
+  assertEquals(errors, []);
+  assertEquals(baseline.falsePositives.length, 1);
+  const unmatched = classifyClusters(clusters, baseline);
+  assertEquals(
+    unmatched.rows.find((r) => r.path === target.path)?.status,
+    "new",
+    "a snippet-only entry must fail closed against a finding with no snippet",
+  );
+
+  // Positive control: the same entry suppresses the finding once the
+  // finding's line reads back the same fingerprint.
+  const withSnippet = attachClusterSnippets(
+    clusters,
+    () => "const urlPattern = /https:/g;",
+  );
+  const matched = classifyClusters(withSnippet, baseline);
+  assertEquals(
+    matched.rows.find((r) => r.path === target.path)?.status,
+    "false-positive",
+  );
+});
+
+Deno.test("accepted - an entry needs no evidence and no anchor (Issue #3658)", () => {
+  const { baseline, errors } = parseSweepBaseline(
+    JSON.stringify({
+      accepted: [{
+        path: "worker/lib/token.ts",
+        rule: "js/insecure-randomness",
+        reason: "Display nonce only; tracked for replacement.",
+      }],
+    }),
+    FIXTURE_TREE,
+  );
+  assertEquals(errors, []);
+  assertEquals(baseline.accepted.length, 1);
+});
+
+/** Run `body` in a fresh tree directory; the directory is removed after. */
+async function withTree(
+  body: (root: string, outer: string) => Promise<void>,
+): Promise<void> {
+  const outer = await Deno.makeTempDir({ prefix: "sweep-evidence-" });
+  try {
+    const root = `${outer}/tree`;
+    await Deno.mkdir(root);
+    await body(root, outer);
+  } finally {
+    await Deno.remove(outer, { recursive: true });
+  }
+}
+
+Deno.test("countTreeLines - counts lines with and without a trailing newline (Issue #3658)", async () => {
+  await withTree(async (root) => {
+    await Deno.writeTextFile(`${root}/with-newline.ts`, "a\nb\nc\n");
+    await Deno.writeTextFile(`${root}/no-newline.ts`, "a\nb\nc");
+    await Deno.writeTextFile(`${root}/empty.ts`, "");
+    assertEquals(countTreeLines(root, "with-newline.ts"), 3);
+    assertEquals(countTreeLines(root, "no-newline.ts"), 3);
+    assertEquals(countTreeLines(root, "empty.ts"), 0);
+  });
+});
+
+Deno.test("countTreeLines - a missing path or a directory is null (Issue #3658)", async () => {
+  await withTree(async (root) => {
+    await Deno.mkdir(`${root}/dir`);
+    assertEquals(countTreeLines(root, "missing.ts"), null);
+    assertEquals(countTreeLines(root, "dir"), null);
+  });
+});
+
+Deno.test("countTreeLines - a path that leaves the tree is null (Issue #3658)", async () => {
+  await withTree(async (root, outer) => {
+    await Deno.writeTextFile(`${outer}/outside.ts`, "x\n");
+    await Deno.mkdir(`${root}/sub`);
+    await Deno.writeTextFile(`${root}/file.ts`, "a\nb\n");
+    assertEquals(countTreeLines(root, "../outside.ts"), null);
+    // Resolves back inside the tree, but a `..` segment is still refused.
+    assertEquals(countTreeLines(root, "sub/../file.ts"), null);
+    assertEquals(countTreeLines(root, "missing/../file.ts"), null);
+    // Control: the same file without the traversal is counted.
+    assertEquals(countTreeLines(root, "file.ts"), 2);
+  });
+});
+
+Deno.test({
+  name:
+    "countTreeLines - a symlink pointing outside the tree is null (Issue #3658)",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withTree(async (root, outer) => {
+      await Deno.writeTextFile(`${outer}/outside.ts`, "x\n");
+      await Deno.mkdir(`${outer}/outdir`);
+      await Deno.writeTextFile(`${outer}/outdir/file.ts`, "x\n");
+      await Deno.symlink(`${outer}/outside.ts`, `${root}/link.ts`);
+      await Deno.symlink(`${outer}/outdir`, `${root}/linkdir`);
+      assertEquals(countTreeLines(root, "link.ts"), null);
+      assertEquals(countTreeLines(root, "missing/../linkdir/file.ts"), null);
+    }),
+});
+
+Deno.test({
+  name:
+    "countTreeLines - a symlink pointing inside the tree is counted (Issue #3658)",
+  ignore: Deno.build.os === "windows",
+  fn: () =>
+    withTree(async (root) => {
+      await Deno.writeTextFile(`${root}/real.ts`, "a\nb\nc\n");
+      await Deno.symlink(`${root}/real.ts`, `${root}/alias.ts`);
+      assertEquals(countTreeLines(root, "alias.ts"), 3);
+    }),
+});
+
+Deno.test("sweep: a falsePositives entry whose evidence is absent from the tree fails the run (Issue #3658)", async () => {
+  const baseline = (evidence: string[]) =>
+    JSON.stringify({
+      falsePositives: [{
+        path: "worker/lib/files.ts",
+        rule: "path-traversal",
+        line: 40,
+        reason: "Path is validated by resolveInside() before use.",
+        evidence,
+      }],
+    });
+  const refused = await runWith(
+    makeStub(),
+    baseline(["worker/lib/absent.ts:3"]),
+  );
+  assertEquals(refused.ok, false);
+  assert(
+    refused.baselineErrors.some((e) => e.includes("does not resolve")),
+    refused.baselineErrors.join("\n"),
+  );
+  assertStringIncludes(refused.report, "Baseline errors");
+
+  // Control: the same entry citing the file the temp repo really has.
+  const control = await runWith(
+    makeStub(),
+    baseline(["worker/lib/guard.ts:3"]),
+  );
+  assertEquals(control.baselineErrors, []);
+});
+
+Deno.test("sweep: a falsePositives entry with no line or snippet fails the run (Issue #3658)", async () => {
+  const baseline = (anchor: Record<string, unknown>) =>
+    JSON.stringify({
+      falsePositives: [{
+        path: "worker/lib/files.ts",
+        rule: "path-traversal",
+        reason: "Path is validated by resolveInside() before use.",
+        evidence: ["worker/lib/guard.ts:3"],
+        ...anchor,
+      }],
+    });
+  const refused = await runWith(makeStub(), baseline({}));
+  assertEquals(refused.ok, false);
+  assert(
+    refused.baselineErrors.some((e) => e.includes('"line" or a "snippet"')),
+    refused.baselineErrors.join("\n"),
+  );
+  assertStringIncludes(refused.report, "Baseline errors");
+
+  // Control: the same entry with a line anchor.
+  const control = await runWith(makeStub(), baseline({ line: 40 }));
+  assertEquals(control.baselineErrors, []);
+});
+
+Deno.test("buildSweepIssueBody - the false-positive triage JSON asks for evidence (Issue #3658)", () => {
+  const body = buildSweepIssueBody({
+    id: "SWEEP-0123456789ab",
+    family: "command-injection",
+    path: "src/app.ts",
+    lineStart: 10,
+    lineEnd: 10,
+    snippet: "exec(userInput)",
+    severity: "high",
+    confidence: "high",
+    sources: ["semgrep"],
+    findings: [{
+      source: "semgrep",
+      ruleId: "rules.exec-injection",
+      path: "src/app.ts",
+      line: 10,
+      severity: "high",
+      confidence: "high",
+      message: "Unsanitised input reaches exec",
+    }],
+  }, ".github/security-tree-sweep-baseline.json");
+  assertStringIncludes(body, '"evidence"');
+  assertStringIncludes(body, '"snippet": "exec(userInput)"');
+  assert(
+    !body.includes("goes under `accepted`"),
+    "a located finding has an anchor, so the accepted note must not appear",
   );
 });
