@@ -55,7 +55,7 @@ flowchart LR
 - The old command failed the production-entry regression because it did not
   serialize a top-up. The initial implementation also failed the shallow-clone
   and redacted-result regressions before those defects were fixed.
-- Three focused suites pass: 61 tests. Twenty-eight isolated mutations each
+- Three focused suites pass: 61 tests. Thirty-nine isolated mutations each
   failed their named regression assertion. Production files were not changed
   by those mutation runs.
 - The real Git fixture exercises feature work, squash integration, later default
@@ -82,9 +82,10 @@ flowchart LR
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — Initial default discovery depended on an absent tracking ref in narrow clones. — evidence: shallow feature-only production-command fixture. — reason: fixed with remote HEAD discovery and an explicit validated tracking-ref fetch.
-- **violation** — Initial producer diagnostics could expose remote secrets. — evidence: command-result redaction regression. — reason: fixed by redacting before the result sink, including payload-read failures.
-- **violation** — Some invalid-input cases only asserted a generic refusal. — evidence: specific-rule matrix in `worker/deno/tests/sweep_drift_command_test.ts`. — reason: fixed with specific diagnostics and a shared legal control so later guards cannot satisfy the wrong case.
+- **violation** — Initial default discovery depended on an absent tracking ref in narrow clones. — evidence: `worker/deno/lib/lib_sweep_coverage.ts:282` and the shallow feature-only production-command fixture. — reason: fixed with remote HEAD discovery and an explicit validated tracking-ref fetch.
+- **violation** — Initial producer diagnostics could expose remote secrets. — evidence: `worker/deno/lib/lib_sweep_coverage.ts:401` and the command-result redaction regression. — reason: fixed by redacting before the result sink, including payload-read failures.
+- **violation** — Some invalid-input cases only asserted a generic refusal. — evidence: specific-rule matrix in `worker/deno/tests/sweep_drift_command_test.ts:418`. — reason: fixed with specific diagnostics and a shared legal control so later guards cannot satisfy the wrong case.
+- **violation** — Whole-condition mutations did not establish each compound operand. — evidence: `worker/deno/lib/lib_sweep_coverage.ts:294` and `worker/deno/commands/sweep_drift.ts:125`. — reason: fixed with eleven separate operand flips and an accepted exact-root ownership fixture.
 - **clean** — Independent Spec and Standards rechecks found no remaining material source or test issue. Existing validation, symlink protection, required CI, model routing and protected-branch rules remain enforced.
 
 ## Test Plan

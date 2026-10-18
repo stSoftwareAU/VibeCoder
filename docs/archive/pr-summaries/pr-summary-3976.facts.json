@@ -229,12 +229,100 @@
       },
       {
         "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 294,
+        "outcome": "remote head prefix operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer reports missing default, stale fetch and shallow history without writing coverage (Issue #3976)",
+        "flipWentRed": "remote-head-prefix operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 303,
+        "outcome": "requested default presence operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "requested-default-presence operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 303,
+        "outcome": "requested default mismatch operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "requested-default-mismatch operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 351,
+        "outcome": "absolute path operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "absolute-path operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 352,
+        "outcome": "parent segment operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "parent-segment operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 352,
+        "outcome": "current segment operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "current-segment operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 352,
+        "outcome": "empty segment operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "empty-segment operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 355,
+        "outcome": "exact root operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "exact-root operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 355,
+        "outcome": "root descendant operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "root-descendant operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/commands/sweep_drift.ts",
+        "line": 125,
+        "outcome": "command path type operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer leaves unavailable refs and invalid input visible without a record (Issue #3976)",
+        "flipWentRed": "command-path-type operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/commands/sweep_drift.ts",
+        "line": 126,
+        "outcome": "command path empty operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer leaves unavailable refs and invalid input visible without a record (Issue #3976)",
+        "flipWentRed": "command-path-empty operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
         "line": 335,
         "endLine": 341,
         "outcome": "defensive lstat rejects a symlink introduced after canonical confinement or ledger validation",
         "exempt": {
           "kind": "untestable",
-          "reason": "A deterministic race between completed realPath validation and lstat requires a new filesystem scheduling seam or an unreliable concurrent writer. Neither is justified for this defensive guard. Stable symlink outputs and directories are exercised through the command; the guard remains intact."
+          "reason": "Searched worker/deno/tests/sweep_drift_command_test.ts: its stable symlink setup exits during ledger validation or confinePath before this post-validation guard. A deterministic race between realPath and lstat requires a new filesystem scheduling seam or an unreliable concurrent writer. Neither is justified for this defensive guard; stable symlink outputs and directories are exercised and the guard remains intact."
         }
       }
     ]

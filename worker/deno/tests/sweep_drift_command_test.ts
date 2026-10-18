@@ -530,6 +530,23 @@ Deno.test("sweep-drift producer uses the default merge-base and preserves it thr
       wrongDefault.message,
     );
     assertEquals(await Deno.readTextFile(`${f.clone}/${recordPath}`), original);
+    // A ledger root can itself be the audited path, as well as containing
+    // audited descendants. Both supported ownership shapes must serialize.
+    await Deno.writeTextFile(
+      input,
+      JSON.stringify({ ...payload, issue: 4003, paths: ["worker/deno/lib"] }),
+    );
+    const exactRoot = await sweepDriftCommand.execute(args, {} as never);
+    assertEquals(exactRoot.success, true, exactRoot.message);
+    const exactRootPath = `${f.clone}/${LIB_SWEEP_TOP_UP_DIR}/top-up-4003.json`;
+    assertEquals(JSON.parse(await Deno.readTextFile(exactRootPath)).paths, [
+      "worker/deno/lib",
+    ]);
+    await Deno.remove(exactRootPath);
+    await Deno.writeTextFile(
+      input,
+      JSON.stringify({ ...payload, status: "swept" }),
+    );
     // A historical branch-only record must remain visibly invalid, never be
     // silently replaced with today's merge-base by regeneration.
     const historicalPath =
