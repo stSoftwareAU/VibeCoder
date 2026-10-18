@@ -1,6 +1,10 @@
 /** Synthetic processes for the separate-container diagnostic; no live accounts. */
 import { createCredentialBroker } from "../../lib/credential_broker.ts";
 import {
+  buildBrokeredAnthropicEnvironment,
+  serveAnthropicAgentGateway,
+} from "../../lib/anthropic_agent_gateway.ts";
+import {
   childEvidence,
   type Fixture,
 } from "./agent_namespace_container_probe.ts";
@@ -18,6 +22,7 @@ interface ContainerFixture extends Fixture {
   privatePath: string;
   secretHash: string;
   credentialRoot: string;
+  nativeCapabilities: Record<"api-key" | "subscription", string>;
 }
 
 function requireFact(value: unknown, message: string): asserts value {
@@ -76,7 +81,9 @@ async function broker(credentialRoot: string): Promise<void> {
   // Keep a readable descriptor open on the trusted side: the agent's fd and
   // /proc checks must distinguish containers, not merely an unopened file.
   const credentialFile = await Deno.open(privatePath, { read: true });
-  const witness: BrokerWitness = {
+  const witness: BrokerWitness & {
+    nativeRequests: Record<"api-key" | "subscription", number>;
+  } = {
     fileMatches:
       await sha256(await Deno.readTextFile(privatePath)) === secretHash,
     environmentMatches: await countSyntheticCredentialMatches(
@@ -85,6 +92,7 @@ async function broker(credentialRoot: string): Promise<void> {
     ) === 1,
     descriptorMatches: false,
     authenticatedRequests: 0,
+    nativeRequests: { "api-key": 0, subscription: 0 },
   };
   for await (const entry of Deno.readDir("/proc/self/fd")) {
     const path = `/proc/self/fd/${entry.name}`;
@@ -100,9 +108,77 @@ async function broker(credentialRoot: string): Promise<void> {
   await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
   const fixtureHandler = async (request: Request): Promise<Response> => {
     const github = new URL(request.url).pathname.startsWith("/repos/");
-    const actual = request.headers.get(github ? "authorization" : "x-api-key");
-    if (actual !== (github ? `Bearer ${secret}` : secret)) {
+    const key = request.headers.get("x-api-key");
+    const bearer = request.headers.get("authorization");
+    if (
+      github
+        ? bearer !== `Bearer ${secret}`
+        : !((key === secret && bearer === null) ||
+          (key === null && bearer === `Bearer ${secret}`))
+    ) {
       return new Response("Synthetic authentication failed", { status: 401 });
+    }
+    const body = github ? undefined : await request.json();
+    if (typeof body?.model === "string") {
+      const auth = key === secret ? "api-key" : "subscription";
+      if (
+        auth === "subscription" &&
+        !request.headers.get("anthropic-beta")?.includes("oauth-")
+      ) {
+        return new Response("Synthetic subscription capability missing", {
+          status: 401,
+        });
+      }
+      if (new URL(request.url).pathname.endsWith("/count_tokens")) {
+        return Response.json({ input_tokens: 1 });
+      }
+      witness.nativeRequests[auth]++;
+      await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+      const events = [
+        {
+          type: "message_start",
+          message: {
+            id: "msg_fixture",
+            type: "message",
+            role: "assistant",
+            model: body.model,
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: {
+              input_tokens: 1,
+              output_tokens: 0,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+            },
+          },
+        },
+        {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        },
+        {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "fixture-native-complete" },
+        },
+        { type: "content_block_stop", index: 0 },
+        {
+          type: "message_delta",
+          delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 1 },
+        },
+        { type: "message_stop" },
+      ];
+      return new Response(
+        events.map((event) =>
+          `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+        ).join(""),
+        {
+          headers: { "content-type": "text/event-stream" },
+        },
+      );
     }
     witness.authenticatedRequests++;
     await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
@@ -149,22 +225,54 @@ async function broker(credentialRoot: string): Promise<void> {
     privatePath,
     secretHash,
     credentialRoot,
+    nativeCapabilities: {
+      "api-key": crypto.randomUUID().replaceAll("-", ""),
+      subscription: crypto.randomUUID().replaceAll("-", ""),
+    },
   };
-  const server = Deno.serve(
-    { path: fixture.socket, onListen() {} },
+  const createHandler = (
+    capability: string,
+    claudeAuthentication: "api-key" | "bearer",
+  ) =>
     createCredentialBroker({
-      capability: fixture.capability,
+      capability,
+      claudeAuthentication,
       credentials: { claude: secret, github: secret },
       repositories: ["fixture/allowed"],
       // The fixed-origin policy runs first. Only the test forwarding seam
       // substitutes this controlled local HTTP listener; no internet request.
       fetch(request) {
-        const path = new URL(request.url).pathname;
+        const url = new URL(request.url);
         return fetch(
-          new Request(`http://127.0.0.1:${ipv4.addr.port}${path}`, request),
+          new Request(
+            `http://127.0.0.1:${ipv4.addr.port}${url.pathname}${url.search}`,
+            request,
+          ),
         );
       },
-    }),
+    });
+  const ordinaryHandler = createHandler(fixture.capability, "api-key");
+  const nativeApiHandler = createHandler(
+    fixture.nativeCapabilities["api-key"],
+    "api-key",
+  );
+  const nativeSubscriptionHandler = createHandler(
+    fixture.nativeCapabilities.subscription,
+    "bearer",
+  );
+  const server = Deno.serve(
+    { path: fixture.socket, onListen() {} },
+    (request) => {
+      // The trusted fixture configures each mode before either client runs.
+      // Requests cannot choose a credential or change an existing capability.
+      const auth = request.headers.get("authorization");
+      const handler = auth === `Bearer ${fixture.nativeCapabilities["api-key"]}`
+        ? nativeApiHandler
+        : auth === `Bearer ${fixture.nativeCapabilities.subscription}`
+        ? nativeSubscriptionHandler
+        : ordinaryHandler;
+      return handler(request);
+    },
   );
   await Deno.chmod(fixture.socket, 0o600);
   await Deno.writeTextFile(metadataPath, JSON.stringify(fixture));
@@ -181,6 +289,89 @@ async function broker(credentialRoot: string): Promise<void> {
   } finally {
     credentialFile.close();
     await Promise.all([ipv4.shutdown(), ipv6.shutdown()]);
+  }
+}
+
+async function nativeClient(
+  fixture: ContainerFixture,
+  mode: "api-key" | "subscription",
+): Promise<void> {
+  requireFact(
+    mode === "api-key" || mode === "subscription",
+    "Unknown native authentication fixture",
+  );
+  const home = await Deno.makeTempDir({ prefix: "vibe-native-" });
+  const gateway = serveAnthropicAgentGateway({
+    service: "claude",
+    capability: fixture.nativeCapabilities[mode],
+  });
+  try {
+    const env = buildBrokeredAnthropicEnvironment({
+      service: "claude",
+      mode,
+      capability: fixture.nativeCapabilities[mode],
+      baseUrl: gateway.baseUrl,
+      homeDir: home,
+      configDir: `${home}/config`,
+    });
+    const child = new Deno.Command("/usr/local/bin/claude", {
+      args: [
+        "-p",
+        "--output-format",
+        "json",
+        "--max-turns",
+        "1",
+        "--model",
+        "haiku",
+        "--tools",
+        "",
+        "--setting-sources",
+        "",
+      ],
+      clearEnv: true,
+      env,
+      cwd: home,
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+      signal: AbortSignal.timeout(45_000),
+    }).spawn();
+    const writer = child.stdin.getWriter();
+    await writer.write(
+      new TextEncoder().encode("Reply with the fixture response.\n"),
+    );
+    await writer.close();
+    const output = await child.output();
+    const stdout = new TextDecoder().decode(output.stdout);
+    const stderr = new TextDecoder().decode(output.stderr);
+    requireFact(
+      await countSyntheticCredentialMatches(
+        stdout + stderr + Object.values(env).join("\n"),
+        fixture.secretHash,
+      ) === 0,
+      "Native client received the planted upstream credential",
+    );
+    // Only synthetic client data may be printed; no live account is used.
+    if (!output.success) console.error(stderr);
+    requireFact(
+      output.success,
+      `Native Claude ${mode} fixture exited ${output.code}`,
+    );
+    const result = JSON.parse(stdout.trim());
+    requireFact(
+      result.is_error === false && result.result === "fixture-native-complete",
+      `Native Claude ${mode} did not complete synthetic inference`,
+    );
+    console.log(
+      JSON.stringify({
+        mode,
+        nativeClientCompleted: true,
+        upstreamCredentialVisible: false,
+      }),
+    );
+  } finally {
+    await gateway.close();
+    await Deno.remove(home, { recursive: true });
   }
 }
 
@@ -295,6 +486,11 @@ if (mode === "broker") {
 } else if (mode === "agent") {
   const fixture = JSON.parse(Deno.args[1]!) as ContainerFixture;
   console.log(JSON.stringify(await agent(fixture)));
+} else if (mode === "native-client") {
+  await nativeClient(
+    JSON.parse(Deno.args[1]!),
+    Deno.args[2] as "api-key" | "subscription",
+  );
 } else if (mode === "broker-stopped") {
   const fixture = JSON.parse(Deno.args[1]!) as ContainerFixture;
   let refused = false;

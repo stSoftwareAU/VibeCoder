@@ -171,6 +171,7 @@ try {
       const relative of [
         "lib/credential_broker.ts",
         "lib/credential_broker_policy.ts",
+        "lib/anthropic_agent_gateway.ts",
         "tests/support/agent_namespace_evidence.ts",
         "tests/support/agent_container_evidence.ts",
         "tests/fixtures/agent_namespace_container_probe.ts",
@@ -280,6 +281,37 @@ try {
     JSON.stringify({ phase: "broker-credential-witness", evidence: witness }),
   );
   assertSeparateContainerEvidence(before, isolated, after, witness);
+  for (const mode of ["api-key", "subscription"]) {
+    const result = JSON.parse(
+      await launch(agentPlan, "native-client", [metadata, mode]),
+    );
+    if (
+      result.nativeClientCompleted !== true ||
+      result.upstreamCredentialVisible !== false || result.mode !== mode
+    ) {
+      throw new Error(
+        `Native Claude ${mode} fixture lacked completion evidence`,
+      );
+    }
+    console.log(JSON.stringify({ phase: "native-client", evidence: result }));
+  }
+  const nativeWitness = JSON.parse(await inside("witness"));
+  for (const mode of ["api-key", "subscription"]) {
+    if (
+      !Number.isSafeInteger(nativeWitness.nativeRequests?.[mode]) ||
+      nativeWitness.nativeRequests[mode] < 1
+    ) {
+      throw new Error(
+        `Native Claude ${mode} fixture lacked authenticated upstream evidence`,
+      );
+    }
+  }
+  console.log(
+    JSON.stringify({
+      phase: "native-upstream-witness",
+      evidence: nativeWitness.nativeRequests,
+    }),
+  );
   await docker(["stop", "--time", "5", brokerPlan.containerName]);
   const stopped = JSON.parse(
     await launch(agentPlan, "broker-stopped", [metadata]),
@@ -289,7 +321,7 @@ try {
   }
   console.log(JSON.stringify({ phase: "broker-stopped", evidence: stopped }));
   console.log(
-    "PASS: separate hardened Docker containers deny direct IPv4/IPv6 and hide the planted credential while synthetic broker requests work; native CLI/OAuth/Apple acceptance remains unproved",
+    "PASS: separate hardened Docker containers deny direct IPv4/IPv6 and hide the planted credential while synthetic broker requests and pinned Claude inference work; live OAuth/other providers/Apple acceptance remains unproved",
   );
 } finally {
   for (const plan of plans) {

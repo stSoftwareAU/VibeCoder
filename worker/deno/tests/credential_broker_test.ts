@@ -56,6 +56,41 @@ Deno.test("credential broker injects its credential only on the fixed model rout
   assertEquals(await response.text(), '{"ok":true}');
 });
 
+Deno.test("credential broker preserves selected Claude subscription authentication without API-key fallback", async () => {
+  const calls: Request[] = [];
+  const handle = createCredentialBroker({
+    capability,
+    credentials: { claude: secret },
+    claudeAuthentication: "bearer",
+    repositories: [],
+    fetch(input) {
+      calls.push(input);
+      return Promise.resolve(
+        new Response('{"error":{"type":"authentication_error"}}', {
+          status: 401,
+        }),
+      );
+    },
+  });
+  const response = await handle(request("/claude/v1/messages?beta=true", {
+    method: "POST",
+    body: "{}",
+    headers: {
+      "x-api-key": "must-not-be-a-fallback",
+      "anthropic-beta": "oauth-2025-04-20",
+    },
+  }));
+  assertEquals(response.status, 401);
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0]!.headers.get("authorization"), `Bearer ${secret}`);
+  assertEquals(calls[0]!.headers.get("x-api-key"), null);
+  assertEquals(calls[0]!.headers.get("anthropic-beta"), "oauth-2025-04-20");
+  assertEquals(
+    await response.text(),
+    '{"error":{"type":"authentication_error"}}',
+  );
+});
+
 Deno.test("credential broker denies callers without its per-run capability", async () => {
   const { calls, handle } = fixture();
   for (const authorization of [undefined, "Bearer wrong", "Basic wrong"]) {

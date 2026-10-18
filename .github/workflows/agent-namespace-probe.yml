@@ -48,7 +48,7 @@ jobs:
           set -euo pipefail
           deno test --frozen --lock=deno.lock --allow-read --allow-env \
             tests/agent_namespace_probe_test.ts tests/agent_container_probe_test.ts \
-            tests/credential_broker_test.ts
+            tests/credential_broker_test.ts tests/anthropic_agent_gateway_test.ts
 
       - name: Exercise real sockets and the unmodified Docker security boundary
         id: nested

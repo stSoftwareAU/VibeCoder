@@ -16,6 +16,15 @@ export const CREDENTIAL_BROKER_UPSTREAMS = {
 /** The upstream services implemented by the experimental broker. */
 export type BrokerService = keyof typeof CREDENTIAL_BROKER_UPSTREAMS;
 
+/** Reject weak or malformed run capabilities before starting either side. */
+export function assertBrokerCapability(capability: string): void {
+  if (!/^[A-Za-z0-9_-]{32,256}$/.test(capability)) {
+    throw new Error(
+      "Broker capability must contain 32–256 URL-safe characters",
+    );
+  }
+}
+
 /** Decide a route before reading its body or looking up any credential. */
 export function resolveCredentialBrokerRoute(
   request: Request,
@@ -64,13 +73,25 @@ export function resolveCredentialBrokerRoute(
       : service === "openai"
       ? ["/v1/responses", "/v1/chat/completions"].includes(path)
       : service === "deepseek"
-      ? ["/anthropic/v1/messages", "/chat/completions"].includes(path)
+      ? [
+        "/anthropic/v1/messages",
+        "/anthropic/v1/messages/count_tokens",
+        "/chat/completions",
+      ].includes(path)
       : /^\/v1beta\/models\/[A-Za-z0-9_.-]+:(?:generateContent|streamGenerateContent)$/
         .test(path);
     if (!permitted) return;
     if (service === "gemini") {
       if (url.search && url.search !== "?alt=sse") return;
-    } else if (url.search) return;
+    } else if (url.search) {
+      // Native Claude Code uses this exact flag on Anthropic-format
+      // inference. No additional or duplicate query parameter is needed.
+      if (
+        (service !== "claude" &&
+          !(service === "deepseek" && path.startsWith("/anthropic/"))) ||
+        url.search !== "?beta=true"
+      ) return;
+    }
   }
   return {
     service,

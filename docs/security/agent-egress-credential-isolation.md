@@ -308,7 +308,7 @@ or Apple. The fixture's local HTTP forwarding seam deliberately avoids real
 provider accounts and internet requests. The milestone acceptance matrix
 above remains **Not run** until the integrated production boundary is tested.
 
-### Separate-container diagnostic — prepared, not yet run
+### Separate-container diagnostic — observed on Docker
 
 The second workflow step uses the same production image and launch-plan
 builder for a trusted broker and a separate agent. Its narrow, recorded
@@ -351,11 +351,87 @@ loss, not a production watchdog's cancellation or capability-expiry policy.
 The nested namespace step retains its failure outcome and log without
 skipping the separate-container step. The workflow summary records both
 outcomes, and the seven-day `agent-boundary-prerequisites` artifact retains
-both logs. A successful separate-container diagnostic would establish this
-Docker construction with synthetic fixtures only. Native CLIs, OAuth refresh,
-TLS, DNS, UDP, VM sockets, GitHub writes, Podman and Apple remain separate
-acceptance requirements. No real-runtime result for this new probe is yet
-claimed.
+both logs.
+
+On 18 October 2026, [run 39090033070](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39090033070)
+([job 117564637157](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39090033070/job/117564637157))
+passed the separate-container diagnostic at commit
+`e3d943462d1afad13e3caa881a63d933fa1097e3`, tree
+`ddd8c368b27dd4c5186bbbc1a9e6199596614816`. The image was
+`sha256:53044e887135332cc1ae8f34211b3529d489d5f14bbd441d843583c02c54bf6c`.
+Docker's default AppArmor and seccomp profiles were retained. The log recorded:
+
+- Reachable IPv4 and IPv6 controls before and after; both agent TCP attempts
+  failed against those same addresses.
+- Separate agent network, PID and mount namespaces; zero effective, permitted
+  and bounding capabilities, `NoNewPrivs: 1` and `Seccomp: 2` for all roles.
+  Docker's user namespace remained shared; no user-namespace separation is claimed.
+- Read-only agent root and socket mount, no proxy variables, an unreadable
+  broker-private path and zero recognised planted-secret matches. One readable
+  process environment and one regular descriptor supplied positive scan controls.
+- Positive broker file, initial-environment and descriptor witnesses, exactly
+  six authenticated upstream requests and refused transport after broker stop.
+
+The nested attempt still returned `unshare: Operation not permitted`. Its step
+outcome was `failure`; `continue-on-error` changed its conclusion, not the
+observed result. [Artifact 12122072765](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39090033070/artifacts/12122072765)
+retains both logs until 25 October, with digest
+`sha256:fdf7fb02ecdca248399cab7641c9d1cca62eb965a396edb7ee62b3a2d3ae11cc`.
+This proves the recorded Docker construction with synthetic fixtures. Native
+CLIs, live OAuth, TLS, DNS, UDP, VM sockets, GitHub writes, Podman and Apple
+remain separate acceptance requirements, as does production integration.
+
+### Native Anthropic adapter — prepared for runtime validation
+
+`anthropic_agent_gateway.ts` provides a fixed Unix-socket forwarder and an
+ephemeral agent-loopback endpoint for the native CLI. Its fresh environment
+contains one local capability, in the variable appropriate to API-key,
+subscription or bearer mode; it accepts no parent environment or upstream
+credential. The trusted broker selects the upstream authentication mode and
+never retries subscription authentication with an API key. Normal worker
+startup has **not** adopted this adapter.
+
+The [official gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)
+documents inference's `?beta=true`, required version/capability headers,
+streaming and retry/usage response headers. Both hops preserve the open
+`anthropic-*` request-header namespace so future capability/body pairs survive;
+upstream `Authorization` and `x-api-key` remain broker-injected. The request
+body is unchanged and route, origin and query policies remain closed. The
+[subscription guidance](https://code.claude.com/docs/en/llm-gateway#subscriptions-and-gateways)
+distinguishes a subscription login from a gateway API credential; the adapter
+retains the subscription variable rather than substituting an API-key mode.
+The [environment reference](https://code.claude.com/docs/en/env-vars)
+states that an explicit `CLAUDE_CODE_OAUTH_TOKEN` lasts for the session and
+requires replacement and restart when expired. This does not establish Codex's
+separate refresh-token contract or validate a live Claude subscription.
+
+The next diagnostic invokes the image's pinned Claude binary twice in fresh,
+network-none containers: API-key mode and subscription-variable mode. Each
+gets an independently configured local capability. The synthetic upstream
+requires the corresponding injected authentication, and requires the native
+OAuth capability header in subscription mode, before returning a complete SSE
+response. The native result and upstream request witnesses must both confirm
+inference. These attempts are **not yet run** and cannot prove live account
+acceptance, billing, token refresh, other providers or production lifecycle.
+
+### Remaining production integration
+
+The host supervisor must create each agent's broker capability, dedicated
+checkout/state scope and container lifecycle without exposing a runtime
+control socket to either the agent or repository code. Reusing the worker's
+whole work volume would expose other checkouts and state. Repository-defined
+quality commands need the same credential-free execution boundary: their
+current optional `sudo` account drop can fall back to the worker account.
+Upstream credentials belong only to the trusted broker, including refresh
+state; agent-writeable code must never execute beside them.
+
+After that boundary, provider-specific adapters must preserve native model,
+subscription, pool and resume behaviour; scoped `gh`/git operations must retain
+the existing write gates without accepting arbitrary trusted-side commands.
+Runner stdin/stdout, cancellation, timeouts, retries and broker expiry then
+need integration tests. Docker, Podman and Apple's VM/socket transport each
+need the full denial and credential-visibility matrix before fail-closed
+launch becomes the default. R9 and R11 remain open until that evidence exists.
 
 ### Local evidence
 
@@ -388,7 +464,14 @@ claimed.
   mount removal, read-only mounts, network-none selection, reachable controls,
   hardening, secret visibility/planting, request-count or fingerprint checks
   were rejected by executable assertions in an isolated copy. These checks
-  validate the diagnostic and do not substitute for its pending CI run.
+  validate the diagnostic; the real Docker result is recorded separately above.
+- Native transport adds seven adapter tests and one broker authentication
+  regression, taking the focused suite to 26 tests. The future-header case
+  first failed with a missing forwarded value, then passed after both hops
+  preserved the protocol namespace. Fifteen isolated mutations of query,
+  service, authentication, header, environment, cancellation and safe-error
+  behaviour were rejected by assertions. Real pinned-client execution remains
+  pending the next branch-only workflow run.
 
 See the [original gap analysis](agent-containment-gap-analysis.md) and
 [threat model](../THREAT-MODEL.md). Neither existing `gh` write gates nor the

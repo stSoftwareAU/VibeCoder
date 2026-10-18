@@ -8,6 +8,7 @@
  * rather than an upstream exception that may contain an injected credential.
  */
 import {
+  assertBrokerCapability,
   type BrokerService,
   resolveCredentialBrokerRoute,
 } from "./credential_broker_policy.ts";
@@ -15,8 +16,13 @@ import {
 interface CredentialBrokerOptions {
   /** Per-run broker capability; never an upstream provider/GitHub credential. */
   capability: string;
-  /** API keys, except GitHub's bearer token. No subscription OAuth fallback. */
+  /**
+   * Selected upstream values, held only by the trusted broker. Claude's value
+   * uses claudeAuthentication; no fallback or token refresh is implied.
+   */
   credentials: Partial<Record<BrokerService, string>>;
+  /** Trusted selection only; bearer mode never falls back to an API key. */
+  claudeAuthentication?: "api-key" | "bearer";
   /** Repository names supplied by the trusted worker, not by an agent request. */
   repositories: readonly string[];
   /** Production defaults to fetch; tests can observe the outgoing request. */
@@ -67,10 +73,10 @@ async function boundedBody(
 export function createCredentialBroker(
   options: CredentialBrokerOptions,
 ): (request: Request) => Promise<Response> {
-  if (!/^[A-Za-z0-9_-]{32,256}$/.test(options.capability)) {
-    throw new Error(
-      "Broker capability must contain 32–256 URL-safe characters",
-    );
+  assertBrokerCapability(options.capability);
+  const claudeAuthentication = options.claudeAuthentication ?? "api-key";
+  if (claudeAuthentication !== "api-key" && claudeAuthentication !== "bearer") {
+    throw new Error("Unsupported broker Claude authentication mode");
   }
   const maximum = options.maxRequestBytes ?? 16 * 1024 * 1024;
   if (!Number.isSafeInteger(maximum) || maximum <= 0) {
@@ -129,9 +135,22 @@ export function createCredentialBroker(
     const headers = new Headers();
     headers.set("accept", "application/json, text/event-stream");
     if (body.byteLength > 0) headers.set("content-type", "application/json");
-    if (route.service === "claude") {
+    const anthropic = route.service === "claude" ||
+      (route.service === "deepseek" &&
+        route.upstream.pathname.startsWith("/anthropic/"));
+    if (anthropic) {
+      // The official gateway protocol defines this as an open namespace:
+      // new capability headers must survive together with their body fields.
+      // Upstream authentication stays exclusively in the injected headers.
+      for (const [name, value] of request.headers) {
+        if (name.startsWith("anthropic-")) headers.set(name, value);
+      }
+      if (!headers.has("anthropic-version")) {
+        headers.set("anthropic-version", "2023-06-01");
+      }
+    }
+    if (route.service === "claude" && claudeAuthentication === "api-key") {
       headers.set("x-api-key", credential);
-      headers.set("anthropic-version", "2023-06-01");
     } else if (route.service === "gemini") {
       headers.set("x-goog-api-key", credential);
     } else {
@@ -163,9 +182,15 @@ export function createCredentialBroker(
     }
     const responseHeaders = new Headers({ "cache-control": "no-store" });
     // An allowlist keeps auth/cookie/location/debug headers from the agent.
-    for (const name of ["content-type", "retry-after", "x-request-id"]) {
-      const value = response.headers.get(name);
-      if (value) responseHeaders.set(name, value);
+    for (const [name, value] of response.headers) {
+      if (
+        ["content-type", "retry-after", "x-request-id", "request-id"].includes(
+          name,
+        ) ||
+        (anthropic &&
+          (name === "x-should-retry" ||
+            name.startsWith("anthropic-ratelimit-unified-")))
+      ) responseHeaders.set(name, value);
     }
     return new Response(response.body, {
       status: response.status,
