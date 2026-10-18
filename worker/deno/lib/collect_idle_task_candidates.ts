@@ -277,7 +277,7 @@ export async function collectIdleTaskCandidates(
     // `idleTaskTrustedAdders`, so a bot in `authorized_commenters` may add
     // the label; the author check below still uses the narrower
     // `idleTaskTrustedAuthors` set.
-    let labelAddedByTrusted = false;
+    let labelAddedByTrusted: boolean;
     try {
       labelAddedByTrusted = await wasLabelAddedByAllowedAuthor(
         repo,

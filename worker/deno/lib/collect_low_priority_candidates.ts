@@ -276,7 +276,7 @@ export async function collectLowPriorityCandidates(
     // Issue #3416: exclude fleet worker logins (own host + siblings) — they
     // sit in allowedAuthors for PR-dedup but must not be trusted to
     // self-apply the reserved `low-priority` discovery label.
-    let labelAdded = false;
+    let labelAdded: boolean;
     try {
       labelAdded = await wasLabelAddedByAllowedAuthor(
         repo,
