@@ -43,9 +43,11 @@ flowchart LR
 
 ## Evidence
 
+- #3954: Generate version-bump summaries that stay correct after CI auto-bumps.
+- #3979: Render Branch outcomes once from existing facts and remove duplicate summary evidence maintenance.
 - The loader regression failed against base production code. Preservation and
   heading-growth regressions also failed against the initial implementation.
-- Three focused suites pass: 149 tests, no failures. Nine actual mutations of
+- Three focused suites pass: 149 tests, no failures. Sixteen actual mutations of
   scope, ownership, logical units, heading growth and loader integration fail
   their named regression assertions.
 - Independent corpus: 1,044 existing archived summaries; zero changes and zero
@@ -56,7 +58,7 @@ flowchart LR
   updated `CODING-STANDARDS.md`, `prompts/issue/prompt.md`,
   `prompts/pr_feedback/prompt.md` and `docs/workflows/issue-processing.md`;
   section: `docs/workflows/issue-processing.md` → "Durable project-version
-  wording"; siblings: Branch-outcomes ownership remains in #3979.
+  wording"; siblings: none — no existing set gained a member; Branch-outcomes ownership remains in #3979.
 
 ## Acceptance Criteria
 
@@ -76,6 +78,7 @@ flowchart LR
 - **violation** — Historical ancestors, indented code and nested dependencies could be rewritten — evidence: `worker/deno/lib/pr_summary_facts.ts:43` — reason: fixed with bounded heading ancestry, code exclusion and root-manifest ownership.
 - **violation** — Heading whitespace matching was superlinear — evidence: `worker/deno/lib/pr_summary_facts.ts:47` — reason: fixed with separate linear scans; the old pattern fails the growth regression.
 - **violation** — A redundant local-check caller had no observable regression — evidence: `worker/deno/lib/pr_summary_loader.ts:54` — reason: fixed in this diff by removing the redundant caller; the loader is the sole production reader.
+- **violation** — Closing ATX markers and the PR Summary wrapper lacked regression sensitivity — evidence: `worker/deno/lib/pr_summary_facts.ts:53` — reason: fixed in this diff with positive heading fixtures and individually failing mutations, including quoted/thematic-break/sibling-heading controls.
 - **clean** — Independent recheck found no remaining material code/test violation. Shared Markdown logic, Result contracts, assertion preservation, Australian English and existing merge protections were checked. Unrelated documentation formatting was reverted.
 
 ## Test Plan

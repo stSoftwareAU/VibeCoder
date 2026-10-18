@@ -287,6 +287,41 @@ Deno.test("version normalisation preserves scope and layout across manifest and 
         "Version bump: `VERSION` 1.2.3 → 1.2.4",
         "Version bump: `VERSION`",
       ],
+      [
+        "> ## Evidence\n\n",
+        "Version bump: `VERSION` 1.2.3 → 1.2.4",
+        "Version bump: `VERSION`",
+      ],
+      [
+        "## Summary\n\nPreface\n\n---\n\n",
+        "Version bump: `VERSION` 1.2.3 → 1.2.4",
+        "Version bump: `VERSION`",
+      ],
+      [
+        "## Summary\n\nPreface\n***\n\n",
+        "Version bump: `VERSION` 1.2.3 → 1.2.4",
+        "Version bump: `VERSION`",
+      ],
+      [
+        "Summary\n=======\n\n",
+        "Version bump: `VERSION` 1.2.3 → 1.2.4",
+        "Version bump: `VERSION`",
+      ],
+      [
+        "## Summary ##\n\n",
+        "Version bump: `VERSION` 1.2.3 → 1.2.4",
+        "Version bump: `VERSION`",
+      ],
+      [
+        "# PR Summary\n## Summary\n\n",
+        "Version bump: `VERSION` 1.2.3 → 1.2.4",
+        "Version bump: `VERSION`",
+      ],
+      [
+        "## Evidence\n\nRelease evidence: abc123.\n\n## Summary\n\n",
+        "Version bump: `VERSION` 1.2.3 → 1.2.4",
+        "Version bump: `VERSION`",
+      ],
     ] as const
   ) {
     const content = header + line + "\r\n";
@@ -309,6 +344,8 @@ Deno.test("version normalisation preserves ambiguous ownership and release conti
       const content of [
         `## Changelog\n### Summary\n${pair}\n`,
         `## Evidence\n### Summary\n${pair}\n`,
+        `## PR Summary\n\n${pair}\n`,
+        `## Summary###\n\n${pair}\n`,
         `# Historical reproduction\n## Summary\n${pair}\n`,
         `Historical reproduction\n-----------------------\n${pair}\n`,
         `## Summary\n\n    ${pair}\n`,

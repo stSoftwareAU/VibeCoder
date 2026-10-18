@@ -74,6 +74,62 @@
         "test": "worker/deno/tests/pr_summary_loader_test.ts",
         "testName": "loadPrSummary - project bump statements stay valid across later workflow bumps (Issue #3954)",
         "flipWentRed": "removing loader normalisation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 53,
+        "outcome": "closing ATX markers preserve the intended Summary section",
+        "test": "worker/deno/tests/pr_summary_loader_test.ts",
+        "testName": "version normalisation preserves scope and layout across manifest and policy shapes (Issue #3954)",
+        "flipWentRed": "closing-heading mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 75,
+        "outcome": "an H1 PR Summary wrapper permits the current Summary statement",
+        "test": "worker/deno/tests/pr_summary_loader_test.ts",
+        "testName": "version normalisation preserves scope and layout across manifest and policy shapes (Issue #3954)",
+        "flipWentRed": "pr-summary-wrapper mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 35,
+        "outcome": "a sibling section replaces the prior historical context",
+        "test": "worker/deno/tests/pr_summary_loader_test.ts",
+        "testName": "version normalisation preserves scope and layout across manifest and policy shapes (Issue #3954)",
+        "flipWentRed": "sibling-heading mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 48,
+        "outcome": "quoted headings cannot change unquoted summary ownership",
+        "test": "worker/deno/tests/pr_summary_loader_test.ts",
+        "testName": "version normalisation preserves scope and layout across manifest and policy shapes (Issue #3954)",
+        "flipWentRed": "quoted-heading mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 62,
+        "outcome": "a nonadjacent thematic break is not a setext heading",
+        "test": "worker/deno/tests/pr_summary_loader_test.ts",
+        "testName": "version normalisation preserves scope and layout across manifest and policy shapes (Issue #3954)",
+        "flipWentRed": "setext-adjacency mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 65,
+        "outcome": "a thematic asterisk break is not a setext underline",
+        "test": "worker/deno/tests/pr_summary_loader_test.ts",
+        "testName": "version normalisation preserves scope and layout across manifest and policy shapes (Issue #3954)",
+        "flipWentRed": "setext-marker mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 75,
+        "outcome": "a nested PR Summary heading does not own the whole document",
+        "test": "worker/deno/tests/pr_summary_loader_test.ts",
+        "testName": "version normalisation preserves ambiguous ownership and release continuations (Issue #3954)",
+        "flipWentRed": "wrapper-level mutation made the named regression fail"
       }
     ]
   }
