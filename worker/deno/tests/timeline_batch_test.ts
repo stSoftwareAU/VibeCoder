@@ -318,6 +318,32 @@ Deno.test("timeline_batch - wrapped gh feeds wasLabelAddedByAllowedAuthor withou
   assertEquals(baseCalls, 0);
 });
 
+Deno.test("timeline_batch - wrapped gh serves page >= 2 as empty so paginateTimeline stops (Issue #3974)", async () => {
+  const events = new Map([
+    [42, Array.from({ length: 100 }, () => ({
+      event: "labeled",
+      label: { name: "work-on" },
+      actor: { login: "alice" },
+      created_at: "2024-04-01T00:00:00Z",
+    }))],
+  ]);
+  let baseCalls = 0;
+  const baseGh = (_args: string[]): Promise<string> => {
+    baseCalls++;
+    return Promise.resolve("[]");
+  };
+  const wrapped = wrapGhWithBatchedTimeline(baseGh, events);
+  const result = await wasLabelAddedByAllowedAuthor(
+    "acme/tools",
+    42,
+    "work-on",
+    ["alice"],
+    wrapped,
+  );
+  assertEquals(result, true);
+  assertEquals(baseCalls, 0);
+});
+
 Deno.test("timeline_batch - wrapped gh falls through for non-timeline calls", async () => {
   const events = new Map();
   let baseCalls = 0;
