@@ -7,7 +7,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertStrictEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   type CiFixInput,
   type CiProcessorDeps,
@@ -15,6 +19,7 @@ import {
   processCiFailure,
   resolveCiCheckStateDir,
 } from "../lib/pr_ci_processor.ts";
+import type { SyncFollowUpFiling } from "../lib/pr_body_sync_follow_up.ts";
 import {
   getCiCheckRetryCount,
   recordCiCheckRetry,
@@ -2748,6 +2753,40 @@ Deno.test("processCiFailure - syncs the PR body once after a verified push", asy
     assertEquals(calls[0]?.prNumber, 42);
     assertEquals(calls[0]?.repo, "org/repo");
     assertEquals(calls[0]?.beforeSha, DEFAULT_MOCK_HEAD_SHA);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - forwards the sync follow-up filer to the PR body sync (Issue #3678)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const sentinel: SyncFollowUpFiling = {
+      verifyIssueContent: () =>
+        Promise.reject(new Error("sentinel filer must not be called")),
+      ensureLabelExists: () =>
+        Promise.reject(new Error("sentinel filer must not be called")),
+      fleetAuthors: [],
+    };
+    let syncCalls = 0;
+    let forwarded: SyncFollowUpFiling | undefined;
+    const syncPrBodyFn: CiProcessorDeps["syncPrBodyFn"] = (_input, deps) => {
+      syncCalls++;
+      forwarded = deps.followUpFiling;
+      return Promise.resolve({
+        ok: true,
+        value: { status: "updated", issueNumber: 42 },
+      });
+    };
+    const processorDeps: CiProcessorDeps = {
+      ...makeSuccessfulCiPushDeps(tmpDir, syncPrBodyFn),
+      syncFollowUpFiling: sentinel,
+    };
+
+    const result = await processCiFailure(makeInput(), processorDeps);
+    assertEquals(result.ok, true);
+    assertEquals(syncCalls, 1);
+    assertStrictEquals(forwarded, sentinel);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

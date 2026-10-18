@@ -113,8 +113,9 @@ and further from the cause. Values are never logged; only names are.
 
 The same credentials reach the diff-scoped mutation check, which reruns the
 repository's tests; there a failed `mint` makes the check not applicable, with
-a warning, instead of failing the phase (see
-[Diff-scoped mutation check](mutation-check.md)).
+a warning, instead of failing the phase. The check also runs on review-fix
+pushes, where survivors are reported in the PR reply rather than blocking the
+push (see [Diff-scoped mutation check](mutation-check.md)).
 
 
 ## Two axes of trust

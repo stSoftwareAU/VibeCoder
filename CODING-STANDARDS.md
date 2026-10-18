@@ -1165,7 +1165,10 @@ A unit test is **behavioural**, **self-contained**, **fast** and
   script is a `test-audit` finding (check 13) whatever the test happens to cost
   on your machine — unless the file is **declared**, in the integration
   manifest or in `IN_GATE_SCRIPT_SUITES`, where the spawn is the point and its
-  cost is recorded beside it.
+  cost is recorded beside it. The real signal-cleanup suite also keeps its
+  process and polling assertions in the required serial pass, with its measured
+  reason in `SUBPROCESS_TIMING_TEST_FILES` (see "Real signal cleanup stays in the
+  required gate" below).
 - **Parallel-safe** — it does not mutate process-wide state (`Deno.env.set`,
   `Deno.env.delete`, `Deno.chdir`, or a module-level singleton the rest of the
   suite reads). Take the value as a parameter or an injected seam instead.
@@ -1326,6 +1329,15 @@ at all.
 A benchmark disguised as a unit test is a gate failure, not a style point. The
 benchmark-audit stage scans `worker/deno/tests/` and fails any `Deno.test`
 whose name contains `benchmark` or `bench_` (Issue #583).
+
+### Real signal cleanup stays in the required gate
+
+`worker/deno/tests/run_core_signal_cleanup_test.ts` exercises SIGINT/SIGTERM against a real
+Deno entrypoint and descendant process. It remains in the required serial unit pass,
+with every cleanup assertion intact. Its process startup and graceful-termination
+polling have a named reason in `SUBPROCESS_TIMING_TEST_FILES`, inherited by
+`SLOW_UNIT_TEST_KEEP_FILES`; the one-second mockable
+unit-work budget is not a signal-cleanup performance requirement.
 
 ### When a test does not fit
 
@@ -1763,13 +1775,27 @@ for every PR summary — containing:
 
 In this repository, `deno task pr-summary-check --base <base-branch>
 <summary-file>` from `worker/deno` runs most of the PR-summary gates against a
-draft summary before the PR is raised. A gate it reports as not checked is not
-a pass. For a summary named `pr-summary-<N>.md` it also reads
+summary at either stage: a draft before the PR is raised, or the archived
+summary once it is open. A gate it reports as not checked is not a pass. For a
+summary named `pr-summary-<N>.md` it also reads
 `docs/archive/pr-summaries/pr-summary-<N>.facts.json` under the repository
 root, as the worker does (it takes only `<N>` from the summary's file name):
 the Branch outcomes gate sees the list rendered at the
 `<!-- vibe-branch-outcomes -->` marker, and blocks on an invalid facts file or
 on a facts file beside a hand-written list.
+
+CI runs the same gates on every push to a pull request: the `PR summary
+freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
+`deno task pr-summary-ci --base <base-branch> --head-branch <head-branch>`
+(Issue #3768). On an `issue-<N>-…` head branch whose diff carries
+`pr-summary-<N>.md` (or its facts file), it fails when the PR's newest non-merge
+commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
+commit changing that summary or its facts file. Rewrite the summary for the head
+in that push, whoever makes it. The step then runs the `pr-summary-check` gates
+and fails on a blocked one; gates needing the issue body or labels are reported
+as not checked. A PR carrying no summary passes with a log line. On a head
+branch that is not an `issue-<N>` branch (milestone roll-ups, sync PRs) the
+summary is reported as not checked.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests

@@ -526,7 +526,8 @@ export interface QualityDeps {
   /** Record a baseline gate outcome for reuse (Issue #4283). */
   writeBaselineQualityCache: typeof writeBaselineQualityCache;
   /**
-   * Run the diff-scoped mutation check over the PR diff (Issue #3393).
+   * Run the diff-scoped mutation check over the PR diff (Issue #3393). Used
+   * by both the PR-raise gate and the review-fix drift check (Issue #3750).
    * Optional: when absent the mutation gate is not applicable and never
    * blocks, so fixtures that build their own deps never run real mutants.
    */

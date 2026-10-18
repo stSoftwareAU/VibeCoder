@@ -69,9 +69,8 @@ import {
 } from "../git_push.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
-import { resolveRepoCredentials } from "../repo_credentials.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
-import type { WorkerConfig } from "../../types.ts";
+import type { Result, WorkerConfig } from "../../types.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
   findBranchEvidenceImages,
@@ -180,10 +179,9 @@ import {
 } from "../security_fix_gate.ts";
 import {
   buildMutationGateComment,
-  DEFAULT_MUTATION_BUDGET_SECONDS,
   evaluateMutationGate,
-  type MutationCheckResult,
 } from "../mutation_gate.ts";
+import { invokeMutationCheck } from "../mutation_check_invocation.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
 import { preserveRunWip } from "./run_wip_preservation.ts";
 import {
@@ -420,35 +418,6 @@ async function runGitOrThrow(
     );
   }
   return result.value.stdout;
-}
-
-/** Upper bound on `mutation_check_budget_seconds` (Issue #3393). */
-export const MAX_MUTATION_BUDGET_SECONDS = 3600;
-
-/**
- * Resolve the mutation gate's wall-clock budget from the per-repo
- * `mutation_check_budget_seconds` value (Issue #3393). A missing value is the
- * default; a value that is not a positive integer no greater than
- * {@link MAX_MUTATION_BUDGET_SECONDS} is refused loudly through `warn` and
- * the default applies, as the other untrusted per-repo numbers do.
- */
-export function resolveMutationBudgetSeconds(
-  raw: string,
-  warn: (message: string, context?: Record<string, unknown>) => void,
-): number {
-  if (raw === "") return DEFAULT_MUTATION_BUDGET_SECONDS;
-  const parsed = Number(raw);
-  if (
-    !Number.isInteger(parsed) || parsed <= 0 ||
-    parsed > MAX_MUTATION_BUDGET_SECONDS
-  ) {
-    warn(
-      "Ignoring invalid mutation_check_budget_seconds — using the default",
-      { value: raw, default: DEFAULT_MUTATION_BUDGET_SECONDS },
-    );
-    return DEFAULT_MUTATION_BUDGET_SECONDS;
-  }
-  return parsed;
 }
 
 /**
@@ -3263,84 +3232,44 @@ async function completionBody(
   // ---------------------------------------------------------------------
   let mutationVerdict: LateSummaryVerdict;
   {
-    let mutationResult: MutationCheckResult | null = null;
-    if (
-      getRepoConfig(config.repoConfig, repo, "skipMutationCheck") === "true"
-    ) {
-      logger.info("mutation check skipped by skip_mutation_check", { repo });
-      mutationResult = {
-        kind: "not_applicable",
-        reason: "skipped by skip_mutation_check",
-      };
-    } else if (!deps.quality.runMutationCheck) {
-      logger.warn("Mutation runner not wired — mutation check not applicable");
-      mutationResult = {
-        kind: "not_applicable",
-        reason: "mutation runner not wired",
-      };
-    } else {
-      const budgetSeconds = resolveMutationBudgetSeconds(
-        getRepoConfig(config.repoConfig, repo, "mutationCheckBudgetSeconds"),
-        (message, context) => logger.warn(message, context),
-      );
-      let mutationDiff: string | null = null;
-      if (comparableBase.ok) {
+    const mutationResult = await invokeMutationCheck({
+      repo,
+      repoPath: state.repoPath,
+      repoConfigs: config.repoConfig,
+      runner: deps.quality.runMutationCheck,
+      logger,
+      collectDiff: async (): Promise<Result<string>> => {
+        if (!comparableBase.ok) {
+          return {
+            ok: false,
+            error: new Error(
+              `could not collect the PR diff against ${baseBranch}`,
+            ),
+          };
+        }
         try {
-          mutationDiff = await runGitOrThrow(
-            ["diff", "--unified=0", `${comparableBase.value}...HEAD`],
-            state.repoPath,
-            deps,
-          );
+          return {
+            ok: true,
+            value: await runGitOrThrow(
+              ["diff", "--unified=0", `${comparableBase.value}...HEAD`],
+              state.repoPath,
+              deps,
+            ),
+          };
         } catch (error) {
           logger.warn("Could not collect the PR diff for the mutation check", {
             base: comparableBase.value,
             error: error instanceof Error ? error.message : String(error),
           });
-        }
-      }
-      if (mutationDiff === null) {
-        mutationResult = {
-          kind: "error",
-          reason: `could not collect the PR diff against ${baseBranch}`,
-        };
-      } else {
-        // The quality gate's child gets the credentials this repository
-        // declared, and its tests need them here too or the baseline fails
-        // before mutation. A failed mint is not run without them: that would
-        // block the PR on a fault that is not its code.
-        const credentials = await resolveRepoCredentials(
-          repo,
-          config.repoConfig?.[repo]?.qualityCredentials,
-        );
-        if (!credentials.ok) {
-          logger.warn(
-            "Could not resolve quality_credentials for the mutation check",
-            { repo, error: credentials.error.message },
-          );
-          mutationResult = {
-            kind: "not_applicable",
-            reason:
-              `the repository's quality_credentials could not be resolved (${credentials.error.message})`,
+          return {
+            ok: false,
+            error: new Error(
+              `could not collect the PR diff against ${baseBranch}`,
+            ),
           };
-        } else {
-          try {
-            mutationResult = await deps.quality.runMutationCheck({
-              repoPath: state.repoPath,
-              diff: mutationDiff,
-              budgetSeconds,
-              credentialEnv: credentials.value.env,
-            });
-          } catch (error) {
-            mutationResult = {
-              kind: "error",
-              reason: `mutation runner failed: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            };
-          }
         }
-      }
-    }
+      },
+    });
     const gate = evaluateMutationGate(mutationResult, prBody);
     if (gate.budgetExhausted) {
       logger.warn(gate.note, { repo, issueNumber });

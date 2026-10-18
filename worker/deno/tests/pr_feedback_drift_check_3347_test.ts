@@ -68,6 +68,12 @@ function makeRunGit(dir: string): DriftCheckDeps["runGit"] {
   return async (args: string[]) => await git(dir, args);
 }
 
+/** Fake `runMutationCheck` for tests not about the mutation gate (Issue #3750). */
+const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
+  kind: "not_applicable",
+  reason: "not under test",
+});
+
 function makeRunGh(): DriftCheckDeps["runGh"] {
   return async () => "main\n";
 }
@@ -155,6 +161,7 @@ Deno.test("runPrFeedbackDriftCheck - a push that edits only a manual makes one r
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent([{ ok: true, output: verdictBlock([]) }], calls),
         logger: noopLogger(),
       },
@@ -180,6 +187,7 @@ Deno.test("runPrFeedbackDriftCheck - a manual sentence the verdict reports drive
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent(
           [
             {
@@ -223,6 +231,7 @@ Deno.test("runPrFeedbackDriftCheck - a push that edits only the PR summary still
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent([], calls),
         logger: noopLogger(),
       },
@@ -278,6 +287,7 @@ Deno.test("runPrFeedbackDriftCheck - a pushed manual is still questioned when th
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
+        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent([{ ok: true, output: verdictBlock([]) }], calls),
         logger: {
           info: () => {},
@@ -339,6 +349,7 @@ Deno.test("runPrFeedbackDriftCheck - an unchanged comment and untouched related 
     }, {
       runGit: makeRunGit(dir),
       runGh: makeRunGh(),
+      runMutationCheck: notMutationChecked,
       logger: noopLogger(),
       runAgent: makeRunAgent([
         {
@@ -405,6 +416,7 @@ Deno.test("runPrFeedbackDriftCheck - source under docs is checked but an executa
     }, {
       runGit: makeRunGit(dir),
       runGh: makeRunGh(),
+      runMutationCheck: notMutationChecked,
       logger: {
         info: () => {},
         error: () => {},
