@@ -718,3 +718,16 @@ Deno.test("exempt reason renders as plain text that cannot open a span or commen
   const reason = bullet.slice(bullet.indexOf("): ") + 3);
   assertEquals(reason, "&lt;!-- open 'tick and more words");
 });
+
+Deno.test("version normalisation scans long heading whitespace linearly (Issue #3954)", async () => {
+  const { normaliseSummaryVersionBumps } = await import(
+    "../lib/pr_summary_facts.ts"
+  );
+  const pair = "\n\nVersion bump: `VERSION` 1.2.3 → 1.2.4\n";
+  assertLinearGrowth(
+    "version-heading whitespace",
+    (n) => "## a" + " ".repeat(n) + "x" + pair,
+    (text) => normaliseSummaryVersionBumps(text),
+    { baseChars: 4000 },
+  );
+});

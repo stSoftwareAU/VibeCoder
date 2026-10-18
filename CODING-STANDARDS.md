@@ -1922,6 +1922,17 @@ script's header comments listed "three things" that are deliberately not
 faults when the script skips and allows several more (GRQ-AutoTrader#2479)
 (Issue #3232).
 
+**Project version wording (Issue #3954).** Write the summary's own version-bump
+statement in Summary using durable wording, for example:
+``Version bump: `VERSION` updated for this change; the merged commit records the final version.``
+Do not predict a literal before/after pair that CI can change after your push.
+Name a specific relation to the actual target branch, such as one patch above
+it, only after checking that repository's workflow guarantees that policy.
+Otherwise keep the policy-neutral wording; manual or minor version changes do
+not imply an automatic patch policy. Exact release/build evidence belongs in
+Evidence with its final commit or release provenance. Preserve dependency pins,
+historical reproduction versions, migration examples and changelog entries.
+
 The worker checks this mechanically too (Issues #3347, #3715, #3731).
 Whenever a PR summary was loaded, the first-run claim check asks a read-only
 model, before the PR is raised, about added or edited manual/prompt Markdown,

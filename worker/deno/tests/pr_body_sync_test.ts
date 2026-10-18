@@ -2538,6 +2538,35 @@ Deno.test("Issue #3720: summary refresh preserves the originating assignment", a
   }
 });
 
+Deno.test("sync - workflow version changes retain durable body wording without another edit (Issue #3954)", async () => {
+  const raw =
+    "## Summary\n\nVersion bump: `VERSION` 1.2.3 → 1.2.4\n\n## Evidence\n\nRelease evidence: 1.2.3 at commit abc123.\n";
+  const repoPath = await makeRepo({ summary: raw });
+  try {
+    const first = await syncFactsCase({
+      repoPath,
+      liveBody: bodyRecording(await prSummaryDigest(raw)),
+    });
+    assert(first.result.ok);
+    assertEquals(first.result.value.status, "updated");
+    const body = first.ghCalls[0]!.bodyFileContent!;
+    assertStringIncludes(body, "the merged commit records the final version");
+    assertStringIncludes(body, "Release evidence: 1.2.3 at commit abc123.");
+    assert(!body.includes("1.2.4"));
+    await Deno.writeTextFile(
+      `${repoPath}/docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`,
+      raw.replace("1.2.3 → 1.2.4", "1.2.4 → 1.2.5"),
+    );
+    await Deno.writeTextFile(`${repoPath}/VERSION`, "1.2.5\n");
+    const second = await syncFactsCase({ repoPath, liveBody: body });
+    assert(second.result.ok);
+    assertEquals(second.result.value.status, "skipped");
+    assertEquals(second.ghCalls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
 Deno.test("sync - ambiguous outcome ownership fails without editing the PR (Issue #3979)", async () => {
   const summary = `${BRANCH_OUTCOMES_MARKER}\n${BRANCH_OUTCOMES_MARKER}\n`;
   const repoPath = await makeRepo({ summary, facts: FACTS_JSON });
