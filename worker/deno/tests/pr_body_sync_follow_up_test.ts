@@ -372,3 +372,37 @@ Deno.test("addReportedGapSectionOnSync - a parent with a milestone files the fol
   assert(at !== -1, "gh issue create must carry --milestone");
   assertEquals(create[at + 1], "M1");
 });
+
+Deno.test("pending-only sync gaps do not trigger follow-up discovery or side effects (Issue #3961)", async () => {
+  const body =
+    "## Acceptance Criteria\n\n- **partial** — required CI — reviewer: partial — reason: CI not yet verified\n";
+  assertEquals(summaryReportsGap(body), false);
+  assertEquals(
+    summaryReportsGap(body.replace("CI not yet verified", "CI failed")),
+    true,
+  );
+  for (
+    const issueBody of [
+      GAP_PARENT.body,
+      "<!-- finding-id: degraded-follow-up-1 -->\n\n" + GAP_PARENT.body,
+    ]
+  ) {
+    let writes = 0;
+    const result = await addReportedGapSectionOnSync({
+      repo: REPO,
+      issueNumber: ISSUE_NUMBER,
+      prNumber: PR_NUMBER,
+      body,
+      issue: { ...GAP_PARENT, body: issueBody },
+      filing: undefined,
+      gh: () => {
+        writes++;
+        return Promise.resolve("");
+      },
+      runId: "pending-sync",
+      logger,
+    });
+    assertEquals(result, { ok: true, value: body });
+    assertEquals(writes, 0);
+  }
+});

@@ -1,0 +1,12 @@
+{
+  "issue": 3779,
+  "chunk": "top-up-3779",
+  "title": "top-up: existing callers of changed functions",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3779",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/caller_checks.ts, the pre-PR verifier's list of existing callers of changed functions, each owed a verdict (#3779)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/caller_checks.ts"
+  ],
+  "sweptAt": "addaa06f645c2a2ada3c45d6cb334840094fc4f9"
+}
