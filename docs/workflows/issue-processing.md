@@ -1198,8 +1198,10 @@ raised. The agent dispatches nothing for it.
   The reply has the fleet reviewer's JSON shape: `summary`, `findings`,
   `testChanges`, `testChangeNotes` and `unrelatedIssues`, plus a `checklist`
   array when the repository's
-  [review checklists](../review-checklists.md) apply to the changed files. A
-  reply without the array is read as `[]`, but the worker owes a verdict for
+  [review checklists](../review-checklists.md) apply to the changed files. The
+  reply also carries a `callers` array when the worker listed callers (see
+  **Existing callers of changed functions** below). A reply without the
+  checklist array is read as `[]`, but the worker owes a verdict for
   every item the brief rendered: an item with none, a malformed or unreadable
   checklist file (the base copy, unless the change edits the file and its own
   copy is usable or removes it, in which case the change is judged on that
@@ -1238,6 +1240,25 @@ raised. The agent dispatches nothing for it.
   A summary that marks no entry `met`, or has no closure block,
   lists none and owes no verdict. The fleet reviewer shares the brief and so
   the instruction, but its `post.ts` does not check the array.
+- **Existing callers of changed functions (Issue #3779).** Before the
+  verifier runs, the worker lists each function or method whose body the diff
+  changes. It finds them with a language-agnostic definition-line heuristic
+  over the head file, then searches the head's tracked files for each name
+  with `git grep -w`, leaving out the lines the diff changes, test files,
+  docs, comment lines, import-list lines and the definition itself. The list
+  shows at most 10 callers per function, for at most 15 functions that have
+  callers, and searches at most 40 changed functions. Callers beyond 10 and
+  functions not searched are counted in a note to the verifier. A changed file
+  whose path git quotes is not scanned and is also noted. The list is appended
+  to the verifier's prompt as required items
+  ([`caller_checks.ts`](../../worker/deno/lib/caller_checks.ts)). The reply
+  then carries a `callers` array with one entry per listed caller,
+  `{symbol, caller: "file:line", verdict, note}`, where `verdict` is
+  `unchanged`, `changed and tested` or `regressed`. The code adds a blocking
+  finding for every listed caller with no verdict and for every `regressed`
+  verdict, whatever the model's own findings say. A git failure while listing
+  callers, or a malformed `callers` array, makes the pass "not checked". The
+  fleet reviewer does not get this list.
 - **Disposable checkout.** A `git clone --shared` of the issue checkout at the
   head commit, with its `origin` remote removed, holding the exact PR summary
   text the gates read. The verifier may run commands there: tests, flipping a
@@ -1278,7 +1299,8 @@ test as not red-checked does not settle it (Issue #3797). `testChanges: meaningf
 is not a finding and does not block.
 
 **When it cannot run.** A pass that cannot run (brief missing, git failure,
-launch error, timeout, unparseable reply) is logged as a warning as "not checked",
+a failed caller listing, launch error, timeout, unparseable reply, or a
+malformed `callers` array) is logged as a warning as "not checked",
 never read as clean, and does not block, as is a summary path that leaves the
 clone. A verifier after which the issue checkout's `git status` (untracked
 files included, ignored files not) or HEAD shows a change, or after which the
@@ -1495,6 +1517,21 @@ actual output; keeping the shared helper as it was and applying the stricter
 rule at the new call site when any caller can pass a rejected value;
 otherwise adding a test that an existing caller still accepts its real
 inputs; and listing the callers checked in the PR summary.
+
+**Changing a shared helper's result changes every caller (Issue #3779).** The
+rule from Issue #3100 read as covering only narrowing, and it accepted a
+callers list the agent wrote itself. VibeCoder#3353 gave
+`syncPrBodyFromSummary` a `headSha !== view.headRefOid` freshness check for
+the no-push feedback path. The CI-fix and merge-conflict callers sync right
+after their own push, while GitHub's `headRefOid` still lags, so they got
+"checkout is not the PR head" and left the description stale. A private fleet
+PR gave a shared record lookup a fallback for one caller. The other caller
+read "nothing" as "leave it alone" and went on to act on a closed record,
+though its PR summary named that caller and called it unchanged. The
+guidelines rule now covers any change to what a shared helper returns, refuses
+or finds, and requires a test through each existing caller whose behaviour the
+change touches. The pre-PR verifier now gets the caller list from the worker
+([pre-PR verifier](#pre-pr-verifier-issue-3395)).
 
 **A new argument or behaviour reaches every caller that needs it (Issue #3253).**
 The changed-call-site rule above covers callers the diff changes; a caller the

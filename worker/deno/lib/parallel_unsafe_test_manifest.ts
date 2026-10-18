@@ -293,6 +293,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // at a time; only a growth measurement separates that linear scan from a
   // backtracking one on hostile opener runs (Issue #3769).
   "tests/mermaid_validator_growth_3769_test.ts",
+  // The caller checks' definition and diff-header regexes run over untrusted
+  // source lines and diffs; only a growth measurement separates their linear
+  // patterns from a backtracking one (Issue #3779).
+  "tests/caller_checks_3779_test.ts",
 ];
 
 /**
