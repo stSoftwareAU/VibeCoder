@@ -1175,8 +1175,8 @@ Deno.test("config - loadConfig uses default operational values when not in confi
     assertEquals(config.claudeTimeout, 3600);
     assertEquals(config.claudeKillAfter, 30);
     assertEquals(config.maxClarificationRounds, 3);
-    // Issue #2446: default sleep interval raised from 30 s to 120 s.
-    assertEquals(config.sleepInterval, 120);
+    // Default 300 s reduces fixed per-cycle GraphQL spend.
+    assertEquals(config.sleepInterval, 300);
     assertEquals(config.creditWaitInterval, 300);
     assertEquals(config.refinementTimeout, 300);
     assertEquals(config.refinementKillAfter, 10);
@@ -1477,6 +1477,24 @@ Deno.test("config - loadConfig maps the mutation gate repo_config keys (Issue #3
     const repoConf = config.repoConfig?.["org/test-repo"];
     assertEquals(repoConf?.skipMutationCheck, true);
     assertEquals(repoConf?.mutationCheckBudgetSeconds, 120);
+  });
+});
+
+Deno.test("config - loadConfig maps the coverage carry-over gate repo_config key (Issue #3795)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+    repo_config: {
+      "org/test-repo": {
+        skip_coverage_carryover_check: true,
+      } as unknown as import("../types.ts").RepoConfig,
+    },
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    const repoConf = config.repoConfig?.["org/test-repo"];
+    assertEquals(repoConf?.skipCoverageCarryOverCheck, true);
   });
 });
 

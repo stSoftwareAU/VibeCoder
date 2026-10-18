@@ -46,7 +46,7 @@ import {
 function hostFaultFor(options: FailureOptions): HostFaultKind | null {
   return options.qualityGateOutput
     ? null
-    : detectHostFault(options.failureMessage);
+    : detectHostFault(options.failureMessage, options.category);
 }
 
 function qualityGateLine(options: FailureOptions): string {
@@ -154,7 +154,8 @@ export async function markIssueAsFailedOnce(
   const diagnosticContext = options.diagnosticContext ?? "";
 
   // Context-aware failure diagnosis (Issue #398, #400)
-  const failureCategory = detectFailureCategory(options.failureMessage);
+  const failureCategory = options.category ??
+    detectFailureCategory(options.failureMessage);
   const categoryDisplay = getFailureCategoryDisplay(failureCategory);
   const diagnosisOneliner = getFailureDiagnosisOneliner(
     failureCategory,
@@ -283,7 +284,8 @@ async function recordRepoConfigRefusal(
   options: FailureOptions,
   ghCommandFn: (args: string[]) => Promise<string>,
 ): Promise<void> {
-  const failureCategory = detectFailureCategory(options.failureMessage);
+  const failureCategory = options.category ??
+    detectFailureCategory(options.failureMessage);
   const categoryDisplay = getFailureCategoryDisplay(failureCategory);
   const errorSection = buildErrorSection(options.failureMessage);
   const diagnosisText = getFailureDiagnosis(
@@ -348,7 +350,8 @@ export async function markIssueAsFailed(
   const diagnosticContext = options.diagnosticContext ?? "";
 
   // Context-aware failure diagnosis (Issue #398, #400)
-  const failureCategory = detectFailureCategory(options.failureMessage);
+  const failureCategory = options.category ??
+    detectFailureCategory(options.failureMessage);
   const categoryDisplay = getFailureCategoryDisplay(failureCategory);
   const diagnosisText = getFailureDiagnosis(
     failureCategory,
@@ -484,7 +487,8 @@ export async function handleIssueFailure(
   const labels = options.labels ?? DEFAULT_LABEL_CONFIG;
   const maxInfraRetries = options.maxInfraRetries ?? 5;
 
-  const failureCategory = detectFailureCategory(options.failureMessage);
+  const failureCategory = options.category ??
+    detectFailureCategory(options.failureMessage);
 
   // A scheduled release never enters the ladder (Issue #424, parent #397).
   // The cycle ended, or the supervisor's hard cap was reached, with the WIP

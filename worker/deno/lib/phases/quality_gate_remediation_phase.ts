@@ -47,7 +47,9 @@ import { formatBaselineCarryoverNote } from "../quality_helpers.ts";
 import { fenceQualityOutput } from "../untrusted_quality_output.ts";
 import { buildBoundaryIntegrityInstruction } from "../prompt_delimiter.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
+import { alreadyLandedPhaseResult } from "../claim_freshness.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
+import { AgentTurnLimitError } from "../claude_turn_limit.ts";
 
 /**
  * Result of a single quality-gate body pass — see `runQualityGateBody`.
@@ -58,6 +60,8 @@ import { formatBeforeGate } from "../repo_formatters.ts";
  */
 interface QualityGateBodyResult {
   phaseResult: PhaseResult;
+  /** A policy stop cannot be converted into success by another gate or audit. */
+  agentTurnLimit?: true;
   /**
    * If the quality gate ultimately failed, this is the raw quality-output
    * failure message (not the formatted reason) that should be passed to
@@ -159,18 +163,17 @@ export async function workOnIssueQualityGate(
   // outcome is restored below rather than overwritten by a later gate.
   const recordedOutcome = state.qualityGateOutcome;
 
-  let { phaseResult, qualityFailureMessage } = await runQualityGateBody(
-    ctx,
-    state,
-    deps,
-  );
+  let { phaseResult, qualityFailureMessage, agentTurnLimit } =
+    await runQualityGateBody(
+      ctx,
+      state,
+      deps,
+    );
 
-  if (phaseResult.status === "failure") {
+  if (phaseResult.status === "failure" && !agentTurnLimit) {
     // Only infrastructure-category quality failures qualify for the extra
     // in-process retry — real quality-check failures are not retried.
-    const category = detectFailureCategory(
-      qualityFailureMessage ?? phaseResult.reason,
-    );
+    const category = phaseResult.category;
     if (isInfrastructureFailure(category)) {
       const shouldRetry = await shouldRetryInfrastructureFailure(
         "quality_gate",
@@ -178,16 +181,18 @@ export async function workOnIssueQualityGate(
         state,
         deps.logger,
         {
+          category,
           backoffMs: ctx.config.infraRetryBackoffMs,
           cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs,
         },
       );
       if (shouldRetry) {
-        ({ phaseResult, qualityFailureMessage } = await runQualityGateBody(
-          ctx,
-          state,
-          deps,
-        ));
+        ({ phaseResult, qualityFailureMessage, agentTurnLimit } =
+          await runQualityGateBody(
+            ctx,
+            state,
+            deps,
+          ));
       }
     }
   }
@@ -200,6 +205,7 @@ export async function workOnIssueQualityGate(
   // via PR comment.
   if (
     phaseResult.status === "failure" &&
+    !agentTurnLimit &&
     state.bumpInfo?.status === "applied"
   ) {
     const auditResult = await attemptBumpAudit(state, deps);
@@ -210,26 +216,37 @@ export async function workOnIssueQualityGate(
   }
 
   if (phaseResult.status === "failure" && qualityFailureMessage !== undefined) {
-    await deps.github.handleIssueFailure({
-      repo: ctx.repo,
-      issueNumber: ctx.issueNumber,
-      githubUser: ctx.githubUser,
-      failureMessage: qualityFailureMessage,
-      // Issue #3445: the gate output is repository-authored, never a host fault.
-      qualityGateOutput: true,
-      labels: {
-        failedLabel: ctx.config.failedLabel,
-        failedOnceLabel: ctx.config.failedOnceLabel,
-        // Issue #2031: clarification handoff is via needs-human.
-        needsHumanLabel: ctx.config.needsHumanLabel,
-        planningLabel: ctx.config.planningLabel,
-        questionLabel: ctx.config.questionLabel,
-      },
-    });
-    // Issue #1949: the main loop now applies the same ladder to every
-    // non-transient coding failure. Tell it this one is already done, so a
-    // single run cannot step the issue twice and land it on `failed`.
-    state.failureLadderApplied = true;
+    const landed = await alreadyLandedPhaseResult(
+      ctx,
+      state,
+      deps,
+      "quality_gate",
+    );
+    if (landed) {
+      phaseResult = landed;
+    } else {
+      await deps.github.handleIssueFailure({
+        repo: ctx.repo,
+        issueNumber: ctx.issueNumber,
+        githubUser: ctx.githubUser,
+        failureMessage: qualityFailureMessage,
+        // Issue #3445: the gate output is repository-authored, never a host fault.
+        qualityGateOutput: true,
+        category: phaseResult.category,
+        labels: {
+          failedLabel: ctx.config.failedLabel,
+          failedOnceLabel: ctx.config.failedOnceLabel,
+          // Issue #2031: clarification handoff is via needs-human.
+          needsHumanLabel: ctx.config.needsHumanLabel,
+          planningLabel: ctx.config.planningLabel,
+          questionLabel: ctx.config.questionLabel,
+        },
+      });
+      // Issue #1949: the main loop now applies the same ladder to every
+      // non-transient coding failure. Tell it this one is already done, so a
+      // single run cannot step the issue twice and land it on `failed`.
+      state.failureLadderApplied = true;
+    }
   }
 
   if (recordedOutcome) state.qualityGateOutcome = recordedOutcome;
@@ -485,6 +502,7 @@ async function runQualityGateBody(
     if (!qualityResult.ok) {
       return {
         phaseResult: {
+          category: "internal_error",
           status: "failure",
           reason: `Quality gate error: ${qualityResult.error.message}`,
         },
@@ -611,6 +629,7 @@ async function runQualityGateBody(
         });
         return {
           phaseResult: {
+            category: "unknown",
             status: "early_exit",
             reason: `pre_existing_gate_failure: ${named}`,
             expectedSkip: true,
@@ -667,8 +686,18 @@ async function runQualityGateBody(
           lastOutputSnippet: snippet || undefined,
         },
       );
+      // This is the raw external gate output, not the worker's wrapper prose.
+      // Preserve its established infrastructure adapter once at this boundary.
+      const rawCategory = detectFailureCategory(qualityResult.value.output);
+      const category = isInfrastructureFailure(rawCategory)
+        ? rawCategory
+        : "quality_check";
       return {
-        phaseResult: { status: "failure", reason: detailedReason },
+        phaseResult: {
+          category,
+          status: "failure",
+          reason: detailedReason,
+        },
         qualityFailureMessage: failureMessage,
       };
     }
@@ -702,10 +731,24 @@ async function runQualityGateBody(
       logger.warn("Claude fix attempt failed", {
         error: fixResult.error.message,
       });
+      if (fixResult.error instanceof AgentTurnLimitError) {
+        return {
+          phaseResult: {
+            category: "interrupted",
+            status: "failure",
+            reason: fixResult.error.message,
+          },
+          agentTurnLimit: true,
+        };
+      }
     }
   }
 
   return {
-    phaseResult: { status: "failure", reason: "Quality gate loop exhausted" },
+    phaseResult: {
+      category: "quality_check",
+      status: "failure",
+      reason: "Quality gate loop exhausted",
+    },
   };
 }

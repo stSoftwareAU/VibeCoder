@@ -1,0 +1,12 @@
+{
+  "issue": 3678,
+  "chunk": "top-up-3678",
+  "title": "top-up: PR-body sync follow-up filing",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3678",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: pr_body_sync_follow_up.ts (#3678)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/pr_body_sync_follow_up.ts"
+  ],
+  "sweptAt": "568f23669da6ff69832ca9f8c3e467d18bf95063"
+}

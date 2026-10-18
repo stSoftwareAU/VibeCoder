@@ -15,6 +15,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { callbackOutcomeFromRun } from "../lib/run_callback_context.ts";
+import type { RunOutcome } from "../lib/run_outcome.ts";
+import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
+import type { FailureCategory } from "../lib/failure_diagnosis.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -162,7 +166,10 @@ interface Scenario {
 }
 
 interface Outcome {
+  outcome?: RunOutcome;
   status: string;
+  category?: FailureCategory;
+  causes: readonly (readonly FailureCategory[])[];
   reason?: string;
   outcomeKind?: string;
   claudePrompts: string[];
@@ -343,7 +350,12 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   }
 
   return {
+    outcome: result.status === "early_exit" ? result.outcome : undefined,
     status: result.status,
+    category: result.status === "failure" || result.status === "early_exit"
+      ? result.category
+      : undefined,
+    causes: (state.summaryRuleBlocks ?? []).map((v) => v.categories ?? []),
     reason: result.status === "failure" || result.status === "early_exit"
       ? result.reason
       : undefined,
@@ -625,3 +637,82 @@ Deno.test(
     );
   },
 );
+
+Deno.test("completion retains evidence, substantive and mixed verifier causes without hiding blockers (Issue #3738)", async () => {
+  const evidence: ReviewFinding = {
+    file: "docs/summary.md",
+    line: 1,
+    problem: "missing evidence syntax",
+    category: "summary_incomplete",
+  };
+  for (
+    const [summary, findings, category, causes] of [
+      [SUMMARY_CLEAN, [evidence], "summary_incomplete", ["summary_incomplete"]],
+      [SUMMARY_CLEAN, [FINDING], "quality_check", ["quality_check"]],
+      [SUMMARY_CLEAN, [evidence, FINDING], "quality_check", [
+        "summary_incomplete",
+        "quality_check",
+      ]],
+      [SUMMARY_PLACEHOLDER, [FINDING], "quality_check", [
+        "summary_incomplete",
+        "quality_check",
+      ]],
+    ] as const
+  ) {
+    const o = await runCompletion({
+      summary,
+      verifier: [checked([...findings])],
+    });
+    assertEquals(o.status, "failure");
+    assertEquals(o.category, category);
+    assertEquals(o.causes.at(-1), causes);
+    assertEquals(o.prCreateCalls, 0);
+    assertEquals(
+      classifyCodingFailure(
+        "wrapper quotes rate limit ENOSPC timeout",
+        o.category,
+      ).disposition,
+      "ladder",
+    );
+  }
+});
+
+Deno.test("existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)", async () => {
+  const evidence: ReviewFinding = {
+    file: "docs/summary.md",
+    line: 1,
+    problem: "missing evidence",
+    category: "summary_incomplete",
+  };
+  for (
+    const [findings, category, categories] of [
+      [[evidence], "summary_incomplete", ["summary_incomplete"]],
+      [[FINDING], "quality_check", ["quality_check"]],
+      [[evidence, FINDING], "quality_check", [
+        "summary_incomplete",
+        "quality_check",
+      ]],
+    ] as const
+  ) {
+    const o = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      verifier: [checked([...findings])],
+      existingPr: true,
+    });
+    assertEquals(o.outcome?.kind, "summary_incomplete");
+    const emitted = callbackOutcomeFromRun({
+      repo: REPO,
+      issueNumber: ISSUE,
+      result: "success",
+      startedAtEpochMs: 0,
+      finishedAtEpochMs: 1,
+      outcome: o.outcome,
+    });
+    assertEquals(emitted?.category, category);
+    assertEquals(emitted?.categories, categories);
+    assertEquals(emitted?.failureClass, "agent-outcome");
+    assertEquals(o.armed, 0);
+    assert(o.labels.includes("standing-violation"));
+    assertEquals(o.prCreateCalls, 0);
+  }
+});

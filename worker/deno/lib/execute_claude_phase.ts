@@ -1,3 +1,4 @@
+import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 /**
  * Claude execution phase orchestration (Issue #1227).
  *
@@ -157,6 +158,7 @@ export type ExecuteClaudeAction =
 export type ExecuteClaudeFailureType =
   | "timeout"
   | "rate_limit"
+  | "turn_limit"
   | "out_of_memory"
   /** SIGKILLed with no watchdog firing — possible VM OOM (Issue #4202). */
   | "killed"
@@ -1616,14 +1618,21 @@ async function executeClaudePhaseBody(
   if (!claudeResult.ok) {
     return {
       action: "failure",
-      failureType: "execution_error",
+      failureType: claudeResult.error instanceof AgentTurnLimitError
+        ? "turn_limit"
+        : "execution_error",
       failureMessage: `Claude execution failed: ${claudeResult.error.message}`,
       elapsedSeconds,
     };
   }
 
-  const { exitCode, output: claudeOutput, timedOut, outOfMemory, killed } =
-    claudeResult.value;
+  const {
+    exitCode,
+    output: claudeOutput,
+    timedOut,
+    outOfMemory,
+    killed,
+  } = claudeResult.value;
 
   // --- Handle out-of-memory (Issue #2742, parent #2721) ---
   // OOM is terminal and must be classified BEFORE the timeout / rate-limit

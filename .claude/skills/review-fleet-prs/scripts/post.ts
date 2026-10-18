@@ -7,7 +7,7 @@ import { earlierFindingGaps } from "../../../../worker/deno/lib/earlier_findings
 // refreshes the summary, files an issue for each problem Fable noticed outside
 // the PR's scope (skipping one an open issue already covers), labels a held
 // PR `needs-human` and removes that label on a later approve/send-back only
-// when its log shows it added it, brings an approved fleet PR that is behind
+// when its log shows it added it, brings an approved fleet or Dependabot PR that is behind
 // its base up to date (review first, then update: Issue #3225), and raises a
 // desktop notification when a PR is sent back or held for the owner.
 //
@@ -28,7 +28,8 @@ import { earlierFindingGaps } from "../../../../worker/deno/lib/earlier_findings
 // branchUpdated?, branchUpdateError?, autoReleased?, autoReleaseHeld?, reason? }.
 // A failed label call leaves the review posted, is not retried, and is
 // reported in `labelError`; a refused branch update likewise in
-// `branchUpdateError` (the next gate pass retries it).
+// `branchUpdateError`; both paths remember successful requests and GitHub
+// refusals until the PR head changes. An unsent PR-lock timeout stays retryable.
 // Exit 2 when the review is malformed or the entry lacks `checklistState`;
 // nothing is posted and the PR comes back on the next gate pass.
 
@@ -59,7 +60,7 @@ import {
   syncNeedsHumanLabel,
 } from "./needs_human.ts";
 import { loadAutoReleaseRepos, resolveAutoRelease } from "./auto_release.ts";
-import { type BranchUpdateResult, updateBranch } from "./branch_update.ts";
+import { type BranchUpdateResult, updateBranchOnce } from "./branch_update.ts";
 import { postRunInfo, recordPosted } from "./review_cost.ts";
 
 interface Input {
@@ -336,13 +337,14 @@ export async function decidePostOutcome(
 // Review first, then up to date (Issue #3225): every fleet PR is armed with
 // auto-merge on CI green, approved and branch up to date, so an approval of
 // a PR that is behind its base would otherwise sit unmerged until something
-// else brought it up to date. Dependabot branches are never pushed to.
+// else brought it up to date. Dependabot follows the same leased update.
 export function shouldUpdateBranch(
   outcome: Outcome,
-  kind: Input["pr"]["kind"],
   mergeStateStatus: string | undefined,
+  isDraft = false,
+  mergeable = "",
 ): boolean {
-  return outcome === "approved" && kind !== "dependabot" &&
+  return outcome === "approved" && !isDraft && mergeable !== "CONFLICTING" &&
     mergeStateStatus === "BEHIND";
 }
 
@@ -373,6 +375,8 @@ export async function main() {
     headRefOid: string;
     state: string;
     mergeStateStatus?: string;
+    isDraft: boolean;
+    mergeable: string;
   } = JSON.parse(
     await run("gh", [
       "pr",
@@ -381,7 +385,7 @@ export async function main() {
       "-R",
       pr.repo,
       "--json",
-      "headRefOid,state,mergeStateStatus",
+      "headRefOid,state,mergeStateStatus,isDraft,mergeable",
     ]),
   );
   if (live.headRefOid !== pr.headSha || live.state !== "OPEN") {
@@ -466,9 +470,16 @@ export async function main() {
   }
 
   let branchUpdate: BranchUpdateResult | undefined;
-  if (shouldUpdateBranch(outcome, pr.kind, live.mergeStateStatus)) {
-    branchUpdate = await updateBranch(pr, (args) => run("gh", args));
-    if (!branchUpdate.updated) {
+  if (
+    shouldUpdateBranch(
+      outcome,
+      live.mergeStateStatus,
+      live.isDraft,
+      live.mergeable,
+    )
+  ) {
+    branchUpdate = await updateBranchOnce(pr, dir, (args) => run("gh", args));
+    if (branchUpdate?.updated === false) {
       console.error(
         `could not bring ${pr.repo}#${pr.number} up to date: ${branchUpdate.error}`,
       );

@@ -55,8 +55,8 @@ each workflow page.
 **One loop, many queues.** Cron (or launchd) starts the worker; it runs a single
 loop that checks work in **priority order**: PR (Pull Request) feedback (1),
 spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6),
-merge-conflict resolution (1.61), CI nudges
-and the blocking-PR stall repair (1.62, 1.63), auto-merge (1.65), issue closure
+merge-conflict resolution (1.61), CI nudges and the blocking-PR stall repair
+(1.62, 1.63), PR body digest reconcile (1.64), auto-merge (1.65), issue closure
 (1.67), closed-PR recovery (1.68), milestone completion (1.7),
 closed-milestone housekeeping (1.71), branch sync (1.72) and shared-clone ref sweep (1.73), refinement (1.75), grill-me (1.78), quorum (1.79), planning (1.80),
 the Failure-Detection repair resume (1.81), questions (1.85), configured
@@ -153,7 +153,8 @@ flowchart TD
   P16 --> P161["1.61: Resolve merge conflicts"]
   P161 --> P162["1.62: Nudge stalled CI"]
   P162 --> P163["1.63: Blocking-PR stall repair"]
-  P163 --> P165["1.65: Auto-merge"]
+  P163 --> P164["1.64: Reconcile PR body digests"]
+  P164 --> P165["1.65: Auto-merge"]
   P165 --> P167["1.67: Issue closure"]
   P167 --> P168["1.68: Closed-PR recovery"]
   P168 --> P17["1.7: Milestone completion"]
@@ -200,6 +201,7 @@ flowchart TD
 | 1.61 | Resolve PR merge conflicts | Merge the base into a `CONFLICTING` PR for real — both sides survive, never a side-pick, unless both sides' originating issues are known and one explicitly supersedes the other; labels the PR `merge-conflict`, bounded to two **concluded** attempts, after which the PR is closed and its originating issue re-queued for a fresh PR (once per issue) before `needs-human`. An attempt disrupted before it concluded is re-attempted rather than counted, bounded at 3 |
 | 1.62 | Nudge stalled CI | Re-trigger checks on Vibe Coder PRs idle more than 5 minutes; claims nothing |
 | 1.63 | Blocking-PR stall repair | Repair PRs that block `work-on` issues: sync and rerun the owning lane (1.55 or 1) once, then abandon and redo — never escalate (Issue #2802) |
+| 1.64 | Reconcile PR body digests | Re-sync the body of an open fleet-authored PR whose recorded `vibe-pr-summary` digest differs from the summary at its head, after a push the worker did not make (e.g. a review-fix commit pushed by hand); deferrable, never claims an issue, not run in the maintenance lane (Issue #3760) |
 | 1.65     | Auto-merge catch-up                                   | Enable auto-merge on mergeable PRs                                                                                                       |
 | 1.66     | Branch cleanup                                        | Delete branches for merged PRs — runs once at start-up, not every cycle                                                                 |
 | 1.67     | Issue closure                                         | Close issues for merged PRs via GH CLI                                                                                                   |

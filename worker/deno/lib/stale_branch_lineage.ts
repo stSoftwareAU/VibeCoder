@@ -225,6 +225,12 @@ export function parseMergedPrList(
     };
   }
 
+  return { ok: true, value: mergedPrRefs(parsed) };
+}
+
+function mergedPrRefs(
+  parsed: unknown[],
+): { number: number; mergeCommit: string }[] {
   const refs: { number: number; mergeCommit: string }[] = [];
   for (const entry of parsed) {
     const record = entry as { number?: unknown; mergeCommit?: unknown };
@@ -235,7 +241,44 @@ export function parseMergedPrList(
     if (typeof oid !== "string" || !/^[0-9a-f]{7,64}$/.test(oid)) continue;
     refs.push({ number, mergeCommit: oid });
   }
-  return { ok: true, value: refs };
+  return refs;
+}
+
+/** Shared bounded branch-PR provenance read, including milestone merges (#3977). */
+export async function readMergedHeadRefPrs(
+  repo: string,
+  branch: string,
+  runGh: (args: string[]) => Promise<string>,
+): Promise<Result<unknown[]>> {
+  try {
+    assertSafeGitRef(branch, "merged-PR head branch");
+    const raw = await runGh([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--head",
+      branch,
+      "--state",
+      "merged",
+      "--limit",
+      "10",
+      "--json",
+      "number,title,url,body,state,mergedAt,headRefName,headRefOid,baseRefName,headRepository,headRepositoryOwner,mergeCommit",
+    ]);
+    const parsed: unknown = raw.trim() === "" ? [] : JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      throw new Error("'gh pr list' did not return a list");
+    }
+    return { ok: true, value: parsed };
+  } catch (error) {
+    return {
+      ok: false,
+      error: new Error(
+        `merged-PR lookup for '${branch}' failed: ${String(error)}`,
+      ),
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -376,38 +419,12 @@ export async function classifyBranchLineage(
     };
   }
 
-  let raw: string;
-  try {
-    raw = await runGh([
-      "pr",
-      "list",
-      "--repo",
-      repo,
-      "--head",
-      branch,
-      "--state",
-      "merged",
-      "--limit",
-      "10",
-      "--json",
-      "number,mergeCommit",
-    ]);
-  } catch (err) {
-    return {
-      kind: "unknown",
-      detail: `merged-PR lookup for '${branch}' failed: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    };
-  }
-
-  const parsed = parseMergedPrList(raw);
-  if (!parsed.ok) {
-    return { kind: "unknown", detail: parsed.error.message };
-  }
+  const evidence = await readMergedHeadRefPrs(repo, branch, runGh);
+  if (!evidence.ok) return { kind: "unknown", detail: evidence.error.message };
+  const parsed = mergedPrRefs(evidence.value);
 
   const facts: MergedHeadRefPr[] = [];
-  for (const pr of parsed.value) {
+  for (const pr of parsed) {
     // A merge commit git does not have cannot be reasoned about: the clone is
     // shallow or the fetch did not reach it, so say so rather than guess.
     const known = await gitStdout(ctx, [

@@ -87,6 +87,10 @@ import {
   workflowScopeVerdictFor,
 } from "./workflow_scope.ts";
 import { runCoreCommand } from "../commands/run_core.ts";
+import {
+  CLAUDE_MAX_TURNS_ENV,
+  DEFAULT_CLAUDE_MAX_TURNS,
+} from "./claude_turn_limit.ts";
 import { AGENT_TRANSCRIPT_ENV } from "./agent_transcript.ts";
 import { applyOptionalFeatureEnv } from "./optional_feature_env.ts";
 import {
@@ -636,6 +640,10 @@ export async function runWorker(
   // bash conductor's `eval "$(load-config)"` used to be. Environment wins.
   await deps.applyOptionalFeatureEnv?.(
     env("CONFIG_PATH") ?? `${repoDir}/.config.json`,
+  );
+  deps.setEnv(
+    CLAUDE_MAX_TURNS_ENV,
+    String(options.config.claudeMaxTurns ?? DEFAULT_CLAUDE_MAX_TURNS),
   );
   // The agent transcript tee (Issue #1141). `.config.json` is the only
   // operator switch, so the decision is settled here, once, from the loaded

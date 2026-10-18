@@ -1,0 +1,168 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 860,
+        "outcome": "a multi-claim block naming a file the PR did not change no longer skips the whole block: the unknown-file skip applies only to a single-claim block",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "a per-claim unknown file is unchecked while the other claim is still compared",
+        "flipWentRed": "dropping `!multi &&` on the unknown skip turned the per-claim unknown-file test and the #3676 replay red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 879,
+        "outcome": "a single-claim block that is a partial addition ('N tests added to', '+N tests') is skipped and reported unchecked with the partial reason",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "a pure 'N tests added to file' figure is unchecked, not compared",
+        "flipWentRed": "disabling the single-claim partial skip turned the pure-added-to and +N-tests tests red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 879,
+        "outcome": "a multi-claim block that mixes a partial addition with a whole-file count is no longer skipped whole: the whole-file claim is compared",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "a block mixing a partial addition and a whole-file count checks only the whole-file count",
+        "flipWentRed": "dropping `!multi &&` on the partial skip turned this test, the now-has test, the #3676 replay and the evasion-spelling test red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 937,
+        "outcome": "every claim in a multi-claim block is whole-file and names one file: the block is compared as before",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "negative control: correct per-file figures raise no mismatch",
+        "flipWentRed": "making the all-whole condition false turned the negative-control and now-has tests red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 973,
+        "outcome": "a bare-to claim ('added to `file`') on an unknown file is reported with the unknown-file reason",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "a per-claim unknown file is unchecked while the other claim is still compared",
+        "flipWentRed": "swapping the reason ternary turned the per-claim unknown-file assertion on the reason red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 979,
+        "outcome": "a per-claim unknown-file figure is recorded unchecked with the unknown-file reason while the other claims are still compared",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "a per-claim unknown file is unchecked while the other claim is still compared",
+        "flipWentRed": "removing the pending entry turned the per-claim unknown-file test red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 981,
+        "outcome": "a per-claim partial figure is recorded unchecked with the partial reason, never passed",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "the #3676 replay: stale totals give two mismatches, corrected totals give none",
+        "flipWentRed": "removing the pending entry turned the #3676 replay red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 983,
+        "outcome": "a loose claim (count naming no test file in its sentence) is recorded unchecked, not compared",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "a per-claim unknown file is unchecked while the other claim is still compared",
+        "flipWentRed": "making loose claims ambiguous turned the per-claim test red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 593,
+        "outcome": "the 'now has N' total is read as a whole-file claim and compared against the head count, including hard-wrapped and evasion spellings",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "evasion spellings of the now-has total are compared both ways",
+        "flipWentRed": "replacing TOTAL_RE with a never-matching pattern turned the now-has, #3676 replay and evasion-spelling tests red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 707,
+        "outcome": "'Extended `a` (N tests)' governs the figure that follows in the same sentence, so it is unchecked as partial, unless the sentence also names a new file",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "the 1823 shape: 'Extended' governs the later figure, so both figures are unchecked (Issue #3740)",
+        "flipWentRed": "forcing governed=false turned the 1823-shape test and the 3356 wrap test red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 707,
+        "outcome": "'Extended `a` (5 tests) and the new `b` (3 tests)': the new file's figure is compared and the extended one is not",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "'Extended `a` (5 tests) and the new `b` (3 tests)': the new file's figure is compared, the extended one is not (Issue #3740)",
+        "flipWentRed": "dropping the new-file override turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 709,
+        "outcome": "'Added `file` (N tests)' announces a new file, so the figure is a whole-file claim and is compared (a bare 'added' tail is not a partial marker)",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "'Added `file` (N tests)' announces a new file, so the figure is compared whole (Issue #3740)",
+        "flipWentRed": "counting a bare 'added' as a marker turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/test_plan_recount.ts",
+        "line": 720,
+        "outcome": "a '+N tests' figure before the count is a partial claim and is reported unchecked",
+        "test": "worker/deno/tests/test_plan_recount_partial_3740_test.ts",
+        "testName": "a '+3 tests' figure is unchecked, not compared",
+        "flipWentRed": "disabling the PLUS_RE branch turned the +3 tests test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 1622,
+        "outcome": "no figure unchecked and no hit: the check returns clean without a recovery turn",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
+        "testName": "runPrFeedbackDriftCheck - a Test Plan with no unchecked figure stays clean with no recovery turn (Issue #3740)",
+        "flipWentRed": "removing the unchecked-length condition from the early return sent a clean run into recovery and turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 1645,
+        "outcome": "an unchecked Test Plan figure alone triggers the recovery turn with the figure fenced into the prompt",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
+        "testName": "runPrFeedbackDriftCheck - an unchecked Test Plan figure runs the recovery turn with the figure fenced into it (Issue #3740)",
+        "flipWentRed": "deleting the testPlanUnchecked trigger turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 1671,
+        "outcome": "the unchecked figures and their reasons are handed to the recovery prompt",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
+        "testName": "runPrFeedbackDriftCheck - an unchecked Test Plan figure runs the recovery turn with the figure fenced into it (Issue #3740)",
+        "flipWentRed": "dropping the uncheckedFigures argument turned the fenced-prompt assertion red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 1737,
+        "outcome": "a figure still unchecked after the recovery turn goes into the residual and the reply",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
+        "testName": "runPrFeedbackDriftCheck - an unchecked Test Plan figure that survives recovery is reported in the residual and the reply (Issue #3740)",
+        "flipWentRed": "dropping the residual spread turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 1781,
+        "outcome": "a figure the recovery turn removed leaves the residual empty, so the run counts as recovered",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
+        "testName": "runPrFeedbackDriftCheck - an unchecked Test Plan figure the recovery turn removes is recovered, not reported (Issue #3740)",
+        "flipWentRed": "ignoring the fresh check turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 1806,
+        "outcome": "the residual warning reports the unchecked Test Plan figure count",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
+        "testName": "runPrFeedbackDriftCheck - the residual warning reports the unchecked Test Plan figure count (Issue #3740)",
+        "flipWentRed": "removing the count field turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 835,
+        "outcome": "formatDriftResidual renders unchecked figures under their own heading, flattened, with no found-hit intro",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3740_test.ts",
+        "testName": "formatDriftResidual - renders unchecked Test Plan figures under their own heading, flattened, without a found-hit intro (Issue #3740)",
+        "flipWentRed": "emptying the new heading block turned this test red"
+      }
+    ]
+  }
+}

@@ -265,6 +265,57 @@ export const SECURITY_FIX_GATE_MARKER =
 export const PRE_PUSH_GATE_MARKER =
   "the branch did not pass the worker's pre-push gate";
 
+/** The failure categories a registered worker gate marker carries. */
+export type WorkerGateCategory =
+  | "summary_incomplete"
+  | "security_fix_gate"
+  | "pre_push_gate";
+
+/** A worker-written gate marker and the failure category its refusal carries. */
+export interface WorkerGateMarker {
+  readonly marker: string;
+  readonly category: WorkerGateCategory;
+}
+
+/**
+ * Every worker-written gate refusal, keyed by the prefix its failure reason
+ * opens with (Issue #3735). A failure reason that quotes text the worker did
+ * not write (tool output, agent text, issue or comment text) opens with one of
+ * these markers, so the quoted text cannot forge a worse category.
+ * `detectFailureCategory` and `detectHostFault` read it with `startsWith` on
+ * the message (`workerGateCategoryOf`) before their free-text rules;
+ * `classifyRunFailure` and `classifyCodingFailure` first test the category they
+ * are given (`isWorkerGateCategory`); the host-fault and milestone-refusal
+ * label-release sweeps skip a posted record whose head category is registered
+ * (`isWorkerGateFailureRecord`). `shouldRetryInfrastructureFailure` follows
+ * through `detectFailureCategory`. A new gate refusal is one entry here.
+ *
+ * `PRE_PUSH_LOOKUP_FAILED_MARKER` is deliberately NOT registered: it maps to
+ * `push_failure` (infrastructure, retried in-run), not an agent outcome.
+ */
+export const WORKER_GATE_MARKERS: readonly WorkerGateMarker[] = [
+  { marker: SUMMARY_RULE_GATE_MARKER, category: "summary_incomplete" },
+  { marker: SECURITY_FIX_GATE_MARKER, category: "security_fix_gate" },
+  { marker: PRE_PUSH_GATE_MARKER, category: "pre_push_gate" },
+];
+
+/** The gate category `message` opens with, or `null` when it opens with none. */
+export function workerGateCategoryOf(
+  message: string,
+): WorkerGateCategory | null {
+  for (const entry of WORKER_GATE_MARKERS) {
+    if (message.startsWith(entry.marker)) return entry.category;
+  }
+  return null;
+}
+
+/** Whether `category` is one of the registered worker gate categories. */
+export function isWorkerGateCategory(
+  category: FailureCategory,
+): category is WorkerGateCategory {
+  return WORKER_GATE_MARKERS.some((entry) => entry.category === category);
+}
+
 /**
  * The worker-written prefix of the completion phase's reason when the pre-push
  * gate could not read the branch state (a failed or timed-out git or remote
@@ -278,28 +329,52 @@ export const PRE_PUSH_LOOKUP_FAILED_MARKER =
   "Git push failed: the pre-push gate could not read the branch state";
 
 /**
- * The worker-written head of a posted summary-gate failure record: the
- * `## Automated Processing Failed …` heading line followed by the
- * `**Category:** \`summary-incomplete\`` line `markIssueAsFailedOnce` and
+ * The worker-written head of a posted failure record: the `## …` heading line
+ * followed by the `**Category:** \`…\`` line `markIssueAsFailedOnce` and
  * `markIssueAsFailed` write straight after it. Anchored to the start of the
  * comment, ahead of the quoted agent text, so a quoted category line further
  * down cannot forge it. `[^\n]*` and `\s*` are separated by a literal `\n`,
- * so the pattern stays linear.
+ * and the captured category is a bounded `[a-z-]+` run, so the pattern stays
+ * linear.
  */
-const SUMMARY_GATE_RECORD_RE =
-  /^##[^\n]*\n\s*\*\*Category:\*\* `summary-incomplete`/;
+const WORKER_GATE_RECORD_HEAD_RE =
+  /^##[^\n]*\n\s*\*\*Category:\*\* `([a-z-]+)`/;
 
 /**
- * Whether a posted failure-record comment body records a PR-summary gate
- * refusal (Issue #3431; PR #3440 review). The record embeds the reason under
- * a heading, so {@link SUMMARY_RULE_GATE_MARKER} is no longer at the start of
- * the body; the sweeps that re-classify posted bodies
- * (`host_fault_release.ts`, `milestone_branch_refusal_release.ts`) use this
- * to leave such a record alone, because the text it quotes is the agent's
- * own, not host or repository output.
+ * Whether a posted failure-record comment body records a worker gate refusal:
+ * any {@link WORKER_GATE_MARKERS} category (summary, security-fix or pre-push
+ * gate; Issues #3431, #3454, PR #3716; Issue #3735). The record embeds the
+ * reason under a heading, so the gate marker is no longer at the start of the
+ * body. The sweeps that re-classify posted bodies (`host_fault_release.ts`,
+ * `milestone_branch_refusal_release.ts`) use this to leave such a record
+ * alone, because the text it quotes is the agent's, the tools' or the
+ * branch's own, not host or repository output.
  */
-export function isSummaryGateFailureRecord(body: string): boolean {
-  return SUMMARY_GATE_RECORD_RE.test(body.trimStart());
+export function isWorkerGateFailureRecord(body: string): boolean {
+  const head = WORKER_GATE_RECORD_HEAD_RE.exec(body.trimStart());
+  if (head === null) return false;
+  const display = head[1];
+  return WORKER_GATE_MARKERS.some((entry) =>
+    getFailureCategoryDisplay(entry.category) === display
+  );
+}
+
+/**
+ * The worker-written head of a summary or substantive quality failure record.
+ * The Category line immediately follows the heading, before quoted agent text;
+ * a category line deeper in the reason cannot forge this provenance.
+ * The literal newline separates the bounded heading scan from whitespace.
+ */
+const SUMMARY_OR_QUALITY_RECORD_RE =
+  /^##[^\n]*\n\s*\*\*Category:\*\* `(?:summary-incomplete|quality-failure)`/;
+
+/**
+ * Whether a posted failure record declares a summary or quality verdict.
+ * Release sweeps preserve that cause rather than reclassifying quoted text
+ * as a host fault or a repository refusal (Issues #3431 and #3738).
+ */
+export function isSummaryOrQualityFailureRecord(body: string): boolean {
+  return SUMMARY_OR_QUALITY_RECORD_RE.test(body.trimStart());
 }
 
 /**
@@ -337,38 +412,25 @@ export function buildScheduledReleaseReason(
  * string that can be used to select appropriate diagnosis messaging.
  *
  * Order matters: more specific patterns are checked before general ones.
- * The leading worker-written gate markers ({@link SUMMARY_RULE_GATE_MARKER},
- * Issue #3431, {@link SECURITY_FIX_GATE_MARKER}, Issue #3454, then
- * {@link PRE_PUSH_GATE_MARKER}, PR #3716 review, then
- * {@link PRE_PUSH_LOOKUP_FAILED_MARKER}) are
- * `startsWith` rules checked ahead of every other rule.
+ * The leading worker-written gate markers (every entry of
+ * {@link WORKER_GATE_MARKERS}, Issues #3431, #3454 and PR #3716 review), then
+ * {@link PRE_PUSH_LOOKUP_FAILED_MARKER}, are `startsWith` rules checked ahead
+ * of every other rule.
  */
 export function detectFailureCategory(failureMessage: string): FailureCategory {
   if (!failureMessage) return "unknown";
 
-  // The completion phase's own PR-summary gate refusal (Issue #3431; PR #3440
-  // review). Anchored to the START of the message and checked before every
-  // other rule, the scheduled-release one included: the refusal quotes the
-  // agent's own summary, so a quoted "Released on schedule:", "timeout",
+  // The worker's own gate refusals, read from WORKER_GATE_MARKERS (Issue
+  // #3735). Anchored
+  // to the START of the message and checked before every other rule, the
+  // scheduled-release one included: the refusal quotes the agent's, the tools'
+  // or the branch's own text, so a quoted "Released on schedule:", "timeout",
   // "SIGTERM", "rate limit" or `TypeError:` must not outrank it. Safe ahead of
   // the scheduled-release rule because every reason
   // {@link buildScheduledReleaseReason} writes opens with
-  // {@link SCHEDULED_RELEASE_MARKER}, so none can open with this marker.
-  if (failureMessage.startsWith(SUMMARY_RULE_GATE_MARKER)) {
-    return "summary_incomplete";
-  }
-
-  // The security-fix gate refusal (Issue #3454): same reasoning as above —
-  // a worker-written prefix ahead of quoted agent test declarations.
-  if (failureMessage.startsWith(SECURITY_FIX_GATE_MARKER)) {
-    return "security_fix_gate";
-  }
-
-  // The completion phase's pre-push gate block (PR #3716 review): the
-  // worker's prefix ahead of raw formatter, linter and test output.
-  if (failureMessage.startsWith(PRE_PUSH_GATE_MARKER)) {
-    return "pre_push_gate";
-  }
+  // {@link SCHEDULED_RELEASE_MARKER}, so none can open with a gate marker.
+  const gateCategory = workerGateCategoryOf(failureMessage);
+  if (gateCategory !== null) return gateCategory;
 
   // The gate could not read the branch state: an infrastructure fault, never
   // a timeout or rate limit the quoted git text happens to mention.

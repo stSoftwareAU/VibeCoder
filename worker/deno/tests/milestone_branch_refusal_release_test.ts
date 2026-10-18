@@ -123,7 +123,7 @@ Deno.test("refusal release - repo_config is not an infrastructure failure and ha
 });
 
 Deno.test("refusal release - a repo_config failure is never auto-filed as a worker defect (Issue #2220)", () => {
-  const classification = classifyRunFailure("repo_config", SETUP_REASON);
+  const classification = classifyRunFailure("repo_config", SETUP_REASON, false);
   assertEquals(classification.fixability, "not_code_fixable");
   assertEquals(classification.failureClass, "repo-config");
 });

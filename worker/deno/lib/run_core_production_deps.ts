@@ -1,3 +1,5 @@
+import { agentTranscriptDir } from "./agent_transcript.ts";
+import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
 /**
  * Production dependency wiring for the run-core main event loop.
  *
@@ -48,6 +50,7 @@ import { createLogger } from "./logger.ts";
 import { LOG_FILE_PREFIX, LOG_FILE_SUFFIX } from "./credit_tracker.ts";
 import {
   buildDefaultWorkerConfig,
+  LABEL_DEFAULTS,
   OPERATIONAL_DEFAULTS,
 } from "./config_defaults.ts";
 import {
@@ -128,7 +131,7 @@ import { resetRepoAccessLogState } from "./monitored_repo_access.ts";
 
 // Issue processing
 import { stopAllHeartbeats, stopHeartbeatsExcept } from "./heartbeat.ts";
-import { workOnIssue } from "./issue_worker.ts";
+import { reconcileAlreadyLandedFailure, workOnIssue } from "./issue_worker.ts";
 import { createDefaultDeps, type WorkerDeps } from "./issue_worker_wiring.ts";
 import { fetchIssueData, type IssueData } from "./issue_data.ts";
 import { buildImplementationCommentContext } from "./implementation_comments.ts";
@@ -185,6 +188,8 @@ import { bindConflictTakeoverResolvers } from "./conflict_takeover_resolvers.ts"
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { recordClosedLifecyclePrs } from "./lifecycle_pr_observation.ts";
+import { buildSyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
+import { reconcilePrBodyDigests as runPrBodyDigestReconcile } from "./pr_body_reconcile.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
   mergedReconcileWatermarkPath,
@@ -235,6 +240,7 @@ import { secondaryLatchCount } from "./primary_quota_latch.ts";
 import {
   buildIdleDecisionCensus,
   formatIdleDecisionCensus,
+  isUnblockedFor,
   type RepoCensusSkipReason,
   resolveRepoScanState,
 } from "./idle_decision_census.ts";
@@ -282,7 +288,6 @@ import {
   isSetupFault,
   planCodingFailure,
 } from "./coding_failure_ladder.ts";
-import { handleIssueFailure as handleIssueFailureFn } from "./label_failure.ts";
 // Adaptive claim floor (Issue #245): the evidence lookup and the key the
 // per-cycle deferral set is written with.
 import { fetchIssueClaimEvidence } from "./claim_evidence_lookup.ts";
@@ -406,6 +411,7 @@ import {
   type FleetAuthorSetInput,
   isFleetAuthor,
   resolveEffectiveFleetPrAuthors,
+  resolveFleetAuthors,
   resolveFleetMaintenanceAuthorSet,
   resolveFleetPrAuthorSet,
   resolveSuppressionExcludedLogins,
@@ -433,7 +439,9 @@ import {
   allowedAuthorsByRepoFrom,
   createTrustSnapshotHolder,
   setLiveTrustedAuthors,
+  trustedAuthorsFor,
 } from "./trust_snapshot.ts";
+import { censusUntrustedLabelIssues } from "./census_untrusted_label_issues.ts";
 import {
   formatDerivedAuthorsFoldSummary,
   formatDisjointTrustWarning,
@@ -580,6 +588,9 @@ export interface ProductionDepsOptions {
   logger?: Logger;
   /** Optional config override. */
   config?: WorkerConfig;
+  /** Coding-run seams: real phases remain injectable without live GitHub writes (#3977). */
+  workerDeps?: WorkerDeps;
+  workOnIssue?: typeof workOnIssue;
   /**
    * Override the derived-author resolver (Issue #256). Production leaves
    * this unset and gets {@link resolveDerivedAuthors}, which shells out to
@@ -614,11 +625,13 @@ export interface ProductionDepsOptions {
    * a fix that only the production factory could activate, with nothing
    * asserting the factory activated it.
    *
-   * Scoped deliberately to the audit: it is one probe, and a factory-wide
-   * `gh` override would be a much larger surface for a much smaller reason.
-   * The one other read it answers is the fleet-wide fast-failure diagnostic
-   * lookup (Issue #2955) the audit and census make through `backedOffRepos`,
-   * so a wiring test never spawns a real `gh search issues`.
+   * It is not a factory-wide `gh` override: it answers the idle-detect audit's
+   * probes, the fleet-wide fast-failure diagnostic lookup (Issue #2955) the
+   * audit and census make through `backedOffRepos`, and the idle-task
+   * filer's reads (its back-fill sweep and its fleet-wide startable gate,
+   * Issue #3587), so a wiring test can drive the filer's gate without
+   * spawning a real `gh`. Production leaves it unset, and the filer then
+   * takes its default runner.
    */
   idleDetectGhCommandFn?: (args: string[]) => Promise<string>;
 
@@ -971,7 +984,7 @@ export async function createProductionRunCoreDeps(
   // issue-phase line — including the #4169/#4305 progress heartbeats —
   // reached the console but never worker.log, so the file read as a
   // wedged worker while the run was fine.
-  const workerDeps = createDefaultDeps({ logger });
+  const workerDeps = options.workerDeps ?? createDefaultDeps({ logger });
   const inFlightRepos = new InFlightRepoRegistry();
   // The recovery and cleanup passes consult these holds before unassigning
   // anything (Issue #214), so an in-flight claim's assignee is only ever
@@ -1020,6 +1033,8 @@ export async function createProductionRunCoreDeps(
   const issueCache = new IssueCache(
     config.workDir ? `${config.workDir}/.gh-scan-cache` : undefined,
   );
+  // Issue #3760: digests already in sync, kept for the whole run (one run per process).
+  const prBodyDigestInSync = new Map<string, string>();
   // Issue #181: a close the worker performs drops that repo's stale scan-cache
   // entries, so the next scan cannot rank an issue this run already closed.
   setScanCacheForCloseInvalidation(issueCache);
@@ -1528,6 +1543,34 @@ export async function createProductionRunCoreDeps(
       cooldownSet.has(`${repo}|${issueNumber}`) ||
       processedIssues.has(repo, issueNumber) ||
       refused(repo, issueNumber);
+  };
+
+  /**
+   * The hold the idle-detect audit and the idle-task filer put on an issue
+   * (Issue #3587): the run-local hold set above, plus the milestone the
+   * persisted pacing ledger paces (`milestone-behind`). The claim scan skips
+   * every issue of such a milestone, so counting them as startable would
+   * suppress or refuse nothing the scan will start.
+   */
+  const loadIdleDetectionHold = async (): Promise<
+    (repo: string, issueNumber: number, milestone: string) => boolean
+  > => {
+    const runLocalHold = await loadRunLocalHolds();
+    const { loadSyncStreaks, milestoneSyncStreakPath } = await import(
+      "./milestone_sync_streak.ts"
+    );
+    const { milestonePacedUntil } = await import("./milestone_presync.ts");
+    // same path the scan and census read (config.workDir || workDir)
+    const pacingLedger = await loadSyncStreaks(
+      milestoneSyncStreakPath(config.workDir || workDir),
+    );
+    return (repo, issueNumber, milestone) =>
+      withholdsFromIdleDetection(
+        sharedProcessedIssues(),
+        runLocalHold,
+        repo,
+        issueNumber,
+      ) || milestonePacedUntil(pacingLedger, repo, milestone) !== undefined;
   };
 
   const circuitBreakerConfig: CircuitBreakerConfig = {
@@ -2371,6 +2414,8 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feeds the refreshed PR body's footer.
             workerName: config.workerName,
+            // Issue #3678: files the follow-up for a newly reported gap.
+            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
           },
         );
 
@@ -2618,6 +2663,8 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
+            // Issue #3678: files the follow-up for a newly reported gap.
+            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
           },
         );
@@ -3052,6 +3099,8 @@ export async function createProductionRunCoreDeps(
             trustedAuthors,
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
+            // Issue #3678: files the follow-up for a newly reported gap.
+            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
             // Issue #3031: a milestone head is resolved through the takeover
             // in this same cycle.
@@ -3398,6 +3447,34 @@ export async function createProductionRunCoreDeps(
         });
         return { ok: true, value: undefined };
       }
+    },
+
+    // -- Priority 1.64: Reconcile PR body digests (Issue #3760) --
+    async reconcilePrBodyDigests() {
+      try {
+        await runPrBodyDigestReconcile(
+          {
+            repos: pollRepos,
+            maintenanceAuthors,
+            workerName: config.workerName ?? "",
+            githubUser,
+            runId: getRunId(),
+          },
+          {
+            runGhCommand,
+            runGitCommand,
+            logger,
+            followUpFiling: buildSyncFollowUpFiling(config, githubUser),
+            cache: issueCache,
+            inSync: prBodyDigestInSync,
+          },
+        );
+      } catch (err) {
+        logger.warn("PR body digest reconcile: unexpected error", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return { ok: true, value: undefined };
     },
 
     // -- Priority 1.65: Auto-merge --
@@ -4467,6 +4544,7 @@ export async function createProductionRunCoreDeps(
       const issueData: IssueData = await fetchIssueData(
         issue.repo,
         issue.issueNumber,
+        workerDeps.github.runGhCommand,
       );
 
       // Issue #3878: verify — and then use — the title this fetch observed,
@@ -4497,7 +4575,7 @@ export async function createProductionRunCoreDeps(
         issueAuthor: issueData.author,
         config,
         githubUser,
-      }, { ghFn: runGhCommand, timelineCache });
+      }, { ghFn: workerDeps.github.runGhCommand, timelineCache });
       if (integrity.blocked) {
         logger.warn(
           `Skipped ${issue.repo}#${issue.issueNumber}: ${integrity.reason}`,
@@ -4683,6 +4761,7 @@ export async function createProductionRunCoreDeps(
           },
         ),
         githubUser,
+        deferTerminalRelease: true,
         milestoneTitle: issue.milestoneTitle || undefined,
         ...(parentOwnerDirection ? { parentOwnerDirection } : {}),
         config,
@@ -4693,7 +4772,23 @@ export async function createProductionRunCoreDeps(
         ...(laneId === undefined ? {} : { laneId }),
       };
 
-      const result = await workOnIssue(ctx, workerDeps);
+      let result = await (options.workOnIssue ?? workOnIssue)(ctx, workerDeps);
+      // Issue #1487: if the worker escalated by adding `needs-human` during
+      // this run (success or failure), strip the discovery labels so the
+      // issue is not re-picked on the next scan. The label_security layer
+      // treats the worker's own label adds as untrusted and removes them
+      // from the in-memory label list — removing the discovery labels on
+      // the server side keeps the issue out of `fetchIssuesByLabel` results
+      // entirely.
+      await stripDiscoveryLabelsOnEscalation(
+        issue.repo,
+        issue.issueNumber,
+        config,
+        workerDeps.github.runGhCommand,
+      );
+
+      // The state can change after completion returned but before bookkeeping.
+      result = await reconcileAlreadyLandedFailure(result, ctx, workerDeps);
       // Issue #175: a phase can declare its own bounce (`expectedSkip`) — a
       // run that neither resolved the issue nor failed. It cools the issue
       // down without failure tracking and without counting as processed.
@@ -4709,19 +4804,6 @@ export async function createProductionRunCoreDeps(
           );
         }
       }
-
-      // Issue #1487: if the worker escalated by adding `needs-human` during
-      // this run (success or failure), strip the discovery labels so the
-      // issue is not re-picked on the next scan. The label_security layer
-      // treats the worker's own label adds as untrusted and removes them
-      // from the in-memory label list — removing the discovery labels on
-      // the server side keeps the issue out of `fetchIssuesByLabel` results
-      // entirely.
-      await stripDiscoveryLabelsOnEscalation(
-        issue.repo,
-        issue.issueNumber,
-        config,
-      );
 
       // Terminal coding-run failure disposition (Issue #4304, broadened by
       // Issue #1949). Every failure that is not transient infrastructure
@@ -4742,6 +4824,8 @@ export async function createProductionRunCoreDeps(
         success: result.success,
         expectedSkip: isExpectedSkip,
         reason: result.reason,
+        category: result.category,
+        classification: result.classification,
         ...(result.ladderApplied ? { ladderApplied: true } : {}),
         ...(result.phase ? { phase: result.phase } : {}),
       });
@@ -4752,6 +4836,8 @@ export async function createProductionRunCoreDeps(
           issueNumber: issue.issueNumber,
           githubUser,
           failureReason: result.reason,
+          category: result.category,
+          classification: result.classification,
           ...(result.phase ? { failurePhase: result.phase } : {}),
           labels: {
             failedLabel: config.failedLabel,
@@ -4760,7 +4846,7 @@ export async function createProductionRunCoreDeps(
             planningLabel: config.planningLabel,
             questionLabel: config.questionLabel,
           },
-        }, { handleIssueFailure: handleIssueFailureFn });
+        }, { handleIssueFailure: workerDeps.github.handleIssueFailure });
         if (ladderOutcome.error) {
           // Never swallowed: the run already failed and its claim still has
           // to be released, so this is reported rather than thrown.
@@ -4782,40 +4868,13 @@ export async function createProductionRunCoreDeps(
         }
       }
 
-      // Issue #2689: a workflow-scope refusal is transient — no label, no
-      // attempt — so it owes two bounds instead. This install remembers the
-      // issue and its claim scan skips it; and once the issue's release
-      // tally shows the fleet-wide bound, one comment parks it for hosts
-      // without the scope. The heartbeat's final clear has already written
-      // this run's attempt to the tally (Issue #4330).
+      // Keep this install's refusal memory immediately. The fleet-wide bound
+      // reads the durable attempt tally after final claim release below.
       if (plan.decision?.failureClass === "token-scope") {
         await recordThisHostsWorkflowScopeRefusal(
           issue.repo,
           issue.issueNumber,
         );
-        try {
-          const bound = await enforceTokenScopeFleetBound({
-            repo: issue.repo,
-            issueNumber: issue.issueNumber,
-            fleetAuthors,
-          }, { ghFn: runGhCommand });
-          logger.info("Workflow-scope refusal recorded", {
-            repo: issue.repo,
-            issueNumber: issue.issueNumber,
-            consecutiveRefusals: bound.consecutive,
-            parked: bound.parked,
-            parkedNow: bound.posted,
-          });
-        } catch (err) {
-          logger.warn(
-            "Workflow-scope fleet bound could not be checked (non-fatal)",
-            {
-              repo: issue.repo,
-              issueNumber: issue.issueNumber,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
       }
 
       return {
@@ -4843,7 +4902,9 @@ export async function createProductionRunCoreDeps(
             : {}),
           // The run outcome travels to the claim release (Issue #4325);
           // a skip is not an outcome of a run that never ran.
-          ...(result.outcome && !isExpectedSkip
+          ...(result.outcome && (!isExpectedSkip ||
+              (result.outcome.kind === "claim_stale" &&
+                result.outcome.reason === "work_already_merged"))
             ? { outcome: result.outcome }
             : {}),
           // Token and cost telemetry for the post-run callbacks (Issue
@@ -5162,10 +5223,37 @@ export async function createProductionRunCoreDeps(
           ...(outcome ? { outcome } : {}),
         });
       } catch { /* best-effort */ }
-      // Code-fixable no-PR failures raise a deduped worker-fault issue
-      // (Issue #4329). Strictly after the claim release and best-effort:
-      // the helper never throws, and nothing here may stop the release.
+      // Existing no-PR follow-up controls run after final claim release.
       if (outcome?.kind === "no_pr") {
+        // Read only durable attempts after trying the final marker write.
+        // A failed write contributes nothing; a later refusal retries.
+        if (outcome.category === "token_scope") {
+          try {
+            const bound = await enforceTokenScopeFleetBound({
+              repo,
+              issueNumber,
+              fleetAuthors,
+            }, { ghFn: runGhCommand });
+            logger.info("Workflow-scope refusal recorded", {
+              repo,
+              issueNumber,
+              consecutiveRefusals: bound.consecutive,
+              parked: bound.parked,
+              parkedNow: bound.posted,
+            });
+          } catch (err) {
+            logger.warn(
+              "Workflow-scope fleet bound could not be checked (non-fatal)",
+              {
+                repo,
+                issueNumber,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          }
+        }
+        // Code-fixable failures raise a deduped worker-fault issue (Issue
+        // #4329), best-effort so this cannot stop claim release.
         try {
           const marker = await readMarkerState(workDir, repo, issueNumber);
           const decision = await fileRunFailureIssue({
@@ -5612,6 +5700,18 @@ export async function createProductionRunCoreDeps(
           : null;
       }),
 
+    runTranscriptScan: homeDirectory(env) === undefined
+      ? async () => {
+        logger.warn(
+          "[agent-transcript-scan] no home directory; scan unavailable",
+        );
+      }
+      : createScheduledTranscriptScan({
+        logDir: agentTranscriptDir(homeDirectory(env)!),
+        warn: (message) => logger.warn(message),
+        info: (message) => logger.info(message),
+      }),
+
     runIdleTaskFiler: async () => {
       try {
         // Issue #2158: rescue any orphan `Run a security scan` wrappers
@@ -5624,21 +5724,18 @@ export async function createProductionRunCoreDeps(
         await runIdleTaskFilerCycle({
           repos,
           log: (line) => logger.info(line),
+          // Issue #3587: a wiring test's stub answers the back-fill sweep
+          // too. Undefined (production) means the default runner.
+          ghCommandFn: options.idleDetectGhCommandFn,
           fileFn: async () => {
             // Issue #1050: the filer's fleet-global gate asks "can any of
             // this be started right now?", and work this run is holding
             // back — the persisted retry cooldown plus its processed-issue
-            // registry — cannot be. Resolved from the one hold set the
-            // scan, the census and the audit already share, so all four
+            // registry, and (Issue #3587) a milestone the pacing ledger
+            // paces — cannot be. Resolved from the one hold set the scan,
+            // the census and the audit already share, so all four
             // instruments agree.
-            const runLocalHold = await loadRunLocalHolds();
-            const idleDetectionHold = (repo: string, issueNumber: number) =>
-              withholdsFromIdleDetection(
-                sharedProcessedIssues(),
-                runLocalHold,
-                repo,
-                issueNumber,
-              );
+            const idleDetectionHold = await loadIdleDetectionHold();
             await maybeFileIdleTaskCommand.execute(
               {
                 "monitored-repos": repos.join(","),
@@ -5669,6 +5766,10 @@ export async function createProductionRunCoreDeps(
                   // Issue #2405: a hold the claim path made by deferring the issue
                   // does not hide it — the census draws the same line.
                   runLocalHoldFn: idleDetectionHold,
+                  // Issue #3587: the filer's fleet-wide startable gate reads
+                  // through the same stub when a wiring test sets one;
+                  // undefined (production) means the filer's default runner.
+                  ghCommandFn: options.idleDetectGhCommandFn,
                 },
               },
               config,
@@ -5703,15 +5804,9 @@ export async function createProductionRunCoreDeps(
         // the audit stops counting work this run is itself withholding — the
         // over-count that kept `mis_classification` firing, and the audit's
         // own `claimableTotal` suppressing the idle-task filer, for the life
-        // of the process.
-        const runLocalHold = await loadRunLocalHolds();
-        const idleDetectionHold = (repo: string, issueNumber: number) =>
-          withholdsFromIdleDetection(
-            sharedProcessedIssues(),
-            runLocalHold,
-            repo,
-            issueNumber,
-          );
+        // of the process. Issue #3587: and the milestone the pacing ledger
+        // paces, which the scan skips as `milestone-behind`.
+        const idleDetectionHold = await loadIdleDetectionHold();
         // Issue #2085: the repositories backed off for fast failures (Issue
         // #1950), which `findNextIssue` unions into the scan's
         // `excludeRepos`. The scan was never shown them, so it cannot have
@@ -5782,7 +5877,9 @@ export async function createProductionRunCoreDeps(
             ),
           // Issue #655: this run's persisted retry cooldown and its
           // processed-issue registry, resolved above from the one hold set
-          // `findNextIssue` filters its candidates against.
+          // `findNextIssue` filters its candidates against. Issue #3587: and
+          // a milestone the pacing ledger paces, as the scan's
+          // `milestone-behind` skip does.
           // Issue #2405: a hold the claim path made by deferring the issue
           // does not hide it — the census draws the same line.
           runLocalHoldFn: idleDetectionHold,
@@ -5935,6 +6032,35 @@ export async function createProductionRunCoreDeps(
             } catch {
               openMilestones = new Set<string>();
             }
+            // Issue #3571: the claim scan's `label-author-not-allowed` gate
+            // refuses an issue whose priority label an untrusted author added.
+            // The census reads that same gate (through
+            // `wasLabelAddedByAllowedAuthor`) so such an issue counts as
+            // `claim_refused`, not claimable. Best-effort per issue: a failed
+            // timeline read counts the issue trusted and is logged loudly.
+            // PR #3963: skip issues the census already excludes for labels
+            // or assignment, and share the scan's iteration timeline batch.
+            const priorityIssues = issues.filter((issue) =>
+              [
+                LABEL_DEFAULTS.topPriorityLabel,
+                LABEL_DEFAULTS.workOnLabel,
+                LABEL_DEFAULTS.lowPriorityLabel,
+              ].some((label) => isUnblockedFor(issue, label))
+            );
+            const censusGh = await timelineBatchRegistry.getBatchedGh(
+              repo,
+              priorityIssues.map((issue) => issue.number),
+              options.idleDetectGhCommandFn ?? runGhCommand,
+            );
+            const untrustedLabelIssues = await censusUntrustedLabelIssues(
+              repo,
+              priorityIssues,
+              trustedAuthorsFor(config, repo),
+              censusGh,
+              timelineCache,
+              resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
+              (msg) => logger.warn(msg),
+            );
             return {
               repo,
               monitored: true,
@@ -6026,6 +6152,7 @@ export async function createProductionRunCoreDeps(
                   .map((i) => i.number),
               ),
               openMilestones,
+              untrustedLabelIssues,
             };
           }),
         );
