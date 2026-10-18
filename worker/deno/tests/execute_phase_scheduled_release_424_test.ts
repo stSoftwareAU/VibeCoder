@@ -1,3 +1,4 @@
+import { planCodingFailure } from "../lib/coding_failure_ladder.ts";
 /**
  * A cycle-end or hard-cap release is not "Claude ran out of time"
  * (Issue #424, parent #397).
@@ -28,6 +29,7 @@ import {
   isInfrastructureFailure,
   isTimeoutClassFailureReason,
 } from "../lib/failure_diagnosis.ts";
+import { callbackOutcomeFromRun } from "../lib/run_callback_context.ts";
 import { deriveRunOutcome } from "../lib/run_outcome.ts";
 import { renderRunOutcomeClause } from "../lib/heartbeat_storage.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
@@ -67,7 +69,17 @@ function makeState(): PhaseState {
 /** Drive the phase with a runner result and return the phase outcome. */
 async function runPhaseWith(
   runnerValue: Record<string, unknown>,
-): Promise<{ status: string; reason?: string; runnerCalls: number }> {
+): Promise<
+  {
+    status: string;
+    reason?: string;
+    category?: import("../lib/failure_diagnosis.ts").FailureCategory;
+    termination?: import("../lib/run_outcome.ts").RunTermination;
+    classification?:
+      import("../lib/run_outcome_classifier.ts").RunFailureClassification;
+    runnerCalls: number;
+  }
+> {
   let runnerCalls = 0;
   const deps = createMockDeps({
     claude: {
@@ -86,7 +98,14 @@ async function runPhaseWith(
     makeContext(config),
     makeState(),
     deps,
-  ) as { status: string; reason?: string };
+  ) as {
+    status: string;
+    reason?: string;
+    category?: import("../lib/failure_diagnosis.ts").FailureCategory;
+    termination?: import("../lib/run_outcome.ts").RunTermination;
+    classification?:
+      import("../lib/run_outcome_classifier.ts").RunFailureClassification;
+  };
   return { ...result, runnerCalls };
 }
 
@@ -200,4 +219,121 @@ Deno.test("execute_phase #424 - the release comment states the handover, not a t
   assertStringIncludes(clause, "WIP preserved");
   assertStringIncludes(clause, "resumes next cycle");
   assertNoTimeoutBlame(clause);
+});
+
+Deno.test("execute preserves known stop provenance through failure outcome and callback (Issue #3738)", async () => {
+  for (
+    const [extra, category] of [
+      [{ scheduledRelease: "hard-cap" as const }, "scheduled_release"],
+      [{ watchdogLateSeconds: 47, killIncompleteSeconds: 9 }, "timeout"],
+      [{}, "timeout"],
+    ] as const
+  ) {
+    const result = await runPhaseWith({
+      output: "WIP in progress; quoted rate limit",
+      exitCode: 124,
+      rawExitCode: 143,
+      timedOut: true,
+      timeoutReason: "hard-timeout",
+      ...extra,
+    });
+    assertEquals(result.category, category);
+    assertEquals(result.termination?.rawExitCode, 143);
+    assertEquals(result.termination?.timeoutReason, "hard-timeout");
+    assertEquals(
+      result.termination?.watchdogLateSeconds,
+      "watchdogLateSeconds" in extra ? extra.watchdogLateSeconds : undefined,
+    );
+    assertEquals(
+      result.termination?.killIncompleteSeconds,
+      "killIncompleteSeconds" in extra
+        ? extra.killIncompleteSeconds
+        : undefined,
+    );
+    const outcome = deriveRunOutcome({
+      success: false,
+      phase: "execute",
+      reason: result.reason ?? "",
+      category: result.category,
+      termination: result.termination,
+      classification: result.status === "failure"
+        ? result.classification
+        : undefined,
+    });
+    assert(outcome.kind === "no_pr");
+    assertEquals(outcome.termination, result.termination);
+    const emitted = callbackOutcomeFromRun({
+      repo: "o/r",
+      issueNumber: 1,
+      result: "failure",
+      startedAtEpochMs: 0,
+      finishedAtEpochMs: 1,
+      outcome,
+    });
+    assertEquals(emitted?.termination, result.termination);
+    assertEquals(
+      outcome.classification?.failureClass,
+      category === "timeout" ? "timeout" : "scheduled-release",
+    );
+  }
+});
+
+Deno.test("execute retains a known disk fault from the CLI boundary through failure bookkeeping (Issue #3738)", async () => {
+  const result = await runPhaseWith({
+    output:
+      "Error: ENOSPC: no space left on device, write /workspace/repo/file",
+    exitCode: 124,
+    rawExitCode: 143,
+    timedOut: true,
+    timeoutReason: "hard-timeout",
+  });
+  assertEquals(result.category, "timeout");
+  const classification = "classification" in result
+    ? result
+      .classification as import("../lib/run_outcome_classifier.ts").RunFailureClassification
+    : undefined;
+  assertEquals(classification?.failureClass, "disk-full");
+  const run = {
+    success: false,
+    expectedSkip: false,
+    phase: "execute",
+    reason: result.reason ?? "",
+    category: result.category,
+    classification,
+  };
+  assertEquals(planCodingFailure(run).applyLadder, false);
+  const outcome = deriveRunOutcome(run);
+  assert(outcome.kind === "no_pr");
+  assertEquals(outcome.classification?.failureClass, "disk-full");
+});
+
+Deno.test("execute timeout keeps its known cause when agent output quotes billing text (Issue #3738)", async () => {
+  const result = await runPhaseWith({
+    output:
+      "I am adding a regression for the quoted error Credit balance is too low",
+    exitCode: 124,
+    timedOut: true,
+    timeoutReason: "hard-timeout",
+  });
+  assert(result.status === "failure");
+  assertEquals(result.category, "timeout");
+  const run = {
+    success: false,
+    expectedSkip: false,
+    phase: "execute",
+    reason: result.reason ?? "",
+    category: result.category,
+    classification: result.classification,
+  };
+  assertEquals(planCodingFailure(run).applyLadder, true);
+  const outcome = deriveRunOutcome(run);
+  const emitted = callbackOutcomeFromRun({
+    repo: "o/r",
+    issueNumber: 1,
+    result: "failure",
+    startedAtEpochMs: 0,
+    finishedAtEpochMs: 1,
+    outcome,
+  });
+  assertEquals(emitted?.failureClass, "timeout");
 });

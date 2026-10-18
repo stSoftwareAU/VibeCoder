@@ -176,6 +176,7 @@ export async function runWorkOnIssueCommand(
   });
   if (integrity.blocked) {
     const blockedResult: WorkOnIssueResult = {
+      category: "unknown",
       success: false,
       phase: "content_integrity",
       reason: integrity.reason,
@@ -218,6 +219,7 @@ export async function runWorkOnIssueCommand(
       { logger: idleDeps.logger, ghCommandFn },
     );
     const orchestratorResult: WorkOnIssueResult = {
+      category: "unknown",
       success: idleResult.ok ?? false,
       phase: "idle_task",
       reason: summary,

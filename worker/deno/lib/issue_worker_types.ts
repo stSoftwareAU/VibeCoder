@@ -9,7 +9,9 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { RunOutcome } from "./run_outcome.ts";
+import type { RunFailureClassification } from "./run_outcome_classifier.ts";
+import type { FailureCategory } from "./failure_diagnosis.ts";
+import type { RunOutcome, RunTermination } from "./run_outcome.ts";
 import type { IssueComment } from "./issue_data.ts";
 import type { WorkerConfig } from "../types.ts";
 import type { HeartbeatHandle } from "./heartbeat.ts";
@@ -466,6 +468,7 @@ export type PhaseResult =
   | {
     status: "early_exit";
     reason: string;
+    category: FailureCategory;
     /**
      * The phase ended the run without resolving the issue and without
      * failing (Issue #175) — a bounce. The orchestrator reports it as
@@ -490,10 +493,27 @@ export type PhaseResult =
      */
     claimNotHeld?: true;
   }
-  | { status: "failure"; reason: string };
+  | {
+    status: "failure";
+    reason: string;
+    category: FailureCategory;
+    termination?: RunTermination;
+    classification?: RunFailureClassification;
+    categories?: readonly FailureCategory[];
+  };
 
 /** Result of the full workOnIssue orchestration. */
-export interface WorkOnIssueResult {
+export type WorkOnIssueResult =
+  & WorkOnIssueResultBase
+  & (
+    | { success: true; category?: FailureCategory }
+    | { success: false; category: FailureCategory }
+  );
+
+interface WorkOnIssueResultBase {
+  categories?: readonly FailureCategory[];
+  classification?: RunFailureClassification;
+  termination?: RunTermination;
   /** Ephemeral branch context for a final read before failure bookkeeping. */
   branchContext?:
     & Pick<
@@ -501,7 +521,6 @@ export interface WorkOnIssueResult {
       "branchName" | "repoPath" | "defaultBranch" | "milestoneBranch"
     >
     & { reapproved: boolean };
-  success: boolean;
   phase: string;
   reason: string;
   timings: Record<string, number>;

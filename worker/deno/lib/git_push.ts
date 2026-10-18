@@ -545,10 +545,13 @@ function capGateText(text: string): string {
  * The pre-push gate gave a verdict on the branch's content (PR #3716 review):
  * a changed-file or pre-flight command failed, a plan could not be built, or a
  * `sweptAt` is not on the default branch. {@link gateUnpushedCommits} returns
- * any other error (a git or remote lookup that failed or timed out) as itself,
+ * any other error (a git or remote lookup that failed or timed out) as an
+ * infrastructure error,
  * so a caller that blames the branch for a failed gate can tell the two apart.
  */
 export class PrePushGateBlockedError extends Error {
+  readonly kind = "verdict" as const;
+
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "PrePushGateBlockedError";
@@ -564,8 +567,8 @@ export class PrePushGateBlockedError extends Error {
  * are skipped when Step 1 already ran them this call. Any failure — including
  * being unable to determine the state — is returned as an error so the caller
  * refuses to push (fail closed). Only a verdict on the branch's content is a
- * {@link PrePushGateBlockedError}; a failed git or remote lookup is a plain
- * error (or a `PrePushGateInfrastructureError`) with no `[PRE_PUSH_BLOCKED]`
+ * {@link PrePushGateBlockedError}; a failed git or remote lookup is a
+ * `PrePushGateInfrastructureError` with no `[PRE_PUSH_BLOCKED]`
  * prefix, so it is not reported as the branch failing its checks.
  *
  * With `baseRef` the gate covers every non-merge commit the branch has ahead
@@ -581,11 +584,20 @@ export async function gateUnpushedCommits(
   preFlight: PreFlightGateSpec,
   preFlightAlreadyRan = false,
   baseRef?: string,
-): Promise<Result<void>> {
+): Promise<
+  Result<void, PrePushGateBlockedError | PrePushGateInfrastructureError>
+> {
   let remoteSha = "0".repeat(40);
   if (baseRef === undefined) {
     const state = await describeUnpushedCommits(branchName, options);
-    if (!state.ok) return { ok: false, error: state.error };
+    if (!state.ok) {
+      return {
+        ok: false,
+        error: new PrePushGateInfrastructureError(state.error.message, {
+          cause: state.error,
+        }),
+      };
+    }
     if (state.value.count === 0) return { ok: true, value: undefined };
     if (state.value.source === "tracking-ref" && state.value.sha) {
       remoteSha = state.value.sha;
@@ -610,12 +622,19 @@ export async function gateUnpushedCommits(
       ["rev-list", "--count", "--no-merges", `${baseRef}..HEAD`],
       options,
     );
-    if (!ahead.ok) return { ok: false, error: ahead.error };
+    if (!ahead.ok) {
+      return {
+        ok: false,
+        error: new PrePushGateInfrastructureError(ahead.error.message, {
+          cause: ahead.error,
+        }),
+      };
+    }
     const aheadCount = Number.parseInt(ahead.value.stdout.trim(), 10);
     if (ahead.value.code !== 0 || !Number.isFinite(aheadCount)) {
       return {
         ok: false,
-        error: new Error(
+        error: new PrePushGateInfrastructureError(
           `git rev-list ${baseRef}..HEAD failed: ${
             ahead.value.stderr.trim() || `exit ${ahead.value.code}`
           }`,
@@ -626,11 +645,18 @@ export async function gateUnpushedCommits(
   }
 
   const head = await runGitCommand(["rev-parse", "HEAD"], options);
-  if (!head.ok) return { ok: false, error: head.error };
+  if (!head.ok) {
+    return {
+      ok: false,
+      error: new PrePushGateInfrastructureError(head.error.message, {
+        cause: head.error,
+      }),
+    };
+  }
   if (head.value.code !== 0) {
     return {
       ok: false,
-      error: new Error(
+      error: new PrePushGateInfrastructureError(
         `git rev-parse HEAD failed: ${head.value.stderr.trim()}`,
       ),
     };

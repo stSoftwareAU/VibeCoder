@@ -173,9 +173,7 @@ export async function workOnIssueQualityGate(
   if (phaseResult.status === "failure" && !agentTurnLimit) {
     // Only infrastructure-category quality failures qualify for the extra
     // in-process retry — real quality-check failures are not retried.
-    const category = detectFailureCategory(
-      qualityFailureMessage ?? phaseResult.reason,
-    );
+    const category = phaseResult.category;
     if (isInfrastructureFailure(category)) {
       const shouldRetry = await shouldRetryInfrastructureFailure(
         "quality_gate",
@@ -183,6 +181,7 @@ export async function workOnIssueQualityGate(
         state,
         deps.logger,
         {
+          category,
           backoffMs: ctx.config.infraRetryBackoffMs,
           cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs,
         },
@@ -233,6 +232,7 @@ export async function workOnIssueQualityGate(
         failureMessage: qualityFailureMessage,
         // Issue #3445: the gate output is repository-authored, never a host fault.
         qualityGateOutput: true,
+        category: phaseResult.category,
         labels: {
           failedLabel: ctx.config.failedLabel,
           failedOnceLabel: ctx.config.failedOnceLabel,
@@ -502,6 +502,7 @@ async function runQualityGateBody(
     if (!qualityResult.ok) {
       return {
         phaseResult: {
+          category: "internal_error",
           status: "failure",
           reason: `Quality gate error: ${qualityResult.error.message}`,
         },
@@ -628,6 +629,7 @@ async function runQualityGateBody(
         });
         return {
           phaseResult: {
+            category: "unknown",
             status: "early_exit",
             reason: `pre_existing_gate_failure: ${named}`,
             expectedSkip: true,
@@ -684,8 +686,18 @@ async function runQualityGateBody(
           lastOutputSnippet: snippet || undefined,
         },
       );
+      // This is the raw external gate output, not the worker's wrapper prose.
+      // Preserve its established infrastructure adapter once at this boundary.
+      const rawCategory = detectFailureCategory(qualityResult.value.output);
+      const category = isInfrastructureFailure(rawCategory)
+        ? rawCategory
+        : "quality_check";
       return {
-        phaseResult: { status: "failure", reason: detailedReason },
+        phaseResult: {
+          category,
+          status: "failure",
+          reason: detailedReason,
+        },
         qualityFailureMessage: failureMessage,
       };
     }
@@ -721,7 +733,11 @@ async function runQualityGateBody(
       });
       if (fixResult.error instanceof AgentTurnLimitError) {
         return {
-          phaseResult: { status: "failure", reason: fixResult.error.message },
+          phaseResult: {
+            category: "interrupted",
+            status: "failure",
+            reason: fixResult.error.message,
+          },
           agentTurnLimit: true,
         };
       }
@@ -729,6 +745,10 @@ async function runQualityGateBody(
   }
 
   return {
-    phaseResult: { status: "failure", reason: "Quality gate loop exhausted" },
+    phaseResult: {
+      category: "quality_check",
+      status: "failure",
+      reason: "Quality gate loop exhausted",
+    },
   };
 }

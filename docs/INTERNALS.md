@@ -3647,7 +3647,7 @@ those matters most: a host that cannot find `deno` fails the baseline and the
 post-change gate with byte-identical output, so without that guard a broken host
 would read as a broken repository — silencing the health failure an operator
 needs and filing a tracker on an innocent repo. The class comes from
-`detectFailureCategory`, the single diagnosis path.
+`detectFailureCategory` applied to the raw quality-gate output.
 
 ```mermaid
 flowchart TD
@@ -5123,9 +5123,12 @@ below. The posted failure comment embeds
 the reason under a heading, so the marker no longer opens the body; the
 host-fault and milestone-refusal label-release sweeps, which re-classify posted
 bodies, therefore skip a record whose worker-written `**Category:**` line at the
-head of the comment is `summary-incomplete` (`isSummaryGateFailureRecord` in
+head of the comment is `summary-incomplete` or `quality-failure`
+(`isSummaryOrQualityFailureRecord` in
 `failure_diagnosis.ts`). A quoted `ignoring broken ref` or milestone `GH013`
-rejection in a refused summary cannot strip `failed-once` or `failed`.
+rejection in a refused summary or substantive verifier finding cannot strip
+`failed-once` or `failed`. Quality findings retain their category without a
+`quality gate` Source line: that line is reserved for actual repository output.
 
 #### `security_fix_gate` is its own failure category (Issue #3454)
 
@@ -5154,7 +5157,7 @@ quotes the marker later keeps its own category. A retry that could not be
 launched at all (a rate limit, a failed spawn) is deliberately not marked: that
 is a real launch fault and its own error text must still be classified. The
 posted issue comment is unchanged. Unlike `summary_incomplete`, there is no
-`isSummaryGateFailureRecord`-style record check for the label-release sweeps.
+`isSummaryOrQualityFailureRecord`-style record check for the label-release sweeps.
 
 #### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
 
@@ -5200,15 +5203,27 @@ non-infrastructure error from `runPrePushGate` (such as malformed hook input),
 which `gateUnpushedCommits` wraps in one. A git or remote lookup that failed or timed out (a
 `describeUnpushedCommits` `ls-remote`, the `git log` or `ls-files` call in
 `runPrePushGate`, a failed history deepen in the sweep check, a `rev-list` of
-the base range) comes back as a plain error or a `PrePushGateInfrastructureError`
+the base range) comes back as a `PrePushGateInfrastructureError`
 with no gate marker, and `gateBeforePush()` reports it as
 `PRE_PUSH_LOOKUP_FAILED_MARKER` ("Git push failed: the pre-push gate could not
 read the branch state") followed by the cut git text. `detectFailureCategory`
-matches that prefix with `startsWith` ahead of its timeout rule, so the quoted
+retains that prefix as a legacy adapter. New results declare `push_failure`
+from the error kind, so the quoted
 git text (`TIMEOUT: git rev-list ... timed out after 30s`, `Connection timed
 out`) cannot make it a `timeout`: it is the `push_failure` infrastructure
 category, retried in-run, as the push path's own failures are (Issue #1550). With a `baseRef` the gate reads no remote head at all, because
 the base range is local.
+
+The existing failure results now require their source category. The completion
+phase distinguishes the pre-push error kinds exhaustively and forwards that
+category through infrastructure retry, the coding ladder and label handler.
+The existing `RunFailureClassification` can be captured at a raw CLI boundary
+and retained on the outcome; callback and filing consumers prefer that source
+record. Summary-rule verdicts retain all simultaneous categories, and existing-PR
+outcomes keep evidence and substantive finding diagnostics. Stop provenance uses
+the existing runner fields on the outcome/callback, including unknown/absent
+watchdog information. See the source-declared failure section of the issue
+workflow for the contract.
 
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
