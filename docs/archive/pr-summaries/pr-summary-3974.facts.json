@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/timeline_batch.ts",
+        "line": 310,
+        "outcome": "for a cached issue, page >= 2 serves an empty array so paginateTimeline stops on a short page",
+        "test": "worker/deno/tests/timeline_batch_test.ts",
+        "testName": "timeline_batch - wrapped gh serves page >= 2 as empty so paginateTimeline stops (Issue #3974)",
+        "flipWentRed": "Reverted the page >= 2 branch to always serve the cached batch; the named test failed with the timeline-exceeded throw, then passed with the empty-page guard restored."
+      },
+      {
+        "path": "worker/deno/lib/collect_work_on_candidates.ts",
+        "line": 455,
+        "outcome": "a throwing label-author trust read is caught and skipped fail-closed (labelAdded = false)",
+        "test": "worker/deno/tests/collect_work_on_candidates_fail_loud_test.ts",
+        "testName": "collectWorkOnCandidates - label-author trust-read failure is a fail-closed skip, not a rejection (Issue #3974)",
+        "flipWentRed": "Removed the try/catch so the trust-read throw propagated; the named test failed by rejecting instead of skipping, then passed with the catch restored."
+      },
+      {
+        "path": "worker/deno/lib/collect_low_priority_candidates.ts",
+        "line": 290,
+        "outcome": "a throwing label-author trust read is caught and skipped fail-closed (labelAdded = false)",
+        "test": "worker/deno/tests/collect_low_priority_candidates_test.ts",
+        "testName": "collect_low_priority_candidates - skips issue when the label-author trust read throws (Issue #3974)",
+        "flipWentRed": "Removed the try/catch so the trust-read throw propagated; the named test failed by rejecting instead of skipping, then passed with the catch restored."
+      },
+      {
+        "path": "worker/deno/lib/collect_label_candidates.ts",
+        "line": 269,
+        "outcome": "a throwing timeline trust read is caught and skipped fail-closed (labelAdded = false)",
+        "test": "worker/deno/tests/collect_label_candidates_test.ts",
+        "testName": "collect_label_candidates - a throwing timeline trust read skips the issue fail-closed (does not reject)",
+        "flipWentRed": "Removed the try/catch so the trust-read throw propagated; the named test failed by rejecting instead of skipping, then passed with the catch restored."
+      },
+      {
+        "path": "worker/deno/lib/collect_idle_task_candidates.ts",
+        "line": 293,
+        "outcome": "a throwing label-add trust read is caught, sets labelAddedByTrusted = false, and skips an issue whose author is also untrusted",
+        "test": "worker/deno/tests/collect_idle_task_candidates_test.ts",
+        "testName": "collect_idle_task_candidates - Issue #3974: skips an untrusted-author issue when the label-add trust read throws",
+        "flipWentRed": "Removed the try/catch so the trust-read throw propagated; the named test failed by rejecting instead of skipping, then passed with the catch restored."
+      }
+    ]
+  }
+}

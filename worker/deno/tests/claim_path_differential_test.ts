@@ -105,6 +105,46 @@ Deno.test(
 );
 
 Deno.test(
+  "claim path - census and scan agree when one issue's label author is untrusted, beside every gate (Issue #3571)",
+  async () => {
+    // `label-author-not-allowed` is modelled through the `untrustedLabel` axis
+    // rather than `MODELLED_GATES`: the untrusted issue sits beside a second
+    // issue behind each gate, in every tier arrangement.
+    for (const [tierA, tierB] of TIER_PAIRS) {
+      for (const gate of GATE_AXIS) {
+        await assertInstrumentsAgree({
+          repo: "owner/differential",
+          issues: [
+            { number: 11, tier: tierA, untrustedLabel: true },
+            { number: 22, tier: tierB, gate },
+          ],
+        });
+      }
+    }
+  },
+);
+
+Deno.test(
+  "claim path - an untrusted work-on issue is refused and does not park the backlog, in both instruments (Issue #3571)",
+  async () => {
+    const state: RepoState = {
+      repo: "owner/differential",
+      issues: [
+        { number: 48, tier: "work-on", untrustedLabel: true },
+        { number: 60, tier: "low-priority" },
+      ],
+    };
+    const entry = runCensus(state);
+    assertEquals(entry.claimableIssues, [60]);
+    assertEquals(entry.claimRefused, 1);
+    assertEquals(entry.lowPrioritySuppressed, 0);
+
+    const outcome = await runClaimScan(state);
+    assertEquals(outcome.claimedIssue, 60);
+  },
+);
+
+Deno.test(
   "claim path - the #499 shape: a permanently-blocked work-on issue must not hide the backlog (Issue #524)",
   async () => {
     // The `NEAT-AI-Rebase` state, in miniature: one `work-on` issue named by a

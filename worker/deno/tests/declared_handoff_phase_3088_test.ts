@@ -14,7 +14,13 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
+import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
+import { deriveRunOutcome } from "../lib/run_outcome.ts";
+import { callbackOutcomeFromRun } from "../lib/run_callback_context.ts";
+import {
+  detectFailureCategory,
+  isInfrastructureFailure,
+} from "../lib/failure_diagnosis.ts";
 import { workOnIssueDeclaredHandoff } from "../lib/phases/declared_handoff_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -955,3 +961,53 @@ Deno.test(
     }
   },
 );
+
+Deno.test("declared handoff retains network and token causes through the failure decision and callback (Issue #3738)", async () => {
+  for (
+    const [message, category] of [
+      ["Could not resolve host github.com", "push_failure"],
+      [
+        "refusing to allow an OAuth App to create or update workflow `.github/workflows/ci.yml` without `workflow` scope",
+        "token_scope",
+      ],
+    ] as const
+  ) {
+    const calls = makeCalls();
+    const deps = createMockDeps({
+      github: { createClient: () => makeClient(calls) },
+      git: {
+        commitAndPushPending: () =>
+          Promise.resolve({ ok: false as const, error: new Error(message) }),
+      },
+    });
+    const phase = await workOnIssueDeclaredHandoff(
+      makeContext(),
+      makeState(BLOCKED_OUTPUT),
+      deps,
+    );
+    assert(phase.status === "failure");
+    assertEquals(phase.category, category);
+    assert(isInfrastructureFailure(phase.category));
+    const decision = classifyCodingFailure(
+      "outer wrapper quotes timeout",
+      phase.category,
+    );
+    assertEquals(decision.disposition, "transient");
+    assertEquals(calls.postComment.length, 0);
+    const outcome = deriveRunOutcome({
+      success: false,
+      phase: "declared_handoff",
+      reason: phase.reason,
+      category: phase.category,
+    });
+    const emitted = callbackOutcomeFromRun({
+      repo: REPO,
+      issueNumber: ISSUE,
+      result: "failure",
+      startedAtEpochMs: 0,
+      finishedAtEpochMs: 1,
+      outcome,
+    });
+    assertEquals(emitted?.category, category);
+  }
+});

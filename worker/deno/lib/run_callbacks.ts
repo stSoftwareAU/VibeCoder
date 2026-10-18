@@ -343,6 +343,8 @@ export function rtkNotRun(switchedOn: boolean): RtkOutputResult {
  * transcript (Issue #1947).
  */
 export interface CallbackRunOutcome {
+  categories?: readonly FailureCategory[];
+  termination?: import("./run_outcome.ts").RunTermination;
   kind: RunOutcome["kind"];
   /**
    * {@link FailureCategory} when `kind` is `no_pr`, or when a `pr` run was

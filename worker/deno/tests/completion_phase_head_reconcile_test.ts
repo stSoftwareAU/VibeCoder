@@ -14,6 +14,7 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { HeadReconciliation } from "../lib/git_branch.ts";
+import { HeadDivergedError } from "../lib/git_branch.ts";
 
 function stubClient(): GitHubClient {
   return {
@@ -37,11 +38,13 @@ async function runCompletion(
   opts: {
     /** Per-command exit code; default 0 (command succeeded). */
     gitCodeFor?: (args: string[]) => number;
+    infraRetryBackoffMs?: number;
     /** Set `state.milestoneBranch` to exercise the milestone base (Issue #68). */
     milestoneBranch?: string;
   } = {},
 ): Promise<{
   status: string;
+  category?: string;
   reason?: string;
   order: string[];
   gitCalls: string[][];
@@ -58,6 +61,9 @@ async function runCompletion(
     "## Summary\n\nBanner. Closes #565.\n\n**Docs sweep** — grep: `banner`; section: `docs/EXTENDING.md#branding`; no hits; siblings: none — no existing set gained a member\n\n## Test Plan\n\n- Manual check that the banner hot-links correctly.\n\n**Branch outcomes:** none added\n",
   );
   const config = buildDefaultWorkerConfig();
+  if (opts.infraRetryBackoffMs !== undefined) {
+    config.infraRetryBackoffMs = opts.infraRetryBackoffMs;
+  }
   const ctx: IssueContext = {
     repo: "stSoftwareAU/private-repo-22",
     issueNumber: 565,
@@ -130,6 +136,7 @@ async function runCompletion(
   await Deno.remove(repoPath, { recursive: true });
   return {
     status: result.status,
+    ...(result.status === "failure" ? { category: result.category } : {}),
     ...(result.status === "failure" ? { reason: result.reason } : {}),
     order,
     gitCalls,
@@ -180,11 +187,13 @@ Deno.test("completion - the ahead-of-base guard counts the WORKER branch, not HE
 Deno.test("completion - diverged agent/worker branches fail with the explicit reason, never reaching gh pr create (Issue #4286)", async () => {
   const run = await runCompletion({
     ok: false,
-    error: new Error(
-      "HEAD is on 'agent-branch' and the worker branch 'issue-565-branding-hot-link' has diverged from it",
+    error: new HeadDivergedError(
+      "agent-branch",
+      "issue-565-branding-hot-link",
     ),
   });
   assertEquals(run.status, "failure");
+  assertEquals(run.category, "unknown");
   assertStringIncludes(run.reason ?? "", "diverged");
   assertStringIncludes(run.reason ?? "", "issue-565-branding-hot-link");
   assertEquals(
@@ -192,6 +201,22 @@ Deno.test("completion - diverged agent/worker branches fail with the explicit re
     ["reconcile"],
     "nothing pushed after a refused reconcile",
   );
+});
+
+Deno.test("completion keeps unreadable reconciliation infrastructure even when its prose mentions divergence (Issue #3738)", async () => {
+  const run = await runCompletion(
+    {
+      ok: false,
+      error: new Error(
+        "fatal: remote lookup failed while checking whether HEAD diverged",
+      ),
+    },
+    () => "",
+    { infraRetryBackoffMs: 0 },
+  );
+  assertEquals(run.status, "failure");
+  assertEquals(run.category, "push_failure");
+  assertEquals(run.order, ["reconcile", "reconcile"]);
 });
 
 Deno.test("completion - a failing ahead-of-base guard warns instead of silently proceeding (Issue #4286)", async () => {

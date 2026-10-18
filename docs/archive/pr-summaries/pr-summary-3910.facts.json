@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/milestone_completion.ts",
+        "line": 835,
+        "outcome": "invalid integer count returns false",
+        "test": "worker/deno/tests/milestone_completion_test.ts",
+        "testName": "hasNothingToMerge - incomplete or malformed comparisons keep the milestone open (Issue #3910)",
+        "flipWentRed": "bypassed integer validation; malformed-comparison test went red"
+      },
+      {
+        "path": "worker/deno/lib/milestone_completion.ts",
+        "line": 835,
+        "outcome": "negative integer count returns false",
+        "test": "worker/deno/tests/milestone_completion_test.ts",
+        "testName": "hasNothingToMerge - incomplete or malformed comparisons keep the milestone open (Issue #3910)",
+        "flipWentRed": "removed negative-count operand; malformed-comparison test went red"
+      },
+      {
+        "path": "worker/deno/lib/milestone_completion.ts",
+        "line": 835,
+        "outcome": "valid non-negative count reaches file comparison",
+        "test": "worker/deno/tests/milestone_completion_test.ts",
+        "testName": "hasNothingToMerge - an ahead branch with no changed files needs no roll-up (Issue #3910)",
+        "flipWentRed": "forced comparison to report work; empty-files regression went red"
+      },
+      {
+        "path": "worker/deno/lib/milestone_completion.ts",
+        "line": 836,
+        "outcome": "zero commits returns true without requiring a file list",
+        "test": "worker/deno/tests/milestone_completion_test.ts",
+        "testName": "hasNothingToMerge - true when the branch is 0 commits ahead (Issue #3214)",
+        "flipWentRed": "removed zero-commits operand; zero-commits test went red"
+      },
+      {
+        "path": "worker/deno/lib/milestone_completion.ts",
+        "line": 836,
+        "outcome": "positive commit count reaches file comparison",
+        "test": "worker/deno/tests/milestone_completion_test.ts",
+        "testName": "hasNothingToMerge - false when the branch has commits ahead (Issue #3214)",
+        "flipWentRed": "forced zero-commits operand true; work-present test went red"
+      },
+      {
+        "path": "worker/deno/lib/milestone_completion.ts",
+        "line": 837,
+        "outcome": "non-array file list cannot establish emptiness",
+        "test": "worker/deno/tests/milestone_completion_test.ts",
+        "testName": "hasNothingToMerge - incomplete or malformed comparisons keep the milestone open (Issue #3910)",
+        "flipWentRed": "forced array-type operand true; empty-string file list went red"
+      },
+      {
+        "path": "worker/deno/lib/milestone_completion.ts",
+        "line": 837,
+        "outcome": "empty array with commits ahead returns true",
+        "test": "worker/deno/tests/milestone_completion_test.ts",
+        "testName": "hasNothingToMerge - an ahead branch with no changed files needs no roll-up (Issue #3910)",
+        "flipWentRed": "forced empty-files operand false; empty-files regression went red"
+      },
+      {
+        "path": "worker/deno/lib/milestone_completion.ts",
+        "line": 837,
+        "outcome": "nonempty file list keeps the milestone open",
+        "test": "worker/deno/tests/milestone_completion_test.ts",
+        "testName": "hasNothingToMerge - false when the branch has commits ahead (Issue #3214)",
+        "flipWentRed": "forced empty-files operand true; work-present test went red"
+      }
+    ]
+  }
+}

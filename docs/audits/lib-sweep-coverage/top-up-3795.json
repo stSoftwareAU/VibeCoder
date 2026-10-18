@@ -1,0 +1,13 @@
+{
+  "issue": 3795,
+  "chunk": "top-up-3795",
+  "title": "top-up: coverage carry-over gate",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3795",
+  "definition": "modules added after 12a-12af recorded their coverage: worker/deno/lib/coverage_carryover_gate.ts and worker/deno/lib/coverage_carryover_runner.ts, the coverage carry-over PR-raise gate (#3795)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/coverage_carryover_gate.ts",
+    "worker/deno/lib/coverage_carryover_runner.ts"
+  ],
+  "sweptAt": "addaa06f645c2a2ada3c45d6cb334840094fc4f9"
+}

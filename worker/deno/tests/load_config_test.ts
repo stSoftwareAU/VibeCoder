@@ -186,9 +186,9 @@ Deno.test("load-config - outputs operational defaults", async () => {
       output.includes('CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-3600}"'),
       "Should output CLAUDE_TIMEOUT default",
     );
-    // Issue #2446: sleepInterval raised from 30 to 120.
+    // Issue #2446: sleepInterval raised from 30 to 300 to reduce polling.
     assert(
-      output.includes('SLEEP_INTERVAL="${SLEEP_INTERVAL:-120}"'),
+      output.includes('SLEEP_INTERVAL="${SLEEP_INTERVAL:-300}"'),
       "Should output SLEEP_INTERVAL default",
     );
     assert(
@@ -622,5 +622,26 @@ Deno.test("load-config - the progress-extension defaults are exported when unset
       ),
       "the documented check-interval default must reach bash",
     );
+  });
+});
+
+Deno.test("load-config - turn cap overrides stale internal shell transport", async () => {
+  await withTempConfig({
+    repos: ["org/repo"],
+    fleet_pr_authors: ["test-bot"],
+    claude_max_turns: 7,
+  }, async (configPath) => {
+    const result = await loadConfigCommand.execute({
+      "config-path": configPath,
+    }, buildDefaultWorkerConfig());
+    assertEquals(result.success, true, result.message);
+    const shell = await new Deno.Command("bash", {
+      args: ["-c", result.message + '\nprintf "%s" "$VIBE_CLAUDE_MAX_TURNS"'],
+      env: { VIBE_CLAUDE_MAX_TURNS: "999" },
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(shell.code, 0);
+    assertEquals(new TextDecoder().decode(shell.stdout), "7");
   });
 });

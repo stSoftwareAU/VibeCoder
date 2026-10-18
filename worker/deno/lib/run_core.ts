@@ -198,7 +198,7 @@ import {
 export interface RunCoreConfig {
   /** Total duration to run before planned shutdown (seconds, default: 3600). */
   runDurationSeconds: number;
-  /** Base sleep interval between scan cycles (seconds, default: 120). */
+  /** Base sleep interval between scan cycles (seconds, default: 300). */
   sleepInterval: number;
   /**
    * Concurrent-issue slot count (Issue #4174; default 1). Made available and
@@ -723,6 +723,14 @@ export interface RunCoreDeps {
    * without the watchdog still runs every other priority unchanged.
    */
   scanBlockingPrStalls?: () => Promise<Result<void>>;
+
+  /**
+   * Priority 1.64: re-sync a PR body whose recorded summary digest no longer
+   * matches the summary at the PR head, whoever pushed it (Issue #3760).
+   *
+   * Optional — when absent the priority is a no-op.
+   */
+  reconcilePrBodyDigests?: () => Promise<Result<void>>;
 
   /**
    * Priority 1.65: Auto-merge, and the post-scan pass that repeats it once
@@ -1465,6 +1473,8 @@ export interface RunCoreDeps {
    * test deps can omit it.
    */
   runIdleTaskFiler?: () => Promise<void>;
+  /** Scheduled local security scan, independent of GitHub filing gates. */
+  runTranscriptScan?: () => Promise<void>;
 
   /**
    * Whether the weekly-quota pace guard is engaged right now (Issues #1885,
@@ -1964,6 +1974,24 @@ export function buildPriorityDispatchTable(
       maintenanceLane: true,
       execute: () =>
         (deps.scanBlockingPrStalls?.() ??
+          Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
+            r.ok
+              ? { ok: true as const, value: { processed: false } }
+              : { ok: false as const, error: r.error }
+          ),
+    },
+    {
+      // Issue #3760: a push made outside the worker never reaches the
+      // post-push sync. This pass compares digests through the contents API
+      // with no checkout, and stays silent when they match. Never claims an
+      // issue. Not in the maintenance lane: it never touches the shared clone
+      // (it uses a disposable clone only on a mismatch). Deferrable because it
+      // is a fixed-cost sweep (Issue #2449).
+      priority: 1.64,
+      name: "Reconcile PR Body Digests",
+      budgetTier: "deferrable",
+      execute: () =>
+        (deps.reconcilePrBodyDigests?.() ??
           Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
             r.ok
               ? { ok: true as const, value: { processed: false } }
@@ -3006,7 +3034,10 @@ async function runIssueScanLoop(
         deps,
         issue.repo,
         issue.issueNumber,
-        undefined,
+        runOutcome?.kind === "claim_stale" &&
+          runOutcome.reason === "work_already_merged"
+          ? runOutcome
+          : undefined,
         undefined,
         { claimNotHeld },
       );
@@ -4883,7 +4914,10 @@ async function runSlotIssue(
       deps,
       issue.repo,
       issue.issueNumber,
-      undefined,
+      runOutcome?.kind === "claim_stale" &&
+        runOutcome.reason === "work_already_merged"
+        ? runOutcome
+        : undefined,
       undefined,
       { claimNotHeld },
     );
@@ -5207,6 +5241,7 @@ function runIdleWorkHooks(
   // from outside priority dispatch — attribute them to the hooks.
   return withPriorityContext("Idle Work Hooks", async () => {
     const outcome: IdleHookOutcome = { filed: false };
+    await deps.runTranscriptScan?.();
     const flagFragment =
       `foundClaimableIssue=${req.scanFoundClaimable} scanHadSuccess=${req.scanHadSuccess}`;
     // Issue #2106: run the idle-detect audit at the same gate

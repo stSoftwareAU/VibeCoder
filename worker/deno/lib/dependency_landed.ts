@@ -74,7 +74,7 @@ function errorText(err: unknown): string {
 }
 
 /** True when `sha` is already an ancestor of `target` (landed relative to it). */
-async function isAncestorOf(
+export async function isAncestorOf(
   repo: string,
   target: string,
   sha: string,

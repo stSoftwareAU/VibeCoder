@@ -120,6 +120,7 @@ export function classifyGitHubError(
   if (
     /timed?\s*out/i.test(errorMessage) ||
     lower.includes("timeout") ||
+    lower.includes("error connecting to ") ||
     lower.includes("connection refused") ||
     lower.includes("could not resolve") ||
     lower.includes("network is unreachable") ||

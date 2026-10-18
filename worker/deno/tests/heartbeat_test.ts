@@ -794,3 +794,32 @@ Deno.test("heartbeat - a slot stopping ITS heartbeat leaves the sibling's runnin
     await Deno.remove(b.workDir, { recursive: true });
   }
 });
+
+Deno.test("heartbeat defers terminal publication while stopping the failed production run (Issue #3977)", async () => {
+  const workDir = await Deno.makeTempDir();
+  let clears = 0;
+  try {
+    const handle = await startOrFail({
+      repo: "org/repo",
+      issueNumber: 42,
+      workDir,
+      intervalMs: 60000,
+      recordFn: () => Promise.resolve({ ok: true, value: undefined }),
+      clearFn: () => {
+        clears++;
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+    });
+    await stopHeartbeat(handle, undefined, { deferClear: true });
+    assertEquals(isHeartbeatRunning("org/repo", 42), false);
+    assertEquals(
+      clears,
+      0,
+      "no provisional failure or generic released tally before final reconciliation",
+    );
+    await stopHeartbeat(handle);
+    assertEquals(clears, 0);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});

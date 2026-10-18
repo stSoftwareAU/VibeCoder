@@ -1,3 +1,4 @@
+import { classifyRunFailure } from "../run_outcome_classifier.ts";
 /**
  * Phase 3 — Execute Claude.
  *
@@ -101,7 +102,6 @@ import {
 } from "../infra_retry.ts";
 import {
   buildScheduledReleaseReason,
-  detectFailureCategory,
   getFailureCategoryDisplay,
 } from "../failure_diagnosis.ts";
 import {
@@ -273,6 +273,7 @@ function supersededResult(
     },
   );
   return {
+    category: "unknown",
     status: "early_exit",
     reason,
     outcome: supersededOutcome({
@@ -347,7 +348,7 @@ export async function workOnIssueExecuteClaude(
         "(VibeCoder#174)",
       {
         phase: "execute",
-        category: detectFailureCategory(result.reason),
+        category: result.category,
         runwaySeconds: Math.max(
           0,
           Math.round(((ctx.cycleDeadlineEpochMs ?? 0) - Date.now()) / 1000),
@@ -363,6 +364,7 @@ export async function workOnIssueExecuteClaude(
     state,
     deps.logger,
     {
+      category: result.category,
       backoffMs: ctx.config.infraRetryBackoffMs,
       cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs,
     },
@@ -442,6 +444,7 @@ async function executeWithRefusalRetry(
   );
   await postWorkOnRunStats(ctx, state, deps, { recordFigures: false });
   return {
+    category: "unknown",
     status: "failure",
     reason: buildRefusalFailureReason(state.agentRefusal),
   };
@@ -480,6 +483,7 @@ async function executeWithFreshSessionFallback(
       },
     );
     return {
+      category: "prompt_too_long",
       status: "failure",
       reason: buildPromptTooLongReason(state.claudeOutput),
     };
@@ -602,6 +606,7 @@ async function executeClaudeBody(
       { reason: freshness.reason, detail: freshness.detail },
     );
     return {
+      category: "unknown",
       status: "early_exit",
       reason: formatStaleClaimReason(freshness),
       outcome: claimStaleOutcome({
@@ -621,6 +626,7 @@ async function executeClaudeBody(
   );
   if (!repoValidation.ok) {
     return {
+      category: "unknown",
       status: "failure",
       reason: `Repository validation failed: ${repoValidation.error.message}`,
     };
@@ -800,6 +806,7 @@ async function executeClaudeBody(
   });
   if (!promptResult.ok) {
     return {
+      category: "internal_error",
       status: "failure",
       reason: `Failed to build prompt: ${promptResult.error.message}`,
     };
@@ -922,7 +929,11 @@ async function executeClaudeBody(
       deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
       logger,
     });
-    return { status: "early_exit", reason: "context_budget_exceeded" };
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "context_budget_exceeded",
+    };
   }
 
   // Record the prompt revision for traceability (Issue #1190, #844).
@@ -1247,6 +1258,7 @@ async function executeClaudeBody(
 
   if (!claudeResult.ok) {
     return {
+      category: "internal_error",
       status: "failure",
       reason: `Claude execution failed: ${claudeResult.error.message}`,
     };
@@ -1270,6 +1282,17 @@ async function executeClaudeBody(
   syncGraftFacts();
 
   // Check for timeout (Issue #1188 — detailed failure messages)
+  const termination = {
+    timedOut: claudeResult.value.timedOut,
+    timeoutReason: claudeResult.value.timeoutReason,
+    scheduledRelease: claudeResult.value.scheduledRelease,
+    terminated: claudeResult.value.terminated,
+    killed: claudeResult.value.killed,
+    externalSigterm: claudeResult.value.externalSigterm,
+    rawExitCode: claudeResult.value.rawExitCode,
+    watchdogLateSeconds: claudeResult.value.watchdogLateSeconds,
+    killIncompleteSeconds: claudeResult.value.killIncompleteSeconds,
+  };
   if (claudeResult.value.timedOut) {
     // A hard-cap release fires the same watchdog and exits with the same
     // status as a genuine timeout (Issue #424, parent #397). Only the runner
@@ -1413,7 +1436,25 @@ async function executeClaudeBody(
       watchdogLateSeconds: claudeResult.value.watchdogLateSeconds,
       killIncompleteSeconds: claudeResult.value.killIncompleteSeconds,
     });
-    return { status: "failure", reason };
+    return {
+      category: scheduled
+        ? "scheduled_release"
+        : !stalled && state.claudeOutput.length === 0
+        ? "zero_output"
+        : "timeout",
+      status: "failure",
+      termination,
+      classification: classifyRunFailure(
+        scheduled
+          ? "scheduled_release"
+          : !stalled && state.claudeOutput.length === 0
+          ? "zero_output"
+          : "timeout",
+        reason,
+        true,
+      ),
+      reason,
+    };
   }
 
   // A killed run (Issue #4202): SIGKILLed with no watchdog firing — the
@@ -1491,7 +1532,13 @@ async function executeClaudeBody(
         killDiagnostics: claudeResult.value.killDiagnostics,
       },
     );
-    return { status: "failure", reason };
+    return {
+      category: "killed",
+      status: "failure",
+      termination,
+      classification: classifyRunFailure("killed", reason, true),
+      reason,
+    };
   }
 
   // The worker's own shutdown ended the agent run (Issue #4369): the cycle is
@@ -1556,7 +1603,13 @@ async function executeClaudeBody(
         rawExitCode: claudeResult.value.rawExitCode ?? 143,
       },
     );
-    return { status: "failure", reason };
+    return {
+      category: "scheduled_release",
+      status: "failure",
+      termination,
+      classification: classifyRunFailure("scheduled_release", reason, true),
+      reason,
+    };
   }
 
   // Issue #46: a SIGTERM the worker never requested — an external kill (a tool
@@ -1624,7 +1677,13 @@ async function executeClaudeBody(
         killDiagnostics: claudeResult.value.killDiagnostics,
       },
     );
-    return { status: "failure", reason };
+    return {
+      category: "killed",
+      status: "failure",
+      termination,
+      classification: classifyRunFailure("killed", reason, true),
+      reason,
+    };
   }
 
   // Check for auth errors (Issue #1188 — detailed failure messages).
@@ -1674,7 +1733,12 @@ async function executeClaudeBody(
           lastOutputSnippet: authSnippet,
         },
       );
-      return { status: "failure", reason };
+      return {
+        category: "internal_error",
+        status: "failure",
+
+        reason,
+      };
     }
   }
 
@@ -1730,7 +1794,12 @@ async function executeClaudeBody(
         ? { preservedBranch: usageLimitWip.preserved.branch }
         : {}),
     });
-    return { status: "failure", reason };
+    return {
+      category: "rate_limit",
+      status: "failure",
+
+      reason,
+    };
   }
 
   // Record session phase completion for resume support (Issue #1324).
@@ -1822,7 +1891,9 @@ async function executeClaudeBody(
       return { status: "continue" };
     }
     return {
+      category: "internal_error",
       status: "failure",
+
       reason:
         `change detection could not resolve base ref '${state.baseBranch}': ${baseRef.error.message}`,
     };
@@ -1882,7 +1953,9 @@ async function executeClaudeBody(
     // conclude no_changes (which escalates to analysis-only).
     if (!logOk) {
       return {
+        category: "internal_error",
         status: "failure",
+
         reason: `change detection failed: git log ${baseRef.value}..HEAD ` +
           (logResult.ok
             ? `exited ${logResult.value.code}: ${logResult.value.stderr.trim()}`
@@ -1890,7 +1963,11 @@ async function executeClaudeBody(
       };
     }
 
-    return { status: "early_exit", reason: "no_changes" };
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "no_changes",
+    };
   }
 
   return { status: "continue" };

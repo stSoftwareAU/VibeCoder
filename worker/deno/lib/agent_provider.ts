@@ -57,6 +57,7 @@ import {
   claudeAuthActionableMessage,
   isClaudeAuthError,
 } from "./claude_auth.ts";
+import { resolveClaudeMaxTurns } from "./claude_turn_limit.ts";
 import type { AgentOutputAdapter } from "./agent_output.ts";
 import {
   CLAUDE_OUTPUT_ADAPTER,
@@ -605,6 +606,7 @@ function buildClaudeCliArgs(
   if (routing.model) args.push("--model", routing.model);
   if (routing.effort) args.push("--effort", routing.effort);
 
+  args.push("--max-turns", String(resolveClaudeMaxTurns(request.env)));
   args.push("--dangerously-skip-permissions");
   const disallowed = request.disallowedTools ?? [];
   if (disallowed.length > 0) {

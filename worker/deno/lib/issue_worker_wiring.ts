@@ -208,6 +208,16 @@ import {
   type MutationRunInput,
   runMutationCheck,
 } from "./mutation_runner.ts";
+import type { CoverageCarryOverResult } from "./coverage_carryover_gate.ts";
+import {
+  type CoverageCarryOverInput,
+  runCoverageCarryOverCheck,
+} from "./coverage_carryover_runner.ts";
+import {
+  type DiscriminationRunInput,
+  runSecurityFixDiscrimination,
+  type SecurityFixDiscrimination,
+} from "./security_fix_discrimination.ts";
 import {
   fileBaselineCarryoverTracker,
   fileRedCheckTracker,
@@ -521,13 +531,32 @@ export interface QualityDeps {
   /** Record a baseline gate outcome for reuse (Issue #4283). */
   writeBaselineQualityCache: typeof writeBaselineQualityCache;
   /**
-   * Run the diff-scoped mutation check over the PR diff (Issue #3393).
+   * Run the diff-scoped mutation check over the PR diff (Issue #3393). Used
+   * by both the PR-raise gate and the review-fix drift check (Issue #3750).
    * Optional: when absent the mutation gate is not applicable and never
    * blocks, so fixtures that build their own deps never run real mutants.
    */
   runMutationCheck?: (
     input: MutationRunInput,
   ) => Promise<MutationCheckResult>;
+  /**
+   * Run the coverage carry-over check over the PR diff (Issue #3795): every
+   * line a test edited or removed by the PR reached must still be covered.
+   * Optional: when absent the coverage carry-over gate is not applicable and
+   * never blocks, so fixtures that build their own deps never run the check.
+   */
+  runCoverageCarryOverCheck?: (
+    input: CoverageCarryOverInput,
+  ) => Promise<CoverageCarryOverResult>;
+  /**
+   * Run the cited security test red→green: against the base production files,
+   * then against the fix (Issue #3659). Optional: when absent, a security-fix
+   * PR whose discrimination check is due blocks as `discrimination-not-checked`
+   * — it never passes unchecked.
+   */
+  runSecurityFixDiscrimination?: (
+    input: DiscriminationRunInput,
+  ) => Promise<SecurityFixDiscrimination>;
 }
 
 // ---------------------------------------------------------------------------
@@ -806,6 +835,10 @@ export function createDefaultDeps(
       writeBaselineQualityCache,
       runMutationCheck: (input) =>
         runMutationCheck(input, defaultMutationRunnerSeams()),
+      runCoverageCarryOverCheck: (input) =>
+        runCoverageCarryOverCheck(input, defaultMutationRunnerSeams()),
+      runSecurityFixDiscrimination: (input) =>
+        runSecurityFixDiscrimination(input, defaultMutationRunnerSeams()),
     },
   };
 }

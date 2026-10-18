@@ -18,6 +18,7 @@ import {
   resetInfraRetryCount,
   shouldRetryInfrastructureFailure,
 } from "../lib/infra_retry.ts";
+import type { HandleFailureOptions } from "../lib/label_types.ts";
 import type { PhaseState } from "../lib/issue_worker_types.ts";
 import type { Logger } from "../types.ts";
 import {
@@ -437,7 +438,8 @@ Deno.test(
           }),
       },
       github: {
-        handleIssueFailure: (() => {
+        handleIssueFailure: ((options: HandleFailureOptions) => {
+          assertEquals(options.category, "zero_output");
           handleFailureCalls++;
           return Promise.resolve({
             ok: true,
@@ -455,6 +457,9 @@ Deno.test(
     const result = await workOnIssueQualityGate(ctx, state, deps);
 
     assertEquals(result.status, "failure");
+    if (result.status === "failure") {
+      assertEquals(result.category, "zero_output");
+    }
     assertEquals(
       handleFailureCalls,
       1,
@@ -778,4 +783,112 @@ Deno.test("infra retry - a rate_limit retry with no latched reset keeps the fixe
 
   assertEquals(retry, true);
   assertEquals(sleptMs, 15_000);
+});
+
+Deno.test("infra retry honours a declared cause over a contradictory wrapper (Issue #3738)", async () => {
+  for (
+    const [category, reason, expected] of [
+      ["push_failure", "a neutral transport wrapper", true],
+      ["quality_check", "Claude rate limit exceeded", false],
+    ] as const
+  ) {
+    const retry = await shouldRetryInfrastructureFailure(
+      "completion",
+      reason,
+      makeState(),
+      makeCapturingLogger([]),
+      { category, sleepFn: instantSleep },
+    );
+    assertEquals(retry, expected);
+  }
+});
+
+Deno.test("qualityGate reconciles an exact merge immediately before charging failure (Issue #3977)", async () => {
+  for (const dirty of [false, true]) {
+    const ctx = makeContext();
+    const priorOutcome = { status: "passed", attempt: 7 } as const;
+    const state = makeState({ qualityGateOutcome: priorOutcome });
+    let gates = 0;
+    let failures = 0;
+    const head = "a".repeat(40);
+    const deps = createMockDeps({
+      quality: {
+        runQualityGate: () => {
+          gates++;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              checks: [],
+              summary: { text: "failed", passed: false },
+              passed: false,
+              output: "quality.sh: 2 tests failed",
+            },
+          });
+        },
+      },
+      git: {
+        runGitCommand: (args: string[]) =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              code: 0,
+              stdout: args[0] === "rev-parse"
+                ? head
+                : args[0] === "status" && dirty
+                ? "?? remaining.ts"
+                : "",
+              stderr: "",
+            },
+          }),
+      },
+      github: {
+        runGhCommand: (args: string[]) =>
+          Promise.resolve(
+            args[1] === "list"
+              ? JSON.stringify(
+                gates >= 2
+                  ? [{
+                    number: 99,
+                    title: "Test issue (#42)",
+                    state: "MERGED",
+                    mergedAt: "2026-10-18T01:44:24Z",
+                    url: `https://github.com/${ctx.repo}/pull/99`,
+                    headRefName: state.branchName,
+                    headRefOid: head,
+                    headRepository: { name: "test-repo" },
+                    headRepositoryOwner: { login: "org" },
+                    baseRefName: "main",
+                    mergeCommit: { oid: "b".repeat(40) },
+                    body:
+                      "Closes #42\n\nThe exact implementation is delivered.",
+                  }]
+                  : [],
+              )
+              : "behind",
+          ),
+        handleIssueFailure: () => {
+          failures++;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              markedAsFailed: false,
+              markedAsFailedOnce: true,
+              failureCategory: "quality_check",
+              isInfrastructure: false,
+            },
+          });
+        },
+      },
+    });
+    const result = await workOnIssueQualityGate(ctx, state, deps);
+    assertEquals(gates, 2);
+    assertEquals(failures, dirty ? 1 : 0);
+    assertEquals(result.status, dirty ? "failure" : "early_exit");
+    assertEquals(state.failureLadderApplied, dirty ? true : undefined);
+    assertEquals(state.qualityGateOutcome, priorOutcome);
+    if (result.status === "early_exit") {
+      assertEquals(result.expectedSkip, true);
+      assertEquals(result.outcome?.kind, "claim_stale");
+    }
+  }
 });

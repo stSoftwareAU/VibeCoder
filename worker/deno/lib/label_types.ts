@@ -62,6 +62,7 @@ export const DEFAULT_LABEL_CONFIG: LabelConfig = {
 
 /** Options for marking an issue as failed. */
 export interface FailureOptions {
+  category?: FailureCategory;
   repo: string;
   issueNumber: number;
   githubUser: string;

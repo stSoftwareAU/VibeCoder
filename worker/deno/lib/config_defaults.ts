@@ -1,3 +1,4 @@
+import { DEFAULT_CLAUDE_MAX_TURNS } from "./claude_turn_limit.ts";
 /**
  * Configuration defaults — single source of truth for TypeScript.
  *
@@ -203,6 +204,7 @@ export const OPERATIONAL_DEFAULTS = {
   // and starved other repositories. If issue work genuinely needs more
   // than an hour, the escape hatch should raise a sub-issue.
   claudeTimeout: 3600,
+  claudeMaxTurns: DEFAULT_CLAUDE_MAX_TURNS,
   /**
    * Claim-runway floor in seconds (Issue #289). Five minutes: enough to rule
    * out a claim that cannot finish setup, small enough that a run keeps
@@ -337,12 +339,12 @@ export const OPERATIONAL_DEFAULTS = {
   claudeKillAfter: 30,
   maxClarificationRounds: 3,
   /**
-   * Seconds slept between scan cycles (Issue #2446). Raised from 30 to 120:
-   * each cycle carries a fixed GraphQL cost, so a quarter as many cycles an
-   * hour is the cheapest reduction in quota spend (#2409). An explicit
+   * Seconds slept between scan cycles. Raised from 120 to 300 because each
+   * cycle carries a fixed GraphQL cost; fewer cycles reduce shared-account
+   * quota spend. An explicit
    * `sleep_interval` in `.config.json` still wins.
    */
-  sleepInterval: 120,
+  sleepInterval: 300,
   // Concurrent-issue slots (Issues #4174/#4177, VibeCoder#170): two by
   // default — the intended cadence is "work as many issues as possible in
   // each hourly run", and the slot governor (#4179) lowers the effective
@@ -1562,6 +1564,7 @@ export function buildDefaultWorkerConfig(
     // Issue #2654: configured best planning model for degraded-model detection.
     bestPlanningModel: DEFAULT_BEST_PLANNING_MODEL,
     claudeTimeout: OPERATIONAL_DEFAULTS.claudeTimeout,
+    claudeMaxTurns: OPERATIONAL_DEFAULTS.claudeMaxTurns,
     minClaimRunwaySeconds: OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
     // Adaptive claim floor (Issue #245): the labels that mark a long job.
     claimLongJobLabels: [...DEFAULT_LONG_JOB_LABELS],
