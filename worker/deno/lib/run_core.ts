@@ -198,7 +198,7 @@ import {
 export interface RunCoreConfig {
   /** Total duration to run before planned shutdown (seconds, default: 3600). */
   runDurationSeconds: number;
-  /** Base sleep interval between scan cycles (seconds, default: 120). */
+  /** Base sleep interval between scan cycles (seconds, default: 300). */
   sleepInterval: number;
   /**
    * Concurrent-issue slot count (Issue #4174; default 1). Made available and

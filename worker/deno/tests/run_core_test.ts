@@ -203,8 +203,8 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
 Deno.test("run_core - createDefaultRunCoreConfig returns valid defaults", () => {
   const config = createDefaultRunCoreConfig();
   assertEquals(config.runDurationSeconds, 3600);
-  // Issue #2446: default sleep interval raised from 30 s to 120 s.
-  assertEquals(config.sleepInterval, 120);
+  // Issue #2446: default sleep interval raised from 30 s to 300 s.
+  assertEquals(config.sleepInterval, 300);
   assertEquals(typeof config.maxConsecutiveFailures, "number");
   assertEquals(config.maxConsecutiveFailures > 0, true);
 });
@@ -1180,6 +1180,9 @@ Deno.test("run_core - an unavailable tier adapts in place and the cycle continue
   const calls: string[] = [];
   let nowValue = 0;
   let cycleCount = 0;
+  // Recovery must reach the next health probe, otherwise the fixture keeps
+  // adapting before its mocked sleep can advance time.
+  let adapted = false;
 
   const deps = createMockDeps({
     now: () => nowValue,
@@ -1192,10 +1195,18 @@ Deno.test("run_core - an unavailable tier adapts in place and the cycle continue
       errors.push(msg);
     },
     checkClaudeHealth: () =>
-      Promise.resolve({ ok: true, value: { healthy: false, exitCode: 1 } }),
+      Promise.resolve({
+        ok: true,
+        value: { healthy: adapted, exitCode: adapted ? 0 : 1 },
+      }),
     tryModelAdaptation: () => {
       calls.push("adapt");
+      adapted = true;
       return Promise.resolve({ adapted: true, detail: "flash → v4-pro" });
+    },
+    findNextIssue: () => {
+      calls.push("scan");
+      return Promise.resolve({ ok: true, value: null });
     },
   });
 
@@ -1205,6 +1216,8 @@ Deno.test("run_core - an unavailable tier adapts in place and the cycle continue
   await runCoreLoop(config, deps);
 
   assert(calls.includes("adapt"), "the gate must attempt the adaptation");
+  assertEquals(calls.filter((call) => call === "adapt").length, 1);
+  assert(calls.includes("scan"), "the recovered cycle must scan for work");
   assertEquals(
     errors.some((e) => e.includes("skipping cycle")),
     false,
