@@ -36,12 +36,17 @@ milestone. Zero commits ahead still establishes that there is nothing to merge.
   milestone without a tracker or summary PR after it.
 - The two affected milestone suites pass: 168 tests, no failures.
 - Manifest completeness checks pass: 687 passed, one existing ignored test.
-- Docs sweep — grep: "0 commits ahead", "nothing to merge", "ahead_by";
+- Docs sweep — grep: "0 commits ahead", "nothing to merge", "ahead_by",
+  "SUBPROCESS_TIMING_TEST_FILES", "polling wait";
   updated `docs/workflows/milestones.md`, `docs/INTERNALS.md` and completion
   comments/logging and the required-gate signal-suite rationale in
   `CODING-STANDARDS.md`; section: `docs/workflows/milestones.md` → "Decision points
-  and exceptions"; siblings: none — extends an existing decision, with no new
-  member of a documented set. `docs/INTERNALS.md:4477` still describes the
+  and exceptions"; siblings: `worker/deno/tests/container_containment_test.ts`
+  and `worker/deno/tests/launcher_signal_readiness_test.ts` already share the
+  subprocess-timing manifest. Updated its shared prose for the third member
+  and clarified the required signal suite's polling exception in the standards.
+  The milestone change extends an existing decision.
+  `docs/INTERNALS.md:4477` still describes the
   separate sync-PR retirement decision, whose commit-ancestry requirement is
   unchanged.
 
