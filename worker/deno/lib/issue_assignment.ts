@@ -239,6 +239,8 @@ function createdAtMillis(createdAt: string): number {
 
 /** The issue an assignment is recorded against, and who may record it. */
 export interface IssueAssignmentInput {
+  /** Proposed cohort for a new assignment; trusted existing attribution wins. */
+  cohort?: string;
   repo: string;
   issueNumber: number;
   /** Fleet logins whose markers are believed. */
@@ -294,7 +296,7 @@ export async function recordIssueAssignment(
   const existing = selectTrustedAssignment(comments, input.trustedAuthors);
   let marker: ResolvedAssignment = existing ?? {
     assignmentId: seams.mintId(),
-    cohort: UNASSIGNED_COHORT,
+    cohort: input.cohort ?? UNASSIGNED_COHORT,
     assignedAt: new Date(seams.now()).toISOString(),
   };
   let reused = existing !== undefined;

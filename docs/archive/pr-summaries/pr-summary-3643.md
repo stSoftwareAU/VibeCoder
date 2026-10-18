@@ -43,10 +43,12 @@ subscription, CLI and observed quota failures stop external dispatch.
   recorded treatment, and repository rollback to native dispatch.
 - The full local gate passed completeness, type checking, lint and formatting.
   Its parallel test pass had 29,241 passes and three host-related failures:
-  two process-tree cleanup assertions also reproduced on the milestone base.
-  PowerShell startup was fixed locally with a cache-directory wrapper; the
-  separate serial test pass is running.
-  Local markdownlint and semgrep are unavailable; required CI runs those checks. No live subscription-model turn
+  two process-tree cleanup assertions and PowerShell startup under the
+  sanitised test environment. The process-tree failures also reproduce on the
+  base; a cache-directory wrapper resolves PowerShell startup. A separate
+  serial pass was stopped after an existing signal fixture stalled.
+  All required CI and additional integration checks passed on PR #4007.
+  Local markdownlint and semgrep are unavailable; CI passed both. No live subscription-model turn
   was purchased or used to claim host entitlement.
 - #3643: Configure manager, executor and reviewer independently per host and repository.
 - #3642: Implement external provider-neutral orchestration behind an opt-in feature flag.
@@ -74,6 +76,7 @@ subscription, CLI and observed quota failures stop external dispatch.
 
 ## Merge verification
 
-Required CI and code review are pending. Live subscription entitlements and
+PR #4007 merged into the milestone branch with all CI checks successful.
+Live subscription entitlements and
 sandbox support require each operator-selected host; unavailable combinations
 fail closed.

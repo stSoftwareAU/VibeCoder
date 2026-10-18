@@ -188,6 +188,10 @@ import { bindConflictTakeoverResolvers } from "./conflict_takeover_resolvers.ts"
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { recordClosedLifecyclePrs } from "./lifecycle_pr_observation.ts";
+import {
+  refreshSubscriptionAllocation,
+  startSubscriptionAllocationRefresh,
+} from "./subscription_allocation_runtime.ts";
 import { buildSyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
 import { reconcilePrBodyDigests as runPrBodyDigestReconcile } from "./pr_body_reconcile.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
@@ -3713,6 +3717,10 @@ export async function createProductionRunCoreDeps(
           runGhCommand,
           logger,
         );
+        await refreshSubscriptionAllocation(
+          config,
+          (message) => logger.info(message),
+        );
         return { ok: true, value: undefined };
       } catch (err) {
         return {
@@ -5384,6 +5392,10 @@ export async function createProductionRunCoreDeps(
      * without ever altering the run's own outcome.
      */
     async runIssueCallbacks(run) {
+      await refreshSubscriptionAllocation(
+        config,
+        (message) => logger.info(message),
+      );
       if (!hasAnyRunCallback(config.callbacks)) return;
       const key = `${run.repo}#${run.issueNumber}`;
       const sessionId = releasedSessionIds.get(key);
@@ -5443,6 +5455,10 @@ export async function createProductionRunCoreDeps(
       );
     },
     async runCycleCallback(cycle) {
+      await refreshSubscriptionAllocation(
+        config,
+        (message) => logger.info(message),
+      );
       if (!hasCycleCallback(config.callbacks)) return;
       await invokeCycleCallback({
         callbacks: config.callbacks,
@@ -6467,8 +6483,13 @@ export async function createProductionRunCoreDeps(
     },
   };
 
-  /** Close the log file handle (if any) to avoid resource leaks. */
+  const stopAllocationRefresh = startSubscriptionAllocationRefresh(
+    config,
+    (message) => logger.info(message),
+  );
+  /** Stop periodic evaluation and close the log file handle (if any). */
   const cleanup = () => {
+    stopAllocationRefresh();
     if (logFileHandle) {
       try {
         logFileHandle.close();

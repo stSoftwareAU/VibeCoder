@@ -92,6 +92,7 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Operator label for the subscription allocation recorded on each issue's
   // lifecycle-ledger assignment (Issue #3718). A label only.
   "subscription_allocation_label",
+  "subscription_allocation",
 
   // Label fields
   // Issue #1834: `work_on_label` and `low_priority_label` removed — both

@@ -13,6 +13,7 @@ import {
   DEFAULT_CLAUDE_MAX_TURNS,
   validateClaudeMaxTurns,
 } from "./claude_turn_limit.ts";
+import { parseAllocationPolicy } from "./subscription_allocation.ts";
 import { registerAgentPreFlightConfigs } from "./agent_pre_flight.ts";
 import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
@@ -1333,6 +1334,7 @@ export async function loadConfig(
     // operator believes Graft is on.
     graftContext: assertGraftContextConfig(file.graft_context),
     repoConfig: normaliseRepoConfigs(file.repo_config),
+    subscriptionAllocation: parseAllocationPolicy(file.subscription_allocation),
   };
 
   // Issue #3577: reject a malformed pre-flight gate loudly at config load,
