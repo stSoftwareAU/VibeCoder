@@ -8,7 +8,12 @@
  * Australian English spelling used throughout.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   type CitedSecurityTest,
   namedRustTestOutcome,
@@ -149,7 +154,12 @@ async function run(
   cwd: string,
 ): Promise<string> {
   const out = await new Deno.Command(cmd, {
-    args,
+    // Fixture commits/checkouts can leave detached auto-maintenance writing
+    // into .git after output() resolves, racing withRepo's strict removal.
+    // Disable it for fixture setup only, as in the other real-git fixtures.
+    args: cmd === "git"
+      ? ["-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args]
+      : args,
     cwd,
     stdin: "null",
     stdout: "piped",
@@ -530,25 +540,38 @@ Deno.test("discrimination: a repo with no Deno marker is not_checked", async () 
 });
 
 Deno.test("discrimination: a timed-out git step is not_checked", async () => {
+  let repo = "";
   await withRepo({ "src/sanitise.ts": VULN }, BRANCH_FILES, async (root) => {
+    repo = root;
     const rec = recordingSeams(markerDeno);
     const wrapped: MutationRunnerSeams = {
       ...rec.seams,
-      runProcess(cmd, args, opts) {
+      async runProcess(cmd, args, opts) {
         if (cmd === "git" && args[0] === "clone") {
-          return Promise.resolve({
+          // A clone can time out after it has already written part of its tree.
+          await write(args[args.length - 1]!, ".git/partial", "incomplete");
+          return {
             code: 0,
             stdout: "",
             stderr: "",
             timedOut: true,
-          });
+          };
         }
-        return rec.seams.runProcess(cmd, args, opts);
+        return await rec.seams.runProcess(cmd, args, opts);
       },
     };
     const r = await runSecurityFixDiscrimination(input(root), wrapped);
     assertEquals(reasonOf(r), "git clone timed out");
+    assertEquals(rec.tempDirs.length, 1);
+    await assertRejects(
+      () => Deno.stat(rec.tempDirs[0]!),
+      Deno.errors.NotFound,
+    );
+    assertEquals(rec.calls.filter((c) => c.cmd === "deno").length, 0);
+    assertEquals(await run("git", ["status", "--porcelain"], root), "");
+    assertEquals(await Deno.readTextFile(`${root}/src/sanitise.ts`), FIXED);
   });
+  await assertRejects(() => Deno.stat(repo), Deno.errors.NotFound);
 });
 
 Deno.test("discrimination: no production files means no ls-tree and the base run is the head tree", async () => {
