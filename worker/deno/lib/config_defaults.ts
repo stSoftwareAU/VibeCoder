@@ -339,12 +339,12 @@ export const OPERATIONAL_DEFAULTS = {
   claudeKillAfter: 30,
   maxClarificationRounds: 3,
   /**
-   * Seconds slept between scan cycles (Issue #2446). Raised from 30 to 120:
-   * each cycle carries a fixed GraphQL cost, so a quarter as many cycles an
-   * hour is the cheapest reduction in quota spend (#2409). An explicit
+   * Seconds slept between scan cycles. Raised from 120 to 300 because each
+   * cycle carries a fixed GraphQL cost; fewer cycles reduce shared-account
+   * quota spend. An explicit
    * `sleep_interval` in `.config.json` still wins.
    */
-  sleepInterval: 120,
+  sleepInterval: 300,
   // Concurrent-issue slots (Issues #4174/#4177, VibeCoder#170): two by
   // default — the intended cadence is "work as many issues as possible in
   // each hourly run", and the slot governor (#4179) lowers the effective

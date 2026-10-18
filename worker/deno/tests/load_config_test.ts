@@ -186,9 +186,9 @@ Deno.test("load-config - outputs operational defaults", async () => {
       output.includes('CLAUDE_TIMEOUT="${CLAUDE_TIMEOUT:-3600}"'),
       "Should output CLAUDE_TIMEOUT default",
     );
-    // Issue #2446: sleepInterval raised from 30 to 120.
+    // Issue #2446: sleepInterval raised from 30 to 300 to reduce polling.
     assert(
-      output.includes('SLEEP_INTERVAL="${SLEEP_INTERVAL:-120}"'),
+      output.includes('SLEEP_INTERVAL="${SLEEP_INTERVAL:-300}"'),
       "Should output SLEEP_INTERVAL default",
     );
     assert(
