@@ -157,7 +157,7 @@
       },
       {
         "path": "worker/deno/lib/phases/completion_phase.ts",
-        "line": 2374,
+        "line": 2343,
         "outcome": "renderer error stays blocking with its cause",
         "test": "worker/deno/tests/completion_phase_branch_outcomes_facts_3396_test.ts",
         "testName": "completion facts - ambiguous ownership and unresolved evidence remain blocking (Issue #3979)",
@@ -173,7 +173,7 @@
       },
       {
         "path": "worker/deno/lib/pr_body_sync.ts",
-        "line": 535,
+        "line": 567,
         "outcome": "renderer error stays blocking with its cause",
         "test": "worker/deno/tests/pr_body_sync_test.ts",
         "testName": "sync - ambiguous outcome ownership fails without editing the PR (Issue #3979)",

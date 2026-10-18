@@ -41,7 +41,7 @@ admissions stay blocking in completion, local validation and body sync.
   also fails its GRQ-shape regression when its shared check is removed.
 - Docs sweep — grep: "hand-written", "facts file", "Branch outcomes", "marker";
   updated CODING-STANDARDS.md, docs/workflows/issue-processing.md and the issue,
-  coding_guidelines and pr_feedback prompts; section:
+  pr_feedback prompts; verified existing coding_guidelines parity; section:
   docs/workflows/issue-processing.md → "The facts file"; siblings: none — no existing configuration or outcome set gained a member.
 - Removed the completion/local-check categorical facts-plus-prose refusal.
   Templates request facts plus the marker instead of two maintained lists.
@@ -66,6 +66,7 @@ admissions stay blocking in completion, local validation and body sync.
 - **violation** — Local-check replacement regression could pass without rendering — evidence: `worker/deno/tests/pr_summary_check_test.ts:397` — reason: fixed with a stale named-test citation that only authoritative facts replace.
 - **clean** — Reviewed Result contracts, shared admission reuse, named-test paths, test-only production members, documentation truthfulness and issue-required assertion replacements. No routing or merge protections change.
 
+
 ## Test Plan
 
 - Labelled synthetic refusal corpus: 14 invalid inputs and 14 paired legal
@@ -82,6 +83,7 @@ admissions stay blocking in completion, local validation and body sync.
 - Append expectation: omit the appended block → red. Empty-summary
   expectation: return an empty string in that arm → red.
 
+- Eight focused suites pass after updating the base: 173 tests, no failures.
 - Focused regressions cover rendering, completion, local validation and body
   sync, plus existing admission and head-drift validation.
 - Existing marker-absence expectations change because refreshed bodies retain
