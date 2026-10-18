@@ -74,7 +74,7 @@ flowchart LR
 
 - **violation** — Pending wording could hide a failed check — evidence: `worker/deno/lib/degraded_delivery.ts:201` — reason: fixed with narrowly matched pending reasons and current check-result evidence.
 - **violation** — Negated or resolved failure words could create false follow-ups — evidence: `worker/deno/lib/degraded_delivery.ts:170` — reason: fixed by reading declared current results rather than historical criterion wording; later clean results supersede only the same check and suite.
-- **violation** — Test citations used basenames — evidence: `docs/archive/pr-summaries/pr-summary-3961.md:94` — reason: fixed with repository-relative paths.
+- **violation** — Test citations used basenames — evidence: `docs/archive/pr-summaries/pr-summary-3961.md:87` — reason: fixed with repository-relative paths.
 - **clean** — Reviewed genuine/negated/resolved failures, supported field separators, per-check and unit/integration identity, Result contracts, Australian English, preserved assertions and unchanged merge protections. No existing assertion or expected value was removed or weakened.
 
 ## Test Plan
