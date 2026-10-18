@@ -48,8 +48,11 @@ flowchart LR
 - The loader regression failed against base production code. Preservation and
   heading-growth regressions also failed against the initial implementation.
 - After integration with main `60392646`, the three loader/facts/body-sync
-  suites pass 101 tests with type checking enabled. The sole full rerun remains
-  pending. Sixteen actual mutations of
+  suites pass 101 tests with type checking enabled. The sole full gate passed
+  at `6ed14e5b119e35e35a6de0e60d47cc0417e0171b` on 2026-10-18: parallel and
+  serial unit passes, type checking, formatting, lint, completeness, documentation
+  and security checks all passed. Optional local configuration integration was
+  skipped because this workspace has no `.config.json`. Sixteen actual mutations of
   scope, ownership, logical units, heading growth and loader integration fail
   their named regression assertions.
 - Independent corpus: 1,044 existing archived summaries; zero changes and zero
