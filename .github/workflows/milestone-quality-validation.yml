@@ -20,7 +20,7 @@ jobs:
         # actions/checkout@v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 9a2fcdc227a08800153cccb7b8a7261fc4df9f9a
+          ref: c081a90d81800fea2b9a9a02c103efc135c4e27f
           persist-credentials: false
           fetch-depth: 0
 

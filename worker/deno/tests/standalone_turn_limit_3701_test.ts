@@ -6,6 +6,16 @@ Deno.test({
     "standalone command settles configured and default turn caps over stale inherited transport",
   ignore: Deno.build.os === "windows",
   async fn() {
+    // Changing HOME must not silently select an empty child cache when CI uses
+    // Deno's default cache location rather than an explicit DENO_DIR.
+    const cacheInfo = await new Deno.Command(Deno.execPath(), {
+      args: ["info", "--json"],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(cacheInfo.code, 0, new TextDecoder().decode(cacheInfo.stderr));
+    const cacheDir = JSON.parse(new TextDecoder().decode(cacheInfo.stdout))
+      .denoDir as string;
     await withAgentStub(
       `printf '%s\\n' "$@" > "$(dirname "$0")/argv"\nprintf '%s\\n' '{"type":"result","subtype":"success","result":"summary"}'`,
       async (stub) => {
@@ -30,6 +40,11 @@ Deno.test({
               "run",
               "-A",
               "--cached-only",
+              "--frozen",
+              "--lock",
+              decodeURIComponent(
+                new URL("../deno.lock", import.meta.url).pathname,
+              ),
               "--config",
               decodeURIComponent(
                 new URL("../deno.json", import.meta.url).pathname,
@@ -48,7 +63,7 @@ Deno.test({
             env: {
               PATH: `${stub.dir}:/usr/bin:/bin`,
               HOME: stub.dir,
-              DENO_DIR: Deno.env.get("DENO_DIR") ?? "",
+              DENO_DIR: cacheDir,
               CONFIG_PATH: configPath,
               VIBE_CLAUDE_MAX_TURNS: "999",
               VIBE_AGENT_NICE: "0",
