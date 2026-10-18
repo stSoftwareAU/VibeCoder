@@ -293,6 +293,8 @@ Deno.test("deepseek provider - the invocation takes the Claude CLI's argument sh
   assertEquals(args, [
     "--model",
     "deepseek-flash",
+    "--max-turns",
+    "100",
     "--dangerously-skip-permissions",
     "--disallowed-tools",
     "EnterPlanMode,ExitPlanMode",

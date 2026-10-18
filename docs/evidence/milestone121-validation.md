@@ -59,7 +59,7 @@ before merge, independently of technical validation.
 
 ## Completed focused checks
 
-- Fourteen combined behavioural test files: 418 passed, 0 failed. This includes
+- Sixteen combined behavioural test files: 454 passed, 0 failed. This includes
   the six planning stages and terminal quality-remediation regressions.
 - Repository manifest checks: 687 passed, 0 failed, 1 ignored by the existing
   harness.
@@ -68,6 +68,32 @@ before merge, independently of technical validation.
 - Both archived summary checks report zero blocked gates. Their model-dependent
   summary claim checks are explicitly not checked, not represented as passes.
 - The complete unchanged quality gate remains a separate publication condition.
+
+## First hosted run and follow-up
+
+The [first immutable-source run](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39089145423)
+checked source `9a2fcdc227a08800153cccb7b8a7261fc4df9f9a`. Its parallel unit pass
+reported 28,666 passed, 4 failed and 4 ignored; the serial pass did not run.
+All other required quality stages passed; configuration integration was
+reported skipped by the existing gate. This is a failed full gate, not a
+completed validation pass.
+
+Three failures were existing DeepSeek/routing argv expectations that omitted
+the new cap. The expectations now retain all prior arguments and add only the
+cap. An isolated mutation removing the production cap argument makes all five
+edited argv tests fail, including the two earlier Claude descriptor assertions.
+The exact replacements and issue requirement are recorded in the turn-limit
+archive's Test Plan.
+
+The fourth failure came from the standalone test changing HOME while passing
+an empty DENO_DIR on CI, selecting a fresh child cache. Reproducing DENO_DIR
+unset with an isolated parent default-cache HOME failed the existing test.
+Resolving the actual cache with `deno info --json` before changing HOME fixes
+that case and keeps `--cached-only`, with an explicit frozen lockfile. All
+three affected test files then passed together: 37 passed, 0 failed.
+
+The follow-up needs a new unchanged full-gate run against its immutable source.
+Human runbook review remains pending.
 
 ## Documentation sweep
 
