@@ -267,7 +267,6 @@ async function carryOver(
           alreadyRun.add(t);
         }
       }
-      if (batch.length === 0) continue;
       const stop = await runUnderCoverage(seams, {
         ...headRun,
         groups: new Map([[dir, batch]]),
