@@ -1197,7 +1197,10 @@ A unit test is **behavioural**, **self-contained**, **fast** and
   script is a `test-audit` finding (check 13) whatever the test happens to cost
   on your machine — unless the file is **declared**, in the integration
   manifest or in `IN_GATE_SCRIPT_SUITES`, where the spawn is the point and its
-  cost is recorded beside it.
+  cost is recorded beside it. The real signal-cleanup suite also keeps its
+  process and polling assertions in the required serial pass, with its measured
+  reason in `SUBPROCESS_TIMING_TEST_FILES` (see "Real signal cleanup stays in the
+  required gate" below).
 - **Parallel-safe** — it does not mutate process-wide state (`Deno.env.set`,
   `Deno.env.delete`, `Deno.chdir`, or a module-level singleton the rest of the
   suite reads). Take the value as a parameter or an injected seam instead.
@@ -1358,6 +1361,15 @@ at all.
 A benchmark disguised as a unit test is a gate failure, not a style point. The
 benchmark-audit stage scans `worker/deno/tests/` and fails any `Deno.test`
 whose name contains `benchmark` or `bench_` (Issue #583).
+
+### Real signal cleanup stays in the required gate
+
+`worker/deno/tests/run_core_signal_cleanup_test.ts` exercises SIGINT/SIGTERM against a real
+Deno entrypoint and descendant process. It remains in the required serial unit pass,
+with every cleanup assertion intact. Its process startup and graceful-termination
+polling have a named reason in `SUBPROCESS_TIMING_TEST_FILES`, inherited by
+`SLOW_UNIT_TEST_KEEP_FILES`; the one-second mockable
+unit-work budget is not a signal-cleanup performance requirement.
 
 ### When a test does not fit
 
