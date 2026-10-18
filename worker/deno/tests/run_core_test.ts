@@ -1908,12 +1908,13 @@ Deno.test(
 // Tests — Deferrable sweeps skipped while the budget is in reserve (#2449)
 // ---------------------------------------------------------------------------
 
-/** The four fixed-cost sweeps tiered `deferrable` (Issue #2449). */
+/** The five fixed-cost sweeps tiered `deferrable` (Issue #2449, #3760). */
 const DEFERRABLE_HANDLER_NAMES = [
   "Close Issues for Merged PRs",
   "Recover Assigned with Closed PRs",
   "Milestone Completions",
   "Failure-Detection Repair Resume",
+  "Reconcile PR Body Digests",
 ];
 
 /**
@@ -1979,6 +1980,10 @@ async function runCyclesWithQuota(
       record("Failure-Detection Repair Resume");
       return Promise.resolve({ ok: true, value: { processed: false } });
     },
+    reconcilePrBodyDigests: () => {
+      record("Reconcile PR Body Digests");
+      return done();
+    },
     // A representative sample of the handlers that must never be skipped.
     findAndProcessPrFeedback: () => {
       record("PR Feedback");
@@ -2024,7 +2029,7 @@ async function runCyclesWithQuota(
 }
 
 Deno.test(
-  "run_core - exactly four handlers carry budgetTier deferrable (Issue #2449)",
+  "run_core - exactly five handlers carry budgetTier deferrable (Issue #2449, #3760)",
   () => {
     const table = buildPriorityDispatchTable(createMockDeps());
     const tiered = table
