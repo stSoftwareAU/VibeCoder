@@ -150,6 +150,16 @@ degraded/partial-delivery section, which adoption leaves unchanged.
   with type checking: 156 tests, no failures. The missing-criterion adoption
   test retains every previous body assertion and also verifies content checking
   and one follow-up creation. No existing assertion was removed or weakened.
-  The subsequent main `3b6cc28f` summary integration also passes the body-sync, summary-loader and facts suites with type checking. Required hosted checks validate the pushed head.
+  The subsequent main `3b6cc28f` summary integration also passes the body-sync, summary-loader and facts suites with type checking.
+- Hosted Quality run `39120571897` passed all unit shards, integration,
+  container and Markdown checks but blocked on the top-up's branch-only
+  `sweptAt`. The never-landed `claimed` record was regenerated through the
+  supported `sweep-drift --record-top-up` producer in a disposable checkout of
+  its original source stamp `52eb528e`. The producer selected that snapshot's
+  default-branch merge base `addaa06f`, preserving every scope/status field
+  and retaining a conservative original horizon. No audit completion is claimed.
+  With full git history, the exact hosted ancestry command failed on that one
+  slice before replacement and passed afterwards; 52 existing ledger/producer
+  tests also pass. Required hosted checks validate the pushed head.
 
 <!-- vibe-branch-outcomes -->
