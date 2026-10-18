@@ -13,6 +13,8 @@ import {
   reapWedgedContainer,
 } from "./container_watchdog.ts";
 
+import { parseBrokerSessionConfig } from "./broker_session_config.ts";
+
 const OWNER_LABEL = "io.vibecoder.broker-session";
 
 interface RuntimeChild {
@@ -23,7 +25,7 @@ interface RuntimeChild {
 export interface BrokerSupervisorDeps {
   /** Bounded runtime calls; production uses the existing watchdog runner. */
   run: (args: string[]) => Promise<{ code: number; stdout: string }>;
-  start: (args: string[]) => RuntimeChild;
+  start: (args: string[], input?: Uint8Array) => RuntimeChild;
   /** True only when the existing reaper verifies the container/client gone. */
   reap: (
     name: string,
@@ -41,16 +43,29 @@ function productionDeps(plan: BrokerIsolationPlan): BrokerSupervisorDeps {
   });
   return {
     run: (args) => reaper.runRuntime(args),
-    start(args) {
+    start(args, input) {
       const child = new Deno.Command(plan.runtime, {
         args,
-        stdin: "null",
+        stdin: input ? "piped" : "null",
         stdout: "inherit",
         stderr: "inherit",
       }).spawn();
+      const delivered = input
+        ? (async () => {
+          const writer = child.stdin.getWriter();
+          try {
+            await writer.write(input);
+            await writer.close();
+          } finally {
+            writer.releaseLock();
+          }
+        })()
+        : Promise.resolve();
       return {
         pid: child.pid,
-        status: child.status.then((status) => status.code),
+        status: Promise.all([child.status, delivered]).then(([status]) =>
+          status.code
+        ),
       };
     },
     async reap(containerName, clientPid, owner) {
@@ -130,13 +145,18 @@ function productionDeps(plan: BrokerIsolationPlan): BrokerSupervisorDeps {
 export async function superviseBrokeredWorker(
   plan: BrokerIsolationPlan,
   options: {
+    /** Selected host values; never included in the launch plan or runtime argv. */
+    sessionConfig: string;
     signal?: AbortSignal;
     readinessTimeoutMs?: number;
     pollMs?: number;
-  } = {},
+  },
   deps?: BrokerSupervisorDeps,
 ): Promise<number> {
   plan = structuredClone(plan);
+  const sessionInput = new TextEncoder().encode(
+    JSON.stringify(parseBrokerSessionConfig(options.sessionConfig)),
+  );
   deps ??= productionDeps(plan);
   const readinessTimeoutMs = options.readinessTimeoutMs ?? 30_000;
   const pollMs = options.pollMs ?? 100;
@@ -179,7 +199,12 @@ export async function superviseBrokeredWorker(
     args: string[],
   ) => [args[0]!, "--label", `${label}=${owner}`, ...args.slice(1)];
   const initialisers: string[] = [];
-  let owned = false;
+  const owned = new Set<string>();
+  const volumes = [
+    { name: plan.socketVolume, removeArgs: plan.socketRemoveArgs },
+    { name: plan.privateVolume, removeArgs: plan.privateRemoveArgs },
+  ];
+  let provisioner: RuntimeChild | undefined;
   let broker: RuntimeChild | undefined;
   let worker: RuntimeChild | undefined;
   let brokerExited = false;
@@ -192,36 +217,43 @@ export async function superviseBrokeredWorker(
   let outcome: { code: number } | { error: unknown };
   try {
     checkCancelled();
-    const existing = await checked([
-      "volume",
-      "ls",
-      "--filter",
-      `name=^${plan.socketVolume}$`,
-      "--format",
-      "{{.Name}}",
-    ], "Could not establish socket volume ownership");
-    if (existing.trim() !== "") {
-      throw new Error("Broker socket volume already exists");
+    // Preflight both names before creating either one. Each successful create
+    // still needs an independent owner witness before it becomes removable.
+    for (const volume of volumes) {
+      const existing = await checked([
+        "volume",
+        "ls",
+        "--filter",
+        `name=^${volume.name}$`,
+        "--format",
+        "{{.Name}}",
+      ], "Could not establish broker volume ownership");
+      if (existing.trim() !== "") {
+        throw new Error("Broker socket or private volume already exists");
+      }
+      checkCancelled();
     }
-    checkCancelled();
-    await checked([
-      "volume",
-      "create",
-      "--label",
-      `${label}=${owner}`,
-      plan.socketVolume,
-    ], "Could not create broker socket volume");
-    const actualOwner = await checked([
-      "volume",
-      "inspect",
-      "--format",
-      `{{ index .Labels "${label}" }}`,
-      plan.socketVolume,
-    ], "Could not verify socket volume ownership");
-    if (actualOwner.trim() !== owner) {
-      throw new Error("Broker socket volume ownership changed");
+    for (const volume of volumes) {
+      await checked([
+        "volume",
+        "create",
+        "--label",
+        `${label}=${owner}`,
+        volume.name,
+      ], "Could not create broker session volume");
+      const actualOwner = await checked([
+        "volume",
+        "inspect",
+        "--format",
+        `{{ index .Labels "${label}" }}`,
+        volume.name,
+      ], "Could not verify broker volume ownership");
+      if (actualOwner.trim() !== owner) {
+        throw new Error("Broker volume ownership changed");
+      }
+      owned.add(volume.name);
+      checkCancelled();
     }
-    owned = true;
     checkCancelled();
     initialisers.push(
       plan.socketInitArgs[plan.socketInitArgs.indexOf("--name") + 1]!,
@@ -238,6 +270,12 @@ export async function superviseBrokeredWorker(
       labelled(plan.worker.initArgs),
       "Worker volume initialisation failed",
     );
+    checkCancelled();
+    provisioner = deps.start(labelled(plan.provisionArgs), sessionInput);
+    const provisionCode = await Promise.race([provisioner.status, interrupted]);
+    if (provisionCode !== 0) {
+      throw new Error("Broker credential provisioning failed");
+    }
     checkCancelled();
     broker = deps.start(labelled(plan.broker.runArgs));
     brokerExit = broker.status.then(() => {
@@ -314,6 +352,7 @@ export async function superviseBrokeredWorker(
     const role of [
       { child: broker, name: plan.broker.name },
       { child: worker, name: plan.worker.containerName },
+      { child: provisioner, name: `${plan.worker.containerName}-broker-stage` },
       ...initialisers.map((name) => ({ child: undefined, name })),
     ]
   ) {
@@ -326,24 +365,31 @@ export async function superviseBrokeredWorker(
       failures.push(role.name);
     }
   }
-  if (owned && failures.length === 0) {
-    try {
-      const ownerNow = await checked([
-        "volume",
-        "inspect",
-        "--format",
-        `{{ index .Labels "${label}" }}`,
-        plan.socketVolume,
-      ], "Socket ownership could not be rechecked");
-      if (ownerNow.trim() !== owner) {
-        throw new Error("Socket ownership changed");
+  if (failures.length === 0) {
+    for (const volume of [...volumes].reverse()) {
+      if (!owned.has(volume.name)) continue;
+      try {
+        const ownerNow = await checked([
+          "volume",
+          "inspect",
+          "--format",
+          `{{ index .Labels "${label}" }}`,
+          volume.name,
+        ], "Broker volume ownership could not be rechecked");
+        if (ownerNow.trim() !== owner) {
+          throw new Error("Broker volume ownership changed");
+        }
+        await checked(
+          volume.removeArgs,
+          "Broker session volume could not be removed",
+        );
+      } catch {
+        failures.push(
+          volume.name === plan.socketVolume
+            ? "socket volume"
+            : "private volume",
+        );
       }
-      await checked(
-        plan.socketRemoveArgs,
-        "Socket volume could not be removed",
-      );
-    } catch {
-      failures.push("socket volume");
     }
   }
   if (failures.length > 0) {

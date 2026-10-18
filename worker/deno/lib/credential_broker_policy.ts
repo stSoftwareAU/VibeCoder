@@ -11,6 +11,12 @@ export const CREDENTIAL_BROKER_UPSTREAMS = {
   deepseek: "https://api.deepseek.com",
   gemini: "https://generativelanguage.googleapis.com",
   github: "https://api.github.com",
+  "codex-subscription": "https://chatgpt.com",
+} as const;
+
+/** Trusted refresh only; these endpoints are never agent-accessible routes. */
+export const CREDENTIAL_BROKER_AUTH_ENDPOINTS = {
+  codex: "https://auth.openai.com/oauth/token",
 } as const;
 
 /** The upstream services implemented by the experimental broker. */
@@ -34,6 +40,19 @@ export function resolveCredentialBrokerRoute(
   const segments = url.pathname.split("/");
   const service = segments[1] as BrokerService;
   if (!Object.hasOwn(CREDENTIAL_BROKER_UPSTREAMS, service)) return;
+  if (service === "codex-subscription") {
+    if (
+      request.method !== "POST" ||
+      url.pathname !== "/codex-subscription/responses" || url.search
+    ) return;
+    return {
+      service,
+      upstream: new URL(
+        "/backend-api/codex/responses",
+        CREDENTIAL_BROKER_UPSTREAMS[service],
+      ),
+    };
+  }
   const path = "/" + segments.slice(2).join("/");
   // No encoded separators, control characters, dot segments, path parameters,
   // or backslashes. The small API surface below needs none of them. URL has

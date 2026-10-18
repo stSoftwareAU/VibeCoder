@@ -202,12 +202,14 @@ Deno.test({
   },
 });
 
-Deno.test("Codex subscription mode is explicitly refused without metered fallback", () => {
-  for (const mode of ["chatgpt", "unknown"] as BrokeredCodexOptions["mode"][]) {
+Deno.test("Codex unknown mode is explicitly refused without metered fallback", () => {
+  for (
+    const mode of ["unknown", ""] as unknown as BrokeredCodexOptions["mode"][]
+  ) {
     assertThrows(
       () => buildBrokeredCodexLaunch({ ...options, mode }),
       Error,
-      "Only explicitly selected API-key mode is implemented",
+      "Codex broker mode must be explicitly selected",
     );
     assertThrows(
       () =>
@@ -217,8 +219,93 @@ Deno.test("Codex subscription mode is explicitly refused without metered fallbac
           forward: () => Promise.resolve(new Response()),
         }),
       Error,
-      "Only explicitly selected API-key mode is implemented",
+      "Codex broker mode must be explicitly selected",
     );
+  }
+});
+
+Deno.test({
+  name:
+    "Codex ChatGPT launch uses an opaque custom provider with no ambient authentication",
+  permissions: { env: false },
+  fn() {
+    const launch = buildBrokeredCodexLaunch({ ...options, mode: "chatgpt" });
+    assertEquals(launch.env, {
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+      HOME: options.homeDir,
+      CODEX_HOME: options.codexHome,
+      CODEX_BROKER_CAPABILITY: capability,
+    });
+    assertEquals(launch.providerId, "vibe_broker_chatgpt");
+    assertEquals(
+      launch.configToml,
+      [
+        'model_provider = "vibe_broker_chatgpt"',
+        "check_for_update_on_startup = false",
+        'cli_auth_credentials_store = "file"',
+        "",
+        "[model_providers.vibe_broker_chatgpt]",
+        'name = "Isolated ChatGPT subscription broker"',
+        'base_url = "http://127.0.0.1:4567/v1"',
+        'env_key = "CODEX_BROKER_CAPABILITY"',
+        'wire_api = "responses"',
+        "requires_openai_auth = false",
+        "supports_websockets = false",
+        "",
+      ].join("\n"),
+    );
+  },
+});
+
+Deno.test("Codex trusted subscription selection fixes the route and preserves only protocol metadata", async () => {
+  const calls: Request[] = [];
+  const selected = {
+    mode: "chatgpt" as BrokeredCodexOptions["mode"],
+    capability,
+    forward(req: Request) {
+      calls.push(req);
+      return Promise.resolve(new Response("completed"));
+    },
+  };
+  const gateway = createCodexAgentGateway(selected);
+  selected.mode = "api-key";
+  selected.capability = "changed-after-construction-0123456789abcdef";
+  const input = new Request(`${options.baseUrl}/v1/responses`, {
+    method: "POST",
+    body: "{}",
+    headers: {
+      authorization: "Bearer attacker",
+      "chatgpt-account-id": "attacker",
+      "openai-organization": "attacker",
+      cookie: "attacker",
+      originator: "codex_cli_rs",
+      "user-agent": "codex_cli_rs/0.147.0",
+      version: "0.147.0",
+      "x-codex-turn-state": "fixture-state",
+      "x-codex-turn-metadata": '{"turn_id":"fixture"}',
+    },
+  });
+  const response = await gateway(input);
+  assertEquals(await response.text(), "completed");
+  assertEquals(calls.length, 1);
+  assertEquals(
+    calls[0]!.url,
+    "http://broker.invalid/codex-subscription/responses",
+  );
+  assertEquals(calls[0]!.headers.get("authorization"), `Bearer ${capability}`);
+  for (
+    const name of [
+      "originator",
+      "user-agent",
+      "version",
+      "x-codex-turn-state",
+      "x-codex-turn-metadata",
+    ]
+  ) {
+    assertEquals(calls[0]!.headers.get(name), input.headers.get(name));
+  }
+  for (const name of ["chatgpt-account-id", "openai-organization", "cookie"]) {
+    assertEquals(calls[0]!.headers.get(name), null);
   }
 });
 

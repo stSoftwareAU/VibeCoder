@@ -503,6 +503,9 @@ function maskedJsonBody(text: string): string | undefined {
   return changed ? serialised : undefined;
 }
 
+/** The same JSON redaction policy for callers that already own bounded bytes. */
+export { maskedJsonBody as redactGhJsonBody };
+
 /**
  * Handle an `--input` body that is not a JSON object: not something whose keys
  * can be redacted. Do not let unparseable mean unscanned — fail closed when a

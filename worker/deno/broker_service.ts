@@ -1,72 +1,14 @@
 /**
  * Fixed trusted broker entrypoint (#3698, #3699).
  *
- * Host-only /run/broker-config/session.json supplies selected upstream values.
+ * The private /run/broker-config/session.json volume supplies selected values.
  * Only an opaque capability is written into the shared socket directory. No
  * worker command, credential path, grant or renewal request is accepted.
  * Normal worker startup cannot select this unfinished integration mode.
  */
 import { createCredentialBrokerLease } from "./lib/credential_broker_lease.ts";
-import { CREDENTIAL_BROKER_UPSTREAMS } from "./lib/credential_broker_policy.ts";
-import type { CredentialBrokerOptions } from "./lib/credential_broker.ts";
-
-interface BrokerSessionConfig {
-  credentials: CredentialBrokerOptions["credentials"];
-  repositories: string[];
-  lifetimeMs: number;
-  claudeAuthentication?: "api-key" | "bearer";
-}
-
-/** Parse only the static host contract; no executable options cross it. */
-export function parseBrokerSessionConfig(text: string): BrokerSessionConfig {
-  const invalid = () =>
-    new Error("Invalid private broker session configuration");
-  let data: unknown;
-  try {
-    data = JSON.parse(text);
-  } catch {
-    throw invalid();
-  }
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
-    throw invalid();
-  }
-  const value = data as Record<string, unknown>;
-  if (
-    Object.keys(value).some((key) =>
-      !["credentials", "repositories", "lifetimeMs", "claudeAuthentication"]
-        .includes(key)
-    )
-  ) throw invalid();
-  if (
-    typeof value.credentials !== "object" || value.credentials === null ||
-    Array.isArray(value.credentials)
-  ) throw invalid();
-  for (const [service, credential] of Object.entries(value.credentials)) {
-    if (
-      !Object.hasOwn(CREDENTIAL_BROKER_UPSTREAMS, service) ||
-      typeof credential !== "string" || !/^[\x21-\x7e]+$/.test(credential)
-    ) throw invalid();
-  }
-  if (
-    !Array.isArray(value.repositories) ||
-    value.repositories.some((repo) =>
-      typeof repo !== "string" ||
-      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) ||
-      repo.split("/").some((part) => part === "." || part === "..")
-    )
-  ) throw invalid();
-  if (
-    typeof value.lifetimeMs !== "number" ||
-    !Number.isSafeInteger(value.lifetimeMs) || value.lifetimeMs < 1 ||
-    value.lifetimeMs > 86_400_000
-  ) throw invalid();
-  if (
-    value.claudeAuthentication !== undefined &&
-    value.claudeAuthentication !== "api-key" &&
-    value.claudeAuthentication !== "bearer"
-  ) throw invalid();
-  return value as unknown as BrokerSessionConfig;
-}
+import { parseBrokerSessionConfig } from "./lib/broker_session_config.ts";
+import { provisionBrokerSession } from "./lib/broker_session_provision.ts";
 
 const metadataPath = "/run/broker/session.json";
 const socketPath = "/run/broker/broker.sock";
@@ -137,7 +79,9 @@ if (import.meta.main) {
     if (Deno.args.length !== 1) {
       throw new Error("Expected exactly one broker service role");
     }
-    if (Deno.args[0] === "serve") await serve();
+    if (Deno.args[0] === "stage") {
+      await provisionBrokerSession(Deno.stdin.readable, "/run/broker-config");
+    } else if (Deno.args[0] === "serve") await serve();
     else if (Deno.args[0] === "probe") Deno.exit(await probe() ? 0 : 1);
     else throw new Error("Unknown broker service role");
   } catch (error) {

@@ -25,14 +25,15 @@ def alive(pid):
         return False
 
 if args[:2] == ["volume", "ls"]:
-    if (root / "volume.label").exists():
-        print("fixture-owned-socket")
+    name = option("--filter").removeprefix("name=^").removesuffix("$")
+    if (root / (name + ".volume")).exists():
+        print(name)
 elif args[:2] == ["volume", "create"]:
-    (root / "volume.label").write_text(option("--label").split("=", 1)[1])
+    (root / (args[-1] + ".volume")).write_text(option("--label").split("=", 1)[1])
 elif args[:2] == ["volume", "inspect"]:
-    print((root / "volume.label").read_text())
+    print((root / (args[-1] + ".volume")).read_text())
 elif args[:2] == ["volume", "rm"]:
-    (root / "volume.label").unlink()
+    (root / (args[-1] + ".volume")).unlink()
 elif args[0] == "run":
     name = option("--name")
     path = file_for(name)
@@ -42,6 +43,10 @@ elif args[0] == "run":
     signal.signal(signal.SIGTERM, lambda _s, _f: sys.exit(0))
     try:
         if name.endswith("-init"):
+            sys.exit(0)
+        if name.endswith("-broker-stage"):
+            config = json.load(sys.stdin)
+            assert config["credentials"]["claude"] == "synthetic-private-secret"
             sys.exit(0)
         if name.endswith("-broker"):
             while True:

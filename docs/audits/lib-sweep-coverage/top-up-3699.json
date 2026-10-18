@@ -10,16 +10,21 @@
     "worker/deno/lib/anthropic_agent_gateway.ts",
     "worker/deno/lib/broker_isolation_plan.ts",
     "worker/deno/lib/broker_legacy_credentials.ts",
+    "worker/deno/lib/broker_session_config.ts",
+    "worker/deno/lib/broker_session_provision.ts",
     "worker/deno/lib/broker_supervisor.ts",
     "worker/deno/lib/broker_worker_config.ts",
     "worker/deno/lib/codex_agent_gateway.ts",
+    "worker/deno/lib/codex_subscription_persistence.ts",
     "worker/deno/lib/codex_subscription_transport.ts",
+    "worker/deno/lib/codex_transport_headers.ts",
     "worker/deno/lib/credential_broker.ts",
     "worker/deno/lib/credential_broker_lease.ts",
     "worker/deno/lib/credential_broker_policy.ts",
     "worker/deno/lib/gemini_agent_gateway.ts",
     "worker/deno/lib/github_agent_gateway.ts",
-    "worker/deno/lib/github_broker_reads.ts"
+    "worker/deno/lib/github_broker_reads.ts",
+    "worker/deno/lib/github_broker_writes.ts"
   ],
   "sweptAt": "a900fa7b68486ab83562887d66675be6d5cc3535"
 }

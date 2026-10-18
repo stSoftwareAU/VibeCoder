@@ -17,6 +17,8 @@ export interface NativeGitHubEvidence {
   startupCompleted: boolean;
   paginationCompleted: boolean;
   repositoryReadsCompleted: boolean;
+  ordinaryWritesCompleted: boolean;
+  deniedWrites: number;
 }
 
 function requireFact(value: unknown, message: string): asserts value {
@@ -169,6 +171,63 @@ export async function probeNativeGitHubClient(options: {
         "Native gh forbidden request was not refused by the broker policy",
       );
     }
+    const input = `${home}/write.json`;
+    // This synthetic publication token exercises redaction, distinct from
+    // the upstream credential which the agent never receives.
+    await Deno.writeTextFile(
+      input,
+      JSON.stringify({ body: "Native write ghp_" + "a".repeat(36) }),
+    );
+    for (
+      const [method, path] of [["POST", "issues/7/comments"], [
+        "PATCH",
+        "issues/comments/19",
+      ]]
+    ) {
+      const written = await run([
+        "api",
+        `repos/fixture/allowed/${path}`,
+        "--method",
+        method!,
+        "--input",
+        input,
+      ]);
+      requireFact(
+        written.success,
+        `Native gh ordinary write failed: ${written.stderr}`,
+      );
+      requireFact(
+        JSON.parse(written.stdout).id === 19,
+        "Native gh write lacked the authenticated upstream result",
+      );
+    }
+    const forbiddenWrites = [
+      ["POST", "repos/fixture/allowed/issues/8/labels", {
+        labels: ["needs-human"],
+      }],
+      ["POST", "repos/fixture/allowed/issues/7/labels", {
+        labels: ["work-on"],
+      }],
+      ["PATCH", "repos/fixture/allowed/issues/7", { state: "closed" }],
+      ["POST", "repos/fixture/other/issues/7/comments", {
+        body: "outside scope",
+      }],
+    ] as const;
+    for (const [method, path, body] of forbiddenWrites) {
+      await Deno.writeTextFile(input, JSON.stringify(body));
+      const denied = await run([
+        "api",
+        path,
+        "--method",
+        method,
+        "--input",
+        input,
+      ]);
+      requireFact(
+        !denied.success && denied.stderr.includes("HTTP 403"),
+        "Native gh write bypassed the trusted policy",
+      );
+    }
     // This deliberately invokes the real CLI without the worker's disclosure
     // shim: even its credential-printing command can only reveal the local cap.
     const token = await run(["auth", "token", "--hostname", "github.com"]);
@@ -187,6 +246,8 @@ export async function probeNativeGitHubClient(options: {
       startupCompleted: true,
       paginationCompleted: true,
       repositoryReadsCompleted: true,
+      ordinaryWritesCompleted: true,
+      deniedWrites: forbiddenWrites.length,
     };
   } finally {
     try {

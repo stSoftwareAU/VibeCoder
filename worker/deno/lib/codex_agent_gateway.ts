@@ -1,13 +1,13 @@
 /**
- * Credential-free Codex API-key transport (#3699).
+ * Credential-free Codex API-key and ChatGPT transport (#3699).
  *
  * The agent-local adapter forwards only to the fixed Unix broker. The broker
- * owns upstream credentials and route policy. ChatGPT subscription sessions
- * require a different upstream, account binding and trusted token refresh;
- * this slice refuses that mode rather than falling back to metered API use.
+ * owns upstream credentials, account binding, refresh and route policy. The
+ * trusted selected mode fixes the route; requests cannot change billing mode.
  * Provider configuration is verified against openai/codex rust-v0.147.0.
  */
 import { assertBrokerCapability } from "./credential_broker_policy.ts";
+import { CODEX_SUBSCRIPTION_METADATA_HEADERS } from "./codex_transport_headers.ts";
 
 export type BrokeredCodexMode = "api-key" | "chatgpt";
 export interface BrokeredCodexOptions {
@@ -18,9 +18,9 @@ export interface BrokeredCodexOptions {
   codexHome: string;
 }
 
-function assertApiKeyMode(mode: BrokeredCodexMode): void {
-  if (mode !== "api-key") {
-    throw new Error("Only explicitly selected API-key mode is implemented");
+function assertMode(mode: BrokeredCodexMode): void {
+  if (mode !== "api-key" && mode !== "chatgpt") {
+    throw new Error("Codex broker mode must be explicitly selected");
   }
 }
 
@@ -28,8 +28,9 @@ function assertApiKeyMode(mode: BrokeredCodexMode): void {
 export function buildBrokeredCodexLaunch(options: BrokeredCodexOptions): {
   env: Record<string, string>;
   configToml: string;
+  providerId: string;
 } {
-  assertApiKeyMode(options.mode);
+  assertMode(options.mode);
   assertBrokerCapability(options.capability);
   const base = new URL(options.baseUrl);
   if (
@@ -46,7 +47,14 @@ export function buildBrokeredCodexLaunch(options: BrokeredCodexOptions): {
       throw new Error("Agent home and state must be absolute sandbox paths");
     }
   }
+  const providerId = options.mode === "api-key"
+    ? "vibe_broker_api_key"
+    : "vibe_broker_chatgpt";
+  const name = options.mode === "api-key"
+    ? "Isolated OpenAI API-key broker"
+    : "Isolated ChatGPT subscription broker";
   return {
+    providerId,
     env: {
       PATH: "/usr/local/bin:/usr/bin:/bin",
       HOME: options.homeDir,
@@ -54,12 +62,12 @@ export function buildBrokeredCodexLaunch(options: BrokeredCodexOptions): {
       CODEX_BROKER_CAPABILITY: options.capability,
     },
     configToml: [
-      'model_provider = "vibe_broker_api_key"',
+      `model_provider = "${providerId}"`,
       "check_for_update_on_startup = false",
       'cli_auth_credentials_store = "file"',
       "",
-      "[model_providers.vibe_broker_api_key]",
-      'name = "Isolated OpenAI API-key broker"',
+      `[model_providers.${providerId}]`,
+      `name = "${name}"`,
       `base_url = "${base.origin}/v1"`,
       'env_key = "CODEX_BROKER_CAPABILITY"',
       'wire_api = "responses"',
@@ -76,8 +84,13 @@ export function createCodexAgentGateway(options: {
   capability: string;
   forward: (request: Request) => Promise<Response>;
 }): (request: Request) => Promise<Response> {
-  assertApiKeyMode(options.mode);
+  assertMode(options.mode);
   assertBrokerCapability(options.capability);
+  const capability = options.capability;
+  const forward = options.forward;
+  const target = options.mode === "api-key"
+    ? "http://broker.invalid/openai/v1/responses"
+    : "http://broker.invalid/codex-subscription/responses";
   return async (request) => {
     const url = new URL(request.url);
     if (
@@ -87,14 +100,20 @@ export function createCodexAgentGateway(options: {
       return new Response("Broker route denied\n", { status: 403 });
     }
     const headers = new Headers();
-    for (const name of ["content-type", "accept"]) {
+    for (
+      const name of [
+        "content-type",
+        "accept",
+        ...CODEX_SUBSCRIPTION_METADATA_HEADERS,
+      ]
+    ) {
       const value = request.headers.get(name);
       if (value !== null) headers.set(name, value);
     }
-    headers.set("authorization", `Bearer ${options.capability}`);
+    headers.set("authorization", `Bearer ${capability}`);
     try {
-      return await options.forward(
-        new Request("http://broker.invalid/openai/v1/responses", {
+      return await forward(
+        new Request(target, {
           method: "POST",
           headers,
           body: request.body,
@@ -116,7 +135,7 @@ export function serveCodexAgentGateway(options: {
   mode: BrokeredCodexMode;
   capability: string;
 }): { baseUrl: string; close: () => Promise<void> } {
-  assertApiKeyMode(options.mode);
+  assertMode(options.mode);
   assertBrokerCapability(options.capability);
   const client = Deno.createHttpClient({
     proxy: { transport: "unix", path: "/run/broker/broker.sock" },

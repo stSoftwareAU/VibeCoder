@@ -8,7 +8,7 @@ for (const kind of ["docker", "podman"] as const) {
     const f = await fixture(kind);
     try {
       const plan = await buildBrokerIsolationPlan(f.input, {
-        brokerConfigDir: f.config,
+        privateVolume: "fixture-private-config",
         socketVolume: "fixture-broker-socket",
       });
       assertEquals(plan.runtime, kind);
@@ -36,6 +36,40 @@ for (const kind of ["docker", "podman"] as const) {
           role === plan.worker,
         );
       }
+      assertEquals(plan.privateVolume, "fixture-private-config");
+      assertEquals(
+        plan.worker.mounts.some((m) => m.source === plan.privateVolume),
+        false,
+      );
+      assertEquals(
+        plan.broker.mounts.find((m) => m.source === plan.privateVolume)
+          ?.readOnly,
+        true,
+      );
+      assertEquals(
+        plan.provisionArgs[plan.provisionArgs.indexOf("--network") + 1],
+        "none",
+      );
+      assert(plan.provisionArgs.includes("--read-only"));
+      assertEquals(
+        plan.provisionArgs[plan.provisionArgs.indexOf("--cap-drop") + 1],
+        "ALL",
+      );
+      assertEquals(
+        plan.provisionArgs[plan.provisionArgs.indexOf("--security-opt") + 1],
+        "no-new-privileges",
+      );
+      assert(
+        plan.provisionArgs.includes(
+          "fixture-private-config:/run/broker-config",
+        ),
+      );
+      assertEquals(plan.provisionArgs.includes("--allow-net"), false);
+      assertEquals(
+        plan.provisionArgs.some((arg) => arg.includes(":/run/broker:")),
+        false,
+      );
+      assertEquals(plan.provisionArgs.at(-1), "stage");
       assertEquals(plan.broker.mounts.map((m) => m.target), [
         "/workspace",
         "/run/broker-config",
@@ -65,6 +99,7 @@ for (const kind of ["docker", "podman"] as const) {
       assertEquals(plan.worker.runArgs.at(-1), plan.worker.image);
       assertEquals(plan.socketInitArgs.filter((a) => a.includes(":/")), [
         "fixture-broker-socket:/run/broker",
+        "fixture-private-config:/run/broker-config",
       ]);
       assertEquals(
         plan.socketInitArgs[plan.socketInitArgs.indexOf("--network") + 1],
@@ -84,7 +119,7 @@ Deno.test("broker split rejects unsupported runtime and shared credential/config
     await assertRejects(
       () =>
         buildBrokerIsolationPlan(apple.input, {
-          brokerConfigDir: apple.config,
+          privateVolume: "fixture-private-config",
           socketVolume: "fixture-socket",
         }),
       Error,
@@ -95,23 +130,6 @@ Deno.test("broker split rejects unsupported runtime and shared credential/config
   }
   const f = await fixture();
   try {
-    for (
-      const config of [
-        f.input.hostPaths.baseDir,
-        `${f.input.hostPaths.baseDir}/private`,
-      ]
-    ) {
-      await Deno.mkdir(config, { recursive: true });
-      await assertRejects(
-        () =>
-          buildBrokerIsolationPlan(f.input, {
-            brokerConfigDir: config,
-            socketVolume: "fixture-socket",
-          }),
-        Error,
-        "private broker configuration overlaps a worker mount",
-      );
-    }
     const promptAlias = `${f.root}/prompt-alias`;
     await Deno.symlink(
       `${f.input.hostPaths.credentialDir}/claude`,
@@ -122,7 +140,10 @@ Deno.test("broker split rejects unsupported runtime and shared credential/config
         buildBrokerIsolationPlan({
           ...f.input,
           customPromptPaths: [`${promptAlias}/prompt.md`],
-        }, { brokerConfigDir: f.config, socketVolume: "fixture-socket" }),
+        }, {
+          privateVolume: "fixture-private-config",
+          socketVolume: "fixture-socket",
+        }),
       Error,
       "credential source overlaps a worker mount",
     );
@@ -136,7 +157,7 @@ Deno.test("broker split rejects unsupported runtime and shared credential/config
     ) {
       await assertRejects(() =>
         buildBrokerIsolationPlan(f.input, {
-          brokerConfigDir: f.config,
+          privateVolume: "fixture-private-config",
           socketVolume,
         })
       );
@@ -158,11 +179,48 @@ Deno.test("broker split refuses an original host config exposed through checkout
           buildBrokerIsolationPlan({
             ...f.input,
             hostPaths: { ...f.input.hostPaths, configFile: alias },
-          }, { brokerConfigDir: f.config, socketVolume: "fixture-socket" }),
+          }, {
+            privateVolume: "fixture-private-config",
+            socketVolume: "fixture-socket",
+          }),
         Error,
         "Original host configuration overlaps a worker mount",
       );
     }
+  } finally {
+    await f.close();
+  }
+});
+
+Deno.test("broker split refuses private volume aliases and mounts no host credential config", async () => {
+  const f = await fixture();
+  try {
+    for (const privateVolume of ["fixture-socket", "vibe-work", "../private"]) {
+      await assertRejects(() =>
+        buildBrokerIsolationPlan(f.input, {
+          socketVolume: "fixture-socket",
+          privateVolume,
+        })
+      );
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+Deno.test("broker split snapshots session volume options before asynchronous path checks", async () => {
+  const f = await fixture();
+  try {
+    const options = {
+      socketVolume: "fixture-socket",
+      privateVolume: "fixture-private",
+    };
+    const building = buildBrokerIsolationPlan(f.input, options);
+    options.privateVolume = "vibe-work";
+    options.socketVolume = "vibe-agent-state";
+    const plan = await building;
+    assertEquals(plan.privateVolume, "fixture-private");
+    assertEquals(plan.socketVolume, "fixture-socket");
   } finally {
     await f.close();
   }

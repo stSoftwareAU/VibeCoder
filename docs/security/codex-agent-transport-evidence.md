@@ -2,12 +2,13 @@
 
 ## Status and scope
 
-This is an experimental API-key adapter for Issues #3698 and #3699. It is
+This is an experimental native Codex adapter for Issues #3698 and #3699. It is
 not wired into the normal worker launcher. The pinned API-key native fixture
 passed on Docker and rootless Podman; see the observed run below. The separate
 trusted ChatGPT subscription transport has local tests, but has not been
-proved with the actual native client. The API-key gateway still refuses a
-subscription selection rather than silently changing billing mode. This
+proved with the actual native client. The native gateway now accepts an
+explicit ChatGPT selection and fixes its broker route to
+`/codex-subscription/responses`; unknown modes fail instead of changing billing. This
 checkpoint does not resolve the milestone's full containment or subscription
 acceptance criteria.
 
@@ -49,11 +50,19 @@ must retain the production capability, network and filesystem restrictions.
 `tests/fixtures/native_codex_client_probe.ts` exports:
 
 - `codexNativeFixtureResponse()`: the source-backed synthetic SSE response.
-- `runCodexNativeClientProbe({ capability, expectedVersion, secretHash })`:
+- `runCodexNativeClientProbe({ mode, capability, expectedVersion, secretHash })`:
   the actual installed CLI invocation. It refuses versions other than
   0.147.0, requires the expected assistant message and a successful completed
   turn, and checks stdout, stderr and generated configuration for the planted
   upstream credential fingerprint.
+
+`mode` is mandatory and is selected by the trusted launcher. Both modes use
+an opaque local capability and a fresh custom provider; neither receives
+an upstream credential or `auth.json`. API-key mode routes to the OpenAI
+API-key broker service, while ChatGPT mode routes only to the separate
+subscription service. The shared credential-free HTTP metadata allowlist
+lives in `codex_transport_headers.ts`, so the agent need not load the
+trusted refresh implementation to preserve the native protocol headers.
 
 The trusted diagnostic broker must independently authenticate exactly one
 new native request to `https://api.openai.com/v1/responses` before returning
@@ -70,7 +79,8 @@ the test does not download an unpinned client at runtime.
 broker together. It covers fixed routing and upstream credential injection,
 caller account-header removal, denied routes, sanitised transport failures,
 incremental streaming and cancellation, configuration injection refusal,
-subscription refusal, and native-output success/failure interpretation.
+explicit subscription selection, unknown-mode refusal, and native-output
+success/failure interpretation.
 The launch test runs with environment permission denied, so reading ambient
 secrets is an immediate test failure. No production account or live OpenAI
 endpoint is used by these tests.
@@ -151,7 +161,7 @@ that result before publishing its new immutable snapshot. It rechecks
 cancellation after persistence; a late callback completion after shutdown
 cannot start an inference request. A refresh or persistence failure latches
 the transport closed and aborts other request bodies and response streams.
-The callback contract is not itself a disk-persistence implementation.
+The host implementation below provides that disk-persistence contract.
 
 Pinned [default client headers](https://github.com/openai/codex/blob/be6e8eac029b183056b7e4402879f15d2c85f61b/codex-rs/login/src/auth/default_client.rs),
 [session headers](https://github.com/openai/codex/blob/be6e8eac029b183056b7e4402879f15d2c85f61b/codex-rs/codex-api/src/requests/headers.rs)
@@ -169,7 +179,59 @@ state, simultaneous and late 401 responses, persistence failure, cancellation
 during refresh/persistence, pending-request cancellation, size bounds,
 protocol metadata and refused token-bearing errors. Deliberately breaking
 the account, refresh, persistence, routing, metadata or size guards makes
-the relevant tests fail. Native ChatGPT configuration, authenticated outer
-broker dispatch, atomic host persistence and synthetic forced-refresh proof
-remain integration requirements. Subscription support must not be claimed
+the relevant tests fail. Actual native ChatGPT execution, authenticated outer
+broker dispatch and synthetic forced-refresh proof remain integration
+requirements. Atomic host persistence now has local actual-file/lock tests,
+but is not yet wired into the native hosted fixture. Subscription support must not be claimed
 from the API-key native result.
+
+
+## Host account transaction and durable persistence
+
+`createCodexSubscriptionPersistence({ authFile, accountId })` returns
+`{ persist, transaction }` for the trusted transport options. The path must
+be absolute and canonical, with a host-owned private parent directory.
+Existing auth files must be bounded regular files with one link; missing,
+symlinked, oversized, malformed or differently bound account state is refused.
+The helper does not discover credentials or read an ambient `CODEX_HOME`.
+
+The transaction uses the existing cross-process `withFileLock` primitive
+and reloads the selected snapshot under that lock. A second broker reuses a
+fresh rotation completed while it waited. Otherwise the lock remains held
+across OAuth refresh and persistence, so a compare-and-swap alone cannot let
+two brokers consume the same refresh token. Each transaction can commit once.
+This serialises cooperating brokers using the same canonical file on one
+host/filesystem; it is not a fleet-wide or remote OAuth transaction.
+
+The writer compares the exact loaded JSON and updates only access, refresh
+and ID tokens plus `last_refresh`. It preserves unrelated top-level and token
+metadata. `readTextFileNoFollow` protects the read; `atomicWriteSync` creates
+an exclusive random sibling at mode 0600 and atomically replaces the target.
+There is no event-loop yield between the final abort check and rename. Both
+the replacement file and its directory are synchronised before success is
+returned. The exact merged JSON becomes the transport's next immutable
+snapshot, so later rotations retain a valid comparison baseline.
+
+Lock acquisition has the shared primitive's ten-second bound; the account
+transaction has a thirty-second deadline. Cancellation releases the lock and
+revokes the scoped writer, including a callback that returns late. A storage
+or identity failure closes that transport. If shutdown or a network failure
+occurs after the upstream consumed a token but before durable replacement,
+the remote rotation cannot be rolled back; reauthentication may be required.
+No retry or API-key fallback hides that uncertainty. Native client writers
+that do not use this lock must not share the selected auth file concurrently.
+
+Actual-file tests cover two independent broker instances refreshing once,
+competing/stale CAS writes, metadata retention over successive rotations,
+0600 permissions, account drift, unsafe paths and links, cancellation before
+and during persistence, and rejected late writes after the lock is released.
+These local checks establish the store contract, not live refresh success or
+hosted native subscription compatibility.
+
+The persistence checkpoint passed 12 new tests and 26 existing gateway/transport
+tests with type checking enabled. The 12 actual-file tests also passed with
+only Deno read/write permissions, without environment or subprocess access.
+Thirteen deliberately broken variants failed their behavioural assertions,
+covering the host lock, CAS, metadata, mode, final abort check, single-write
+scope, snapshot validation, exact merged-state return, refresh transaction,
+refresh-token rotation, private/canonical parent and file-size bound.

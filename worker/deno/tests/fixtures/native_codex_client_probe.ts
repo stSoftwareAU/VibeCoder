@@ -1,5 +1,6 @@
 /** Real pinned Codex client fixture; only the trusted broker has upstream secrets. */
 import {
+  type BrokeredCodexMode,
   buildBrokeredCodexLaunch,
   serveCodexAgentGateway,
 } from "../../lib/codex_agent_gateway.ts";
@@ -41,6 +42,7 @@ export function codexNativeFixtureResponse(): Response {
  * witness the upstream request's authentication before claiming success.
  */
 export async function runCodexNativeClientProbe(options: {
+  mode: BrokeredCodexMode;
   capability: string;
   expectedVersion: string;
   secretHash: string;
@@ -48,7 +50,7 @@ export async function runCodexNativeClientProbe(options: {
   nativeClientCompleted: true;
   versionMatched: true;
   upstreamCredentialVisible: false;
-  authenticationMode: "api-key";
+  authenticationMode: BrokeredCodexMode;
 }> {
   if (options.expectedVersion !== VERIFIED_CODEX_VERSION) {
     throw new Error(
@@ -59,11 +61,11 @@ export async function runCodexNativeClientProbe(options: {
   let gateway: ReturnType<typeof serveCodexAgentGateway> | undefined;
   try {
     gateway = serveCodexAgentGateway({
-      mode: "api-key",
+      mode: options.mode,
       capability: options.capability,
     });
     const launch = buildBrokeredCodexLaunch({
-      mode: "api-key",
+      mode: options.mode,
       capability: options.capability,
       baseUrl: gateway.baseUrl,
       homeDir: root,
@@ -119,9 +121,9 @@ export async function runCodexNativeClientProbe(options: {
       "--model",
       "gpt-5",
       "-c",
-      "model_providers.vibe_broker_api_key.request_max_retries=0",
+      `model_providers.${launch.providerId}.request_max_retries=0`,
       "-c",
-      "model_providers.vibe_broker_api_key.stream_max_retries=0",
+      `model_providers.${launch.providerId}.stream_max_retries=0`,
       "Return the synthetic gateway fixture response without using tools.",
     ]);
     await assertCodexNativeOutput(result, options.secretHash);
@@ -129,7 +131,7 @@ export async function runCodexNativeClientProbe(options: {
       nativeClientCompleted: true,
       versionMatched: true,
       upstreamCredentialVisible: false,
-      authenticationMode: "api-key",
+      authenticationMode: options.mode,
     };
   } finally {
     try {

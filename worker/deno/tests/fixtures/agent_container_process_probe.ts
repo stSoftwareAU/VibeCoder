@@ -1,5 +1,7 @@
 /** Synthetic processes for the separate-container diagnostic; no live accounts. */
 import { createCredentialBroker } from "../../lib/credential_broker.ts";
+import { REDACTION_PLACEHOLDER } from "../../lib/secret_redaction.ts";
+import { createCodexSubscriptionPersistence } from "../../lib/codex_subscription_persistence.ts";
 import {
   buildBrokeredAnthropicEnvironment,
   serveAnthropicAgentGateway,
@@ -91,11 +93,50 @@ async function broker(credentialRoot: string): Promise<void> {
   // Keep a readable descriptor open on the trusted side: the agent's fd and
   // /proc checks must distinguish containers, not merely an unopened file.
   const credentialFile = await Deno.open(privatePath, { read: true });
+  const accountId = "fixture-account";
+  const encode = (value: unknown) =>
+    btoa(JSON.stringify(value)).replaceAll("=", "").replaceAll("+", "-")
+      .replaceAll("/", "_");
+  const jwt = (rotation: number) =>
+    `${encode({ alg: "none" })}.${
+      encode({
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        rotation,
+        "https://api.openai.com/auth": { chatgpt_account_id: accountId },
+      })
+    }.${secret}`;
+  const initialToken = jwt(0);
+  const rotatedToken = jwt(1);
+  const refreshToken = `refresh-${secret}`;
+  const rotatedRefresh = `rotated-${secret}`;
+  const authFile = `${privateDirectory}/codex-auth.json`;
+  const authJson = JSON.stringify({
+    auth_mode: "chatgpt",
+    OPENAI_API_KEY: null,
+    tokens: {
+      account_id: accountId,
+      access_token: initialToken,
+      id_token: initialToken,
+      refresh_token: refreshToken,
+      retained: "fixture-metadata",
+    },
+    last_refresh: new Date().toISOString(),
+    retained: "fixture-root-metadata",
+  });
+  await Deno.writeTextFile(authFile, authJson, {
+    createNew: true,
+    mode: 0o600,
+  });
   const witness: BrokerWitness & {
     nativeRequests: Record<"api-key" | "subscription", number>;
     nativeGitHubRequests: number;
     nativeGeminiRequests: number;
     nativeCodexRequests: number;
+    nativeGitHubWrites: number;
+    nativeGitHubWriteAudits: number;
+    nativeCodexSubscriptionRequests: number;
+    nativeCodexRefreshRequests: number;
+    nativeCodexPersisted: boolean;
     nativeGitHubReads: {
       identity: number;
       quota: number;
@@ -117,6 +158,11 @@ async function broker(credentialRoot: string): Promise<void> {
     nativeGitHubRequests: 0,
     nativeGeminiRequests: 0,
     nativeCodexRequests: 0,
+    nativeGitHubWrites: 0,
+    nativeGitHubWriteAudits: 0,
+    nativeCodexSubscriptionRequests: 0,
+    nativeCodexRefreshRequests: 0,
+    nativeCodexPersisted: false,
     nativeGitHubReads: {
       identity: 0,
       quota: 0,
@@ -145,6 +191,62 @@ async function broker(credentialRoot: string): Promise<void> {
     const gemini = url.pathname.startsWith("/v1beta/models/");
     const key = request.headers.get("x-api-key");
     const bearer = request.headers.get("authorization");
+    const origin = request.headers.get("x-fixture-upstream-origin");
+    if (origin === "https://auth.openai.com") {
+      requireFact(
+        request.method === "POST" && url.pathname === "/oauth/token" &&
+          bearer === null,
+        "Native Codex refresh used an invalid trusted route",
+      );
+      const body = await request.json();
+      requireFact(
+        body.grant_type === "refresh_token" &&
+          body.refresh_token === refreshToken &&
+          body.client_id === "app_EMoamEEZ73f0CkXaXp7hrann",
+        "Native Codex refresh omitted selected account authentication",
+      );
+      witness.nativeCodexRefreshRequests++;
+      await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+      return Response.json({
+        access_token: rotatedToken,
+        id_token: rotatedToken,
+        refresh_token: rotatedRefresh,
+      });
+    }
+    if (origin === "https://chatgpt.com") {
+      requireFact(
+        request.method === "POST" &&
+          url.pathname === "/backend-api/codex/responses" &&
+          request.headers.get("chatgpt-account-id") === accountId,
+        "Native Codex subscription used an invalid account/route",
+      );
+      const body = await request.json();
+      requireFact(
+        body.stream === true && Array.isArray(body.input),
+        "Native Codex subscription omitted streamed input",
+      );
+      witness.nativeCodexSubscriptionRequests++;
+      await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+      if (bearer === `Bearer ${initialToken}`) {
+        return new Response("Synthetic refresh required", { status: 401 });
+      }
+      requireFact(
+        bearer === `Bearer ${rotatedToken}`,
+        "Native Codex subscription failed to use the rotated token",
+      );
+      const persisted = JSON.parse(await Deno.readTextFile(authFile));
+      requireFact(
+        persisted.tokens.access_token === rotatedToken &&
+          persisted.tokens.refresh_token === rotatedRefresh &&
+          persisted.tokens.retained === "fixture-metadata" &&
+          persisted.retained === "fixture-root-metadata" &&
+          ((await Deno.stat(authFile)).mode! & 0o777) === 0o600,
+        "Native Codex published before durable private persistence",
+      );
+      witness.nativeCodexPersisted = true;
+      await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+      return codexNativeFixtureResponse();
+    }
     if (
       gemini
         ? request.headers.get("x-goog-api-key") !== secret || bearer !== null
@@ -154,6 +256,29 @@ async function broker(credentialRoot: string): Promise<void> {
           (key === null && bearer === `Bearer ${secret}`))
     ) {
       return new Response("Synthetic authentication failed", { status: 401 });
+    }
+    if (
+      github && ["POST", "PATCH"].includes(request.method) &&
+      url.pathname !== "/graphql"
+    ) {
+      requireFact(
+        (request.method === "POST" &&
+          url.pathname === "/repos/fixture/allowed/issues/7/comments") ||
+          (request.method === "PATCH" &&
+            url.pathname === "/repos/fixture/allowed/issues/comments/19"),
+        "Native gh write reached an unexpected upstream target",
+      );
+      const body = await request.json();
+      requireFact(
+        JSON.stringify(body) ===
+          JSON.stringify({ body: `Native write ${REDACTION_PLACEHOLDER}` }),
+        "Native gh write body was not redacted before publication",
+      );
+      witness.nativeGitHubWrites++;
+      await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+      return Response.json({ id: 19 }, {
+        status: request.method === "POST" ? 201 : 200,
+      });
     }
     if (
       request.headers.get("x-fixture-upstream-origin") ===
@@ -380,6 +505,26 @@ async function broker(credentialRoot: string): Promise<void> {
         openai: secret,
       },
       repositories: ["fixture/allowed"],
+      ...(capability === fixture.capability
+        ? {
+          codexSubscription: {
+            authJson,
+            accountId,
+            ...createCodexSubscriptionPersistence({ authFile, accountId }),
+          },
+        }
+        : {}),
+      githubWrites: {
+        claimedIssue: { repo: "fixture/allowed", issueNumber: 7 },
+        async audit(mutation, status) {
+          requireFact(
+            mutation.repo === "fixture/allowed" && [200, 201].includes(status!),
+            "Native gh audit omitted its upstream outcome",
+          );
+          witness.nativeGitHubWriteAudits++;
+          await Deno.writeTextFile(witnessPath, JSON.stringify(witness));
+        },
+      },
       // The fixed-origin policy runs first. Only the test forwarding seam
       // substitutes this controlled local HTTP listener; no internet request.
       fetch(request) {
@@ -645,9 +790,15 @@ if (mode === "broker") {
   ));
 } else if (mode === "native-codex") {
   const fixture = JSON.parse(Deno.args[1]!) as ContainerFixture;
+  const authenticationMode = Deno.args[3];
+  requireFact(
+    authenticationMode === "api-key" || authenticationMode === "chatgpt",
+    "Native Codex requires an explicit authentication mode",
+  );
   console.log(JSON.stringify(
     await runCodexNativeClientProbe({
       ...fixture,
+      mode: authenticationMode,
       expectedVersion: Deno.args[2]!,
     }),
   ));

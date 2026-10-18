@@ -56,7 +56,28 @@ jobs:
             tests/agent_namespace_probe_test.ts tests/agent_container_probe_test.ts \
             tests/credential_broker_test.ts tests/credential_broker_lease_test.ts \
             tests/anthropic_agent_gateway_test.ts tests/github_agent_gateway_test.ts tests/github_broker_reads_test.ts tests/credential_broker_github_reads_test.ts \
-            tests/gemini_agent_gateway_test.ts tests/codex_agent_gateway_test.ts
+            tests/gemini_agent_gateway_test.ts tests/codex_agent_gateway_test.ts \
+            tests/github_broker_writes_test.ts tests/credential_broker_github_writes_test.ts \
+            tests/credential_broker_codex_subscription_test.ts tests/codex_subscription_transport_test.ts
+
+      - name: Check private provisioning and supervisor lifecycle
+        working-directory: worker/deno
+        run: |
+          set -euo pipefail
+          deno test --reporter=dot --frozen --lock=deno.lock \
+            --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname \
+            tests/broker_isolation_plan_test.ts tests/broker_session_provision_test.ts \
+            tests/broker_supervisor_test.ts tests/broker_supervisor_probe_test.ts \
+            tests/broker_service_test.ts tests/codex_subscription_persistence_test.ts
+
+      - name: Exercise actual Docker supervisor and private-volume provisioning
+        working-directory: worker/deno
+        run: |
+          set -euo pipefail
+          deno run --frozen --lock=deno.lock \
+            --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname \
+            tests/fixtures/broker_supervisor_runtime_probe.ts "${IMAGE}" \
+            2>&1 | tee /tmp/broker-supervisor-probe.log
 
       - name: Exercise real sockets and the unmodified Docker security boundary
         id: nested
@@ -101,6 +122,7 @@ jobs:
           path: |
             /tmp/agent-namespace-probe.log
             /tmp/agent-container-probe.log
+            /tmp/broker-supervisor-probe.log
           if-no-files-found: warn
           retention-days: 7
 
@@ -154,7 +176,28 @@ jobs:
             tests/agent_namespace_probe_test.ts tests/agent_container_probe_test.ts \
             tests/agent_container_probe_workflow_test.ts tests/credential_broker_test.ts \
             tests/anthropic_agent_gateway_test.ts tests/credential_broker_lease_test.ts \
-            tests/github_agent_gateway_test.ts tests/github_broker_reads_test.ts tests/credential_broker_github_reads_test.ts tests/gemini_agent_gateway_test.ts tests/codex_agent_gateway_test.ts
+            tests/github_agent_gateway_test.ts tests/github_broker_reads_test.ts tests/credential_broker_github_reads_test.ts tests/gemini_agent_gateway_test.ts tests/codex_agent_gateway_test.ts \
+            tests/github_broker_writes_test.ts tests/credential_broker_github_writes_test.ts \
+            tests/credential_broker_codex_subscription_test.ts tests/codex_subscription_transport_test.ts
+
+      - name: Check private provisioning and supervisor lifecycle
+        working-directory: worker/deno
+        run: |
+          set -euo pipefail
+          deno test --reporter=dot --frozen --lock=deno.lock \
+            --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname \
+            tests/broker_isolation_plan_test.ts tests/broker_session_provision_test.ts \
+            tests/broker_supervisor_test.ts tests/broker_supervisor_probe_test.ts \
+            tests/broker_service_test.ts tests/codex_subscription_persistence_test.ts
+
+      - name: Exercise actual Podman supervisor and private-volume provisioning
+        working-directory: worker/deno
+        run: |
+          set -euo pipefail
+          deno run --frozen --lock=deno.lock \
+            --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname \
+            tests/fixtures/broker_supervisor_runtime_probe.ts "${IMAGE}" podman \
+            2>&1 | tee /tmp/broker-supervisor-podman-probe.log
 
       - name: Exercise separate hardened rootless Podman containers
         id: separate
@@ -184,5 +227,6 @@ jobs:
           path: |
             /tmp/agent-podman-info.log
             /tmp/agent-podman-container-probe.log
+            /tmp/broker-supervisor-podman-probe.log
           if-no-files-found: warn
           retention-days: 7

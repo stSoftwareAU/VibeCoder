@@ -26,6 +26,9 @@ export interface BrokerIsolationPlan {
   worker: ContainerLaunchPlan;
   broker: { name: string; mounts: ContainerMount[]; runArgs: string[] };
   socketVolume: string;
+  privateVolume: string;
+  privateRemoveArgs: string[];
+  provisionArgs: string[];
   socketInitArgs: string[];
   socketRemoveArgs: string[];
   readinessArgs: string[];
@@ -46,9 +49,10 @@ async function canonical(path: string): Promise<string> {
 /** Only trusted host inputs enter here; no worker request can build a plan. */
 export async function buildBrokerIsolationPlan(
   inputs: ContainerLaunchInputs,
-  options: { brokerConfigDir: string; socketVolume: string },
+  options: { privateVolume: string; socketVolume: string },
 ): Promise<BrokerIsolationPlan> {
   inputs = structuredClone(inputs);
+  options = structuredClone(options);
   if (inputs.descriptor.kind === "apple-container") {
     throw new Error("Apple broker boundary has not been validated");
   }
@@ -57,9 +61,16 @@ export async function buildBrokerIsolationPlan(
   }
   const base = buildContainerLaunchPlan(inputs);
   if (
-    !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(options.socketVolume) ||
-    base.volumes.includes(options.socketVolume)
-  ) throw new Error("Broker socket must use a distinct, plain named volume");
+    options.socketVolume === options.privateVolume ||
+    [options.socketVolume, options.privateVolume].some((volume) =>
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(volume) ||
+      base.volumes.includes(volume)
+    )
+  ) {
+    throw new Error(
+      "Broker session volumes must be distinct, plain named volumes",
+    );
+  }
   const targets = containerTargetPaths(inputs.manifest);
   if (targets.base !== "/workspace") {
     throw new Error("Unsupported broker checkout target");
@@ -71,7 +82,6 @@ export async function buildBrokerIsolationPlan(
   const workerMounts = base.mounts.filter((mount) =>
     !credentials.includes(mount)
   );
-  const privateConfig = await canonical(options.brokerConfigDir);
   const originalConfig = await canonical(inputs.hostPaths.configFile);
   const privateSources = await Promise.all(
     credentials.map((mount) => canonical(mount.source)),
@@ -81,9 +91,6 @@ export async function buildBrokerIsolationPlan(
     const source = await canonical(mount.source);
     if (overlaps(source, originalConfig)) {
       throw new Error("Original host configuration overlaps a worker mount");
-    }
-    if (overlaps(source, privateConfig)) {
-      throw new Error("private broker configuration overlaps a worker mount");
     }
     if (
       privateSources.some((privateSource) => overlaps(source, privateSource))
@@ -127,9 +134,15 @@ export async function buildBrokerIsolationPlan(
     throw new Error("Production OCI plan omitted its network mode");
   }
   workerArgs[network + 1] = "none";
+  const privateConfig: ContainerMount = {
+    source: options.privateVolume,
+    target: BROKER_CONFIG_DIR,
+    volume: true,
+    readOnly: true,
+  };
   const brokerMounts: ContainerMount[] = [
     base.mounts.find((mount) => mount.target === targets.base)!,
-    { source: privateConfig, target: BROKER_CONFIG_DIR, readOnly: true },
+    privateConfig,
     socket,
   ];
   const brokerArgs = withMounts(brokerMounts);
@@ -161,6 +174,33 @@ export async function buildBrokerIsolationPlan(
     BROKER_SERVICE_PATH,
   ];
   brokerArgs.push(...serviceArgs, "serve");
+  const provisionArgs = [...brokerArgs];
+  const socketParts = buildMountArguments(inputs.descriptor, socket);
+  const socketIndex = provisionArgs.findIndex((_, i) =>
+    socketParts.every((part, offset) => provisionArgs[i + offset] === part)
+  );
+  provisionArgs.splice(socketIndex, socketParts.length);
+  const privateParts = buildMountArguments(inputs.descriptor, privateConfig);
+  const privateIndex = provisionArgs.findIndex((_, i) =>
+    privateParts.every((part, offset) => provisionArgs[i + offset] === part)
+  );
+  provisionArgs.splice(
+    privateIndex,
+    privateParts.length,
+    ...buildMountArguments(inputs.descriptor, {
+      ...privateConfig,
+      readOnly: false,
+    }),
+  );
+  provisionArgs[provisionArgs.indexOf("--name") + 1] =
+    `${inputs.containerName}-broker-stage`;
+  provisionArgs[provisionArgs.indexOf("--network") + 1] = "none";
+  // Deno's stdin is the only credential input, never an argument or env var.
+  provisionArgs.splice(1, 0, "--interactive");
+  provisionArgs.splice(provisionArgs.indexOf("--allow-net"), 1);
+  provisionArgs[provisionArgs.indexOf(`--allow-write=${BROKER_SOCKET_DIR}`)] =
+    `--allow-write=${BROKER_CONFIG_DIR}`;
+  provisionArgs[provisionArgs.length - 1] = "stage";
   const socketInitArgs = [
     "run",
     "--rm",
@@ -173,9 +213,14 @@ export async function buildBrokerIsolationPlan(
     "--entrypoint",
     VOLUME_INIT_ENTRYPOINT,
     ...buildMountArguments(inputs.descriptor, socket),
+    ...buildMountArguments(inputs.descriptor, {
+      ...privateConfig,
+      readOnly: false,
+    }),
     inputs.image,
     `${inputs.manifest.user.uid}:${inputs.manifest.user.gid}`,
     BROKER_SOCKET_DIR,
+    BROKER_CONFIG_DIR,
   ];
   const workerInitArgs = [...base.initArgs];
   workerInitArgs.splice(1, 0, "--network", "none");
@@ -184,6 +229,12 @@ export async function buildBrokerIsolationPlan(
     worker: { ...base, mounts, runArgs: workerArgs, initArgs: workerInitArgs },
     broker: { name, mounts: brokerMounts, runArgs: brokerArgs },
     socketVolume: options.socketVolume,
+    privateVolume: options.privateVolume,
+    privateRemoveArgs: [
+      ...inputs.descriptor.dialect.volumeRemoveArgs,
+      options.privateVolume,
+    ],
+    provisionArgs,
     socketInitArgs,
     socketRemoveArgs: [
       ...inputs.descriptor.dialect.volumeRemoveArgs,

@@ -1,10 +1,11 @@
 /**
  * Experimental request broker: credentials stay on the forwarding side of a
- * future agent namespace boundary (#3698, #3699). It does not create that
- * boundary, change container egress, or support native CLI OAuth refresh.
+ * separate container boundary (#3698, #3699). It does not create that
+ * boundary or enable normal worker startup by itself.
  *
- * No arbitrary CONNECT, redirects, token-issuing endpoints, GitHub mutations
- * or caller-selected upstreams. Errors deliberately name a stable category
+ * No arbitrary CONNECT, redirects, agent token-issuing endpoints or
+ * caller-selected upstreams. Ordinary GitHub writes require a trusted grant.
+ * Errors deliberately name a stable category
  * rather than an upstream exception that may contain an injected credential.
  */
 import {
@@ -17,6 +18,13 @@ import {
   githubBrokerReadHeaders,
   resolveGitHubBrokerRead,
 } from "./github_broker_reads.ts";
+import {
+  type GitHubBrokerWriteContext,
+  resolveGitHubBrokerWrite,
+} from "./github_broker_writes.ts";
+import type { MutationInfo } from "./audit_mutation_classifier.ts";
+import { createCodexSubscriptionTransport } from "./codex_subscription_transport.ts";
+import { CODEX_SUBSCRIPTION_METADATA_HEADERS } from "./codex_transport_headers.ts";
 
 export interface CredentialBrokerOptions {
   /** Per-run broker capability; never an upstream provider/GitHub credential. */
@@ -28,8 +36,19 @@ export interface CredentialBrokerOptions {
   credentials: Partial<Record<BrokerService, string>>;
   /** Trusted selection only; bearer mode never falls back to an API key. */
   claudeAuthentication?: "api-key" | "bearer";
+  /** Trusted selected subscription snapshot and persistence, never worker input. */
+  codexSubscription?: Omit<
+    Parameters<typeof createCodexSubscriptionTransport>[0],
+    "signal" | "fetch"
+  >;
   /** Repository names supplied by the trusted supervisor, not by a worker request. */
   repositories: readonly string[];
+  /** Explicit host grant; no agent request can select a claim or audit target. */
+  githubWrites?: {
+    claimedIssue?: GitHubBrokerWriteContext["claimedIssue"];
+    /** Trusted journal callback. An absent status means transport outcome unknown. */
+    audit: (mutation: MutationInfo, status?: number) => Promise<void>;
+  };
   /** Production defaults to fetch; tests can observe the outgoing request. */
   fetch?: (request: Request) => Promise<Response>;
   /** Hard request-body bound, including streaming/chunked requests. */
@@ -137,6 +156,24 @@ export function createCredentialBroker(
     new TextEncoder().encode(`Bearer ${options.capability}`),
   );
   const forward = options.fetch ?? fetch;
+  const subscription = options.codexSubscription
+    ? createCodexSubscriptionTransport({
+      ...options.codexSubscription,
+      signal: options.signal,
+      fetch: forward,
+    })
+    : undefined;
+  const writes = options.githubWrites;
+  if (writes && typeof writes.audit !== "function") {
+    throw new Error("GitHub writes require a trusted audit journal");
+  }
+  const writeContext: GitHubBrokerWriteContext = {
+    repositories: [...repositories],
+    ...(writes?.claimedIssue
+      ? { claimedIssue: { ...writes.claimedIssue } }
+      : {}),
+  };
+  const auditWrite = writes?.audit;
 
   return async (request) => {
     if (options.signal?.aborted) {
@@ -170,11 +207,23 @@ export function createCredentialBroker(
           service: "github",
           upstream: new URL("/graphql", CREDENTIAL_BROKER_UPSTREAMS.github),
         };
+      } else if (
+        writes && ["POST", "PATCH"].includes(request.method) &&
+        url.pathname.startsWith("/github/repos/") && !url.search
+      ) {
+        // This is only a pending body check. The closed write policy below
+        // supplies the actual upstream after validating and redacting bytes.
+        route = {
+          service: "github",
+          upstream: new URL(CREDENTIAL_BROKER_UPSTREAMS.github),
+        };
       }
     }
     if (!route) return failure(403, "Broker route denied");
     const credential = credentials[route.service];
-    if (!credential) return failure(503, "Broker service is not configured");
+    if (route.service === "codex-subscription" ? !subscription : !credential) {
+      return failure(503, "Broker service is not configured");
+    }
 
     const signal = AbortSignal.any([
       request.signal,
@@ -193,15 +242,32 @@ export function createCredentialBroker(
       return failure(400, "Request body could not be read");
     }
     if (!body) return failure(413, "Request body exceeds broker limit");
+    let mutation: MutationInfo | undefined;
     if (route.service === "github") {
       const read = resolveGitHubBrokerRead(request, repositories, body);
-      if (!read) return failure(403, "Broker route denied");
-      route = { service: "github", upstream: read.upstream };
-      body = read.body ?? body;
+      if (read) {
+        route = { service: "github", upstream: read.upstream };
+        body = read.body ?? body;
+      } else {
+        const write = writes &&
+          resolveGitHubBrokerWrite(request, writeContext, body);
+        if (!write || !write.allowed) {
+          return failure(403, "Broker route denied");
+        }
+        route = { service: "github", upstream: write.upstream };
+        body = write.body;
+        mutation = write.mutation;
+      }
     }
     const headers = new Headers();
     headers.set("accept", "application/json, text/event-stream");
     if (body.byteLength > 0) headers.set("content-type", "application/json");
+    if (route.service === "codex-subscription") {
+      for (const name of CODEX_SUBSCRIPTION_METADATA_HEADERS) {
+        const value = request.headers.get(name);
+        if (value !== null) headers.set(name, value);
+      }
+    }
     const anthropic = route.service === "claude" ||
       (route.service === "deepseek" &&
         route.upstream.pathname.startsWith("/anthropic/"));
@@ -217,10 +283,10 @@ export function createCredentialBroker(
       }
     }
     if (route.service === "claude" && claudeAuthentication === "api-key") {
-      headers.set("x-api-key", credential);
+      headers.set("x-api-key", credential!);
     } else if (route.service === "gemini") {
-      headers.set("x-goog-api-key", credential);
-    } else {
+      headers.set("x-goog-api-key", credential!);
+    } else if (route.service !== "codex-subscription") {
       headers.set("authorization", `Bearer ${credential}`);
     }
     if (route.service === "github") {
@@ -237,21 +303,39 @@ export function createCredentialBroker(
       );
     }
     let response: Response;
+    let status: number | undefined;
     try {
-      response = await forward(
-        new Request(route.upstream, {
-          method: request.method,
-          headers,
-          body: request.method === "POST" ? body : undefined,
-          redirect: "manual",
-          signal,
-        }),
-      );
+      response = await (route.service === "codex-subscription"
+        ? subscription!
+        : forward)(
+          new Request(route.upstream, {
+            method: request.method,
+            headers,
+            body: ["POST", "PATCH"].includes(request.method)
+              ? body
+              : undefined,
+            redirect: "manual",
+            signal,
+          }),
+        );
+      status = response.status;
     } catch {
       if (options.signal?.aborted) {
         return failure(503, "Broker session is closed");
       }
       return failure(502, "Upstream request failed");
+    } finally {
+      if (mutation) {
+        try {
+          await auditWrite!(mutation, status);
+        } catch {
+          // Match the existing journal contract: publication has already
+          // happened, so record failure loudly without inducing a retry.
+          console.error(
+            "[SECURITY] [AUDIT_JOURNAL_REFUSED] Broker write outcome could not be recorded",
+          );
+        }
+      }
     }
     if (signal.aborted) {
       return refuseResponse(
@@ -272,6 +356,8 @@ export function createCredentialBroker(
         ["content-type", "retry-after", "x-request-id", "request-id"].includes(
           name,
         ) ||
+        (route.service === "codex-subscription" &&
+          name === "x-codex-turn-state") ||
         (anthropic &&
           (name === "x-should-retry" ||
             name.startsWith("anthropic-ratelimit-unified-")))

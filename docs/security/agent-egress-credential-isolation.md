@@ -640,10 +640,39 @@ existing lease revocation and native-adapter callers. The earlier `/user` denial
 fixture now checks `/user/repos`, because identity alone is intentionally
 authorised while account subresources remain refused.
 
-A new hosted native fixture will exercise `gh auth status`, identity, quota,
-two-page REST reads and both registered repository-view fields. Those additional
-wire behaviours are pending. Ordinary writes, git transport, production account
-selection/refresh, private-volume provisioning and Apple boundary proof remain
-incomplete. The [supervisor checkpoint](broker-supervisor-checkpoint.md) and
+Run [39099360961](https://github.com/stSoftwareAU/VibeCoder/actions/runs/39099360961),
+source `c00040580031b2755e90da78825528c0f87a344a`, completed those native startup
+and pagination checks in Docker job `117592270308` and rootless Podman job
+`117592270556`. Both recorded identity/quota/root/registered-user-GraphQL counts
+of one each, two pagination pages and two repository reads. The previous native
+provider, credential-visibility and network-denial witnesses also passed.
+The separate older nested-namespace diagnostic failed before reaching its
+namespace check because its source staging omitted the new read-policy module.
+That run is not fresh `EPERM` evidence. The next run stages the tracked library
+dependencies for both diagnostics, so the original prerequisite is exercised.
+
+- Docker image: `sha256:066ffcd57bf2c1c79d4b9a3a5048f9fd869bcf98e818e0bb0c7219e8cb9c31af`.
+  Artifact `12125572789`, SHA-256
+  `0dc14f648b60ae3ae5886886debeb05ff54ce7ee2c9319b6e48b340a854a322f`.
+- Rootless Podman image: `241e77f9edf163e2db98a3182f0eb78aae5398a78a4b1209884ea5e374c76d20`.
+  Artifact `12126067228`, SHA-256
+  `bdf05b2f0b3fccd4bc543712b6300e4a8256acfce82494e74b981bb987c970f7`.
+
+Ordinary REST writes now have a separately enabled host grant: canonical body
+schemas, mandatory existing redaction, existing repository/label/claim guards,
+and a trusted audit callback. Request fields cannot grant worker privileges.
+Four new integration tests went red to green; 68 broker/client tests passed.
+Native POST/PATCH publication and forbidden-write checks are prepared but still
+await a hosted run. High-level GraphQL writes and Git transport remain incomplete.
+
+The outer broker also routes explicitly selected Codex subscription requests
+through the trusted refresh transport after capability, body-bound and lease
+checks. Three integration tests went red to green; 59 focused broker/transport
+tests passed. Subscription inference and refresh endpoints now live in the same
+central allowlist as all other destinations. The native subscription and
+persistence proof is still pending; no API-key fallback is enabled.
+
+Production account selection/refresh, private-volume provisioning and Apple
+boundary proof remain incomplete. The [supervisor checkpoint](broker-supervisor-checkpoint.md) and
 [Codex transport evidence](codex-agent-transport-evidence.md) record their own
 limits; none of these modules enables normal isolated startup yet.

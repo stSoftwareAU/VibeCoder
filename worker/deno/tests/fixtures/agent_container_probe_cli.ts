@@ -153,6 +153,20 @@ let networkCreated = false;
 let brokerOutput: Promise<Deno.CommandOutput> | undefined;
 let brokerResult: Deno.CommandOutput | undefined;
 try {
+  // Reuse the real guards/redactor and their library dependencies. Only
+  // tracked TypeScript source is staged; host state and credentials are not.
+  const sourceList = await new Deno.Command("git", {
+    args: ["ls-files", "-z", "--", "worker/deno/lib", "worker/deno/types.ts"],
+    cwd: repo,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  if (!sourceList.success) {
+    throw new Error("Cannot enumerate tracked broker source");
+  }
+  const librarySources = new TextDecoder().decode(sourceList.stdout).split("\0")
+    .filter((path) => path.endsWith(".ts"))
+    .map((path) => path.slice("worker/deno/".length));
   console.log(JSON.stringify({ date: new Date().toISOString() }));
   for (const paths of roots) {
     // Each role gets distinct, empty configuration/work/state. Credential
@@ -171,13 +185,7 @@ try {
     await Deno.writeTextFile(`${paths.configStageDir}/.config.json`, "{}");
     for (
       const relative of [
-        "lib/credential_broker.ts",
-        "lib/credential_broker_policy.ts",
-        "lib/github_broker_reads.ts",
-        "lib/anthropic_agent_gateway.ts",
-        "lib/github_agent_gateway.ts",
-        "lib/gemini_agent_gateway.ts",
-        "lib/codex_agent_gateway.ts",
+        ...librarySources,
         "tests/support/agent_namespace_evidence.ts",
         "tests/support/agent_container_evidence.ts",
         "tests/fixtures/agent_namespace_container_probe.ts",
@@ -188,6 +196,9 @@ try {
         "tests/support/codex_native_evidence.ts",
       ]
     ) {
+      if (!(await Deno.lstat(`${repo}/worker/deno/${relative}`)).isFile) {
+        throw new Error("Probe source staging refuses non-files");
+      }
       const target = `${paths.baseDir}/worker/deno/${relative}`;
       await Deno.mkdir(target.slice(0, target.lastIndexOf("/")), {
         recursive: true,
@@ -311,7 +322,8 @@ try {
     github.localCapabilityOnly !== true ||
     github.upstreamCredentialVisible !== false ||
     github.startupCompleted !== true || github.paginationCompleted !== true ||
-    github.repositoryReadsCompleted !== true
+    github.repositoryReadsCompleted !== true ||
+    github.ordinaryWritesCompleted !== true || github.deniedWrites !== 4
   ) {
     throw new Error(
       "Native GitHub fixture lacked complete read/denial evidence",
@@ -338,21 +350,32 @@ try {
   if (!codexPin) {
     throw new Error("Native Codex fixture requires a manifest pin");
   }
-  const codex = JSON.parse(
-    await launch(agentPlan, "native-codex", [metadata, codexPin.version]),
-  );
-  if (
-    codex.nativeClientCompleted !== true || codex.versionMatched !== true ||
-    codex.upstreamCredentialVisible !== false ||
-    codex.authenticationMode !== "api-key"
-  ) {
-    throw new Error("Native Codex fixture lacked completion evidence");
+  for (const mode of ["api-key", "chatgpt"]) {
+    const codex = JSON.parse(
+      await launch(agentPlan, "native-codex", [
+        metadata,
+        codexPin.version,
+        mode,
+      ]),
+    );
+    if (
+      codex.nativeClientCompleted !== true || codex.versionMatched !== true ||
+      codex.upstreamCredentialVisible !== false ||
+      codex.authenticationMode !== mode
+    ) {
+      throw new Error("Native Codex fixture lacked completion evidence");
+    }
+    console.log(JSON.stringify({ phase: "native-codex", evidence: codex }));
   }
-  console.log(JSON.stringify({ phase: "native-codex", evidence: codex }));
   const nativeWitness = JSON.parse(await inside("witness"));
   if (
     nativeWitness.nativeGitHubRequests !== 2 ||
     nativeWitness.nativeCodexRequests !== 1 ||
+    nativeWitness.nativeCodexSubscriptionRequests !== 2 ||
+    nativeWitness.nativeCodexRefreshRequests !== 1 ||
+    nativeWitness.nativeCodexPersisted !== true ||
+    nativeWitness.nativeGitHubWrites !== 2 ||
+    nativeWitness.nativeGitHubWriteAudits !== 2 ||
     nativeWitness.nativeGitHubReads?.identity !== 1 ||
     nativeWitness.nativeGitHubReads?.quota !== 1 ||
     nativeWitness.nativeGitHubReads?.root !== 1 ||
@@ -383,8 +406,13 @@ try {
         claude: nativeWitness.nativeRequests,
         github: nativeWitness.nativeGitHubRequests,
         githubReads: nativeWitness.nativeGitHubReads,
+        githubWrites: nativeWitness.nativeGitHubWrites,
+        githubWriteAudits: nativeWitness.nativeGitHubWriteAudits,
         gemini: nativeWitness.nativeGeminiRequests,
         codex: nativeWitness.nativeCodexRequests,
+        codexSubscription: nativeWitness.nativeCodexSubscriptionRequests,
+        codexRefresh: nativeWitness.nativeCodexRefreshRequests,
+        codexPersisted: nativeWitness.nativeCodexPersisted,
       },
     }),
   );

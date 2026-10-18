@@ -1,5 +1,5 @@
 import { assertEquals, assertThrows } from "@std/assert";
-import { parseBrokerSessionConfig } from "../broker_service.ts";
+import { parseBrokerSessionConfig } from "../lib/broker_session_config.ts";
 
 Deno.test("broker service accepts only a host-owned immutable credential session", () => {
   const value = {
@@ -22,6 +22,7 @@ Deno.test("broker service accepts only a host-owned immutable credential session
       { ...value, credentials: null },
       { ...value, credentials: [] },
       { ...value, credentials: { claude: 7 } },
+      { ...value, credentials: { claude: "x".repeat(65_536) } },
       { ...value, credentials: { claude: "line\nbreak" } },
       { ...value, repositories: "fixture/allowed" },
       { ...value, repositories: [7] },

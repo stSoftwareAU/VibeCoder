@@ -4,32 +4,23 @@
  * No token endpoint, credential snapshot or refresh result is an agent route.
  */
 import { readTextBounded } from "./bounded_fetch.ts";
+import {
+  CREDENTIAL_BROKER_AUTH_ENDPOINTS,
+  CREDENTIAL_BROKER_UPSTREAMS,
+} from "./credential_broker_policy.ts";
 
-const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
-const REFRESH_URL = "https://auth.openai.com/oauth/token";
+const RESPONSES_URL = new URL(
+  "/backend-api/codex/responses",
+  CREDENTIAL_BROKER_UPSTREAMS["codex-subscription"],
+).href;
+const REFRESH_URL = CREDENTIAL_BROKER_AUTH_ENDPOINTS.codex;
 const MAX_AUTH_BYTES = 128 * 1024;
 const MAX_REQUEST_BYTES = 16 * 1024 * 1024;
 const REFRESH_WINDOW_MS = 5 * 60_000;
 const REFRESH_AGE_MS = 8 * 24 * 60 * 60_000;
 
-/** Pinned HTTP metadata; outer adapters must carry these without adding auth. */
-export const CODEX_SUBSCRIPTION_METADATA_HEADERS = [
-  "originator",
-  "user-agent",
-  "version",
-  "session-id",
-  "thread-id",
-  "x-client-request-id",
-  "x-codex-beta-features",
-  "x-codex-turn-state",
-  "x-codex-turn-metadata",
-  "x-codex-window-id",
-  "x-codex-parent-thread-id",
-  "x-codex-installation-id",
-  "x-openai-subagent",
-  "x-openai-memgen-request",
-  "x-openai-internal-codex-responses-lite",
-] as const;
+import { CODEX_SUBSCRIPTION_METADATA_HEADERS } from "./codex_transport_headers.ts";
+export { CODEX_SUBSCRIPTION_METADATA_HEADERS } from "./codex_transport_headers.ts";
 
 interface Snapshot {
   readonly authJson: string;
@@ -135,6 +126,27 @@ function snapshot(authJson: string, accountId: string): Snapshot {
   }
 }
 
+/** Validate host-owned state without returning credential values to a caller. */
+export function assertCodexSubscriptionSnapshot(
+  authJson: string,
+  accountId: string,
+): void {
+  snapshot(authJson, accountId);
+}
+
+/** A successful disk writer returns its exact merged JSON for the next CAS. */
+export type CodexSubscriptionPersist = (replacement: {
+  expectedAuthJson: string;
+  authJson: string;
+  signal: AbortSignal;
+}) => Promise<string | void>;
+
+/** Same-account host lock held across reload, refresh and persistence. */
+export type CodexSubscriptionTransaction = (options: {
+  signal: AbortSignal;
+  run: (authJson: string, persist: CodexSubscriptionPersist) => Promise<string>;
+}) => Promise<string>;
+
 function failure(status: number, reason: string): Response {
   return new Response(`${reason}\n`, {
     status,
@@ -145,7 +157,9 @@ function failure(status: number, reason: string): Response {
 /**
  * Construct one selected-account transport in the trusted broker.
  * `persist` must atomically compare expectedAuthJson and replace only while its
- * signal remains live. The host must serialise owners of the same auth file.
+ * signal remains live. For shared auth files, `transaction` must hold the host
+ * account lock across reload, upstream refresh and persistence; CAS alone cannot
+ * prevent two brokers consuming the same rotating refresh token.
  * Neither its arguments nor this function belong inside the agent container.
  */
 export function createCodexSubscriptionTransport(options: {
@@ -153,17 +167,15 @@ export function createCodexSubscriptionTransport(options: {
   accountId: string;
   now?: () => number;
   signal?: AbortSignal;
-  persist: (replacement: {
-    expectedAuthJson: string;
-    authJson: string;
-    signal: AbortSignal;
-  }) => Promise<void>;
+  persist: CodexSubscriptionPersist;
+  transaction?: CodexSubscriptionTransaction;
   fetch?: (request: Request) => Promise<Response>;
 }): (request: Request) => Promise<Response> {
   let current = snapshot(options.authJson, options.accountId);
   const accountId = options.accountId;
   const forward = options.fetch ?? fetch;
   const persist = options.persist;
+  const transaction = options.transaction;
   const now = options.now ?? Date.now;
   const session = options.signal ?? new AbortController().signal;
   const failureAbort = new AbortController();
@@ -193,70 +205,98 @@ export function createCodexSubscriptionTransport(options: {
         failureAbort.signal,
         AbortSignal.timeout(30_000),
       ]);
-      let replacement: Snapshot;
-      try {
-        const response = await forward(
-          new Request(REFRESH_URL, {
-            method: "POST",
-            redirect: "manual",
-            signal,
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
-              grant_type: "refresh_token",
-              refresh_token: previous.refreshToken,
-            }),
-          }),
-        );
-        if (!response.ok) {
-          await response.body?.cancel();
-          throw new Error("Refresh refused");
+      const rotate = async (
+        authJson: string,
+        commit: CodexSubscriptionPersist,
+      ): Promise<string> => {
+        signal.throwIfAborted();
+        const selected = snapshot(authJson, accountId);
+        // Another broker rotated while we waited for the host account lock.
+        if (
+          (selected.accessToken !== previous.accessToken ||
+            selected.refreshToken !== previous.refreshToken ||
+            selected.idToken !== previous.idToken ||
+            selected.lastRefresh !== previous.lastRefresh) && !stale(selected)
+        ) {
+          return selected.authJson;
         }
-        const body = await readTextBounded(
-          new Response(
-            response.body?.pipeThrough(new TransformStream(), { signal }),
-          ),
-          MAX_AUTH_BYTES,
-        );
+        let replacement: Snapshot;
+        try {
+          const response = await forward(
+            new Request(REFRESH_URL, {
+              method: "POST",
+              redirect: "manual",
+              signal,
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+                grant_type: "refresh_token",
+                refresh_token: selected.refreshToken,
+              }),
+            }),
+          );
+          if (!response.ok) {
+            await response.body?.cancel();
+            throw new Error("Refresh refused");
+          }
+          const body = await readTextBounded(
+            new Response(
+              response.body?.pipeThrough(new TransformStream(), { signal }),
+            ),
+            MAX_AUTH_BYTES,
+          );
+          signal.throwIfAborted();
+          if (!body.ok) throw new Error("Refresh response exceeded its bound");
+          const result = record(JSON.parse(body.value));
+          replacement = snapshot(
+            JSON.stringify({
+              auth_mode: "chatgpt",
+              OPENAI_API_KEY: null,
+              tokens: {
+                account_id: accountId,
+                access_token: token(result.access_token),
+                refresh_token: result.refresh_token === undefined ||
+                    result.refresh_token === null
+                  ? selected.refreshToken
+                  : token(result.refresh_token),
+                id_token:
+                  result.id_token === undefined || result.id_token === null
+                    ? selected.idToken
+                    : token(result.id_token),
+              },
+              last_refresh: new Date(now()).toISOString(),
+            }),
+            accountId,
+          );
+          if (stale(replacement)) {
+            throw new Error("Replacement already expired");
+          }
+        } catch {
+          throw latchFailure("Codex subscription refresh failed");
+        }
         signal.throwIfAborted();
-        if (!body.ok) throw new Error("Refresh response exceeded its bound");
-        const result = record(JSON.parse(body.value));
-        replacement = snapshot(
-          JSON.stringify({
-            auth_mode: "chatgpt",
-            OPENAI_API_KEY: null,
-            tokens: {
-              account_id: accountId,
-              access_token: token(result.access_token),
-              refresh_token: result.refresh_token === undefined ||
-                  result.refresh_token === null
-                ? previous.refreshToken
-                : token(result.refresh_token),
-              id_token:
-                result.id_token === undefined || result.id_token === null
-                  ? previous.idToken
-                  : token(result.id_token),
-            },
-            last_refresh: new Date(now()).toISOString(),
-          }),
-          accountId,
-        );
-        if (stale(replacement)) throw new Error("Replacement already expired");
-      } catch {
-        throw latchFailure("Codex subscription refresh failed");
-      }
-      signal.throwIfAborted();
+        try {
+          const committed = await commit({
+            expectedAuthJson: selected.authJson,
+            authJson: replacement.authJson,
+            signal,
+          });
+          signal.throwIfAborted();
+          return committed ?? replacement.authJson;
+        } catch {
+          throw latchFailure("Codex subscription persistence failed");
+        }
+      };
       try {
-        await persist({
-          expectedAuthJson: previous.authJson,
-          authJson: replacement.authJson,
-          signal,
-        });
+        const committed = transaction
+          ? await transaction({ signal, run: rotate })
+          : await rotate(previous.authJson, persist);
         signal.throwIfAborted();
+        current = snapshot(committed, accountId);
       } catch {
-        throw latchFailure("Codex subscription persistence failed");
+        if (failed) throw new Error(failed);
+        throw latchFailure("Codex subscription account transaction failed");
       }
-      current = replacement;
       return current;
     })();
     refreshInFlight = job;

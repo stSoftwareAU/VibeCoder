@@ -78,14 +78,28 @@ try {
   await Deno.writeTextFile(`${hostPaths.configStageDir}/.config.json`, "{}");
   // Only committed probe modules are mounted. No real configuration, .git,
   // credential directory or host home is exposed to this validation run.
+  const listing = await new Deno.Command("git", {
+    args: ["ls-files", "-z", "--", "worker/deno/lib", "worker/deno/types.ts"],
+    cwd: repo,
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  if (!listing.success) {
+    throw new Error("Cannot enumerate tracked broker source");
+  }
+  const librarySources = new TextDecoder().decode(listing.stdout).split("\0")
+    .filter((path) => path.endsWith(".ts"))
+    .map((path) => path.slice("worker/deno/".length));
   for (
     const relative of [
-      "lib/credential_broker.ts",
-      "lib/credential_broker_policy.ts",
+      ...librarySources,
       "tests/support/agent_namespace_evidence.ts",
       "tests/fixtures/agent_namespace_container_probe.ts",
     ]
   ) {
+    if (!(await Deno.lstat(`${repo}/worker/deno/${relative}`)).isFile) {
+      throw new Error("Probe source staging refuses non-files");
+    }
     const target = `${hostPaths.baseDir}/worker/deno/${relative}`;
     await Deno.mkdir(target.slice(0, target.lastIndexOf("/")), {
       recursive: true,

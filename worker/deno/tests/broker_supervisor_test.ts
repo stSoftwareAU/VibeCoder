@@ -2,10 +2,23 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   type BrokerSupervisorDeps,
-  superviseBrokeredWorker,
+  superviseBrokeredWorker as supervise,
 } from "../lib/broker_supervisor.ts";
 import { buildBrokerIsolationPlan } from "../lib/broker_isolation_plan.ts";
 import { brokerPlanFixture } from "./support/broker_supervisor_plan.ts";
+
+const SESSION = JSON.stringify({
+  credentials: { claude: "synthetic-private-secret" },
+  repositories: ["fixture/allowed"],
+  lifetimeMs: 5000,
+});
+function superviseBrokeredWorker(
+  plan: Parameters<typeof supervise>[0],
+  options: Omit<Parameters<typeof supervise>[1], "sessionConfig"> = {},
+  deps?: BrokerSupervisorDeps,
+) {
+  return supervise(plan, { ...options, sessionConfig: SESSION }, deps);
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -16,7 +29,7 @@ function deferred<T>() {
 async function harness() {
   const fixture = await brokerPlanFixture();
   const plan = await buildBrokerIsolationPlan(fixture.input, {
-    brokerConfigDir: fixture.config,
+    privateVolume: "fixture-private-config",
     socketVolume: "fixture-owned-socket",
   });
   const broker = deferred<number>();
@@ -39,7 +52,11 @@ async function harness() {
       }
       if (args[0] === "inspect") return { code: 0, stdout: ownedLabel };
       if (args[0] === "volume" && args[1] === "rm") {
-        events.push("remove-socket");
+        events.push(
+          args.at(-1) === plan.socketVolume
+            ? "remove-socket"
+            : "remove-private",
+        );
       }
       if (args[0] === "exec") {
         events.push("probe");
@@ -48,7 +65,16 @@ async function harness() {
       if (args[0] === "run") events.push("initialise");
       return { code: 0, stdout: "" };
     },
-    start(args) {
+    start(args, input) {
+      if (args.includes(`${plan.worker.containerName}-broker-stage`)) {
+        events.push("start-stage");
+        assertEquals(new TextDecoder().decode(input), SESSION);
+        assertEquals(
+          args.some((a) => a.includes("synthetic-private-secret")),
+          false,
+        );
+        return { pid: 70, status: Promise.resolve(0) };
+      }
       const isBroker = args.includes(plan.broker.name);
       events.push(isBroker ? "start-broker" : "start-worker");
       if (!isBroker) {
@@ -63,7 +89,7 @@ async function harness() {
     async reap(name) {
       events.push(`reap:${name}`);
       if (name === plan.broker.name) broker.resolve(0);
-      else worker.resolve(143);
+      else if (name === plan.worker.containerName) worker.resolve(143);
       return true;
     },
   };
@@ -92,6 +118,7 @@ Deno.test("supervisor waits for readiness then preserves the attached worker exi
     await h.started.promise;
     h.worker.resolve(7);
     assertEquals(await running, 7);
+    assert(h.events.indexOf("start-stage") < h.events.indexOf("start-broker"));
     assert(h.events.indexOf("probe") < h.events.indexOf("start-worker"));
     assert(h.events.includes(`reap:${h.plan.broker.name}`));
     assertEquals(h.events.at(-1), "remove-socket");
@@ -161,7 +188,7 @@ Deno.test("supervisor refuses pre-existing socket volumes and surfaces cleanup f
     await assertRejects(
       () => superviseBrokeredWorker(existing.plan, {}, existing.deps),
       Error,
-      "Broker socket volume already exists",
+      "Broker socket or private volume already exists",
     );
     assertEquals(existing.events, []);
   } finally {
@@ -177,6 +204,7 @@ Deno.test("supervisor refuses pre-existing socket volumes and surfaces cleanup f
     await assertRejects(() => running, Error, "Broker cleanup failed");
     // A still-running broker owns its socket; never pretend removal succeeded.
     assertEquals(broken.events.includes("remove-socket"), false);
+    assertEquals(broken.events.includes("remove-private"), false);
   } finally {
     await broken.fixture.close();
   }
@@ -225,13 +253,14 @@ Deno.test("supervisor labels every started container and keeps foreign or unveri
     h.deps.run = async (args) => {
       if (args[0] === "run") labels.push(args[args.indexOf("--label") + 1]!);
       if (
-        args[0] === "volume" && args[1] === "inspect" && ++inspections === 2
+        args[0] === "volume" && args[1] === "inspect" &&
+        args.at(-1) === h.plan.socketVolume && ++inspections === 2
       ) return { code: 0, stdout: "different-owner" };
       return await run(args);
     };
-    h.deps.start = (args) => {
+    h.deps.start = (args, input) => {
       labels.push(args[args.indexOf("--label") + 1]!);
-      return start(args);
+      return start(args, input);
     };
     const running = superviseBrokeredWorker(h.plan, {}, h.deps);
     await h.started.promise;
@@ -241,7 +270,7 @@ Deno.test("supervisor labels every started container and keeps foreign or unveri
       Error,
       "Broker cleanup failed: socket volume",
     );
-    assertEquals(labels.length, 4);
+    assertEquals(labels.length, 5);
     assertEquals(new Set(labels).size, 1);
     assert(labels[0]!.startsWith("io.vibecoder.broker-session="));
     assertEquals(h.events.includes("remove-socket"), false);
@@ -264,9 +293,9 @@ Deno.test("supervisor snapshots host plan and refuses cancellation before creati
     assertEquals(h.events, []);
     h.ready();
     const start = h.deps.start;
-    h.deps.start = (args) => {
+    h.deps.start = (args, input) => {
       assertEquals(args.includes("--privileged"), false);
-      return start(args);
+      return start(args, input);
     };
     const running = superviseBrokeredWorker(h.plan, {}, h.deps);
     h.plan.worker.runArgs.push("--privileged");
@@ -313,7 +342,7 @@ Deno.test({
         entry,
       ) => entry.name);
       assertEquals(entries.some((name) => name.endsWith(".container")), false);
-      assertEquals(entries.includes("volume.label"), false);
+      assertEquals(entries.some((name) => name.endsWith(".volume")), false);
     } finally {
       await h.fixture.close();
     }
@@ -426,4 +455,141 @@ Deno.test({
       }
     }
   },
+});
+
+Deno.test("supervisor revokes a cancelled provisioner before removing either private session volume", async () => {
+  const h = await harness();
+  const controller = new AbortController();
+  const staging = deferred<void>();
+  const completion = deferred<number>();
+  const start = h.deps.start;
+  const reap = h.deps.reap;
+  try {
+    h.deps.start = (args, input) => {
+      const child = start(args, input);
+      if (args.includes(`${h.plan.worker.containerName}-broker-stage`)) {
+        staging.resolve();
+        return { ...child, status: completion.promise };
+      }
+      return child;
+    };
+    h.deps.reap = async (name, pid, owner) => {
+      if (name.endsWith("-broker-stage")) completion.resolve(143);
+      return await reap(name, pid, owner);
+    };
+    const running = superviseBrokeredWorker(h.plan, {
+      signal: controller.signal,
+    }, h.deps);
+    await staging.promise;
+    controller.abort();
+    await assertRejects(() => running, Error, "Broker supervisor cancelled");
+    assertEquals(h.events.includes("start-broker"), false);
+    assertEquals(h.events.includes("start-worker"), false);
+    assert(
+      h.events.includes(`reap:${h.plan.worker.containerName}-broker-stage`),
+    );
+    assert(
+      h.events.indexOf(`reap:${h.plan.worker.containerName}-broker-stage`) <
+        h.events.indexOf("remove-private"),
+    );
+    assert(h.events.includes("remove-private"));
+    assert(h.events.includes("remove-socket"));
+  } finally {
+    await h.fixture.close();
+  }
+});
+
+Deno.test("supervisor refuses invalid session data before resources and cleans only proven volumes after partial setup", async () => {
+  const h = await harness();
+  try {
+    await assertRejects(
+      () =>
+        supervise(h.plan, {
+          sessionConfig: '{"credentials":"synthetic-secret"}',
+        }, h.deps),
+      Error,
+      "Invalid private broker session configuration",
+    );
+    assertEquals(h.events, []);
+    const run = h.deps.run;
+    h.deps.run = (args) =>
+      args[0] === "volume" && args[1] === "create" &&
+        args.at(-1) === h.plan.privateVolume
+        ? Promise.resolve({ code: 1, stdout: "" })
+        : run(args);
+    await assertRejects(
+      () => superviseBrokeredWorker(h.plan, {}, h.deps),
+      Error,
+      "Could not create broker session volume",
+    );
+    assertEquals(h.events.includes("remove-private"), false);
+    assertEquals(h.events.includes("remove-socket"), true);
+    assertEquals(h.events.includes("start-stage"), false);
+  } finally {
+    await h.fixture.close();
+  }
+});
+
+Deno.test("supervisor does not launch broker or worker when private provisioning fails", async () => {
+  const h = await harness();
+  try {
+    h.deps.start = () => ({ pid: 70, status: Promise.resolve(9) });
+    await assertRejects(
+      () => superviseBrokeredWorker(h.plan, {}, h.deps),
+      Error,
+      "Broker credential provisioning failed",
+    );
+    assertEquals(h.events.includes("start-worker"), false);
+    assertEquals(h.events.includes("probe"), false);
+    assert(h.events.includes("remove-private"));
+    assert(h.events.includes("remove-socket"));
+  } finally {
+    await h.fixture.close();
+  }
+});
+
+Deno.test("supervisor refuses a pre-existing private volume before creating socket state", async () => {
+  const h = await harness();
+  try {
+    h.ready();
+    h.worker.resolve(0);
+    const run = h.deps.run;
+    h.deps.run = (args) =>
+      args[0] === "volume" && args[1] === "ls" &&
+        args.includes(`name=^${h.plan.privateVolume}$`)
+        ? Promise.resolve({ code: 0, stdout: h.plan.privateVolume })
+        : run(args);
+    await assertRejects(
+      () => superviseBrokeredWorker(h.plan, {}, h.deps),
+      Error,
+      "already exists",
+    );
+    assertEquals(h.events, []);
+  } finally {
+    await h.fixture.close();
+  }
+});
+
+Deno.test("supervisor keeps private state whose ownership changes while still cleaning its socket", async () => {
+  const h = await harness();
+  try {
+    h.ready();
+    h.worker.resolve(0);
+    const run = h.deps.run;
+    let inspections = 0;
+    h.deps.run = (args) =>
+      args[0] === "volume" && args[1] === "inspect" &&
+        args.at(-1) === h.plan.privateVolume && ++inspections === 2
+        ? Promise.resolve({ code: 0, stdout: "foreign-private-owner" })
+        : run(args);
+    await assertRejects(
+      () => superviseBrokeredWorker(h.plan, {}, h.deps),
+      Error,
+      "Broker cleanup failed: private volume",
+    );
+    assertEquals(h.events.includes("remove-private"), false);
+    assertEquals(h.events.includes("remove-socket"), true);
+  } finally {
+    await h.fixture.close();
+  }
 });

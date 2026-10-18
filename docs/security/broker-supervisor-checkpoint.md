@@ -13,19 +13,19 @@ from the existing production runtime descriptor and launch plan. The worker
 retains its work, approval and agent-state volumes, loses every provider/GitHub
 credential mount, gains only a read-only socket-volume mount and uses
 `--network none`. The trusted broker uses the base image, its fixed Deno service
-entrypoint, read-only checkout and private session-config mounts, and the same
+entrypoint, read-only checkout and private session-volume mounts, and the same
 socket volume writable. Neither role gains runtime-daemon access. Capabilities
 remain dropped, no-new-privileges and the read-only root remain enabled, and
 production tmpfs/seccomp/AppArmor behaviour is retained. The broker explicitly
 uses a temporary Deno cache because it does not run the ordinary entrypoint.
 
-Canonical path checks refuse private configuration, original host configuration
-or credential sources that overlap any worker host mount, including aliases via
-custom prompts. The default original `.config.json` inside the checkout is
-therefore refused: merely projecting a second copy into the config mount does
-not protect the original. The eventual host bootstrap must supply a clean
-checkout and a separately staged worker projection. Apple is refused explicitly
-until its transport and boundary have runtime evidence.
+Canonical path checks refuse original host configuration or credential sources
+that overlap any worker host mount, including aliases via custom prompts. The
+default original `.config.json` inside the checkout is therefore refused: merely
+projecting a second copy into the config mount does not protect the original.
+The eventual host bootstrap must supply a clean checkout and a separately staged
+worker projection. Apple is refused explicitly until its transport and boundary
+have runtime evidence.
 
 `worker/deno/broker_service.ts` reads only a closed host session schema:
 selected upstream values, repository scope, lease lifetime and explicit Claude
@@ -62,20 +62,39 @@ permissions, native authentication or Apple support.
 
 Test-first failures included exposed original host config, mutation of the
 runtime executable after the first await, the read-only-root Deno-cache path,
-and stopped foreign-container cleanup being incorrectly treated as complete.
-After correction, 16 focused tests pass. Twenty-four independent mutations are
-rejected by assertions: worker network mode, socket access, credential mounts,
-config/credential overlap, socket names and ownership, scratch cache, plan
-snapshot, stopped-resource ownership, readiness ownership/deadline, cleanup
-failure propagation, service/credential/repository policy, lease bounds and
-explicit authentication mode. No pre-existing assertion was removed.
+and stopped foreign-container cleanup being incorrectly treated as complete. The
+initial lifecycle checkpoint passed 16 focused tests. Twenty-four independent
+mutations were rejected by assertions: worker network mode, socket access,
+credential mounts, config/credential overlap, socket names and ownership,
+scratch cache, plan snapshot, stopped-resource ownership, readiness
+ownership/deadline, cleanup failure propagation, service/credential/repository
+policy, lease bounds and explicit authentication mode. The private-volume
+follow-up adds streamed-input, mode, stale-file, partial-setup, provisioner
+cancellation and runtime-witness tests. Its 28 further independent mutations are
+rejected by assertions; the combined focused suite now has 28 tests. The
+volume-options snapshot regression first exposed caller mutation during
+asynchronous path checks, then passed after snapshotting those options too. No
+assertion that existed on main was removed.
+
+The executable
+`tests/fixtures/broker_supervisor_runtime_probe.ts <image>
+[docker|podman]` runs
+the actual supervisor and stdin provisioner for normal exit, host cancellation
+and broker loss. It asserts the broker's positive file hash, mode and UID
+witness; the worker's denied broker route, absent private mount and credential
+value, read-only socket, zero capabilities, no-new-privileges and seccomp; and
+container/volume cleanup. Artifacts and release markers stay in worker tmpfs,
+observed through fixed trusted host runtime calls. It makes no upstream request
+and never uses real credentials. The local shell cannot run Docker/Podman, so
+this newer fixture still awaits hosted execution.
 
 Local evidence logs are retained in the implementation session as
 `/private/tmp/m122-supervisor-*-red.log`,
-`/private/tmp/m122-supervisor-mutations.json` and individual mutant logs. These
-temporary local paths are evidence for the checkpoint, not durable CI artifacts.
-The final integrated change still requires the repository quality gate and
-actual runtime acceptance.
+`/private/tmp/m122-supervisor-mutations.json` and individual mutant logs. The
+follow-up uses `/private/tmp/m122-provision-mutations.json` and
+`/private/tmp/m122-private-volume-snapshot-red.log`. These temporary local paths
+are evidence for the checkpoint, not durable CI artifacts. The final integrated
+change still requires the repository quality gate and actual runtime acceptance.
 
 ## Remaining production acceptance criteria
 
