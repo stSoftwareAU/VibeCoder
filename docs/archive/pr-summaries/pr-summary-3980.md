@@ -62,7 +62,7 @@ missing live evidence explicitly; they establish no fleet improvement or winner.
 - The checked-in report is byte-identical to the real CLI output for that
   snapshot. It preserves unknown cost, actual build/role gaps and safeguard
   measurements; no synthetic activity is presented as live fleet evidence.
-- The first full gate exposed a missing CLI console-redaction installation and unregistered module coverage. Both are repaired using the existing shared hook and `recordSweepTopUp` producer; its claimed top-up records the actual default merge-base `60392646`, never a feature-only commit. The report plus both formerly failing checks pass 30 focused tests. All 98 facts now match current source and actual named assertion failures. A full rerun is pending.
+- The first full gate exposed a missing CLI console-redaction installation and unregistered module coverage. Both are repaired using the existing shared hook and `recordSweepTopUp` producer; its claimed top-up records the actual default merge-base `60392646`, never a feature-only commit. The report plus both formerly failing checks pass 30 focused tests. All 98 facts now match current source and actual named assertion failures. The full rerun passed at `6776ab1a67468f71b4cdad7d87715aeafd91881b` on 2026-10-18: both unit passes, type checking, lint, formatting, completeness, documentation and security checks passed. Optional local configuration integration was skipped because this workspace has no `.config.json`.
 - Docs sweep — grep: "improvement", "stabilisation", "lifecycle"; updated `.claude/skills/review-fleet-prs/SKILL.md`, `docs/MODEL-AND-CACHING.md` and the baseline manual; section: MODEL-AND-CACHING lifecycle reporting and review-fleet-prs principle 7; siblings: none — no existing routing, role, allocation or configuration set gained a member.
 
 
@@ -92,7 +92,9 @@ missing live evidence explicitly; they establish no fleet improvement or winner.
   their fixes; failures were assertions, not missing imports or compiler errors.
 - The integrated report, lifecycle reconciliation/outcome and two repaired
   invariant suites pass 103 tests with type checking enabled. The report itself
-  retains 28 tests. The manifest task also passes: 687 tests, one existing ignored.
+  retains 28 tests. After merging main `7bd0d619`, the same 103 tests pass again
+  with type checking enabled. The manifest task also passes: 687 tests, one
+  existing ignored.
 - All 98 enumerated new decisions and logical operands were independently
   mutated. Each produced an actual AssertionError in its named test and was
   restored before the passing run. AND operands were neutralised to true and
@@ -100,6 +102,7 @@ missing live evidence explicitly; they establish no fleet improvement or winner.
 - CLI tests use actual temporary ledger/snapshot files and the real Deno entry
   point, including malformed-input exit status. They do not grep source code.
 - There are no removed assertions from existing tests. Full local quality
-  validation remains pending; no deployment or fleet saving is claimed.
+  validation passed at the commit recorded above; no deployment or fleet saving
+  is claimed.
 
 <!-- vibe-branch-outcomes -->
