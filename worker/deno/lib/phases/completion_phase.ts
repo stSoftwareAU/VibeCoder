@@ -217,6 +217,7 @@ import {
 import { isSecondaryRateLimitMessage } from "../secondary_rate_limit.ts";
 import { healStaleBranchLineage } from "../stale_branch_lineage.ts";
 import {
+  alreadyLandedPhaseResult,
   checkClaimFreshness,
   type ClaimFreshness,
   formatStaleClaimComment,
@@ -1380,6 +1381,15 @@ async function runCompletionAttempt(
   const blocksBefore = state.securityGateBlocks?.length ?? 0;
   const summaryBlocksBefore = state.summaryRuleBlocks?.length ?? 0;
   const result = await completionBody(ctx, state, deps);
+  if (result.status === "failure") {
+    const landed = await alreadyLandedPhaseResult(
+      ctx,
+      state,
+      deps,
+      "completion",
+    );
+    if (landed) return landed;
+  }
 
   // Issue #2960: a screenshot block gets one extra agent turn and one re-run
   // before it fails the run.
@@ -1774,6 +1784,13 @@ async function completionBody(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
+  const alreadyLanded = await alreadyLandedPhaseResult(
+    ctx,
+    state,
+    deps,
+    "completion",
+  );
+  if (alreadyLanded) return alreadyLanded;
   const { repo, issueNumber, issueTitle, githubUser, config, milestoneTitle } =
     ctx;
   const logger = deps.logger;
@@ -2139,6 +2156,14 @@ async function completionBody(
       logger.info(reason);
       return { status: "failure", reason };
     }
+    // Another worker may have merged while this run was pushing.
+    const landedDuringPush = await alreadyLandedPhaseResult(
+      ctx,
+      state,
+      deps,
+      "completion",
+    );
+    if (landedDuringPush) return landedDuringPush;
     // Attempt push rejection recovery (Issue #423)
     logger.warn("Push failed, attempting recovery");
     const recoveryResult = await deps.git.recoverFromPushRejection(

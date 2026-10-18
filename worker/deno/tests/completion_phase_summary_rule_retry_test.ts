@@ -126,6 +126,7 @@ function stubClient(comments: string[]): GitHubClient {
 }
 
 interface Scenario {
+  landedDuringGate?: boolean;
   /** Summary on the branch when the completion phase starts. */
   summary: string;
   /** Summary the recovery invocation writes; omitted, it changes nothing. */
@@ -165,6 +166,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 
   const comments: string[] = [];
   let prCreateCalls = 0;
+  let mergeReads = 0;
   let claudeCalls = 0;
   let qualityGateRuns = 0;
   const claudePrompts: string[] = [];
@@ -199,6 +201,32 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     github: {
       createClient: () => stubClient(comments),
       runGhCommand: (args: string[]) => {
+        if (
+          scenario.landedDuringGate && args[0] === "pr" && args[1] === "list" &&
+          args.includes("merged")
+        ) {
+          return Promise.resolve(JSON.stringify(
+            ++mergeReads > 1
+              ? [{
+                number: 1208,
+                title: `Recover summary (#${ISSUE})`,
+                state: "MERGED",
+                mergedAt: "2026-10-18T01:44:24Z",
+                url: PR_URL,
+                headRefName: state.branchName,
+                headRefOid: SHA,
+                headRepository: { name: "VibeCoder" },
+                headRepositoryOwner: { login: "stSoftwareAU" },
+                baseRefName: "main",
+                mergeCommit: { oid: "b".repeat(40) },
+                body: SUMMARY_WITH_BLOCK,
+              }]
+              : [],
+          ));
+        }
+        if (scenario.landedDuringGate && args[0] === "api") {
+          return Promise.resolve("behind");
+        }
         if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(JSON.stringify({ state: "OPEN" }));
@@ -638,3 +666,14 @@ Deno.test(
     assertEquals(outcome.prCreateCalls, 1);
   },
 );
+
+Deno.test("completion skips summary recovery when the exact work merges during gate checks (Issue #3977)", async () => {
+  const result = await runCompletion({
+    summary: SUMMARY_WITHOUT_BLOCK,
+    landedDuringGate: true,
+  });
+  assertEquals(result.status, "early_exit");
+  assertEquals(result.claudeCalls, 0);
+  assertEquals(result.qualityGateRuns, 0);
+  assertEquals(result.prCreateCalls, 0);
+});
