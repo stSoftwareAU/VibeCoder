@@ -1523,3 +1523,114 @@ Deno.test("refresh without a closure assessment preserves the existing follow-up
   assertStringIncludes(result, "continue in #77:");
   assertStringIncludes(result, "**unassessed** — the export works");
 });
+
+Deno.test("pending wording cannot suppress failed checks in reasons or evidence (Issue #3961)", () => {
+  for (
+    const extra of [
+      "reason: code review is not clean and CI pending",
+      "reason: CI is not green and code review pending",
+      "reason: CI pending and quality gate not passing",
+      "reason: CI pending and code review not clean",
+      "evidence: review failed — reviewer: partial — reason: CI not yet verified",
+      "evidence: review failed — reviewer: partial — reason: CI not yet verified — remaining: merge-verification-only",
+    ]
+  ) {
+    const body =
+      `## Acceptance Criteria\n\n- **partial** — required CI and clean code review — ${extra}`;
+    for (
+      const scope of [
+        "Fix the parser.",
+        "## Acceptance Criteria\n\n- required CI and clean code review",
+      ]
+    ) {
+      const assessed = assessReportedGaps(scope, body);
+      assertEquals(degradedNeedsFollowUp(assessed), true, extra);
+      assertEquals(assessed.shortfalls.length, 1, extra);
+    }
+  }
+});
+
+Deno.test("resolved or negated failure evidence does not turn pending verification into work (Issue #3961)", () => {
+  for (
+    const evidence of [
+      "code review clean with no blocking findings",
+      "all tests pass; no failed checks",
+      "previously broken parser fixed; tests pass",
+      "no failed checks; required checks pending",
+      "parser tests now pass",
+    ]
+  ) {
+    const body =
+      `## Acceptance Criteria\n\n- **partial** — Fix failing parser tests and pass CI — evidence: ${evidence} — reviewer: partial — reason: CI not yet verified — remaining: merge-verification-only`;
+    assertEquals(
+      degradedNeedsFollowUp(assessReportedGaps("Fix the parser.", body)),
+      false,
+      evidence,
+    );
+  }
+});
+
+Deno.test("supported evidence labels preserve current check failures and later clean results (Issue #3961)", () => {
+  for (const label of ["evidence:", "evidence —", "evidence-", "evidence—"]) {
+    for (
+      const evidence of [
+        "review failed",
+        "CI checks failed",
+        "CI: failed",
+        "unit tests failed",
+      ]
+    ) {
+      const body =
+        `## Acceptance Criteria\n\n- **partial** — required CI and clean code review — ${label} ${evidence} — reviewer: partial — reason: CI not yet verified`;
+      assertEquals(
+        degradedNeedsFollowUp(assessReportedGaps("Fix the parser.", body)),
+        true,
+        `${label} ${evidence}`,
+      );
+    }
+  }
+  const body =
+    "## Acceptance Criteria\n\n- **partial** — required CI and clean code review — evidence: review failed; issues fixed; review now clean — reviewer: partial — reason: CI not yet verified";
+  assertEquals(
+    degradedNeedsFollowUp(assessReportedGaps("Fix the parser.", body)),
+    false,
+  );
+  const mixed = body.replace(
+    "review failed; issues fixed; review now clean",
+    "CI failed; review now clean",
+  );
+  assertEquals(
+    degradedNeedsFollowUp(assessReportedGaps("Fix the parser.", mixed)),
+    true,
+  );
+});
+
+Deno.test("a clean result only supersedes a failure of the same merge check (Issue #3961)", () => {
+  for (
+    const failed of [
+      "CI",
+      "quality gate",
+      "review",
+      "unit tests",
+      "integration tests",
+    ]
+  ) {
+    for (
+      const clean of [
+        "CI",
+        "quality gate",
+        "review",
+        "unit tests",
+        "integration tests",
+      ]
+    ) {
+      const body =
+        `## Acceptance Criteria\n\n- **partial** — Implement parser and pass required checks — evidence: ${failed} failed; ${clean} now clean — reviewer: partial — reason: CI not yet verified — remaining: merge-verification-only`;
+      assertEquals(
+        degradedNeedsFollowUp(assessReportedGaps("Fix the parser.", body)),
+        failed !== clean,
+        `${failed} / ${clean}`,
+      );
+    }
+  }
+});

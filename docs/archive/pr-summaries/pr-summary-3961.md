@@ -48,9 +48,9 @@ flowchart LR
 - #3961: Keep pending required CI and clean code review out of partial-delivery
   follow-ups.
 - The pending-only regressions failed against unchanged base production code.
-- Three focused suites pass: 166 tests, no failures.
+- Three focused suites pass: 170 tests, no failures.
 - Individual mutations of filtering, explicit remainder handling, legacy subject
-  and reason checks, the pending-state check, criterion matching, and refresh
+  and pending-state checks, current-result provenance, criterion matching, and refresh
   handling made regression tests fail. Logs were retained during local checks.
 - Docs sweep — grep: "merge-verification-only", "Pending merge verification";
   updated `CODING-STANDARDS.md`, `prompts/issue/prompt.md` and
@@ -61,19 +61,35 @@ flowchart LR
 
 ## Acceptance Criteria
 
-- **met** — Pending required CI/quality execution or the routine clean code review stays visible on the originating PR; waiting for these checks alone does not create a partial/degraded-delivery follow-up or a nested follow-up escalation. — evidence: completion composition regression checks PR creation, retained pending text and absence of follow-up/human escalation writes.
-- **met** — Update the implementation summary guidance and deterministic follow-up path, including re-synchronisation, so future summaries distinguish mandatory merge verification from actual remaining work. — evidence: shared assessment, issue prompt and standards changes; PR-body sync regression.
-- **met** — Genuine failed checks, known defects, absent tests, missing implementation and mixed criteria with unfinished product work remain actionable. Do not weaken any CI, review, acceptance or auto-merge gate, or claim a pending check passed. — evidence: real/mixed-gap regressions and existing gap/completion/sync suites; closure statuses and gate implementations are unchanged.
-- **met** — Regression tests cover healthy/degraded runs, no stated criteria, re-synchronisation and real/mixed gaps. — evidence: the three affected test files.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Pending required CI/quality execution or the routine clean code review stays visible on the originating PR; waiting for these checks alone does not create a partial/degraded-delivery follow-up or a nested follow-up escalation. — evidence: completion composition regression checks PR creation, retained pending text and absence of follow-up/human escalation writes. — reviewer: met
+- **met** — Update the implementation summary guidance and deterministic follow-up path, including re-synchronisation, so future summaries distinguish mandatory merge verification from actual remaining work. — evidence: shared assessment, issue prompt and standards changes; PR-body sync regression. — reviewer: met
+- **met** — Genuine failed checks, known defects, absent tests, missing implementation and mixed criteria with unfinished product work remain actionable. Do not weaken any CI, review, acceptance or auto-merge gate, or claim a pending check passed. — evidence: real/mixed-gap regressions and existing gap/completion/sync suites; closure statuses and gate implementations are unchanged. — reviewer: met
+- **met** — Regression tests cover healthy/degraded runs, no stated criteria, re-synchronisation and real/mixed gaps. — evidence: the three affected test files. — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Pending wording could hide a failed check — evidence: `worker/deno/lib/degraded_delivery.ts:201` — reason: fixed with narrowly matched pending reasons and current check-result evidence.
+- **violation** — Negated or resolved failure words could create false follow-ups — evidence: `worker/deno/lib/degraded_delivery.ts:170` — reason: fixed by reading declared current results rather than historical criterion wording; later clean results supersede only the same check and suite.
+- **violation** — Test citations used basenames — evidence: `docs/archive/pr-summaries/pr-summary-3961.md:94` — reason: fixed with repository-relative paths.
+- **clean** — Reviewed genuine/negated/resolved failures, supported field separators, per-check and unit/integration identity, Result contracts, Australian English, preserved assertions and unchanged merge protections. No existing assertion or expected value was removed or weakened.
 
 ## Test Plan
 
-- `degraded_delivery_test.ts` covers pending-only scope with and without stated
+- Current failed CI/review/test/quality results stay actionable. Supported evidence
+  separators and ordinary failed-check phrasing are covered. Negated/resolved
+  failures and historical criterion wording do not create new work. A later
+  clean result only clears its own check's previous failure.
+
+- `worker/deno/tests/degraded_delivery_test.ts` covers pending-only scope with and without stated
   criteria, explicit verification-only remainders, real/mixed defects, an already
   observed CI result, and unknown/unassessed checks.
-- `completion_phase_degraded_delivery_test.ts` drives the production completion
+- `worker/deno/tests/completion_phase_degraded_delivery_test.ts` drives the production completion
   entry point for healthy and degraded runs, including an existing follow-up.
-- `pr_body_sync_test.ts` drives body refresh and checks that pending status
+- `worker/deno/tests/pr_body_sync_test.ts` drives body refresh and checks that pending status
   survives while the false follow-up banner disappears, with no follow-up write.
 - Refresh with no new closure assessment retains existing follow-up provenance;
   absence of an assessment is not treated as proof of pending-only work.

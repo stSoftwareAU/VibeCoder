@@ -6,98 +6,122 @@
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
         "line": 165,
-        "outcome": "legacy subject must identify a merge check",
+        "outcome": "legacy subject identifies a merge check",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending CI cannot hide real or mixed implementation gaps (Issue #3961)",
-        "flipWentRed": "allowed a subject without CI/quality/review; the real-gap test went red"
+        "flipWentRed": "subject-scope mutation made the named regression fail"
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
         "line": 166,
-        "outcome": "unknown words keep a mixed legacy criterion actionable",
+        "outcome": "unknown subject words keep real or mixed scope actionable",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending CI cannot hide real or mixed implementation gaps (Issue #3961)",
-        "flipWentRed": "accepted unknown subject words; the mixed-gap test went red"
+        "flipWentRed": "subject-words mutation made the named regression fail"
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 171,
-        "outcome": "observed met status remains delivered",
+        "line": 197,
+        "outcome": "met results remain delivered",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "observed CI remains delivered while the separate code review is pending (Issue #3961)",
-        "flipWentRed": "removed the status guard; the delivered-CI test went red"
+        "flipWentRed": "status mutation made the named regression fail"
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 175,
-        "outcome": "an explicit verification-only remainder is excluded without claiming delivery",
+        "line": 201,
+        "outcome": "a current failed check cannot be hidden by pending wording",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "pending wording cannot suppress failed checks in reasons or evidence (Issue #3961)",
+        "flipWentRed": "failure-evidence mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 187,
+        "outcome": "a later clean result supersedes the same check failure",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "supported evidence labels preserve current check failures and later clean results (Issue #3961)",
+        "flipWentRed": "resolved-result mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 177,
+        "outcome": "a clean result never clears another check failure",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "a clean result only supersedes a failure of the same merge check (Issue #3961)",
+        "flipWentRed": "check-identity mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 198,
+        "outcome": "supported evidence label separators retain failure evidence",
+        "test": "worker/deno/tests/degraded_delivery_test.ts",
+        "testName": "supported evidence labels preserve current check failures and later clean results (Issue #3961)",
+        "flipWentRed": "evidence-labels mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/degraded_delivery.ts",
+        "line": 206,
+        "outcome": "explicit verification-only remainder stays pending without claiming delivery",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "an explicit verification-only remainder preserves mixed criteria without inventing a product gap (Issue #3961)",
-        "flipWentRed": "removed explicit-remainder handling; the mixed-criterion regression went red"
+        "flipWentRed": "explicit-remainder mutation made the named regression fail"
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 183,
-        "outcome": "unknown reason details remain actionable",
+        "line": 213,
+        "outcome": "legacy reason must contain only a recognised pending state",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending CI cannot hide real or mixed implementation gaps (Issue #3961)",
-        "flipWentRed": "accepted unknown reason words; the missing-tests case went red"
+        "flipWentRed": "reason-state mutation made the named regression fail"
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 184,
-        "outcome": "legacy check requires an explicit pending state",
-        "test": "worker/deno/tests/degraded_delivery_test.ts",
-        "testName": "pending CI cannot hide real or mixed implementation gaps (Issue #3961)",
-        "flipWentRed": "removed pending-state matching; the already-run check case went red"
-      },
-      {
-        "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 199,
-        "outcome": "pending assessments remain available for criterion matching",
+        "line": 227,
+        "outcome": "pending assessments remain available for stated-scope matching",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending merge checks alone do not request follow-ups for healthy or degraded runs (Issue #3961)",
-        "flipWentRed": "emptied the pending collection; the stated-scope regression went red"
+        "flipWentRed": "pending-collection mutation made the named regression fail"
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 200,
-        "outcome": "pending-only entries do not become implementation gaps",
+        "line": 228,
+        "outcome": "pending entries do not become implementation shortfalls",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending merge checks alone do not request follow-ups for healthy or degraded runs (Issue #3961)",
-        "flipWentRed": "disabled entry filtering; the pending-only regression went red"
+        "flipWentRed": "entry-filter mutation made the named regression fail"
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 240,
-        "outcome": "only matching verification-only criteria are omitted from unassessed scope",
+        "line": 268,
+        "outcome": "only matching verification-only scope is omitted from unassessed items",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "pending merge checks alone do not request follow-ups for healthy or degraded runs (Issue #3961)",
-        "flipWentRed": "disabled criterion handling; the stated-scope regression went red"
+        "flipWentRed": "criterion-match mutation made the named regression fail"
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 241,
-        "outcome": "an unreported verification criterion stays unassessed",
+        "line": 269,
+        "outcome": "unreported checks remain unassessed",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "unreported required checks remain unassessed rather than implicitly pending (Issue #3961)",
-        "flipWentRed": "forced a pending match; the unreported-check test went red"
+        "flipWentRed": "unreported-scope mutation made the named regression fail"
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 826,
-        "outcome": "an absent closure block does not erase follow-up provenance",
+        "line": 854,
+        "outcome": "an absent closure block preserves follow-up provenance",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "refresh without a closure assessment preserves the existing follow-up provenance (Issue #3961)",
-        "flipWentRed": "dropped the nonempty-gap guard; the provenance test went red"
+        "flipWentRed": "refresh-provenance mutation made the named regression fail"
       },
       {
         "path": "worker/deno/lib/degraded_delivery.ts",
-        "line": 827,
-        "outcome": "pending-only refresh does not preserve the false follow-up link",
+        "line": 855,
+        "outcome": "pending-only refresh removes false follow-up provenance",
         "test": "worker/deno/tests/degraded_delivery_test.ts",
         "testName": "re-synchronisation removes pending-only follow-up and chain-stop sections (Issue #3961)",
-        "flipWentRed": "disabled pending-only refresh handling; the refresh regression went red"
+        "flipWentRed": "refresh-pending mutation made the named regression fail"
       }
     ]
   }

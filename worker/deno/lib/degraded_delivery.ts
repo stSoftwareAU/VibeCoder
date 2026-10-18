@@ -166,9 +166,39 @@ function isMergeCheckOnly(text: string): boolean {
     words.every((word) => MERGE_CHECK_WORDS.has(word));
 }
 
+/** Current check results in evidence; a later clean result supersedes its failure. */
+function hasFailedMergeCheck(evidence: string): boolean {
+  const failed = new Map<string, boolean>();
+  const declarations = evidence.matchAll(
+    /(?:^|[;.—]\s*)((?:(?:required|local|all|unit|integration)\s+)?(?:CI(?:\s+checks?)?|quality(?:\s+gates?)?|gates?|(?:(?:clean|code|independent)\s+)?reviews?|tests?))\s*:?\s*(?:(?:is|are|was|were|has|have|now|still|currently)\s+)*(failed|failing|broken|not (?:clean|green|passing)|rejected|blocking findings?|passed|pass|passing|clean|green|fixed|resolved)\b/gi,
+  );
+  for (const match of declarations) {
+    const name = match[1]!.toLowerCase();
+    const check = name.includes("review")
+      ? "review"
+      : name.includes("test")
+      ? name.replace(/^(?:required|local|all)\s+/, "").replace(
+        /tests?$/,
+        "tests",
+      )
+      : name.includes("quality") || name.includes("gate")
+      ? "quality"
+      : "ci";
+    failed.set(
+      check,
+      !/^(?:passed|pass|passing|clean|green|fixed|resolved)$/i.test(match[2]!),
+    );
+  }
+  return [...failed.values()].some(Boolean);
+}
+
 /** Pending merge checks are visible in the summary, not unfinished work. */
 function isPendingMergeCheck(entry: ClosureEntry): boolean {
   if (entry.status !== "partial" && entry.status !== "missing") return false;
+  const evidence = entry.text.match(
+    /\bevidence\s*[:—-]\s*([\s\S]*?)(?:\s+[—-]\s+(?:reviewer|reason|remaining)\s*[:—-]|$)/i,
+  )?.[1] ?? "";
+  if (hasFailedMergeCheck(evidence)) return false;
   // A mixed criterion can have completed product work and only verification
   // left. The generator states that explicitly while retaining its partial
   // closure status; CI/review/acceptance gates still judge the original entry.
@@ -178,11 +208,9 @@ function isPendingMergeCheck(entry: ClosureEntry): boolean {
   ) return true;
   const subject = subjectOf(entry);
   const reason = entry.text.match(/\breason\s*[:\-—]\s*([\s\S]+)$/i)?.[1] ?? "";
-  const text = `${subject} ${reason}`;
   return isMergeCheckOnly(subject) &&
-    mergeCheckWords(reason).every((word) => MERGE_CHECK_WORDS.has(word)) &&
-    /\b(?:pending|awaiting|not yet (?:run|verified|executed|complete|completed))\b/i
-      .test(text);
+    /^(?:(?:required )?CI (?:(?:is |still )?pending|not yet verified)|awaiting (?:independent |clean )?code review|(?:required )?quality (?:gate )?(?:not yet (?:run|executed|complete|completed)|pending)|(?:clean )?code review pending)[.!]?$/i
+      .test(reason.trim());
 }
 
 /**
