@@ -196,6 +196,7 @@ export function withRunOutcomeNotes(
 /** The subset of a work result the builder reads. */
 export interface RunOutcomeSource {
   success: boolean;
+  category?: FailureCategory;
   phase: string;
   reason: string;
   timings?: Record<string, number>;
@@ -248,7 +249,7 @@ export function deriveRunOutcome(source: RunOutcomeSource): RunOutcome {
       ...(source.success ? {} : {
         blocked: {
           phase: source.phase,
-          category: detectFailureCategory(source.reason),
+          category: source.category ?? detectFailureCategory(source.reason),
           reason: source.reason,
         },
       }),
@@ -265,7 +266,7 @@ export function deriveRunOutcome(source: RunOutcomeSource): RunOutcome {
     Object.values(source.timings ?? {}).reduce((a, b) => a + b, 0);
   return {
     kind: "no_pr",
-    category: detectFailureCategory(source.reason),
+    category: source.category ?? detectFailureCategory(source.reason),
     phase: source.phase,
     elapsedSeconds: Math.max(0, Math.round(elapsedSeconds)),
     message: source.reason,

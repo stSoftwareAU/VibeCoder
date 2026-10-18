@@ -9,7 +9,13 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
+import {
+  applyCodingFailureLadder,
+  classifyCodingFailure,
+  planCodingFailure,
+} from "../lib/coding_failure_ladder.ts";
+import { deriveRunOutcome } from "../lib/run_outcome.ts";
+import type { FailureCategory } from "../lib/failure_diagnosis.ts";
 import {
   detectFailureCategory,
   isInfrastructureFailure,
@@ -80,6 +86,7 @@ interface Scenario {
 
 interface Outcome {
   status: string;
+  category?: unknown;
   reason?: string;
   pushes: number;
   recoveries: number;
@@ -211,6 +218,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     const result = await workOnIssueCompletion(ctx, state, deps);
     return {
       status: result.status,
+      category: "category" in result ? result.category : undefined,
       reason: result.status === "failure" ? result.reason : undefined,
       pushes,
       recoveries,
@@ -474,5 +482,89 @@ Deno.test({
     assertStringIncludes(reason, "Could not resolve host");
     assertStringIncludes(reason, "end of the git output");
     assert(reason.length < 8000, `reason was ${reason.length} characters`);
+  },
+});
+
+Deno.test({
+  name:
+    "completion preserves declared network and gate verdict causes through retry, failure bookkeeping and outcome (Issue #3738)",
+  permissions: { read: true, write: true },
+  async fn() {
+    for (
+      const [answer, category, disposition] of [
+        [
+          new Error("Could not resolve host; quoted check: rate limit timeout"),
+          "push_failure",
+          "transient",
+        ],
+        [
+          "[PRE_PUSH_BLOCKED] actual test failure; quoted output: rate limit timeout",
+          "pre_push_gate",
+          "ladder",
+        ],
+      ] as const
+    ) {
+      const o = await runCompletion({
+        ...base,
+        pushRefused: false,
+        gateAnswers: Array.from({ length: 5 }, () => answer),
+      });
+      assertEquals(o.status, "failure");
+      assertEquals(
+        o.category,
+        category,
+        "the phase must declare its cause instead of depending on reason wording",
+      );
+      assertEquals(
+        o.gateCalls > 1,
+        category === "push_failure",
+        "only the network failure is retried in-run",
+      );
+      // A transport wrapper can reword/quote the result. Its declared cause
+      // still drives decisions and telemetry rather than the quotation.
+      const reason = "outer wrapper: " + o.reason;
+      const run = {
+        success: false,
+        expectedSkip: false,
+        phase: "completion",
+        reason,
+        category: o.category as FailureCategory,
+      };
+      const plan = planCodingFailure(run);
+      assertEquals(plan.decision?.category, category);
+      assertEquals(plan.decision?.disposition, disposition);
+      let failureWrites = 0;
+      const options = {
+        repo: "o/r",
+        issueNumber: 10,
+        githubUser: "testbot",
+        failureReason: reason,
+        category: run.category,
+      };
+      const applied = await applyCodingFailureLadder(options, {
+        handleIssueFailure: (record) => {
+          failureWrites++;
+          assertEquals(
+            "category" in record ? record.category : undefined,
+            category,
+          );
+          return Promise.resolve({
+            ok: true,
+            value: {
+              markedAsFailed: false,
+              markedAsFailedOnce: true,
+              failureCategory: category,
+              isInfrastructure: false,
+            },
+          });
+        },
+      });
+      assertEquals(applied.decision.category, category);
+      assertEquals(failureWrites, category === "push_failure" ? 0 : 1);
+      const outcome = deriveRunOutcome(run);
+      assertEquals(outcome.kind, "no_pr");
+      assertEquals(outcome.kind === "no_pr" && outcome.category, category);
+      assertEquals(o.pushes, 0);
+    }
   },
 });

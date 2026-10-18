@@ -1368,6 +1368,7 @@ async function runCompletionAttempt(
     state,
     deps.logger,
     {
+      category: result.status === "failure" ? result.category : undefined,
       backoffMs: ctx.config.infraRetryBackoffMs,
       cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs,
     },
@@ -2046,6 +2047,7 @@ async function completionBody(
     if (!(gate.error instanceof PrePushGateBlockedError)) {
       return {
         status: "failure",
+        category: "push_failure",
         reason: `${PRE_PUSH_LOOKUP_FAILED_MARKER}: ${
           redactedHeadTail(
             gate.error.message,
@@ -2062,6 +2064,7 @@ async function completionBody(
     // 65,536 characters, and the failure labelling swallows that refusal.
     return {
       status: "failure",
+      category: "pre_push_gate",
       reason: `${PRE_PUSH_GATE_MARKER}: ${
         redactedHeadTail(
           gate.error.message,

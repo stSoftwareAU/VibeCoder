@@ -9,6 +9,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { FailureCategory } from "./failure_diagnosis.ts";
 import type { RunOutcome } from "./run_outcome.ts";
 import type { IssueComment } from "./issue_data.ts";
 import type { WorkerConfig } from "../types.ts";
@@ -464,6 +465,7 @@ export type PhaseResult =
   | {
     status: "early_exit";
     reason: string;
+    category?: FailureCategory;
     /**
      * The phase ended the run without resolving the issue and without
      * failing (Issue #175) — a bounce. The orchestrator reports it as
@@ -488,11 +490,12 @@ export type PhaseResult =
      */
     claimNotHeld?: true;
   }
-  | { status: "failure"; reason: string };
+  | { status: "failure"; reason: string; category?: FailureCategory };
 
 /** Result of the full workOnIssue orchestration. */
 export interface WorkOnIssueResult {
   success: boolean;
+  category?: FailureCategory;
   phase: string;
   reason: string;
   timings: Record<string, number>;

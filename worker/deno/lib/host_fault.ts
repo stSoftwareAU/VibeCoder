@@ -17,6 +17,7 @@
  */
 
 import {
+  type FailureCategory,
   PRE_PUSH_GATE_MARKER,
   SECURITY_FIX_GATE_MARKER,
   SUMMARY_RULE_GATE_MARKER,
@@ -91,7 +92,17 @@ const CLONE_CORRUPT_PATTERNS: readonly RegExp[] = [
  * invalid branch name, an unknown ref) returns `null` rather than being
  * guessed at.
  */
-export function detectHostFault(message: string): HostFaultKind | null {
+export function detectHostFault(
+  message: string,
+  category?: FailureCategory,
+): HostFaultKind | null {
+  if (category === "clone_corrupt") return "clone-corrupt";
+  if (
+    category === "summary_incomplete" || category === "security_fix_gate" ||
+    category === "pre_push_gate" || category === "quality_check" ||
+    category === "workflow_gate" || category === "evidence_missing" ||
+    category === "no_changes"
+  ) return null;
   // A PR-summary gate refusal is the worker's own words plus a quotation of
   // the agent's summary (Issue #3431; PR #3440 review): a quoted `ENOSPC` or
   // `Failed to clone` there is not host output, so it is never a host fault.
