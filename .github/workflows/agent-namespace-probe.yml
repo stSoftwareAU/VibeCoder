@@ -32,6 +32,12 @@ jobs:
         with:
           deno-version-file: .deno-version
 
+      - name: Cache Deno modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('worker/deno/deno.lock') }}
+
       - name: Build the production image
         id: build
         run: |
@@ -46,7 +52,7 @@ jobs:
         working-directory: worker/deno
         run: |
           set -euo pipefail
-          deno test --frozen --lock=deno.lock --allow-read --allow-env \
+          deno test --reporter=dot --frozen --lock=deno.lock --allow-read --allow-env \
             tests/agent_namespace_probe_test.ts tests/agent_container_probe_test.ts \
             tests/credential_broker_test.ts tests/anthropic_agent_gateway_test.ts
 
@@ -93,5 +99,87 @@ jobs:
           path: |
             /tmp/agent-namespace-probe.log
             /tmp/agent-container-probe.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  podman-prerequisite:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      IMAGE: vibe-coder:podman-probe
+      PODMAN_VERSION: 4.9.3
+    steps:
+      - name: Checkout validation code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          deno-version-file: .deno-version
+
+      - name: Cache Deno modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/deno
+          key: deno-${{ runner.os }}-${{ hashFiles('worker/deno/deno.lock') }}
+
+      - name: Verify the preinstalled rootless Podman prerequisite
+        id: prerequisite
+        run: |
+          set -euo pipefail
+          podman --version | tee /tmp/agent-podman-info.log
+          podman info --format json | tee -a /tmp/agent-podman-info.log
+          test "$(podman --version)" = "podman version ${PODMAN_VERSION}"
+          test "$(podman info --format '{{.Host.Security.Rootless}}')" = true
+
+      - name: Build the production image with rootless Podman
+        id: build
+        run: |
+          set -euo pipefail
+          deno run --frozen --lock=worker/deno/deno.lock \
+            --allow-read --allow-write --allow-env \
+            worker/deno/mod.ts strip-containerfile --out /tmp/Containerfile.stripped
+          podman build -f /tmp/Containerfile.stripped -t "${IMAGE}" container/
+
+      - name: Check shared probe assertions and broker handlers
+        id: handlers
+        working-directory: worker/deno
+        run: |
+          set -euo pipefail
+          deno test --reporter=dot --frozen --lock=deno.lock --allow-read --allow-env \
+            tests/agent_namespace_probe_test.ts tests/agent_container_probe_test.ts \
+            tests/agent_container_probe_workflow_test.ts tests/credential_broker_test.ts \
+            tests/anthropic_agent_gateway_test.ts
+
+      - name: Exercise separate hardened rootless Podman containers
+        id: separate
+        working-directory: worker/deno
+        run: |
+          set -euo pipefail
+          deno run --frozen --lock=deno.lock \
+            --allow-read --allow-write --allow-env --allow-run \
+            tests/fixtures/agent_container_probe_cli.ts "${IMAGE}" podman \
+            2>&1 | tee /tmp/agent-podman-container-probe.log
+
+      - name: Record the rootless Podman prerequisite outcome
+        if: always()
+        env:
+          PREREQUISITE_OUTCOME: ${{ steps.prerequisite.outcome }}
+          SEPARATE_OUTCOME: ${{ steps.separate.outcome }}
+        run: |
+          printf 'Rootless Podman prerequisite: %s\n\nSeparate container probe: %s\n' \
+            "${PREREQUISITE_OUTCOME}" "${SEPARATE_OUTCOME}" >> "${GITHUB_STEP_SUMMARY}"
+          printf '\nNo rootful fallback, host sysctl or security-profile changes. Live OAuth, other providers and Apple acceptance remain unproved.\n' >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Retain rootless Podman evidence, including refused prerequisites
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: agent-podman-boundary-prerequisites
+          path: |
+            /tmp/agent-podman-info.log
+            /tmp/agent-podman-container-probe.log
           if-no-files-found: warn
           retention-days: 7

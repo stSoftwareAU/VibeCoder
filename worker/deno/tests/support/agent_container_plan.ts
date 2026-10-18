@@ -2,9 +2,58 @@
 import type { ContainerLaunchPlan } from "../../lib/container_launch.ts";
 import {
   buildMountArguments,
+  CONTAINER_RUNTIMES,
   type ContainerMount,
   type ContainerRuntimeDescriptor,
 } from "../../lib/container_runtime.ts";
+
+/** Select the production Linux dialect for the diagnostic's runtime. */
+export function containerProbeRuntime(
+  kind = "docker",
+): ContainerRuntimeDescriptor {
+  if (kind !== "docker" && kind !== "podman") {
+    throw new Error("Probe runtime must be docker or podman");
+  }
+  return { ...CONTAINER_RUNTIMES[kind], platform: "linux", probed: [] };
+}
+
+/** Runtime info uses different JSON fields in Docker and Podman. */
+export function containerProbeSecurityInfo(
+  descriptor: ContainerRuntimeDescriptor,
+  info: unknown,
+): unknown {
+  const record = info as {
+    host?: { security?: { rootless?: unknown } };
+    SecurityOptions?: unknown;
+  } | null;
+  if (descriptor.kind === "podman") {
+    if (record?.host?.security?.rootless !== true) {
+      throw new Error(
+        "Podman rootless prerequisite unavailable: host.security.rootless must be true",
+      );
+    }
+    return record.host.security;
+  }
+  return record?.SecurityOptions;
+}
+
+/** The internal fixture bridge needs explicit address space in both families. */
+export function containerProbeNetworkArgs(token: string): string[] {
+  if (!/^[a-f0-9]{12}$/.test(token)) throw new Error("Invalid probe token");
+  return [
+    "network",
+    "create",
+    "--internal",
+    "--ipv6",
+    "--subnet",
+    `10.${parseInt(token.slice(0, 2), 16)}.${
+      parseInt(token.slice(2, 4), 16)
+    }.0/24`,
+    "--subnet",
+    `fd${token.slice(0, 2)}:${token.slice(2, 6)}:${token.slice(6, 10)}::/64`,
+    `vibe-container-${token}`,
+  ];
+}
 
 export function separateContainerPlan(
   base: ContainerLaunchPlan,

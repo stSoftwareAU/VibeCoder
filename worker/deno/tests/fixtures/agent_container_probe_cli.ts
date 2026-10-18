@@ -1,4 +1,4 @@
-/** Real Docker prerequisite probe: hardened broker plus network-none agent. */
+/** Real Docker/Podman prerequisite probe: hardened broker plus network-none agent. */
 import {
   buildContainerLaunchPlan,
   type ContainerLaunchHostPaths,
@@ -6,10 +6,14 @@ import {
   containerTargetPaths,
   resolveContainerLaunchHostPaths,
 } from "../../lib/container_launch.ts";
-import { CONTAINER_RUNTIMES } from "../../lib/container_runtime.ts";
 import { parseContainerManifest } from "../../lib/container_manifest.ts";
 import { attemptRunArgs } from "../../lib/tabletop_container_runner.ts";
-import { separateContainerPlan } from "../support/agent_container_plan.ts";
+import {
+  containerProbeNetworkArgs,
+  containerProbeRuntime,
+  containerProbeSecurityInfo,
+  separateContainerPlan,
+} from "../support/agent_container_plan.ts";
 import {
   type AgentContainerEvidence,
   assertSeparateContainerEvidence,
@@ -23,16 +27,14 @@ const repo = new URL("../../../../", import.meta.url).pathname.replace(
 );
 const image = Deno.args[0];
 if (!image || Deno.build.os !== "linux") {
-  throw new Error("Usage on Linux: agent_container_probe_cli.ts <local-image>");
+  throw new Error(
+    "Usage on Linux: agent_container_probe_cli.ts <local-image> [docker|podman]",
+  );
 }
 const manifest = parseContainerManifest(
   await Deno.readTextFile(`${repo}/container/tools.json`),
 );
-const descriptor = {
-  ...CONTAINER_RUNTIMES.docker,
-  platform: "linux" as const,
-  probed: [],
-};
+const descriptor = containerProbeRuntime(Deno.args[1]);
 const targets = containerTargetPaths(manifest);
 const script =
   `${targets.base}/worker/deno/tests/fixtures/agent_container_process_probe.ts`;
@@ -85,7 +87,7 @@ if (shared.length !== 1 || shared[0]?.source !== socketVolume) {
 }
 const volumes = [...new Set(plans.flatMap((plan) => plan.volumes))];
 
-async function docker(
+async function runtime(
   args: string[],
   required = true,
 ): Promise<Deno.CommandOutput> {
@@ -99,7 +101,7 @@ async function docker(
   if (!output.success && required) {
     console.error(new TextDecoder().decode(output.stderr));
     throw new Error(
-      `Docker ${
+      `${descriptor.displayName} ${
         args[0]
       } failed (${output.code}); prerequisite unavailable, no weaker retry`,
     );
@@ -124,7 +126,7 @@ const denoArgs = (
 ];
 async function inside(mode: string): Promise<string> {
   return decode(
-    await docker(["exec", brokerPlan.containerName, ...denoArgs(mode)]),
+    await runtime(["exec", brokerPlan.containerName, ...denoArgs(mode)]),
   );
 }
 function processArguments(
@@ -144,7 +146,7 @@ async function launch(
   mode: string,
   args: string[],
 ): Promise<string> {
-  return decode(await docker(processArguments(plan, mode, args)));
+  return decode(await runtime(processArguments(plan, mode, args)));
 }
 
 let networkCreated = false;
@@ -185,42 +187,39 @@ try {
       await Deno.copyFile(`${repo}/worker/deno/${relative}`, target);
     }
   }
-  console.log(decode(await docker(["version"])));
+  console.log(decode(await runtime(["version"])));
   console.log(
     JSON.stringify({
-      securityOptions: decode(
-        await docker(["info", "--format", "{{json .SecurityOptions}}"]),
+      runtime: descriptor.kind,
+      securityOptions: containerProbeSecurityInfo(
+        descriptor,
+        JSON.parse(decode(await runtime(["info", "--format", "{{json .}}"]))),
       ),
       image: decode(
-        await docker(["image", "inspect", "--format", "{{.Id}}", image]),
+        await runtime(["image", "inspect", "--format", "{{.Id}}", image]),
       ),
     }),
   );
   // Internal bridge: fixtures need no internet. A missing IPv6 prerequisite
   // fails here; the probe never changes host sysctls or security profiles.
-  const subnet = `fd${token.slice(0, 2)}:${token.slice(2, 6)}:${
-    token.slice(6, 10)
-  }::/64`;
-  await docker([
-    "network",
-    "create",
-    "--internal",
-    "--ipv6",
-    "--subnet",
-    subnet,
-    network,
-  ]);
+  await runtime(containerProbeNetworkArgs(token));
   networkCreated = true;
   console.log(
     JSON.stringify({
       fixtureNetwork: decode(
-        await docker(["network", "inspect", network, "--format", "{{json .}}"]),
+        await runtime([
+          "network",
+          "inspect",
+          network,
+          "--format",
+          "{{json .}}",
+        ]),
       ),
     }),
   );
-  for (const volume of volumes) await docker(["volume", "create", volume]);
+  for (const volume of volumes) await runtime(["volume", "create", volume]);
   for (const plan of plans) {
-    await docker(plan.initArgs);
+    await runtime(plan.initArgs);
     console.log(
       JSON.stringify({
         role: plan === brokerPlan ? "broker" : "agent",
@@ -228,7 +227,7 @@ try {
       }),
     );
   }
-  // Keep the Docker client attached so startup errors survive --rm. Its
+  // Keep the runtime client attached so startup errors survive --rm. Its
   // captured output contains fixture status only, never the generated secret.
   const brokerProcess = new Deno.Command(descriptor.executable, {
     args: processArguments(brokerPlan, "broker", [targets.credentials]),
@@ -245,7 +244,7 @@ try {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     if (brokerResult) break;
-    const ready = await docker([
+    const ready = await runtime([
       "exec",
       brokerPlan.containerName,
       ...denoArgs("metadata"),
@@ -312,7 +311,7 @@ try {
       evidence: nativeWitness.nativeRequests,
     }),
   );
-  await docker(["stop", "--time", "5", brokerPlan.containerName]);
+  await runtime(["stop", "--time", "5", brokerPlan.containerName]);
   const stopped = JSON.parse(
     await launch(agentPlan, "broker-stopped", [metadata]),
   );
@@ -321,11 +320,11 @@ try {
   }
   console.log(JSON.stringify({ phase: "broker-stopped", evidence: stopped }));
   console.log(
-    "PASS: separate hardened Docker containers deny direct IPv4/IPv6 and hide the planted credential while synthetic broker requests and pinned Claude inference work; live OAuth/other providers/Apple acceptance remains unproved",
+    `PASS: separate hardened ${descriptor.displayName} containers deny direct IPv4/IPv6 and hide the planted credential while synthetic broker requests and pinned Claude inference work; live OAuth/other providers/Apple acceptance remains unproved`,
   );
 } finally {
   for (const plan of plans) {
-    await docker(["rm", "--force", plan.containerName], false);
+    await runtime(["rm", "--force", plan.containerName], false);
   }
   if (brokerOutput) {
     const result = await brokerOutput;
@@ -334,8 +333,8 @@ try {
     if (stderr) console.error(stderr);
   }
   for (const volume of volumes) {
-    await docker(["volume", "rm", "--force", volume], false);
+    await runtime(["volume", "rm", "--force", volume], false);
   }
-  if (networkCreated) await docker(["network", "rm", network], false);
+  if (networkCreated) await runtime(["network", "rm", network], false);
   await Deno.remove(root, { recursive: true });
 }

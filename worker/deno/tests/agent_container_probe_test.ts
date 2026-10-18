@@ -6,7 +6,12 @@ import {
   type BrokerWitness,
   countSyntheticCredentialMatches,
 } from "./support/agent_container_evidence.ts";
-import { separateContainerPlan } from "./support/agent_container_plan.ts";
+import {
+  containerProbeNetworkArgs,
+  containerProbeRuntime,
+  containerProbeSecurityInfo,
+  separateContainerPlan,
+} from "./support/agent_container_plan.ts";
 import {
   buildContainerLaunchPlan,
   containerTargetPaths,
@@ -15,6 +20,85 @@ import {
 import { CONTAINER_RUNTIMES } from "../lib/container_runtime.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import type { NamespaceEvidence } from "./support/agent_namespace_evidence.ts";
+
+Deno.test("separate probe selects the exact production Docker or Podman dialect", () => {
+  assertEquals(containerProbeRuntime().kind, "docker");
+  for (const kind of ["docker", "podman"] as const) {
+    const runtime = containerProbeRuntime(kind);
+    assertEquals(runtime.kind, kind);
+    assertEquals(runtime.executable, CONTAINER_RUNTIMES[kind].executable);
+    assertEquals(runtime.dialect, CONTAINER_RUNTIMES[kind].dialect);
+    assertEquals(runtime.platform, "linux");
+  }
+  for (const kind of ["container", "unknown", "", "sudo podman"]) {
+    assertThrows(
+      () => containerProbeRuntime(kind),
+      Error,
+      "Probe runtime must be docker or podman",
+    );
+  }
+});
+
+// Shapes follow podman-info(1)'s JSON example and Docker's SecurityOptions.
+Deno.test("separate probe records Podman security and rejects missing or rootful evidence", () => {
+  const podman = containerProbeRuntime("podman");
+  const security = {
+    rootless: true,
+    seccompEnabled: true,
+    apparmorEnabled: true,
+  };
+  assertEquals(
+    containerProbeSecurityInfo(podman, { host: { security } }),
+    security,
+  );
+  for (
+    const info of [
+      null,
+      {},
+      { host: {} },
+      { host: { security: {} } },
+      { host: { security: { rootless: false } } },
+      { host: { security: { rootless: "true" } } },
+      { SecurityOptions: ["name=rootless"] },
+    ]
+  ) {
+    assertThrows(
+      () => containerProbeSecurityInfo(podman, info),
+      Error,
+      "host.security.rootless must be true",
+    );
+  }
+  const options = ["name=seccomp,profile=builtin", "name=apparmor"];
+  assertEquals(
+    containerProbeSecurityInfo(containerProbeRuntime(), {
+      SecurityOptions: options,
+    }),
+    options,
+  );
+});
+
+Deno.test("separate probe creates an internal bridge with explicit IPv4 and IPv6 subnets", () => {
+  // podman-network-create(1): --ipv6 autoallocates both families only when no
+  // subnets are supplied. An explicit ULA alone cannot establish an IPv4 control.
+  assertEquals(containerProbeNetworkArgs("123456789abc"), [
+    "network",
+    "create",
+    "--internal",
+    "--ipv6",
+    "--subnet",
+    "10.18.52.0/24",
+    "--subnet",
+    "fd12:3456:789a::/64",
+    "vibe-container-123456789abc",
+  ]);
+  for (const token of ["", "../../bad", "123456789abz", "123456789abc0"]) {
+    assertThrows(
+      () => containerProbeNetworkArgs(token),
+      Error,
+      "Invalid probe token",
+    );
+  }
+});
 
 Deno.test("credential fingerprint detects a planted file, environment value or descriptor without returning it", async () => {
   const secret = `synthetic-${crypto.randomUUID()}`;
@@ -176,102 +260,117 @@ Deno.test("separate container evidence requires real controls and an inaccessibl
   );
 });
 
-Deno.test("separate probe removes credential mounts while preserving the production hardening", async () => {
-  const manifest = parseContainerManifest(
-    await Deno.readTextFile(
-      new URL("../../../container/tools.json", import.meta.url),
-    ),
-  );
-  const descriptor = {
-    ...CONTAINER_RUNTIMES.docker,
-    platform: "linux" as const,
-    probed: [],
-  };
-  const base = buildContainerLaunchPlan({
-    descriptor,
-    manifest,
-    image: "fixture:local",
-    containerName: "fixture-agent",
-    watchdogSeconds: 60,
-    buildCommit: "unknown",
-    hostPaths: resolveContainerLaunchHostPaths(
-      "/tmp/fixture/checkout",
-      (name) => name === "HOME" ? "/tmp/fixture/home" : undefined,
-    ),
-  });
-  const targets = containerTargetPaths(manifest);
-  const plan = separateContainerPlan(
-    base,
-    descriptor,
-    targets.credentials,
-    "fixture-socket",
-    "none",
-    true,
-  );
-  assertEquals(
-    plan.mounts.filter((mount) => mount.target.startsWith(targets.credentials)),
-    [],
-  );
-  assertEquals(plan.mounts.at(-1), {
-    source: "fixture-socket",
-    target: "/run/broker",
-    volume: true,
-    readOnly: true,
-  });
-  assertEquals(plan.runArgs[plan.runArgs.indexOf("--network") + 1], "none");
-  for (const flag of ["--cap-drop", "--security-opt", "--read-only"]) {
-    const index = base.runArgs.indexOf(flag);
-    const changed = plan.runArgs.indexOf(flag);
-    assertEquals(changed >= 0, true);
-    if (flag !== "--read-only") {
-      assertEquals(plan.runArgs[changed + 1], base.runArgs[index + 1]);
-    }
-  }
-  for (
-    const mount of base.mounts.filter((mount) =>
-      mount.target.startsWith(targets.credentials)
-    )
-  ) {
-    assertEquals(plan.runArgs.some((arg) => arg.includes(mount.source)), false);
-  }
-  assertEquals(
-    base.mounts.some((mount) => mount.target.startsWith(targets.credentials)),
-    true,
-  );
-  const broker = separateContainerPlan(
-    base,
-    descriptor,
-    targets.credentials,
-    "fixture-socket",
-    "vibe-container-deadbeef",
-    false,
-  );
-  assertEquals(broker.mounts.at(-1)?.readOnly, false);
-  assertEquals(broker.initArgs.at(-1), "/run/broker");
-  assertEquals(broker.initArgs.includes("fixture-socket:/run/broker"), true);
-  assertEquals(base.initArgs.includes("fixture-socket:/run/broker"), false);
-  assertEquals(
-    broker.runArgs[broker.runArgs.indexOf("--network") + 1],
-    "vibe-container-deadbeef",
-  );
-  assertThrows(() =>
-    separateContainerPlan(
-      base,
+for (const kind of ["docker", "podman"] as const) {
+  Deno.test(`separate ${kind} probe removes credential mounts while preserving the production hardening`, async () => {
+    const manifest = parseContainerManifest(
+      await Deno.readTextFile(
+        new URL("../../../container/tools.json", import.meta.url),
+      ),
+    );
+    const descriptor = containerProbeRuntime(kind);
+    const base = buildContainerLaunchPlan({
       descriptor,
-      targets.credentials,
-      "../socket",
-      "none",
-      true,
-    )
-  );
-  assertThrows(() =>
-    separateContainerPlan(
+      manifest,
+      image: "fixture:local",
+      containerName: "fixture-agent",
+      watchdogSeconds: 60,
+      buildCommit: "unknown",
+      hostPaths: resolveContainerLaunchHostPaths(
+        "/tmp/fixture/checkout",
+        (name) => name === "HOME" ? "/tmp/fixture/home" : undefined,
+      ),
+    });
+    const targets = containerTargetPaths(manifest);
+    const plan = separateContainerPlan(
       base,
       descriptor,
       targets.credentials,
       "fixture-socket",
-      "host",
+      "none",
       true,
-    )
-  );
-});
+    );
+    assertEquals(
+      plan.mounts.filter((mount) =>
+        mount.target.startsWith(targets.credentials)
+      ),
+      [],
+    );
+    assertEquals(plan.mounts.at(-1), {
+      source: "fixture-socket",
+      target: "/run/broker",
+      volume: true,
+      readOnly: true,
+    });
+    assertEquals(plan.runArgs[plan.runArgs.indexOf("--network") + 1], "none");
+    for (const flag of ["--cap-drop", "--security-opt", "--read-only"]) {
+      const index = base.runArgs.indexOf(flag);
+      const changed = plan.runArgs.indexOf(flag);
+      assertEquals(changed >= 0, true);
+      if (flag !== "--read-only") {
+        assertEquals(plan.runArgs[changed + 1], base.runArgs[index + 1]);
+      }
+    }
+    for (
+      const mount of base.mounts.filter((mount) =>
+        mount.target.startsWith(targets.credentials)
+      )
+    ) {
+      assertEquals(
+        plan.runArgs.some((arg) => arg.includes(mount.source)),
+        false,
+      );
+    }
+    assertEquals(
+      base.mounts.some((mount) => mount.target.startsWith(targets.credentials)),
+      true,
+    );
+    const broker = separateContainerPlan(
+      base,
+      descriptor,
+      targets.credentials,
+      "fixture-socket",
+      "vibe-container-deadbeef",
+      false,
+    );
+    assertEquals(broker.mounts.at(-1)?.readOnly, false);
+    assertEquals(broker.initArgs.at(-1), "/run/broker");
+    assertEquals(broker.initArgs.includes("fixture-socket:/run/broker"), true);
+    assertEquals(base.initArgs.includes("fixture-socket:/run/broker"), false);
+    assertEquals(
+      broker.runArgs[broker.runArgs.indexOf("--network") + 1],
+      "vibe-container-deadbeef",
+    );
+    const scratch = plan.runArgs.filter((_, index) =>
+      plan.runArgs[index - 1] === "--tmpfs"
+    );
+    assertEquals(scratch.length > 0, true);
+    assertEquals(
+      scratch,
+      base.runArgs.filter((_, index) => base.runArgs[index - 1] === "--tmpfs"),
+    );
+    if (kind === "podman") {
+      assertEquals(scratch.some((arg) => /[:,]U(?:,|$)/.test(arg)), true);
+      assertEquals(scratch.some((arg) => /[:,](?:uid|gid)=/.test(arg)), false);
+    }
+    assertThrows(() =>
+      separateContainerPlan(
+        base,
+        descriptor,
+        targets.credentials,
+        "../socket",
+        "none",
+        true,
+      )
+    );
+    assertThrows(() =>
+      separateContainerPlan(
+        base,
+        descriptor,
+        targets.credentials,
+        "fixture-socket",
+        "host",
+        true,
+      )
+    );
+  });
+}
