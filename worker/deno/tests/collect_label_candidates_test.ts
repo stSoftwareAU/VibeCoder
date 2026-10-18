@@ -209,6 +209,81 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
+// Regression — a label-author trust read that throws is skipped fail-closed
+// (Issue #3974)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_label_candidates - a throwing timeline trust read skips the issue fail-closed (does not reject)",
+  async () => {
+    const config = makeConfig();
+    const throwingGh = (args: string[]): Promise<string> => {
+      const command = args.join(" ");
+      // The collector wraps this mock with buildBatchedGh, which first issues
+      // a GraphQL batch call whose query string contains `timelineItems` (so
+      // it ALSO matches `command.includes("timeline")`). Return `"[]"` so
+      // JSON.parse yields an Array, fetchTimelineBatch reports {ok:false}, and
+      // buildBatchedGh falls through to calling this mock directly for the
+      // REST timeline read below.
+      if (command.includes("graphql")) {
+        return Promise.resolve("[]");
+      }
+      if (command.includes("issue list")) {
+        return Promise.resolve(
+          JSON.stringify([
+            {
+              number: 50,
+              title: "Trust read throws",
+              url: "https://github.com/owner/repo/issues/50",
+              assignees: [],
+              labels: [{ name: "top-priority" }],
+              createdAt: "2024-03-02T00:00:00Z",
+              author: { login: "mallory" },
+              milestone: null,
+            },
+          ]),
+        );
+      }
+      if (command.includes("issue view") && command.includes("title,body")) {
+        return Promise.resolve(
+          JSON.stringify({ title: "Trust read throws", body: "" }),
+        );
+      }
+      if (command.includes("timeline")) {
+        return Promise.reject(new Error("simulated timeline read failure"));
+      }
+      return Promise.resolve("[]");
+    };
+
+    const cache = createTestCache();
+    const fetcher = createIssueFetcher(throwingGh);
+    const repoPRs: OpenPR[] = [];
+    const repoClosedPRs: ClosedPR[] = [];
+    const repoAllIssues: FilterableIssue[] = [];
+
+    // The `await` completing IS the not-reject assertion: the collector must
+    // resolve normally and skip the issue fail-closed.
+    const result = await collectLabelCandidates(
+      "owner/repo",
+      config,
+      buildOptions(throwingGh, cache),
+      repoPRs,
+      repoAllIssues,
+      fetcher,
+      repoClosedPRs,
+    );
+
+    assertEquals(result.candidates.length, 0);
+    assertEquals(
+      result.blockedDetails.some(
+        (b) => b.issueNumber === 50 && b.reason === "label-author-not-allowed",
+      ),
+      true,
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Regression — TOCTOU content tamper is blocked (Issue #2967 / #1341)
 // ---------------------------------------------------------------------------
 
