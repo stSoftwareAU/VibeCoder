@@ -62,6 +62,7 @@ missing live evidence explicitly; they establish no fleet improvement or winner.
 - The checked-in report is byte-identical to the real CLI output for that
   snapshot. It preserves unknown cost, actual build/role gaps and safeguard
   measurements; no synthetic activity is presented as live fleet evidence.
+- The first full gate exposed a missing CLI console-redaction installation and unregistered module coverage. Both are repaired using the existing shared hook and `recordSweepTopUp` producer; its claimed top-up records the actual default merge-base `60392646`, never a feature-only commit. The report plus both formerly failing checks pass 30 focused tests. All 98 facts now match current source and actual named assertion failures. A full rerun is pending.
 - Docs sweep — grep: "improvement", "stabilisation", "lifecycle"; updated `.claude/skills/review-fleet-prs/SKILL.md`, `docs/MODEL-AND-CACHING.md` and the baseline manual; section: MODEL-AND-CACHING lifecycle reporting and review-fleet-prs principle 7; siblings: none — no existing routing, role, allocation or configuration set gained a member.
 
 
@@ -81,15 +82,17 @@ missing live evidence explicitly; they establish no fleet improvement or winner.
 
 - **violation** — Redundant kind and cutoff tests obscured independently meaningful report decisions — evidence: `worker/deno/lib/stabilisation_report.ts` — reason: fixed by reusing schema-exclusive fields and matched receipts; tests retain old-child cost when target evidence is absent.
 - **violation** — Missing target names and malformed safeguard provenance could be misrepresented — evidence: `worker/deno/lib/stabilisation_report.ts` and `worker/deno/lib/stabilisation_report_cli.ts` — reason: fixed with independent target/provenance controls; missing measurements remain null and equivalent merge instants compare correctly.
-- **clean** — Independent source/baseline review checked reuse, KISS/DRY, actual producer shapes, truthful evidence, named tests, unknown costs, preserved model roles and merge/security gates. Final review independently verified all 98 current-source mutation records, named assertion failures and facts mappings; no findings remain.
+- **violation** — The new CLI omitted shared console redaction and the new modules lacked sweep registration — evidence: `worker/deno/lib/stabilisation_report_cli.ts:61` and `docs/audits/lib-sweep-coverage/top-up-3980.json` — reason: fixed using existing owners; actual CLI output is masked, the coverage and entry-point invariants pass, and omitting the hook makes the real CLI regression fail with AssertionError.
+- **clean** — Independent source/baseline review checked reuse, KISS/DRY, actual producer shapes, truthful evidence, named tests, unknown costs, preserved model roles and merge/security gates. Final review independently verified all 98 current-source mutation records, named assertion failures and facts mappings; both final independent source reviews found no remaining material findings after the integration repairs.
 
 ## Test Plan
 
 - Test-first assertion failures covered core reconciliation, real producer
   shapes, retry/roll-up history, safeguard provenance and missing targets before
   their fixes; failures were assertions, not missing imports or compiler errors.
-- The report suite passes 28 tests; it and the existing lifecycle reconciliation
-  and outcome suites pass 56 tests in total with type checking enabled.
+- The integrated report, lifecycle reconciliation/outcome and two repaired
+  invariant suites pass 103 tests with type checking enabled. The report itself
+  retains 28 tests. The manifest task also passes: 687 tests, one existing ignored.
 - All 98 enumerated new decisions and logical operands were independently
   mutated. Each produced an actual AssertionError in its named test and was
   restored before the passing run. AND operands were neutralised to true and
