@@ -277,7 +277,7 @@
       },
       {
         "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
-        "line": 675,
+        "line": 681,
         "outcome": "quality raw infrastructure preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/issue_worker_infra_retry_test.ts",
         "testName": "qualityGate - zero_output failure then success on retry does NOT call handleIssueFailure",
@@ -285,11 +285,35 @@
       },
       {
         "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
-        "line": 219,
+        "line": 225,
         "outcome": "quality label provenance preserves the declared cause or diagnostic contract",
         "test": "worker/deno/tests/issue_worker_infra_retry_test.ts",
         "testName": "qualityGate - zero_output failure on both attempts invokes handleIssueFailure exactly once",
         "flipWentRed": "quality-label-provenance mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 1868,
+        "outcome": "reconcile declared divergence preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_head_reconcile_test.ts",
+        "testName": "completion - diverged agent/worker branches fail with the explicit reason, never reaching gh pr create (Issue #4286)",
+        "flipWentRed": "reconcile-declared-divergence mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 1868,
+        "outcome": "reconcile declared infrastructure preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/completion_phase_head_reconcile_test.ts",
+        "testName": "completion keeps unreadable reconciliation infrastructure even when its prose mentions divergence (Issue #3738)",
+        "flipWentRed": "reconcile-declared-infrastructure mutation failed the named assertion"
+      },
+      {
+        "path": "worker/deno/lib/phases/quality_gate_remediation_phase.ts",
+        "line": 726,
+        "outcome": "quality turn cap declaration preserves the declared cause or diagnostic contract",
+        "test": "worker/deno/tests/quality_gate_attempt_report_test.ts",
+        "testName": "quality gate - turn limit stops remediation before a passing retry or bump audit (Issue #3701)",
+        "flipWentRed": "quality-turn-cap-declaration mutation failed the named assertion"
       }
     ]
   }

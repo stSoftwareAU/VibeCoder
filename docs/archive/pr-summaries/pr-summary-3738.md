@@ -72,11 +72,12 @@ flowchart LR
   carried. Typed-error, verifier-tag, known-host, stored-record, timeout-billing,
   blocked-PR and source-scan edge regressions each produced assertion failures
   during development, then passed after repair.
-- Twenty-two changed test suites pass: 627 tests, no failures. Their imports
+- The original twenty-two changed test suites pass: 627 tests, no failures. Their imports
   and fixtures type-check. The required full quality gate remains pending.
-- Thirty-six retained production mutations each fail a named regression
+- Thirty-nine retained production mutations each fail a named regression
   assertion. An unobservable secondary category-selection branch was removed;
   no surviving mutation is represented as red.
+- Latest-main integration covers the real typed divergence refusal, a generic git error with divergence-like prose, and the terminal turn-limit quality stop: 18 tests pass. The initial full run had 28,811 passes and one stale plain-error divergence fixture; its existing assertions remain intact with the real production error class. The full gate is being repeated.
 - Independent Spec and Standards source reviews found no remaining material
   findings. Their earlier findings drove the source-provenance, callback and
   lexer fixes described here.
@@ -115,6 +116,9 @@ path, contrary quoted categories, valid legacy/raw controls and real posted
 failure records. Type checking enforces required category/provenance contracts.
 No test, skip, threshold or meaningful existing expectation is weakened.
 
+- `worker/deno/tests/completion_phase_head_reconcile_test.ts` preserves typed divergence refusal and the opposite bounded infrastructure retry.
+- `worker/deno/tests/quality_gate_attempt_report_test.ts` preserves the terminal turn-limit stop despite quoted rate-limit prose.
+
 - `worker/deno/tests/coding_failure_ladder_test.ts` checks declared-cause precedence and retains raw/legacy controls.
 - `worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts` checks evidence/substantive/mixed causes and retained blockers.
 - `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts` checks source git faults through retry, failure decisions and emitted outcomes.
@@ -146,7 +150,7 @@ positive examples, so real-world false negatives/recall are unknown. Eight
 synthetic prohibited shapes and eight legal/comment/literal controls all pass
 the regression's expected decisions; those fixtures are not fleet measurements.
 
-The replacement ledger below accounts for the required category field in three
+The replacement ledger below accounts for the required category field in four
 whole-result expectations and explicit raw provenance in legacy classifier calls.
 Their existing payload and classification expectations remain intact.
 
@@ -319,3 +323,7 @@ Their existing payload and classification expectations remain intact.
   );`
 
 <!-- vibe-branch-outcomes -->
+
+- Removed from `worker/deno/tests/quality_gate_attempt_report_test.ts`: `assertEquals(result, { status: "failure", reason: message });`
+  Required by: "Migrate mechanically, then stop the fallback spreading."
+  Replaced by: `assertEquals(result, { category: "interrupted", status: "failure", reason: message });`

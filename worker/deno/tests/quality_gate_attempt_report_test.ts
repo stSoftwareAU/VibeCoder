@@ -340,7 +340,11 @@ Deno.test("quality gate - turn limit stops remediation before a passing retry or
         },
       }),
     );
-    assertEquals(result, { status: "failure", reason: message });
+    assertEquals(result, {
+      category: "interrupted",
+      status: "failure",
+      reason: message,
+    });
     assertEquals(gateCalls, 1);
     assertEquals(agentCalls, 1);
     assertEquals(state.infraRetryCounts?.quality_gate, undefined);

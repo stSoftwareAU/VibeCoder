@@ -722,7 +722,11 @@ async function runQualityGateBody(
       });
       if (fixResult.error instanceof AgentTurnLimitError) {
         return {
-          phaseResult: { status: "failure", reason: fixResult.error.message },
+          phaseResult: {
+            category: "interrupted",
+            status: "failure",
+            reason: fixResult.error.message,
+          },
           agentTurnLimit: true,
         };
       }
