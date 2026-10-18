@@ -47,7 +47,7 @@ flowchart LR
 - #3979: Render Branch outcomes once from existing facts and remove duplicate summary evidence maintenance.
 - The loader regression failed against base production code. Preservation and
   heading-growth regressions also failed against the initial implementation.
-- After integration with main `60392646`, the three loader/facts/body-sync
+- After integration with main `7bd0d619`, the three loader/facts/body-sync
   suites pass 101 tests with type checking enabled. The sole full gate passed
   at `6ed14e5b119e35e35a6de0e60d47cc0417e0171b` on 2026-10-18: parallel and
   serial unit passes, type checking, formatting, lint, completeness, documentation
