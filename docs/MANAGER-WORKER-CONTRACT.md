@@ -121,17 +121,21 @@ current.
 | Reviewer sub-agents | `worker/deno/lib/issue_executor_agents.ts:296` | `buildIssueReviewerAgents` builds the spec and standards reviewers as read-only — `ISSUE_REVIEWER_TOOLS` is `Read`, `Grep`, `Glob` (`:208`) and `ISSUE_REVIEWER_DISALLOWED_TOOLS` is `Agent` (`:214`) — delivered through `--agents` on Claude only. |
 | Issue-reviewer switch | `worker/deno/lib/config.ts:1013-1014` | `issue_reviewer_agents` (host only, default `true`) toggles the two reviewer definitions. |
 | PR review claim lease | `worker/deno/lib/pr_review_claim_lease.ts:29`, `:33`, `:70`, `:102` | A `pr_review` claim comment is a lease, not a dismissal. `createClaimLeaseRenewer` (`:102`) renews it every `PR_REVIEW_CLAIM_RENEW_MS` (five minutes, `:33`) by editing the comment body, and `isLeaseLive` (`:70`) deems it live while its last beat is inside `PR_REVIEW_CLAIM_LEASE_MS` (`:29`, the fleet heartbeat live window). A host that stops renewing lets the lease lapse, and the review becomes reclaimable by another host. |
-| Post-PR reviewer model | `worker/deno/lib/pr_feedback_processor.ts:803`, `worker/deno/lib/config_defaults.ts:982` | PR feedback and review runs use the host `claude_model`, defaulting to `DEFAULT_CLAUDE_MODEL = "opus"`. |
+| Post-PR reviewer model | `worker/deno/lib/config_defaults.ts:1136`, `:1247`, `worker/deno/lib/pr_feedback_processor.ts:803` | PR feedback and review runs resolve their model from the phase default: `PHASE_MODEL_DEFAULTS.pr_feedback` is `DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = "sonnet"`, not the host `claude_model`. `processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL` is only the fallback model passed to `estimatePhaseRunUsd` for cost estimation. |
 | External review gate | `worker/deno/lib/orchestration/issue_run_gate.ts:178`, `worker/deno/lib/orchestration/capabilities.ts:130` | With external orchestration on, the reviewer is a separate read-only call that fails closed before any paid work: `assertRoleSupported` (`:130`) refuses an unsupported provider or a tool denial it cannot enforce, and the subscription/CLI preflight (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI, unproved entitlement or exhausted quota. An unsupported reviewer provider is refused, not run. |
 
-The owner stated that the PR reviewer stays on Opus. The code has no `pr_review`
-key: `PHASE_MODEL_DEFAULTS` (`worker/deno/lib/config_defaults.ts:1236`) does not
-list one, so PR feedback and review runs fall back to the host `claude_model`,
-which defaults to `DEFAULT_CLAUDE_MODEL = "opus"`
-(`worker/deno/lib/config_defaults.ts:982`). The comment above
+The code has no `pr_review` key: `PHASE_MODEL_DEFAULTS`
+(`worker/deno/lib/config_defaults.ts:1236`) lists `pr_feedback` instead, pinned
+to `DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = "sonnet"`
+(`worker/deno/lib/config_defaults.ts:1136`, `:1247`), so the post-PR review run
+(`phase: "pr_feedback"`) resolves its model from the phase default rather than
+the host `claude_model`. `processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL`
+(`worker/deno/lib/pr_feedback_processor.ts:803`) is only the fallback model
+passed to `estimatePhaseRunUsd` for cost estimation. The comment above
 `DEFAULT_CLAUDE_MODEL_ISSUE` (`worker/deno/lib/config_defaults.ts:1110-1113`)
-records the intent — Opus review is what keeps merged quality high while the
-run itself is a Sonnet manager over Haiku executors.
+still records the older "with the PR reviewer on Opus" intent, which #2812 has
+since superseded by moving the reactive phases (including `pr_feedback`) to
+Sonnet.
 
 ## 4. Target contract
 
