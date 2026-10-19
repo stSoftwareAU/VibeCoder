@@ -965,6 +965,63 @@ Deno.test({
 
 Deno.test({
   name:
+    "runClaudeWithTimeout - refuses providers that drop --agents on the split (Issue #4010)",
+  permissions: { read: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const agents = buildIssueExecutorAgents("sonnet");
+    for (const agentProvider of ["codex", "gemini", "deepseek"]) {
+      const result = await runClaudeWithTimeout({
+        clock: fakeClock(),
+        prompt: "test",
+        phase: "issue",
+        agentProvider,
+        agents,
+        env: emptyEnv,
+        timeoutSeconds: 30,
+        killAfterSeconds: 2,
+      });
+      assert(!result.ok, `${agentProvider} must be refused before spawn`);
+      assertStringIncludes(result.error.message, "cannot carry");
+      assertStringIncludes(result.error.message, "Issue #4010");
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - Claude carrying --agents is not refused (Issue #4010)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const agents = buildIssueExecutorAgents("sonnet");
+    const result = await withAgentStub(
+      `printf 'stub-claude-ok\\n'`,
+      (stub) =>
+        runClaudeWithTimeout({
+          clock: fakeClock(),
+          prompt: "test",
+          phase: "issue",
+          agentBinaryPath: stub.path,
+          agents,
+          env: emptyEnv,
+          timeoutSeconds: 30,
+          killAfterSeconds: 2,
+        }),
+      { prefix: "claude_agents_" },
+    );
+    // Claude carries --agents, so the refusal must not fire; the stub's single
+    // line is not a valid stream result, so ok may be false with a parse error
+    // — but never the --agents refusal.
+    assert(
+      result.ok || !result.error.message.includes("cannot carry"),
+      `Claude must not be refused: ${!result.ok && result.error.message}`,
+    );
+  },
+});
+
+Deno.test({
+  name:
     "runClaudeWithTimeout - spawns unguarded only with the operator opt-in (Issue #3869)",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",

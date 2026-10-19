@@ -1252,6 +1252,28 @@ async function runClaudeWithTimeoutBody(
     ...invocationRequest,
     promptViaStdin,
   });
+  // Fail loud on the native split (Issue #4010): the split hands the CLI the
+  // `--agents` sub-agent definitions, and a provider that cannot carry them
+  // (Codex, Gemini, DeepSeek) drops them silently, so the run would degrade to
+  // single-model routing with no executors and no edit guard. The refusal sits
+  // behind the existing flags — `invocationRequest.agents` is only present when
+  // the split (or reviewers/explorer) resolved on — and it asks the provider's
+  // own argv rather than a provider-id table.
+  if (invocationRequest.agents && !args.includes("--agents")) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refused to start the agent: ${provider.displayName} cannot carry ` +
+          `the issue-executor split's sub-agent definitions (--agents). ` +
+          `The split was requested but this provider drops it, so the run ` +
+          `would silently degrade to single-model routing with no executors ` +
+          `or edit guard. Roll the split back (` +
+          `issue_executor_split: false, issue_reviewer_agents: false, ` +
+          `issue_sub_agent_tier: "sonnet") or run the issue phase on the ` +
+          `Claude provider. (Issue #4010)`,
+      ),
+    };
+  }
   const stdinPayload = promptViaStdin
     ? (provider.stdinBody?.(invocationRequest) ?? prompt)
     : prompt;
