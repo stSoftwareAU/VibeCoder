@@ -1,6 +1,8 @@
 # Manager-worker contract (provider-neutral)
 
-**Issue:** [#3641](https://github.com/stSoftwareAU/VibeCoder/issues/3641)
+**Issue:** [#3641](https://github.com/stSoftwareAU/VibeCoder/issues/3641);
+the review-gate audit and the fail-loud rollout below were completed by
+[#3933](https://github.com/stSoftwareAU/VibeCoder/issues/3933).
 
 The original audit below predates the opt-in implementation.
 [Role configuration](ROLE-CONFIGURATION.md) documents the runtime delivered
@@ -108,14 +110,32 @@ the template carries only a placeholder.
 
 Lifecycle entry points are covered in section 5.
 
-The issue owner states that the PR reviewer stays on Opus. The code has no
-`pr_review` key: `PHASE_MODEL_DEFAULTS` (`worker/deno/lib/config_defaults.ts:1222-1239`)
-does not list one. PR feedback and review runs use the host `claude_model`
-(`worker/deno/lib/pr_feedback_processor.ts:764`, `processorDeps.claudeModel ??
-DEFAULT_CLAUDE_MODEL`), which defaults to `DEFAULT_CLAUDE_MODEL = "opus"`
-(`worker/deno/lib/config_defaults.ts:968`, and `worker/deno/lib/config.ts:596`).
-The comment above `DEFAULT_CLAUDE_MODEL_ISSUE` (`worker/deno/lib/config_defaults.ts:1094-1096`)
-records the intent.
+### Review gates
+
+The audit list's "review gates" area covers more than the two reviewer
+sub-agents. Each row below was opened to verify it, and the citations are
+current.
+
+| Gate | Where | What it does today |
+| --- | --- | --- |
+| Reviewer sub-agents | `worker/deno/lib/issue_executor_agents.ts:296` | `buildIssueReviewerAgents` builds the spec and standards reviewers as read-only — `ISSUE_REVIEWER_TOOLS` is `Read`, `Grep`, `Glob` (`:208`) and `ISSUE_REVIEWER_DISALLOWED_TOOLS` is `Agent` (`:214`) — delivered through `--agents` on Claude only. |
+| Issue-reviewer switch | `worker/deno/lib/config.ts:1013-1014` | `issue_reviewer_agents` (host only, default `true`) toggles the two reviewer definitions. |
+| PR review claim lease | `worker/deno/lib/pr_review_claim_lease.ts:29`, `:33`, `:70`, `:102` | A `pr_review` claim comment is a lease, not a dismissal. `createClaimLeaseRenewer` (`:102`) renews it every `PR_REVIEW_CLAIM_RENEW_MS` (five minutes, `:33`) by editing the comment body, and `isLeaseLive` (`:70`) deems it live while its last beat is inside `PR_REVIEW_CLAIM_LEASE_MS` (`:29`, the fleet heartbeat live window). A host that stops renewing lets the lease lapse, and the review becomes reclaimable by another host. |
+| Post-PR reviewer model | `worker/deno/lib/config_defaults.ts:1136`, `:1247`, `worker/deno/lib/pr_feedback_processor.ts:803` | PR feedback and review runs resolve their model from the phase default: `PHASE_MODEL_DEFAULTS.pr_feedback` is `DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = "sonnet"`, not the host `claude_model`. `processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL` is only the fallback model passed to `estimatePhaseRunUsd` for cost estimation. |
+| External review gate | `worker/deno/lib/orchestration/issue_run_gate.ts:178`, `worker/deno/lib/orchestration/capabilities.ts:130` | With external orchestration on, the reviewer is a separate read-only call that fails closed before any paid work: `assertRoleSupported` (`:130`) refuses an unsupported provider or a tool denial it cannot enforce, and the subscription/CLI preflight (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI, unproved entitlement or exhausted quota. An unsupported reviewer provider is refused, not run. |
+
+The code has no `pr_review` key: `PHASE_MODEL_DEFAULTS`
+(`worker/deno/lib/config_defaults.ts:1236`) lists `pr_feedback` instead, pinned
+to `DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = "sonnet"`
+(`worker/deno/lib/config_defaults.ts:1136`, `:1247`), so the post-PR review run
+(`phase: "pr_feedback"`) resolves its model from the phase default rather than
+the host `claude_model`. `processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL`
+(`worker/deno/lib/pr_feedback_processor.ts:803`) is only the fallback model
+passed to `estimatePhaseRunUsd` for cost estimation. The comment above
+`DEFAULT_CLAUDE_MODEL_ISSUE` (`worker/deno/lib/config_defaults.ts:1110-1113`)
+still records the older "with the PR reviewer on Opus" intent, which #2812 has
+since superseded by moving the reactive phases (including `pr_feedback`) to
+Sonnet.
 
 ## 4. Target contract
 
@@ -356,38 +376,71 @@ provider's `buildInvocation` (`worker/deno/lib/claude_runner.ts:1217`), where th
 Codex, Gemini and DeepSeek rows above drop it. On those three providers the
 advisor is therefore told to dispatch `executor` sub-agents that the CLI never
 defines. This is a known gap, recorded beside the silent-drop gap in section 6.
-No code change in this PR.
+
+**Two paths now.** The table above is the native split path, which runs only
+when external orchestration is off
+(`worker/deno/lib/execute_claude_phase.ts:1338`,
+`worker/deno/lib/phases/execute_phase.ts:796`). The opt-in external
+orchestration path never sets `--agents`
+(`worker/deno/lib/orchestration/issue_run_gate.ts:112`) and refuses a provider
+that cannot carry a role before any paid work: `assertRoleSupported`
+(`worker/deno/lib/orchestration/capabilities.ts:130`) refuses an unsupported
+provider, capability or tool-denial gap, and the subscription/CLI preflight
+(`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI,
+unproved entitlement or exhausted quota. On that path nothing is dropped
+silently: Claude roles use CLI tool denials, Codex roles use read-only or
+workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
+[Role configuration](ROLE-CONFIGURATION.md).
 
 ## 8. Rollout and safeguards
 
 - **Flags.** Each key is read host-wide, and a repository can override some of
   them.
-  - `issue_executor_split`: host value `worker/deno/lib/config.ts:976-977`; a
+  - `issue_executor_split`: host value `worker/deno/lib/config.ts:1003-1004`; a
     `repo_config` boolean overrides it (`worker/deno/lib/issue_executor_split.ts:49-51`).
   - `issue_sub_agent_tier` (`haiku` or `sonnet`): host value read through
-    `resolveHostIssueSubAgentTier` (`worker/deno/lib/config.ts:981-983`,
+    `resolveHostIssueSubAgentTier` (`worker/deno/lib/config.ts:1008-1009`,
     `worker/deno/lib/issue_sub_agent_tier.ts:43`); the repo override is applied
     by `resolveIssueSubAgentTier` (`worker/deno/lib/issue_sub_agent_tier.ts:72`).
-  - `issue_reviewer_agents`: host only (`worker/deno/lib/config.ts:986-987`).
+  - `issue_reviewer_agents`: host only (`worker/deno/lib/config.ts:1013-1014`).
+  - `external_orchestration` (default `false`): opts a host or repository into
+    the independent provider-neutral path. When it is on, the native split and
+    `--agents` are not resolved
+    (`worker/deno/lib/execute_claude_phase.ts:1338`,
+    `worker/deno/lib/phases/execute_phase.ts:796`). See
+    [Role configuration](ROLE-CONFIGURATION.md).
 
   See [Configuration Reference](CONFIGURATION.md), rows for these keys.
-- **Invariant (target).** A provider that cannot carry the contract fails loud
-  when the split is on. It is refused before any sub-agent starts, and the run
-  reports why. This is a behaviour change and is not part of this document's
-  implementation.
-- **Current state.** Codex and Gemini drop agents silently, and DeepSeek drops
-  `settingsJson` silently (section 3). The invariant is not yet true.
+- **Invariant (delivered).** On the external orchestration path, a provider that
+  cannot carry a role fails loud before any paid work: `assertRoleSupported`
+  (`worker/deno/lib/orchestration/capabilities.ts:130`) refuses an unsupported
+  provider, capability or tool-denial gap, and the subscription/CLI preflight
+  (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI,
+  unproved entitlement or exhausted quota. The gate never falls back to
+  `--agents` or a metered API
+  (`worker/deno/lib/orchestration/issue_run_gate.ts:112`).
+- **Native split, current state.** The native `issue_executor_split` path runs
+  only when external orchestration is off
+  (`worker/deno/lib/execute_claude_phase.ts:1338`,
+  `worker/deno/lib/phases/execute_phase.ts:796`). On that path Codex and Gemini
+  still drop `agents` silently and DeepSeek drops `settingsJson` silently
+  (section 3). The fail-loud invariant is therefore delivered for the
+  provider-neutral path, not the native split; closing the native path's silent
+  drop is a separate behaviour change.
 - **No default change.** `issue_executor_split` stays `true`,
   `issue_sub_agent_tier` stays `"haiku"` and `issue_reviewer_agents` stays
-  `true`. Nothing in the rollout changes them.
-- **Rollback.** Setting `issue_executor_split: false` and
+  `true`. `external_orchestration` stays `false` until a host opts in. Nothing
+  in the rollout changes them.
+- **Rollback.** Native: setting `issue_executor_split: false` and
   `issue_reviewer_agents: false` alone does not remove `--agents` on the default
   `haiku` tier. `buildIssueRunAgents` (`worker/deno/lib/issue_executor_agents.ts:420-434`)
   still adds the explorer definition from `buildIssueExplorerAgents()`
   (`worker/deno/lib/issue_executor_agents.ts:374`) when `issue_sub_agent_tier`
   is `"haiku"`. A full rollback to no `--agents` argument also sets
   `issue_sub_agent_tier: "sonnet"`. The run is then a single session, as it was
-  before the split.
+  before the split. External orchestration: set `external_orchestration` to
+  `false` on the host or repository and restart the worker; the native path
+  resumes with the existing configuration keys.
 
 ## 9. Incremental implementation order
 
