@@ -2164,9 +2164,14 @@ unmerged branches, PRs, releases and workflow changes made during the window;
 freeze affected automation while reviewing and revert unauthorised changes
 through the repository's normal review path. Rebuild from a known-good image
 and trusted checkout, restore only reviewed state, install replacement
-credentials, and verify containment and audit logging before a small supervised
-run. Confirm expected destinations, permissions and scan findings, then restore
-the scheduler. Preserve the incident evidence separately from live retention.
+credentials, and verify containment and audit logging in a bounded automated
+validation run before restoring the scheduler. Automated checks must confirm
+expected destinations, permissions and scan findings; an unavailable or failed
+check keeps the affected automation contained and schedules a recovery recheck.
+No person supervising the run is required. Preserve incident evidence separately
+from live retention. This is the required recovery outcome under
+[unattended self-healing](DESIGN-PRINCIPLES.md#fully-unattended-operation-and-self-healing),
+not evidence that every step is already automated in the current worker.
 
 Notify repository/account owners through a private channel, with scope, UTC
 timeline, affected credentials/data, containment actions and remaining unknowns.
