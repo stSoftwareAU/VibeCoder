@@ -2148,6 +2148,15 @@ export async function createProductionRunCoreDeps(
             healthy: false,
             exitCode: result.exitCode,
             message: result.message,
+            // (Issue #4014) Surfaced so the health gate can tell a
+            // signal-writing quota failure — the class whose pool rotation
+            // terminates on the written signal — from a classified outage
+            // that deliberately writes none (a signal would pause auto-mode
+            // claim routing, defeating the fallback this verdict exists to
+            // reach).
+            ...(result.pauseSeconds === undefined
+              ? {}
+              : { pauseSeconds: result.pauseSeconds }),
           },
         };
       } catch (err) {
