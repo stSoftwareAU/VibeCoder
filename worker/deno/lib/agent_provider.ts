@@ -90,7 +90,10 @@ import {
   codexAuthActionableMessage,
   isCodexAuthError,
 } from "./codex_auth.ts";
-import { resolveCodexAuthMode } from "./codex_auth_mode.ts";
+import {
+  initialiseCodexHome,
+  resolveCodexAuthMode,
+} from "./codex_auth_mode.ts";
 import {
   buildGeminiArgs,
   resolveGeminiEffort,
@@ -295,6 +298,10 @@ export interface AgentProviderCredentials {
   file: string;
   /** Environment variables that carry a usable credential. */
   envVars: readonly string[];
+  /** Non-secret runtime selectors, separate from setup's pasteable credentials. */
+  stateEnvVars?: readonly string[];
+  /** Prepare durable login state after the credential environment is loaded. */
+  initialiseState?: (directory: string, env: EnvLookup) => Promise<void>;
   /** The `setup.sh` variable that provisions the credential file. */
   provisionEnvVar: string;
   /**
@@ -789,6 +796,8 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     subdir: "codex",
     file: "provider.env",
     envVars: CODEX_CREDENTIAL_ENV_VARS,
+    stateEnvVars: [CODEX_HOME_ENV_VAR],
+    initialiseState: initialiseCodexHome,
     provisionEnvVar: "VIBE_LAUNCHAGENT_OPENAI_API_KEY",
   },
   // Fixed-price subscription vs metered spend (Issue #1923). No environment

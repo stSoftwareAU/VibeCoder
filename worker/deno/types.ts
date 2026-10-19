@@ -1493,6 +1493,13 @@ export interface ConfigFile {
   /** Stale workflow thresholds (Issue #1240) */
   stale_failed_diagnostic_days?: number;
   stale_planning_warning_days?: number;
+  /** Provider-independent phase-to-tier policy. */
+  phase_model_tiers?: Record<string, "best" | "standard" | "fast">;
+  /** Concrete model ids for each provider's semantic tiers. */
+  provider_model_tiers?: Record<
+    string,
+    Partial<Record<"best" | "standard" | "fast", string>>
+  >;
   /** Per-phase model tier overrides (Issue #1265) */
   phase_model_overrides?: Record<string, string>;
   /** Per-phase effort level overrides (Issue #1403) */

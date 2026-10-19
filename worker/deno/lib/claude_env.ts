@@ -70,6 +70,7 @@ export const CLAUDE_ENV_DENYLIST: readonly string[] = [
   ...WORKER_ONLY_SECRET_ENV_VARS,
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
+  "CODEX_HOME",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "DEEPSEEK_API_KEY",
