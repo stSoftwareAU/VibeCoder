@@ -133,6 +133,19 @@ failure makes that provider unavailable to subsequent work; quota failures are
 rechecked at the stated reset, or after a five-minute cooldown when no reset was
 reported. If no safe candidate remains, the host waits.
 
+Provision Codex's persistent subscription home using
+[Codex subscription authentication](CODEX-SUBSCRIPTION-AUTH.md). The router
+reads the same explicit `CODEX_HOME` that the child receives and ignores parent
+API keys that the child withholds. Rollout quota retains its original evidence
+time, so rereading an old session cannot make its budget fresh.
+
+The shared `phase_model_tiers` policy and `provider_model_tiers` catalogue keep
+labels independent of model vendors; see
+[Model selection](MODEL-AND-CACHING.md#model-selection). To make Quorum follow
+the budget-selected provider too, set `quorum_planners: ["auto", "auto"]` and
+`quorum_judge: "auto"`. Explicit provider ids remain pins.
+
+
 An explicit per-invocation provider bypasses the process default and remains
 absolute. A per-repo pin (`repo_config.<repo>.agent_provider`, Issue #2048) is
 the same class of explicit operator pin, scoped to one repository: it binds
