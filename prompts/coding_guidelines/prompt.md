@@ -768,23 +768,28 @@ separate.
   stSoftwareAU/VibeCoder. Before you name a precedent file or helper in a
   test, PR body or issue, confirm it exists in the target repository.
 - **Vet every regex on untrusted text, one hostile case per pattern.** Every
-  regex a change adds or edits that runs on untrusted or agent-written text
-  (an issue body, a PR summary, agent output) gets its own check, not one per
+  regex a change adds or edits that runs on untrusted or agent-written text (an
+  issue body, a PR summary, agent output) gets its own check, not one per
   module. Read each pattern for two quantifiers that can match the same
   characters with only optional tokens between them: `\s*:?\s*$`,
   `\s*[:\-–—]\s*(.+)$`, or an unanchored `[.!\s]+$` or `\s+$`. Remove the
   overlap: trim the line first and drop the redundant quantifier, make the
   pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
-  trailing whitespace, or cap the run. A `(.*)$` tail can fail too, because
-  `.` stops at a lone `\r`: after an unanchored label such as `reason:`, the
-  search restarts at every later occurrence of the label and rescans to the
-  end each time, so read the value with `([^\n]*)` and no `$` (Issue #3186).
-  Then add one hostile case per pattern: a long run of the shared character
-  followed by a character the pattern rejects. A parser with several
-  patterns needs a case for each. stSoftwareAU/VibeCoder#3085
-  capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
-  with the same defect, and #3160's hostile cases covered the inline form while
-  `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
+  trailing whitespace, or cap the run. A `(.*)$` tail can fail too, because `.`
+  stops at a lone `\r`: after an unanchored label such as `reason:`, the search
+  restarts at every later occurrence of the label and rescans to the end each
+  time, so read the value with `([^\n]*)` and no `$` (Issue #3186). Then add one
+  hostile case per pattern: a long run of the shared character followed by a
+  character the pattern rejects. A parser with several patterns needs a case for
+  each. Each case asserts the pattern's result on an input long enough that
+  catastrophic backtracking never returns, so it hangs on every host, or a
+  deterministic step count: guard super-linear cost by output, then by counted
+  work, as the timing bullets above say. It is not a wall-clock ratio where the
+  repository's own testing standard keeps timing out of unit tests.
+  stSoftwareAU/VibeCoder#3085 capped `isBarePlaceholder` and left
+  `DOCS_SWEEP_LINE_RE` in the same file with the same defect, and #3160's
+  hostile cases covered the inline form while `BRANCH_OUTCOMES_HEADING_RE` took
+  about a minute per call (Issue #3164).
 - **Keep iteration counts honest** — do not shrink them to make a "performance
   test" fit inside a unit test. Write a proper benchmark and include the results
   in the PR summary.

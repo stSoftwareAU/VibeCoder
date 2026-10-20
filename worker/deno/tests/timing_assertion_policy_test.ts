@@ -33,12 +33,19 @@
  * are injected into other repositories and must not name a VibeCoder-only
  * helper.
  *
+ * Issue #3897: the regex hostile-case rules in coding guidelines and
+ * pr_feedback say a hostile case asserts output or counted work, never a
+ * wall-clock ratio where the target repository keeps timing out of unit tests,
+ * and name no VibeCoder-only helper.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assertPins,
+  DocSection,
+  excerpt,
   flat,
   readRepoDoc,
   section,
@@ -274,4 +281,70 @@ Deno.test("timing policy - the helper the carve-out names still exists and is us
     callers.length > 0,
     "no unit test calls the helper the carve-out was written for",
   );
+});
+
+/**
+ * The slice of `text` from the first `start` to the earliest following `ends`
+ * marker (or the end of `text`), `start` included. Stays a `DocSection`, so
+ * `assertPins` and `flat` still accept it.
+ */
+function slice(text: DocSection, start: string, ends: string[]): DocSection {
+  const from = text.indexOf(start);
+  assert(from >= 0, `could not locate "${start}" in the section`);
+  const after = from + start.length;
+  const stops = ends
+    .map((end) => text.indexOf(end, after))
+    .filter((index) => index >= 0);
+  const to = stops.length > 0 ? Math.min(...stops) : text.length;
+  return excerpt(text, from, to);
+}
+
+Deno.test("timing policy - regex hostile-case rules assert output or counted work, not a wall-clock ratio (Issue #3897)", async () => {
+  const guidelines = section(
+    await readRepoDoc(GUIDELINES_SECTION.doc),
+    GUIDELINES_SECTION.title,
+  );
+  const guidelinesBullet = slice(
+    guidelines,
+    "- **Vet every regex on untrusted text",
+    ["\n- ", "\n\n"],
+  );
+  assertPins(guidelinesBullet, [
+    "asserts the pattern's result on an input long enough that catastrophic backtracking never returns",
+    "guard super-linear cost by output, then by counted work, as the timing bullets above say",
+    "It is not a wall-clock ratio where the repository's own testing standard keeps timing out of unit tests",
+  ]);
+
+  const prFeedback = section(
+    await readRepoDoc("prompts/pr_feedback/prompt.md"),
+    "Making Changes",
+  );
+  const prFeedbackParagraph = slice(
+    prFeedback,
+    "**A backtracking finding covers every regex in the module.**",
+    ["\n\n"],
+  );
+  assertPins(prFeedbackParagraph, [
+    "never a wall-clock ratio where the repository's own standard keeps timing out of unit tests",
+  ]);
+
+  const forbidden = [
+    "assertLinearGrowth",
+    "tests/support/growth.ts",
+    "Issue #530",
+  ];
+  for (
+    const [name, text] of [
+      ["coding_guidelines bullet", guidelinesBullet],
+      ["pr_feedback paragraph", prFeedbackParagraph],
+    ] as const
+  ) {
+    for (const phrase of forbidden) {
+      assertEquals(
+        flat(text).includes(phrase),
+        false,
+        `${name} names "${phrase}", a VibeCoder-only helper the guidelines must not cite`,
+      );
+    }
+  }
 });
