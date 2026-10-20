@@ -104,8 +104,6 @@ export interface CheckovCheckOptions {
   probe?: ProbeFn;
   /** Inject a spawner. Defaults to the deadline-bound spawn. */
   spawn?: SpawnFn;
-  /** Inject a template reader. Defaults to reading under `scriptDir`. */
-  templates?: CheckovTemplateReader;
 }
 
 /**
@@ -174,7 +172,6 @@ export async function detectCheckovInvocation(
   }
 
   for (const runtime of ["docker", "podman"]) {
-    if (await probe(runtime, ["--version"]) === null) continue;
     if (await probe(runtime, ["image", "inspect", CHECKOV_IMAGE]) === null) {
       continue;
     }
@@ -274,14 +271,15 @@ export async function runCheckovCheck(
   const verdict = await judgeCheckovRun({
     exitCode: run.exitCode,
     stdout: run.stdout,
-    templates: options.templates ?? checkovTemplateReader(scriptDir),
+    templates: checkovTemplateReader(scriptDir),
   });
 
   const lines = [
     `checkov: ${verdict.status} (via ${description})`,
     verdict.report,
   ];
-  if (verdict.status === "FAILED" && !isJson(run.stdout)) {
+  // Non-JSON stdout is always FAILED (judgeCheckovRun rejects it), so stderr explains why.
+  if (!isJson(run.stdout)) {
     const stderr = run.stderr.trim();
     if (stderr !== "") {
       lines.push(

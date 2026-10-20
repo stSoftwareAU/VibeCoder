@@ -30,10 +30,7 @@ import {
   runCheckovCheck,
   type SpawnFn,
 } from "../lib/checkov_check.ts";
-import {
-  CHECKOV_SCAN_ARGS,
-  type CheckovTemplateReader,
-} from "../lib/checkov_report.ts";
+import { CHECKOV_SCAN_ARGS } from "../lib/checkov_report.ts";
 import { CHECKOV_IMAGE, CHECKOV_IMAGE_TAG } from "../lib/pinned_actions.ts";
 import { runQualityGate } from "../lib/quality_gate.ts";
 import {
@@ -43,8 +40,6 @@ import {
 } from "../lib/quality_helpers.ts";
 
 const FIXTURES = new URL("./fixtures/checkov/", import.meta.url);
-
-const noTemplates: CheckovTemplateReader = () => Promise.resolve(null);
 
 /** Reads a checkov fixture's `report.json`. */
 async function report(name: string): Promise<string> {
@@ -157,7 +152,6 @@ Deno.test("runCheckovCheck - a PATH checkov on the pin is used with the CI scan 
       { exitCode: 0, stdout: await report("clean"), stderr: "" },
       spawnCalls,
     ),
-    templates: noTemplates,
   });
   assertEquals(result.status, "PASSED");
   assertEquals(spawnCalls.length, 1);
@@ -171,7 +165,6 @@ Deno.test("runCheckovCheck - a PATH version mismatch is not run and falls throug
   const result = await runCheckovCheck("/repo", {
     probe: fakeProbe({ [PIN_KEY]: "2.0.0" }),
     spawn: unexpectedSpawn,
-    templates: noTemplates,
   });
   assertEquals(result.status, "SKIPPED");
   assertStringIncludes(
@@ -185,7 +178,6 @@ Deno.test("runCheckovCheck - an empty --version output is SKIPPED as an unknown 
   const result = await runCheckovCheck("/repo", {
     probe: fakeProbe({ [PIN_KEY]: "" }),
     spawn: unexpectedSpawn,
-    templates: noTemplates,
   });
   assertEquals(result.status, "SKIPPED");
   assertStringIncludes(result.output, "an unknown version");
@@ -196,14 +188,12 @@ Deno.test("runCheckovCheck - a PATH version mismatch still reaches the docker ro
   const result = await runCheckovCheck("/repo", {
     probe: fakeProbe({
       [PIN_KEY]: "2.0.0",
-      "docker --version": "Docker version 27",
       [IMAGE_INSPECT_KEY]: "[]",
     }),
     spawn: fakeSpawn(
       { exitCode: 0, stdout: await report("clean"), stderr: "" },
       spawnCalls,
     ),
-    templates: noTemplates,
   });
   assertEquals(result.status, "PASSED");
   assertEquals(firstCall(spawnCalls).binary, "docker");
@@ -215,14 +205,12 @@ Deno.test("runCheckovCheck - a docker-held image runs read-only via --entrypoint
   const probeCalls: string[][] = [];
   await runCheckovCheck("/repo", {
     probe: fakeProbe({
-      "docker --version": "Docker version 27",
       [IMAGE_INSPECT_KEY]: "[]",
     }, probeCalls),
     spawn: fakeSpawn(
       { exitCode: 0, stdout: await report("clean"), stderr: "" },
       spawnCalls,
     ),
-    templates: noTemplates,
   });
   const args = firstCall(spawnCalls).args;
   assertStringIncludes(args.join(" "), "/repo:/src:ro");
@@ -238,23 +226,20 @@ Deno.test("runCheckovCheck - podman is used when docker is absent and podman hol
   const spawnCalls: SpawnCall[] = [];
   await runCheckovCheck("/repo", {
     probe: fakeProbe({
-      "podman --version": "podman version 5",
       [`podman image inspect ${CHECKOV_IMAGE}`]: "[]",
     }),
     spawn: fakeSpawn(
       { exitCode: 0, stdout: await report("clean"), stderr: "" },
       spawnCalls,
     ),
-    templates: noTemplates,
   });
   assertEquals(firstCall(spawnCalls).binary, "podman");
 });
 
 Deno.test("runCheckovCheck - a runtime without the image is not used and is SKIPPED", async () => {
   const result = await runCheckovCheck("/repo", {
-    probe: fakeProbe({ "docker --version": "Docker version 27" }),
+    probe: fakeProbe({}),
     spawn: unexpectedSpawn,
-    templates: noTemplates,
   });
   assertEquals(result.status, "SKIPPED");
   assertStringIncludes(
@@ -268,7 +253,6 @@ Deno.test("runCheckovCheck - SKIPPED names every unusable route and the install 
   const result = await runCheckovCheck("/repo", {
     probe: fakeProbe({}, probeCalls),
     spawn: unexpectedSpawn,
-    templates: noTemplates,
   });
   assertEquals(result.status, "SKIPPED");
   assertStringIncludes(result.output, "no checkov on PATH");
@@ -290,7 +274,6 @@ Deno.test("runCheckovCheck - a SKIPPED checkov fails the gate under --strict", a
   const result = await runCheckovCheck("/repo", {
     probe: fakeProbe({}),
     spawn: unexpectedSpawn,
-    templates: noTemplates,
   });
   assertEquals(result.status, "SKIPPED");
   const checks: CheckResult[] = [];
@@ -312,7 +295,6 @@ Deno.test("runCheckovCheck - a deadline hit is FAILED, not SKIPPED or PASSED", a
       { exitCode: -1, stdout: "", stderr: "", timedOut: true },
       [],
     ),
-    templates: noTemplates,
   });
   assertEquals(result.status, "FAILED");
   assertStringIncludes(result.output, "exceeded");
@@ -325,7 +307,6 @@ Deno.test("runCheckovCheck - a failing scan is FAILED with the judge's finding",
       { exitCode: 1, stdout: await report("failed"), stderr: "" },
       [],
     ),
-    templates: noTemplates,
   });
   assertEquals(result.status, "FAILED");
   assertStringIncludes(
@@ -342,7 +323,6 @@ Deno.test("runCheckovCheck - a clean scan is PASSED", async () => {
       { exitCode: 0, stdout: await report("clean"), stderr: "" },
       [],
     ),
-    templates: noTemplates,
   });
   assertEquals(result.status, "PASSED");
 });
@@ -358,7 +338,6 @@ Deno.test("runCheckovCheck - a FAILED run with non-JSON stdout shows the stderr 
       },
       [],
     ),
-    templates: noTemplates,
   });
   assertEquals(result.status, "FAILED");
   assertStringIncludes(result.output, "checkov stderr (last lines):");
@@ -379,11 +358,33 @@ Deno.test("runCheckovCheck - the stderr tail redacts a token", async () => {
       },
       [],
     ),
-    templates: noTemplates,
   });
   assertEquals(result.status, "FAILED");
   assertStringIncludes(result.output, "boom");
   assert(!result.output.includes(token), "the stderr tail must be redacted");
+});
+
+Deno.test("runCheckovCheck - a FAILED run with JSON stdout shows no stderr tail", async () => {
+  const result = await runCheckovCheck("/repo", {
+    probe: fakeProbe({ [PIN_KEY]: CHECKOV_IMAGE_TAG }),
+    spawn: fakeSpawn(
+      {
+        exitCode: 1,
+        stdout: await report("failed"),
+        stderr: "some stderr noise\n",
+      },
+      [],
+    ),
+  });
+  assertEquals(result.status, "FAILED");
+  assert(
+    !result.output.includes("checkov stderr (last lines):"),
+    "a JSON stdout run must not show the stderr tail",
+  );
+  assert(
+    !result.output.includes("some stderr noise"),
+    "a JSON stdout run must not echo stderr",
+  );
 });
 
 // ---------------------------------------------------------------------------
