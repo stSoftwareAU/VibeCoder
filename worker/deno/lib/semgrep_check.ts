@@ -385,14 +385,19 @@ const TIMED_OUT: SemgrepRunResult = {
   timedOut: true,
 };
 
-/** Spawn a command with the scan deadline applied. */
-async function spawnWithDeadline(
+/**
+ * Spawn a command with the scan deadline applied. Shared with
+ * `checkov_check.ts` (Issue #3972), which passes its own `deadlineMs`; the
+ * default is the semgrep deadline, so semgrep's behaviour is unchanged.
+ */
+export async function spawnWithDeadline(
   binary: string,
   args: string[],
   cwd: string,
+  deadlineMs = SEMGREP_DEADLINE_MS,
 ): Promise<SemgrepRunResult> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SEMGREP_DEADLINE_MS);
+  const timer = setTimeout(() => controller.abort(), deadlineMs);
   try {
     const command = new Deno.Command(binary, {
       args,
@@ -418,8 +423,11 @@ async function spawnWithDeadline(
   }
 }
 
-/** Run `<binary> <probeArgs>` and return its stdout, or null if it cannot run. */
-async function probe(
+/**
+ * Run `<binary> <probeArgs>` and return its stdout, or null if it cannot run.
+ * Shared with `checkov_check.ts` (Issue #3972) so both stages probe the same way.
+ */
+export async function probe(
   binary: string,
   probeArgs: string[],
 ): Promise<string | null> {

@@ -1361,14 +1361,15 @@ Never background it behind a `sleep`/`pgrep` poll loop
 check as each settles, so a slow run is visibly alive rather than
 indistinguishable from a hung one. The quality gate is implemented in Deno
 TypeScript (`worker/deno/quality.ts`) and runs benchmark-audit, markdownlint,
-semgrep, the release-tag ruleset reconciliation, `deno test`,
-`deno lint`, `deno check`, and `deno fmt --check`. The semgrep stage runs the same
+semgrep, Checkov (where `checkov.yml` exists), the release-tag ruleset
+reconciliation, `deno test`, `deno lint`, `deno check`, and
+`deno fmt --check`. The semgrep stage runs the same
 `p/default` ruleset as the blocking `semgrep.yml` PR check, over the branch's
 changed files only, so a SAST finding is met before the push rather than after
 it (Issue #559). Shellcheck is deliberately not run here —
 bash linting is owned by each repo's own CI. See
 [CONTRIBUTING.md → Local quality gate](CONTRIBUTING.md) for how to install the
-optional checks (`markdownlint-cli2`, `semgrep`).
+optional checks (`markdownlint-cli2`, `semgrep`, `checkov`).
 
 **A quality run executes the unit suite only** — no benchmarks, and no
 integration tests beyond the three `run.ps1` launcher suites

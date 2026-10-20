@@ -92,9 +92,10 @@ runs:
 ```
 
 This delegates to `worker/deno/quality.ts` and runs Deno type-check, the
-Deno test suite, `deno lint`, `deno fmt --check`, markdownlint, and
-semgrep. CI additionally runs shellcheck over the repo's shell scripts —
-the gate itself does not. Always redirect stdin from `/dev/null` so
+Deno test suite, `deno lint`, `deno fmt --check`, markdownlint, semgrep,
+and Checkov (registered only where `.github/workflows/checkov.yml` exists).
+CI additionally runs shellcheck over the repo's shell scripts — the gate
+itself does not. Always redirect stdin from `/dev/null` so
 unattended runs cannot hang waiting for input.
 
 Run it in the **foreground** and let it finish — each check reports as it
@@ -162,15 +163,33 @@ flowchart LR
   code itself authored is still flagged — change the pattern rather than
   arguing with the rule (Issue #559).
 
-### Checkov (CloudFormation) in CI
+### Checkov (CloudFormation) before the push and in CI
 
 `checkov.yml` scans CloudFormation templates with the digest-pinned
 `CHECKOV_IMAGE` (`worker/deno/lib/pinned_actions.ts`) and `CHECKOV_SCAN_ARGS`,
 with no SARIF upload and no path filter. `worker/deno/lib/checkov_report.ts`
 decides the verdict: a failed check, a parse error, or a skip without an inline
-`# checkov:skip=<ID>:<reason>` fails. It is a mandatory part of `gate`, so a red
-scan blocks merge. `worker/deno/tests/checkov_workflow_test.ts` keeps the
-workflow in lock-step with the pin and the scan arguments.
+`# checkov:skip=<ID>:<reason>` fails. It is a mandatory part of the CI `gate`,
+so a red scan blocks merge. `worker/deno/tests/checkov_workflow_test.ts` keeps
+the workflow in lock-step with the pin and the scan arguments.
+
+The `checkov` stage of `./quality.sh` runs the same judge over a local scan.
+It is registered only where `.github/workflows/checkov.yml` exists. It installs
+nothing, pulls nothing and adds no suppression, and the CI `checkov` job stays
+authoritative. It tries two routes, in order:
+
+- **A pinned PATH binary.** A `checkov` on PATH is used only when
+  `checkov --version` equals `CHECKOV_IMAGE_TAG`. An unpinned binary is never
+  run; it is recorded and the gate falls through to the image route.
+- **A pinned image.** `docker` or `podman` is used only if it already holds
+  `CHECKOV_IMAGE`, checked with `image inspect`; it is never pulled. The
+  checkout is mounted read-only, and `CHECKOV_SCAN_ARGS` (which include
+  `--skip-download`) mean no network call.
+- **Have a pinned route or it skips, loudly.** With neither route usable the
+  stage reports `SKIPPED` and names what is missing; `--strict` turns that into
+  a failure. A scan over its deadline is `FAILED`. The fleet worker image has no
+  pip and no container runtime, so fleet runs show `checkov` as `SKIPPED`; that
+  is expected, unlike semgrep.
 
 ### Workflow hygiene
 
