@@ -26,6 +26,7 @@ import {
   CHECKOV_SCAN_ARGS,
   type CheckovTemplateReader,
   judgeCheckovRun,
+  main,
 } from "../lib/checkov_report.ts";
 
 /** Root of the captured Checkov fixtures. */
@@ -182,6 +183,61 @@ Deno.test("checkov-report - FAILED names the failed check, file and lines (exit 
   assertStringIncludes(verdict.report, "Status: FAILED");
 });
 
+Deno.test("checkov-report - FAILED for a failed check entry that is not an object", async () => {
+  const verdict = await judgeCheckovRun({
+    exitCode: 1,
+    stdout: await editedReport("failed", (parsed) => {
+      parsed.results.failed_checks[0] = "not-an-entry";
+    }),
+    templates: fixtureTemplates("failed"),
+  });
+  assertEquals(verdict.status, "FAILED");
+  assertStringIncludes(
+    verdict.report,
+    "malformed failed-check entry in results.failed_checks",
+  );
+  assertStringIncludes(verdict.report, "Status: FAILED");
+  assertEquals(problemLines(verdict.report).length, 1);
+});
+
+Deno.test("checkov-report - FAILED names a placeholder for a failed check with an empty check ID", async () => {
+  const verdict = await judgeCheckovRun({
+    exitCode: 1,
+    stdout: await editedReport("failed", (parsed) => {
+      parsed.results.failed_checks[0].check_id = "";
+    }),
+    templates: fixtureTemplates("failed"),
+  });
+  assertEquals(verdict.status, "FAILED");
+  assertStringIncludes(
+    verdict.report,
+    "<unnamed check> failed at /template.yaml lines 3-6",
+  );
+  assertEquals(problemLines(verdict.report).length, 1);
+});
+
+Deno.test("checkov-report - FAILED names a failed check's name only when it is set", async () => {
+  const named = await judgeCheckovRun({
+    exitCode: 1,
+    stdout: await report("failed"),
+    templates: fixtureTemplates("failed"),
+  });
+  assertEquals(problemLines(named.report), [
+    "- CKV_AWS_158 failed at /template.yaml lines 3-6 (Ensure that CloudWatch Log Group is encrypted by KMS)",
+  ]);
+
+  const unnamed = await judgeCheckovRun({
+    exitCode: 1,
+    stdout: await editedReport("failed", (parsed) => {
+      parsed.results.failed_checks[0].check_name = "";
+    }),
+    templates: fixtureTemplates("failed"),
+  });
+  assertEquals(problemLines(unnamed.report), [
+    "- CKV_AWS_158 failed at /template.yaml lines 3-6",
+  ]);
+});
+
 Deno.test("checkov-report - FAILED for a parse error even though Checkov exits 0", async () => {
   const verdict = await judgeCheckovRun({
     exitCode: 0,
@@ -208,6 +264,15 @@ Deno.test("checkov-report - FAILED for a skip with no reason (Checkov's placehol
   assertStringIncludes(verdict.report, "no inline");
 });
 
+Deno.test("checkov-report - PASSED for a skip whose reason is only at the top level of the entry", async () => {
+  const { verdict, calls } = await judgeEditedSkip((entry) => {
+    delete entry.check_result.suppress_comment;
+    entry.suppress_comment = "Log group holds no sensitive data";
+  });
+  assertEquals(verdict.status, "PASSED");
+  assertEquals(calls, ["template.yaml"]);
+});
+
 Deno.test("checkov-report - FAILED for a skip set only in Metadata", async () => {
   const verdict = await judgeCheckovRun({
     exitCode: 0,
@@ -218,6 +283,38 @@ Deno.test("checkov-report - FAILED for a skip set only in Metadata", async () =>
   assertStringIncludes(verdict.report, "CKV_AWS_158 skip at /template.yaml");
   assertStringIncludes(verdict.report, "no inline");
   assertStringIncludes(verdict.report, "Metadata");
+  assertEquals(problemLines(verdict.report).length, 1);
+});
+
+Deno.test("checkov-report - FAILED for an inline skip naming a different check ID", async () => {
+  const template = await Deno.readTextFile(
+    new URL("reasoned_skip/template.yaml", FIXTURES),
+  );
+  const swapped = template.replace(
+    "# checkov:skip=CKV_AWS_158:",
+    "# checkov:skip=CKV_AWS_999:",
+  );
+  assertStringIncludes(
+    swapped,
+    "# checkov:skip=CKV_AWS_999:Log group holds no sensitive data",
+  );
+
+  const control = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: await report("reasoned_skip"),
+    templates: fixtureTemplates("reasoned_skip"),
+  });
+  assertEquals(control.status, "PASSED");
+
+  const verdict = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: await report("reasoned_skip"),
+    templates: (path) =>
+      Promise.resolve(path === "template.yaml" ? swapped : null),
+  });
+  assertEquals(verdict.status, "FAILED");
+  assertStringIncludes(verdict.report, "CKV_AWS_158 skip at /template.yaml");
+  assertStringIncludes(verdict.report, "no inline");
   assertEquals(problemLines(verdict.report).length, 1);
 });
 
@@ -297,6 +394,23 @@ Deno.test("checkov-report - FAILED when a skip's template cannot be read", async
   assertEquals(verdict.status, "FAILED");
   assertStringIncludes(verdict.report, "CKV_AWS_158 skip at /template.yaml");
   assertStringIncludes(verdict.report, "could not be read");
+  assertEquals(problemLines(verdict.report).length, 1);
+});
+
+Deno.test("checkov-report - FAILED for a skipped check entry that is not an object", async () => {
+  const verdict = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: await editedReport("reasoned_skip", (parsed) => {
+      parsed.results.skipped_checks[0] = "not-an-entry";
+    }),
+    templates: fixtureTemplates("reasoned_skip"),
+  });
+  assertEquals(verdict.status, "FAILED");
+  assertStringIncludes(
+    verdict.report,
+    "malformed skipped-check entry in results.skipped_checks",
+  );
+  assertStringIncludes(verdict.report, "Status: FAILED");
   assertEquals(problemLines(verdict.report).length, 1);
 });
 
@@ -692,6 +806,17 @@ Deno.test("checkov-report CLI - exit 2 for bad usage", async () => {
   assertStringIncludes(result.stderr, "usage:");
 });
 
+Deno.test("checkov-report CLI - exit 2 for too many arguments", async () => {
+  const result = await runCli([
+    new URL("clean/report.json", FIXTURES).pathname,
+    "0",
+    "extra",
+  ]);
+  assertEquals(result.code, 2);
+  assertStringIncludes(result.stderr, "usage:");
+  assertEquals(result.stdout, "");
+});
+
 Deno.test("checkov-report CLI - exit 1 when the report file is missing", async () => {
   const missing = new URL("does-not-exist.json", FIXTURES).pathname;
   const result = await runCli([missing, "0"]);
@@ -710,4 +835,22 @@ Deno.test("checkov-report CLI - an unreadable report prints no verdict to stdout
     "no verdict should be judged from a report that was not read",
   );
   assertStringIncludes(result.stderr, `cannot read report ${missing}`);
+});
+
+Deno.test("checkov-report - an unreadable report makes main return 1 without throwing", async () => {
+  const missing = new URL("does-not-exist.json", FIXTURES).pathname;
+  const logged: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args.map(String).join(" "));
+  };
+  let code = -1;
+  try {
+    code = await main([missing, "0"]);
+  } finally {
+    console.error = originalError;
+  }
+  assertEquals(code, 1);
+  assertEquals(logged.length, 1);
+  assertStringIncludes(logged[0], `cannot read report ${missing}`);
 });
