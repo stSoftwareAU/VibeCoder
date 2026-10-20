@@ -14,7 +14,7 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml/parse";
 import { CHECKOV_IMAGE } from "../lib/pinned_actions.ts";
 import { CHECKOV_SCAN_ARGS } from "../lib/checkov_report.ts";
@@ -57,11 +57,10 @@ function escapeRegExp(text: string): string {
 }
 
 /**
- * Joins shell line continuations the way bash does: a `\` and the newline
- * after it are removed, so `--soft-\` then `fail` on the next line is
- * `--soft-fail`. Indentation survives as spaces, so callers collapse blanks
- * before comparing adjacent tokens. ci_install_pin_scanner.ts has its own
- * version of this, but it is private.
+ * Joins shell continuations the way bash does (`--soft-\` + `fail` is
+ * `--soft-fail`). Deliberately not shared with ci_install_pin_scanner.ts: its
+ * private joinContinuations trims each line and inserts a space at the join,
+ * giving `--soft- fail`, which would hide the mid-word split tested here.
  */
 function joinContinuations(text: string): string {
   return text.replace(/\\\r?\n/g, "");
@@ -102,9 +101,8 @@ function lockStepProblems(
 
   // 1. The only trigger is workflow_call. A YAML 1.1 reader reads `on` as the
   // boolean true, which the object keeps as the key "true", so accept either.
-  const triggers = triggerNames(
-    "on" in checkov ? checkov["on"] : checkov["true"],
-  );
+  const on = "on" in checkov ? checkov["on"] : checkov["true"];
+  const triggers = triggerNames(on);
   if (triggers.length !== 1 || triggers[0] !== "workflow_call") {
     problems.push(
       `checkov.yml: "on" must be workflow_call only (found: ${
@@ -218,6 +216,32 @@ function lockStepProblems(
     }
   }
 
+  // 7. No SARIF upload in any job: the verdict is the judge's exit code.
+  for (const [name, job] of Object.entries(asMap(checkov["jobs"]))) {
+    const steps = asMap(job)["steps"];
+    if (!Array.isArray(steps)) continue;
+    for (const step of steps) {
+      const uses = asMap(step)["uses"];
+      if (typeof uses === "string" && uses.includes("upload-sarif")) {
+        problems.push(
+          `checkov.yml: job ${name} has an upload-sarif step (${uses}), which is not allowed`,
+        );
+      }
+    }
+  }
+
+  // 8. No path filter under any trigger, so every call runs the scan and
+  // `gate` never waits on a skipped job.
+  for (const [trigger, config] of Object.entries(asMap(on))) {
+    for (const key of ["paths", "paths-ignore"]) {
+      if (key in asMap(config)) {
+        problems.push(
+          `checkov.yml: "on" must not filter by path (${trigger} sets ${key})`,
+        );
+      }
+    }
+  }
+
   return problems;
 }
 
@@ -240,16 +264,6 @@ function assertProblem(problems: string[], words: string): void {
 Deno.test("checkov_workflow - checkov.yml and quality.yml are in lock-step", async () => {
   const { checkov, quality } = await readWorkflows();
   assertEquals(lockStepProblems(checkov, quality), []);
-});
-
-Deno.test("checkov_workflow - scan step text carries the pinned image and entrypoint", async () => {
-  const { checkov } = await readWorkflows();
-  assertStringIncludes(checkov, CHECKOV_IMAGE);
-  assertStringIncludes(checkov, "--entrypoint checkov");
-  assertStringIncludes(
-    checkov,
-    `${JUDGE} "$RUNNER_TEMP/checkov.json" "$status"`,
-  );
 });
 
 Deno.test("checkov_workflow - a changed image digest is reported", async () => {
@@ -332,4 +346,68 @@ Deno.test('checkov_workflow - the judge without "$status" is reported', async ()
   );
   assert(fixture !== checkov, "fixture did not change the judge call");
   assertProblem(lockStepProblems(fixture, quality), "captured exit code");
+});
+
+Deno.test("checkov_workflow - removing --entrypoint checkov is reported", async () => {
+  const { checkov, quality } = await readWorkflows();
+  const fixture = checkov.replace(" --entrypoint checkov", "");
+  assert(fixture !== checkov, "fixture did not remove the entrypoint");
+  const problems = lockStepProblems(fixture, quality);
+  assertProblem(problems, "must set --entrypoint checkov");
+  assertEquals(problems.length, 1);
+});
+
+Deno.test("checkov_workflow - removing || status=$? is reported", async () => {
+  const { checkov, quality } = await readWorkflows();
+  const fixture = checkov.replace(" || status=$?", "");
+  assert(fixture !== checkov, "fixture did not remove the exit capture");
+  const problems = lockStepProblems(fixture, quality);
+  assertProblem(problems, "must capture its exit code");
+  assertEquals(problems.length, 1);
+});
+
+Deno.test("checkov_workflow - an upload-sarif step is reported", async () => {
+  const { checkov, quality } = await readWorkflows();
+  const fixture =
+    `${checkov.trimEnd()}\n      - uses: github/codeql-action/upload-sarif@0000000000000000000000000000000000000000\n`;
+  assert(fixture !== checkov, "fixture did not add a step");
+  const problems = lockStepProblems(fixture, quality);
+  assertProblem(problems, "upload-sarif");
+  assertEquals(problems.length, 1);
+});
+
+Deno.test("checkov_workflow - a path filter under workflow_call is reported", async () => {
+  const { checkov, quality } = await readWorkflows();
+  const fixture = checkov.replace(
+    "  workflow_call:\n",
+    '  workflow_call:\n    paths:\n      - "**/*.yaml"\n',
+  );
+  assert(fixture !== checkov, "fixture did not add a path filter");
+  const problems = lockStepProblems(fixture, quality);
+  assertProblem(problems, "must not filter by path");
+  assertEquals(problems.length, 1);
+});
+
+Deno.test("checkov_workflow - a changed scan arg is reported", async () => {
+  const { checkov, quality } = await readWorkflows();
+  const fixture = checkov.replace(
+    "--framework cloudformation",
+    "--framework terraform",
+  );
+  assert(fixture !== checkov, "fixture did not change the scan args");
+  const problems = lockStepProblems(fixture, quality);
+  assertProblem(problems, "must pass the scan args");
+  assertEquals(problems.length, 1);
+});
+
+Deno.test("checkov_workflow - a missing checkov caller in quality.yml is reported", async () => {
+  const { checkov, quality } = await readWorkflows();
+  const fixture = quality.replace(
+    `uses: ${CHECKOV_USES}`,
+    "uses: ./.github/workflows/checkov-moved.yml",
+  );
+  assert(fixture !== quality, "fixture did not move the caller");
+  const problems = lockStepProblems(checkov, fixture);
+  assertProblem(problems, `no job calls ${CHECKOV_USES}`);
+  assertEquals(problems.length, 1);
 });
