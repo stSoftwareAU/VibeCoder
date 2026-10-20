@@ -33,13 +33,21 @@
  * are injected into other repositories and must not name a VibeCoder-only
  * helper.
  *
+ * Issue #3897: the regex hostile-case rules in coding guidelines and
+ * pr_feedback say a hostile case asserts output or counted work, never a
+ * wall-clock ratio where the target repository keeps timing out of unit tests,
+ * and name no VibeCoder-only helper.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assertPins,
+  DocSection,
+  excerpt,
   flat,
+  flatWholeFile,
   readRepoDoc,
   section,
 } from "./support/markdown_docs.ts";
@@ -273,5 +281,139 @@ Deno.test("timing policy - the helper the carve-out names still exists and is us
   assert(
     callers.length > 0,
     "no unit test calls the helper the carve-out was written for",
+  );
+});
+
+/**
+ * The slice of `text` from the first `start` to the earliest following `ends`
+ * marker (or the end of `text`), `start` included. Stays a `DocSection`, so
+ * `assertPins` and `flat` still accept it.
+ */
+function slice(text: DocSection, start: string, ends: string[]): DocSection {
+  const from = text.indexOf(start);
+  assert(from >= 0, `could not locate "${start}" in the section`);
+  const after = from + start.length;
+  const stops = ends
+    .map((end) => text.indexOf(end, after))
+    .filter((index) => index >= 0);
+  const to = stops.length > 0 ? Math.min(...stops) : text.length;
+  return excerpt(text, from, to);
+}
+
+/**
+ * Tokens the regex-hostile-case rules must never name: VibeCoder-only helpers,
+ * paths and issue numbers. The guidelines and pr_feedback prompts are injected
+ * into other repositories, where none of these is a precedent.
+ */
+const FORBIDDEN: readonly string[] = [
+  "assertLinearGrowth",
+  "tests/support/growth.ts",
+  "Issue #530",
+  "stSoftwareAU/VibeCoder#",
+];
+
+/** Citations the guidelines bullet alone carried, checked on top of `FORBIDDEN`. */
+const GUIDELINES_ONLY_FORBIDDEN: readonly string[] = [
+  "(Issue #3186)",
+  "(Issue #3164)",
+];
+
+/** The tokens of `tokens` that `text` contains, once whitespace is collapsed. */
+function forbiddenIn(text: string, tokens: readonly string[]): string[] {
+  const collapsed = flatWholeFile(text);
+  return tokens.filter((token) => collapsed.includes(token));
+}
+
+Deno.test("timing policy - regex hostile-case rules assert output or counted work, not a wall-clock ratio (Issue #3897)", async () => {
+  const guidelines = section(
+    await readRepoDoc(GUIDELINES_SECTION.doc),
+    GUIDELINES_SECTION.title,
+  );
+  const guidelinesBullet = slice(
+    guidelines,
+    "- **Vet every regex on untrusted text",
+    ["\n- ", "\n\n"],
+  );
+  assertPins(guidelinesBullet, [
+    "asserts the pattern's result on an input long enough that catastrophic backtracking never returns",
+    "guard super-linear cost by output, then by counted work, as the timing bullets above say",
+    "It is not a wall-clock ratio where the repository's own testing standard keeps timing out of unit tests",
+  ]);
+
+  const prFeedback = section(
+    await readRepoDoc("prompts/pr_feedback/prompt.md"),
+    "Making Changes",
+  );
+  const prFeedbackParagraph = slice(
+    prFeedback,
+    "**A backtracking finding covers every regex in the module.**",
+    ["\n\n"],
+  );
+  assertPins(prFeedbackParagraph, [
+    "never a wall-clock ratio where the repository's own standard keeps timing out of unit tests",
+    "See **Vet every regex on untrusted text** in the guidelines",
+  ]);
+
+  assertEquals(
+    forbiddenIn(guidelinesBullet, [
+      ...FORBIDDEN,
+      ...GUIDELINES_ONLY_FORBIDDEN,
+    ]),
+    [],
+    "coding_guidelines bullet names a VibeCoder-only helper, precedent or issue number the guidelines must not cite",
+  );
+  assertEquals(
+    forbiddenIn(prFeedbackParagraph, FORBIDDEN),
+    [],
+    "pr_feedback paragraph names a VibeCoder-only helper, precedent or issue number the guidelines must not cite",
+  );
+});
+
+Deno.test("timing policy - the absence check reports each forbidden token it is fed and no clean text (Issue #3897)", () => {
+  // Each fixture carries one forbidden token; the check must report exactly it.
+  const fixtures: [string, string][] = [
+    ["assertLinearGrowth", "Time it with assertLinearGrowth against 4N."],
+    ["tests/support/growth.ts", "The helper lives in tests/support/growth.ts."],
+    ["Issue #530", "Carried over from Issue #530 last quarter."],
+    [
+      "stSoftwareAU/VibeCoder#",
+      "Capped in stSoftwareAU/VibeCoder#3085 last cycle.",
+    ],
+  ];
+  for (const [token, fixture] of fixtures) {
+    assert(
+      FORBIDDEN.includes(token),
+      `"${token}" is missing from the forbidden list`,
+    );
+    assertEquals(
+      forbiddenIn(fixture, FORBIDDEN),
+      [token],
+      `the absence check missed "${token}"`,
+    );
+  }
+
+  const guidelinesOnly: [string, string][] = [
+    ["(Issue #3186)", "The remedy is named in (Issue #3186) above."],
+    ["(Issue #3164)", "The hostile cases are in (Issue #3164) above."],
+  ];
+  for (const [token, fixture] of guidelinesOnly) {
+    assert(
+      GUIDELINES_ONLY_FORBIDDEN.includes(token),
+      `"${token}" is missing from the guidelines-only list`,
+    );
+    assertEquals(
+      forbiddenIn(fixture, GUIDELINES_ONLY_FORBIDDEN),
+      [token],
+      `the absence check missed "${token}"`,
+    );
+  }
+
+  assertEquals(
+    forbiddenIn(
+      "Cite only what exists in the repository you are working; this names nothing from elsewhere.",
+      [...FORBIDDEN, ...GUIDELINES_ONLY_FORBIDDEN],
+    ),
+    [],
+    "the absence check reported a token in clean text",
   );
 });
