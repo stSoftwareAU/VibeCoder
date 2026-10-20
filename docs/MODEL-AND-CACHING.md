@@ -1292,6 +1292,16 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
   base tier. The substitution is **per-run and config keeps pointing at Fable**,
   so once Fable returns the next run requests it again with no manual change
   (self-heal) — there is no persistent "Fable is down" circuit-breaker.
+- **A refused model with no cheaper rung moves provider** (Issue #4034).
+  When the provider refuses the model and has no ladder, or is already on its
+  cheapest rung, the same invocation is retried on the next provider in
+  `agent_provider_fallback`. A ChatGPT login that does not offer a model is
+  the usual case: Codex returns HTTP 400 "not supported when using Codex with
+  a ChatGPT account" (Issue #4019). The fallback resolves its own model for
+  the phase and starts a fresh session. It is capped at one switch per
+  invocation and logged as `[provider-fallback] <from> refused model … retrying
+  on <to>`. With the list empty (pinned, the default) the run still gives up
+  with `no cheaper fallback available`, as before.
 - Fallback transitions are recorded in credit logs as `fallbackFrom`: `runClaudeWithRetry` threads the pre-fallback model into the
   re-invocation via the `fallbackFrom` option, so the post-fallback
   `logInvocation()` records the original→cheaper transition and the

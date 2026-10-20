@@ -174,7 +174,11 @@ Claude preferred provider it fires only once **every** Claude credential in
 the pool is exhausted on its five-hour window or its weekly limit — one spent
 subscription rotates to the next — and the run switches back as soon as one
 has budget again (Issue #2637). The weekly pace projection never switches
-provider: it drops the backlog tiers only. It is
+provider: it drops the backlog tiers only. A `model-unavailable` refusal is
+also handled inside the run: when the provider has no cheaper model, the
+invocation that was refused is retried on the next alternative, so a phase whose
+model the provider will not serve does not give up while the health gate
+passes on a different model (Issue #4034). It is
 not restricted to fixed-price subscriptions — see [Subscription-only billing
 policy](#subscription-only-billing-policy) for what it logs when the
 alternative is metered. Neither automatic mechanism is turned on for the
