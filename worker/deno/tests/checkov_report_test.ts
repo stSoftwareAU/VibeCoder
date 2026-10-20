@@ -134,6 +134,8 @@ Deno.test("checkov-report - scan arguments match the CI and local gate command",
     "-o",
     "json",
     "--skip-download",
+    "--skip-path",
+    "worker/deno/tests/fixtures/checkov",
   ]);
 });
 

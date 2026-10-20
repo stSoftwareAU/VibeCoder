@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": ".github/workflows/checkov.yml",
+        "line": 56,
+        "outcome": "a non-zero Checkov exit is captured with || status=$? and handed to the judge instead of aborting the step",
+        "test": "worker/deno/tests/checkov_workflow_test.ts",
+        "testName": "checkov_workflow - removing || status=$? is reported",
+        "flipWentRed": "removed || status=$? from the scan step; the lock-step test went red"
+      },
+      {
+        "path": ".github/workflows/quality.yml",
+        "line": 66,
+        "outcome": "quality.yml calls checkov.yml from a checkov job",
+        "test": "worker/deno/tests/checkov_workflow_test.ts",
+        "testName": "checkov_workflow - a missing checkov caller in quality.yml is reported",
+        "flipWentRed": "removed the checkov job from quality.yml; the lock-step test went red"
+      },
+      {
+        "path": ".github/workflows/quality.yml",
+        "line": 78,
+        "outcome": "gate.needs includes checkov so a red scan turns gate red",
+        "test": "worker/deno/tests/checkov_workflow_test.ts",
+        "testName": "checkov_workflow - checkov removed from gate.needs is reported",
+        "flipWentRed": "removed checkov from gate.needs; the lock-step test went red"
+      },
+      {
+        "path": "worker/deno/tests/checkov_workflow_test.ts",
+        "line": 204,
+        "outcome": "only the exact --skip-path pair from CHECKOV_SCAN_ARGS is stripped before the weakening-flag check; any other --skip-path is reported",
+        "test": "worker/deno/tests/checkov_workflow_test.ts",
+        "testName": "checkov_workflow - a --skip-path other than the allowed pair is reported",
+        "flipWentRed": "widened the allowance so a longer path was stripped; the new negative test went red"
+      }
+    ]
+  }
+}
