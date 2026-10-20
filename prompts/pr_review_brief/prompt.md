@@ -31,6 +31,11 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    and on each read), confirm that each new test named for a later step has a
    fixture that gets past every earlier step giving the same outcome; a test
    an earlier step stops leaves its own step untested, which is a finding.
+   For a documentation-drift test, check each pin that names a value a module
+   or checked-in config file holds (a flag, command line, function name, key,
+   version or tag): it must be built from that source, not typed in, and
+   changing the value at its source must turn the test red; a typed-in copy is
+   a finding.
 5. Judge every change to an existing test: {{TEST_CHANGES}}, plus any
    inline test module (e.g. Rust `#[cfg(test)]`) the diff touches. A change
    is **meaningful** if it removes a test case, weakens or deletes an

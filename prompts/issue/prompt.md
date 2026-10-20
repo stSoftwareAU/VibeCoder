@@ -513,6 +513,19 @@ written. This section adds only what is specific to issue #{{ISSUE_NUMBER}}:
   gh issue comment {{ISSUE_NUMBER}} --repo {{REPO}} --body "Attempted: … Blocked by: … A human needs to: …"
   ```
 
+**A coding standard outranks an implementation detail in the issue.** The
+issue body is the spec for what to build; it does not license breaching a
+standard. When a line of it contradicts a coding standard — a planner's
+sub-issue that says a newly served field's missing value throws, where
+**Changing the Shape of Persisted Data** says to bump the cache key or read
+the old shape — follow the standard and record the deviation in the PR
+summary: quote the line and name the standard under `### Essential Design
+Decisions`, and, when the line is an acceptance criterion, in that
+criterion's `reason:` too, so a reviewer judges the deviation rather than the
+literal line. That entry's status still follows **Do not inflate a status**.
+A line that only chooses among designs the standards allow is not a
+contradiction: follow it.
+
 ## Escape Hatch
 
 For this issue, "genuinely out of scope" means its scope expanded after
@@ -1309,9 +1322,14 @@ comma-separated), and fix everything it reports as blocked before you finish.
 It runs the closure, two-axis review, reproduction, docs-sweep, placeholder and
 branch-outcomes gates the worker applies when it raises the PR. A gate it
 reports as not checked is not a pass. It does not run the removed-assertion
-gate or the claim check, which run only when the worker raises the PR. In a
-repository without that task, follow the rules in this section as written; they
-also say why each check exists.
+gate or the claim check, which run only when the worker raises the PR.
+`deno task pr-summary-check` (`worker/deno/lib/pr_summary_check.ts`) is the twin
+of the completion phase's PR-summary gates
+(`worker/deno/lib/phases/completion_phase.ts`): a change to how the completion
+phase runs one of those gates, or prepares its input, changes
+`pr_summary_check.ts` the same way in the same PR. A change inside a validator
+both files call reaches both already. In a repository without that task, follow
+the rules in this section as written; they also say why each check exists.
 
 The file MUST contain:
 
@@ -1416,8 +1434,15 @@ The file MUST contain:
    drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
    `worker/deno` does this), and record here that each pinned phrase is
    absent from the base section; a phrase the base section already held is a
-   blocking self-review finding. A pin the diff only moves, while converting
-   an existing whole-file drift test to `section()`, is meant to be on base,
+   blocking self-review finding. A pin that names a value a module or
+   checked-in config file already holds is built from that source, never typed
+   in (condition 3 of **Documentation-drift tests** in `CODING-STANDARDS.md`);
+   record here one line per such value — the value changed at its source and
+   the result, for example `buildShallowCloneArgs --depth=1 →
+   --filter=blob:none: test red` — and a pin that stays green when its source
+   value changes is a blocking self-review finding. A pin the diff only moves,
+   while converting an existing whole-file drift test to `section()`,
+   is meant to be on base,
    so that check does not apply to it; follow **Re-scoping an existing drift
    test** in `CODING-STANDARDS.md` instead: scope each pin to the section
    holding the sentence it was written for, leave no pin a substring of

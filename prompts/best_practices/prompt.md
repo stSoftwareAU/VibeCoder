@@ -367,8 +367,9 @@ once:
   the gate, it does not break the product — keep the band tight so it
   does not crowd out genuine high-severity findings against the 6-cap.
 - **How a test asserts belongs to `test-audit`.** An absolute
-  wall-clock threshold inside a test (`assert(elapsed < 500)`) is a
-  `test-audit` finding, not a best-practices one — do not file both.
+  wall-clock threshold inside a test (`assert(elapsed < 500)`), or a
+  ratio of two wall-clock readings, is for `test-audit` to judge, not
+  a best-practices finding — do not file both.
   This rule is about where a test lives and what it touches, never
   about the shape of its assertions.
 
