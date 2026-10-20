@@ -28,6 +28,8 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import { installConsoleRedaction } from "./console_redaction.ts";
+
 /** The Checkov scan both the CI workflow and the local gate run. */
 export const CHECKOV_SCAN_ARGS: readonly string[] = [
   "-d",
@@ -476,4 +478,8 @@ export async function main(args: string[]): Promise<number> {
   return verdict.status === "PASSED" ? 0 : 1;
 }
 
-if (import.meta.main) Deno.exit(await main(Deno.args));
+if (import.meta.main) {
+  // Issue #1280 (SEC-1217-12): the report is printed to stdout; redact any credential a template or finding quotes.
+  installConsoleRedaction();
+  Deno.exit(await main(Deno.args));
+}

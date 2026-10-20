@@ -1,0 +1,12 @@
+{
+  "issue": 3970,
+  "chunk": "top-up-3970",
+  "title": "top-up: Checkov scan arguments and report judge",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3970",
+  "definition": "module added for the pre-push Checkov gate: checkov_report.ts",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/checkov_report.ts"
+  ],
+  "sweptAt": "7b56ee1217a0f445028b2f039a3a93c24bfa24fe"
+}
