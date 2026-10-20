@@ -778,7 +778,7 @@ separate.
   trailing whitespace, or cap the run. A `(.*)$` tail can fail too, because `.`
   stops at a lone `\r`: after an unanchored label such as `reason:`, the search
   restarts at every later occurrence of the label and rescans to the end each
-  time, so read the value with `([^\n]*)` and no `$` (Issue #3186). Then add one
+  time, so read the value with `([^\n]*)` and no `$`. Then add one
   hostile case per pattern: a long run of the shared character followed by a
   character the pattern rejects. A parser with several patterns needs a case for
   each. Each case asserts the pattern's result on an input long enough that
@@ -786,10 +786,8 @@ separate.
   deterministic step count: guard super-linear cost by output, then by counted
   work, as the timing bullets above say. It is not a wall-clock ratio where the
   repository's own testing standard keeps timing out of unit tests.
-  stSoftwareAU/VibeCoder#3085 capped `isBarePlaceholder` and left
-  `DOCS_SWEEP_LINE_RE` in the same file with the same defect, and #3160's
-  hostile cases covered the inline form while `BRANCH_OUTCOMES_HEADING_RE` took
-  about a minute per call (Issue #3164).
+  Capping one pattern and leaving its sibling in the same file with the same
+  defect is the usual miss.
 - **Keep iteration counts honest** — do not shrink them to make a "performance
   test" fit inside a unit test. Write a proper benchmark and include the results
   in the PR summary.
