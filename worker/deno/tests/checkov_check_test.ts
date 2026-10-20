@@ -35,6 +35,11 @@ import {
 } from "../lib/checkov_report.ts";
 import { CHECKOV_IMAGE, CHECKOV_IMAGE_TAG } from "../lib/pinned_actions.ts";
 import { runQualityGate } from "../lib/quality_gate.ts";
+import {
+  type CheckResult,
+  formatSummary,
+  recordCheck,
+} from "../lib/quality_helpers.ts";
 
 const FIXTURES = new URL("./fixtures/checkov/", import.meta.url);
 
@@ -268,6 +273,21 @@ Deno.test("runCheckovCheck - SKIPPED names every unusable route and the install 
     probeCalls.every((call) => !call.includes("pull")),
     `the stage must never pull an image; probes: ${JSON.stringify(probeCalls)}`,
   );
+});
+
+Deno.test("runCheckovCheck - a SKIPPED checkov fails the gate under --strict", async () => {
+  const result = await runCheckovCheck("/repo", {
+    probe: fakeProbe({}),
+    spawn: unexpectedSpawn,
+    templates: noTemplates,
+  });
+  assertEquals(result.status, "SKIPPED");
+  const checks: CheckResult[] = [];
+  recordCheck(checks, "checkov", result.status);
+  assertEquals(formatSummary(checks, false).passed, true);
+  const strictSummary = formatSummary(checks, true);
+  assertEquals(strictSummary.passed, false);
+  assertStringIncludes(strictSummary.text, "Result: FAILED");
 });
 
 // ---------------------------------------------------------------------------
