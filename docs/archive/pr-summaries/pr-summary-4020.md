@@ -39,8 +39,7 @@ Closes #4020. Refreshes the Ponytail row in `docs/REFERENCES.md` for 5.x (v5.3.2
 - `deno test` worker/deno/tests/coding_guidelines_twin_drift_test.ts: 9 passed
 - worker/deno/tests/references_doc_test.ts: 16 passed
 - worker/deno/tests/references_refresh_test.ts: 24 passed
-- 16-file prompt-pinning test set: not yet run; count pending
-- `./quality.sh`: pending
+- `./quality.sh < /dev/null`: PASSED (exit 0), including deno tests (full suite, 526.0s), deno lint, deno type check, deno fmt, markdownlint, mermaid and semgrep; config integration SKIPPED (deno or .config.json not available)
 
 <!-- vibe-branch-outcomes -->
 Branch outcomes: none added
@@ -50,8 +49,8 @@ Branch outcomes: none added
 - `deno fmt` not run on the three docs: they already fail `deno fmt --check` at HEAD, and running it reflows unrelated lines and splits the ladder phrase the drift test pins.
 - Ponytail 5.x version, date and benchmark claims are taken from the issue body and were not independently fetched (no network fetch by rule).
 - No Ponytail plugin or skill installed or exercised.
-- The 16-file prompt-pinning test set has not been run, so its count is pending.
-- `./quality.sh` is pending.
+- quality.sh config integration check skipped (no .config.json in the worktree).
+- Summary claim check (#3257) not run locally; the worker runs it at PR time.
 - Remaining risk: the two new rules are prose; their effect on agent behaviour is unmeasured.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
