@@ -1685,6 +1685,21 @@ version or reading and converting the old shape, a test that seeds an
 old-shape entry, updating every doc that names the key, and saying in the PR
 summary which of the two was chosen.
 
+**A cached API response is persisted data, and a standard outranks the spec line
+that breaches it (Issue #3564).** After #3328 landed, a planner-written
+sub-issue in a private fleet repository told the coder that a newly served
+response field's "missing or malformed value throws", and the sub-PR implemented
+and tested exactly that; every installed client's service-worker cache still
+held the previous release's body without the field, so the affected views stayed
+unavailable until a manual reload. `CODING-STANDARDS.md` and the guidelines now
+say a client that reads API responses through a cache that outlives a deployment
+holds persisted data, and that unless the cache key is bumped a newly served
+field's absence is read as unknown (null), never as an error. The planning
+prompt makes a sub-issue that adds, renames or removes a field a client parses
+say which half of the rule applies, and the issue prompt's Project Guidelines
+say a coding standard outranks an implementation detail in the issue: the run
+follows the standard and records the deviation in the PR summary.
+
 **A new test must go red without its change (Issue #3093).** Fleet PRs
 added the regression test a fix or a review asked for, and the test passed
 whether or not the change was there: VibeCoder#3091, #3085 and #3079, and
@@ -1728,6 +1743,20 @@ of another in the same list (`assertPins` throws on one), and for
 whole-file absence checks to stay on `flatWholeFile`. The issue and
 pr_feedback prompts and `CONTRIBUTING.md` point to it from their per-phrase
 check.
+
+**A drift pin for a code-held value is red-checked at its source
+(Issue #3655).** Fleet drift tests typed in a value the code already held, so
+the test, the doc and the literal agreed with each other and stayed green when
+the code moved on: VibeCoder#3478 typed in the Floci tag that
+`container/tools.json` holds, and VibeCoder#3654 typed in the clone flags that
+`buildShallowCloneArgs` returns. Condition 3 of `CODING-STANDARDS.md` §
+Documentation-drift tests already forbade this, but the guidelines asked only
+for the doc-removed red check, which a typed-in value passes. The guidelines'
+new-test rule now states condition 3 and adds the source-mutation red check:
+change each code-held value where it is produced, see the drift test fail,
+restore it, and record one Test Plan line per value. The issue prompt's Test
+Plan step, the pr_feedback rule and step 4 of the shared review brief
+(`prompts/pr_review_brief/prompt.md`) ask for the same.
 
 **Check where you insert (Issue #3194).** Fleet PRs added a new item or
 paragraph at a point that cut existing text off from what it describes.
