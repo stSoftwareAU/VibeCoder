@@ -42,6 +42,7 @@ import {
 } from "./milestone_tracker_identity.ts";
 import { isMilestoneSyncBranch } from "./milestone_sync_pr.ts";
 import { parseJsonArrayPages } from "./json_array_pages.ts";
+import { inertCodeSpan } from "./ci_human_gate_comment.ts";
 import { scrubUntrustedText } from "./prompt_delimiter.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 // Issue #3014: layer the declared-dependency hold onto this gate.
@@ -1211,9 +1212,7 @@ export async function decideMilestoneBaseMerge(
             ? { milestoneNumber: milestone.number }
             : {}),
           milestoneTitle: milestone.title,
-          detail: `milestone ${
-            typeof milestone.number === "number" ? `#${milestone.number} ` : ""
-          }"${milestone.title}" is closed`,
+          detail: `milestone "${milestone.title}" is closed`,
         };
       }
       return await routeOpenDecision(options, base);
@@ -1260,16 +1259,25 @@ export interface HoldOrphanBoundPrOptions {
  * repo, so it carries no VibeCoder issue reference — GitHub would autolink a
  * bare `#N` to an unrelated issue there (Issue #3501). The design history
  * (Issue #4396, Issue #3433) stays in these comments and the local log line.
+ *
+ * A closed milestone is named by title and linked by URL, never as `#N`:
+ * GitHub would autolink that to an unrelated issue or PR (Issue #3673).
  */
 export function renderRouteClosedHoldComment(
   gate: Extract<MilestoneBaseMergeDecision, { decision: "block" }>,
+  repo: string,
 ): string {
+  const milestoneName = gate.milestoneTitle
+    ? gate.milestoneNumber
+      ? `[${
+        inertCodeSpan(gate.milestoneTitle)
+      }](https://github.com/${repo}/milestone/${gate.milestoneNumber})`
+      : inertCodeSpan(gate.milestoneTitle)
+    : "";
   const why = gate.reason === "rollup-merged"
     ? `its rollup PR #${gate.rollupPrNumber} has already merged`
     : gate.reason === "milestone-closed"
-    ? `its milestone${
-      gate.milestoneNumber ? ` #${gate.milestoneNumber}` : ""
-    } is closed`
+    ? `its milestone${milestoneName ? ` ${milestoneName}` : ""} is closed`
     : `its state could not be verified (${gate.detail})`;
   return [
     ROUTE_CLOSED_HOLD_MARKER,
@@ -1319,7 +1327,7 @@ export async function holdOrphanBoundPr(
       "--repo",
       repo,
       "--body",
-      renderRouteClosedHoldComment(gate),
+      renderRouteClosedHoldComment(gate, repo),
     ]);
   } catch (err) {
     log(
