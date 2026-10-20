@@ -1,0 +1,38 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+import { format } from "jsr:@std/internal@^1.0.12/format";
+import { AssertionError } from "./assertion_error.ts";
+
+/**
+ * Make an assertion that `actual` is less than or equal to `expected`.
+ * If not then throw.
+ *
+ * @example Usage
+ * ```ts ignore
+ * import { assertLessOrEqual } from "@std/assert";
+ *
+ * assertLessOrEqual(1, 2); // Doesn't throw
+ * assertLessOrEqual(1, 1); // Doesn't throw
+ * assertLessOrEqual(1, 0); // Throws
+ * ```
+ *
+ * @typeParam T The type of the values to compare.
+ * @param actual The actual value to compare.
+ * @param expected The expected value to compare.
+ * @param msg The optional message to display if the assertion fails.
+ */
+export function assertLessOrEqual<T>(
+  actual: T,
+  expected: T,
+  msg?: string,
+) {
+  if (actual <= expected) return;
+
+  const actualString = format(actual);
+  const expectedString = format(expected);
+  throw new AssertionError(
+    msg ?? `Expect ${actualString} <= ${expectedString}`,
+  );
+}
+
+// denoCacheMetadata={"headers":{"etag":"\"35d6b24dd5715b679a3deca95d792193\"","content-type":"text/typescript","content-length":"1052","cache-control":"public, max-age=31536000, immutable","server":"cloudflare","vary":"Origin","accept-ranges":"bytes","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","x-content-type-options":"nosniff","cf-ray":"a4d4928c88f6e8dc-SYD","access-control-allow-origin":"*","access-control-expose-headers":"*","cross-origin-resource-policy":"cross-origin","cf-cache-status":"HIT","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=TSVpK9gAKQpvpMrZd2Lb3Woy7X%2FeFke%2B87Zh8tlV5pv5Yn%2BvzSofRtm9zYR2gbDrivt5VRmtdOv%2Fc0CtYpxbSmiklIoJhBD23l0c1Fn1DURSiQo%2BIp9Ilsw%3D\"}]}","set-cookie":"__cf_bm=Q0nB8onduxMRtZCFzWUSFXN9QzH6hRi3sbePhRuU6iU-1792463131.6168478-1.0.1.1-OJPkTAk8FfN2kbUtXkuelESPaFem_B2FK.2ZuU9FyQSK5Taq.xootg8c8YylbNtV0YpCyH7sI2J4YkPOQNK_zoUKBIIlSyEL5VWV0zeQ7xKgNOhLhO8uJK8A53L_uk6m; HttpOnly; SameSite=None; Secure; Path=/; Domain=jsr.io; Expires=Tue, 20 Oct 2026 02:55:31 GMT","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","age":"4591716","date":"Tue, 20 Oct 2026 02:25:31 GMT","x-jsr-backend":"modules","x-robots-tag":"noindex","alt-svc":"h3=\":443\"; ma=86400"},"url":"https://jsr.io/@std/assert/1.0.18/less_or_equal.ts","time":1792463131}

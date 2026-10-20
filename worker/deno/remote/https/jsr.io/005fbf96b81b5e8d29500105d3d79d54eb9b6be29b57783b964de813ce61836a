@@ -1,0 +1,23 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+import { AssertionError } from "./assertion_error.ts";
+
+/**
+ * Use this to stub out methods that will throw when invoked.
+ *
+ * @example Usage
+ * ```ts ignore
+ * import { unimplemented } from "@std/assert";
+ *
+ * unimplemented(); // Throws
+ * ```
+ *
+ * @param msg Optional message to include in the error.
+ * @returns Never returns, always throws.
+ */
+export function unimplemented(msg?: string): never {
+  const msgSuffix = msg ? `: ${msg}` : ".";
+  throw new AssertionError(`Unimplemented${msgSuffix}`);
+}
+
+// denoCacheMetadata={"headers":{"x-robots-tag":"noindex","content-type":"text/typescript","age":"4591716","cache-control":"public, max-age=31536000, immutable","cf-cache-status":"HIT","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","vary":"Origin","etag":"\"e237f68d0079826254115bbe102306cb\"","access-control-allow-origin":"*","cross-origin-resource-policy":"cross-origin","x-content-type-options":"nosniff","set-cookie":"__cf_bm=HciLQHsU_fjcNz6iLuTwd.neEn3.pY1uOO25ReNRiRc-1792463131.6246827-1.0.1.1-3EkdHCzrXLtH9b9twU4tbOIsKljTQPT3j6z60mAcPTSIXj1Vy.ekLaH8lG_V04w.kGMjrbKEV_xLdL9pR0WSDvsJVm.uOETHQxkIflSxDrPnTb.HThvE.bizFxX393Ve; HttpOnly; SameSite=None; Secure; Path=/; Domain=jsr.io; Expires=Tue, 20 Oct 2026 02:55:31 GMT","date":"Tue, 20 Oct 2026 02:25:31 GMT","content-length":"600","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=9xFBF3ZL%2FFG3TVZBIiOqmgWFys2EBDlpXUaopKVZbjI9sUEThdKYW%2FSfoHmqTZfZ4IKqhLAkx20ML96pbOgYzk0it7hEAJ910%2BU%2BZE6WX5xtJGC2ZAqfvu4%3D\"}]}","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","server":"cloudflare","alt-svc":"h3=\":443\"; ma=86400","x-jsr-backend":"modules","access-control-expose-headers":"*","accept-ranges":"bytes","cf-ray":"a4d4928c891fe8dc-SYD"},"url":"https://jsr.io/@std/assert/1.0.18/unimplemented.ts","time":1792463131}

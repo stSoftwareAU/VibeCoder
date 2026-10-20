@@ -1,0 +1,210 @@
+// Copyright 2018-2025 the Deno authors. MIT license.
+// This module is browser compatible.
+
+import type { ChangedDiffResult, DiffResult } from "./types.ts";
+import { diff } from "./diff.ts";
+
+/**
+ * Unescape invisible characters.
+ *
+ * @see {@link https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/String#escape_sequences}
+ *
+ * @param string String to unescape.
+ *
+ * @returns Unescaped string.
+ *
+ * @example Usage
+ * ```ts
+ * import { unescape } from "@std/internal/diff-str";
+ * import { assertEquals } from "@std/assert";
+ *
+ * assertEquals(unescape("Hello\nWorld"), "Hello\\n\nWorld");
+ * ```
+ */
+export function unescape(string: string): string {
+  return string
+    .replaceAll("\\", "\\\\")
+    .replaceAll("\b", "\\b")
+    .replaceAll("\f", "\\f")
+    .replaceAll("\t", "\\t")
+    .replaceAll("\v", "\\v")
+    // This does not remove line breaks
+    .replaceAll(
+      /\r\n|\r|\n/g,
+      (str) => str === "\r" ? "\\r" : str === "\n" ? "\\n\n" : "\\r\\n\r\n",
+    );
+}
+
+const WHITESPACE_SYMBOLS =
+  /((?:\\[bftv]|[^\S\r\n])+|\\[rn\\]|[()[\]{}'"\r\n]|\b)/;
+
+/**
+ * Tokenizes a string into an array of tokens.
+ *
+ * @param string The string to tokenize.
+ * @param wordDiff If true, performs word-based tokenization. Default is false.
+ *
+ * @returns An array of tokens.
+ *
+ * @example Usage
+ * ```ts
+ * import { tokenize } from "@std/internal/diff-str";
+ * import { assertEquals } from "@std/assert";
+ *
+ * assertEquals(tokenize("Hello\nWorld"), ["Hello\n", "World"]);
+ * ```
+ */
+export function tokenize(string: string, wordDiff = false): string[] {
+  if (wordDiff) {
+    return string
+      .split(WHITESPACE_SYMBOLS)
+      .filter((token) => token);
+  }
+  const tokens: string[] = [];
+  const lines = string.split(/(\n|\r\n)/).filter((line) => line);
+
+  for (const [i, line] of lines.entries()) {
+    if (i % 2) {
+      tokens[tokens.length - 1] += line;
+    } else {
+      tokens.push(line);
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Create details by filtering relevant word-diff for current line and merge
+ * "space-diff" if surrounded by word-diff for cleaner displays.
+ *
+ * @param line Current line
+ * @param tokens Word-diff tokens
+ *
+ * @returns Array of diff results.
+ *
+ * @example Usage
+ * ```ts
+ * import { createDetails } from "@std/internal/diff-str";
+ * import { assertEquals } from "@std/assert";
+ *
+ * const tokens = [
+ *   { type: "added", value: "a" },
+ *   { type: "removed", value: "b" },
+ *   { type: "common", value: "c" },
+ * ] as const;
+ * assertEquals(
+ *   createDetails({ type: "added", value: "a" }, [...tokens]),
+ *   [{ type: "added", value: "a" }, { type: "common", value: "c" }]
+ * );
+ * ```
+ */
+export function createDetails(
+  line: DiffResult<string>,
+  tokens: DiffResult<string>[],
+): DiffResult<string>[] {
+  return tokens.filter(({ type }) => type === line.type || type === "common")
+    .map((result, i, t) => {
+      const token = t[i - 1];
+      if (
+        (result.type === "common") && token &&
+        (token.type === t[i + 1]?.type) && /\s+/.test(result.value)
+      ) {
+        return {
+          ...result,
+          type: token.type,
+        };
+      }
+      return result;
+    });
+}
+
+const NON_WHITESPACE_REGEXP = /\S/;
+
+/**
+ * Renders the differences between the actual and expected strings. Partially
+ * inspired from {@link https://github.com/kpdecker/jsdiff}.
+ *
+ * @param A Actual string
+ * @param B Expected string
+ *
+ * @returns Array of diff results.
+ *
+ * @example Usage
+ * ```ts
+ * import { diffStr } from "@std/internal/diff-str";
+ * import { assertEquals } from "@std/assert";
+ *
+ * assertEquals(diffStr("Hello!", "Hello"), [
+ *   {
+ *     type: "removed",
+ *     value: "Hello!\n",
+ *     details: [
+ *       { type: "common", value: "Hello" },
+ *       { type: "removed", value: "!" },
+ *       { type: "common", value: "\n" }
+ *     ]
+ *   },
+ *   {
+ *     type: "added",
+ *     value: "Hello\n",
+ *     details: [
+ *       { type: "common", value: "Hello" },
+ *       { type: "common", value: "\n" }
+ *     ]
+ *   }
+ * ]);
+ * ```
+ */
+export function diffStr(A: string, B: string): DiffResult<string>[] {
+  // Compute multi-line diff
+  const diffResult = diff(
+    tokenize(`${unescape(A)}\n`),
+    tokenize(`${unescape(B)}\n`),
+  );
+
+  const added = [];
+  const removed = [];
+  for (const result of diffResult) {
+    if (result.type === "added") {
+      added.push(result);
+    }
+    if (result.type === "removed") {
+      removed.push(result);
+    }
+  }
+
+  // Compute word-diff
+  const hasMoreRemovedLines = added.length < removed.length;
+  const aLines = hasMoreRemovedLines ? added : removed;
+  const bLines = hasMoreRemovedLines ? removed : added;
+  for (const a of aLines) {
+    let tokens = [] as Array<DiffResult<string>>;
+    let b: undefined | ChangedDiffResult<string>;
+    // Search another diff line with at least one common token
+    while (bLines.length) {
+      b = bLines.shift();
+      const tokenized = [
+        tokenize(a.value, true),
+        tokenize(b!.value, true),
+      ] as [string[], string[]];
+      if (hasMoreRemovedLines) tokenized.reverse();
+      tokens = diff(tokenized[0], tokenized[1]);
+      if (
+        tokens.some(({ type, value }) =>
+          type === "common" && NON_WHITESPACE_REGEXP.test(value)
+        )
+      ) {
+        break;
+      }
+    }
+    // Register word-diff details
+    a.details = createDetails(a, tokens);
+    if (b) {
+      b.details = createDetails(b, tokens);
+    }
+  }
+
+  return diffResult;
+}
+
+// denoCacheMetadata={"headers":{"report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=EbS9t7pXRQURKXyVEkjJGA6b8E43wvKPxPqcoPX7XiCvQ2jBYbuECzTIJwRS5yY%2BqDJJ%2Fxdnqzho28ZEN4XmBnydmlIqj3OG67UkmqaguvQ4Ov4Rv7Z5Q%2B4%3D\"}]}","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","server":"cloudflare","cross-origin-resource-policy":"cross-origin","x-content-type-options":"nosniff","accept-ranges":"bytes","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","age":"3010716","cache-control":"public, max-age=31536000, immutable","vary":"Origin","x-jsr-backend":"modules","set-cookie":"__cf_bm=3Cer8wFzC1aoU45aHrRFQbaJL1A14QW4aFaeuu9ohvs-1792463131.627436-1.0.1.1-FVBCjDfleRWkSMPKTazwO5KDR20q_3FQMTKKW1JTL3J5oedKzCRFUB6uoNVMqT0eQK4vr9ckG7c7Q2VJb_O76Yc69cprcGJSuQkMxL.v66PziIC.5FrMPpurq3kasQsh; HttpOnly; SameSite=None; Secure; Path=/; Domain=jsr.io; Expires=Tue, 20 Oct 2026 02:55:31 GMT","alt-svc":"h3=\":443\"; ma=86400","content-length":"5463","cf-ray":"a4d4928c8933e8dc-SYD","cf-cache-status":"HIT","access-control-expose-headers":"*","etag":"\"86825d7a62fe3f2568c392616fad69ad\"","date":"Tue, 20 Oct 2026 02:25:31 GMT","access-control-allow-origin":"*","x-robots-tag":"noindex","content-type":"text/typescript"},"url":"https://jsr.io/@std/internal/1.0.12/diff_str.ts","time":1792463131}

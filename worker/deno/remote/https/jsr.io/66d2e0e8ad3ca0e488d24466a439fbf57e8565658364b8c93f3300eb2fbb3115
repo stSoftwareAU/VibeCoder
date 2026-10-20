@@ -1,0 +1,26 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+import { AssertionError } from "./assertion_error.ts";
+
+/**
+ * Make an assertion, an error will be thrown if `expr` does not have a truthy value.
+ *
+ * @example Usage
+ * ```ts ignore
+ * import { assert } from "@std/assert";
+ *
+ * assert("hello".includes("ello")); // Doesn't throw
+ * assert("hello".includes("world")); // Throws
+ * ```
+ *
+ * @param expr The expression to test.
+ * @param msg The optional message to display if the assertion fails.
+ * @throws {AssertionError} If `expr` is falsy.
+ */
+export function assert(expr: unknown, msg = ""): asserts expr {
+  if (!expr) {
+    throw new AssertionError(msg);
+  }
+}
+
+// denoCacheMetadata={"headers":{"set-cookie":"__cf_bm=UFSPZ3x6yPSFnlCR_VESEMfBjPYd80dNITCyaaYIcNM-1792463131.6231036-1.0.1.1-kuDwuvlQ.FxqL3xG_FWA_2zcn.sF0K9rx7sIIA5G2WUnPQ2pYG.drUAafEWcyz3z.StzB6duzUpOneupI.FGQOuysunfTcp99iotoK775dEMpsiRyT8Sz.WFOnmEzWev; HttpOnly; SameSite=None; Secure; Path=/; Domain=jsr.io; Expires=Tue, 20 Oct 2026 02:55:31 GMT","x-robots-tag":"noindex","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","cf-cache-status":"HIT","access-control-allow-origin":"*","alt-svc":"h3=\":443\"; ma=86400","x-content-type-options":"nosniff","age":"4591717","accept-ranges":"bytes","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=wwkESJnAOgUi2PJZ%2FcrhL3YOLBDFpizdnkPQzoBKp%2Bcb89ilYrOMpTUj5ATgWc0r4VjMah32Hj79WnZrimZILwXnKdamhkJuHY%2FyCmmBRldEniDnMx20QhM%3D\"}]}","content-length":"712","cache-control":"public, max-age=31536000, immutable","server":"cloudflare","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","cf-ray":"a4d4928c8916e8dc-SYD","x-jsr-backend":"modules","vary":"Origin","date":"Tue, 20 Oct 2026 02:25:31 GMT","etag":"\"c141aa4121cbc8810d3f8f6a93297c0f\"","content-type":"text/typescript","cross-origin-resource-policy":"cross-origin","access-control-expose-headers":"*"},"url":"https://jsr.io/@std/assert/1.0.18/assert.ts","time":1792463131}

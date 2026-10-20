@@ -80,6 +80,50 @@ function problemLines(text: string): string[] {
   return text.split("\n").filter((line) => line.startsWith("- "));
 }
 
+/** A parsed JSON value, typed as `JSON.parse` returns it, for in-place edits. */
+type ParsedJson = ReturnType<typeof JSON.parse>;
+
+/** A captured report with `edit` applied to its parsed JSON, re-serialised. */
+async function editedReport(
+  name: string,
+  edit: (parsed: ParsedJson) => void,
+): Promise<string> {
+  const parsed = JSON.parse(await report(name));
+  edit(parsed);
+  return JSON.stringify(parsed);
+}
+
+/** The reasoned_skip report judged with its one skipped check edited by `edit`. */
+async function judgeEditedSkip(edit: (entry: ParsedJson) => void): Promise<{
+  verdict: Awaited<ReturnType<typeof judgeCheckovRun>>;
+  calls: string[];
+}> {
+  const { reader, calls } = recordingTemplates(
+    fixtureTemplates("reasoned_skip"),
+  );
+  const verdict = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: await editedReport(
+      "reasoned_skip",
+      (parsed) => edit(parsed.results.skipped_checks[0]),
+    ),
+    templates: reader,
+  });
+  return { verdict, calls };
+}
+
+/** A summary-only Checkov object (no templates found) with `overrides` applied. */
+function summaryOnly(overrides: Record<string, number> = {}): string {
+  return JSON.stringify({
+    passed: 0,
+    failed: 0,
+    skipped: 0,
+    parsing_errors: 0,
+    resource_count: 0,
+    ...overrides,
+  });
+}
+
 Deno.test("checkov-report - scan arguments match the CI and local gate command", () => {
   assertEquals([...CHECKOV_SCAN_ARGS], [
     "-d",
@@ -198,6 +242,28 @@ Deno.test("checkov-report - FAILED for malformed JSON", async () => {
   assertStringIncludes(verdict.report, "not valid Checkov JSON");
 });
 
+Deno.test("checkov-report - FAILED names the JSON parse error, not just the status", async () => {
+  const stdout = `{"results":`;
+  let parseMessage = "";
+  try {
+    JSON.parse(stdout);
+  } catch (error) {
+    parseMessage = error instanceof Error ? error.message : String(error);
+  }
+  assert(parseMessage !== "", "JSON.parse should throw on the truncated input");
+  const verdict = await judgeCheckovRun({
+    exitCode: 0,
+    stdout,
+    templates: noTemplates,
+  });
+  assertEquals(verdict.status, "FAILED");
+  assertStringIncludes(
+    verdict.report,
+    `output is not valid Checkov JSON (parse error: ${parseMessage})`,
+  );
+  assertEquals(problemLines(verdict.report).length, 1);
+});
+
 Deno.test("checkov-report - FAILED for empty or whitespace-only stdout", async () => {
   for (const stdout of ["", "  \n\t"]) {
     const verdict = await judgeCheckovRun({
@@ -268,6 +334,274 @@ Deno.test("checkov-report - PASSED for the same skip at its original file path (
   });
   assertEquals(verdict.status, "PASSED");
   assertEquals(calls, ["template.yaml"]);
+});
+
+Deno.test("checkov-report - FAILED for a skip whose file_line_range is not two entries", async () => {
+  for (const range of [[3], [3, 6, 9]]) {
+    const { verdict, calls } = await judgeEditedSkip((entry) => {
+      entry.file_line_range = range;
+    });
+    assertEquals(verdict.status, "FAILED", JSON.stringify(range));
+    assertStringIncludes(
+      verdict.report,
+      "CKV_AWS_158 skip at /template.yaml has no valid file_line_range",
+    );
+    assertEquals(calls, [], JSON.stringify(range));
+    assertEquals(problemLines(verdict.report).length, 1, JSON.stringify(range));
+  }
+  const control = await judgeEditedSkip((entry) => {
+    entry.file_line_range = [3, 6];
+  });
+  assertEquals(control.verdict.status, "PASSED");
+});
+
+Deno.test("checkov-report - FAILED for a skip whose file_line_range holds non-integers", async () => {
+  for (const range of [[3.5, 6], [3, 6.5]]) {
+    const { verdict, calls } = await judgeEditedSkip((entry) => {
+      entry.file_line_range = range;
+    });
+    assertEquals(verdict.status, "FAILED", JSON.stringify(range));
+    assertStringIncludes(
+      verdict.report,
+      "CKV_AWS_158 skip at /template.yaml has no valid file_line_range",
+    );
+    assertEquals(calls, [], JSON.stringify(range));
+    assertEquals(problemLines(verdict.report).length, 1, JSON.stringify(range));
+  }
+  const control = await judgeEditedSkip((entry) => {
+    entry.file_line_range = [3, 6];
+  });
+  assertEquals(control.verdict.status, "PASSED");
+});
+
+Deno.test("checkov-report - FAILED for a skip whose file_line_range starts below 1 or ends before it starts", async () => {
+  for (const range of [[0, 6], [6, 3]]) {
+    const { verdict, calls } = await judgeEditedSkip((entry) => {
+      entry.file_line_range = range;
+    });
+    assertEquals(verdict.status, "FAILED", JSON.stringify(range));
+    assertStringIncludes(
+      verdict.report,
+      "CKV_AWS_158 skip at /template.yaml has no valid file_line_range",
+    );
+    assertEquals(calls, [], JSON.stringify(range));
+    assertEquals(problemLines(verdict.report).length, 1, JSON.stringify(range));
+  }
+  const control = await judgeEditedSkip((entry) => {
+    entry.file_line_range = [3, 6];
+  });
+  assertEquals(control.verdict.status, "PASSED");
+});
+
+Deno.test("checkov-report - FAILED for a skip with no file_line_range", async () => {
+  const { verdict, calls } = await judgeEditedSkip((entry) => {
+    delete entry.file_line_range;
+  });
+  assertEquals(verdict.status, "FAILED");
+  assertStringIncludes(
+    verdict.report,
+    "CKV_AWS_158 skip at /template.yaml has no valid file_line_range",
+  );
+  assertEquals(calls, []);
+  assertEquals(problemLines(verdict.report).length, 1);
+});
+
+Deno.test("checkov-report - FAILED for a skip whose file_path is not a string", async () => {
+  for (const filePath of [42, true]) {
+    const { verdict, calls } = await judgeEditedSkip((entry) => {
+      entry.file_path = filePath;
+    });
+    assertEquals(verdict.status, "FAILED", String(filePath));
+    assertStringIncludes(
+      verdict.report,
+      "CKV_AWS_158 skip at <unknown file> lines 3-7 has no usable file_path",
+    );
+    assertEquals(calls, [], String(filePath));
+    assertEquals(problemLines(verdict.report).length, 1, String(filePath));
+  }
+});
+
+Deno.test("checkov-report - FAILED for a skip with no file_path", async () => {
+  const { verdict, calls } = await judgeEditedSkip((entry) => {
+    delete entry.file_path;
+  });
+  assertEquals(verdict.status, "FAILED");
+  assertStringIncludes(
+    verdict.report,
+    "CKV_AWS_158 skip at <unknown file> lines 3-7 has no usable file_path",
+  );
+  assertEquals(calls, []);
+  assertEquals(problemLines(verdict.report).length, 1);
+});
+
+Deno.test("checkov-report - FAILED for a skip whose file_path is empty once stripped", async () => {
+  for (const filePath of ["", "/", "./"]) {
+    const { verdict, calls } = await judgeEditedSkip((entry) => {
+      entry.file_path = filePath;
+    });
+    assertEquals(verdict.status, "FAILED", JSON.stringify(filePath));
+    assertStringIncludes(verdict.report, "has no usable file_path");
+    assertEquals(calls, [], JSON.stringify(filePath));
+    assertEquals(
+      problemLines(verdict.report).length,
+      1,
+      JSON.stringify(filePath),
+    );
+  }
+});
+
+Deno.test("checkov-report - FAILED without reading a skip whose file path is absolute or holds a NUL", async () => {
+  for (
+    const filePath of ["//etc/passwd", "\\etc\\passwd", "template.yaml\u0000"]
+  ) {
+    const { verdict, calls } = await judgeEditedSkip((entry) => {
+      entry.file_path = filePath;
+    });
+    assertEquals(verdict.status, "FAILED", JSON.stringify(filePath));
+    assertStringIncludes(
+      verdict.report,
+      `CKV_AWS_158 skip at ${filePath} lines 3-7 has a file path outside the scanned directory`,
+    );
+    assertEquals(calls, [], JSON.stringify(filePath));
+    assertEquals(
+      problemLines(verdict.report).length,
+      1,
+      JSON.stringify(filePath),
+    );
+  }
+});
+
+Deno.test("checkov-report - FAILED for a summary-only object that reports failed checks", async () => {
+  const verdict = await judgeCheckovRun({
+    exitCode: 1,
+    stdout: summaryOnly({ failed: 1 }),
+    templates: noTemplates,
+  });
+  assertEquals(verdict.status, "FAILED");
+  assertStringIncludes(
+    verdict.report,
+    "summary reports 1 failed check(s) with no report body to name them",
+  );
+  assertEquals(problemLines(verdict.report).length, 1);
+
+  const control = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: summaryOnly(),
+    templates: noTemplates,
+  });
+  assertEquals(control.status, "PASSED");
+  assertStringIncludes(control.report, "No CloudFormation templates found");
+});
+
+Deno.test("checkov-report - FAILED for a summary-only object that reports parsing errors", async () => {
+  const verdict = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: summaryOnly({ parsing_errors: 1 }),
+    templates: noTemplates,
+  });
+  assertEquals(verdict.status, "FAILED");
+  assertStringIncludes(
+    verdict.report,
+    "summary reports 1 parsing error(s) with no report body to name the files",
+  );
+  assertEquals(problemLines(verdict.report).length, 1);
+
+  const control = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: summaryOnly(),
+    templates: noTemplates,
+  });
+  assertEquals(control.status, "PASSED");
+});
+
+Deno.test("checkov-report - FAILED when a results list is not a list", async () => {
+  for (const key of ["failed_checks", "skipped_checks", "parsing_errors"]) {
+    const verdict = await judgeCheckovRun({
+      exitCode: 0,
+      stdout: await editedReport("clean", (parsed) => {
+        parsed.results[key] = "none";
+      }),
+      templates: fixtureTemplates("clean"),
+    });
+    assertEquals(verdict.status, "FAILED", key);
+    assertStringIncludes(verdict.report, `results.${key} is not a list`);
+    assertEquals(problemLines(verdict.report).length, 1, key);
+  }
+
+  const control = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: await report("clean"),
+    templates: fixtureTemplates("clean"),
+  });
+  assertEquals(control.status, "PASSED");
+});
+
+Deno.test("checkov-report - FAILED when a summary count is not a number", async () => {
+  for (const key of ["passed", "failed", "skipped", "parsing_errors"]) {
+    const verdict = await judgeCheckovRun({
+      exitCode: 0,
+      stdout: await editedReport("clean", (parsed) => {
+        parsed.summary[key] = "0";
+      }),
+      templates: fixtureTemplates("clean"),
+    });
+    assertEquals(verdict.status, "FAILED", key);
+    assertStringIncludes(verdict.report, `summary.${key} is not a number`);
+    assertEquals(problemLines(verdict.report).length, 1, key);
+  }
+
+  const control = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: await report("clean"),
+    templates: fixtureTemplates("clean"),
+  });
+  assertEquals(control.status, "PASSED");
+});
+
+Deno.test("checkov-report - FAILED when the summary counts failed checks but none are listed", async () => {
+  const verdict = await judgeCheckovRun({
+    exitCode: 1,
+    stdout: await editedReport("clean", (parsed) => {
+      parsed.summary.failed = 1;
+    }),
+    templates: fixtureTemplates("clean"),
+  });
+  assertEquals(verdict.status, "FAILED");
+  assertStringIncludes(
+    verdict.report,
+    "summary reports 1 failed check(s) but none are listed",
+  );
+  assertEquals(problemLines(verdict.report).length, 1);
+
+  const control = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: await report("clean"),
+    templates: fixtureTemplates("clean"),
+  });
+  assertEquals(control.status, "PASSED");
+});
+
+Deno.test("checkov-report - FAILED when the summary counts parse errors but names no file", async () => {
+  const verdict = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: await editedReport("clean", (parsed) => {
+      parsed.summary.parsing_errors = 1;
+    }),
+    templates: fixtureTemplates("clean"),
+  });
+  assertEquals(verdict.status, "FAILED");
+  assertStringIncludes(
+    verdict.report,
+    "summary reports 1 parsing error(s) but names no file",
+  );
+  assertEquals(problemLines(verdict.report).length, 1);
+
+  const control = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: await report("clean"),
+    templates: fixtureTemplates("clean"),
+  });
+  assertEquals(control.status, "PASSED");
 });
 
 Deno.test("checkov-report - multi-framework array is FAILED when one element fails", async () => {
@@ -364,4 +698,16 @@ Deno.test("checkov-report CLI - exit 1 when the report file is missing", async (
   assertEquals(result.code, 1);
   assertStringIncludes(result.stderr, "cannot read report");
   assertStringIncludes(result.stderr, missing);
+});
+
+Deno.test("checkov-report CLI - an unreadable report prints no verdict to stdout", async () => {
+  const missing = new URL("does-not-exist.json", FIXTURES).pathname;
+  const result = await runCli([missing, "0"]);
+  assertEquals(result.code, 1);
+  assertEquals(
+    result.stdout,
+    "",
+    "no verdict should be judged from a report that was not read",
+  );
+  assertStringIncludes(result.stderr, `cannot read report ${missing}`);
 });

@@ -1,0 +1,50 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+import { AssertionError } from "./assertion_error.ts";
+import { stripAnsiCode } from "jsr:@std/internal@^1.0.12/styles";
+/**
+ * Make an assertion that `error` is an `Error`.
+ * If not then an error will be thrown.
+ * An error class and a string that should be included in the
+ * error message can also be asserted.
+ *
+ * @example Usage
+ * ```ts ignore
+ * import { assertIsError } from "@std/assert";
+ *
+ * assertIsError(null); // Throws
+ * assertIsError(new RangeError("Out of range")); // Doesn't throw
+ * assertIsError(new RangeError("Out of range"), SyntaxError); // Throws
+ * assertIsError(new RangeError("Out of range"), SyntaxError, "Out of range"); // Doesn't throw
+ * assertIsError(new RangeError("Out of range"), SyntaxError, "Within range"); // Throws
+ * ```
+ *
+ * @typeParam E The type of the error to assert.
+ * @param error The error to assert.
+ * @param ErrorClass The optional error class to assert.
+ * @param msgMatches The optional string or RegExp to assert in the error message.
+ * @param msg The optional message to display if the assertion fails.
+ */ export function assertIsError(error, // deno-lint-ignore no-explicit-any
+ErrorClass, msgMatches, msg) {
+  const msgSuffix = msg ? `: ${msg}` : ".";
+  if (!(error instanceof Error)) {
+    throw new AssertionError(`Expected "error" to be an Error object${msgSuffix}`);
+  }
+  if (ErrorClass && !(error instanceof ErrorClass)) {
+    msg = `Expected error to be instance of "${ErrorClass.name}", but was "${error?.constructor?.name}"${msgSuffix}`;
+    throw new AssertionError(msg);
+  }
+  let msgCheck;
+  if (typeof msgMatches === "string") {
+    msgCheck = stripAnsiCode(error.message).includes(stripAnsiCode(msgMatches));
+  }
+  if (msgMatches instanceof RegExp) {
+    msgCheck = msgMatches.test(stripAnsiCode(error.message));
+  }
+  if (msgMatches && !msgCheck) {
+    msg = `Expected error message to include ${msgMatches instanceof RegExp ? msgMatches.toString() : JSON.stringify(msgMatches)}, but got ${JSON.stringify(error?.message)}${msgSuffix}`;
+    throw new AssertionError(msg);
+  }
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImh0dHBzOi8vanNyLmlvL0BzdGQvYXNzZXJ0LzEuMC4xOC9pc19lcnJvci50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvLyBDb3B5cmlnaHQgMjAxOC0yMDI2IHRoZSBEZW5vIGF1dGhvcnMuIE1JVCBsaWNlbnNlLlxuLy8gVGhpcyBtb2R1bGUgaXMgYnJvd3NlciBjb21wYXRpYmxlLlxuaW1wb3J0IHsgQXNzZXJ0aW9uRXJyb3IgfSBmcm9tIFwiLi9hc3NlcnRpb25fZXJyb3IudHNcIjtcbmltcG9ydCB7IHN0cmlwQW5zaUNvZGUgfSBmcm9tIFwianNyOkBzdGQvaW50ZXJuYWxAXjEuMC4xMi9zdHlsZXNcIjtcblxuLyoqXG4gKiBNYWtlIGFuIGFzc2VydGlvbiB0aGF0IGBlcnJvcmAgaXMgYW4gYEVycm9yYC5cbiAqIElmIG5vdCB0aGVuIGFuIGVycm9yIHdpbGwgYmUgdGhyb3duLlxuICogQW4gZXJyb3IgY2xhc3MgYW5kIGEgc3RyaW5nIHRoYXQgc2hvdWxkIGJlIGluY2x1ZGVkIGluIHRoZVxuICogZXJyb3IgbWVzc2FnZSBjYW4gYWxzbyBiZSBhc3NlcnRlZC5cbiAqXG4gKiBAZXhhbXBsZSBVc2FnZVxuICogYGBgdHMgaWdub3JlXG4gKiBpbXBvcnQgeyBhc3NlcnRJc0Vycm9yIH0gZnJvbSBcIkBzdGQvYXNzZXJ0XCI7XG4gKlxuICogYXNzZXJ0SXNFcnJvcihudWxsKTsgLy8gVGhyb3dzXG4gKiBhc3NlcnRJc0Vycm9yKG5ldyBSYW5nZUVycm9yKFwiT3V0IG9mIHJhbmdlXCIpKTsgLy8gRG9lc24ndCB0aHJvd1xuICogYXNzZXJ0SXNFcnJvcihuZXcgUmFuZ2VFcnJvcihcIk91dCBvZiByYW5nZVwiKSwgU3ludGF4RXJyb3IpOyAvLyBUaHJvd3NcbiAqIGFzc2VydElzRXJyb3IobmV3IFJhbmdlRXJyb3IoXCJPdXQgb2YgcmFuZ2VcIiksIFN5bnRheEVycm9yLCBcIk91dCBvZiByYW5nZVwiKTsgLy8gRG9lc24ndCB0aHJvd1xuICogYXNzZXJ0SXNFcnJvcihuZXcgUmFuZ2VFcnJvcihcIk91dCBvZiByYW5nZVwiKSwgU3ludGF4RXJyb3IsIFwiV2l0aGluIHJhbmdlXCIpOyAvLyBUaHJvd3NcbiAqIGBgYFxuICpcbiAqIEB0eXBlUGFyYW0gRSBUaGUgdHlwZSBvZiB0aGUgZXJyb3IgdG8gYXNzZXJ0LlxuICogQHBhcmFtIGVycm9yIFRoZSBlcnJvciB0byBhc3NlcnQuXG4gKiBAcGFyYW0gRXJyb3JDbGFzcyBUaGUgb3B0aW9uYWwgZXJyb3IgY2xhc3MgdG8gYXNzZXJ0LlxuICogQHBhcmFtIG1zZ01hdGNoZXMgVGhlIG9wdGlvbmFsIHN0cmluZyBvciBSZWdFeHAgdG8gYXNzZXJ0IGluIHRoZSBlcnJvciBtZXNzYWdlLlxuICogQHBhcmFtIG1zZyBUaGUgb3B0aW9uYWwgbWVzc2FnZSB0byBkaXNwbGF5IGlmIHRoZSBhc3NlcnRpb24gZmFpbHMuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBhc3NlcnRJc0Vycm9yPEUgZXh0ZW5kcyBFcnJvciA9IEVycm9yPihcbiAgZXJyb3I6IHVua25vd24sXG4gIC8vIGRlbm8tbGludC1pZ25vcmUgbm8tZXhwbGljaXQtYW55XG4gIEVycm9yQ2xhc3M/OiBhYnN0cmFjdCBuZXcgKC4uLmFyZ3M6IGFueVtdKSA9PiBFLFxuICBtc2dNYXRjaGVzPzogc3RyaW5nIHwgUmVnRXhwLFxuICBtc2c/OiBzdHJpbmcsXG4pOiBhc3NlcnRzIGVycm9yIGlzIEUge1xuICBjb25zdCBtc2dTdWZmaXggPSBtc2cgPyBgOiAke21zZ31gIDogXCIuXCI7XG4gIGlmICghKGVycm9yIGluc3RhbmNlb2YgRXJyb3IpKSB7XG4gICAgdGhyb3cgbmV3IEFzc2VydGlvbkVycm9yKFxuICAgICAgYEV4cGVjdGVkIFwiZXJyb3JcIiB0byBiZSBhbiBFcnJvciBvYmplY3Qke21zZ1N1ZmZpeH1gLFxuICAgICk7XG4gIH1cbiAgaWYgKEVycm9yQ2xhc3MgJiYgIShlcnJvciBpbnN0YW5jZW9mIEVycm9yQ2xhc3MpKSB7XG4gICAgbXNnID1cbiAgICAgIGBFeHBlY3RlZCBlcnJvciB0byBiZSBpbnN0YW5jZSBvZiBcIiR7RXJyb3JDbGFzcy5uYW1lfVwiLCBidXQgd2FzIFwiJHtlcnJvcj8uY29uc3RydWN0b3I/Lm5hbWV9XCIke21zZ1N1ZmZpeH1gO1xuICAgIHRocm93IG5ldyBBc3NlcnRpb25FcnJvcihtc2cpO1xuICB9XG4gIGxldCBtc2dDaGVjaztcbiAgaWYgKHR5cGVvZiBtc2dNYXRjaGVzID09PSBcInN0cmluZ1wiKSB7XG4gICAgbXNnQ2hlY2sgPSBzdHJpcEFuc2lDb2RlKGVycm9yLm1lc3NhZ2UpLmluY2x1ZGVzKFxuICAgICAgc3RyaXBBbnNpQ29kZShtc2dNYXRjaGVzKSxcbiAgICApO1xuICB9XG4gIGlmIChtc2dNYXRjaGVzIGluc3RhbmNlb2YgUmVnRXhwKSB7XG4gICAgbXNnQ2hlY2sgPSBtc2dNYXRjaGVzLnRlc3Qoc3RyaXBBbnNpQ29kZShlcnJvci5tZXNzYWdlKSk7XG4gIH1cblxuICBpZiAobXNnTWF0Y2hlcyAmJiAhbXNnQ2hlY2spIHtcbiAgICBtc2cgPSBgRXhwZWN0ZWQgZXJyb3IgbWVzc2FnZSB0byBpbmNsdWRlICR7XG4gICAgICBtc2dNYXRjaGVzIGluc3RhbmNlb2YgUmVnRXhwXG4gICAgICAgID8gbXNnTWF0Y2hlcy50b1N0cmluZygpXG4gICAgICAgIDogSlNPTi5zdHJpbmdpZnkobXNnTWF0Y2hlcylcbiAgICB9LCBidXQgZ290ICR7SlNPTi5zdHJpbmdpZnkoZXJyb3I/Lm1lc3NhZ2UpfSR7bXNnU3VmZml4fWA7XG4gICAgdGhyb3cgbmV3IEFzc2VydGlvbkVycm9yKG1zZyk7XG4gIH1cbn1cbiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQSxxREFBcUQ7QUFDckQscUNBQXFDO0FBQ3JDLFNBQVMsY0FBYyxRQUFRLHVCQUF1QjtBQUN0RCxTQUFTLGFBQWEsUUFBUSxtQ0FBbUM7QUFFakU7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0FzQkMsR0FDRCxPQUFPLFNBQVMsY0FDZCxLQUFjLEVBQ2QsbUNBQW1DO0FBQ25DLFVBQStDLEVBQy9DLFVBQTRCLEVBQzVCLEdBQVk7RUFFWixNQUFNLFlBQVksTUFBTSxDQUFDLEVBQUUsRUFBRSxLQUFLLEdBQUc7RUFDckMsSUFBSSxDQUFDLENBQUMsaUJBQWlCLEtBQUssR0FBRztJQUM3QixNQUFNLElBQUksZUFDUixDQUFDLHNDQUFzQyxFQUFFLFdBQVc7RUFFeEQ7RUFDQSxJQUFJLGNBQWMsQ0FBQyxDQUFDLGlCQUFpQixVQUFVLEdBQUc7SUFDaEQsTUFDRSxDQUFDLGtDQUFrQyxFQUFFLFdBQVcsSUFBSSxDQUFDLFlBQVksRUFBRSxPQUFPLGFBQWEsS0FBSyxDQUFDLEVBQUUsV0FBVztJQUM1RyxNQUFNLElBQUksZUFBZTtFQUMzQjtFQUNBLElBQUk7RUFDSixJQUFJLE9BQU8sZUFBZSxVQUFVO0lBQ2xDLFdBQVcsY0FBYyxNQUFNLE9BQU8sRUFBRSxRQUFRLENBQzlDLGNBQWM7RUFFbEI7RUFDQSxJQUFJLHNCQUFzQixRQUFRO0lBQ2hDLFdBQVcsV0FBVyxJQUFJLENBQUMsY0FBYyxNQUFNLE9BQU87RUFDeEQ7RUFFQSxJQUFJLGNBQWMsQ0FBQyxVQUFVO0lBQzNCLE1BQU0sQ0FBQyxrQ0FBa0MsRUFDdkMsc0JBQXNCLFNBQ2xCLFdBQVcsUUFBUSxLQUNuQixLQUFLLFNBQVMsQ0FBQyxZQUNwQixVQUFVLEVBQUUsS0FBSyxTQUFTLENBQUMsT0FBTyxXQUFXLFdBQVc7SUFDekQsTUFBTSxJQUFJLGVBQWU7RUFDM0I7QUFDRiJ9
+// denoCacheMetadata=14827361436341147409,1650540569697664107

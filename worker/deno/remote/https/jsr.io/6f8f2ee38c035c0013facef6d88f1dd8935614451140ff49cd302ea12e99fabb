@@ -1,0 +1,44 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+import { AssertionError } from "./assertion_error.ts";
+import { format } from "jsr:@std/internal@^1.0.12/format";
+
+/**
+ * Make an assertion that `actual` and `expected` are not strictly equal, using
+ * {@linkcode Object.is} for equality comparison. If the values are strictly
+ * equal then throw.
+ *
+ * @example Usage
+ * ```ts ignore
+ * import { assertNotStrictEquals } from "@std/assert";
+ *
+ * assertNotStrictEquals(1, 1); // Throws
+ * assertNotStrictEquals(1, 2); // Doesn't throw
+ *
+ * assertNotStrictEquals(0, 0); // Throws
+ * assertNotStrictEquals(0, -0); // Doesn't throw
+ * ```
+ *
+ * @typeParam T The type of the values to compare.
+ * @param actual The actual value to compare.
+ * @param expected The expected value to compare.
+ * @param msg The optional message to display if the assertion fails.
+ */
+export function assertNotStrictEquals<T>(
+  actual: T,
+  expected: T,
+  msg?: string,
+) {
+  if (!Object.is(actual, expected)) {
+    return;
+  }
+
+  const msgSuffix = msg ? `: ${msg}` : ".";
+  throw new AssertionError(
+    `Expected "actual" to not be strictly equal to: ${
+      format(actual)
+    }${msgSuffix}\n`,
+  );
+}
+
+// denoCacheMetadata={"headers":{"content-length":"1224","access-control-allow-origin":"*","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","server":"cloudflare","access-control-expose-headers":"*","x-jsr-backend":"modules","x-robots-tag":"noindex","content-type":"text/typescript","set-cookie":"__cf_bm=Ty3Ehim5xJrvztSUVQUf3QEaiejW4.zTAA710TleVQk-1792463131.619764-1.0.1.1-sQSpJteocj1AX1fY7.cGviPPi3gyLMdePxjNjMArrBMvfGqHwrZ_Y8TELvZ6aQfAsKEDDU8..sWmNWP0eRDO1laVzfjtCBy55cbvUpVzRAt3DM9KQDnUyewszOBTca.r; HttpOnly; SameSite=None; Secure; Path=/; Domain=jsr.io; Expires=Tue, 20 Oct 2026 02:55:31 GMT","cache-control":"public, max-age=31536000, immutable","alt-svc":"h3=\":443\"; ma=86400","cf-ray":"a4d4928c8902e8dc-SYD","etag":"\"7b1a4e3e13d9136fb34f7019a505a99f\"","vary":"Origin","age":"4591716","x-content-type-options":"nosniff","date":"Tue, 20 Oct 2026 02:25:31 GMT","cf-cache-status":"HIT","cross-origin-resource-policy":"cross-origin","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","accept-ranges":"bytes","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=647rxXERij6AO%2BAEeQedfNVqLl8OpNoUhW%2FdAg%2BQDl43jyil8DgCvRPsyNQxRGUv2VmsgLpGJASnlPzJMKv6o6BcGve4GUz%2Bsz5Fd%2BkVFURSOEZVgGMUWCw%3D\"}]}"},"url":"https://jsr.io/@std/assert/1.0.18/not_strict_equals.ts","time":1792463131}

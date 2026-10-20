@@ -1,0 +1,32 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+import { AssertionError } from "./assertion_error.ts";
+
+/**
+ * Make an assertion that `actual` not match RegExp `expected`. If match
+ * then throw.
+ *
+ * @example Usage
+ * ```ts ignore
+ * import { assertNotMatch } from "@std/assert";
+ *
+ * assertNotMatch("Denosaurus", /Raptor/); // Doesn't throw
+ * assertNotMatch("Raptor", /Raptor/); // Throws
+ * ```
+ *
+ * @param actual The actual value to match.
+ * @param expected The expected value to not match.
+ * @param msg The optional message to display if the assertion fails.
+ */
+export function assertNotMatch(
+  actual: string,
+  expected: RegExp,
+  msg?: string,
+) {
+  if (!expected.test(actual)) return;
+  const msgSuffix = msg ? `: ${msg}` : ".";
+  msg = `Expected actual: "${actual}" to not match: "${expected}"${msgSuffix}`;
+  throw new AssertionError(msg);
+}
+
+// denoCacheMetadata={"headers":{"accept-ranges":"bytes","access-control-allow-origin":"*","server":"cloudflare","alt-svc":"h3=\":443\"; ma=86400","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","content-type":"text/typescript","access-control-expose-headers":"*","set-cookie":"__cf_bm=qLfyx9Juy_igshytEcMHttnQTwQfkKDAb7c7PlxbmzE-1792463131.6192985-1.0.1.1-z9HCoy5UN6x6SSFuButrc2TwtHnn9dz5OYHhuoDhLz8rOHBBHj5kTQcdgZ3Q20Rsj.PNGvVLS8jzgbHbV2r1f0gHBcK0nFJnB4X.QK5lRSY0CXZ.k1Fn12X6LG_Ntzd_; HttpOnly; SameSite=None; Secure; Path=/; Domain=jsr.io; Expires=Tue, 20 Oct 2026 02:55:31 GMT","cache-control":"public, max-age=31536000, immutable","cross-origin-resource-policy":"cross-origin","x-robots-tag":"noindex","x-content-type-options":"nosniff","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","cf-ray":"a4d4928c8901e8dc-SYD","age":"4591716","etag":"\"906ce2d9e2ef7713fe174659f115ce62\"","date":"Tue, 20 Oct 2026 02:25:31 GMT","content-length":"905","x-jsr-backend":"modules","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=W4Z46GdfmhNj0hfjo%2FINQRAtoeYl73tZkmdxHsjwblC9E2qdWO2cNdx22dSjC%2FoV12Ha2U6hq0vHX34Yvau66eSpzDL06dIugr%2FJ9gy7mcDFRdByykffR5M%3D\"}]}","vary":"Origin","cf-cache-status":"HIT"},"url":"https://jsr.io/@std/assert/1.0.18/not_match.ts","time":1792463131}
