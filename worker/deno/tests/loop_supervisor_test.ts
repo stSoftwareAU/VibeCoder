@@ -275,6 +275,82 @@ Deno.test({
   },
 });
 
+/** The PIDs of every `sleep` process descended from `pid`. */
+async function sleepDescendants(pid: number): Promise<number[]> {
+  const sleeps: number[] = [];
+  for (const descendant of await getDescendants(pid)) {
+    const ps = await new Deno.Command("ps", {
+      args: ["-o", "comm=", "-p", String(descendant)],
+      stdout: "piped",
+      stderr: "null",
+    }).output();
+    const comm = new TextDecoder().decode(ps.stdout).trim();
+    if (comm === "sleep" || comm.endsWith("/sleep")) sleeps.push(descendant);
+  }
+  return sleeps;
+}
+
+Deno.test({
+  name:
+    "loop.sh - a signal during the failure backoff does not cut it short (Issue #4062)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // A terminal hangup signals the whole foreground process group: loop.sh
+    // survives through its trap, but the backoff `sleep` it is waiting on
+    // must not die either, or a host whose launcher fails every cycle is
+    // relaunched every few seconds instead of backing off.
+    const backoffSeconds = 5;
+    const harness = await setupHarness({
+      runStub: "#!/bin/bash\necho launched >> invocations.log\nexit 1\n",
+    });
+    const child = spawnLoop(harness.tmpDir, {
+      LOOP_SLEEP_SECONDS: String(backoffSeconds),
+    });
+    try {
+      for (let i = 0; i < 50; i++) {
+        if (await readInvocationCount(harness.tmpDir) >= 1) break;
+        await delay(100);
+      }
+      assertEquals(await readInvocationCount(harness.tmpDir), 1);
+      const backoffStarted = Date.now();
+
+      // Signal the supervisor and its sleep, as a process-group hangup
+      // does, repeatedly through most of the backoff.
+      while (Date.now() - backoffStarted < (backoffSeconds - 1.5) * 1000) {
+        for (const pid of [child.pid, ...await sleepDescendants(child.pid)]) {
+          for (const sig of ["SIGHUP", "SIGTERM"] as const) {
+            try {
+              Deno.kill(pid, sig);
+            } catch { /* already gone */ }
+          }
+        }
+        await delay(300);
+      }
+
+      assertEquals(
+        await readInvocationCount(harness.tmpDir),
+        1,
+        "a signal must not end the backoff early and relaunch run.sh",
+      );
+
+      // And the backoff still ends: the supervisor relaunches once it has
+      // elapsed in full.
+      for (let i = 0; i < 60; i++) {
+        if (await readInvocationCount(harness.tmpDir) >= 2) break;
+        await delay(100);
+      }
+      assert(
+        await readInvocationCount(harness.tmpDir) >= 2,
+        "loop.sh must relaunch run.sh once the backoff has elapsed",
+      );
+    } finally {
+      await killTree(child);
+      await harness.cleanup();
+    }
+  },
+});
+
 Deno.test({
   name: "loop.sh - survives SIGTERM and continues looping (Issue #1836)",
   permissions: { run: true, read: true, write: true, env: true },

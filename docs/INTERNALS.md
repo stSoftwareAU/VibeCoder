@@ -4006,6 +4006,14 @@ Four boundaries make it safe to run on every scan:
   complements rather than replaces. "Pushed" is measured against every remote
   ref, not `origin/<branch>` — a merged milestone branch is routinely deleted
   on the remote while its commits live on the default branch.
+- **The primary clone is released, not fought.** When the shared clone
+  (`<work root>/<repo>`) itself has the closed milestone's branch checked out,
+  the sweep takes the repository's maintenance lease, detaches the clone's
+  `HEAD` at the branch tip (the tree does not change) and then deletes the
+  branch. A dirty tree or a held lease is a *deferral* — one INFO line, the
+  milestone left unswept, retried next scan — never a warning on every scan
+  (Issue #4060). Stale worktree records are pruned first, so a worktree whose
+  directory is gone no longer holds its branch.
 - **Never fatal.** A failed removal is logged loud and the milestone is *not*
   recorded as swept, so the next scan retries it; the run itself always
   completes. The sweep is independent of `enable_session_resume` — with resume
