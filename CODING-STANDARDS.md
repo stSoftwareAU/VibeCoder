@@ -41,6 +41,16 @@ summarise, authorised.
   `grep -r SIMPLE-ON-PURPOSE` lists every cut:
   `// SIMPLE-ON-PURPOSE: linear scan, fine to 10,000 rows — upgrade when a table exceeds 10,000 rows`.
 - **DRY** — Avoid code duplication; maintain a single source of truth.
+- **Change every copy of a twinned rule** — Before changing a rule, gate,
+  matcher or check, search for text that declares a second copy of it
+  ("mirrors", "runs the same gate as", "shared copy of", "both carry") and for
+  its function or rule name. Change every copy in the same PR, or make one call
+  the other. If both copies must stay, add a test that fails when they
+  disagree. The Test Plan names the copies found, or says none was found. This
+  document and `prompts/coding_guidelines/prompt.md` are one such pair (see
+  [Language-Agnostic Standards vs Per-Language Buckets](#language-agnostic-standards-vs-per-language-buckets)),
+  and the completion phase's PR-summary gates and `deno task pr-summary-check`
+  are another (see [PR Summary and Evidence](#pr-summary-and-evidence)).
 - **Boy Scout Rule** — Leave the code cleaner than you found it.
 - **Single Responsibility / Smaller Files** — Favour many smaller, focused
   source files over large monolithic ones.
@@ -166,9 +176,20 @@ PR summary which of the two the change chose. A persisted shape changed with
 neither a bumped key nor an old-shape test is a blocking self-review finding
 (Issue #3328).
 
-This covers data the code writes and later reads back itself. An interface a
-deployed extension reads from outside this repository follows
-[A Contract a Deployed Extension Reads Is Additive-Only](#a-contract-a-deployed-extension-reads-is-additive-only)
+**A cached API response is persisted data.** A client that reads an API response
+through a cache that outlives a deployment — a service worker, an HTTP cache, an
+offline store — still holds the previous release's bodies after the update, so
+its parser is held to the rule above. Making a newly served field required, or
+renaming one, is a shape change. Unless the cache key is bumped, read the old
+shape: a renamed field under its old name too, and a newly served field's
+absence as unknown (null) — never as an error, and never as a made-up default.
+The old-shape test seeds a body the previous release served. An issue or plan
+that says a missing value throws does not override this (Issue #3564).
+
+This covers data the code writes and later reads back itself, a client's cached
+copy of its own API's responses included. An interface a deployed extension
+reads from outside this repository follows [A Contract a Deployed Extension
+Reads Is Additive-Only](#a-contract-a-deployed-extension-reads-is-additive-only)
 instead, where a version bump is a release decision.
 
 Past regressions: VibeCoder#3325 moved `getSubIssues` from `number[]` to
@@ -179,7 +200,11 @@ parent/child gate; GRQ-AutoTrader#2481 made `cashChange` read only
 `row.interest_charged` while the service worker's `grq-api-v1:` partitions
 still served rows with the old `interest` key. The precedent for the fix is
 Issue #2173, which bumped `issue_state_v1_` to `issue_state_v2_` when that
-payload gained `milestone`.
+payload gained `milestone`. Issue #3564 records the same fault after this rule
+landed: a planner-written sub-issue told the coder that a newly served response
+field's missing value throws, the sub-PR did exactly that, and every installed
+client's service-worker cache still held the previous release's body without
+the field.
 
 ## Automation and Shared GitHub State
 
@@ -352,6 +377,19 @@ earns its place by meeting all four conditions:
    A retyped constant stays green while the page and the test agree with each
    other and the code has moved on — the very drift the suite was written to
    catch.
+
+   The same holds for a flag, a command line, a function or export name, a
+   version or a tag, and for a value a checked-in config file holds: call the
+   function that builds it, read the file (the `tag` of an entry in
+   `container/tools.json`, say), and use `fn.name` for a function name.
+   Deleting the new doc sentence does not catch a typed-in value, because the
+   test still goes red, so the red check for each code-held value is a source
+   mutation: change the value in the module or file that produces it, run the
+   drift test, see it fail, then restore it, and record one Test Plan line per
+   value. VibeCoder#3478 typed in the Floci tag that `container/tools.json`
+   holds, and VibeCoder#3654 typed in the clone flags that
+   `buildShallowCloneArgs` returns; a reviewer changed each source value and
+   the test stayed green.
 4. **Every pinned phrase occurs only in the rule being added.** A phrase the
    section already held before the change stays green when the new rule is
    deleted — VibeCoder#3091 pinned "blocking self-review finding", which the
@@ -628,8 +666,19 @@ section the test reads (`git show <base>:<doc>`, narrowed to the same section
 title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
 <doc> <section> <phrase>...` from `worker/deno` does this), and record in the
 Test Plan that each pinned phrase is absent from the base section; a phrase
-the base section already held is a blocking self-review finding. A pin a
-change only moves, while converting an existing whole-file drift test to
+the base section already held is a blocking self-review finding. A pin that
+names a value a module or a checked-in config file already holds — a flag, a
+command line, a function or export name, a status, marker, key, default,
+version or tag — is built from that module or file, never typed in: import it,
+call it, or read the JSON, and use `fn.name` for a function name (condition 3
+of **Documentation-drift tests** in `CODING-STANDARDS.md` is the canonical
+rule). Removing the doc change does not catch a typed-in value, because the
+test still goes red without the new sentence; so for each such value, change
+it in the module or file that produces it, run the drift test, see it fail,
+then restore it. Record one Test Plan line per value, for example
+`buildShallowCloneArgs --depth=1 → --filter=blob:none: test red`. A pin that
+stays green when its source value changes is a blocking self-review finding. A
+pin a change only moves, while converting an existing whole-file drift test to
 `section()`, is meant to be on base, so this check does not apply to it:
 **Re-scoping an existing drift test** in `CODING-STANDARDS.md` red-checks
 each moved check in its own section instead. A test that only pins current
@@ -1346,19 +1395,34 @@ simply no longer waits out a stopwatch to do it.
   unfixed pattern to see it hang or fail the growth check before counting it:
   Issue #3085's growth test fed dots that ran to the end of the value, which
   never backtracks, when the input that does is dots followed by `x`.
-- **If, and only if, no observable output distinguishes the two, guard by
-  shape rather than by clock** — catastrophic backtracking has no wrong output,
-  only a runtime one, so such a test must measure. Use
+- **The target repository's own testing standard wins on timing.** Fleet
+  runs work in repositories whose standards keep timing out of unit tests
+  ("no `Instant`/`elapsed` for pass/fail", "timing belongs in `benches/`");
+  there that rule covers a ratio of two readings too, because the PR #1170
+  lesson above is a ratio going red on linear work. Guard super-linear cost
+  there by the output first, then by **deterministic work** counted through
+  an injected observer or counter and asserted to grow linearly
+  (stSoftwareAU/NEAT-AI-Discovery PRs #2321 and #2345 replaced fleet-written
+  ratio tests that way), and put timing comparisons in the repository's
+  benchmark harness. Never cite this repository's helpers or issue numbers
+  (`assertLinearGrowth`, Issue #530) as a precedent in another repository,
+  and confirm a precedent file exists before naming it (Issue #3680).
+- **If, and only if, neither the output nor a work count distinguishes the
+  two, this repository allows a ratio as a last resort** — catastrophic
+  backtracking has no wrong output, only a runtime one, and a regex engine
+  exposes no step counter, so such a test must measure. It is a last resort,
+  not a safe default: by the lesson above, a ratio can still flake under
+  load, so it runs in the serial pass, where the machine is its own. Use
   [`tests/support/growth.ts`](worker/deno/tests/support/growth.ts)
   (`assertLinearGrowth`), which times the same work at size N and 4N and fails
   only when the cost grew faster than the input. A slower fleet host inflates
-  both readings and stays green; an absolute millisecond budget does not
+  both readings, where an absolute millisecond budget simply goes red
   (Issue #530). The rule in one line: **compare two readings of the same work,
-  never a reading against a constant.** A ratio assertion is permitted and is
-  not a `test-audit` finding; an absolute wall-clock threshold is forbidden and
-  is one (Issue #786). Such a test measures deliberately, so it runs in the
-  serial pass — and it is still a unit test. Prefer the behavioural form where
-  it works: PR #1170 moved twelve ReDoS guards onto asserting what the code
+  never a reading against a constant.** Because this standard explicitly
+  allows it, such a ratio assertion is not a `test-audit` finding in this
+  repository; an absolute wall-clock threshold is forbidden and is one
+  (Issue #786). It is still a unit test. Prefer the behavioural form where it
+  works: PR #1170 moved twelve ReDoS guards onto asserting what the code
   *produces* for an adversarial input, because a pattern that never returns
   hangs the case on every host. It only works when the pre-fix cost is large
   enough to hang — `plan_coverage_gate_bounds_1245_test.ts` guards a pattern
@@ -1366,23 +1430,26 @@ simply no longer waits out a stopwatch to do it.
   stalls a planning close but finishes well inside a test timeout, so the
   ratio is the only detector it has (Issue #1245).
 - **Vet every regex on untrusted text, one hostile case per pattern.** Every
-  regex a change adds or edits that runs on untrusted or agent-written text
-  (an issue body, a PR summary, agent output) gets its own check, not one per
+  regex a change adds or edits that runs on untrusted or agent-written text (an
+  issue body, a PR summary, agent output) gets its own check, not one per
   module. Read each pattern for two quantifiers that can match the same
   characters with only optional tokens between them: `\s*:?\s*$`,
   `\s*[:\-–—]\s*(.+)$`, or an unanchored `[.!\s]+$` or `\s+$`. Remove the
   overlap: trim the line first and drop the redundant quantifier, make the
   pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
-  trailing whitespace, or cap the run. A `(.*)$` tail can fail too, because
-  `.` stops at a lone `\r`: after an unanchored label such as `reason:`, the
-  search restarts at every later occurrence of the label and rescans to the
-  end each time, so read the value with `([^\n]*)` and no `$` (Issue #3186).
-  Then add one hostile case per pattern: a long run of the shared character
-  followed by a character the pattern rejects. A parser with several
-  patterns needs a case for each. stSoftwareAU/VibeCoder#3085
-  capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
-  with the same defect, and #3160's hostile cases covered the inline form while
-  `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
+  trailing whitespace, or cap the run. A `(.*)$` tail can fail too, because `.`
+  stops at a lone `\r`: after an unanchored label such as `reason:`, the search
+  restarts at every later occurrence of the label and rescans to the end each
+  time, so read the value with `([^\n]*)` and no `$`. Then add one
+  hostile case per pattern: a long run of the shared character followed by a
+  character the pattern rejects. A parser with several patterns needs a case for
+  each. Each case asserts the pattern's result on an input long enough that
+  catastrophic backtracking never returns, so it hangs on every host, or a
+  deterministic step count: guard super-linear cost by output, then by counted
+  work, as the timing bullets above say. It is not a wall-clock ratio where the
+  repository's own testing standard keeps timing out of unit tests.
+  Capping one pattern and leaving its sibling in the same file with the same
+  defect is the usual miss.
 
 ### Integration tests
 
@@ -1902,6 +1969,13 @@ the Branch outcomes gate sees the list rendered at the
 `<!-- vibe-branch-outcomes -->` marker. It blocks on invalid facts, ambiguous
 block ownership or unresolved evidence; a safely identified legacy duplicate is
 regenerated from the facts.
+
+`deno task pr-summary-check`
+(`worker/deno/lib/pr_summary_check.ts`) is the twin of the completion phase's
+PR-summary gates (`worker/deno/lib/phases/completion_phase.ts`): a change to how
+the completion phase runs one of those gates, or prepares its input, changes
+`pr_summary_check.ts` the same way in the same PR. A change inside a validator
+both files call reaches both already.
 
 Pending required CI/quality execution and routine clean code review belong in
 `## Merge verification` on the originating PR, with an honest pending status.
