@@ -1,0 +1,7 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  Logs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 365
+      KmsKeyId: arn:aws:kms:ap-southeast-2:111122223333:key/example
