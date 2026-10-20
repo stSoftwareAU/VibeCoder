@@ -852,5 +852,5 @@ Deno.test("checkov-report - an unreadable report makes main return 1 without thr
   }
   assertEquals(code, 1);
   assertEquals(logged.length, 1);
-  assertStringIncludes(logged[0], `cannot read report ${missing}`);
+  assertStringIncludes(logged[0] ?? "", `cannot read report ${missing}`);
 });
