@@ -981,7 +981,12 @@ Deno.test({
         timeoutSeconds: 30,
         killAfterSeconds: 2,
       });
-      assert(!result.ok, `${agentProvider} must be refused before spawn`);
+      // Strictly `false`: a refusal that lost its `ok` would read as falsy
+      // here but break callers that discriminate on `ok === false`.
+      assert(
+        result.ok === false,
+        `${agentProvider} must be refused before spawn`,
+      );
       assertStringIncludes(result.error.message, "cannot carry");
       assertStringIncludes(result.error.message, "Issue #4010");
     }
