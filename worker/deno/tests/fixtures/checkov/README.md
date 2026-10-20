@@ -13,6 +13,10 @@ untrimmed) and, where a skip needs to be looked up, the `template.yaml` Checkov
 scanned. `no_templates` has no template, as the case is a scan that finds
 nothing to check.
 
+This directory is excluded from the repository scan via `--skip-path` in
+`CHECKOV_SCAN_ARGS` (`worker/deno/lib/checkov_report.ts`), so the deliberately
+bad templates here do not fail CI or the local gate.
+
 | Case            | Observed exit code | What it shows                                               |
 | --------------- | ------------------ | ----------------------------------------------------------- |
 | clean           | 0                  | Two checks passed, nothing failed                           |

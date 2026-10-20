@@ -30,7 +30,11 @@
 
 import { installConsoleRedaction } from "./console_redaction.ts";
 
-/** The Checkov scan both the CI workflow and the local gate run. */
+/**
+ * The Checkov scan both the CI workflow and the local gate run. The fixture
+ * templates under worker/deno/tests/fixtures/checkov are deliberately bad, so
+ * the scan excludes that directory with `--skip-path`.
+ */
 export const CHECKOV_SCAN_ARGS: readonly string[] = [
   "-d",
   ".",
@@ -39,6 +43,8 @@ export const CHECKOV_SCAN_ARGS: readonly string[] = [
   "-o",
   "json",
   "--skip-download",
+  "--skip-path",
+  "worker/deno/tests/fixtures/checkov",
 ] as const;
 
 /**

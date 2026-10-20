@@ -44,6 +44,21 @@ const WEAKENING_FLAGS = [
   "--skip-framework",
 ];
 
+/**
+ * The one `--skip-path` use allowed: the pair CHECKOV_SCAN_ARGS already carries,
+ * which keeps the intentionally bad #3970 fixtures out of the repo scan. It is
+ * read from CHECKOV_SCAN_ARGS rather than hard-coded, so the exception cannot
+ * drift from the scan contract.
+ */
+const ALLOWED_SKIP_PATH = (() => {
+  const index = CHECKOV_SCAN_ARGS.indexOf("--skip-path");
+  assert(
+    index !== -1 && index + 1 < CHECKOV_SCAN_ARGS.length,
+    "CHECKOV_SCAN_ARGS must carry a --skip-path value",
+  );
+  return `--skip-path ${CHECKOV_SCAN_ARGS[index + 1]}`;
+})();
+
 type YamlMap = Record<string, unknown>;
 
 function asMap(value: unknown): YamlMap {
@@ -184,8 +199,13 @@ function lockStepProblems(
   }
 
   // 4. No weakening flag anywhere in a run step, whether or not it is split
-  // across continuation lines.
-  const allRuns = runs.join("\n");
+  // across continuation lines. Exception: ALLOWED_SKIP_PATH, removed as whole
+  // tokens only, so a longer path such as `checkov-extra` is still reported.
+  const allowedSkip = new RegExp(
+    `(?:^|\\s)${escapeRegExp(ALLOWED_SKIP_PATH)}(?=\\s|$)`,
+    "g",
+  );
+  const allRuns = runs.join("\n").replace(allowedSkip, " ");
   for (const flag of WEAKENING_FLAGS) {
     const wholeWord = new RegExp(`(?:^|\\s)${escapeRegExp(flag)}(?:=|\\s|$)`);
     if (wholeWord.test(allRuns)) {
@@ -386,6 +406,19 @@ Deno.test("checkov_workflow - a path filter under workflow_call is reported", as
   const problems = lockStepProblems(fixture, quality);
   assertProblem(problems, "must not filter by path");
   assertEquals(problems.length, 1);
+});
+
+Deno.test("checkov_workflow - a --skip-path other than the allowed pair is reported", async () => {
+  const { checkov, quality } = await readWorkflows();
+  const fixture = checkov.replace(
+    "--skip-path worker/deno/tests/fixtures/checkov",
+    "--skip-path worker/deno/tests/fixtures/checkov-extra",
+  );
+  assert(fixture !== checkov, "fixture did not change the skip path");
+  assertProblem(
+    lockStepProblems(fixture, quality),
+    "--skip-path weakens the scan",
+  );
 });
 
 Deno.test("checkov_workflow - a changed scan arg is reported", async () => {

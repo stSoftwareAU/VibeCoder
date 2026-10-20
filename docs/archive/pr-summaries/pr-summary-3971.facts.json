@@ -26,6 +26,14 @@
         "test": "worker/deno/tests/checkov_workflow_test.ts",
         "testName": "checkov_workflow - checkov removed from gate.needs is reported",
         "flipWentRed": "removed checkov from gate.needs; the lock-step test went red"
+      },
+      {
+        "path": "worker/deno/tests/checkov_workflow_test.ts",
+        "line": 204,
+        "outcome": "only the exact --skip-path pair from CHECKOV_SCAN_ARGS is stripped before the weakening-flag check; any other --skip-path is reported",
+        "test": "worker/deno/tests/checkov_workflow_test.ts",
+        "testName": "checkov_workflow - a --skip-path other than the allowed pair is reported",
+        "flipWentRed": "widened the allowance so a longer path was stripped; the new negative test went red"
       }
     ]
   }
