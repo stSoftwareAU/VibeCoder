@@ -96,7 +96,10 @@ not a rule.
 - `deno task test:unit tests/breakpoint_sides_3656_docs_test.ts tests/open_state_viewport_3335_docs_test.ts tests/front_end_design_anti_patterns_2636_test.ts tests/bucket_check_numbering_test.ts`
   ran in `worker/deno`: 21 passed, 0 failed.
 - `markdownlint-cli2` on the three edited Markdown files reported 0 issues.
-- `./quality.sh` ran on the final head: see the result line below.
+- `./quality.sh` ran on head `c566dcc2`, which holds every code, prompt and
+  test change in this PR: `Result: PASSED (with skipped checks)`. Only
+  `config integration` was skipped; deno tests, lint, type check, fmt,
+  markdownlint and semgrep all passed.
 
 <!-- vibe-branch-outcomes -->
 
