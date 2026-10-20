@@ -223,6 +223,16 @@ export async function applyDependencyConflictRules(
     });
     deferred.push({ path, reason });
   };
+  // Issue #4063: a rule declining a file (or no rule matching it) is the
+  // routine hand-off to the AI resolver — the expected path, so INFO. The
+  // failures above (unreadable, unstageable, ...) stay at WARNING.
+  const handOff = (path: string, reason: string): void => {
+    logger?.info?.(`Conflicted file left for the AI fallback: ${reason}`, {
+      path,
+      reason,
+    });
+    deferred.push({ path, reason });
+  };
 
   const lockFiles = conflictedFiles.filter((path) =>
     lockSpecForPath(path) !== undefined
@@ -241,7 +251,7 @@ export async function applyDependencyConflictRules(
     const rule = registry.find(path);
     if (!rule) {
       manifestOutcomes.set(path, "unresolved");
-      defer(path, "no deterministic rule handles this file");
+      handOff(path, "no deterministic rule handles this file");
       continue;
     }
 
@@ -291,7 +301,7 @@ export async function applyDependencyConflictRules(
     const outcome = rule.resolve(parsed.value, { path, base });
     if (outcome.kind === "unresolved") {
       manifestOutcomes.set(path, "unresolved");
-      defer(path, outcome.reason);
+      handOff(path, outcome.reason);
       continue;
     }
 
