@@ -265,6 +265,8 @@ export interface WorkerConfig {
   lowPriorityLabel: string;
   /** Timeout in seconds for Claude CLI (default: 3600 = 1 hour, Issue #1824) */
   claudeTimeout: number;
+  /** Positive per-invocation Claude Code turn cap; defaults to 100. */
+  claudeMaxTurns?: number;
   /**
    * Seconds of runway to the supervisor hard cap a new implementation claim
    * must have (`.config.json` `min_claim_runway_seconds`, Issues #289/#425).
@@ -997,6 +999,8 @@ export interface RepoConfig {
   skipMutationCheck?: boolean;
   /** Wall-clock budget in seconds for the mutation gate; positive integer, default 300, max 3600 (Issue #3393). */
   mutationCheckBudgetSeconds?: number;
+  /** When true, skips the coverage carry-over gate on PR completion (Issue #3795). */
+  skipCoverageCarryOverCheck?: boolean;
   /**
    * Credentials this repository's own checks need (Issues #573, #574).
    *
@@ -1344,6 +1348,8 @@ export interface ConfigFile {
   best_planning_model?: string;
   /** Operational settings (Issue #277) — only overrides stored */
   claude_timeout?: number;
+  /** Positive per-invocation Claude Code turn cap; defaults to 100. */
+  claude_max_turns?: number;
   min_claim_runway_seconds?: number;
   /** Labels marking an issue as a long job (Issue #245) */
   claim_long_job_labels?: string[];
@@ -1487,6 +1493,13 @@ export interface ConfigFile {
   /** Stale workflow thresholds (Issue #1240) */
   stale_failed_diagnostic_days?: number;
   stale_planning_warning_days?: number;
+  /** Provider-independent phase-to-tier policy. */
+  phase_model_tiers?: Record<string, "best" | "standard" | "fast">;
+  /** Concrete model ids for each provider's semantic tiers. */
+  provider_model_tiers?: Record<
+    string,
+    Partial<Record<"best" | "standard" | "fast", string>>
+  >;
   /** Per-phase model tier overrides (Issue #1265) */
   phase_model_overrides?: Record<string, string>;
   /** Per-phase effort level overrides (Issue #1403) */

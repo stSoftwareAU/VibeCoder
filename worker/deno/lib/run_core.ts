@@ -198,7 +198,7 @@ import {
 export interface RunCoreConfig {
   /** Total duration to run before planned shutdown (seconds, default: 3600). */
   runDurationSeconds: number;
-  /** Base sleep interval between scan cycles (seconds, default: 120). */
+  /** Base sleep interval between scan cycles (seconds, default: 300). */
   sleepInterval: number;
   /**
    * Concurrent-issue slot count (Issue #4174; default 1). Made available and
@@ -581,12 +581,21 @@ export interface RunCoreDeps {
   // Health checks
   /**
    * Agent health probe. An unhealthy value carries the probe's `message` so
-   * the skip-cycle line can say why (Issue #3180).
+   * the skip-cycle line can say why (Issue #3180), and `pauseSeconds` when
+   * the failure wrote the durable usage signal (Issue #4014 — absent for a
+   * classified outage that deliberately writes none).
    */
   checkClaudeHealth: (
     provider?: AgentProviderSelector,
   ) => Promise<
-    Result<{ healthy: boolean; exitCode?: number; message?: string }>
+    Result<
+      {
+        healthy: boolean;
+        exitCode?: number;
+        message?: string;
+        pauseSeconds?: number;
+      }
+    >
   >;
   /**
    * Fresh (uncached) agent auth re-probe for the mid-cycle auth-outage
@@ -723,6 +732,14 @@ export interface RunCoreDeps {
    * without the watchdog still runs every other priority unchanged.
    */
   scanBlockingPrStalls?: () => Promise<Result<void>>;
+
+  /**
+   * Priority 1.64: re-sync a PR body whose recorded summary digest no longer
+   * matches the summary at the PR head, whoever pushed it (Issue #3760).
+   *
+   * Optional — when absent the priority is a no-op.
+   */
+  reconcilePrBodyDigests?: () => Promise<Result<void>>;
 
   /**
    * Priority 1.65: Auto-merge, and the post-scan pass that repeats it once
@@ -1465,6 +1482,8 @@ export interface RunCoreDeps {
    * test deps can omit it.
    */
   runIdleTaskFiler?: () => Promise<void>;
+  /** Scheduled local security scan, independent of GitHub filing gates. */
+  runTranscriptScan?: () => Promise<void>;
 
   /**
    * Whether the weekly-quota pace guard is engaged right now (Issues #1885,
@@ -1964,6 +1983,24 @@ export function buildPriorityDispatchTable(
       maintenanceLane: true,
       execute: () =>
         (deps.scanBlockingPrStalls?.() ??
+          Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
+            r.ok
+              ? { ok: true as const, value: { processed: false } }
+              : { ok: false as const, error: r.error }
+          ),
+    },
+    {
+      // Issue #3760: a push made outside the worker never reaches the
+      // post-push sync. This pass compares digests through the contents API
+      // with no checkout, and stays silent when they match. Never claims an
+      // issue. Not in the maintenance lane: it never touches the shared clone
+      // (it uses a disposable clone only on a mismatch). Deferrable because it
+      // is a fixed-cost sweep (Issue #2449).
+      priority: 1.64,
+      name: "Reconcile PR Body Digests",
+      budgetTier: "deferrable",
+      execute: () =>
+        (deps.reconcilePrBodyDigests?.() ??
           Promise.resolve({ ok: true as const, value: undefined })).then((r) =>
             r.ok
               ? { ok: true as const, value: { processed: false } }
@@ -3006,7 +3043,10 @@ async function runIssueScanLoop(
         deps,
         issue.repo,
         issue.issueNumber,
-        undefined,
+        runOutcome?.kind === "claim_stale" &&
+          runOutcome.reason === "work_already_merged"
+          ? runOutcome
+          : undefined,
         undefined,
         { claimNotHeld },
       );
@@ -4883,7 +4923,10 @@ async function runSlotIssue(
       deps,
       issue.repo,
       issue.issueNumber,
-      undefined,
+      runOutcome?.kind === "claim_stale" &&
+        runOutcome.reason === "work_already_merged"
+        ? runOutcome
+        : undefined,
       undefined,
       { claimNotHeld },
     );
@@ -5207,6 +5250,7 @@ function runIdleWorkHooks(
   // from outside priority dispatch — attribute them to the hooks.
   return withPriorityContext("Idle Work Hooks", async () => {
     const outcome: IdleHookOutcome = { filed: false };
+    await deps.runTranscriptScan?.();
     const flagFragment =
       `foundClaimableIssue=${req.scanFoundClaimable} scanHadSuccess=${req.scanHadSuccess}`;
     // Issue #2106: run the idle-detect audit at the same gate
@@ -5593,12 +5637,13 @@ export function describeHealthCheckFailure(
  * (Issue #2055).
  *
  * Called only when the active provider's health check failed with
- * `exitCode: 3` (usage/rate limit) — the same failure class the
- * invocation-layer `agent_provider_fallback` path fires on. Each alternative
- * is probed with the same health check; the first healthy id is returned and
- * the caller switches the active provider for this run. A failed alternative
- * is logged loudly rather than skipped silently, because an operator who
- * configured it as the fallback needs to know it is down too.
+ * `exitCode: 3` — a usage/rate limit, or another classified provider outage
+ * (quota exhaustion or model unavailability, Issue #4014) — the same failure
+ * classes the invocation-layer `agent_provider_fallback` path fires on. Each
+ * alternative is probed with the same health check; the first healthy id is
+ * returned and the caller switches the active provider for this run. A failed
+ * alternative is logged loudly rather than skipped silently, because an
+ * operator who configured it as the fallback needs to know it is down too.
  *
  * @param deps - Injected dependencies
  * @param config - Loop configuration carrying the ordered alternatives
@@ -6400,10 +6445,13 @@ export async function runCoreLoop(
             // alternatives: probe them in order, and the first healthy one
             // becomes the active provider for this run — the same
             // process-wide switch `provider_auto_runtime` performs. Only a
-            // usage/rate-limit failure (exitCode 3) is fallback-eligible;
-            // an auth failure is not fixed by switching providers, and
-            // every other failure keeps the skip-cycle path. The next run
-            // re-reads config and starts on the preferred provider again.
+            // classified provider outage (exitCode 3: usage/rate limit, or a
+            // quota-exhausted / rate-limit / model-unavailable refusal read
+            // from the provider's structured events, Issue #4014) is
+            // fallback-eligible; an auth failure is not fixed by switching
+            // providers, and every other failure keeps the skip-cycle path.
+            // The next run re-reads config and starts on the preferred
+            // provider again.
             const exitCode = claudeHealth.ok
               ? claudeHealth.value.exitCode
               : undefined;
@@ -6424,9 +6472,17 @@ export async function runCoreLoop(
             // (Issue #2637) Drain the preferred provider before any fallback:
             // an exhausted credential rotates to the next one in the pool
             // that still has budget, and the configured alternatives are
-            // probed only once every credential is spent.
+            // probed only once every credential is spent. Rotation only
+            // terminates on the usage signal the pause-bearing failure wrote,
+            // so a classified outage without one (Issue #4014 — a signal
+            // would pause auto-mode claim routing and defeat the fallback)
+            // goes straight to the fallback probe instead of rotating
+            // between two budgeted credentials for ever.
             if (
-              exitCode === 3 && fallbackSwitchedFrom === undefined &&
+              exitCode === 3 &&
+              claudeHealth.ok &&
+              claudeHealth.value.pauseSeconds !== undefined &&
+              fallbackSwitchedFrom === undefined &&
               deps.selectPreferredCredential
             ) {
               const label = await deps.selectPreferredCredential({

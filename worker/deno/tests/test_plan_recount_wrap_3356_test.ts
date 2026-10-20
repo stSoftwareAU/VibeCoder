@@ -255,6 +255,7 @@ Deno.test("wrapped test counts mixed with red-run prose are reported unchecked (
   assertEquals(found[0]!.reason, "the block mixes tests and passed counts");
 });
 
+// "Extended" governs every figure in its sentence, so both figures stay unchecked rather than compared (#3740).
 Deno.test("wrapped partial additions are reported unchecked instead of silently skipped", () => {
   const opts = {
     summary:
@@ -263,11 +264,15 @@ Deno.test("wrapped partial additions are reported unchecked instead of silently 
   };
   assertEquals(findTestPlanMismatches(opts), []);
   const found = findUncheckedRunResults(opts);
-  assertEquals(found.length, 1);
-  assertEquals(
-    found[0]!.reason,
-    "the block describes partial test additions, not whole-file counts",
-  );
+  assertEquals(found.length, 2);
+  for (const entry of found) {
+    assertEquals(
+      entry.reason,
+      "the block describes partial test additions, not whole-file counts",
+    );
+    assertEquals(entry.line.includes("tests/a_test.ts"), true);
+    assertEquals(entry.line.includes("tests/b_test.ts"), true);
+  }
 });
 
 Deno.test("a per-file breakdown is not counted again in the next run (3315 shape)", () => {

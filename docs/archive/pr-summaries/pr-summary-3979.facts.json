@@ -1,0 +1,184 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 75,
+        "outcome": "oversized input is refused before a partial parse",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "oversized legacy evidence is refused before ownership is inferred from a partial parse (Issue #3979)",
+        "flipWentRed": "input-bound mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 91,
+        "outcome": "fenced example markers do not own a block",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts preserve line endings and fenced examples outside the owned block (Issue #3979)",
+        "flipWentRed": "fenced-code mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 100,
+        "outcome": "duplicate opening markers are refused",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "applyBranchOutcomesFacts refuses duplicate ownership markers (Issue #3979)",
+        "flipWentRed": "duplicate-start mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 100,
+        "outcome": "duplicate closing markers are refused",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts cannot erase ambiguous evidence or an unreached-outcome admission (Issue #3979)",
+        "flipWentRed": "duplicate-end mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 101,
+        "outcome": "an end marker without a start is refused",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts cannot erase ambiguous evidence or an unreached-outcome admission (Issue #3979)",
+        "flipWentRed": "missing-start mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 101,
+        "outcome": "reversed markers are refused",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts cannot erase ambiguous evidence or an unreached-outcome admission (Issue #3979)",
+        "flipWentRed": "marker-order mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 118,
+        "outcome": "unreached-outcome admission remains blocking",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts cannot erase ambiguous evidence or an unreached-outcome admission (Issue #3979)",
+        "flipWentRed": "unresolved-admission mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 129,
+        "outcome": "an existing owned block is refreshed",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts replace a legacy duplicate once and preserve unrelated narrative (Issue #3979)",
+        "flipWentRed": "owned-refresh mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 137,
+        "outcome": "safely identified legacy lists are removed",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts replace a legacy duplicate once and preserve unrelated narrative (Issue #3979)",
+        "flipWentRed": "legacy-discovery mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 139,
+        "outcome": "inline legacy evidence is not discarded",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts cannot erase ambiguous evidence or an unreached-outcome admission (Issue #3979)",
+        "flipWentRed": "inline-legacy-body mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 144,
+        "outcome": "unindented narrative is not treated as owned continuation",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts cannot erase ambiguous evidence or an unreached-outcome admission (Issue #3979)",
+        "flipWentRed": "lazy-continuation mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 146,
+        "outcome": "unknown legacy entry shapes remain unresolved",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts cannot erase ambiguous evidence or an unreached-outcome admission (Issue #3979)",
+        "flipWentRed": "legacy-entry-shape mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 149,
+        "outcome": "uncaptured citations beyond the parser entry cap are not discarded",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts cannot erase ambiguous evidence or an unreached-outcome admission (Issue #3979)",
+        "flipWentRed": "uncaptured-citation mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 162,
+        "outcome": "inline-code header remains ambiguous",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts cannot erase ambiguous evidence or an unreached-outcome admission (Issue #3979)",
+        "flipWentRed": "inline-example mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 182,
+        "outcome": "generated block replaces its opening marker",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts replace a legacy duplicate once and preserve unrelated narrative (Issue #3979)",
+        "flipWentRed": "marker-placement mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 184,
+        "outcome": "unrelated narrative is retained",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts replace a legacy duplicate once and preserve unrelated narrative (Issue #3979)",
+        "flipWentRed": "unrelated-narrative mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 193,
+        "outcome": "output exceeding the parser window is refused",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "rendering cannot move evidence beyond the existing parser limit (Issue #3979)",
+        "flipWentRed": "output-bound mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 136,
+        "outcome": "wrapped inline-code examples remain explicitly ambiguous",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "facts cannot erase ambiguous evidence or an unreached-outcome admission (Issue #3979)",
+        "flipWentRed": "removed the logical ownership rule; the named regression went red"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_facts.ts",
+        "line": 110,
+        "outcome": "known renderer markers form a legacy-entry boundary",
+        "test": "worker/deno/tests/pr_summary_facts_test.ts",
+        "testName": "a known renderer marker directly after a legacy entry is a boundary (Issue #3979)",
+        "flipWentRed": "removed the logical ownership rule; the named regression went red"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 2423,
+        "outcome": "renderer error stays blocking with its cause",
+        "test": "worker/deno/tests/completion_phase_branch_outcomes_facts_3396_test.ts",
+        "testName": "completion facts - ambiguous ownership and unresolved evidence remain blocking (Issue #3979)",
+        "flipWentRed": "completion-caller mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_summary_check.ts",
+        "line": 105,
+        "outcome": "renderer error stays blocking with its cause",
+        "test": "worker/deno/tests/pr_summary_check_test.ts",
+        "testName": "runPrSummaryCheck - ambiguous outcome ownership names the blocker (Issue #3979)",
+        "flipWentRed": "local-check-caller mutation made the named regression fail"
+      },
+      {
+        "path": "worker/deno/lib/pr_body_sync.ts",
+        "line": 567,
+        "outcome": "renderer error stays blocking with its cause",
+        "test": "worker/deno/tests/pr_body_sync_test.ts",
+        "testName": "sync - ambiguous outcome ownership fails without editing the PR (Issue #3979)",
+        "flipWentRed": "body-sync-caller mutation made the named regression fail"
+      }
+    ]
+  }
+}

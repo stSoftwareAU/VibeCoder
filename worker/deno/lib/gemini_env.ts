@@ -43,6 +43,7 @@ export const GEMINI_ENV_DENYLIST: readonly string[] = [
   ...CLAUDE_CREDENTIAL_ENV_VARS,
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
+  "CODEX_HOME",
   "DEEPSEEK_API_KEY",
 ];
 

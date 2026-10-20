@@ -9,9 +9,14 @@
  * Use setup.sh to configure via .config.json.
  */
 
+import {
+  DEFAULT_CLAUDE_MAX_TURNS,
+  validateClaudeMaxTurns,
+} from "./claude_turn_limit.ts";
 import { registerAgentPreFlightConfigs } from "./agent_pre_flight.ts";
 import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { modelTierOverrides } from "./phase_routing.ts";
 import {
   EXCLUSION_TEAM_PATTERN,
   validateConfigFileJson,
@@ -69,6 +74,7 @@ import {
   defaultQuorumPlanners,
   LABEL_DEFAULTS,
   OPERATIONAL_DEFAULTS,
+  PROVIDER_MODEL_TIERS,
 } from "./config_defaults.ts";
 import type { VerbosityLevel } from "../types.ts";
 import type { DuplicateRepoSlug } from "./repo_slug.ts";
@@ -200,6 +206,8 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   // Diff-scoped mutation gate (Issue #3393).
   skip_mutation_check: "skipMutationCheck",
   mutation_check_budget_seconds: "mutationCheckBudgetSeconds",
+  // Coverage carry-over gate (Issue #3795).
+  skip_coverage_carryover_check: "skipCoverageCarryOverCheck",
   // Credentials this repository's checks need (Issues #573, #574).
   quality_credentials: "qualityCredentials",
   docker_image: "dockerImage",
@@ -601,6 +609,9 @@ export async function loadConfig(
     DEFAULT_BEST_PLANNING_MODEL;
 
   // Operational settings — all from .config.json with defaults (Issue #277)
+  const claudeMaxTurns = validateClaudeMaxTurns(
+    file.claude_max_turns ?? DEFAULT_CLAUDE_MAX_TURNS,
+  );
   const claudeTimeout = file.claude_timeout ??
     OPERATIONAL_DEFAULTS.claudeTimeout;
   // Claim-runway floor (Issue #289). Config first, then the legacy
@@ -949,27 +960,41 @@ export async function loadConfig(
   const repoFastFailureWindowHours = file.repo_fast_failure_window_hours ??
     OPERATIONAL_DEFAULTS.repoFastFailureWindowHours;
 
+  const tierModels = modelTierOverrides(
+    file.phase_model_tiers,
+    file.provider_model_tiers,
+    PROVIDER_MODEL_TIERS,
+  );
+
   // Phase-specific model overrides (Issue #1265)
-  const phaseModelOverrides: Record<string, string> =
-    file.phase_model_overrides ?? {};
+  const phaseModelOverrides: Record<string, string> = {
+    ...tierModels.claude,
+    ...(file.phase_model_overrides ?? {}),
+  };
 
   // Phase-specific effort overrides (Issue #1403)
   const phaseEffortOverrides: Record<string, string> =
     file.phase_effort_overrides ?? {};
 
   // Phase-specific Codex model/effort overrides (Issue #363)
-  const codexPhaseModelOverrides: Record<string, string> =
-    file.codex_phase_model_overrides ?? {};
+  const codexPhaseModelOverrides: Record<string, string> = {
+    ...tierModels.codex,
+    ...(file.codex_phase_model_overrides ?? {}),
+  };
   const codexPhaseEffortOverrides: Record<string, string> =
     file.codex_phase_effort_overrides ?? {};
 
   // Phase-specific Gemini model overrides (Issue #364)
-  const geminiPhaseModelOverrides: Record<string, string> =
-    file.gemini_phase_model_overrides ?? {};
+  const geminiPhaseModelOverrides: Record<string, string> = {
+    ...tierModels.gemini,
+    ...(file.gemini_phase_model_overrides ?? {}),
+  };
 
   // Phase-specific DeepSeek model overrides (Issue #413)
-  const deepseekPhaseModelOverrides: Record<string, string> =
-    file.deepseek_phase_model_overrides ?? {};
+  const deepseekPhaseModelOverrides: Record<string, string> = {
+    ...tierModels.deepseek,
+    ...(file.deepseek_phase_model_overrides ?? {}),
+  };
 
   // Issue-executor split, host-wide (Issue #2341). A `repo_config` entry of
   // the same name overrides it per repository.
@@ -1174,6 +1199,7 @@ export async function loadConfig(
     claudeModel,
     bestPlanningModel,
     claudeTimeout,
+    claudeMaxTurns,
     minClaimRunwaySeconds,
     claimLongJobLabels,
     progressExtensionEnabled,

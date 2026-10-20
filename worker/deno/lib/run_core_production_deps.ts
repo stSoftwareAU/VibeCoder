@@ -1,3 +1,5 @@
+import { agentTranscriptDir } from "./agent_transcript.ts";
+import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
 /**
  * Production dependency wiring for the run-core main event loop.
  *
@@ -129,7 +131,7 @@ import { resetRepoAccessLogState } from "./monitored_repo_access.ts";
 
 // Issue processing
 import { stopAllHeartbeats, stopHeartbeatsExcept } from "./heartbeat.ts";
-import { workOnIssue } from "./issue_worker.ts";
+import { reconcileAlreadyLandedFailure, workOnIssue } from "./issue_worker.ts";
 import { createDefaultDeps, type WorkerDeps } from "./issue_worker_wiring.ts";
 import { fetchIssueData, type IssueData } from "./issue_data.ts";
 import { buildImplementationCommentContext } from "./implementation_comments.ts";
@@ -186,6 +188,8 @@ import { bindConflictTakeoverResolvers } from "./conflict_takeover_resolvers.ts"
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { processMergeConflict } from "./pr_merge_conflict_processor.ts";
 import { recordClosedLifecyclePrs } from "./lifecycle_pr_observation.ts";
+import { buildSyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
+import { reconcilePrBodyDigests as runPrBodyDigestReconcile } from "./pr_body_reconcile.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
   mergedReconcileWatermarkPath,
@@ -284,7 +288,6 @@ import {
   isSetupFault,
   planCodingFailure,
 } from "./coding_failure_ladder.ts";
-import { handleIssueFailure as handleIssueFailureFn } from "./label_failure.ts";
 // Adaptive claim floor (Issue #245): the evidence lookup and the key the
 // per-cycle deferral set is written with.
 import { fetchIssueClaimEvidence } from "./claim_evidence_lookup.ts";
@@ -585,6 +588,9 @@ export interface ProductionDepsOptions {
   logger?: Logger;
   /** Optional config override. */
   config?: WorkerConfig;
+  /** Coding-run seams: real phases remain injectable without live GitHub writes (#3977). */
+  workerDeps?: WorkerDeps;
+  workOnIssue?: typeof workOnIssue;
   /**
    * Override the derived-author resolver (Issue #256). Production leaves
    * this unset and gets {@link resolveDerivedAuthors}, which shells out to
@@ -978,7 +984,7 @@ export async function createProductionRunCoreDeps(
   // issue-phase line — including the #4169/#4305 progress heartbeats —
   // reached the console but never worker.log, so the file read as a
   // wedged worker while the run was fine.
-  const workerDeps = createDefaultDeps({ logger });
+  const workerDeps = options.workerDeps ?? createDefaultDeps({ logger });
   const inFlightRepos = new InFlightRepoRegistry();
   // The recovery and cleanup passes consult these holds before unassigning
   // anything (Issue #214), so an in-flight claim's assignee is only ever
@@ -1027,6 +1033,8 @@ export async function createProductionRunCoreDeps(
   const issueCache = new IssueCache(
     config.workDir ? `${config.workDir}/.gh-scan-cache` : undefined,
   );
+  // Issue #3760: digests already in sync, kept for the whole run (one run per process).
+  const prBodyDigestInSync = new Map<string, string>();
   // Issue #181: a close the worker performs drops that repo's stale scan-cache
   // entries, so the next scan cannot rank an issue this run already closed.
   setScanCacheForCloseInvalidation(issueCache);
@@ -2140,6 +2148,15 @@ export async function createProductionRunCoreDeps(
             healthy: false,
             exitCode: result.exitCode,
             message: result.message,
+            // (Issue #4014) Surfaced so the health gate can tell a
+            // signal-writing quota failure — the class whose pool rotation
+            // terminates on the written signal — from a classified outage
+            // that deliberately writes none (a signal would pause auto-mode
+            // claim routing, defeating the fallback this verdict exists to
+            // reach).
+            ...(result.pauseSeconds === undefined
+              ? {}
+              : { pauseSeconds: result.pauseSeconds }),
           },
         };
       } catch (err) {
@@ -2406,6 +2423,8 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feeds the refreshed PR body's footer.
             workerName: config.workerName,
+            // Issue #3678: files the follow-up for a newly reported gap.
+            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
           },
         );
 
@@ -2653,6 +2672,8 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
+            // Issue #3678: files the follow-up for a newly reported gap.
+            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
           },
         );
@@ -3087,6 +3108,8 @@ export async function createProductionRunCoreDeps(
             trustedAuthors,
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
+            // Issue #3678: files the follow-up for a newly reported gap.
+            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
             // Issue #3031: a milestone head is resolved through the takeover
             // in this same cycle.
@@ -3433,6 +3456,34 @@ export async function createProductionRunCoreDeps(
         });
         return { ok: true, value: undefined };
       }
+    },
+
+    // -- Priority 1.64: Reconcile PR body digests (Issue #3760) --
+    async reconcilePrBodyDigests() {
+      try {
+        await runPrBodyDigestReconcile(
+          {
+            repos: pollRepos,
+            maintenanceAuthors,
+            workerName: config.workerName ?? "",
+            githubUser,
+            runId: getRunId(),
+          },
+          {
+            runGhCommand,
+            runGitCommand,
+            logger,
+            followUpFiling: buildSyncFollowUpFiling(config, githubUser),
+            cache: issueCache,
+            inSync: prBodyDigestInSync,
+          },
+        );
+      } catch (err) {
+        logger.warn("PR body digest reconcile: unexpected error", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return { ok: true, value: undefined };
     },
 
     // -- Priority 1.65: Auto-merge --
@@ -4502,6 +4553,7 @@ export async function createProductionRunCoreDeps(
       const issueData: IssueData = await fetchIssueData(
         issue.repo,
         issue.issueNumber,
+        workerDeps.github.runGhCommand,
       );
 
       // Issue #3878: verify — and then use — the title this fetch observed,
@@ -4532,7 +4584,7 @@ export async function createProductionRunCoreDeps(
         issueAuthor: issueData.author,
         config,
         githubUser,
-      }, { ghFn: runGhCommand, timelineCache });
+      }, { ghFn: workerDeps.github.runGhCommand, timelineCache });
       if (integrity.blocked) {
         logger.warn(
           `Skipped ${issue.repo}#${issue.issueNumber}: ${integrity.reason}`,
@@ -4718,6 +4770,7 @@ export async function createProductionRunCoreDeps(
           },
         ),
         githubUser,
+        deferTerminalRelease: true,
         milestoneTitle: issue.milestoneTitle || undefined,
         ...(parentOwnerDirection ? { parentOwnerDirection } : {}),
         config,
@@ -4728,7 +4781,23 @@ export async function createProductionRunCoreDeps(
         ...(laneId === undefined ? {} : { laneId }),
       };
 
-      const result = await workOnIssue(ctx, workerDeps);
+      let result = await (options.workOnIssue ?? workOnIssue)(ctx, workerDeps);
+      // Issue #1487: if the worker escalated by adding `needs-human` during
+      // this run (success or failure), strip the discovery labels so the
+      // issue is not re-picked on the next scan. The label_security layer
+      // treats the worker's own label adds as untrusted and removes them
+      // from the in-memory label list — removing the discovery labels on
+      // the server side keeps the issue out of `fetchIssuesByLabel` results
+      // entirely.
+      await stripDiscoveryLabelsOnEscalation(
+        issue.repo,
+        issue.issueNumber,
+        config,
+        workerDeps.github.runGhCommand,
+      );
+
+      // The state can change after completion returned but before bookkeeping.
+      result = await reconcileAlreadyLandedFailure(result, ctx, workerDeps);
       // Issue #175: a phase can declare its own bounce (`expectedSkip`) — a
       // run that neither resolved the issue nor failed. It cools the issue
       // down without failure tracking and without counting as processed.
@@ -4744,19 +4813,6 @@ export async function createProductionRunCoreDeps(
           );
         }
       }
-
-      // Issue #1487: if the worker escalated by adding `needs-human` during
-      // this run (success or failure), strip the discovery labels so the
-      // issue is not re-picked on the next scan. The label_security layer
-      // treats the worker's own label adds as untrusted and removes them
-      // from the in-memory label list — removing the discovery labels on
-      // the server side keeps the issue out of `fetchIssuesByLabel` results
-      // entirely.
-      await stripDiscoveryLabelsOnEscalation(
-        issue.repo,
-        issue.issueNumber,
-        config,
-      );
 
       // Terminal coding-run failure disposition (Issue #4304, broadened by
       // Issue #1949). Every failure that is not transient infrastructure
@@ -4777,6 +4833,8 @@ export async function createProductionRunCoreDeps(
         success: result.success,
         expectedSkip: isExpectedSkip,
         reason: result.reason,
+        category: result.category,
+        classification: result.classification,
         ...(result.ladderApplied ? { ladderApplied: true } : {}),
         ...(result.phase ? { phase: result.phase } : {}),
       });
@@ -4787,6 +4845,8 @@ export async function createProductionRunCoreDeps(
           issueNumber: issue.issueNumber,
           githubUser,
           failureReason: result.reason,
+          category: result.category,
+          classification: result.classification,
           ...(result.phase ? { failurePhase: result.phase } : {}),
           labels: {
             failedLabel: config.failedLabel,
@@ -4795,7 +4855,7 @@ export async function createProductionRunCoreDeps(
             planningLabel: config.planningLabel,
             questionLabel: config.questionLabel,
           },
-        }, { handleIssueFailure: handleIssueFailureFn });
+        }, { handleIssueFailure: workerDeps.github.handleIssueFailure });
         if (ladderOutcome.error) {
           // Never swallowed: the run already failed and its claim still has
           // to be released, so this is reported rather than thrown.
@@ -4817,40 +4877,13 @@ export async function createProductionRunCoreDeps(
         }
       }
 
-      // Issue #2689: a workflow-scope refusal is transient — no label, no
-      // attempt — so it owes two bounds instead. This install remembers the
-      // issue and its claim scan skips it; and once the issue's release
-      // tally shows the fleet-wide bound, one comment parks it for hosts
-      // without the scope. The heartbeat's final clear has already written
-      // this run's attempt to the tally (Issue #4330).
+      // Keep this install's refusal memory immediately. The fleet-wide bound
+      // reads the durable attempt tally after final claim release below.
       if (plan.decision?.failureClass === "token-scope") {
         await recordThisHostsWorkflowScopeRefusal(
           issue.repo,
           issue.issueNumber,
         );
-        try {
-          const bound = await enforceTokenScopeFleetBound({
-            repo: issue.repo,
-            issueNumber: issue.issueNumber,
-            fleetAuthors,
-          }, { ghFn: runGhCommand });
-          logger.info("Workflow-scope refusal recorded", {
-            repo: issue.repo,
-            issueNumber: issue.issueNumber,
-            consecutiveRefusals: bound.consecutive,
-            parked: bound.parked,
-            parkedNow: bound.posted,
-          });
-        } catch (err) {
-          logger.warn(
-            "Workflow-scope fleet bound could not be checked (non-fatal)",
-            {
-              repo: issue.repo,
-              issueNumber: issue.issueNumber,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
       }
 
       return {
@@ -4878,7 +4911,9 @@ export async function createProductionRunCoreDeps(
             : {}),
           // The run outcome travels to the claim release (Issue #4325);
           // a skip is not an outcome of a run that never ran.
-          ...(result.outcome && !isExpectedSkip
+          ...(result.outcome && (!isExpectedSkip ||
+              (result.outcome.kind === "claim_stale" &&
+                result.outcome.reason === "work_already_merged"))
             ? { outcome: result.outcome }
             : {}),
           // Token and cost telemetry for the post-run callbacks (Issue
@@ -5197,10 +5232,37 @@ export async function createProductionRunCoreDeps(
           ...(outcome ? { outcome } : {}),
         });
       } catch { /* best-effort */ }
-      // Code-fixable no-PR failures raise a deduped worker-fault issue
-      // (Issue #4329). Strictly after the claim release and best-effort:
-      // the helper never throws, and nothing here may stop the release.
+      // Existing no-PR follow-up controls run after final claim release.
       if (outcome?.kind === "no_pr") {
+        // Read only durable attempts after trying the final marker write.
+        // A failed write contributes nothing; a later refusal retries.
+        if (outcome.category === "token_scope") {
+          try {
+            const bound = await enforceTokenScopeFleetBound({
+              repo,
+              issueNumber,
+              fleetAuthors,
+            }, { ghFn: runGhCommand });
+            logger.info("Workflow-scope refusal recorded", {
+              repo,
+              issueNumber,
+              consecutiveRefusals: bound.consecutive,
+              parked: bound.parked,
+              parkedNow: bound.posted,
+            });
+          } catch (err) {
+            logger.warn(
+              "Workflow-scope fleet bound could not be checked (non-fatal)",
+              {
+                repo,
+                issueNumber,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          }
+        }
+        // Code-fixable failures raise a deduped worker-fault issue (Issue
+        // #4329), best-effort so this cannot stop claim release.
         try {
           const marker = await readMarkerState(workDir, repo, issueNumber);
           const decision = await fileRunFailureIssue({
@@ -5645,6 +5707,18 @@ export async function createProductionRunCoreDeps(
         return pollingGateVerdict(0, reading, thresholds).deferIdle
           ? `remaining=${reading.remaining}/${reading.limit} below idle_floor=${thresholds.idleFloor}`
           : null;
+      }),
+
+    runTranscriptScan: homeDirectory(env) === undefined
+      ? async () => {
+        logger.warn(
+          "[agent-transcript-scan] no home directory; scan unavailable",
+        );
+      }
+      : createScheduledTranscriptScan({
+        logDir: agentTranscriptDir(homeDirectory(env)!),
+        warn: (message) => logger.warn(message),
+        info: (message) => logger.info(message),
       }),
 
     runIdleTaskFiler: async () => {

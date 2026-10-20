@@ -167,13 +167,12 @@ per-request throttle. It is recorded as `transient-rate-limit` — an unknown
 budget with the throttle attached — not as a spent window, because a credential
 with plenty of window left can be throttled for a minute.
 
-**Today's provisioning yields no percentage.** The worker provisions Codex with
-`OPENAI_API_KEY` / `CODEX_API_KEY` (`worker/deno/lib/codex_env.ts`), and an
-API-key credential has no subscription window at all — so against a
-worker-provisioned Codex this adapter honestly answers `api-key-account` every
-time. A percentage requires a ChatGPT-login `CODEX_HOME`, which is what the
-credential pooling of #1698 introduces. Saying so is the point: the alternative
-is a number nobody can justify.
+**An API-key login yields no subscription percentage.** API-key credentials
+report `api-key-account`. A ChatGPT-login `CODEX_HOME`, provisioned through
+[Codex subscription authentication](CODEX-SUBSCRIPTION-AUTH.md), supplies
+subscription windows once a session records them. A new home with only login
+state reports unknown quota rather than fabricating a percentage. Automatic
+routing preserves the rollout's evidence timestamp when assessing freshness.
 
 ## The live diagnostic
 

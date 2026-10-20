@@ -35,6 +35,8 @@ import {
   probeHostMemoryPressure,
 } from "./memory_pressure.ts";
 import type { Logger, Result } from "../types.ts";
+import { createLogger } from "./logger.ts";
+import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import {
   captureTimeoutDiagnostics,
   type ClaudeExecutionResult,
@@ -838,7 +840,9 @@ export interface HealthCheckResult {
   /**
    * 0 = healthy, 1 = unresponsive, 2 = auth failure,
    * 3 = rate/usage limited (Issue #4315 — the caller pauses instead of
-   * re-probing; every probe is a billed invocation).
+   * re-probing; every probe is a billed invocation) or another classified
+   * provider outage — quota exhaustion, rate limit or model unavailability —
+   * read from the provider's structured events (Issue #4014).
    */
   exitCode: number;
   /** Human-readable message. */
@@ -1395,6 +1399,11 @@ async function runClaudeWithTimeoutBody(
       // Name the provider that is about to run (Issue #4109) so a Quorum
       // run's interleaved log lines attribute to the agent that produced them.
       `Running ${provider.displayName} with ${timeoutSeconds}s timeout (${killAfterSeconds}s grace period)` +
+        (args.includes("--max-turns")
+          ? ` claude_timeout=${timeoutSeconds} claude_max_turns=${
+            args[args.indexOf("--max-turns") + 1]
+          }`
+          : "") +
         (noOutputMs > 0 ? `, no-output watchdog ${noOutputTimeout}s` : "") +
         "...",
     );
@@ -2522,6 +2531,13 @@ async function runClaudeWithTimeoutBody(
         nowMs: clock.now(),
       }, agentOutput)
       : undefined;
+    if (normalisedFailure?.category === "turn-limit") {
+      const failureLogger = logger ?? createLogger();
+      failureLogger.error(
+        normalisedFailure.message + " — invocation stopped at its turn cap.",
+      );
+      failureLogger.security?.("AGENT_TURN_LIMIT", "reason=error_max_turns");
+    }
     if (
       normalisedFailure?.category === "authentication" ||
       normalisedFailure?.category === "quota-exhausted"
@@ -3084,6 +3100,16 @@ async function runRetryLadder(
     // Cleared, not carried, when this invocation did not fail: a stale
     // failure from a previous attempt must never describe a later success.
     invokedAgentFailure = result.value.agentFailure;
+
+    if (invokedAgentFailure?.category === "turn-limit") {
+      return {
+        ok: false,
+        error: new AgentTurnLimitError(
+          invokedAgentFailure.message,
+          withPreflight(result.value),
+        ),
+      };
+    }
 
     // Out of memory (Issue #2741, parent #2721) — TERMINAL. Checked first,
     // before the timeout and rate-limit paths, for two reasons:
@@ -3724,6 +3750,42 @@ export async function checkClaudeHealth(
       exitCode: 3,
       message: summary.message,
       pauseSeconds,
+    };
+  }
+
+  // (Issue #4014) A provider whose CLI reports its refusal only as structured
+  // events — Codex writes errors into its JSONL stream, not stderr — leaves
+  // the text summariser above with nothing to classify, and the probe read as
+  // a generic exit-1 failure that skipped the cycle for ever. The provider's
+  // own classifier (Issue #1695) decoded those events onto the result; when
+  // the text evidence was unclassifiable, its verdict stands in.
+  const classified = result.value.agentFailure;
+  if (classified?.category === "authentication") {
+    // A structured auth refusal is the same verdict the text branch above
+    // returns, reached without text evidence (Issue #4014).
+    const actionable = provider.authActionableMessage();
+    logger?.error(
+      `${provider.displayName} requires login (structured refusal)`,
+    );
+    logger?.error(`ACTION REQUIRED: ${actionable}`);
+    return { healthy: false, exitCode: 2, message: actionable };
+  }
+  if (
+    classified &&
+    (classified.category === "quota-exhausted" ||
+      classified.category === "rate-limit" ||
+      classified.category === "model-unavailable")
+  ) {
+    // The same failure classes the invocation-layer fallback policy fires on
+    // (PROVIDER_OUTAGE_CLASSES): the health gate must probe the configured
+    // alternatives rather than skip the cycle. Deliberately no `pauseSeconds`
+    // — writing a usage signal for the provider would pause auto-mode claim
+    // routing, defeating the fallback this verdict exists to reach.
+    logger?.warn(classified.message);
+    return {
+      healthy: false,
+      exitCode: 3,
+      message: classified.message,
     };
   }
 

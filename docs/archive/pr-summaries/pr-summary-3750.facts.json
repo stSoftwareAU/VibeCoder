@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/mutation_check_invocation.ts",
+        "line": 72,
+        "outcome": "skip_mutation_check returns not applicable before any diff is collected or the runner runs",
+        "test": "worker/deno/tests/pr_feedback_mutation_check_3750_test.ts",
+        "testName": "runReviewFixMutationCheck - skip_mutation_check: not applicable, nothing collected or run",
+        "flipWentRed": "making the skip check never match turned it red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_check_invocation.ts",
+        "line": 79,
+        "outcome": "an unwired runner is not applicable",
+        "test": "worker/deno/tests/pr_feedback_processor_mutation_check_3750_test.ts",
+        "testName": "processPrFeedback - mutation check (Issue #3750): a survivor on the run's own line drives recovery and reaches the PR comment",
+        "flipWentRed": "wiring runner: undefined at the processor call site turned it red: no survivor reached the recovery prompt"
+      },
+      {
+        "path": "worker/deno/lib/mutation_check_invocation.ts",
+        "line": 91,
+        "outcome": "a diff that cannot be collected is an error and the runner is not called",
+        "test": "worker/deno/tests/pr_feedback_mutation_check_3750_test.ts",
+        "testName": "runReviewFixMutationCheck - a diff that cannot be collected is an error and the runner is not called",
+        "flipWentRed": "changing `if (!diff.ok)` to `if (false)` turned it red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_mutation_check.ts",
+        "line": 88,
+        "outcome": "a merge in the run's range switches the baseline to merge-tree of beforeSha and the merged parent, so merged lines are not mutated",
+        "test": "worker/deno/tests/pr_feedback_mutation_check_3750_test.ts",
+        "testName": "collectRunOwnDiff - lines a merge brought in are excluded, the run's own are kept",
+        "flipWentRed": "forcing oldSide = beforeSha turned this test and the negative-control test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_mutation_check.ts",
+        "line": 119,
+        "outcome": "an earlier merged parent not contained in the newest one is refused as unrelated",
+        "test": "worker/deno/tests/pr_feedback_mutation_check_3750_test.ts",
+        "testName": "collectRunOwnDiff - an unrelated merge followed by a merge of main is refused",
+        "flipWentRed": "removing the containment refusal turned it red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_mutation_check.ts",
+        "line": 188,
+        "outcome": "untracked files count as wholly added lines",
+        "test": "worker/deno/tests/pr_feedback_mutation_check_3750_test.ts",
+        "testName": "collectRunOwnDiff - no merges: committed, uncommitted and untracked lines count",
+        "flipWentRed": "dropping the untracked step turned it red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 1589,
+        "outcome": "unexempted survivors drive the one recovery turn",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3750_test.ts",
+        "testName": "runPrFeedbackDriftCheck - a survivor that outlives the recovery turn gets one recovery turn, a second check, and a residual heading",
+        "flipWentRed": "dropping survivors from the recovery condition turned it and the recovered test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 1665,
+        "outcome": "after a recovery turn against survivors the mutation check runs again with the fresh summaries",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3750_test.ts",
+        "testName": "runPrFeedbackDriftCheck - a survivor the recovery turn kills reports recovered, with no .pr_response_message",
+        "flipWentRed": "skipping the re-run turned it red: status stayed reported and the seam ran once"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 1571,
+        "outcome": "a budget-exhausted check is never clean",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3750_test.ts",
+        "testName": "runPrFeedbackDriftCheck - a budget-exhausted check with no survivors gets no recovery turn and reports the budget note",
+        "flipWentRed": "dropping budgetExhausted from the clean condition turned it red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 1708,
+        "outcome": "an error verdict is reported as the mutation check failing to run",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3750_test.ts",
+        "testName": "runPrFeedbackDriftCheck - an error result gets no recovery turn and is reported as the mutation check failing to run",
+        "flipWentRed": "dropping mutationCheckUnavailable from the residual turned it and the throwing-seam test red"
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_drift_check.ts",
+        "line": 644,
+        "outcome": "survivors switch the recovery prompt's closing step to tests-and-docs-only wording; without them the documentation-only step is kept",
+        "test": "worker/deno/tests/pr_feedback_drift_check_3750_test.ts",
+        "testName": "buildDriftRecoveryPrompt - survivors switch the closing step to the test-only wording and fence the survivors",
+        "flipWentRed": "inverting the closing-step condition turned this test, its no-survivors pair and the outlived-survivor run test red"
+      }
+    ]
+  }
+}

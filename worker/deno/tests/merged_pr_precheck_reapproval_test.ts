@@ -289,6 +289,7 @@ Deno.test(
 
     assertEquals(result, {
       status: "early_exit",
+      category: "unknown",
       reason: MERGED_PR_PRECHECK_EARLY_EXIT_REASON,
     });
     assertEquals(closeAttempted(gh.calls), true);

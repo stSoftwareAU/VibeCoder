@@ -66,6 +66,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "claude_model",
   "best_planning_model",
   "phase_model_overrides",
+  "phase_model_tiers",
+  "provider_model_tiers",
   "phase_effort_overrides",
   // Codex per-phase routing overrides (Issue #363).
   "codex_phase_model_overrides",
@@ -105,6 +107,7 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
 
   // Timeout and interval fields
   "claude_timeout",
+  "claude_max_turns",
   "min_claim_runway_seconds",
   // Issue #425: `claim_require_full_execute_budget` removed — the #47 rule it
   // switched on was retired with the deadline truncation that justified it.

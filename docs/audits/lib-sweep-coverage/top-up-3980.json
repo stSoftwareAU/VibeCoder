@@ -1,0 +1,13 @@
+{
+  "issue": 3980,
+  "chunk": "top-up-3980",
+  "title": "top-up: read-only lifecycle stabilisation reporting",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3980",
+  "definition": "Read-only report and CLI added after the preceding recorded module lists; supplied ledger/snapshot inputs and shared output redaction.",
+  "status": "claimed",
+  "sweptAt": "603926468da4a472441b064710df55a4d78411d1",
+  "paths": [
+    "worker/deno/lib/stabilisation_report.ts",
+    "worker/deno/lib/stabilisation_report_cli.ts"
+  ]
+}

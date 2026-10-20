@@ -17,9 +17,9 @@
  * (`codex-rs/protocol/src/auth.rs`) serialises `rename_all = "lowercase"` with
  * explicit renames for the camelCase variants.
  *
- * **No credential value is ever read.** Only the presence of a key is
- * inspected, so nothing this module returns can carry a token, and a caller
- * cannot accidentally log one.
+ * The classifier returns only authentication metadata, never credential
+ * values. The initialiser copies login state into a new persistent home
+ * without returning or logging its contents.
  *
  * Australian English spelling throughout (behaviour, organisation).
  */
@@ -179,4 +179,41 @@ export function resolveCodexHome(
   if (explicit) return explicit;
   const root = resolveAgentStateDir(workDir);
   return root ? `${root}/codex` : "";
+}
+
+/** Seed a new durable Codex home once; never overwrite the CLI's refreshed login. */
+export async function initialiseCodexHome(
+  credentialDirectory: string,
+  env: EnvLookup,
+): Promise<void> {
+  const home = env(CODEX_HOME_ENV_VAR)?.trim();
+  if (!home) return;
+  const target = `${home}/auth.json`;
+  try {
+    await Deno.stat(target);
+    return;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  const seed = `${credentialDirectory}/auth.json`;
+  if (
+    resolveCodexAuthMode(credentialDirectory, () => undefined).mode !==
+      "chatgpt"
+  ) {
+    throw new Error(
+      `Codex subscription login missing: initialise ${target} or provision a ChatGPT auth.json at ${seed}`,
+    );
+  }
+  const info = await Deno.stat(seed);
+  if (info.mode !== null && (info.mode & 0o077) !== 0) {
+    throw new Error(`Codex login seed ${seed} must be owner-only (0600)`);
+  }
+  await Deno.mkdir(home, { recursive: true, mode: 0o700 });
+  const auth = await Deno.readTextFile(seed);
+  try {
+    await Deno.writeTextFile(target, auth, { createNew: true, mode: 0o600 });
+  } catch (error) {
+    // A concurrent initialiser won; never overwrite a login another CLI owns.
+    if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
+  }
 }

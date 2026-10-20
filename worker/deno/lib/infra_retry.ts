@@ -19,6 +19,7 @@ import type { Logger } from "../types.ts";
 import type { PhaseState } from "./issue_worker_types.ts";
 import {
   detectFailureCategory,
+  type FailureCategory,
   isInfrastructureFailure,
 } from "./failure_diagnosis.ts";
 import { primaryQuotaLatchedUntil } from "./primary_quota_latch.ts";
@@ -58,6 +59,7 @@ export const RATE_LIMIT_RESET_MARGIN_MS = 5_000;
 
 /** Options for `shouldRetryInfrastructureFailure`. */
 export interface InfraRetryOptions {
+  category?: FailureCategory;
   /** Backoff in milliseconds before the retry. Defaults to 15s. */
   backoffMs?: number;
   /**
@@ -125,7 +127,7 @@ export async function shouldRetryInfrastructureFailure(
   logger: Logger,
   options: InfraRetryOptions = {},
 ): Promise<boolean> {
-  const category = detectFailureCategory(failureReason);
+  const category = options.category ?? detectFailureCategory(failureReason);
   if (!isInfrastructureFailure(category)) {
     return false;
   }

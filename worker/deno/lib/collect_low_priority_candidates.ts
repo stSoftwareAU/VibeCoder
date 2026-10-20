@@ -276,15 +276,25 @@ export async function collectLowPriorityCandidates(
     // Issue #3416: exclude fleet worker logins (own host + siblings) — they
     // sit in allowedAuthors for PR-dedup but must not be trusted to
     // self-apply the reserved `low-priority` discovery label.
-    const labelAdded = await wasLabelAddedByAllowedAuthor(
-      repo,
-      issue.number,
-      config.lowPriorityLabel,
-      repoAllowedAuthors,
-      batchedGh,
-      options.timelineCache,
-      fleetWorkerLogins,
-    );
+    let labelAdded: boolean;
+    try {
+      labelAdded = await wasLabelAddedByAllowedAuthor(
+        repo,
+        issue.number,
+        config.lowPriorityLabel,
+        repoAllowedAuthors,
+        batchedGh,
+        options.timelineCache,
+        fleetWorkerLogins,
+      );
+    } catch (err) {
+      console.warn(
+        `timeline trust read failed for ${repo}#${issue.number}: ${
+          (err as Error).message
+        }`,
+      );
+      labelAdded = false;
+    }
     if (!labelAdded) {
       diag?.logIssueSkipped(repo, issue.number, "label-author-not-allowed");
       continue;

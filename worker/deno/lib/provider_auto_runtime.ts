@@ -28,7 +28,6 @@ import {
 import { subscriptionStatusFromClaudeBudget } from "./claude_pool_budget.ts";
 import { probeClaudeTokenBudget } from "./claude_token_budget.ts";
 
-import { resolveCodexHome as codexHome } from "./codex_auth_mode.ts";
 import { CodexBudgetAdapter } from "./codex_budget.ts";
 import { classifyProviderBilling } from "./provider_billing.ts";
 import { subscriptionStatusFromCodexSnapshot } from "./codex_quota.ts";
@@ -254,11 +253,10 @@ async function claudeStatus(
 }
 
 async function codexStatus(
-  workDir: string,
   env: EnvLookup,
   now: number,
 ): Promise<ProviderSubscriptionStatus> {
-  const home = codexHome(workDir, env);
+  const home = env("CODEX_HOME")?.trim();
   if (!home) {
     return unavailableStatus(
       "codex",
@@ -269,10 +267,13 @@ async function codexStatus(
       "codex-home-missing",
     );
   }
-  return await statusCache.get("codex", "active", async () => {
+  return await statusCache.get("codex", home, async () => {
     let adapter = codexAdapters.get(home);
     if (!adapter) {
-      adapter = new CodexBudgetAdapter({ codexHome: home, env });
+      adapter = new CodexBudgetAdapter({
+        codexHome: home,
+        env: () => undefined,
+      });
       codexAdapters.set(home, adapter);
     }
     const snapshot = await adapter.refresh();
@@ -349,7 +350,7 @@ export async function resolveAutomaticProviderStatus(
     case "claude":
       return await claudeStatus(context.env, context.now);
     case "codex":
-      return await codexStatus(context.workDir, context.env, context.now);
+      return await codexStatus(context.env, context.now);
     default:
       return unavailableStatus(
         providerId,
