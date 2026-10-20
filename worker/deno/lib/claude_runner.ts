@@ -169,6 +169,10 @@ import {
   recordAutomaticProviderOutage,
 } from "./provider_auto_state.ts";
 import { noteProviderRunOutcome } from "./provider_outage_alert.ts";
+import {
+  configuredProviderFallbackPolicy,
+  providerAfterModelRefusal,
+} from "./provider_fallback_policy.ts";
 
 // Re-export for convenience
 export {
@@ -3001,6 +3005,9 @@ async function runRetryLadder(
   // Track the current effective options (may be mutated on fallback)
   let currentOptions = { ...options };
   let fallbackModel: string | undefined;
+  // Providers this invocation moved away from after a model refusal
+  // (Issue #4034), so the configured fallback walk never revisits one.
+  const providersRefusedModel: string[] = [];
 
   /**
    * The run-end result: this ladder was stopped by the worker, not by the
@@ -3377,10 +3384,46 @@ async function runRetryLadder(
           continue;
         }
 
-        // No cheaper model available — give up rather than re-run an
-        // unavailable model. Name the provider when it has no ladder at all
-        // (Issue #365), so "no downgrade attempted" is visible rather than
-        // inferred.
+        // No cheaper model on this provider. A refusal is terminal for the
+        // provider — a ChatGPT login that does not offer a model never will
+        // (Issue #4019) — so the configured `agent_provider_fallback` is the
+        // remaining remedy (Issue #4034). Only the health gate consulted it
+        // before, and a phase whose model the provider refused gave up every
+        // cycle while a healthy alternative stood idle. The fallback resolves
+        // its own model: the refused id names the old provider's catalogue,
+        // and a session id belongs to the CLI that recorded it.
+        const refusingProvider = selectAgentProvider(
+          currentOptions.agentProvider,
+          currentOptions.env ? { env: currentOptions.env } : {},
+        ).id;
+        const nextProvider = providerAfterModelRefusal(
+          configuredProviderFallbackPolicy(),
+          refusingProvider,
+          providersRefusedModel,
+        );
+        if (nextProvider) {
+          providersRefusedModel.push(refusingProvider);
+          currentOptions.logger?.warn(
+            `[provider-fallback] ${refusingProvider} refused model ` +
+              `"${currentModel}" and has no cheaper model — retrying on ` +
+              `${nextProvider} from agent_provider_fallback (Issue #4034).`,
+          );
+          currentOptions = {
+            ...currentOptions,
+            agentProvider: nextProvider,
+            model: undefined,
+            sessionResumeState: undefined,
+          };
+          retryCount = 0;
+          totalWaitTime = 0;
+          waitInterval = initialWaitInterval;
+          continue;
+        }
+
+        // No cheaper model and no fallback provider — give up rather than
+        // re-run an unavailable model. Name the provider when it has no
+        // ladder at all (Issue #365), so "no downgrade attempted" is visible
+        // rather than inferred.
         warnNoModelLadder(fallbackResult, currentModel, currentOptions.logger);
         currentOptions.logger?.error(
           `Model "${currentModel}" unavailable and no cheaper fallback available (${fallbackResult.reason}). Giving up.`,

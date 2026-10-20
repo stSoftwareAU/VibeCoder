@@ -5074,6 +5074,13 @@ are three failed fixes whether or not the build was briefly green in between —
 and it replaces the old locus-wide sweep, which handed a flapping check a fresh
 budget on every green cycle and so never reached the cap at all.
 
+An agent run the provider refused to serve is not an attempt at all
+(Issue #4038). That covers a refused model, spent quota, a rejected credential
+or an outage, which `isProviderUnavailableFailure` classifies. Such a run
+leaves the working tree empty because the agent never read the failure, not
+because no change was needed. So it posts nothing, writes no marker and
+applies no label, and the next scan retries.
+
 ```mermaid
 flowchart TD
     A["Failing CI check"] --> B["Normalise log excerpt<br/>(strip timestamps, build numbers, paths)"]
@@ -5084,7 +5091,9 @@ flowchart TD
     D -->|no| N{"no-change marker<br/>on this head?"}
     N -->|yes| Q["Post nothing,<br/>run no agent"]
     N -->|no| F["Run the auto-fix"]
-    F --> G{"infrastructure<br/>category?"}
+    F --> P{"provider refused<br/>to serve?"}
+    P -->|yes| H2["Attempt NOT charged, nothing posted<br/>(retried next scan, #4038)"]
+    P -->|no| G{"infrastructure<br/>category?"}
     G -->|yes| H["Attempt NOT charged<br/>(no marker written)"]
     G -->|no| I["Comment carries attempt N's marker<br/>(appended in place on a repeat)"]
     style E fill:#7f1d1d,stroke:#450a0a,color:#fff

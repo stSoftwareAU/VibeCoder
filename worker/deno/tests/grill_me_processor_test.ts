@@ -4803,3 +4803,121 @@ Deno.test(
     assertNoForbiddenLabel(addedLabels);
   },
 );
+
+/**
+ * A grill-me round whose agent ended with `agentFailure` in `category`
+ * (Issue #4035): records every comment posted and every label added.
+ */
+async function runGrillMeEndingIn(
+  category: "model-unavailable" | "quota-exhausted" | "task-failure",
+  priorComments: GitHubComment[] = [],
+): Promise<{ posted: string[]; addedLabels: string[]; unassigned: number }> {
+  const posted: string[] = [];
+  const addedLabels: string[] = [];
+  let unassigned = 0;
+  const ghClient = stubGhClient({
+    getIssueComments: () => Promise.resolve([...priorComments]),
+    postComment: (_r, _n, body) => {
+      posted.push(body);
+      return Promise.resolve(undefined);
+    },
+    addLabel: (_r, _n, label) => {
+      addedLabels.push(label);
+      return Promise.resolve();
+    },
+    unassignIssue: () => {
+      unassigned++;
+      return Promise.resolve();
+    },
+  });
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            output: "",
+            exitCode: 1,
+            timedOut: false,
+            agentFailure: {
+              category,
+              message:
+                "Codex refused the requested model: The 'gpt-5' model is not supported when using Codex with a ChatGPT account.",
+              evidence: "structured" as const,
+              terminal: true,
+              errors: [],
+            },
+          },
+        }),
+    },
+  });
+  await processGrillMe(makeContext(), {
+    promptsDir: PROMPTS_DIR,
+    ghClient,
+    logger: deps.logger,
+    deps,
+  });
+  return { posted, addedLabels, unassigned };
+}
+
+Deno.test(
+  "processGrillMe - a provider refusal posts no failure marker, so it cannot build a streak (Issue #4035)",
+  async () => {
+    // GRQ-AutoTrader#3788 on GRQ-23: two rounds the provider refused in five
+    // seconds escalated the issue to needs-human, although nothing about the
+    // issue had failed — and rounds 1–3 had succeeded on another provider.
+    for (const category of ["model-unavailable", "quota-exhausted"] as const) {
+      const { posted, addedLabels, unassigned } = await runGrillMeEndingIn(
+        category,
+      );
+      assert(
+        !posted.some((body) => body.includes(GRILL_ME_FAILED_MARKER)),
+        `${category}: no failure marker — the next round must not count it`,
+      );
+      assertEquals(addedLabels.includes("needs-human"), false, category);
+      assertEquals(unassigned, 1, `${category}: the claim is released`);
+    }
+  },
+);
+
+Deno.test(
+  "processGrillMe - a provider refusal after one real failure does not escalate (Issue #4035)",
+  async () => {
+    // Composition: the counter reads the marker the refusal did not post, so
+    // the round after next still sees a streak of one, not two.
+    const { posted, addedLabels } = await runGrillMeEndingIn(
+      "model-unavailable",
+      [makeComment({
+        author: "testbot",
+        body: `${GRILL_ME_FAILED_MARKER}\n\nThis grill-me round failed: x`,
+      })],
+    );
+    assertEquals(
+      countConsecutiveFailures(
+        [
+          makeComment({
+            author: "testbot",
+            body: `${GRILL_ME_FAILED_MARKER}\n\nThis grill-me round failed: x`,
+          }),
+          ...posted.map((body) => makeComment({ author: "testbot", body })),
+        ],
+        "testbot",
+      ),
+      1,
+    );
+    assertEquals(addedLabels.includes("needs-human"), false);
+  },
+);
+
+Deno.test(
+  "processGrillMe - a task failure still posts the failure marker (Issue #4035)",
+  async () => {
+    // Control: only provider outages are exempt. A round the agent ran and
+    // failed on its own still counts toward escalation.
+    const { posted } = await runGrillMeEndingIn("task-failure");
+    assert(
+      posted.some((body) => body.includes(GRILL_ME_FAILED_MARKER)),
+      "a task failure must keep counting",
+    );
+  },
+);
