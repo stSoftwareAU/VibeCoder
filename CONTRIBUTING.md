@@ -124,8 +124,8 @@ Markdown files there are in that state on `main`, by design rather than by
 drift. Match the surrounding wrapping by hand, as the existing text does.
 
 CI-enforced workflows live under `.github/workflows/`, including
-`validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, and
-`semgrep.yml`. A green local `./quality.sh` is the best predictor of a
+`validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, `semgrep.yml`,
+and `checkov.yml`. A green local `./quality.sh` is the best predictor of a
 green PR.
 
 ### Semgrep (SAST) before the push
@@ -161,6 +161,16 @@ flowchart LR
   before it reaches the constructor. A dynamic regex over constants the
   code itself authored is still flagged — change the pattern rather than
   arguing with the rule (Issue #559).
+
+### Checkov (CloudFormation) in CI
+
+`checkov.yml` scans CloudFormation templates with the digest-pinned
+`CHECKOV_IMAGE` (`worker/deno/lib/pinned_actions.ts`) and `CHECKOV_SCAN_ARGS`,
+with no SARIF upload and no path filter. `worker/deno/lib/checkov_report.ts`
+decides the verdict: a failed check, a parse error, or a skip without an inline
+`# checkov:skip=<ID>:<reason>` fails. It is a mandatory part of `gate`, so a red
+scan blocks merge. `worker/deno/tests/checkov_workflow_test.ts` keeps the
+workflow in lock-step with the pin and the scan arguments.
 
 ### Workflow hygiene
 

@@ -1,0 +1,58 @@
+name: Checkov
+
+# CloudFormation misconfiguration scan (Issue #3971). Mandatory part of
+# quality.yml's `gate`: a failed check, a parse error or a skip without an
+# inline reason turns `gate` red.
+#
+# Every action is pinned to a full commit SHA with its version in a comment
+# (Issue #2123), and the Checkov image is pinned by digest to the same
+# `CHECKOV_IMAGE` the local quality gate runs (worker/deno/lib/pinned_actions.ts).
+# worker/deno/tests/checkov_workflow_test.ts keeps this file in lock-step with
+# that pin and with `CHECKOV_SCAN_ARGS` (worker/deno/lib/checkov_report.ts).
+#
+# No SARIF upload and no path filter: the verdict is the judge's exit code, and
+# the scan runs on every call so `gate` never waits on a skipped job.
+
+on:
+  # Called by quality.yml, whose `gate` job is the one required check: on a
+  # pull request this workflow runs once, through that call.
+  workflow_call:
+
+permissions:
+  contents: read
+
+# No concurrency group here: as a called workflow this file inherits its
+# caller's `github.workflow`, so a group of its own would cancel its siblings.
+# quality.yml holds the one group.
+
+jobs:
+  checkov:
+    name: checkov (CloudFormation)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      # actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # denoland/setup-deno@v2.0.5
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed
+        with:
+          deno-version-file: .deno-version
+
+      # `--entrypoint checkov` is required: under GITHUB_ACTIONS=true the
+      # image's own entrypoint ignores argv. Checkov's exit code is captured,
+      # not trusted: the judge decides PASSED or FAILED from the report.
+      - name: Scan CloudFormation templates with Checkov
+        run: |
+          set -euo pipefail
+          status=0
+          docker run --rm -v "$PWD:/src:ro" -w /src --entrypoint checkov \
+            bridgecrew/checkov:3.3.29@sha256:3cc125b5337717b7303dbddd4e79374c120687b5ff6a24f9abdad56b562469f3 \
+            -d . --framework cloudformation -o json --skip-download \
+            > "$RUNNER_TEMP/checkov.json" || status=$?
+          deno run --frozen --lock=worker/deno/deno.lock --config worker/deno/deno.json --allow-read \
+            worker/deno/lib/checkov_report.ts "$RUNNER_TEMP/checkov.json" "$status"
