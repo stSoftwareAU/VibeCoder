@@ -49,5 +49,8 @@
         "verbatim-module-syntax"
       ]
     }
+  },
+  "fmt": {
+    "exclude": ["tests/fixtures/checkov/"]
   }
 }

@@ -151,10 +151,27 @@ function checkIdOf(entry: Obj): string {
     : "<unnamed check>";
 }
 
-/** `file_path` with a leading `/` and then a leading `./` stripped, or null. */
+/**
+ * `file_path` with a leading `/` and then a leading `./` stripped, or null
+ * when it is not a string or is empty once stripped. A path that
+ * `escapesScanDir` flags is still returned here, but `judgeSkip` refuses it
+ * before the reader is called, so only templates inside the scanned directory
+ * can justify a skip.
+ */
 function repoPathOf(entry: Obj): string | null {
   if (typeof entry.file_path !== "string") return null;
-  return entry.file_path.replace(/^\//, "").replace(/^\.\//, "");
+  const path = entry.file_path.replace(/^\//, "").replace(/^\.\//, "");
+  return path === "" ? null : path;
+}
+
+/**
+ * True when a `repoPathOf` path is absolute, holds a NUL, or has a `..` segment
+ * (split on both `/` and `\`): a template it names may lie outside the scanned
+ * directory.
+ */
+function escapesScanDir(path: string): boolean {
+  return /^[/\\]/.test(path) || path.includes("\0") ||
+    path.split(/[/\\]/).includes("..");
 }
 
 /** `file_path` and line range as shown in a problem line. */
@@ -242,6 +259,12 @@ async function judgeSkip(
   const path = repoPathOf(entry);
   if (path === null) {
     problems.push(`${id} skip at ${at} has no usable file_path`);
+    return;
+  }
+  if (escapesScanDir(path)) {
+    problems.push(
+      `${id} skip at ${at} has a file path outside the scanned directory`,
+    );
     return;
   }
   const range = rangeOf(entry.file_line_range);

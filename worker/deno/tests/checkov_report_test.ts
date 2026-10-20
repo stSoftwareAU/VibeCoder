@@ -53,6 +53,28 @@ function fixtureTemplates(name: string): CheckovTemplateReader {
 /** A template reader that cannot find any template. */
 const noTemplates: CheckovTemplateReader = () => Promise.resolve(null);
 
+/** A reader serving `inner`'s templates and recording each path it is asked for. */
+function recordingTemplates(inner: CheckovTemplateReader): {
+  reader: CheckovTemplateReader;
+  calls: string[];
+} {
+  const calls: string[] = [];
+  return {
+    calls,
+    reader: async (path) => {
+      calls.push(path);
+      return await inner(path);
+    },
+  };
+}
+
+/** The reasoned_skip report with its one skipped check's `file_path` replaced. */
+async function reasonedSkipAt(filePath: string): Promise<string> {
+  const parsed = JSON.parse(await report("reasoned_skip"));
+  parsed.results.skipped_checks[0].file_path = filePath;
+  return JSON.stringify(parsed);
+}
+
 /** The `- ` problem lines of a verdict report. */
 function problemLines(text: string): string[] {
   return text.split("\n").filter((line) => line.startsWith("- "));
@@ -210,6 +232,42 @@ Deno.test("checkov-report - FAILED when a skip's template cannot be read", async
   assertStringIncludes(verdict.report, "CKV_AWS_158 skip at /template.yaml");
   assertStringIncludes(verdict.report, "could not be read");
   assertEquals(problemLines(verdict.report).length, 1);
+});
+
+Deno.test("checkov-report - FAILED without reading a skip whose file path leaves the scan", async () => {
+  for (
+    const filePath of ["/../template.yaml", "/missing/../../template.yaml"]
+  ) {
+    const { reader, calls } = recordingTemplates(
+      fixtureTemplates("reasoned_skip"),
+    );
+    const verdict = await judgeCheckovRun({
+      exitCode: 0,
+      stdout: await reasonedSkipAt(filePath),
+      templates: reader,
+    });
+    assertEquals(verdict.status, "FAILED", filePath);
+    assertStringIncludes(verdict.report, `CKV_AWS_158 skip at ${filePath}`);
+    assertStringIncludes(
+      verdict.report,
+      "has a file path outside the scanned directory",
+    );
+    assertEquals(calls, [], `reader called for ${filePath}`);
+    assertEquals(problemLines(verdict.report).length, 1);
+  }
+});
+
+Deno.test("checkov-report - PASSED for the same skip at its original file path (control)", async () => {
+  const { reader, calls } = recordingTemplates(
+    fixtureTemplates("reasoned_skip"),
+  );
+  const verdict = await judgeCheckovRun({
+    exitCode: 0,
+    stdout: await reasonedSkipAt("/template.yaml"),
+    templates: reader,
+  });
+  assertEquals(verdict.status, "PASSED");
+  assertEquals(calls, ["template.yaml"]);
 });
 
 Deno.test("checkov-report - multi-framework array is FAILED when one element fails", async () => {
