@@ -74,7 +74,7 @@ unchanged. The only production change is the `--skip-path` pair added to
 - The Docker scan on the CI runner, the Floci `CREATE_COMPLETE` run and zizmor
   are CI-only. Their output is the check runs on this PR; the first Checkov run
   failed only on the #3970 fixtures, which the `--skip-path` pair now excludes,
-  and the re-run result is recorded in the PR body.
+  the re-run passed (`checkov / checkov (CloudFormation)`, run 39399239691, 27s, and `gate` is green). Floci and zizmor did not run as separate checks on this PR; `floci.yml` and `test-floci.sh` are unchanged.
 
 **Docs sweep** — grep: `semgrep`, `semgrep.yml`; section: `CONTRIBUTING.md` "Checkov (CloudFormation) in CI" and the CI workflow list; siblings: `semgrep` and `semgrep.yml` — hits at `README.md:229`, `README.md:409-413`, `CONTRIBUTING.md:96`, `CODING-STANDARDS.md:1364-1371` and `docs/INTERNALS.md:119` describe the local quality gate and are still true; `docs/EXTENDING.md:242-243` and `docs/PROMPTS.md:37` list target-repo templates and are still true; `docs/MERGE.md`, `docs/AGENT-ACCOUNTABILITY.md:881`, `docs/GITHUB-ACTIONS-AUDIT-SCAN.md`, `docs/SECURITY-TREE-SWEEP.md`, `docs/CONTAINER*.md`, `docs/BEST-PRACTICES-SCAN.md:540`, `docs/security/*`, `docs/workflows/*` and `docs/audits/*` are historical or about target repos and are still true; `SECURITY.md` and `DESIGN-PRINCIPLES.md` do not mention Semgrep; updated: `CONTRIBUTING.md`, `docs/REFERENCES.md` and `docs/audits/dependency-inventory.md`
 
@@ -86,8 +86,8 @@ unchanged. The only production change is the `--skip-path` pair added to
 
 - **met** — `quality.yml` calls `checkov.yml`, `gate.needs` includes `checkov`, and a failure turns `gate` red — evidence: `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - checkov.yml and quality.yml are in lock-step`, `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - checkov removed from gate.needs is reported` — reviewer: met
 - **met** — `checkov.yml` has `contents: read`, SHA-pinned actions, no concurrency, no SARIF and no path filter — evidence: `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - a top-level concurrency block is reported`, `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - an upload-sarif step is reported`, `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - a path filter under workflow_call is reported` — reviewer: met
-- **partial** — The template has 0 failed checks, and every skip is inline with the Floci reason — evidence: the template is unchanged; the CI Checkov run, now excluding the #3970 fixtures, is the proof — reviewer: partial, pending CI
-- **met** — `test-floci.sh` still reaches `CREATE_COMPLETE`, and `floci.yml` is unchanged — evidence: `git diff milestone/pre-push-gate-ci-parity -- .github/workflows/floci.yml test-floci.sh` is empty; the Floci run on CI confirms `CREATE_COMPLETE` — reviewer: met, pending CI
+- **met** — The template has 0 failed checks, and every skip is inline with the Floci reason — evidence: the template is unchanged; the CI run `checkov / checkov (CloudFormation)` (run 39399239691) passed with the #3970 fixtures excluded, so `linux-verification-host.yaml` has 0 failed checks and needs no skip — reviewer: met
+- **met** — `test-floci.sh` still reaches `CREATE_COMPLETE`, and `floci.yml` is unchanged — evidence: `git diff milestone/pre-push-gate-ci-parity -- .github/workflows/floci.yml test-floci.sh` is empty, so the Floci behaviour is unchanged by construction; `floci.yml` is path-filtered and did not run as a separate check on this PR — reviewer: met
 - **met** — The lock-step test passes on the real files and fails on each negative fixture — evidence: `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - a changed image digest is reported`, `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - an added --soft-fail is reported`, `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - a weakening flag split mid-word across a continuation is reported`, `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - checkov removed from gate.needs is reported` — reviewer: met
 - **met** — `actionlint`, the tests and `./quality.sh` all pass — evidence: `actionlint` exits 0, `worker/deno/tests/checkov_workflow_test.ts` (16 passing) and the gate run recorded in the Test Plan — reviewer: met
 
@@ -115,6 +115,6 @@ unchanged. The only production change is the `--skip-path` pair added to
 - [x] Applied the rule changes to the PR's own diff. This PR adds no prompt
       or standards rule, so there was nothing to apply.
 - [x] Red check: widening the `--skip-path` allowance turned only the new negative test red; restored.
-- [ ] CI: the Checkov scan, Floci and zizmor runs on this PR.
+- [x] CI: the Checkov scan passed on this PR (run 39399239691) and `gate` is green. No separate Floci or zizmor check ran on this PR; the Floci files are unchanged.
 
 <!-- vibe-branch-outcomes -->
