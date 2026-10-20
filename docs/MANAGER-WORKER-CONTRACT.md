@@ -330,7 +330,7 @@ stateDiagram-v2
   cannot enforce it is refused (section 8), not run with delegation open.
 - **Target: executor workspace is scoped.** Today sub-agents run inside the
   advisor's single CLI process, so they share its working directory. The CLI
-  is spawned with one `cwd` (`worker/deno/lib/claude_runner.ts:1391`), and
+  is spawned with one `cwd` (`worker/deno/lib/claude_runner.ts:1424`), and
   there is no per-executor workspace. In the target, the manager hands each
   executor a `workspaceDir` in the task envelope (section 4). The executor's
   edits and commands are confined to it, and the manager stays read-only.

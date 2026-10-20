@@ -995,10 +995,10 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   async fn() {
     const agents = buildIssueExecutorAgents("sonnet");
-    const result = await withAgentStub(
-      `printf 'stub-claude-ok\\n'`,
-      (stub) =>
-        runClaudeWithTimeout({
+    const { result, spawned } = await withAgentStub(
+      `printf 'spawned\\n' > "$(dirname "$0")/spawned"`,
+      async (stub) => {
+        const result = await runClaudeWithTimeout({
           clock: fakeClock(),
           prompt: "test",
           phase: "issue",
@@ -1007,12 +1007,26 @@ Deno.test({
           env: emptyEnv,
           timeoutSeconds: 30,
           killAfterSeconds: 2,
-        }),
+        });
+        return {
+          result,
+          spawned: await Deno.stat(`${stub.dir}/spawned`).then(
+            () => true,
+            () => false,
+          ),
+        };
+      },
       { prefix: "claude_agents_" },
     );
-    // Claude carries --agents, so the refusal must not fire; the stub's single
-    // line is not a valid stream result, so ok may be false with a parse error
-    // — but never the --agents refusal.
+    // Claude carries --agents, so the refusal must not fire. The stub marks its
+    // own spawn (the `spawned` file beside it), so the run is proven to have got
+    // through to the spawn whatever the stub prints. The stub writes no stream
+    // result, so ok may be false with a parse error — but never the --agents
+    // refusal.
+    assert(
+      spawned,
+      "the runner must reach the spawn — the refusal must not fire",
+    );
     assert(
       result.ok || !result.error.message.includes("cannot carry"),
       `Claude must not be refused: ${!result.ok && result.error.message}`,
@@ -1027,11 +1041,12 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   async fn() {
     // Positive control: the refusal keys on agents being present, so the same
-    // provider without agents still reaches the spawn.
-    const result = await withAgentStub(
-      `printf 'stub-agent-ok\\n'`,
-      (stub) =>
-        runClaudeWithTimeout({
+    // provider without agents still reaches the spawn. The stub marks its own
+    // spawn, so the assertion proves the run got through to it.
+    const { result, spawned } = await withAgentStub(
+      `printf 'spawned\\n' > "$(dirname "$0")/spawned"`,
+      async (stub) => {
+        const result = await runClaudeWithTimeout({
           clock: fakeClock(),
           prompt: "test",
           phase: "issue",
@@ -1040,8 +1055,20 @@ Deno.test({
           env: emptyEnv,
           timeoutSeconds: 30,
           killAfterSeconds: 2,
-        }),
+        });
+        return {
+          result,
+          spawned: await Deno.stat(`${stub.dir}/spawned`).then(
+            () => true,
+            () => false,
+          ),
+        };
+      },
       { prefix: "codex_noagents_" },
+    );
+    assert(
+      spawned,
+      "a provider without agents must reach the spawn — the refusal must not fire",
     );
     assert(
       result.ok || !result.error.message.includes("cannot carry"),
