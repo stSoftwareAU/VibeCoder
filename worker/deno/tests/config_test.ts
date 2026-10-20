@@ -33,6 +33,10 @@ import {
   resetAutomaticProviderState,
   setAutomaticProviderRoutingActive,
 } from "../lib/provider_auto_state.ts";
+import {
+  configuredProviderFallbackPolicy,
+  setConfiguredProviderFallbackPolicy,
+} from "../lib/provider_fallback_policy.ts";
 import type { EnvLookup } from "../lib/env_lookup.ts";
 import type { ConfigFile, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -148,6 +152,39 @@ Deno.test("config - a reload under automatic routing keeps the auto-selected pro
     });
   } finally {
     resetAutomaticProviderState();
+  }
+});
+
+Deno.test("config - loadConfig records the provider fallback policy for the agent runner (Issue #4034)", async () => {
+  // The runner holds no config handle: a phase whose model the provider
+  // refused can only reach `agent_provider_fallback` through this seam.
+  const env = statedEnv({
+    [IMAGE_AGENT_PROVIDERS_ENV]: "claude,codex,deepseek",
+  });
+  const base: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+    agent_provider: "codex",
+    agent_providers: ["claude", "codex", "deepseek"],
+  };
+  try {
+    await withTempConfig(
+      { ...base, agent_provider_fallback: ["deepseek"] },
+      async (configPath) => {
+        await loadConfig(configPath, { env });
+        const policy = configuredProviderFallbackPolicy();
+        assertEquals(policy?.mode, "ordered");
+        assertEquals(policy?.preferred, "codex");
+        assertEquals(policy?.alternatives, ["deepseek"]);
+      },
+    );
+    // A reload without the key must not keep the earlier list alive.
+    await withTempConfig(base, async (configPath) => {
+      await loadConfig(configPath, { env });
+      assertEquals(configuredProviderFallbackPolicy()?.mode, "pinned");
+    });
+  } finally {
+    setConfiguredProviderFallbackPolicy(undefined);
   }
 });
 
