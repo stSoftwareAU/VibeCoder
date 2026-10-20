@@ -31,7 +31,7 @@ Issue numbers added as provenance: #3665: Preserved-WIP notes in the claim-relea
 - Added `worker/deno/tests/run_wip_preservation_note_test.ts`, with four tests, one per variant: dirty tree pushed, clean tree with 2 checkpoint commits, dirty tree already checkpointed, and failed push. Each asserts the variant's wording and that the note does not match `/#\d/`. As a positive control, the first three also assert the branch name and the failed variant asserts the failure reason.
 - Red run against the unfixed production code, before the edit: 0 passed, 4 failed. Each failure quoted the note ending `(Issue #47)` or `(Issue #4170)`. Green after the fix: 4 passed.
 - `deno task test:unit` over the new test plus `execute_phase_superseded_wip_test.ts`, `completion_phase_superseded_wip_test.ts`, `preserved_branch_release_comment_test.ts`, `wip_resume_handoff_test.ts`, `run_outcome_classifier_test.ts`, `heartbeat_outcome_render_test.ts`, `completion_wip_only_gate_test.ts` and `wip_checkpoint_test.ts`, all under `worker/deno/tests/`: 89 passed, 0 failed. `deno fmt --check`, `deno lint` and `deno check` on both changed files are clean.
-- `./quality.sh`: QUALITY_RESULT_LINE
+- `./quality.sh`: passed on the code head `4a18a93e` ("Result: PASSED (with skipped checks)"; only `config integration` was skipped)
 - No existing test was edited, and no assertion was removed.
 
 <!-- vibe-branch-outcomes -->
