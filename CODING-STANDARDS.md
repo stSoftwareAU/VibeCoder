@@ -38,6 +38,16 @@ summarise, authorised.
   `grep -r SIMPLE-ON-PURPOSE` lists every cut:
   `// SIMPLE-ON-PURPOSE: linear scan, fine to 10,000 rows — upgrade when a table exceeds 10,000 rows`.
 - **DRY** — Avoid code duplication; maintain a single source of truth.
+- **Change every copy of a twinned rule** — Before changing a rule, gate,
+  matcher or check, search for text that declares a second copy of it
+  ("mirrors", "runs the same gate as", "shared copy of", "both carry") and for
+  its function or rule name. Change every copy in the same PR, or make one call
+  the other. If both copies must stay, add a test that fails when they
+  disagree. The Test Plan names the copies found, or says none was found. This
+  document and `prompts/coding_guidelines/prompt.md` are one such pair (see
+  [Language-Agnostic Standards vs Per-Language Buckets](#language-agnostic-standards-vs-per-language-buckets)),
+  and the completion phase's PR-summary gates and `deno task pr-summary-check`
+  are another (see [PR Summary and Evidence](#pr-summary-and-evidence)).
 - **Boy Scout Rule** — Leave the code cleaner than you found it.
 - **Single Responsibility / Smaller Files** — Favour many smaller, focused
   source files over large monolithic ones.
@@ -1823,7 +1833,12 @@ a pass. For a summary named `pr-summary-<N>.md` it also reads
 root, as the worker does (it takes only `<N>` from the summary's file name):
 the Branch outcomes gate sees the list rendered at the
 `<!-- vibe-branch-outcomes -->` marker, and blocks on an invalid facts file or
-on a facts file beside a hand-written list.
+on a facts file beside a hand-written list. `deno task pr-summary-check`
+(`worker/deno/lib/pr_summary_check.ts`) is the twin of the completion phase's
+PR-summary gates (`worker/deno/lib/phases/completion_phase.ts`): a change to how
+the completion phase runs one of those gates, or prepares its input, changes
+`pr_summary_check.ts` the same way in the same PR. A change inside a validator
+both files call reaches both already.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
