@@ -12,6 +12,10 @@ Claude remains the default. This page is the operator runbook for a
 Codex-only host and for an **opt-in** mixed Claude/Codex host. Nothing
 here automatically enables new routing on the production fleet.
 
+See also: [Manager-worker contract](MANAGER-WORKER-CONTRACT.md) for the provider-neutral advisor/executor contract.
+
+See also: [Provider feasibility](PROVIDER-FEASIBILITY.md) for the go/no-go per provider, model and role, and the read-only `provider-feasibility` smoke test.
+
 ```mermaid
 flowchart TD
     M["agent_provider_mode"] --> S["shared quota scheduler"]
@@ -132,6 +136,13 @@ fixed-subscription status adapter are excluded. A real quota or authentication
 failure makes that provider unavailable to subsequent work; quota failures are
 rechecked at the stated reset, or after a five-minute cooldown when no reset was
 reported. If no safe candidate remains, the host waits.
+
+While automatic routing is active, auxiliary configuration reloads preserve
+the router's active provider between refreshes. The loaded `agentProvider`
+still reports the file's preference to callers; it does not overwrite the
+process-wide selection used to invoke work. With automatic routing inactive,
+reloads retain the historical pinned-provider behaviour. A per-run health-gate
+override continues to take precedence in either mode.
 
 Provision Codex's persistent subscription home using
 [Codex subscription authentication](CODEX-SUBSCRIPTION-AUTH.md). The router

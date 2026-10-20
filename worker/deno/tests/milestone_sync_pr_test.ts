@@ -20,7 +20,9 @@ import {
   isStaleInfoPush,
   raiseMilestoneSyncPr,
   SYNC_BRANCH_PREFIX,
+  syncBranchAlreadyCarries,
   syncBranchFor,
+  syncPrLandingNote,
 } from "../lib/milestone_sync_pr.ts";
 
 const REPO = "org/repo";
@@ -95,7 +97,9 @@ Deno.test("syncBranchFor - deterministic, so a second run updates rather than re
 });
 
 Deno.test("raiseMilestoneSyncPr - pushes a sync branch and opens a PR into the milestone", async () => {
-  const { deps, git, gh } = fakeDeps();
+  const { deps: base, git, gh } = fakeDeps();
+  const logs: string[] = [];
+  const deps = { ...base, log: (m: string) => logs.push(m) };
   const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
 
   assert(result.ok);
@@ -110,6 +114,13 @@ Deno.test("raiseMilestoneSyncPr - pushes a sync branch and opens a PR into the m
     `refs/heads/${syncBranchFor(MILESTONE)}`,
   );
   assertEquals(push.includes("--force-with-lease"), true);
+
+  // A push accepted first time was never stale, so no retry is reported.
+  assertEquals(
+    logs.some((m) => m.includes("stale info")),
+    false,
+    logs.join("\n"),
+  );
 
   const create = gh.find((a) => a[1] === "create");
   assert(create);
@@ -415,10 +426,19 @@ Deno.test("raiseMilestoneSyncPr - a stale-info rejection is refetched and retrie
     logs.some((m) => m.includes("stale info") && m.includes("retried")),
     logs.join("\n"),
   );
-  const verbs = git.map((args) => args[0]);
+  // The Issue #3690 guard also reads git (rev-parse); only the network verbs
+  // matter to the retry sequence.
+  const verbs = git.map((args) => args[0]).filter((v) =>
+    v === "fetch" || v === "push"
+  );
   // fetch, push (stale), refetch, push (accepted).
   assertEquals(verbs, ["fetch", "push", "fetch", "push"]);
-  assertEquals(git[2], git[0], "the refetch refreshes the same lease baseline");
+  const fetches = git.filter((args) => args[0] === "fetch");
+  assertEquals(
+    fetches[1],
+    fetches[0],
+    "the refetch refreshes the same lease baseline",
+  );
 });
 
 Deno.test("raiseMilestoneSyncPr - a second stale-info rejection says another actor moved the branch, not a repository rule (Issue #2613)", async () => {
@@ -445,4 +465,294 @@ Deno.test("raiseMilestoneSyncPr - any other push failure is not retried (Issue #
 
   assert(!result.ok);
   assertEquals(git.filter((args) => args[0] === "push").length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Skip a no-op re-push (Issue #3690)
+//
+// Every host that merges the same milestone tip and default tip builds a fresh
+// merge commit (new SHA, same content). Force-pushing it over the sync branch
+// restarts the open sync PR's required checks for no change. The remote sync
+// branch is the fleet-wide record, so the push is skipped when it already
+// carries this merge.
+// ---------------------------------------------------------------------------
+
+const REMOTE_HEAD = "a".repeat(40);
+const PARENT_MILESTONE = "b".repeat(40);
+const PARENT_DEFAULT = "c".repeat(40);
+const HEAD_SHA = "d".repeat(40);
+const TREE = "1".repeat(40);
+const OTHER_TREE = "2".repeat(40);
+const BRANCH = syncBranchFor(MILESTONE);
+
+interface Scenario {
+  /** Exit code of `rev-parse --verify` for the remote sync branch. */
+  remoteCode?: number;
+  headTree?: string | null;
+  remoteTree?: string | null;
+  /** Exit code of `merge-base --is-ancestor HEAD R`. */
+  headAncestorCode?: number;
+  /** Exit codes of `merge-base --is-ancestor <parent> R`, by parent. */
+  parentAncestorCode?: Record<string, number>;
+  /** Stdout of `rev-list --parents -n 1 HEAD`; null makes the call fail. */
+  revListLine?: string | null;
+  /** Stdout of the remote `rev-parse --verify` (default the remote head). */
+  remoteStdout?: string;
+  openPrs?: string;
+  /** Exit code of the baseline `fetch` (default 0). */
+  fetchCode?: number;
+}
+
+/** A git/gh fake that answers by command pattern, recording every call. */
+function scriptedDeps(scenario: Scenario) {
+  const git: string[][] = [];
+  const gh: string[][] = [];
+  const logs: string[] = [];
+  const ok = (stdout = "") => Promise.resolve({ code: 0, stderr: "", stdout });
+  const fail = (code: number) =>
+    Promise.resolve({ code, stderr: "fatal", stdout: "" });
+  return {
+    git,
+    gh,
+    logs,
+    deps: {
+      git: (args: string[]) => {
+        git.push(args);
+        const joined = args.join(" ");
+        if (args[0] === "fetch" && (scenario.fetchCode ?? 0) !== 0) {
+          return fail(scenario.fetchCode!);
+        }
+        if (args[0] === "fetch" || args[0] === "push") return ok();
+        // Only the exact quiet lookup answers: a missing ref then exits 1
+        // with no output, rather than printing `fatal` (Issue #3690).
+        if (
+          joined === `rev-parse --verify --quiet refs/remotes/origin/${BRANCH}`
+        ) {
+          return (scenario.remoteCode ?? 0) === 0
+            ? ok(scenario.remoteStdout ?? `${REMOTE_HEAD}\n`)
+            : fail(scenario.remoteCode!);
+        }
+        if (joined === "rev-parse HEAD^{tree}") {
+          const t = scenario.headTree === undefined ? TREE : scenario.headTree;
+          return t === null ? fail(128) : ok(`${t}\n`);
+        }
+        if (joined === `rev-parse ${REMOTE_HEAD}^{tree}`) {
+          const t = scenario.remoteTree === undefined
+            ? TREE
+            : scenario.remoteTree;
+          return t === null ? fail(128) : ok(`${t}\n`);
+        }
+        if (joined === "rev-list --parents -n 1 HEAD") {
+          if (scenario.revListLine === null) return fail(128);
+          if (scenario.revListLine !== undefined) {
+            return ok(`${scenario.revListLine}\n`);
+          }
+          return ok(`${HEAD_SHA} ${PARENT_MILESTONE} ${PARENT_DEFAULT}\n`);
+        }
+        if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+          // Git refuses an ancestry check without both commits (usage, 129).
+          if (args.length !== 4 || args[3] !== REMOTE_HEAD) return fail(129);
+          const commit = args[2]!;
+          const code = commit === "HEAD"
+            ? scenario.headAncestorCode ?? 1
+            : scenario.parentAncestorCode?.[commit] ?? 0;
+          return code === 0 ? ok() : fail(code);
+        }
+        return ok();
+      },
+      gh: (args: string[]) => {
+        gh.push(args);
+        if (args[1] === "list") {
+          return Promise.resolve(scenario.openPrs ?? "[]");
+        }
+        if (args[1] === "create") {
+          return Promise.resolve("https://github.com/org/repo/pull/700\n");
+        }
+        return Promise.resolve("");
+      },
+      log: (m: string) => logs.push(m),
+    },
+  };
+}
+
+const pushed = (git: string[][]) => git.some((a) => a[0] === "push");
+const created = (gh: string[][]) => gh.some((a) => a[1] === "create");
+const OPEN_PR = JSON.stringify([{ number: 700 }]);
+
+Deno.test("sync push guard - simultaneous workers: a sibling already pushed the same merge, so nothing is pushed (Issue #3690)", async () => {
+  const { deps, git, gh, logs } = scriptedDeps({ openPrs: OPEN_PR });
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(result.ok);
+  assertEquals(pushed(git), false, JSON.stringify(git));
+  assertEquals(result.value.pushed, false);
+  assertEquals(result.value.opened, false);
+  assertEquals(created(gh), false);
+  assert(
+    logs.some((m) => m.includes("already holds this merge")),
+    logs.join("\n"),
+  );
+});
+
+Deno.test("sync push guard - base advance: the default branch moved, so the trees differ and the push happens (Issue #3690)", async () => {
+  const { deps, git } = scriptedDeps({
+    remoteTree: OTHER_TREE,
+    openPrs: OPEN_PR,
+  });
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(result.ok);
+  assertEquals(pushed(git), true);
+  assertEquals(result.value.pushed, true);
+});
+
+Deno.test("sync push guard - milestone advance: equal trees but parents not in the remote head still pushes (Issue #3690)", async () => {
+  const { deps, git } = scriptedDeps({
+    parentAncestorCode: { [PARENT_MILESTONE]: 1 },
+    openPrs: OPEN_PR,
+  });
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(result.ok);
+  assertEquals(pushed(git), true);
+  assertEquals(result.value.pushed, true);
+});
+
+Deno.test("sync push guard - interrupted sync: the branch holds the merge but no PR is open, so the PR is raised without a push (Issue #3690)", async () => {
+  const { deps, git, gh } = scriptedDeps({ openPrs: "[]" });
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(result.ok);
+  assertEquals(pushed(git), false);
+  assertEquals(result.value.pushed, false);
+  assertEquals(result.value.opened, true);
+  assertEquals(created(gh), true);
+});
+
+Deno.test("sync push guard - fast-forward: HEAD is itself an ancestor of the remote head, so nothing is pushed (Issue #3690)", async () => {
+  const { deps, git } = scriptedDeps({
+    headAncestorCode: 0,
+    // Parents would fail if consulted; HEAD being an ancestor is enough.
+    parentAncestorCode: { [PARENT_MILESTONE]: 1, [PARENT_DEFAULT]: 1 },
+    openPrs: OPEN_PR,
+  });
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(result.ok);
+  assertEquals(pushed(git), false);
+  assertEquals(result.value.pushed, false);
+});
+
+Deno.test("sync push guard - unknown state: an unreadable ancestry check fails towards syncing and says so (Issue #3690)", async () => {
+  const { deps, git, logs } = scriptedDeps({
+    parentAncestorCode: { [PARENT_DEFAULT]: 128 },
+    openPrs: OPEN_PR,
+  });
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(result.ok);
+  assertEquals(pushed(git), true);
+  assertEquals(result.value.pushed, true);
+  assert(
+    logs.some((m) => m.includes("could not be read")),
+    logs.join("\n"),
+  );
+});
+
+Deno.test("sync push guard - unknown state: an unreadable tree fails towards syncing (Issue #3690)", async () => {
+  const { deps, git } = scriptedDeps({ remoteTree: null, openPrs: OPEN_PR });
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(result.ok);
+  assertEquals(pushed(git), true);
+  assertEquals(result.value.pushed, true);
+});
+
+Deno.test("sync push guard - stale remote-tracking ref: the fetch fails but the old local ref still holds the same merge, so the push happens (Issue #3690)", async () => {
+  const { deps, git } = scriptedDeps({ fetchCode: 128, openPrs: "[]" });
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(result.ok);
+  assertEquals(pushed(git), true);
+  assertEquals(result.value.pushed, true);
+});
+
+Deno.test("sync push guard - first run: no remote sync branch means the push happens (Issue #3690)", async () => {
+  const { deps, git } = scriptedDeps({ remoteCode: 1, openPrs: "[]" });
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
+
+  assert(result.ok);
+  assertEquals(pushed(git), true);
+  assertEquals(result.value.pushed, true);
+  assertEquals(result.value.opened, true);
+});
+
+Deno.test("syncBranchAlreadyCarries - classifies each comparison (Issue #3690)", async () => {
+  const branch = syncBranchFor(MILESTONE);
+  const run = (s: Scenario) =>
+    syncBranchAlreadyCarries(branch, scriptedDeps(s).deps.git);
+
+  assertEquals(await run({}), "carries");
+  assertEquals(await run({ headAncestorCode: 0 }), "carries");
+  assertEquals(await run({ remoteCode: 1 }), "differs");
+  assertEquals(await run({ remoteTree: OTHER_TREE }), "differs");
+  assertEquals(
+    await run({ parentAncestorCode: { [PARENT_DEFAULT]: 1 } }),
+    "differs",
+  );
+  assertEquals(await run({ headTree: null }), "unknown");
+  assertEquals(await run({ headAncestorCode: 128 }), "unknown");
+  // A parent's ancestry check errors out.
+  assertEquals(
+    await run({ parentAncestorCode: { [PARENT_MILESTONE]: 128 } }),
+    "unknown",
+  );
+  // The remote ref resolves but is not a full sha.
+  assertEquals(await run({ remoteStdout: "not-a-sha\n" }), "unknown");
+  // HEAD is not an ancestor and its parents cannot be listed.
+  assertEquals(
+    await run({ headAncestorCode: 1, revListLine: null }),
+    "unknown",
+  );
+  // HEAD is not an ancestor and is a root commit: no parents to compare.
+  assertEquals(
+    await run({ headAncestorCode: 1, revListLine: HEAD_SHA }),
+    "unknown",
+  );
+  // A git that returns no stdout at all (the rollback path) reads unknown.
+  assertEquals(
+    await syncBranchAlreadyCarries(
+      branch,
+      () => Promise.resolve({ code: 0, stderr: "" }),
+    ),
+    "unknown",
+  );
+});
+
+Deno.test("syncPrLandingNote - not pushed and not opened says already in the open sync PR", () => {
+  assertStringIncludes(
+    syncPrLandingNote({ branch: "sync/x", opened: false, pushed: false }),
+    "ALREADY IN the open sync PR",
+  );
+});
+
+Deno.test("syncPrLandingNote - not pushed but opened says raised from the existing head", () => {
+  assertStringIncludes(
+    syncPrLandingNote({ branch: "sync/x", opened: true, pushed: false }),
+    "from the existing",
+  );
+});
+
+Deno.test("syncPrLandingNote - pushed and opened says raised a sync PR", () => {
+  assertStringIncludes(
+    syncPrLandingNote({ branch: "sync/x", opened: true, pushed: true }),
+    "RAISED a sync PR from '",
+  );
+});
+
+Deno.test("syncPrLandingNote - pushed but not opened says updated the open sync PR", () => {
+  assertStringIncludes(
+    syncPrLandingNote({ branch: "sync/x", opened: false, pushed: true }),
+    "UPDATED the open sync PR",
+  );
 });

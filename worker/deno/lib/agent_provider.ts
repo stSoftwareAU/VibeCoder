@@ -353,6 +353,8 @@ export interface AgentDefinition {
 
 /** One invocation of the provider's CLI. */
 export interface AgentInvocationRequest {
+  /** Enforced sandbox for orchestrator-owned Codex role calls. */
+  orchestrationRole?: "manager" | "executor" | "reviewer";
   /** The user prompt. */
   prompt: string;
   /** Static system prompt passed separately so the CLI can cache it. */
@@ -378,7 +380,8 @@ export interface AgentInvocationRequest {
    * **Absent — the default — emits no argument at all**, so an invocation
    * that does not ask for the split is byte-for-byte the argv the worker has
    * always built and every sub-agent inherits the phase's model. Only the
-   * Claude CLI takes the flag; the other providers keep single-model routing.
+   * Claude CLI takes the flag; the other providers' argv never carries it,
+   * and the runner refuses a native run that asked for it (Issue #4010).
    */
   agents?: Readonly<Record<string, AgentDefinition>>;
   /** Session continuity state, when session resume is enabled. */
@@ -411,9 +414,11 @@ export interface AgentInvocationRequest {
    * `PreToolUse` guard, which denies the advisor's own `Edit`/`Write` calls
    * while allowing an executor's — a distinction `disallowedTools` cannot
    * express, because a tool removed from the session pool is gone for
-   * sub-agents too — and RTK's `PreToolUse` Bash entry. Absent or empty —
-   * every run that has not opted into either — emits no argument, and the
-   * argv is the one every host spawned before. Claude-only: DeepSeek shares
+   * sub-agents too — and RTK's `PreToolUse` Bash entry. Absent or empty — a
+   * run with neither the split guard nor RTK's hook (the split is on by
+   * default for `issue` runs; `issue_executor_split: false` turns it off) —
+   * emits no argument, and the argv is the one every host spawned before.
+   * Claude-only: DeepSeek shares
    * the CLI but its endpoint implements no hooks, so that descriptor strips
    * the field, and no other provider takes the flag.
    */
@@ -618,10 +623,11 @@ function buildClaudeCliArgs(
     args.push("--disallowed-tools", disallowed.join(","));
   }
   // Sub-agent definitions (Issue #2342), beside the tool policy they extend.
-  // Absent — every invocation that has not opted into the split — pushes
-  // nothing, so the argv below it is unchanged. There is no fallback if the
-  // CLI rejects the flag: an older binary fails the run with its own error
-  // rather than quietly reverting to single-model routing.
+  // Absent — no sub-agent definitions were built (see `buildIssueRunAgents` in
+  // `issue_executor_agents.ts`) — pushes nothing, so the argv below it is
+  // unchanged. There is no fallback if the CLI rejects the flag: an older
+  // binary fails the run with its own error rather than quietly reverting to
+  // single-model routing.
   if (request.agents) {
     args.push("--agents", JSON.stringify(request.agents));
   }
@@ -890,6 +896,7 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     }
     return buildCodexArgs({
       prompt: request.prompt,
+      orchestrationRole: request.orchestrationRole,
       systemPrompt: request.systemPrompt,
       disallowedTools: request.disallowedTools,
       model: routing.model,
@@ -1107,11 +1114,12 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
     if (routing.effort) {
       warnDeepSeekEffortUnsupported(routing.effort, request.phase);
     }
-    // The same treatment for sub-agent definitions (Issue #2342): they name
-    // Anthropic tier aliases this endpoint cannot resolve, so DeepSeek keeps
-    // today's single-model routing. Dropped from the argv — but stated, never
-    // in silence, so a split configured under DeepSeek is visible rather than
-    // a run that looks split and is not.
+    // Sub-agent definitions (Issue #2342) name Anthropic tier aliases this
+    // endpoint cannot resolve, so they are dropped from the argv — but stated,
+    // never in silence. The runner then refuses a native run whose argv lost
+    // its `--agents` before spawn (Issue #4010), so a split configured under
+    // DeepSeek fails loud rather than running as one that looks split and is
+    // not.
     // The advisor edit guard goes with them (Issue #2344): without executors
     // to make the edits, a guard here would deny the advisor's own and leave
     // the run unable to edit anything.

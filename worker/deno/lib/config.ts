@@ -13,6 +13,7 @@ import {
   DEFAULT_CLAUDE_MAX_TURNS,
   validateClaudeMaxTurns,
 } from "./claude_turn_limit.ts";
+import { parseAllocationPolicy } from "./subscription_allocation.ts";
 import { registerAgentPreFlightConfigs } from "./agent_pre_flight.ts";
 import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
@@ -27,6 +28,7 @@ import {
   setConfiguredAgentProviderId,
   setConfiguredEnabledAgentProviderIds,
 } from "./agent_provider.ts";
+import { isAutomaticProviderRoutingActive } from "./provider_auto_state.ts";
 import { resolveProviderFallbackPolicy } from "./provider_fallback_policy.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
 import { resolveRunMode } from "./run_mode.ts";
@@ -44,6 +46,10 @@ import { parseRtkOutput } from "./rtk_output_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
 import { assertGraftContextConfig } from "./graft_context_config.ts";
 import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
+import {
+  parseOrchestrationSettings,
+  validateRoleProviders,
+} from "./orchestration/role_config.ts";
 import { resolveHostIssueSubAgentTier } from "./issue_sub_agent_tier.ts";
 import {
   CUSTOM_PROMPT_PATH_MAP_ENV,
@@ -239,6 +245,8 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   deepseek_phase_model_overrides: "deepseekPhaseModelOverrides",
   // Per-repo coding-agent provider pin (Issue #2048).
   agent_provider: "agentProvider",
+  external_orchestration: "externalOrchestration",
+  external_orchestration_settings: "externalOrchestrationSettings",
   // Pre-flight enforcement gate (Issue #3577). Accept the kebab-case form
   // shown in the issue/docs example (`"pre-flight"`) and the snake_case form
   // (`pre_flight`); camelCase (`preFlight`) passes through unchanged.
@@ -275,6 +283,17 @@ function normaliseRepoConfig(raw: Record<string, unknown>): RepoConfig {
     }
   }
 
+  if (
+    normalised.externalOrchestration !== undefined &&
+    typeof normalised.externalOrchestration !== "boolean"
+  ) {
+    throw new Error("repo external_orchestration must be boolean");
+  }
+  if (normalised.externalOrchestrationSettings !== undefined) {
+    normalised.externalOrchestrationSettings = parseOrchestrationSettings(
+      normalised.externalOrchestrationSettings,
+    );
+  }
   return normalised as RepoConfig;
 }
 
@@ -553,9 +572,10 @@ export async function loadConfig(
 
   // Coding-agent provider selection (Issue #4067). Resolved here so an
   // unsupported id fails loudly at startup, naming the supported providers,
-  // rather than surfacing as a missing binary mid-run. The selection is also
-  // recorded on the seam, because the low-level modules that spawn the agent
-  // hold no configuration handle.
+  // rather than surfacing as a missing binary mid-run. Outside automatic
+  // routing the selection is also recorded on the seam, because the low-level
+  // modules that spawn the agent hold no configuration handle. While routing
+  // is active, the router owns that seam between its refreshes (Issue #4024).
   // The resolver consults the per-run provider override (Issue #2062)
   // before the file's value: the health gate's fallback switch therefore
   // survives every in-process config reload, which would otherwise reset
@@ -570,7 +590,18 @@ export async function loadConfig(
     configured: file.agent_provider,
     env,
   });
-  setConfiguredAgentProviderId(agentProvider);
+  // (Issue #4024) Automatic routing owns the active provider between its
+  // refreshes: a best-effort config reload — the allowlist and
+  // trusted-author readers call this full loader for one small field — must
+  // not reset the seam to the file's preferred id, or every maintenance
+  // phase after the reload runs the provider the router just deselected
+  // (GRQ-23: PR feedback ran Codex while the router had switched to Claude).
+  // The run override is already immune (Issue #2062), so only the
+  // auto-router's selection needs this guard; a pinned-mode host — routing
+  // inactive — keeps the historical reload behaviour.
+  if (!isAutomaticProviderRoutingActive()) {
+    setConfiguredAgentProviderId(agentProvider);
+  }
 
   // The providers enabled for this run (Issue #4108). Each one is provisioned,
   // preflighted and mounted separately; a provider outside the set has no
@@ -1011,6 +1042,20 @@ export async function loadConfig(
   const issueReviewerAgents = file.issue_reviewer_agents ??
     OPERATIONAL_DEFAULTS.issueReviewerAgents;
 
+  // External orchestrator, host-wide only (Issue #3642). Off by default, so
+  // an unconfigured host keeps the Claude-native `--agents` path.
+  const externalOrchestration = file.external_orchestration ??
+    OPERATIONAL_DEFAULTS.externalOrchestration;
+  if (typeof externalOrchestration !== "boolean") {
+    throw new Error(
+      `external_orchestration must be true or false, got ` +
+        `${JSON.stringify(file.external_orchestration)}`,
+    );
+  }
+  const externalOrchestrationSettings = parseOrchestrationSettings(
+    file.external_orchestration_settings,
+  );
+
   // Fleet-wide run archive repo slug for measurement issues (Issue #2930).
   // Unset (or blank) leaves the feature off.
   const fleetRunArchiveTrimmed = file.fleet_run_archive?.trim();
@@ -1275,6 +1320,8 @@ export async function loadConfig(
     issueExecutorSplit,
     issueSubAgentTier,
     issueReviewerAgents,
+    externalOrchestration,
+    externalOrchestrationSettings,
     fleetRunArchive,
     subscriptionAllocationLabel,
     includeRecentActivity,
@@ -1316,11 +1363,13 @@ export async function loadConfig(
     // operator believes Graft is on.
     graftContext: assertGraftContextConfig(file.graft_context),
     repoConfig: normaliseRepoConfigs(file.repo_config),
+    subscriptionAllocation: parseAllocationPolicy(file.subscription_allocation),
   };
 
   // Issue #3577: reject a malformed pre-flight gate loudly at config load,
   // rather than silently ignoring it and running the repo unguarded.
   validatePreFlightConfigs(config.repoConfig);
+  validateRoleProviders(config);
   // Issue #3394: make the pre-flight commands available to agent spawns.
   registerAgentPreFlightConfigs(config.repoConfig);
 

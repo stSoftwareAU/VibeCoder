@@ -132,7 +132,7 @@ function basename(path: string): string {
 }
 
 /** Split a comma-separated CLI list into non-empty, trimmed values. */
-function splitList(value: string): string[] {
+export function splitList(value: string): string[] {
   return value.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
 }
 

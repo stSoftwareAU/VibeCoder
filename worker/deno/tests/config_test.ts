@@ -29,6 +29,10 @@ import {
   setConfiguredAgentProviderId,
   setRunProviderOverride,
 } from "../lib/agent_provider.ts";
+import {
+  resetAutomaticProviderState,
+  setAutomaticProviderRoutingActive,
+} from "../lib/provider_auto_state.ts";
 import type { EnvLookup } from "../lib/env_lookup.ts";
 import type { ConfigFile, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -106,6 +110,45 @@ Deno.test("config - no override leaves the configured provider alone (Issue #206
     const config = await loadConfig(configPath, { env: statedEnv() });
     assertEquals(config.agentProvider, "claude");
   });
+});
+
+Deno.test("config - a reload under automatic routing keeps the auto-selected provider (Issue #4024)", async () => {
+  // GRQ-23: the automatic router switched to Claude, and a best-effort
+  // config reload (the allowlist/trusted-author readers call the full
+  // loader) silently reset the seam to the file's preferred id — so a
+  // maintenance phase ran the deselected provider two minutes later.
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+    agent_provider: "codex",
+    agent_providers: ["claude", "codex", "deepseek"],
+  };
+  try {
+    setAutomaticProviderRoutingActive(true);
+    setConfiguredAgentProviderId("claude");
+    await withTempConfig(testConfig, async (configPath) => {
+      const config = await loadConfig(configPath, {
+        env: statedEnv({
+          [IMAGE_AGENT_PROVIDERS_ENV]: "claude,codex,deepseek",
+        }),
+      });
+      // The file's preference is still reported to the callers that want
+      // it (the fallback policy's preferred).
+      assertEquals(config.agentProvider, "codex");
+      // But the active provider stays the router's choice: a reload must
+      // not clobber automatic routing (Issue #4024).
+      assertEquals(
+        resolveAgentProviderId({
+          env: statedEnv({
+            [IMAGE_AGENT_PROVIDERS_ENV]: "claude,codex,deepseek",
+          }),
+        }),
+        "claude",
+      );
+    });
+  } finally {
+    resetAutomaticProviderState();
+  }
 });
 
 Deno.test("config - loadConfig resolves the active provider through the injected lookup (Issue #2086)", async () => {

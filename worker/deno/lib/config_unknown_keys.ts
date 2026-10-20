@@ -86,11 +86,15 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "issue_sub_agent_tier",
   // Reviewer sub-agents (Issue #2575). Host-wide only.
   "issue_reviewer_agents",
+  // External orchestrator (Issue #3642). Host-wide only.
+  "external_orchestration",
+  "external_orchestration_settings",
   // Fleet-wide run archive repo slug for measurement issues (Issue #2930).
   "fleet_run_archive",
   // Operator label for the subscription allocation recorded on each issue's
   // lifecycle-ledger assignment (Issue #3718). A label only.
   "subscription_allocation_label",
+  "subscription_allocation",
 
   // Label fields
   // Issue #1834: `work_on_label` and `low_priority_label` removed — both
