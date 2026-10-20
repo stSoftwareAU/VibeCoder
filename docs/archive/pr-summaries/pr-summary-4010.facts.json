@@ -1,0 +1,11 @@
+{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
+  {"path":"worker/deno/lib/claude_runner.ts","line":1263,"outcome":"operand `invocationRequest.agents` present and argv lacks --agents (codex, gemini, deepseek): refused before spawn",
+   "test":"worker/deno/tests/claude_runner_test.ts","testName":"runClaudeWithTimeout - refuses providers that drop --agents on the split (Issue #4010)",
+   "flipWentRed":"replacing the condition with `false` turned it red: the error no longer contained cannot carry"},
+  {"path":"worker/deno/lib/claude_runner.ts","line":1263,"outcome":"operand `!args.includes(\"--agents\")` false (Claude carries --agents): not refused, the stub is spawned",
+   "test":"worker/deno/tests/claude_runner_test.ts","testName":"runClaudeWithTimeout - Claude carrying --agents is not refused (Issue #4010)",
+   "flipWentRed":"forcing the operand to `true` turned it red: Claude was refused"},
+  {"path":"worker/deno/lib/claude_runner.ts","line":1263,"outcome":"operand `invocationRequest.agents` absent on a non-Claude provider: not refused, the stub is spawned",
+   "test":"worker/deno/tests/claude_runner_test.ts","testName":"runClaudeWithTimeout - a non-Claude provider with no agents is not refused (Issue #4010)",
+   "flipWentRed":"deleting the operand turned it red: codex without agents was refused"}
+]}}

@@ -1,3 +1,4 @@
+import { resolveIssueAllocation } from "./subscription_allocation_runtime.ts";
 /**
  * Dependency injection and module wiring for the issue worker.
  *
@@ -130,6 +131,7 @@ import {
 import { checkCiStatus, directMergePr } from "./direct_merge.ts";
 
 // Claude operations
+import { runOrchestratedIssueRun } from "./orchestration/issue_run_gate.ts";
 import { checkClaudeHealth, runClaudeWithRetry } from "./claude_runner.ts";
 import { prepareCodegraphContext } from "./codegraph_context.ts";
 import { prepareRtkRun, rtkProviderId } from "./rtk_output.ts";
@@ -352,6 +354,7 @@ export interface PrDeps {
 
 /** Claude operations — runner, executor, auth, health. */
 export interface ClaudeDeps {
+  runOrchestratedIssueRun: typeof runOrchestratedIssueRun;
   runClaudeWithRetry: typeof runClaudeWithRetry;
   /**
    * The read-only question the completion phase asks about the PR summary's
@@ -463,6 +466,7 @@ export interface CrashHandlingDeps {
 
 /** Infrastructure — file I/O, temp files, disk, logs, prompts, misc. */
 export interface InfrastructureDeps {
+  resolveIssueAllocation: typeof resolveIssueAllocation;
   /** Record a PR follow-on cycle without changing the existing tier counters (Issue #3720). */
   recordPrFollowOn: (
     input: Parameters<typeof recordPrFollowOnFromGithub>[0],
@@ -756,6 +760,7 @@ export function createDefaultDeps(
     },
 
     claude: {
+      runOrchestratedIssueRun,
       runClaudeWithRetry,
       runSummaryClaimQuestion: runClaudeWithRetry,
       runPrePrVerifier: (input) => runPrePrVerifier(input),
@@ -811,6 +816,7 @@ export function createDefaultDeps(
       buildPrompt: buildIssuePrompt,
       collectGraftContext,
       getCodebaseMap: getOrGenerateCodebaseMap,
+      resolveIssueAllocation,
       recordPrFollowOn: (input) =>
         recordPrFollowOnFromGithub(input, runGhCommand),
       recordIssueAssignment: ({ workDir, ...input }) =>
@@ -1252,6 +1258,10 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
   };
 
   const mockClaude: ClaudeDeps = {
+    runOrchestratedIssueRun: async () => ({
+      ok: true,
+      value: { output: "mock orchestrated", exitCode: 0, timedOut: false },
+    }),
     runClaudeWithRetry: mockFn<ClaudeDeps["runClaudeWithRetry"]>(() =>
       Promise.resolve({
         ok: true,
@@ -1485,6 +1495,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     recordPrFollowOn: mockFn<InfrastructureDeps["recordPrFollowOn"]>(() =>
       Promise.resolve()
     ),
+    resolveIssueAllocation: async () => undefined,
     // Issue #3718: a mocked run posts no assignment marker and writes no ledger.
     recordIssueAssignment: mockFn<InfrastructureDeps["recordIssueAssignment"]>(
       () =>

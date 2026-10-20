@@ -451,6 +451,8 @@ export interface ClaudeRunResult {
 
 /** Options for running Claude with timeout. */
 export interface RunClaudeOptions {
+  /** Enforced CLI sandbox for a provider-neutral role invocation. */
+  orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Retain each retry's usage for lifecycle follow-on attribution (Issue #3720). */
   captureInvocationStats?: boolean;
   /** Explicit observable role for lifecycle telemetry (Issue #3719). */
@@ -552,10 +554,10 @@ export interface RunClaudeOptions {
    * Sub-agent definitions for this run (Issue #2342), handed to the Claude
    * CLI as `--agents`.
    *
-   * Absent — every run that has not opted into the issue-executor split —
-   * emits no argument, so each sub-agent inherits the phase's model exactly
-   * as it does today. No fallback: a CLI that rejects the flag fails the run
-   * with its own error rather than being re-invoked without it.
+   * Absent (no sub-agent definitions were built — see `buildIssueRunAgents`
+   * in `issue_executor_agents.ts`) — emits no argument, so each sub-agent
+   * inherits the phase's model. No fallback: a CLI that rejects the flag fails
+   * the run with its own error rather than being re-invoked without it.
    */
   agents?: Readonly<Record<string, AgentDefinition>>;
   /**
@@ -564,9 +566,9 @@ export interface RunClaudeOptions {
    *
    * Set `true` and the Claude invocation carries the `PreToolUse` guard that
    * denies the advisor's own edits and allows an executor's, and the run's
-   * stream is summarised into {@link RunStats.executorSplit}. Absent — every
-   * run that has not opted into the split — configures no hook, parses
-   * nothing, and carries no such field.
+   * stream is summarised into {@link RunStats.executorSplit}. Absent — the
+   * split is off (`issue_executor_split: false`) or the run is not an `issue`
+   * run — configures no hook, parses nothing, and carries no such field.
    */
   issueExecutorSplit?: boolean;
   /**
@@ -758,6 +760,18 @@ export interface RunClaudeOptions {
  * cycle plus a fallback tier with its own retries, and halves the worst case.
  */
 export const DEFAULT_MAX_TOTAL_INVOCATIONS = 6;
+
+/** The default `maxRetries` of `runClaudeWithRetry` (Issue #3642). */
+export const DEFAULT_RETRY_MAX_RETRIES = 2;
+
+/** The default `maxWaitSeconds` of `runClaudeWithRetry` (Issue #3642). */
+export const DEFAULT_RETRY_MAX_WAIT_SECONDS = 600;
+
+/** The default hard `timeoutSeconds` of one `claude` run (Issue #3642). */
+export const DEFAULT_CLAUDE_TIMEOUT_SECONDS = 14400;
+
+/** The default `killAfterSeconds` grace of one `claude` run (Issue #3642). */
+export const DEFAULT_CLAUDE_KILL_AFTER_SECONDS = 30;
 
 /**
  * Requested-model value used when the routing chain resolves no `--model` arg.
@@ -1150,8 +1164,8 @@ async function runClaudeWithTimeoutBody(
   const {
     prompt,
     systemPrompt,
-    timeoutSeconds = 14400,
-    killAfterSeconds = 30,
+    timeoutSeconds = DEFAULT_CLAUDE_TIMEOUT_SECONDS,
+    killAfterSeconds = DEFAULT_CLAUDE_KILL_AFTER_SECONDS,
     noOutputTimeout = 0,
     model,
     phase,
@@ -1205,6 +1219,7 @@ async function runClaudeWithTimeoutBody(
   // at spawn, observed live in container mode.
   const promptViaStdin = provider.promptTransport === "stdin";
   const invocationRequest = {
+    orchestrationRole: options.orchestrationRole,
     prompt,
     systemPrompt,
     model,
@@ -1239,6 +1254,27 @@ async function runClaudeWithTimeoutBody(
     ...invocationRequest,
     promptViaStdin,
   });
+  // Fail loud on the native split (Issue #4010): the native `issue` run hands
+  // the CLI `--agents` sub-agent definitions (executor, reviewers, or the
+  // Haiku-tier explorer). A provider whose argv cannot carry them drops them —
+  // Codex and Gemini silently, DeepSeek with a warning — so the advisor would
+  // be told to dispatch sub-agents the CLI never defines. Refuse before spawn
+  // instead. `invocationRequest.agents` is present only when the run's flags
+  // resolved some definition, and the check asks the provider's own argv rather
+  // than a provider-id table.
+  if (invocationRequest.agents && !args.includes("--agents")) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refused to start the agent: ${provider.displayName} cannot carry ` +
+          `the issue run's sub-agent definitions (--agents), so the advisor ` +
+          `would be told to dispatch executors and reviewers the CLI never ` +
+          `defines. Turn the definitions off (issue_executor_split: false, ` +
+          `issue_reviewer_agents: false, issue_sub_agent_tier: "sonnet") or ` +
+          `run the issue phase on the Claude provider. (Issue #4010)`,
+      ),
+    };
+  }
   const stdinPayload = promptViaStdin
     ? (provider.stdinBody?.(invocationRequest) ?? prompt)
     : prompt;
@@ -2828,8 +2864,8 @@ async function runRetryLadder(
   ladderSignal: AbortSignal,
 ): Promise<Result<ClaudeRunResult>> {
   const {
-    maxRetries = 2,
-    maxWaitSeconds = 600,
+    maxRetries = DEFAULT_RETRY_MAX_RETRIES,
+    maxWaitSeconds = DEFAULT_RETRY_MAX_WAIT_SECONDS,
     initialWaitInterval = 300,
     maxTotalInvocations = DEFAULT_MAX_TOTAL_INVOCATIONS,
   } = retryOptions;
