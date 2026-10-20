@@ -22,6 +22,7 @@ import {
   revertCommitMessage,
   type RollbackCandidate,
 } from "../lib/milestone_rollback.ts";
+import { syncBranchFor } from "../lib/milestone_sync_pr.ts";
 
 const MILESTONE_BRANCH = "milestone/1730-roll-back";
 
@@ -293,6 +294,30 @@ function ghStub(
   };
 }
 
+/**
+ * The `milestone/**` required-status-checks ruleset, as git sees it: the
+ * milestone ref is refused, every other ref is not (Issue #589).
+ */
+async function gateMilestoneRefs(fixture: Fixture): Promise<void> {
+  const hook = `${fixture.upstream}/hooks/pre-receive`;
+  await Deno.writeTextFile(
+    hook,
+    [
+      "#!/bin/sh",
+      "while read -r old new ref; do",
+      '  case "$ref" in',
+      "    refs/heads/milestone/*)",
+      '      echo "remote: - 2 of 2 required status checks are expected." >&2',
+      '      echo "! [remote rejected] $ref (push declined due to repository rule violations)" >&2',
+      "      exit 1;;",
+      "  esac",
+      "done",
+      "exit 0",
+    ].join("\n") + "\n",
+  );
+  await Deno.chmod(hook, 0o755);
+}
+
 /** Deps wired to real git in the fixture clone. */
 function depsFor(
   fixture: Fixture,
@@ -463,25 +488,7 @@ Deno.test("executeRollback - a ruleset-rejected push lands through the sync PR",
       (await runGit(["rev-parse", `origin/${MILESTONE_BRANCH}`], fixture.clone))
         .stdout.trim();
 
-    // The `milestone/**` required-status-checks ruleset, as git sees it: the
-    // milestone ref is refused, every other ref is not (Issue #589).
-    const hook = `${fixture.upstream}/hooks/pre-receive`;
-    await Deno.writeTextFile(
-      hook,
-      [
-        "#!/bin/sh",
-        "while read -r old new ref; do",
-        '  case "$ref" in',
-        "    refs/heads/milestone/*)",
-        '      echo "remote: - 2 of 2 required status checks are expected." >&2',
-        '      echo "! [remote rejected] $ref (push declined due to repository rule violations)" >&2',
-        "      exit 1;;",
-        "  esac",
-        "done",
-        "exit 0",
-      ].join("\n") + "\n",
-    );
-    await Deno.chmod(hook, 0o755);
+    await gateMilestoneRefs(fixture);
 
     const recorded: string[][] = [];
     const gh = ghStub([
@@ -519,6 +526,66 @@ Deno.test("executeRollback - a ruleset-rejected push lands through the sync PR",
         .stdout.trim(),
       beforeRemote,
       "the gated milestone branch itself was never pushed to",
+    );
+  } finally {
+    await Deno.remove(fixture.tmp, { recursive: true });
+  }
+});
+
+Deno.test("executeRollback - an existing sync branch is compared through the roll-back's own git, then updated (Issue #3690)", async () => {
+  const fixture = await makeFixture("milestone_rollback_sync_guard_");
+  try {
+    const shaB = await commitFiles(fixture.clone, "child B", {
+      "shared.txt": "child B\n",
+    });
+    await runGit(["push", "origin", MILESTONE_BRANCH], fixture.clone);
+    await advanceDefaultBranch(fixture, { "shared.txt": "default\n" });
+    // A sync branch left by an earlier cycle, so the baseline fetch succeeds
+    // and the guard has a remote head to read.
+    const syncBranch = syncBranchFor(MILESTONE_BRANCH);
+    await runGit(
+      ["push", "origin", `origin/main:refs/heads/${syncBranch}`],
+      fixture.clone,
+    );
+    await gateMilestoneRefs(fixture);
+
+    const logs: string[] = [];
+    const result = await executeRollback(
+      depsFor(
+        fixture,
+        ghStub([
+          {
+            number: 31,
+            title: "Child B",
+            mergedAt: "2026-09-02T10:00:00Z",
+            headRefName: "issue-31-shared",
+            sha: shaB,
+          },
+        ], []),
+        {
+          conflictingPaths: ["shared.txt"],
+          log: (message) => logs.push(message),
+        },
+      ),
+    );
+
+    assert(result.ok, `roll-back failed: ${result.ok ? "" : result.error}`);
+    assertEquals(result.value.merged, true);
+    // The guard reads the remote head from git's stdout; a wrapper that drops
+    // it reads every comparison as unknown.
+    assert(
+      !logs.some((line) => line.includes("could not be read")),
+      logs.join("\n"),
+    );
+    const head = (await runGit(["rev-parse", "HEAD"], fixture.clone)).stdout
+      .trim();
+    const remoteSync =
+      (await runGit(["ls-remote", "origin", syncBranch], fixture.clone))
+        .stdout.split(/\s+/)[0];
+    assertEquals(
+      remoteSync,
+      head,
+      "the rebuilt merge differs, so it is pushed",
     );
   } finally {
     await Deno.remove(fixture.tmp, { recursive: true });

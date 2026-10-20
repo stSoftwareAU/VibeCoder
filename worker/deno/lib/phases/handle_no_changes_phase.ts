@@ -117,6 +117,7 @@ async function retryDescribedCodeChange(
     });
   }
   return {
+    category: "no_changes",
     status: "failure",
     reason: formatDetailedFailureMessage(
       `Described a code change (${
@@ -180,7 +181,11 @@ async function postPartialAnswerAndHandOff(
     deps: { ensureLabelExists: deps.github.ensureLabelExists },
   });
 
-  return { status: "early_exit", reason: "analysis_only_handed_off" };
+  return {
+    category: "unknown",
+    status: "early_exit",
+    reason: "analysis_only_handed_off",
+  };
 }
 
 /**
@@ -352,7 +357,11 @@ export async function workOnIssueHandleNoChanges(
       });
     }
 
-    return { status: "early_exit", reason: "already_complete" };
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "already_complete",
+    };
   }
 
   // Issue #108: a no-changes run that was CUT OFF before finishing — blocked on
@@ -388,6 +397,7 @@ export async function workOnIssueHandleNoChanges(
   if (detectUsageLimit(claudeOutput)) {
     logger.warn("Claude hit the subscription usage limit mid-run (no changes)");
     return {
+      category: "rate_limit",
       status: "failure",
       reason: formatDetailedFailureMessage(
         "Claude usage limit reached mid-run (subscription window) — no changes",
@@ -405,6 +415,7 @@ export async function workOnIssueHandleNoChanges(
       "Claude run interrupted before completing (no changes) — retrying, not analysis-only",
     );
     return {
+      category: "interrupted",
       status: "failure",
       reason: formatDetailedFailureMessage(
         "Run interrupted before completing — the agent was still working (no changes yet)",
@@ -438,6 +449,7 @@ export async function workOnIssueHandleNoChanges(
         });
       }
       return {
+        category: "unknown",
         status: "early_exit",
         reason: "structured_output_wrapper_skipped",
       };
@@ -505,5 +517,9 @@ export async function workOnIssueHandleNoChanges(
       lastOutputSnippet: snippet || undefined,
     },
   );
-  return { status: "failure", reason };
+  return {
+    category: "unknown",
+    status: "failure",
+    reason,
+  };
 }

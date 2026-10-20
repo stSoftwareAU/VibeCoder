@@ -39,10 +39,15 @@ import {
   DEADLINE_BOUND_TIMEOUT_MARKER,
   detectFailureCategory,
   type FailureCategory,
+  isInfrastructureFailure,
   isTimeoutClassFailureReason,
+  isWorkerGateCategory,
 } from "./failure_diagnosis.ts";
 import { detectHostFault } from "./host_fault.ts";
-import { classifyRunFailure } from "./run_outcome_classifier.ts";
+import {
+  classifyRunFailure,
+  type RunFailureClassification,
+} from "./run_outcome_classifier.ts";
 import type { handleIssueFailure } from "./label_failure.ts";
 import type {
   HandleFailureOptions,
@@ -152,22 +157,24 @@ const RECORD_ONLY_FAILURE_CLASSES: ReadonlySet<string> = new Set([
  */
 export function classifyCodingFailure(
   reason: string | undefined | null,
+  declaredCategory?: FailureCategory,
+  classification?: RunFailureClassification,
 ): CodingFailureDecision {
   const message = reason ?? "";
-  const category = detectFailureCategory(message);
-  const { failureClass, rationale } = classifyRunFailure(category, message);
+  const category = declaredCategory ?? detectFailureCategory(message);
+  const { failureClass, rationale } = classification ?? classifyRunFailure(
+    category,
+    message,
+    declaredCategory !== undefined,
+  );
 
-  // A PR-summary gate refusal (Issue #3431; PR #3440 review) or a
-  // security-fix gate refusal (Issue #3454) is the worker's
-  // refusal plus the agent's quoted summary, and a pre-push gate block (PR
-  // #3716 review) is the worker's prefix plus raw check output, so no
-  // free-text check below may read it: a quoted "at the cycle deadline",
-  // "rate limit" or "timeout" must neither make it transient nor a
-  // timeout-class failure. It earns a normal attempt.
-  if (
-    category === "summary_incomplete" || category === "security_fix_gate" ||
-    category === "pre_push_gate"
-  ) {
+  // A worker gate refusal (every WORKER_GATE_MARKERS category: summary,
+  // security-fix or pre-push gate; Issues #3431, #3454, PR #3716) is the
+  // worker's own refusal plus text it quotes (the agent's summary, tests or
+  // raw check output), so no free-text check below may read it: a quoted "at
+  // the cycle deadline", "rate limit" or "timeout" must neither make it
+  // transient nor a timeout-class failure. It earns a normal attempt.
+  if (isWorkerGateCategory(category)) {
     return {
       disposition: "ladder",
       category,
@@ -180,7 +187,10 @@ export function classifyCodingFailure(
   // A deadline-bound timeout (VibeCoder#174) is a handover, not a defeat:
   // the cycle ended with the WIP committed, so the next cycle resumes it.
   // Checked before the class table because its category is `timeout`.
-  if (message.includes(DEADLINE_BOUND_TIMEOUT_MARKER)) {
+  if (
+    declaredCategory === undefined &&
+    message.includes(DEADLINE_BOUND_TIMEOUT_MARKER)
+  ) {
     return {
       disposition: "transient",
       category,
@@ -190,7 +200,10 @@ export function classifyCodingFailure(
     };
   }
 
-  if (TRANSIENT_FAILURE_CLASSES.has(failureClass)) {
+  if (
+    (declaredCategory !== undefined && isInfrastructureFailure(category)) ||
+    TRANSIENT_FAILURE_CLASSES.has(failureClass)
+  ) {
     return { disposition: "transient", category, failureClass, rationale };
   }
 
@@ -204,7 +217,9 @@ export function classifyCodingFailure(
     failureClass,
     // A timeout keeps its own kind so the fleet telemetry and the
     // timeout-specific hand-off wording stay accurate (Issue #4304).
-    cooldownKind: isTimeoutClassFailureReason(message)
+    cooldownKind: (category === "timeout" ||
+        (declaredCategory === undefined &&
+          isTimeoutClassFailureReason(message)))
       ? "timeout"
       : "non_transient",
     rationale,
@@ -218,6 +233,8 @@ export interface CodingFailureLadderOptions {
   githubUser: string;
   /** The terminal failure reason the run produced. */
   failureReason: string;
+  category?: FailureCategory;
+  classification?: RunFailureClassification;
   /** The phase the run died at (`execute`, `quality_gate`, …), if known. */
   failurePhase?: string;
   /** Configured label names; defaults apply when absent. */
@@ -254,7 +271,11 @@ export async function applyCodingFailureLadder(
   options: CodingFailureLadderOptions,
   deps: CodingFailureLadderDeps,
 ): Promise<CodingFailureLadderOutcome> {
-  const decision = classifyCodingFailure(options.failureReason);
+  const decision = classifyCodingFailure(
+    options.failureReason,
+    options.category,
+    options.classification,
+  );
   if (decision.disposition === "transient") return { decision };
 
   const diagnosticContext = [
@@ -267,6 +288,7 @@ export async function applyCodingFailureLadder(
     issueNumber: options.issueNumber,
     githubUser: options.githubUser,
     failureMessage: options.failureReason,
+    category: options.category,
     diagnosticContext,
     ...(options.labels ? { labels: options.labels } : {}),
   };
@@ -292,14 +314,17 @@ export async function applyCodingFailureLadder(
  * the issue's.
  */
 export function isSetupFault(
-  run: { phase?: string; reason?: string | null },
+  run: { phase?: string; reason?: string | null; category?: FailureCategory },
 ): boolean {
-  return run.phase === "setup" || detectHostFault(run.reason ?? "") !== null;
+  return run.phase === "setup" ||
+    detectHostFault(run.reason ?? "", run.category) !== null;
 }
 
 /** One finished coding run, as the main loop sees it. */
 export interface CodingRunOutcomeSummary {
   success: boolean;
+  category?: FailureCategory;
+  classification?: RunFailureClassification;
   /** A phase declared its own bounce (Issue #175) — not a failure. */
   expectedSkip: boolean;
   /** The terminal failure reason, when the run failed. */
@@ -340,7 +365,11 @@ export function planCodingFailure(
 ): CodingFailurePlan {
   if (run.success || run.expectedSkip) return { applyLadder: false };
 
-  const decision = classifyCodingFailure(run.reason);
+  const decision = classifyCodingFailure(
+    run.reason,
+    run.category,
+    run.classification,
+  );
   if (run.ladderApplied) {
     return {
       applyLadder: false,
@@ -357,7 +386,11 @@ export function planCodingFailure(
   // writes no label either way, so it falls through unchanged.
   if (
     decision.disposition === "ladder" &&
-    isSetupFault({ phase: run.phase, reason: run.reason })
+    isSetupFault({
+      phase: run.phase,
+      reason: run.reason,
+      category: run.category,
+    })
   ) {
     return { applyLadder: false, decision };
   }

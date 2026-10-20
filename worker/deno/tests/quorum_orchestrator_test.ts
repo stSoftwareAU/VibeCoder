@@ -34,6 +34,7 @@ import {
 import {
   type AgentProviderDescriptor,
   IMAGE_AGENT_PROVIDERS_ENV,
+  setConfiguredAgentProviderId,
 } from "../lib/agent_provider.ts";
 import type { CustomLabelPromptMapping, Result } from "../types.ts";
 import type { RunStats } from "../lib/run_stats.ts";
@@ -865,4 +866,30 @@ Deno.test("runQuorum - an override deleted since config load fails the run loudl
   if (result.ok) return;
   // The built-in template is never substituted: the fault names the file.
   assertStringIncludes(result.error.message, "gone.md");
+});
+
+Deno.test("runQuorum - auto follows the budget-selected provider for all three roles", async () => {
+  const calls: string[] = [];
+  try {
+    setConfiguredAgentProviderId("codex");
+    const result = await runQuorum({
+      issue: ISSUE,
+      providers: { planners: ["auto", "auto"], judge: "auto" },
+      timeoutSeconds: 10,
+      providerSelection: { env: () => undefined },
+      invoke: async (call) => {
+        calls.push(call.providerId);
+        return {
+          ok: true,
+          value: {
+            output: call.role === "judge" ? verdict("A") : "A complete plan.",
+          },
+        };
+      },
+    });
+    assertEquals(result.ok, true);
+    assertEquals(calls, ["codex", "codex", "codex"]);
+  } finally {
+    setConfiguredAgentProviderId(undefined);
+  }
 });

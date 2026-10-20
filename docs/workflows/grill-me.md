@@ -631,6 +631,7 @@ recovers from each common failure as follows:
 |---------|----------------------|
 | **Claude times out** (per-round timeout exceeded) | Posts a `## Grill-Me Failed` comment with the reason. The label stays on the issue so the next worker scan retries the same round. |
 | **Claude errors / API failure** | Same as timeout — posts a `## Grill-Me Failed` comment and lets the next scan retry. |
+| **The provider refuses to serve** (model refused, quota or credit spent, credential rejected, outage — Issue #4035) | Posts **no** `## Grill-Me Failed` comment and releases the claim. Nothing about the issue failed, and the wait clears by itself, so the round cannot count toward escalation; the next scan retries it. |
 | **Claude does not post a round comment** | Posts a `## Grill-Me Failed` comment ("Claude did not post a Grill-Me round comment"); next scan retries. |
 | **Two consecutive rounds fail** | The worker adds the `needs-human` label, posts a `## Grill-Me Escalation` comment, and stops. A human takes over. |
 | **User has not replied yet** | The processor adds `needs-human` after each round, and the discovery filter skips any issue carrying `needs-human`. The worker therefore does not even consider the issue until the developer removes `needs-human` after replying. The `**⏳ Awaiting your reply.**` footer plus the `needs-human` label remain the visible cues; the labels stay on the issue indefinitely until either you reply and clear `needs-human`, you remove `grill-me`, or someone else intervenes. |

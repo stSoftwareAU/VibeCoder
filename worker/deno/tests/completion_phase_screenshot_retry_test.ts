@@ -436,3 +436,64 @@ Deno.test("completion - screenshot gate: not needed when the repo opts out via s
   assertEquals(h.agentCalls.length, 0);
   assertEquals(result.status, "continue", JSON.stringify(result));
 });
+
+Deno.test("completion skips screenshot recovery when the exact work merges during gate checks (Issue #3977)", async () => {
+  const repoPath = await makeRepo(2960);
+  const h = makeHarness({
+    repoPath,
+    changedFiles: ["web/index.html"],
+    runClaudeWithRetry: () =>
+      Promise.resolve({
+        ok: true,
+        value: { exitCode: 0, output: "no change", timedOut: false },
+      }),
+  });
+  const head = "a".repeat(40);
+  let reads = 0;
+  const originalGit = h.deps.git.runGitCommand;
+  h.deps.git.runGitCommand = (args, options) =>
+    args[0] === "rev-parse"
+      ? Promise.resolve({
+        ok: true,
+        value: { code: 0, stdout: head, stderr: "" },
+      })
+      : originalGit(args, options);
+  h.deps.github.runGhCommand = (args) =>
+    Promise.resolve(
+      args[0] === "pr" && args[1] === "list" && args.includes("merged")
+        ? JSON.stringify(
+          ++reads > 1
+            ? [{
+              number: 99,
+              title: "UI change (#2960)",
+              state: "MERGED",
+              mergedAt: "2026-10-18T01:44:24Z",
+              url: "https://github.com/stSoftwareAU/VibeCoder/pull/99",
+              headRefName: h.state.branchName,
+              headRefOid: head,
+              headRepository: { name: "VibeCoder" },
+              headRepositoryOwner: { login: "stSoftwareAU" },
+              baseRefName: "main",
+              mergeCommit: { oid: "b".repeat(40) },
+              body: "Closes #2960\n\nThe exact implementation is delivered.",
+            }]
+            : [],
+        )
+        : args[0] === "issue"
+        ? JSON.stringify({ state: "OPEN" })
+        : "behind",
+    );
+  try {
+    const result = await workOnIssueCompletion(h.ctx, h.state, h.deps);
+    assertEquals(result.status, "early_exit");
+    assertEquals(h.agentCalls.length, 0);
+    assertEquals(h.capturedPrCreates.length, 0);
+    assertEquals(h.labelsAdded, []);
+    assertEquals(
+      h.posted.some((body) => body.includes("Screenshot Evidence Required")),
+      false,
+    );
+  } finally {
+    await cleanup(h);
+  }
+});

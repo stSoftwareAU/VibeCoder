@@ -205,6 +205,16 @@ export function extractGhToken(yaml: string): string | null {
   return unquoted.length > 0 ? unquoted : null;
 }
 
+/** Credential material and persistent-state selectors accepted at runtime. */
+function runtimeCredentialEnvVars(
+  provider: AgentProviderDescriptor,
+): readonly string[] {
+  return [
+    ...provider.credentials.envVars,
+    ...(provider.credentials.stateEnvVars ?? []),
+  ];
+}
+
 /**
  * Find a usable provider credential in an env-style credential file.
  *
@@ -215,7 +225,7 @@ export function extractGhToken(yaml: string): string | null {
  */
 export function parseProviderCredentials(
   content: string,
-  envVars: readonly string[] = activeAgentProvider().credentials.envVars,
+  envVars: readonly string[] = runtimeCredentialEnvVars(activeAgentProvider()),
 ): string | null {
   return parseProviderCredentialEntries(content, envVars)[0]?.name ?? null;
 }
@@ -303,7 +313,7 @@ function tokenFileRecord(
 ): ProviderTokenFile {
   const entries = parseProviderCredentialEntries(
     content,
-    provider.credentials.envVars,
+    runtimeCredentialEnvVars(provider),
   );
   const first = entries[0] ?? null;
   const pool = provider.credentials.tokenPool;
@@ -535,6 +545,12 @@ export async function applyProviderCredentialEnv(options: {
       recordHeldProviderCredential(provider.id, selected.label);
     }
   }
+  for (const provider of providers) {
+    await provider.credentials.initialiseState?.(
+      `${dir}/${provider.credentials.subdir}`,
+      env,
+    );
+  }
   return exported;
 }
 
@@ -712,7 +728,7 @@ export async function checkCredentialPreflight(
           provider: provider.id,
           message:
             `Token file ${token.path} holds no credential ${provider.displayName} recognises — it must set one of ${
-              provider.credentials.envVars.join("/")
+              runtimeCredentialEnvVars(provider).join("/")
             }. Fix the variable name or remove the file.`,
         });
       }
@@ -726,7 +742,7 @@ export async function checkCredentialPreflight(
   for (const provider of providers) {
     if (
       providerSources.get(provider.id) === null &&
-      firstEnvValue(provider.credentials.envVars, env)
+      firstEnvValue(runtimeCredentialEnvVars(provider), env)
     ) {
       providerSources.set(provider.id, "environment");
     }
@@ -753,7 +769,7 @@ export async function checkCredentialPreflight(
       provider: provider.id,
       message:
         `Coding-agent provider authentication required for ${provider.displayName} (${provider.id}): ${path} holds no credential and none of ${
-          provider.credentials.envVars.join("/")
+          runtimeCredentialEnvVars(provider).join("/")
         } is set. Re-run ./setup.sh with ${provider.credentials.provisionEnvVar} set — the worker never performs an interactive login.`,
     });
   }

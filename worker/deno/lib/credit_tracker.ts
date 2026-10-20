@@ -19,6 +19,12 @@ import {
   type TokenUsage,
 } from "./token_usage.ts";
 import {
+  attributeUsageByModel,
+  mergeUsageByModel,
+  type ModelUsageEntry,
+  readModelUsageBreakdown,
+} from "./cost_estimate.ts";
+import {
   aggregateBudgetStats,
   type BudgetStats,
   formatBudgetStats,
@@ -88,14 +94,43 @@ export interface InvocationEntry {
    * cost rather than an implied zero, and the daily summary says so.
    */
   usageUnknown?: boolean;
-  /** Input tokens consumed (Issue #1260). */
+  /**
+   * Input tokens consumed across every model that served the invocation
+   * (Issues #1260, #3616) — the sum of {@link usageByModel} when present.
+   */
   inputTokens?: number;
-  /** Output tokens generated (Issue #1260). */
+  /**
+   * Output tokens generated across every model that served the invocation
+   * (Issues #1260, #3616) — the sum of {@link usageByModel} when present.
+   */
   outputTokens?: number;
-  /** Tokens written to prompt cache (Issue #1260). */
+  /**
+   * Tokens written to prompt cache across every model that served the
+   * invocation (Issues #1260, #3616) — the sum of {@link usageByModel} when
+   * present.
+   */
   cacheCreationTokens?: number;
-  /** Tokens read from prompt cache (Issue #1260). */
+  /**
+   * Tokens read from prompt cache across every model that served the
+   * invocation (Issues #1260, #3616) — the sum of {@link usageByModel} when
+   * present.
+   */
   cacheReadTokens?: number;
+  /**
+   * Tokens per model that served the invocation (Issue #3616).
+   *
+   * Present only when the caller passed a `modelUsage` breakdown. The counters
+   * use the CLI's camelCase `modelUsage` names so
+   * {@link readModelUsageBreakdown} reads them back. Absent on older entries
+   * and on single-model runs that had no breakdown, which read as the whole
+   * entry on `model`.
+   */
+  usageByModel?: Record<string, {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheReadInputTokens: number;
+  }>;
 }
 
 /** Options for logging an invocation. */
@@ -118,6 +153,13 @@ export interface LogInvocationOptions {
   provider?: string;
   /** Token usage from this invocation (Issue #1260). */
   tokenUsage?: TokenUsage;
+  /**
+   * The invocation's per-model `modelUsage` breakdown as recorded on the run
+   * stats (Issue #3616). On a split run `tokenUsage` covers the main session
+   * only, while this covers every model that served the invocation, sub-agents
+   * included.
+   */
+  modelUsage?: Record<string, unknown>;
   /** The run's usage could not be parsed — record it unknown (Issue #366). */
   usageUnknown?: boolean;
 }
@@ -148,9 +190,19 @@ export interface DailySummary {
   totalTokens: TokenUsage;
   /** Token usage breakdown by phase (Issue #1260). */
   tokensByPhase: Record<string, TokenUsage>;
-  /** Token usage breakdown by model (Issue #1260). */
+  /**
+   * Token usage breakdown by the model that served it (Issue #1260).
+   *
+   * A split run's sub-agent models are included (Issue #3616), so this can name
+   * a model that {@link byModel} (invocations by billed model) does not.
+   */
   tokensByModel: Record<string, TokenUsage>;
-  /** Estimated cost breakdown by model (Issue #1260). */
+  /**
+   * Estimated cost breakdown by model (Issue #1260).
+   *
+   * Like {@link tokensByModel}, includes a split run's sub-agent models
+   * (Issue #3616).
+   */
   estimatedCostByModel: Record<string, CostBreakdown>;
   /**
    * Estimated cost breakdown by phase (Issue #2392).
@@ -308,11 +360,60 @@ function parseDateFromFilename(filename: string): string | null {
 // Core functions
 // ---------------------------------------------------------------------------
 
+/** Sum the counters of usage entries into one total (Issue #3616). */
+function sumTokenUsage(entries: ModelUsageEntry[]): TokenUsage {
+  const total: TokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+  };
+  for (const { usage } of entries) {
+    total.inputTokens += usage.inputTokens;
+    total.outputTokens += usage.outputTokens;
+    total.cacheCreationTokens += usage.cacheCreationTokens;
+    total.cacheReadTokens += usage.cacheReadTokens;
+  }
+  return total;
+}
+
+/**
+ * The models that served a logged invocation, each with its own tokens
+ * (Issue #3616).
+ *
+ * A split run's sub-agents are priced at their own model's rate when the entry
+ * carries a readable `usageByModel`. Otherwise the top-level counters hold the
+ * whole invocation, so they are charged whole to `entry.model` and no spend is
+ * lost.
+ */
+function entryUsageByModel(entry: InvocationEntry): ModelUsageEntry[] {
+  // Persisted JSON may hold an array, whose index keys would read as model ids.
+  const raw = entry.usageByModel;
+  const breakdown = Array.isArray(raw)
+    ? undefined
+    : readModelUsageBreakdown(raw);
+  if (breakdown) return breakdown;
+  return [{
+    model: entry.model,
+    usage: {
+      inputTokens: entry.inputTokens ?? 0,
+      outputTokens: entry.outputTokens ?? 0,
+      cacheCreationTokens: entry.cacheCreationTokens ?? 0,
+      cacheReadTokens: entry.cacheReadTokens ?? 0,
+    },
+  }];
+}
+
 /**
  * Log a Claude invocation to the daily credit log.
  *
  * Appends a single JSON line to the day's log file. Creates the log
  * directory (owner-only) and file if they do not exist.
+ *
+ * When `modelUsage` is given with `tokenUsage` (Issue #3616), the top-level
+ * counters are the total across every model that served the invocation, and
+ * `usageByModel` records each model's share. Without it the entry is written
+ * as before.
  *
  * The append refuses to follow a symlink and the log is created 0600
  * (Issue #1239): the log path is predictable and, by default, sits on the
@@ -338,10 +439,30 @@ export async function logInvocation(
     effort,
     provider,
     tokenUsage,
+    modelUsage,
     usageUnknown,
   } = options;
 
   await ensureCreditLogDir(logDir);
+
+  // On a split run `tokenUsage` covers the main session only, so the invocation
+  // total is the sum over every model the breakdown attributes (Issue #3616).
+  const attributed = tokenUsage && modelUsage
+    ? attributeUsageByModel(tokenUsage, modelUsage, model)
+    : undefined;
+  const total = attributed ? sumTokenUsage(attributed) : tokenUsage;
+  let usageByModel: InvocationEntry["usageByModel"];
+  if (attributed) {
+    usageByModel = {};
+    for (const { model: served, usage } of mergeUsageByModel(attributed)) {
+      usageByModel[served] = {
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheCreationInputTokens: usage.cacheCreationTokens,
+        cacheReadInputTokens: usage.cacheReadTokens,
+      };
+    }
+  }
 
   const entry: InvocationEntry = {
     workerName,
@@ -355,14 +476,15 @@ export async function logInvocation(
     // An unparseable run is flagged rather than left to look like a zero-token
     // invocation (Issue #366).
     ...(usageUnknown ? { usageUnknown: true } : {}),
-    ...(tokenUsage
+    ...(total
       ? {
-        inputTokens: tokenUsage.inputTokens,
-        outputTokens: tokenUsage.outputTokens,
-        cacheCreationTokens: tokenUsage.cacheCreationTokens,
-        cacheReadTokens: tokenUsage.cacheReadTokens,
+        inputTokens: total.inputTokens,
+        outputTokens: total.outputTokens,
+        cacheCreationTokens: total.cacheCreationTokens,
+        cacheReadTokens: total.cacheReadTokens,
       }
       : {}),
+    ...(usageByModel ? { usageByModel } : {}),
   };
 
   const logPath = buildLogPath(logDir, todayString());
@@ -424,6 +546,13 @@ export async function getDailySummary(
     target.outputTokens += entry.outputTokens ?? 0;
     target.cacheCreationTokens += entry.cacheCreationTokens ?? 0;
     target.cacheReadTokens += entry.cacheReadTokens ?? 0;
+  };
+
+  const addUsage = (target: TokenUsage, usage: TokenUsage): void => {
+    target.inputTokens += usage.inputTokens;
+    target.outputTokens += usage.outputTokens;
+    target.cacheCreationTokens += usage.cacheCreationTokens;
+    target.cacheReadTokens += usage.cacheReadTokens;
   };
 
   const summary: DailySummary = {
@@ -492,10 +621,15 @@ export async function getDailySummary(
       }
       addTokens(summary.tokensByPhase[entry.phase]!, entry);
 
-      if (!summary.tokensByModel[entry.model]) {
-        summary.tokensByModel[entry.model] = zeroTokens();
+      // Tokens by the model that served them (Issue #3616): a split run's
+      // sub-agent models each get their own share, not the billed model's.
+      const served = entryUsageByModel(entry);
+      for (const share of served) {
+        if (!summary.tokensByModel[share.model]) {
+          summary.tokensByModel[share.model] = zeroTokens();
+        }
+        addUsage(summary.tokensByModel[share.model]!, share.usage);
       }
-      addTokens(summary.tokensByModel[entry.model]!, entry);
 
       // Per-phase model+effort visibility (Issue #2392). A phase may run
       // several model/effort combinations across retries and fallbacks; track
@@ -510,13 +644,8 @@ export async function getDailySummary(
       // model, so summing per-invocation costs gives the correct blended cost
       // even when a phase spans multiple models.
       // An unpriced model id is charged at the conservative upper bound
-      // (Issue #3870) so a phase never reads as free.
-      const entryCost = estimateCostWithUpperBound({
-        inputTokens: entry.inputTokens ?? 0,
-        outputTokens: entry.outputTokens ?? 0,
-        cacheCreationTokens: entry.cacheCreationTokens ?? 0,
-        cacheReadTokens: entry.cacheReadTokens ?? 0,
-      }, entry.model).cost;
+      // (Issue #3870) so a phase never reads as free. Each model that served
+      // the invocation is priced at its own rate (Issue #3616).
       if (!summary.estimatedCostByPhase![entry.phase]) {
         summary.estimatedCostByPhase![entry.phase] = {
           inputCost: 0,
@@ -526,7 +655,12 @@ export async function getDailySummary(
           totalCost: 0,
         };
       }
-      addCost(summary.estimatedCostByPhase![entry.phase]!, entryCost);
+      for (const share of served) {
+        addCost(
+          summary.estimatedCostByPhase![entry.phase]!,
+          estimateCostWithUpperBound(share.usage, share.model).cost,
+        );
+      }
     } catch {
       // Skip malformed lines — do not crash on corrupted data — but count
       // them so log corruption is observable rather than a silent undercount

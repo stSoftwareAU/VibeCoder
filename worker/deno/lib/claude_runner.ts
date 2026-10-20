@@ -35,6 +35,8 @@ import {
   probeHostMemoryPressure,
 } from "./memory_pressure.ts";
 import type { Logger, Result } from "../types.ts";
+import { createLogger } from "./logger.ts";
+import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import {
   captureTimeoutDiagnostics,
   type ClaudeExecutionResult,
@@ -167,6 +169,10 @@ import {
   recordAutomaticProviderOutage,
 } from "./provider_auto_state.ts";
 import { noteProviderRunOutcome } from "./provider_outage_alert.ts";
+import {
+  configuredProviderFallbackPolicy,
+  providerAfterModelRefusal,
+} from "./provider_fallback_policy.ts";
 
 // Re-export for convenience
 export {
@@ -449,6 +455,8 @@ export interface ClaudeRunResult {
 
 /** Options for running Claude with timeout. */
 export interface RunClaudeOptions {
+  /** Enforced CLI sandbox for a provider-neutral role invocation. */
+  orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Retain each retry's usage for lifecycle follow-on attribution (Issue #3720). */
   captureInvocationStats?: boolean;
   /** Explicit observable role for lifecycle telemetry (Issue #3719). */
@@ -550,10 +558,10 @@ export interface RunClaudeOptions {
    * Sub-agent definitions for this run (Issue #2342), handed to the Claude
    * CLI as `--agents`.
    *
-   * Absent — every run that has not opted into the issue-executor split —
-   * emits no argument, so each sub-agent inherits the phase's model exactly
-   * as it does today. No fallback: a CLI that rejects the flag fails the run
-   * with its own error rather than being re-invoked without it.
+   * Absent (no sub-agent definitions were built — see `buildIssueRunAgents`
+   * in `issue_executor_agents.ts`) — emits no argument, so each sub-agent
+   * inherits the phase's model. No fallback: a CLI that rejects the flag fails
+   * the run with its own error rather than being re-invoked without it.
    */
   agents?: Readonly<Record<string, AgentDefinition>>;
   /**
@@ -562,9 +570,9 @@ export interface RunClaudeOptions {
    *
    * Set `true` and the Claude invocation carries the `PreToolUse` guard that
    * denies the advisor's own edits and allows an executor's, and the run's
-   * stream is summarised into {@link RunStats.executorSplit}. Absent — every
-   * run that has not opted into the split — configures no hook, parses
-   * nothing, and carries no such field.
+   * stream is summarised into {@link RunStats.executorSplit}. Absent — the
+   * split is off (`issue_executor_split: false`) or the run is not an `issue`
+   * run — configures no hook, parses nothing, and carries no such field.
    */
   issueExecutorSplit?: boolean;
   /**
@@ -757,6 +765,18 @@ export interface RunClaudeOptions {
  */
 export const DEFAULT_MAX_TOTAL_INVOCATIONS = 6;
 
+/** The default `maxRetries` of `runClaudeWithRetry` (Issue #3642). */
+export const DEFAULT_RETRY_MAX_RETRIES = 2;
+
+/** The default `maxWaitSeconds` of `runClaudeWithRetry` (Issue #3642). */
+export const DEFAULT_RETRY_MAX_WAIT_SECONDS = 600;
+
+/** The default hard `timeoutSeconds` of one `claude` run (Issue #3642). */
+export const DEFAULT_CLAUDE_TIMEOUT_SECONDS = 14400;
+
+/** The default `killAfterSeconds` grace of one `claude` run (Issue #3642). */
+export const DEFAULT_CLAUDE_KILL_AFTER_SECONDS = 30;
+
 /**
  * Requested-model value used when the routing chain resolves no `--model` arg.
  *
@@ -838,7 +858,9 @@ export interface HealthCheckResult {
   /**
    * 0 = healthy, 1 = unresponsive, 2 = auth failure,
    * 3 = rate/usage limited (Issue #4315 — the caller pauses instead of
-   * re-probing; every probe is a billed invocation).
+   * re-probing; every probe is a billed invocation) or another classified
+   * provider outage — quota exhaustion, rate limit or model unavailability —
+   * read from the provider's structured events (Issue #4014).
    */
   exitCode: number;
   /** Human-readable message. */
@@ -1146,8 +1168,8 @@ async function runClaudeWithTimeoutBody(
   const {
     prompt,
     systemPrompt,
-    timeoutSeconds = 14400,
-    killAfterSeconds = 30,
+    timeoutSeconds = DEFAULT_CLAUDE_TIMEOUT_SECONDS,
+    killAfterSeconds = DEFAULT_CLAUDE_KILL_AFTER_SECONDS,
     noOutputTimeout = 0,
     model,
     phase,
@@ -1201,6 +1223,7 @@ async function runClaudeWithTimeoutBody(
   // at spawn, observed live in container mode.
   const promptViaStdin = provider.promptTransport === "stdin";
   const invocationRequest = {
+    orchestrationRole: options.orchestrationRole,
     prompt,
     systemPrompt,
     model,
@@ -1235,6 +1258,27 @@ async function runClaudeWithTimeoutBody(
     ...invocationRequest,
     promptViaStdin,
   });
+  // Fail loud on the native split (Issue #4010): the native `issue` run hands
+  // the CLI `--agents` sub-agent definitions (executor, reviewers, or the
+  // Haiku-tier explorer). A provider whose argv cannot carry them drops them —
+  // Codex and Gemini silently, DeepSeek with a warning — so the advisor would
+  // be told to dispatch sub-agents the CLI never defines. Refuse before spawn
+  // instead. `invocationRequest.agents` is present only when the run's flags
+  // resolved some definition, and the check asks the provider's own argv rather
+  // than a provider-id table.
+  if (invocationRequest.agents && !args.includes("--agents")) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refused to start the agent: ${provider.displayName} cannot carry ` +
+          `the issue run's sub-agent definitions (--agents), so the advisor ` +
+          `would be told to dispatch executors and reviewers the CLI never ` +
+          `defines. Turn the definitions off (issue_executor_split: false, ` +
+          `issue_reviewer_agents: false, issue_sub_agent_tier: "sonnet") or ` +
+          `run the issue phase on the Claude provider. (Issue #4010)`,
+      ),
+    };
+  }
   const stdinPayload = promptViaStdin
     ? (provider.stdinBody?.(invocationRequest) ?? prompt)
     : prompt;
@@ -1395,6 +1439,11 @@ async function runClaudeWithTimeoutBody(
       // Name the provider that is about to run (Issue #4109) so a Quorum
       // run's interleaved log lines attribute to the agent that produced them.
       `Running ${provider.displayName} with ${timeoutSeconds}s timeout (${killAfterSeconds}s grace period)` +
+        (args.includes("--max-turns")
+          ? ` claude_timeout=${timeoutSeconds} claude_max_turns=${
+            args[args.indexOf("--max-turns") + 1]
+          }`
+          : "") +
         (noOutputMs > 0 ? `, no-output watchdog ${noOutputTimeout}s` : "") +
         "...",
     );
@@ -2475,6 +2524,8 @@ async function runClaudeWithTimeoutBody(
         ...(resolvedEffort ? { effort: resolvedEffort } : {}),
         ...(usageUnknown ? { usageUnknown: true } : {}),
         tokenUsage,
+        // Issue #3616: a split run's sub-agent tokens are only in `modelUsage`.
+        modelUsage: runStats.modelUsage,
       }).catch((err: unknown) => {
         // Credit logging must never fail the main flow — but it must never be
         // silent either (Issue #1239). A refused append means the log was
@@ -2520,6 +2571,13 @@ async function runClaudeWithTimeoutBody(
         nowMs: clock.now(),
       }, agentOutput)
       : undefined;
+    if (normalisedFailure?.category === "turn-limit") {
+      const failureLogger = logger ?? createLogger();
+      failureLogger.error(
+        normalisedFailure.message + " — invocation stopped at its turn cap.",
+      );
+      failureLogger.security?.("AGENT_TURN_LIMIT", "reason=error_max_turns");
+    }
     if (
       normalisedFailure?.category === "authentication" ||
       normalisedFailure?.category === "quota-exhausted"
@@ -2810,8 +2868,8 @@ async function runRetryLadder(
   ladderSignal: AbortSignal,
 ): Promise<Result<ClaudeRunResult>> {
   const {
-    maxRetries = 2,
-    maxWaitSeconds = 600,
+    maxRetries = DEFAULT_RETRY_MAX_RETRIES,
+    maxWaitSeconds = DEFAULT_RETRY_MAX_WAIT_SECONDS,
     initialWaitInterval = 300,
     maxTotalInvocations = DEFAULT_MAX_TOTAL_INVOCATIONS,
   } = retryOptions;
@@ -2947,6 +3005,9 @@ async function runRetryLadder(
   // Track the current effective options (may be mutated on fallback)
   let currentOptions = { ...options };
   let fallbackModel: string | undefined;
+  // Providers this invocation moved away from after a model refusal
+  // (Issue #4034), so the configured fallback walk never revisits one.
+  const providersRefusedModel: string[] = [];
 
   /**
    * The run-end result: this ladder was stopped by the worker, not by the
@@ -3082,6 +3143,16 @@ async function runRetryLadder(
     // Cleared, not carried, when this invocation did not fail: a stale
     // failure from a previous attempt must never describe a later success.
     invokedAgentFailure = result.value.agentFailure;
+
+    if (invokedAgentFailure?.category === "turn-limit") {
+      return {
+        ok: false,
+        error: new AgentTurnLimitError(
+          invokedAgentFailure.message,
+          withPreflight(result.value),
+        ),
+      };
+    }
 
     // Out of memory (Issue #2741, parent #2721) — TERMINAL. Checked first,
     // before the timeout and rate-limit paths, for two reasons:
@@ -3313,10 +3384,46 @@ async function runRetryLadder(
           continue;
         }
 
-        // No cheaper model available — give up rather than re-run an
-        // unavailable model. Name the provider when it has no ladder at all
-        // (Issue #365), so "no downgrade attempted" is visible rather than
-        // inferred.
+        // No cheaper model on this provider. A refusal is terminal for the
+        // provider — a ChatGPT login that does not offer a model never will
+        // (Issue #4019) — so the configured `agent_provider_fallback` is the
+        // remaining remedy (Issue #4034). Only the health gate consulted it
+        // before, and a phase whose model the provider refused gave up every
+        // cycle while a healthy alternative stood idle. The fallback resolves
+        // its own model: the refused id names the old provider's catalogue,
+        // and a session id belongs to the CLI that recorded it.
+        const refusingProvider = selectAgentProvider(
+          currentOptions.agentProvider,
+          currentOptions.env ? { env: currentOptions.env } : {},
+        ).id;
+        const nextProvider = providerAfterModelRefusal(
+          configuredProviderFallbackPolicy(),
+          refusingProvider,
+          providersRefusedModel,
+        );
+        if (nextProvider) {
+          providersRefusedModel.push(refusingProvider);
+          currentOptions.logger?.warn(
+            `[provider-fallback] ${refusingProvider} refused model ` +
+              `"${currentModel}" and has no cheaper model — retrying on ` +
+              `${nextProvider} from agent_provider_fallback (Issue #4034).`,
+          );
+          currentOptions = {
+            ...currentOptions,
+            agentProvider: nextProvider,
+            model: undefined,
+            sessionResumeState: undefined,
+          };
+          retryCount = 0;
+          totalWaitTime = 0;
+          waitInterval = initialWaitInterval;
+          continue;
+        }
+
+        // No cheaper model and no fallback provider — give up rather than
+        // re-run an unavailable model. Name the provider when it has no
+        // ladder at all (Issue #365), so "no downgrade attempted" is visible
+        // rather than inferred.
         warnNoModelLadder(fallbackResult, currentModel, currentOptions.logger);
         currentOptions.logger?.error(
           `Model "${currentModel}" unavailable and no cheaper fallback available (${fallbackResult.reason}). Giving up.`,
@@ -3722,6 +3829,42 @@ export async function checkClaudeHealth(
       exitCode: 3,
       message: summary.message,
       pauseSeconds,
+    };
+  }
+
+  // (Issue #4014) A provider whose CLI reports its refusal only as structured
+  // events — Codex writes errors into its JSONL stream, not stderr — leaves
+  // the text summariser above with nothing to classify, and the probe read as
+  // a generic exit-1 failure that skipped the cycle for ever. The provider's
+  // own classifier (Issue #1695) decoded those events onto the result; when
+  // the text evidence was unclassifiable, its verdict stands in.
+  const classified = result.value.agentFailure;
+  if (classified?.category === "authentication") {
+    // A structured auth refusal is the same verdict the text branch above
+    // returns, reached without text evidence (Issue #4014).
+    const actionable = provider.authActionableMessage();
+    logger?.error(
+      `${provider.displayName} requires login (structured refusal)`,
+    );
+    logger?.error(`ACTION REQUIRED: ${actionable}`);
+    return { healthy: false, exitCode: 2, message: actionable };
+  }
+  if (
+    classified &&
+    (classified.category === "quota-exhausted" ||
+      classified.category === "rate-limit" ||
+      classified.category === "model-unavailable")
+  ) {
+    // The same failure classes the invocation-layer fallback policy fires on
+    // (PROVIDER_OUTAGE_CLASSES): the health gate must probe the configured
+    // alternatives rather than skip the cycle. Deliberately no `pauseSeconds`
+    // — writing a usage signal for the provider would pause auto-mode claim
+    // routing, defeating the fallback this verdict exists to reach.
+    logger?.warn(classified.message);
+    return {
+      healthy: false,
+      exitCode: 3,
+      message: classified.message,
     };
   }
 

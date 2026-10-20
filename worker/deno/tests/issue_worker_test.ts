@@ -6,10 +6,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type IssueContext,
   type PhaseState,
+  reconcileAlreadyLandedFailure,
   workOnIssue,
   workOnIssueBaselineQuality,
   workOnIssueClarityPhase,
@@ -2231,8 +2232,8 @@ Deno.test(
         }) as unknown as typeof deps.git.runGitCommand,
       },
       github: {
-        runGhCommand: (() => {
-          ghPrCreateCalled = true;
+        runGhCommand: ((args: string[]) => {
+          if (args[0] === "pr" && args[1] === "create") ghPrCreateCalled = true;
           return Promise.resolve("https://github.com/org/repo/pull/999");
         }) as unknown as typeof deps.github.runGhCommand,
       },
@@ -4474,4 +4475,362 @@ Deno.test({
     assertEquals(result.codegraph?.nodeCount, 4_210);
     assertEquals(result.codegraph?.relationshipCount, 9_004);
   },
+});
+
+Deno.test("workOnIssue reconciles terminal failure before heartbeat publication and defers unresolved production failures (Issue #3977)", async () => {
+  for (
+    const variant of [
+      "landed",
+      "dirty",
+      "standalone",
+      "closed",
+      "success",
+      "preexisting",
+    ] as const
+  ) {
+    const dirty = variant === "dirty";
+    const root = await Deno.makeTempDir();
+    let merged = false;
+    let clears = 0;
+    let executions = 0;
+    const branch = "issue-42-exact-implementation";
+    const head = "a".repeat(40);
+    const ctx = makeContext({
+      config: makeConfig({ workDir: `${root}/work`, infraRetryBackoffMs: 0 }),
+      deferTerminalRelease: variant !== "standalone",
+    });
+    const deps = createMockDeps({
+      git: {
+        setupRepo: () => Promise.resolve({ ok: true, value: root }),
+        createBranchName: () => branch,
+        createFeatureBranchFromBase: () =>
+          Promise.resolve({ ok: true, value: branch }),
+        runGitCommand: (args: string[]) =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              code: 0,
+              stdout: args[0] === "log" &&
+                  (variant === "success" || variant === "preexisting")
+                ? "abc123 implemented requested behaviour"
+                : args[0] === "rev-parse"
+                ? head
+                : args[0] === "status" && dirty
+                ? "?? remaining.ts"
+                : "",
+              stderr: "",
+            },
+          }),
+      },
+      claude: {
+        runClaudeWithRetry: () => {
+          executions++;
+          merged = true;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              exitCode: (variant === "success" || variant === "preexisting")
+                ? 0
+                : 1,
+              output: (variant === "success" || variant === "preexisting")
+                ? "Implemented the requested behaviour"
+                : "Implementation failed: requested behaviour is incomplete",
+              timedOut: false,
+            },
+          });
+        },
+      },
+      github: {
+        runGhCommand: (args: string[]) =>
+          Promise.resolve(
+            args[0] === "pr" && args[1] === "list"
+              ? JSON.stringify(
+                merged && variant !== "success"
+                  ? [{
+                    number: 99,
+                    title: "Fix login bug (#42)",
+                    state: "MERGED",
+                    mergedAt: "2026-10-18T01:44:24Z",
+                    url: `https://github.com/${ctx.repo}/pull/99`,
+                    headRefName: branch,
+                    headRefOid: head,
+                    headRepository: { name: "repo" },
+                    headRepositoryOwner: { login: "org" },
+                    baseRefName: "main",
+                    mergeCommit: { oid: "b".repeat(40) },
+                    body:
+                      "Closes #42\n\nThe exact implementation is delivered.",
+                  }]
+                  : [],
+              )
+              : args[0] === "issue"
+              ? JSON.stringify({
+                state: variant === "closed" ? "CLOSED" : "OPEN",
+              })
+              : args[0] === "pr" && args[1] === "create"
+              ? "https://github.com/org/repo/pull/1"
+              : "behind",
+          ),
+      },
+      quality: {
+        runQualityGate: () =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              checks: variant === "preexisting"
+                ? [{
+                  name: "tests",
+                  status: "FAILED" as const,
+                  duration: 1,
+                  output: "assertion failed in existing repository tests",
+                }]
+                : [],
+              summary: {
+                text: variant === "preexisting" ? "failed" : "passed",
+                passed: variant !== "preexisting",
+              },
+              passed: variant !== "preexisting",
+              output: "assertion failed in existing repository tests",
+            },
+          }),
+      },
+      pr: {
+        findExistingPrForIssue: () =>
+          Promise.resolve({ ok: false, error: new Error("No open PR") }),
+      },
+      crashHandling: {
+        clearHeartbeat: () => {
+          clears++;
+          return Promise.resolve({ ok: true, value: undefined });
+        },
+      },
+    });
+    try {
+      let failure: unknown;
+      const result = await workOnIssue(ctx, deps).catch((error) => {
+        failure = error;
+        return undefined;
+      });
+      assertEquals(
+        failure,
+        undefined,
+        "the public worker must return a terminal result without throwing: " +
+          variant,
+      );
+      assert(result);
+      assertEquals(executions, variant === "closed" ? 0 : 1, variant);
+      assertEquals(
+        result.success,
+        variant === "closed" || variant === "success",
+        variant,
+      );
+      assertEquals(
+        result.expectedSkip === true,
+        variant === "landed" || variant === "standalone" ||
+          variant === "preexisting",
+        variant,
+      );
+      assertEquals(
+        result.outcome?.kind === "claim_stale",
+        variant !== "dirty" && variant !== "success" &&
+          variant !== "preexisting",
+        variant,
+      );
+      assertEquals(
+        clears,
+        variant === "standalone" || variant === "closed" ||
+          (variant === "success" || variant === "preexisting")
+          ? 1
+          : 0,
+        "only an unresolved failure or exact landed skip defers production publication; standalone and other terminal outcomes publish normally: " +
+          variant,
+      );
+      assertEquals(result.branchContext?.branchName, branch);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("workOnIssue retains a genuine quality failure booked before a later merge (Issue #3977)", async () => {
+  const root = await Deno.makeTempDir();
+  const branch = "issue-42-exact-implementation";
+  const head = "a".repeat(40);
+  let merged = false;
+  let charges = 0;
+  let gates = 0;
+  const ctx = makeContext({
+    config: makeConfig({ workDir: `${root}/work`, infraRetryBackoffMs: 0 }),
+    deferTerminalRelease: true,
+  });
+  const deps = createMockDeps({
+    git: {
+      setupRepo: () => Promise.resolve({ ok: true, value: root }),
+      createBranchName: () => branch,
+      createFeatureBranchFromBase: () =>
+        Promise.resolve({ ok: true, value: branch }),
+      runGitCommand: (args: string[]) =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            code: 0,
+            stdout: args[0] === "rev-parse"
+              ? head
+              : args[0] === "log"
+              ? "a implementation"
+              : "",
+            stderr: "",
+          },
+        }),
+    },
+    quality: {
+      runQualityGate: () => {
+        const passed = gates++ === 0;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            checks: [],
+            summary: { text: passed ? "passed" : "failed", passed },
+            passed,
+            output: passed ? "passed" : "quality.sh: 2 tests failed",
+          },
+        });
+      },
+    },
+    github: {
+      runGhCommand: (args: string[]) =>
+        Promise.resolve(
+          args[0] === "pr" && args[1] === "list"
+            ? JSON.stringify(
+              merged
+                ? [{
+                  number: 99,
+                  title: "Fix login bug (#42)",
+                  state: "MERGED",
+                  mergedAt: "2026-10-18T01:44:24Z",
+                  url: `https://github.com/${ctx.repo}/pull/99`,
+                  headRefName: branch,
+                  headRefOid: head,
+                  headRepository: { name: "repo" },
+                  headRepositoryOwner: { login: "org" },
+                  baseRefName: "main",
+                  mergeCommit: { oid: "b".repeat(40) },
+                  body: "Closes #42\n\nThe exact implementation is delivered.",
+                }]
+                : [],
+            )
+            : args[0] === "issue"
+            ? JSON.stringify({ state: "OPEN" })
+            : "behind",
+        ),
+      handleIssueFailure: () => {
+        charges++;
+        merged = true;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            markedAsFailed: false,
+            markedAsFailedOnce: true,
+            failureCategory: "quality_check",
+            isInfrastructure: false,
+          },
+        });
+      },
+    },
+  });
+  try {
+    const result = await workOnIssue(ctx, deps);
+    assertEquals(gates, 3);
+    assertEquals(charges, 1);
+    assertEquals(result.success, false);
+    assertEquals(result.expectedSkip === true, false);
+    assertEquals(result.ladderApplied, true);
+    assertEquals(result.outcome?.kind, "no_pr");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("terminal reconciliation preserves completed, skipped, booked and branchless outcomes (Issue #3977)", async () => {
+  const ctx = makeContext();
+  const branch = "issue-42-exact-implementation";
+  const head = "a".repeat(40);
+  for (
+    const variant of [{ success: true }, { expectedSkip: true }, {
+      ladderApplied: true,
+    }, { branchContext: undefined }]
+  ) {
+    let reads = 0;
+    const deps = createMockDeps({
+      git: {
+        runGitCommand: (args: string[]) => {
+          reads++;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              code: 0,
+              stdout: args[0] === "rev-parse" ? head : "",
+              stderr: "",
+            },
+          });
+        },
+      },
+      github: {
+        runGhCommand: (args: string[]) => {
+          reads++;
+          return Promise.resolve(
+            args[0] === "pr"
+              ? JSON.stringify([{
+                number: 99,
+                title: "Fix login bug (#42)",
+                state: "MERGED",
+                mergedAt: "2026-10-18T01:44:24Z",
+                url: `https://github.com/${ctx.repo}/pull/99`,
+                headRefName: branch,
+                headRefOid: head,
+                headRepository: { name: "repo" },
+                headRepositoryOwner: { login: "org" },
+                baseRefName: "main",
+                mergeCommit: { oid: "b".repeat(40) },
+                body: "Closes #42\n\nThe exact implementation is delivered.",
+              }])
+              : "behind",
+          );
+        },
+      },
+    });
+    const input = {
+      success: false,
+      category: "unknown" as const,
+      expectedSkip: false,
+      phase: "completion",
+      reason: "existing terminal decision",
+      timings: {},
+      branchContext: {
+        branchName: branch,
+        repoPath: "/tmp/fixture",
+        defaultBranch: "main",
+        reapproved: false,
+      },
+      ...variant,
+    };
+    let actual;
+    let thrown;
+    try {
+      actual = await reconcileAlreadyLandedFailure(input, ctx, deps);
+    } catch (error) {
+      thrown = error;
+    }
+    assertEquals(
+      thrown,
+      undefined,
+      "an ineligible terminal outcome must not throw",
+    );
+    assertEquals(actual, input, "an existing terminal decision is retained");
+    assertEquals(
+      reads,
+      0,
+      "no provenance lookup can replace an ineligible terminal decision",
+    );
+  }
 });

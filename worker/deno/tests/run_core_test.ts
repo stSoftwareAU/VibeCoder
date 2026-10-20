@@ -203,8 +203,8 @@ function createMockDeps(overrides?: Partial<RunCoreDeps>): RunCoreDeps {
 Deno.test("run_core - createDefaultRunCoreConfig returns valid defaults", () => {
   const config = createDefaultRunCoreConfig();
   assertEquals(config.runDurationSeconds, 3600);
-  // Issue #2446: default sleep interval raised from 30 s to 120 s.
-  assertEquals(config.sleepInterval, 120);
+  // Issue #2446: default sleep interval raised from 30 s to 300 s.
+  assertEquals(config.sleepInterval, 300);
   assertEquals(typeof config.maxConsecutiveFailures, "number");
   assertEquals(config.maxConsecutiveFailures > 0, true);
 });
@@ -606,6 +606,120 @@ Deno.test("run_core - an exhausted preferred provider falls back to a healthy al
     false,
     "a healthy alternative must not leave the host skipping cycles",
   );
+});
+
+Deno.test("run_core - a structured provider outage falls back to a healthy alternative (Issue #4014)", async () => {
+  // GRQ-23: Codex's refusal (model not supported on the ChatGPT account)
+  // exists only as structured events, so the health check reported a generic
+  // exit 1 and the gate skipped cycles. The classified outage must reach the
+  // same fallback probe the usage/rate-limit exit code drives (Issue #2055).
+  const probed: Array<string | undefined> = [];
+  const errors: string[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000; // End after 2 cycles
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) => {
+      probed.push(typeof provider === "string" ? provider : provider?.id);
+      if (provider === undefined) {
+        return Promise.resolve({
+          ok: true,
+          value: {
+            healthy: false,
+            exitCode: 3,
+            message: "Codex refused the requested model (…): not supported",
+          },
+        });
+      }
+      return Promise.resolve({ ok: true, value: { healthy: true } });
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["deepseek"];
+
+  try {
+    await runCoreLoop(config, deps);
+
+    assert(
+      probed.includes("deepseek"),
+      "the gate must probe the configured alternative for a classified outage",
+    );
+    assertEquals(runProviderOverrideId(), "deepseek");
+  } finally {
+    setRunProviderOverride(undefined);
+  }
+  assertEquals(
+    errors.some((e) => e.includes("skipping cycle")),
+    false,
+    "a healthy alternative must not leave the host skipping cycles",
+  );
+});
+
+Deno.test("run_core - a classified outage with no pause skips credential rotation and probes the fallback (Issue #4014)", async () => {
+  // A classified outage deliberately writes no usage signal (a signal would
+  // pause auto-mode claim routing and defeat the fallback), and pool
+  // rotation only terminates on that signal — rotating between two budgeted
+  // credentials would ping-pong for ever. The fallback probe must come first.
+  const probed: Array<string | undefined> = [];
+  const asked: boolean[] = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) => {
+      probed.push(typeof provider === "string" ? provider : provider?.id);
+      if (provider === undefined) {
+        return Promise.resolve({
+          ok: true,
+          value: {
+            healthy: false,
+            exitCode: 3,
+            message: "Claude refused the requested model (…)",
+          },
+        });
+      }
+      return Promise.resolve({ ok: true, value: { healthy: true } });
+    },
+    selectPreferredCredential: ({ excludeHeld }) => {
+      asked.push(excludeHeld);
+      return Promise.resolve("provider-3");
+    },
+  });
+
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["deepseek"];
+
+  try {
+    await runCoreLoop(config, deps);
+
+    assertEquals(
+      asked.length,
+      0,
+      "no credential rotation for a no-pause outage",
+    );
+    assert(probed.includes("deepseek"), "the fallback must be probed directly");
+    assertEquals(runProviderOverrideId(), "deepseek");
+  } finally {
+    setRunProviderOverride(undefined);
+  }
 });
 
 Deno.test("run_core - an unhealthy alternative keeps the skip-cycle path (Issue #2055)", async () => {
@@ -1042,7 +1156,12 @@ Deno.test("run_core - one exhausted credential rotates to the next Claude creden
       return Promise.resolve(
         rotated
           ? { ok: true, value: { healthy: true } }
-          : { ok: true, value: { healthy: false, exitCode: 3 } },
+          // Production's quota verdicts carry the pause that wrote the
+          // usage signal (Issue #4315), which is what terminates rotation.
+          : {
+            ok: true,
+            value: { healthy: false, exitCode: 3, pauseSeconds: 600 },
+          },
       );
     },
     selectPreferredCredential: ({ excludeHeld }) => {
@@ -1092,7 +1211,10 @@ Deno.test("run_core - every Claude credential exhausted: the fallback provider t
       probed.push(typeof provider === "string" ? provider : provider?.id);
       return Promise.resolve(
         provider === undefined
-          ? { ok: true, value: { healthy: false, exitCode: 3 } }
+          ? {
+            ok: true,
+            value: { healthy: false, exitCode: 3, pauseSeconds: 600 },
+          }
           : { ok: true, value: { healthy: true } },
       );
     },
@@ -1140,9 +1262,10 @@ Deno.test("run_core - once a Claude credential's window resets the run switches 
       }
       const onFallback = runProviderOverrideId() === "deepseek";
       return Promise.resolve(
-        onFallback || windowReset
-          ? { ok: true, value: { healthy: true } }
-          : { ok: true, value: { healthy: false, exitCode: 3 } },
+        onFallback || windowReset ? { ok: true, value: { healthy: true } } : {
+          ok: true,
+          value: { healthy: false, exitCode: 3, pauseSeconds: 600 },
+        },
       );
     },
     selectPreferredCredential: ({ excludeHeld }) => {
@@ -1180,6 +1303,9 @@ Deno.test("run_core - an unavailable tier adapts in place and the cycle continue
   const calls: string[] = [];
   let nowValue = 0;
   let cycleCount = 0;
+  // Recovery must reach the next health probe, otherwise the fixture keeps
+  // adapting before its mocked sleep can advance time.
+  let adapted = false;
 
   const deps = createMockDeps({
     now: () => nowValue,
@@ -1192,10 +1318,18 @@ Deno.test("run_core - an unavailable tier adapts in place and the cycle continue
       errors.push(msg);
     },
     checkClaudeHealth: () =>
-      Promise.resolve({ ok: true, value: { healthy: false, exitCode: 1 } }),
+      Promise.resolve({
+        ok: true,
+        value: { healthy: adapted, exitCode: adapted ? 0 : 1 },
+      }),
     tryModelAdaptation: () => {
       calls.push("adapt");
+      adapted = true;
       return Promise.resolve({ adapted: true, detail: "flash → v4-pro" });
+    },
+    findNextIssue: () => {
+      calls.push("scan");
+      return Promise.resolve({ ok: true, value: null });
     },
   });
 
@@ -1205,6 +1339,8 @@ Deno.test("run_core - an unavailable tier adapts in place and the cycle continue
   await runCoreLoop(config, deps);
 
   assert(calls.includes("adapt"), "the gate must attempt the adaptation");
+  assertEquals(calls.filter((call) => call === "adapt").length, 1);
+  assert(calls.includes("scan"), "the recovered cycle must scan for work");
   assertEquals(
     errors.some((e) => e.includes("skipping cycle")),
     false,
@@ -1908,12 +2044,13 @@ Deno.test(
 // Tests — Deferrable sweeps skipped while the budget is in reserve (#2449)
 // ---------------------------------------------------------------------------
 
-/** The four fixed-cost sweeps tiered `deferrable` (Issue #2449). */
+/** The five fixed-cost sweeps tiered `deferrable` (Issue #2449, #3760). */
 const DEFERRABLE_HANDLER_NAMES = [
   "Close Issues for Merged PRs",
   "Recover Assigned with Closed PRs",
   "Milestone Completions",
   "Failure-Detection Repair Resume",
+  "Reconcile PR Body Digests",
 ];
 
 /**
@@ -1979,6 +2116,10 @@ async function runCyclesWithQuota(
       record("Failure-Detection Repair Resume");
       return Promise.resolve({ ok: true, value: { processed: false } });
     },
+    reconcilePrBodyDigests: () => {
+      record("Reconcile PR Body Digests");
+      return done();
+    },
     // A representative sample of the handlers that must never be skipped.
     findAndProcessPrFeedback: () => {
       record("PR Feedback");
@@ -2024,7 +2165,7 @@ async function runCyclesWithQuota(
 }
 
 Deno.test(
-  "run_core - exactly four handlers carry budgetTier deferrable (Issue #2449)",
+  "run_core - exactly five handlers carry budgetTier deferrable (Issue #2449, #3760)",
   () => {
     const table = buildPriorityDispatchTable(createMockDeps());
     const tiered = table

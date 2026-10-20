@@ -17,7 +17,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   agentProviderIds,
   CLAUDE_PROVIDER_ID,
@@ -25,13 +25,18 @@ import {
   GEMINI_PROVIDER_ID,
   resolveAgentProvider,
   resolveInvocationRouting,
+  setConfiguredAgentProviderId,
+  setConfiguredEnabledAgentProviderIds,
 } from "../lib/agent_provider.ts";
 import {
   buildClaudeEffortArgs,
   buildClaudeModelArgs,
   resolveClaudeEffort,
   resolveClaudeModel,
+  setPhaseModelConfigOverrides,
 } from "../lib/claude_executor.ts";
+import { loadConfig } from "../lib/config.ts";
+import { setCodexPhaseModelConfigOverrides } from "../lib/codex_executor.ts";
 import {
   CODEX_PHASE_EFFORT_DEFAULTS,
   CODEX_PHASE_MODEL_DEFAULTS,
@@ -51,6 +56,8 @@ const ROUTED_PHASES: string[] = [
 
 /** The Claude argv tail that follows the model/effort flags. */
 const CLAUDE_TAIL = [
+  "--max-turns",
+  "100",
   "--dangerously-skip-permissions",
   "--verbose",
   "--output-format",
@@ -439,5 +446,72 @@ Deno.test("routing seam - every provider's resolvers and argv read the injected 
       `${id} must carry the injected model into argv`,
     );
     assertEquals(Deno.env.get(envVar), undefined);
+  }
+});
+
+Deno.test("neutral phase tiers resolve models after provider selection", async () => {
+  const path = await Deno.makeTempFile({ suffix: ".json" });
+  try {
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        agent_providers: ["claude", "codex"],
+        phase_model_tiers: { issue: "best", health: "fast" },
+        provider_model_tiers: {
+          claude: { best: "opus", standard: "sonnet", fast: "haiku" },
+          codex: {
+            best: "codex-best",
+            standard: "codex-standard",
+            fast: "codex-fast",
+          },
+        },
+        codex_phase_model_overrides: { question: "explicit-codex" },
+      }),
+    );
+    const config = await loadConfig(path, { env: emptyEnv });
+    setPhaseModelConfigOverrides(config.phaseModelOverrides);
+    setCodexPhaseModelConfigOverrides(config.codexPhaseModelOverrides);
+    for (
+      const [id, best, fast] of [["claude", "opus", "haiku"], [
+        "codex",
+        "codex-best",
+        "codex-fast",
+      ]] as const
+    ) {
+      const provider = resolveAgentProvider(id);
+      const issue = provider.buildInvocation({
+        prompt: "implement",
+        phase: "issue",
+        env: emptyEnv,
+      });
+      assertEquals(issue[issue.indexOf("--model") + 1], best);
+      const health = provider.buildInvocation({
+        prompt: "check",
+        phase: "health",
+        env: emptyEnv,
+      });
+      assertEquals(health[health.indexOf("--model") + 1], fast);
+    }
+    assertEquals(
+      resolveAgentProvider("codex").resolveModel("question", emptyEnv),
+      "explicit-codex",
+    );
+    for (
+      const bad of [
+        { phase_model_tiers: { issue: "typo" } },
+        { phase_model_tiers: { unknown: "best" } },
+        { provider_model_tiers: { codex: { best: "" } } },
+        { provider_model_tiers: { unknown: { best: "model" } } },
+      ]
+    ) {
+      await Deno.writeTextFile(path, JSON.stringify(bad));
+      await assertRejects(() => loadConfig(path, { env: emptyEnv }), Error);
+    }
+  } finally {
+    setPhaseModelConfigOverrides({});
+    setCodexPhaseModelConfigOverrides({});
+    setConfiguredAgentProviderId(undefined);
+    setConfiguredEnabledAgentProviderIds(undefined);
+    await Deno.remove(path);
   }
 });

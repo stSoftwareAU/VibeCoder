@@ -197,6 +197,70 @@ Deno.test(
 );
 
 Deno.test(
+  "collect_low_priority_candidates - skips issue when the label-author trust read throws (Issue #3974)",
+  async () => {
+    const config = makeConfig();
+    const throwingGh = (args: string[]): Promise<string> => {
+      const command = args.join(" ");
+      if (command.includes("graphql")) {
+        // The collector wraps this mock with buildBatchedGh, whose first call
+        // is a GraphQL batch (`gh api graphql -f query=...`) whose query text
+        // contains "timelineItems" (so it also matches "timeline"). Returning
+        // "[]" makes JSON.parse yield an Array, so fetchTimelineBatch returns
+        // { ok: false } and buildBatchedGh falls through to this mock for the
+        // REST timeline read below.
+        return Promise.resolve("[]");
+      }
+      if (command.includes("issue list")) {
+        return Promise.resolve(
+          JSON.stringify([
+            {
+              number: 50,
+              title: "Timeline read fails",
+              url: "https://github.com/owner/repo/issues/50",
+              assignees: [],
+              labels: [{ name: "low-priority" }],
+              createdAt: "2024-03-02T00:00:00Z",
+              author: { login: "mallory" },
+              milestone: null,
+            },
+          ]),
+        );
+      }
+      if (command.includes("issue view") && command.includes("title,body")) {
+        return Promise.resolve(
+          JSON.stringify({ title: "Timeline read fails", body: "" }),
+        );
+      }
+      if (command.includes("timeline")) {
+        return Promise.reject(new Error("simulated timeline read failure"));
+      }
+      return Promise.resolve("[]");
+    };
+
+    const cache = createTestCache();
+    const fetcher = createIssueFetcher(throwingGh);
+    const repoPRs: OpenPR[] = [];
+    const repoClosedPRs: ClosedPR[] = [];
+    const repoAllIssues: FilterableIssue[] = [];
+
+    // The `await` completing is the not-reject assertion: the collector must
+    // fail closed (skip the issue) rather than propagate the timeline throw.
+    const result = await collectLowPriorityCandidates(
+      "owner/repo",
+      config,
+      buildOptions(throwingGh, cache),
+      repoPRs,
+      repoAllIssues,
+      fetcher,
+      repoClosedPRs,
+    );
+
+    assertEquals(result.candidates.length, 0);
+  },
+);
+
+Deno.test(
   "collect_low_priority_candidates - excludes issue blocked by milestone occupancy",
   async () => {
     const config = makeConfig();

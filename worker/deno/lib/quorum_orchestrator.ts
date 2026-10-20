@@ -930,11 +930,17 @@ export async function runQuorum(
   let positions: { A: string; B: string };
   try {
     const selection = options.providerSelection;
+    // Bind automatic roles once to the budget-selected provider for this run.
+    const resolve = (provider: AgentProviderSelector) =>
+      selectAgentProvider(
+        provider === "auto" ? undefined : provider,
+        selection,
+      );
     planners = [
-      selectAgentProvider(providers.planners[0], selection),
-      selectAgentProvider(providers.planners[1], selection),
+      resolve(providers.planners[0]),
+      resolve(providers.planners[1]),
     ];
-    judge = selectAgentProvider(providers.judge, selection);
+    judge = resolve(providers.judge);
     positions = assignQuorumPositions(issue.issueNumber, [
       planners[0].id,
       planners[1].id,
