@@ -3,14 +3,15 @@
  *
  * Covers:
  *   - route selection: a PATH checkov is used only when it reports exactly the
- *     CI pin; a version mismatch falls through to the container route;
+ *     CI pin; a version mismatch falls through to the container route, and an
+ *     empty version is named as an unknown version in the SKIPPED reason;
  *   - the container route runs only an image already held locally (`image
  *     inspect`), never `pull`, and mounts the repository read-only with
  *     `--entrypoint checkov`, as `checkov.yml` does;
  *   - loud SKIPPED, naming each unusable route, when no route is available;
  *   - a deadline hit is FAILED, never SKIPPED or PASSED;
  *   - the verdict comes from the shared judge (`judgeCheckovRun`), and a
- *     FAILED non-JSON run shows the tail of stderr;
+ *     FAILED non-JSON run shows the tail of stderr, redacted before the cut;
  *   - the default template reader returns null for a missing file and rethrows
  *     any other read fault;
  *   - the real quality gate registers the check only where `checkov.yml`
@@ -178,6 +179,16 @@ Deno.test("runCheckovCheck - a PATH version mismatch is not run and falls throug
     `checkov on PATH reports 2.0.0, not the CI pin ${CHECKOV_IMAGE_TAG}`,
   );
   assertStringIncludes(result.output, "SKIPPED");
+});
+
+Deno.test("runCheckovCheck - an empty --version output is SKIPPED as an unknown version", async () => {
+  const result = await runCheckovCheck("/repo", {
+    probe: fakeProbe({ [PIN_KEY]: "" }),
+    spawn: unexpectedSpawn,
+    templates: noTemplates,
+  });
+  assertEquals(result.status, "SKIPPED");
+  assertStringIncludes(result.output, "an unknown version");
 });
 
 Deno.test("runCheckovCheck - a PATH version mismatch still reaches the docker route", async () => {
@@ -352,6 +363,27 @@ Deno.test("runCheckovCheck - a FAILED run with non-JSON stdout shows the stderr 
   assertEquals(result.status, "FAILED");
   assertStringIncludes(result.output, "checkov stderr (last lines):");
   assertStringIncludes(result.output, "boom: image layer missing");
+});
+
+Deno.test("runCheckovCheck - the stderr tail redacts a token", async () => {
+  const token = ["ghp", "_", "0123456789abcdefghijklmnopqrstuvwxyzAB"].join(
+    "",
+  );
+  const result = await runCheckovCheck("/repo", {
+    probe: fakeProbe({ [PIN_KEY]: CHECKOV_IMAGE_TAG }),
+    spawn: fakeSpawn(
+      {
+        exitCode: 2,
+        stdout: "not json",
+        stderr: `auth failed: ${token}\nboom\n`,
+      },
+      [],
+    ),
+    templates: noTemplates,
+  });
+  assertEquals(result.status, "FAILED");
+  assertStringIncludes(result.output, "boom");
+  assert(!result.output.includes(token), "the stderr tail must be redacted");
 });
 
 // ---------------------------------------------------------------------------

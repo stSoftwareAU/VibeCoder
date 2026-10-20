@@ -19,7 +19,7 @@
  *      → FAILED. A scan that cannot be judged is never read as a pass.
  *   3. Judge the exit code and stdout with `judgeCheckovRun` → PASSED or FAILED,
  *      with the judge's report rendered under the status line. A FAILED run
- *      whose stdout is not JSON also shows the tail of stderr.
+ *      whose stdout is not JSON also shows the redacted tail of stderr.
  *
  * The stage adds no suppression, edits no workflow and makes no network call:
  * `--skip-download` is in `CHECKOV_SCAN_ARGS`, and the stage never runs
@@ -36,6 +36,7 @@ import {
   type CheckovTemplateReader,
   judgeCheckovRun,
 } from "./checkov_report.ts";
+import { redactedLineTail } from "./redacted_text.ts";
 import {
   probe as defaultProbe,
   type SemgrepRunResult,
@@ -51,7 +52,10 @@ import {
  */
 export const CHECKOV_DEADLINE_MS = 300_000;
 
-/** Lines of stderr shown after a FAILED run whose stdout is not JSON. */
+/**
+ * Lines of redacted stderr shown after a FAILED run whose stdout is not JSON.
+ * The tail is redacted over the whole of stderr before it is cut.
+ */
 const STDERR_TAIL_LINES = 10;
 
 /** Raw subprocess result from one Checkov invocation. */
@@ -235,13 +239,6 @@ function isJson(text: string): boolean {
   }
 }
 
-/** The last `count` lines of `text`, trimmed, or "" when it is blank. */
-function tailOf(text: string, count: number): string {
-  const trimmed = text.trim();
-  if (trimmed === "") return "";
-  return trimmed.split("\n").slice(-count).join("\n");
-}
-
 /**
  * Run the checkov quality-gate stage over `scriptDir`.
  *
@@ -285,8 +282,14 @@ export async function runCheckovCheck(
     verdict.report,
   ];
   if (verdict.status === "FAILED" && !isJson(run.stdout)) {
-    const tail = tailOf(run.stderr, STDERR_TAIL_LINES);
-    if (tail !== "") lines.push("", "checkov stderr (last lines):", tail);
+    const stderr = run.stderr.trim();
+    if (stderr !== "") {
+      lines.push(
+        "",
+        "checkov stderr (last lines):",
+        redactedLineTail(stderr, STDERR_TAIL_LINES),
+      );
+    }
   }
   return { status: verdict.status, output: lines.join("\n") };
 }
