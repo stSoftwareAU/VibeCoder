@@ -1,0 +1,18 @@
+{
+  "issue": 3643,
+  "chunk": "top-up-3643",
+  "title": "top-up: opt-in provider-neutral role dispatch and configuration",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3643",
+  "definition": "Orchestrator, checkpoint, capability, subscription preflight and role configuration modules introduced for independent role configuration.",
+  "status": "claimed",
+  "sweptAt": "977a3496b3c98f35e0c92e270f7a15266f14a6af",
+  "paths": [
+    "worker/deno/lib/orchestration/capabilities.ts",
+    "worker/deno/lib/orchestration/checkpoint.ts",
+    "worker/deno/lib/orchestration/issue_run_gate.ts",
+    "worker/deno/lib/orchestration/orchestrator.ts",
+    "worker/deno/lib/orchestration/preflight.ts",
+    "worker/deno/lib/orchestration/role_config.ts",
+    "worker/deno/lib/orchestration/types.ts"
+  ]
+}

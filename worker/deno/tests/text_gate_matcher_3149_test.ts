@@ -11,17 +11,25 @@
  * VibeCoder#3157 counted `Deno.test(` inside string literals and
  * `Deno.test.ignore` declarations, flagging correct Test Plan counts as
  * stale. CODING-STANDARDS.md and the issue prompt's Instructions must both
- * carry the four-point checklist: an evasion table run both ways, a corpus
+ * carry the checklist: an evasion table run both ways, a corpus
  * run reporting false-positive and false-negative counts, no silent pass on
  * unread input, and comparing like with like. Issue #3313 adds the pointer
  * to the shared Markdown code-span helper so a gate over Markdown never
- * pairs backticks with a per-line regex.
+ * pairs backticks with a per-line regex. Issue #3696 adds a fifth point:
+ * reading the worker's own marker out of a body that also holds agent text
+ * is a gate over text, read only at the anchored position or after
+ * neutralisation.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
 import { assert } from "@std/assert";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  assertPins,
+  flat,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const STANDARDS_KEY_PHRASES = [
   "Evasion table",
@@ -114,4 +122,33 @@ Deno.test("issue prompt testing step points at Writing a gate over text (Issue #
       `Instructions is missing "${phrase}": ${text}`,
     );
   }
+});
+
+Deno.test("CODING-STANDARDS.md Writing a gate over text treats reading the worker's own marker as a gate (Issue #3696)", async () => {
+  assertPins(
+    section(
+      await readRepoDoc("CODING-STANDARDS.md"),
+      "Writing a gate over text",
+    ),
+    [
+      "Reading the worker's own marker is a gate over text",
+      "extractLeadingSection",
+      "neutraliseAgentMarkers",
+      "Never use `includes()` or a first-occurrence match over such a mixed body",
+      "quoting the marker in a code span and in plain prose after the summary heading",
+      "re-wrapping the worker does",
+    ],
+  );
+});
+
+Deno.test("issue prompt gate-over-text bullet covers reading the worker's own marker (Issue #3696)", async () => {
+  assertPins(
+    section(await readRepoDoc("prompts/issue/prompt.md"), "Instructions"),
+    [
+      "Reading the worker's own marker out of a body that also holds agent, issue or comment text is such a gate",
+      "only at the anchored position where the worker writes it",
+      "never with `includes()` or a first-occurrence match over the whole body",
+      "after the worker re-wraps the body",
+    ],
+  );
 });

@@ -17,9 +17,8 @@
  *
  * Modelled on `ci_failure_classifier.ts` (classify, then file, with a stable
  * class slug for dedup). The primary input is the `FailureCategory` from
- * `failure_diagnosis.ts` — `detectFailureCategory()` is the single diagnosis
- * path (#4298's corrected messages flow through it) and this refines it
- * rather than re-deriving it. The raw message is a secondary input only, for
+ * `failure_diagnosis.ts`, declared by new worker results or detected by legacy
+ * raw-output adapters. This refines that category rather than re-deriving it. The raw message is a secondary input only, for
  * signals the category cannot express (OOM evidence, disk exhaustion,
  * out-of-credit).
  *
@@ -34,6 +33,7 @@ import { assertNever } from "./assert_never.ts";
 import {
   type FailureCategory,
   isOutOfCreditMessage,
+  isWorkerGateCategory,
 } from "./failure_diagnosis.ts";
 import { isSecondaryRateLimitMessage } from "./secondary_rate_limit.ts";
 
@@ -82,8 +82,14 @@ export const RUN_FAILURE_CLASSES = [
 /**
  * Memory-pressure evidence beside a kill (Issue #4202).
  *
- * Whole-message, for the same reason as {@link DISK_FULL_RE} — and gated on
- * the `killed` category besides, so agent prose alone cannot reach it.
+ * Read from the worker's own words only (Issue #3694): gated on the `killed`
+ * category and scanned over `splitAgentNarration(...).worker`. The agent's
+ * quoted output carries tool results such as `Error: Exit code 137` from a
+ * command the agent ran, which is not evidence that the agent itself was
+ * OOM-killed. The worker-authored kill-diagnostics block (kernel OOM lines)
+ * and the kill headline stay in scope. The CLI's own V8 heap abort is caught
+ * earlier by the runner's `detectOutOfMemory` (claude_runner.ts) and reaches
+ * the classifier as `buildOutOfMemoryMessage`'s worker-worded headline.
  */
 const OOM_EVIDENCE_RE =
   /(?<![\w/-])out[- ]of[- ]memory(?![\w/-])|(?<![\w/-])oom[- ]?kill|killed process|\bexit(?: code)? 137\b|\(exit 137|heap out of memory|allocation failed|cannot allocate memory/i;
@@ -203,10 +209,11 @@ const AGENT_OUTCOME: RunFailureClassification = {
  * ORDER MATTERS and is fixed here, most specific first — exactly as
  * `detectFailureCategory` documents its own ordering:
  *
- * 0. `summary_incomplete` and `security_fix_gate` (Issue #3454) — answered
+ * 0. Every registered worker gate category (`WORKER_GATE_MARKERS`: summary,
+ *    security-fix and pre-push gates; Issues #3431, #3454, #3716) — answered
  *    before everything else, because the gate refusal quotes the agent's
- *    summary or tests and a quoted "ENOSPC", usage limit or stack trace
- *    must not turn it into another class.
+ *    summary, tests or tool output and a quoted "ENOSPC", usage limit or stack
+ *    trace must not turn it into another class.
  * 1. Account limits (`rate_limit` category, out-of-credit message) — the
  *    highest-cost false positive is auto-filing on a fleet-wide usage cap,
  *    so these win over everything, including a stack trace in the same
@@ -236,21 +243,26 @@ const AGENT_OUTCOME: RunFailureClassification = {
 export function classifyRunFailure(
   category: FailureCategory,
   failureMessage: string,
+  declaredCategory: boolean,
 ): RunFailureClassification {
-  const message = failureMessage ?? "";
+  // A declared source cause cannot be replaced by quoted git, test or agent
+  // prose. Kills, account limits and internal-tool errors retain their source-specific
+  // diagnostic refinements. Timeout disk evidence has its narrow exception below;
+  // other declared categories do not read a message.
+  const message = declaredCategory
+    ? category === "killed" || category === "rate_limit" ||
+        category === "internal_error"
+      ? splitAgentNarration(failureMessage ?? "").worker
+      : ""
+    : failureMessage ?? "";
 
-  // The PR-summary gate refusal quotes the agent's own summary, so any
-  //    message-pattern rule below (secondary limit, out-of-credit, stale
-  //    lineage, disk-full) can trip on that quotation. The category is
-  //    `summary_incomplete` only for a worker-authored marker prefix (or an
-  //    existing-PR finalise), so it answers first (Issue #3431; PR #3440).
-  if (category === "summary_incomplete") return AGENT_OUTCOME;
-  // Same for the security-fix gate refusal (Issue #3454): marker-prefixed
-  // worker text quoting agent test declarations.
-  if (category === "security_fix_gate") return AGENT_OUTCOME;
-  // And the pre-push gate block (PR #3716 review): marker-prefixed worker text
-  // quoting raw formatter, linter and test output.
-  if (category === "pre_push_gate") return AGENT_OUTCOME;
+  // A worker gate refusal (summary, security-fix or pre-push gate) quotes text
+  //    the worker did not write, so any message-pattern rule below (secondary
+  //    limit, out-of-credit, stale lineage, disk-full) can trip on that
+  //    quotation. The category is a gate category only for a worker-authored
+  //    marker prefix (or, for `summary_incomplete`, an existing-PR finalise),
+  //    so it answers first (Issues #3431, #3454; PR #3716).
+  if (isWorkerGateCategory(category)) return AGENT_OUTCOME;
 
   // 1. Account limits: usage / rate limit and out-of-credit are never a
   //    worker fault. Checked before anything else so a stack trace or a
@@ -326,7 +338,14 @@ export function classifyRunFailure(
 
   // 3. Disk exhaustion by message — outranks killed/crash because a full
   //    disk is what killed or crashed the run.
-  if (isDiskFull(message)) {
+  // Existing timeout diagnostics intentionally retain error-shaped disk evidence
+  // from CLI output. That narrow refinement does not grant quoted account,
+  // crash or lineage prose authority over a declared execution timeout.
+  if (
+    isDiskFull(
+      declaredCategory && category === "timeout" ? failureMessage : message,
+    )
+  ) {
     return {
       fixability: "code_fixable",
       failureClass: "disk-full",
@@ -349,7 +368,7 @@ export function classifyRunFailure(
             "The run was killed (SIGKILL) while the memory-pressure probe read high at the kill.",
         };
       }
-      if (OOM_EVIDENCE_RE.test(message)) {
+      if (OOM_EVIDENCE_RE.test(splitAgentNarration(message).worker)) {
         return {
           fixability: "code_fixable",
           failureClass: "oom",

@@ -7,11 +7,17 @@
  * partial-delivery section, bump note, footer). That leading section is
  * re-derived at sync time from the current issue and summary rather than
  * copied forward (Issue #3350, #3506), except that a partial-delivery section
- * whose follow-up number cannot be read is kept as it is. The sync only reads
- * the issue: it never writes to the follow-up (PR #3676 review). A
- * review-fix run that rewrites that summary file and pushes new commits never
- * touched the PR body again, so a reviewer reading the description kept
- * seeing the original summary while the diff underneath it changed.
+ * whose follow-up number cannot be read is kept as it is. Re-deriving a
+ * section the live body already carries only reads the issue and never writes
+ * to the follow-up (PR #3676 review). When the live body has no leading
+ * section and the rebuilt summary newly marks a criterion `partial` or
+ * `missing`, the sync files or reuses the follow-up (or, on a partial-delivery
+ * follow-up, hands the issue to a human) through `pr_body_sync_follow_up.ts`,
+ * from issue content that passed the pickup content-integrity check, and fails
+ * loudly if it cannot (Issue #3678). Before Issue #3089, a review-fix run that
+ * rewrote that summary file and pushed new commits never touched the PR body
+ * again, so a reviewer reading the description kept seeing the original summary
+ * while the diff underneath it changed.
  *
  * This module gives the completion phase's body-assembly logic a second
  * caller: a fix run that pushed only new commits (no PR yet created on this
@@ -27,13 +33,21 @@
  * marker; for that legacy shape the before-push-SHA diff this module always
  * used is still how staleness is decided. It never touches a PR body the
  * worker did not originally author (no {@link WORKER_PR_MARKER_PREFIX}
- * marker), and it never overwrites the body when the summary file was
- * deleted — a missing file is treated as "nothing to refresh", not as
- * "blank the body".
+ * marker), except a marker-less body on the run's own worker issue branch,
+ * which is adopted (Issue #3804; see {@link syncPrBodyFromSummary}). It never
+ * overwrites the body when the summary file was deleted — a missing file is
+ * treated as "nothing to refresh", not as "blank the body".
  *
  * Issue #3535: the structured Branch outcomes facts file beside the summary is
  * rendered into the rebuilt body and its content is part of the digest input,
  * so a push changing only the facts still refreshes the body.
+ *
+ * Issue #3760: the digest-reconcile pass in `pr_body_reconcile.ts` is a further
+ * caller, whoever pushed the PR head. It compares the digest the live body
+ * records against the summary at that head and calls
+ * {@link syncPrBodyFromSummary} only when they differ, so a push made outside
+ * the worker (which never reaches the post-push sync above) still refreshes
+ * the body.
  *
  * The rebuilt body also carries over the hidden sub-agent tier marker (Issue
  * #3403) the live body carries, so a review-fix refresh keeps attributing
@@ -60,6 +74,7 @@ import {
   WORKER_PR_MARKER_PREFIX,
 } from "./pr_body.ts";
 import { buildWorkerFooter } from "./worker_identity.ts";
+import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { loadPrSummary } from "./pr_summary_loader.ts";
 import {
   applyBranchOutcomesFacts,
@@ -89,6 +104,14 @@ import {
   findMissingCriteria,
   withholdIssueClose,
 } from "./missing_criterion_close_guard.ts";
+import {
+  addReportedGapSectionOnSync,
+  parseSyncParentIssue,
+  summaryReportsGap,
+  SYNC_PARENT_ISSUE_FIELDS,
+  type SyncFollowUpFiling,
+  type SyncParentIssue,
+} from "./pr_body_sync_follow_up.ts";
 
 /** Relative path of the PR summary file inside a repo checkout. */
 function prSummaryPath(issueNumber: number): string {
@@ -276,6 +299,18 @@ export interface SyncPrBodyInput {
   githubUser: string;
   /** Canonical run id for this worker invocation. */
   runId?: string;
+  /**
+   * The branch this run works on. A PR whose head is this branch, whose name
+   * is a worker issue branch, and whose body lacks the worker marker is
+   * adopted (Issue #3804).
+   */
+  branchName: string;
+  /**
+   * When true, only adopt a marker-less PR; a body that already carries the
+   * worker marker is left to the fix runs' sync (skipped with reason "worker
+   * marker present"). Used by the completion phase.
+   */
+  adoptOnly?: boolean;
 }
 
 /** Collaborators {@link syncPrBodyFromSummary} needs — all injectable for testing. */
@@ -285,6 +320,12 @@ export interface SyncPrBodyDeps {
   /** Runs a `git` command. */
   runGitCommand: typeof runGitCommandType;
   logger: Logger;
+  /**
+   * Files the follow-up when the rebuilt summary newly reports a gap on a body
+   * with no leading section (Issue #3678). `undefined` means not wired, and
+   * such a sync then fails loudly rather than filing nothing.
+   */
+  followUpFiling: SyncFollowUpFiling | undefined;
 }
 
 /** Outcome of a sync attempt. */
@@ -292,12 +333,14 @@ export type SyncPrBodyOutcome =
   | { status: "updated"; issueNumber: number }
   | { status: "skipped"; reason: string };
 
-/** The `gh pr view --json body,files,headRefOid` shape this module reads. */
+/** The `gh pr view --json body,files,headRefOid,headRefName` shape this module reads. */
 interface PrViewJson {
   body: string;
   files: Array<{ path: string }>;
   /** The PR's current head SHA on the remote, used to detect a stale checkout. */
   headRefOid: string;
+  /** The PR's head branch name (Issue #3804: marker-less adoption). */
+  headRefName: string;
 }
 
 /**
@@ -311,7 +354,7 @@ interface PrViewJson {
  * integer) is skipped rather than stopping the search — the body's own
  * marker can still be found after it (PR #3353 review).
  */
-function issueNumberFromMarker(body: string): number | undefined {
+export function issueNumberFromMarker(body: string): number | undefined {
   const pattern = new RegExp(
     `${
       WORKER_PR_MARKER_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -378,7 +421,13 @@ function extractLeadingSection(body: string, heading: string): string {
  * result with `gh pr edit`, but only when all of the following hold:
  *
  * - the PR carries the worker's own marker (never overwrite a body the
- *   worker did not author);
+ *   worker did not author), or — Issue #3804 — its body is marker-less but
+ *   its head is the run's own worker issue branch (`issue-<N>[-slug]`, equal
+ *   to `input.branchName`). That body is adopted: rebuilt with the marker,
+ *   digest and withheld close, skipping the digest and legacy staleness tests
+ *   below. `adoptOnly` limits the call to that adoption, so a body already
+ *   carrying the marker is skipped with "worker marker present" rather than
+ *   refreshed;
  * - the summary file was not deleted (a deleted summary means "nothing to
  *   refresh", not "blank the body");
  * - the summary actually changed (Issue #3535: the facts file beside it counts
@@ -397,6 +446,11 @@ function extractLeadingSection(body: string, heading: string): string {
  *   verified push — not that someone else pushed — so that case still
  *   proceeds; and
  * - the freshly assembled body actually differs from what is live.
+ *
+ * When the live body carries no leading section and the rebuilt summary newly
+ * marks a criterion `partial` or `missing`, the parent issue's follow-up is
+ * filed or reused first (Issue #3678). The sync fails rather than rebuild a
+ * body whose gap is recorded nowhere.
  */
 export async function syncPrBodyFromSummary(
   input: SyncPrBodyInput,
@@ -431,7 +485,7 @@ export async function syncPrBodyFromSummary(
       "--repo",
       input.repo,
       "--json",
-      "body,files,headRefOid",
+      "body,files,headRefOid,headRefName",
     ]);
     view = JSON.parse(raw) as PrViewJson;
   } catch (err) {
@@ -443,17 +497,47 @@ export async function syncPrBodyFromSummary(
     };
   }
 
-  const issueNumber = issueNumberFromMarker(view.body ?? "");
-  if (issueNumber === undefined) {
+  let issueNumber = issueNumberFromMarker(view.body ?? "");
+  if (issueNumber !== undefined && input.adoptOnly) {
     return {
       ok: true,
-      value: { status: "skipped", reason: "no worker marker" },
+      value: { status: "skipped", reason: "worker marker present" },
     };
   }
 
-  const recordedDigest = summaryDigestFromBody(view.body ?? "");
+  // Issue #3804: an agent that raised its own PR with `gh pr create` wrote a
+  // marker-less body. Adopt it when its head is this run's own worker branch.
+  let adopting = false;
+  if (issueNumber === undefined) {
+    const branchIssue = view.headRefName === input.branchName
+      ? issueNumberFromBranch(input.branchName)
+      : null;
+    if (branchIssue === null) {
+      return {
+        ok: true,
+        value: { status: "skipped", reason: "no worker marker" },
+      };
+    }
+    issueNumber = branchIssue;
+    adopting = true;
+    logger.info(
+      "Adopting an agent-raised PR body on the run's own branch (Issue #3804)",
+      {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        branch: input.branchName,
+        issueNumber,
+      },
+    );
+  }
 
-  if (recordedDigest === undefined) {
+  // The draft was never built from the summary, so an adopted body has no
+  // digest to compare and no before-push SHA to diff against: always rebuild.
+  const recordedDigest = adopting
+    ? undefined
+    : summaryDigestFromBody(view.body ?? "");
+
+  if (recordedDigest === undefined && !adopting) {
     // Legacy body, built before the summary-digest marker existed (Issue
     // #3315): fall back to the original before-push-SHA diff.
     if (!input.beforeSha) {
@@ -526,9 +610,15 @@ export async function syncPrBodyFromSummary(
       factsOutcome.kind === "valid" ? factsOutcome.content : null,
     ),
   );
-  const summaryContent = factsOutcome.kind === "valid"
-    ? applyBranchOutcomesFacts(rawSummary, factsOutcome.rendered)
-    : rawSummary;
+  let summaryContent = rawSummary;
+  if (factsOutcome.kind === "valid") {
+    const rendered = applyBranchOutcomesFacts(
+      rawSummary,
+      factsOutcome.rendered,
+    );
+    if (!rendered.ok) return rendered;
+    summaryContent = rendered.value;
+  }
 
   if (recordedDigest !== undefined && recordedDigest === currentDigest) {
     return {
@@ -721,6 +811,47 @@ export async function syncPrBodyFromSummary(
       (liveChainStop && rederived !== ""
         ? withholdIssueClose(body, issueNumber)
         : body);
+  } else if (summaryReportsGap(body)) {
+    // Issue #3678: a fix run that newly marks a criterion partial or missing
+    // on a body with no leading section files or reuses the follow-up the
+    // completion phase would, rather than rebuilding the body with the gap
+    // recorded nowhere. The issue is re-verified before any of its text is
+    // written (see pr_body_sync_follow_up.ts).
+    let parentIssue: SyncParentIssue;
+    try {
+      const raw = await deps.runGhCommand([
+        "issue",
+        "view",
+        String(issueNumber),
+        "--repo",
+        input.repo,
+        "--json",
+        SYNC_PARENT_ISSUE_FIELDS,
+      ]);
+      parentIssue = parseSyncParentIssue(raw);
+    } catch (err) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to read issue #${issueNumber} to file the follow-up for PR #${input.prNumber}: ${
+            (err as Error).message
+          }`,
+        ),
+      };
+    }
+    const filed = await addReportedGapSectionOnSync({
+      repo: input.repo,
+      issueNumber,
+      prNumber: input.prNumber,
+      body,
+      issue: parentIssue,
+      filing: deps.followUpFiling,
+      gh: deps.runGhCommand,
+      runId: input.runId ?? "",
+      logger,
+    });
+    if (!filed.ok) return filed;
+    body = filed.value;
   }
 
   if (body.trim() === (view.body ?? "").trim()) {
@@ -772,6 +903,7 @@ export async function syncPrBodyFromSummary(
     repo: input.repo,
     prNumber: input.prNumber,
     issueNumber,
+    adopted: adopting,
   });
   return { ok: true, value: { status: "updated", issueNumber } };
 }
@@ -780,9 +912,11 @@ export async function syncPrBodyFromSummary(
  * Call {@link syncPrBodyFromSummary} (or an injected stand-in) and log the
  * outcome, without ever failing the caller's run (Issue #3089).
  *
- * Shared by the three fix-run processors (feedback, CI, merge-conflict) so
- * each one does not duplicate the "call, then log success or failure"
- * boilerplate.
+ * Shared by the three fix-run processors (feedback, CI, merge-conflict) and by
+ * the Issue #3760 digest-reconcile pass in `pr_body_reconcile.ts`, which calls
+ * the sync for a PR whose body digest differs from the summary at the PR head,
+ * whoever pushed it, so none of them duplicates the "call, then log success or
+ * failure" boilerplate.
  */
 export async function runPrBodySync(
   input: SyncPrBodyInput,

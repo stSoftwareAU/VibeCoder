@@ -609,7 +609,11 @@ async function commitAndPushMerge(
     {
       git: async (args) => {
         const result = await runGit(deps, args);
-        return { code: result.code, stderr: result.stderr };
+        return {
+          code: result.code,
+          stderr: result.stderr,
+          stdout: result.stdout,
+        };
       },
       gh: deps.gh,
       ...(deps.log ? { log: deps.log } : {}),

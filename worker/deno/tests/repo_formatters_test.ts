@@ -188,7 +188,7 @@ Deno.test("repo formatters - formatter that changes files commits once", async (
   const addIndex = gitCalls.indexOf(addCalls[0]!);
   assert(addIndex < commitIndex, "git add -u must run before git commit");
   // Only the formatted scope is staged — never the whole tree (`add -u`).
-  assertEquals(addCalls[0]?.args, ["add", "-u", "--", ":(literal)."]);
+  assertEquals(addCalls[0]?.args, ["add", "-u", "--", ":(literal)src/main.rs"]);
 
   const message = commitCalls[0]?.args[2] ?? "";
   assert(message.startsWith("style: apply repository formatters"));

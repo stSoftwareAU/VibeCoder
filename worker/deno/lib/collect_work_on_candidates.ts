@@ -441,15 +441,25 @@ export async function collectWorkOnCandidates(
     // Issue #3416: exclude fleet worker logins (own host + siblings) — they
     // sit in allowedAuthors for PR-dedup but must not be trusted to
     // self-apply the reserved `work-on` discovery label.
-    const labelAdded = await wasLabelAddedByAllowedAuthor(
-      repo,
-      issue.number,
-      config.workOnLabel,
-      repoAllowedAuthors,
-      batchedGh,
-      options.timelineCache,
-      fleetWorkerLogins,
-    );
+    let labelAdded: boolean;
+    try {
+      labelAdded = await wasLabelAddedByAllowedAuthor(
+        repo,
+        issue.number,
+        config.workOnLabel,
+        repoAllowedAuthors,
+        batchedGh,
+        options.timelineCache,
+        fleetWorkerLogins,
+      );
+    } catch (err) {
+      console.warn(
+        `timeline trust read failed for ${repo}#${issue.number}: ${
+          (err as Error).message
+        }`,
+      );
+      labelAdded = false;
+    }
     if (!labelAdded) {
       noteBlocked(issue.number, issue.milestone, "label-author-not-allowed");
       diag?.logIssueSkipped(repo, issue.number, "label-author-not-allowed");

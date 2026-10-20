@@ -5,6 +5,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { sourceProseLines } from "../lib/removed_assertion_gate.ts";
 import {
   assert,
   assertEquals,
@@ -767,7 +768,7 @@ const ISSUE_3431_MESSAGE =
 Deno.test("detectFailureCategory - the marked #3431 refusal is summary_incomplete and an agent outcome, not a worker crash", () => {
   const message = `${SUMMARY_RULE_GATE_MARKER}: ${ISSUE_3431_MESSAGE}`;
   assertEquals(detectFailureCategory(message), "summary_incomplete");
-  const got = classifyRunFailure("summary_incomplete", message);
+  const got = classifyRunFailure("summary_incomplete", message, false);
   assertEquals(got.fixability, "not_code_fixable");
   assertEquals(got.failureClass, "agent-outcome");
 });
@@ -800,7 +801,11 @@ for (const [name, quoted] of QUOTED_TRAPS) {
       false,
     );
     assertEquals(detectFailureCategory(message), "summary_incomplete");
-    const got = classifyRunFailure(detectFailureCategory(message), message);
+    const got = classifyRunFailure(
+      detectFailureCategory(message),
+      message,
+      false,
+    );
     assertEquals(got.fixability, "not_code_fixable");
     assertEquals(got.failureClass, "agent-outcome");
   });
@@ -816,7 +821,7 @@ Deno.test("classifyRunFailure - a marked refusal quoting ENOSPC / out-of-credit 
   ) {
     const message = `${SUMMARY_RULE_GATE_MARKER}: ${quoted}`;
     assertEquals(detectFailureCategory(message), "summary_incomplete");
-    const got = classifyRunFailure("summary_incomplete", message);
+    const got = classifyRunFailure("summary_incomplete", message, false);
     assertEquals(got.fixability, "not_code_fixable");
     assertEquals(got.failureClass, "agent-outcome");
   }
@@ -926,4 +931,85 @@ Deno.test("security_fix_gate category - display, diagnosis, oneliner and validat
     "security_fix_gate",
   );
   assertEquals(isInfrastructureFailure("security_fix_gate"), false);
+});
+
+/** Reuse the existing lexer so quoted prose cannot create or hide result objects. */
+function resultLiteralReclassifies(source: string): boolean {
+  const rawLines = source.split("\n");
+  const lexed = sourceProseLines(source, "phase.ts");
+  if (lexed.unterminatedFrom >= 0) return true;
+  const code = lexed.lines.map((line, index) =>
+    // The shared mask retains quote delimiters and character offsets. Restore
+    // only this property name, including computed ["category"] keys.
+    line.code.replace(/(["']) *\1/g, (masked, _quote, offset: number) => {
+      const literal = rawLines[index]!.slice(offset, offset + masked.length);
+      return literal === '"category"' || literal === "'category'"
+        ? "category"
+        : masked;
+    })
+  ).join("\n");
+  const tokens = code.match(/[A-Za-z_$][\w$]*|=>|[{}()[\]:,=?>]/g) ?? [];
+  const frames: Array<{ object: boolean; category: boolean; call: boolean }> =
+    [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!;
+    if (token === "{") {
+      frames.push({
+        object: ["=", "(", ":", "return", "[", ",", "?", ">"].includes(
+          tokens[i - 1] ?? "",
+        ),
+        category: false,
+        call: false,
+      });
+    } else if (token === "}") {
+      const frame = frames.pop();
+      if (frame?.object && frame.category && frame.call) return true;
+    } else if (
+      token === "category" &&
+      (tokens[i + 1] === ":" || tokens[i + 1] === "]" && tokens[i + 2] === ":")
+    ) {
+      const frame = frames.at(-1);
+      if (frame?.object) frame.category = true;
+    } else if (token === "detectFailureCategory" && tokens[i + 1] === "(") {
+      for (const frame of frames) if (frame.object) frame.call = true;
+    }
+  }
+  return false;
+}
+
+Deno.test("phase failure result literals declare causes instead of deriving them from prose (Issue #3738)", async () => {
+  for (
+    const source of [
+      'return {status:"failure",category:detectFailureCategory(reason),reason}',
+      'return {phaseResult:{status:"failure",category: detectFailureCategory(reason)}}',
+      'const result: PhaseResult = {status:"failure",category:detectFailureCategory(reason),reason}; return result;',
+      'return ({status:"failure",category:detectFailureCategory(reason),reason});',
+      'return {status:"failure",["category"]:detectFailureCategory(reason),reason};',
+      'return <PhaseResult>{status:"failure",category:detectFailureCategory(reason),reason};',
+      'return {reason:"a; b",category:detectFailureCategory(reason),status:"failure"};',
+      'return {status:"failure",category:`${detectFailureCategory(reason)}`};',
+    ]
+  ) assert(resultLiteralReclassifies(source), source);
+  for (
+    const source of [
+      'return {status:"failure",category:"push_failure",reason}',
+      "// return {category:detectFailureCategory(reason)}",
+      '/* return {category:detectFailureCategory(reason)} */ return {category:"unknown"};',
+      "const example = `return {category:detectFailureCategory(reason)}`;",
+      'return {category:"unknown",reason:"detectFailureCategory(reason)"};',
+      'return {category:"unknown",reason:/detectFailureCategory\\(/};',
+      'return {category:"unknown",reason:ok && /detectFailureCategory()/.source};',
+      'const category: FailureCategory = "unknown"; isInfrastructureFailure(detectFailureCategory(output));',
+    ]
+  ) assert(!resultLiteralReclassifies(source), source);
+  const root = new URL("../lib/phases/", import.meta.url);
+  for await (const entry of Deno.readDir(root)) {
+    if (!entry.isFile || !entry.name.endsWith(".ts")) continue;
+    assert(
+      !resultLiteralReclassifies(
+        await Deno.readTextFile(new URL(entry.name, root)),
+      ),
+      entry.name + " reclassifies a worker-written result",
+    );
+  }
 });

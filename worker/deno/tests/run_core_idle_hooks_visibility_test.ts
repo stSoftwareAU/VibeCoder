@@ -17,6 +17,9 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { createLogger } from "../lib/logger.ts";
 import { assert, assertEquals } from "@std/assert";
 import {
   createDefaultRunCoreConfig,
@@ -334,3 +337,79 @@ Deno.test(
     );
   },
 );
+
+Deno.test("idle loop and production dependency run the scheduled transcript scan", async () => {
+  const dir = await Deno.makeTempDir();
+  let cleanup: (() => void) | undefined;
+  try {
+    await Deno.mkdir(`${dir}/logs`);
+    await Deno.writeTextFile(
+      `${dir}/logs/agent-vibe-wired.jsonl`,
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [{
+            type: "tool_use",
+            name: "Read",
+            input: { file_path: "~/.aws/credentials" },
+          }],
+        },
+      }),
+    );
+    const logs: string[] = [];
+    const production = await createProductionRunCoreDeps({
+      repoDir: dir,
+      workDir: dir,
+      githubUser: "test-worker",
+      config: { ...buildDefaultWorkerConfig(), repos: [], workDir: dir },
+      env: (key) => key === "HOME" ? dir : undefined,
+      logger: createLogger({ write: (line) => logs.push(line) }),
+    });
+    cleanup = production.cleanup;
+    let now = 0;
+    const deps = createMockDeps({
+      now: () => now,
+      sleep: () => {
+        now += 4000_000;
+        return Promise.resolve();
+      },
+      runTranscriptScan: production.deps.runTranscriptScan,
+      runIdleTaskFiler: () => Promise.resolve(),
+    });
+    await runCoreLoop({
+      ...createDefaultRunCoreConfig(),
+      runDurationSeconds: 3600,
+    }, deps);
+    assertEquals(
+      logs.some((line) =>
+        line.includes("AGENT_TRANSCRIPT_SIGNAL") &&
+        line.includes("credential-path")
+      ),
+      true,
+    );
+  } finally {
+    cleanup?.();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("production transcript scan warns when no home directory is available", async () => {
+  const logs: string[] = [];
+  const production = await createProductionRunCoreDeps({
+    repoDir: "/tmp/test-no-home",
+    workDir: "/tmp/test-no-home",
+    githubUser: "test-worker",
+    config: { ...buildDefaultWorkerConfig(), repos: [] },
+    env: () => undefined,
+    logger: createLogger({ write: (line) => logs.push(line) }),
+  });
+  try {
+    await production.deps.runTranscriptScan?.();
+    assertEquals(
+      logs.some((line) => line.includes("no home directory; scan unavailable")),
+      true,
+    );
+  } finally {
+    production.cleanup();
+  }
+});

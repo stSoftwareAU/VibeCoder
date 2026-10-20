@@ -1,3 +1,4 @@
+import { assertNever } from "../assert_never.ts";
 /**
  * Phase 5 — Completion (Push & PR).
  *
@@ -15,6 +16,7 @@
 import { summaryScrubProblem } from "../summary_scrub_gate.ts";
 
 import {
+  type FailureCategory,
   PRE_PUSH_GATE_MARKER,
   PRE_PUSH_LOOKUP_FAILED_MARKER,
   SUMMARY_RULE_GATE_MARKER,
@@ -36,12 +38,13 @@ import {
   finalisePrBodyImages,
   prSummaryDigest,
 } from "../pr_body_sync.ts";
+import { adoptAgentRaisedPrBody } from "../agent_pr_adoption.ts";
+import { buildSyncFollowUpFiling } from "../pr_body_sync_follow_up.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import {
   applyBranchOutcomesFacts,
-  BRANCH_OUTCOMES_MARKER,
   prSummaryDigestInput,
   resolveBranchOutcomesFacts,
 } from "../pr_summary_facts.ts";
@@ -61,17 +64,16 @@ import {
 } from "../pre_pr_verifier.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
+import { resolveRepoCredentials } from "../repo_credentials.ts";
 import {
   PRE_PUSH_GATE_REASON_HEAD_CHARS,
   PRE_PUSH_GATE_REASON_TAIL_CHARS,
-  PrePushGateBlockedError,
   resolvePreFlightSpec,
 } from "../git_push.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
-import { resolveRepoCredentials } from "../repo_credentials.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
-import type { WorkerConfig } from "../../types.ts";
+import type { Result, WorkerConfig } from "../../types.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
   findBranchEvidenceImages,
@@ -169,18 +171,26 @@ import {
 } from "../issue_sub_agent_degradation.ts";
 import {
   buildSecurityFixGateMessage,
+  citedSecurityTests,
+  citedTestIdentifierInDiff,
   evaluateSecurityFixGate,
   hasSecurityLabel,
   isTestFilePath,
   matchedTestDeclarations,
   referencesFindingId,
+  type SecurityFixDiffEvidence,
 } from "../security_fix_gate.ts";
 import {
+  buildCoverageCarryOverGateComment,
+  type CoverageCarryOverResult,
+  DEFAULT_COVERAGE_CARRYOVER_BUDGET_SECONDS,
+  evaluateCoverageCarryOverGate,
+} from "../coverage_carryover_gate.ts";
+import {
   buildMutationGateComment,
-  DEFAULT_MUTATION_BUDGET_SECONDS,
   evaluateMutationGate,
-  type MutationCheckResult,
 } from "../mutation_gate.ts";
+import { invokeMutationCheck } from "../mutation_check_invocation.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
 import { preserveRunWip } from "./run_wip_preservation.ts";
 import {
@@ -216,6 +226,7 @@ import {
 import { isSecondaryRateLimitMessage } from "../secondary_rate_limit.ts";
 import { healStaleBranchLineage } from "../stale_branch_lineage.ts";
 import {
+  alreadyLandedPhaseResult,
   checkClaimFreshness,
   type ClaimFreshness,
   formatStaleClaimComment,
@@ -225,6 +236,10 @@ import {
   clearSecurityFixGateBlock,
   resolveSecurityGateStateDir,
 } from "../security_fix_gate_feedback.ts";
+import {
+  DEFAULT_DISCRIMINATION_BUDGET_SECONDS,
+  type SecurityFixDiscrimination,
+} from "../security_fix_discrimination.ts";
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
@@ -318,6 +333,78 @@ async function lookupPrState(
 }
 
 /**
+ * Execute the cited security test red→green (Issue #3659). Never throws: any
+ * failure to run is reported as `not_checked`, which the pure gate blocks on,
+ * so an unrunnable check can never read as a pass.
+ */
+async function runSecurityDiscrimination(input: {
+  comparableBase: Awaited<ReturnType<typeof resolveComparableBaseRef>>;
+  securityDiff: SecurityFixDiffEvidence;
+  prBody: string;
+  repo: string;
+  repoPath: string;
+  qualityCredentials: Parameters<typeof resolveRepoCredentials>[1];
+  deps: WorkerDeps;
+}): Promise<SecurityFixDiscrimination> {
+  const { comparableBase, securityDiff, prBody, repo, repoPath, deps } = input;
+  const logger = deps.logger;
+  const notChecked = (reason: string): SecurityFixDiscrimination => {
+    logger.warn("Security-fix discrimination check did not run", { reason });
+    return { kind: "not_checked", reason };
+  };
+  if (!comparableBase.ok) {
+    return notChecked(
+      `the base ref is unresolvable: ${comparableBase.error.message}`,
+    );
+  }
+  const runner = deps.quality.runSecurityFixDiscrimination;
+  if (!runner) {
+    return notChecked("the security-fix discrimination runner is not wired");
+  }
+  try {
+    const credentials = await resolveRepoCredentials(
+      repo,
+      input.qualityCredentials,
+    );
+    if (!credentials.ok) {
+      return notChecked(
+        `the repository's quality_credentials could not be resolved (${credentials.error.message})`,
+      );
+    }
+    const result = await runner({
+      repoPath,
+      baseRef: comparableBase.value,
+      productionFiles: securityDiff.changedFiles.filter((f) =>
+        !isTestFilePath(f)
+      ),
+      tests: citedSecurityTests(prBody, securityDiff.testDiffText),
+      budgetSeconds: DEFAULT_DISCRIMINATION_BUDGET_SECONDS,
+      credentialEnv: credentials.value.env,
+    });
+    if (result.kind === "checked") {
+      logger.info("Security-fix discrimination check ran", {
+        test: result.test,
+        preFix: result.preFix,
+        postFix: result.postFix,
+        others: result.others,
+        notRun: result.notRun,
+      });
+    } else {
+      logger.warn("Security-fix discrimination check did not run", {
+        reason: result.reason,
+      });
+    }
+    return result;
+  } catch (error) {
+    return notChecked(
+      `discrimination runner failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
  * Run a git command and return its stdout, throwing on any failure.
  *
  * `deps.git.runGitCommand` reports a non-zero exit as `ok: true` with the exit
@@ -341,35 +428,6 @@ async function runGitOrThrow(
     );
   }
   return result.value.stdout;
-}
-
-/** Upper bound on `mutation_check_budget_seconds` (Issue #3393). */
-export const MAX_MUTATION_BUDGET_SECONDS = 3600;
-
-/**
- * Resolve the mutation gate's wall-clock budget from the per-repo
- * `mutation_check_budget_seconds` value (Issue #3393). A missing value is the
- * default; a value that is not a positive integer no greater than
- * {@link MAX_MUTATION_BUDGET_SECONDS} is refused loudly through `warn` and
- * the default applies, as the other untrusted per-repo numbers do.
- */
-export function resolveMutationBudgetSeconds(
-  raw: string,
-  warn: (message: string, context?: Record<string, unknown>) => void,
-): number {
-  if (raw === "") return DEFAULT_MUTATION_BUDGET_SECONDS;
-  const parsed = Number(raw);
-  if (
-    !Number.isInteger(parsed) || parsed <= 0 ||
-    parsed > MAX_MUTATION_BUDGET_SECONDS
-  ) {
-    warn(
-      "Ignoring invalid mutation_check_budget_seconds — using the default",
-      { value: raw, default: DEFAULT_MUTATION_BUDGET_SECONDS },
-    );
-    return DEFAULT_MUTATION_BUDGET_SECONDS;
-  }
-  return parsed;
 }
 
 /**
@@ -558,6 +616,8 @@ async function lookupBlockedGatePr(
  * (Issue #3324).
  */
 interface SummaryRuleBlock {
+  /** Reuses the existing failure enum, preserving every simultaneous cause. */
+  categories: readonly FailureCategory[];
   /** The phase-failure reason the gate would have reported. */
   reason: string;
   /** The gate's remediation comment, posted to the issue thread. */
@@ -582,7 +642,8 @@ interface SummaryRuleBlock {
   docHoldComment: string;
   /**
    * True when a blocked gate in `sections` is fixed by changing tests (the
-   * mutation gate, Issue #3393), so the recovery prompt allows test changes.
+   * mutation gate, Issue #3393, and the coverage carry-over gate, Issue #3795),
+   * so the recovery prompt allows test changes.
    */
   allowsTestChanges?: boolean;
 }
@@ -677,9 +738,17 @@ async function reportSummaryRuleBlock(
 ): Promise<PhaseResult> {
   const { reason, comment, sections, standingViolations, allowsTestChanges } =
     block;
+  const category: FailureCategory = block.categories.includes("quality_check")
+    ? "quality_check"
+    : block.categories[0] ?? "summary_incomplete";
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
   const client = deps.github.createClient(logger);
+  logger.warn("Summary-rule causes", {
+    repo,
+    issueNumber,
+    categories: block.categories,
+  });
   // Issue #3431: the failure reason leads with the worker's own marker so the
   // category detector never reads the gates' quoted agent text as a crash.
   const failureReason = `${SUMMARY_RULE_GATE_MARKER}: ${reason}`;
@@ -699,6 +768,7 @@ async function reportSummaryRuleBlock(
     state.summaryRuleBlocks = [
       ...verdicts,
       {
+        categories: block.categories,
         reason,
         comment,
         sections,
@@ -733,7 +803,12 @@ async function reportSummaryRuleBlock(
         lookup: existingPr.error.message,
       },
     );
-    return { status: "failure", reason: failureReason };
+    return {
+      category,
+      categories: block.categories,
+      status: "failure",
+      reason: failureReason,
+    };
   }
 
   const prUrl = existingPr.value;
@@ -767,7 +842,12 @@ async function reportSummaryRuleBlock(
     }
     // Always replaced by `recoverFromSummaryRuleBlock`'s outcome, so this
     // reason never leaves the phase; marked anyway to match the other returns.
-    return { status: "failure", reason: failureReason };
+    return {
+      category,
+      categories: block.categories,
+      status: "failure",
+      reason: failureReason,
+    };
   }
 
   logger.warn(
@@ -805,7 +885,12 @@ async function reportSummaryRuleBlock(
         "summary rule as a failure rather than naming an unnumbered PR",
       { repo, issueNumber, prUrl },
     );
-    return { status: "failure", reason: failureReason };
+    return {
+      category,
+      categories: block.categories,
+      status: "failure",
+      reason: failureReason,
+    };
   }
 
   const recovered = await recoverAndFinaliseExistingPr(
@@ -825,9 +910,12 @@ async function reportSummaryRuleBlock(
   if (recovered.status !== "continue") return recovered;
 
   return {
+    category,
     status: "early_exit",
     reason,
     outcome: summaryIncompleteOutcome({
+      category,
+      categories: block.categories,
       phase: "completion",
       prUrl,
       prNumber,
@@ -861,9 +949,10 @@ async function reportSummaryRuleBlock(
  * #3092 only the docs-sweep gate took this guard on an existing-PR branch,
  * because that gate ran after the guard; the closure, independent-review
  * and reproduction-status gates ran ahead of it and skipped it. The call
- * in `completionBody` runs once all six late-summary gates (Issue #3393
- * added the mutation check as the fifth and Issue #3257 the summary claim
- * check as the sixth) pass, whether the PR is then raised or recovered.
+ * in `completionBody` runs once all seven late-summary gates (Issue #3393
+ * added the mutation check as the fifth, Issue #3795 the coverage carry-over
+ * check as the sixth and Issue #3257 the summary claim check as the seventh)
+ * pass, whether the PR is then raised or recovered.
  *
  * PR #3676 review: a healthy run on an issue that is itself a
  * partial-delivery follow-up files no nested one. It labels the issue
@@ -927,6 +1016,7 @@ async function applyDegradedDeliveryGuard(
       return {
         ok: false,
         result: {
+          category: "unknown",
           status: "failure",
           reason:
             `Run reported ${verdict.shortfalls.length} acceptance criteria as partial or missing on a partial-delivery follow-up, and it could not be handed to a human: ${handed.error.message}`,
@@ -976,6 +1066,7 @@ async function applyDegradedDeliveryGuard(
       return {
         ok: false,
         result: {
+          category: "unknown",
           status: "failure",
           reason: verdict.degraded
             ? `Degraded run (${verdict.reason}) left ${verdict.shortfalls.length} ` +
@@ -1241,6 +1332,9 @@ export async function recoverAndFinaliseExistingPr(
  * infrastructure-category failures (notably `push_failure`). A transient
  * git-push blip no longer applies `failed-once` on the first occurrence —
  * the phase sleeps briefly and re-runs once before surfacing the failure.
+ *
+ * Issue #3804: at every exit it adopts an agent-raised PR on the run's own
+ * branch (see `adoptAgentRaisedPrBody`), so a later fix-run sync can refresh it.
  */
 export async function workOnIssueCompletion(
   ctx: IssueContext,
@@ -1305,6 +1399,26 @@ export async function workOnIssueCompletion(
     await postWorkOnRunStats(ctx, state, deps, { recordFigures: true });
   }
 
+  // Issue #3804: an agent that raised its own PR wrote a marker-less body.
+  // Adopt it on every exit so later fix-run syncs have a marker and digest.
+  await adoptAgentRaisedPrBody(
+    {
+      repo: ctx.repo,
+      branchName: state.branchName,
+      repoPath: state.repoPath,
+      workerName: ctx.config.workerName,
+      githubUser: ctx.githubUser,
+      runId: getRunId(),
+    },
+    {
+      findExistingPrForBranch: (r, b) => deps.pr.findExistingPrForBranch(r, b),
+      runGhCommand: (a) => deps.github.runGhCommand(a),
+      runGitCommand: deps.git.runGitCommand,
+      logger: deps.logger,
+      followUpFiling: buildSyncFollowUpFiling(ctx.config, ctx.githubUser),
+    },
+  );
+
   return result;
 }
 
@@ -1332,6 +1446,15 @@ async function runCompletionAttempt(
   const blocksBefore = state.securityGateBlocks?.length ?? 0;
   const summaryBlocksBefore = state.summaryRuleBlocks?.length ?? 0;
   const result = await completionBody(ctx, state, deps);
+  if (result.status === "failure") {
+    const landed = await alreadyLandedPhaseResult(
+      ctx,
+      state,
+      deps,
+      "completion",
+    );
+    if (landed) return landed;
+  }
 
   // Issue #2960: a screenshot block gets one extra agent turn and one re-run
   // before it fails the run.
@@ -1368,6 +1491,7 @@ async function runCompletionAttempt(
     state,
     deps.logger,
     {
+      category: result.category,
       backoffMs: ctx.config.infraRetryBackoffMs,
       cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs,
     },
@@ -1710,6 +1834,7 @@ async function abortStaleClaim(
   }
 
   return {
+    category: "unknown",
     status: "early_exit",
     reason: formatStaleClaimReason(stale),
     outcome: claimStaleOutcome({
@@ -1726,6 +1851,13 @@ async function completionBody(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
+  const alreadyLanded = await alreadyLandedPhaseResult(
+    ctx,
+    state,
+    deps,
+    "completion",
+  );
+  if (alreadyLanded) return alreadyLanded;
   const { repo, issueNumber, issueTitle, githubUser, config, milestoneTitle } =
     ctx;
   const logger = deps.logger;
@@ -1782,6 +1914,9 @@ async function completionBody(
       }
     }
     return {
+      category: reconcile.error instanceof HeadDivergedError
+        ? "unknown"
+        : "push_failure",
       status: "failure",
       reason:
         `Cannot push branch \`${state.branchName}\`: ${reconcile.error.message}`,
@@ -1818,6 +1953,7 @@ async function completionBody(
   });
   if (lineage.kind === "refused") {
     return {
+      category: "unknown",
       status: "failure",
       reason:
         `Refusing to push \`${state.branchName}\`: ${lineage.detail} (Issue #534)`,
@@ -1892,6 +2028,7 @@ async function completionBody(
   });
   if (prRaiseSync.kind === "refused") {
     return {
+      category: "unknown",
       status: "failure",
       reason: `Refusing to raise the PR for \`${state.branchName}\`: ` +
         `${prRaiseSync.detail} (Issue #2809)`,
@@ -1981,6 +2118,7 @@ async function completionBody(
       // Issue #2689: the host's gap, logged once; the run releases uncounted.
       deps.infrastructure.warnMissingWorkflowScope((m) => logger.warn(m));
       return {
+        category: "token_scope",
         status: "failure",
         reason: `Cannot push: the token lacks the 'workflow' scope and the ` +
           `branch changes ${workflowPaths.join(", ")} (per ${provenance}) — ` +
@@ -2059,9 +2197,20 @@ async function completionBody(
     // (infrastructure) whatever git text it quotes — a "timed out" in it must
     // not make it a `timeout` — so it is retried instead of using a ladder
     // attempt.
-    if (!(gate.error instanceof PrePushGateBlockedError)) {
+    const gateCategory = (() => {
+      switch (gate.error.kind) {
+        case "infrastructure":
+          return "push_failure" as const;
+        case "verdict":
+          return "pre_push_gate" as const;
+        default:
+          return assertNever(gate.error);
+      }
+    })();
+    if (gateCategory === "push_failure") {
       return {
         status: "failure",
+        category: "push_failure",
         reason: `${PRE_PUSH_LOOKUP_FAILED_MARKER}: ${
           redactedHeadTail(
             gate.error.message,
@@ -2078,6 +2227,7 @@ async function completionBody(
     // 65,536 characters, and the failure labelling swallows that refusal.
     return {
       status: "failure",
+      category: "pre_push_gate",
       reason: `${PRE_PUSH_GATE_MARKER}: ${
         redactedHeadTail(
           gate.error.message,
@@ -2105,8 +2255,20 @@ async function completionBody(
       // WARNING per process, and the run releases uncounted.
       deps.infrastructure.warnMissingWorkflowScope((m) => logger.warn(m));
       logger.info(reason);
-      return { status: "failure", reason };
+      return {
+        category: "token_scope",
+        status: "failure",
+        reason,
+      };
     }
+    // Another worker may have merged while this run was pushing.
+    const landedDuringPush = await alreadyLandedPhaseResult(
+      ctx,
+      state,
+      deps,
+      "completion",
+    );
+    if (landedDuringPush) return landedDuringPush;
     // Attempt push rejection recovery (Issue #423)
     logger.warn("Push failed, attempting recovery");
     const recoveryResult = await deps.git.recoverFromPushRejection(
@@ -2118,6 +2280,7 @@ async function completionBody(
     );
     if (!recoveryResult.ok) {
       return {
+        category: "push_failure",
         status: "failure",
         // Issue #1550: include "Git push failed" so detectFailureCategory
         // classifies this as `push_failure` (infrastructure) and the infra
@@ -2135,6 +2298,7 @@ async function completionBody(
     });
     if (!retryPush.ok) {
       return {
+        category: "push_failure",
         status: "failure",
         reason: `Git push failed after recovery: ${retryPush.error.message}`,
       };
@@ -2203,7 +2367,13 @@ async function completionBody(
           deps,
           comparableBase.value,
         );
-        if (halfDone) return { status: "failure", reason: halfDone };
+        if (halfDone) {
+          return {
+            category: "unknown",
+            status: "failure",
+            reason: halfDone,
+          };
+        }
       }
       if (Number.isFinite(aheadCount) && aheadCount === 0) {
         // Issue #218: this used to describe the loss and stop — "uncommitted
@@ -2248,6 +2418,7 @@ async function completionBody(
             },
           );
           return {
+            category: "unknown",
             status: "early_exit",
             reason: formatSupersededReason(disposition, wip.wipNote),
             outcome: supersededOutcome({
@@ -2270,6 +2441,7 @@ async function completionBody(
           ? ` — ${wip.wipNote}`
           : "";
         return {
+          category: "unknown",
           status: "failure",
           reason:
             `Branch \`${state.branchName}\` has no commits ahead of \`${baseBranch}\` — cannot create PR${wipHint}`,
@@ -2368,7 +2540,7 @@ async function completionBody(
   }
 
   // Issue #3535: a structured facts file renders the Branch outcomes list
-  // into the summary. The digest and the hand-written-list check use the raw
+  // into the summary. The digest uses the raw
   // file content, so keep it before rendering.
   const rawSummaryContent = summaryContent;
   const branchOutcomesFacts = await resolveBranchOutcomesFacts(
@@ -2378,14 +2550,17 @@ async function completionBody(
   const factsContent = branchOutcomesFacts.kind === "absent"
     ? null
     : branchOutcomesFacts.content;
+  let branchOutcomesRenderProblem: string | null = null;
   if (branchOutcomesFacts.kind === "valid") {
     logger.info("Loaded PR summary facts file", {
       source: branchOutcomesFacts.relativePath,
     });
-    summaryContent = applyBranchOutcomesFacts(
+    const rendered = applyBranchOutcomesFacts(
       summaryContent,
       branchOutcomesFacts.rendered,
     );
+    if (rendered.ok) summaryContent = rendered.value;
+    else branchOutcomesRenderProblem = rendered.error.message;
   } else if (branchOutcomesFacts.kind === "error") {
     logger.warn("PR summary facts file is unusable", {
       error: branchOutcomesFacts.reason,
@@ -2508,7 +2683,11 @@ async function completionBody(
           "deferring to one extra agent turn (Issue #2960)",
       );
       state.screenshotGateBlock = { failureMessage };
-      return { status: "failure", reason: SCREENSHOT_EVIDENCE_MISSING_REASON };
+      return {
+        category: "evidence_missing",
+        status: "failure",
+        reason: SCREENSHOT_EVIDENCE_MISSING_REASON,
+      };
     }
     logger.error(
       "Screenshot validation still fails after the one extra agent turn " +
@@ -2541,10 +2720,11 @@ async function completionBody(
   // `SEC-<hex>` finding id) must demonstrate that the fault is genuinely
   // closed. The decisive evidence is machine-checkable against the branch
   // diff — a test file is changed, and the test identifier the summary names
-  // really appears in that diff — with the prose linkage kept as a secondary
-  // human-review aid. Fail loud rather than mask a fault as success (Issue
-  // #3234). Per-repo only (Issue #3239); opt out with the
-  // `skip_security_fix_check` repo config.
+  // really appears in that diff — and that test is then executed red→green
+  // against the base and the fix (Issue #3659). The prose regression linkage
+  // was dropped: a sentence cannot show a test discriminates. Fail loud rather
+  // than mask a fault as success (Issue #3234). Per-repo only (Issue #3239);
+  // opt out with the `skip_security_fix_check` repo config.
   //
   // It runs **first** of the five PR gates (Issue #1140). The three summary
   // gates below stop being a hard failure once the run has raised its PR, and
@@ -2572,10 +2752,30 @@ async function completionBody(
       });
     }
 
+    // Execute the cited test red→green only when the pure gate will want the
+    // record. securityDiff is non-null only when the gate is active, and its
+    // testDiffText is empty unless a test file changed, so these two suffice.
+    let discrimination: SecurityFixDiscrimination | null = null;
+    if (
+      securityDiff &&
+      citedTestIdentifierInDiff(prBody, securityDiff.testDiffText)
+    ) {
+      discrimination = await runSecurityDiscrimination({
+        comparableBase,
+        securityDiff,
+        prBody,
+        repo,
+        repoPath: state.repoPath,
+        qualityCredentials: config.repoConfig?.[repo]?.qualityCredentials,
+        deps,
+      });
+    }
+
     const securityGate = evaluateSecurityFixGate({
       prSummaryContent: prBody,
       issueLabels,
       diff: securityDiff,
+      discrimination,
     });
     // The verdict is carried in worker run state so the next attempt reads it
     // from a trusted channel (Issue #4057). The gate's issue comment cannot
@@ -2599,11 +2799,16 @@ async function completionBody(
       // owns the persistence, the comment and any escalation (Issue #1575).
       state.securityGateBlocks = [
         ...(state.securityGateBlocks ?? []),
-        { missing: securityGate.missing, declarations },
+        { missing: securityGate.missing, declarations, discrimination },
       ];
       return {
+        category: "security_fix_gate",
         status: "failure",
-        reason: buildSecurityFixGateMessage(securityGate.missing, declarations),
+        reason: buildSecurityFixGateMessage(
+          securityGate.missing,
+          declarations,
+          discrimination,
+        ),
       };
     }
 
@@ -2731,7 +2936,11 @@ async function completionBody(
         state.prUrl = blockedPr.url;
         state.prNumber = blockedPr.number;
       }
-      return { status: "failure", reason: message };
+      return {
+        category: "workflow_gate",
+        status: "failure",
+        reason: message,
+      };
     }
   }
 
@@ -2778,7 +2987,7 @@ async function completionBody(
   }
   const removedAssertionGateCouldApply = !changedFilesKnown ||
     removedAssertionTestFiles.length > 0 ||
-    (changedFilesKnown && changedFiles.some((file) => isTestFilePath(file)));
+    changedFiles.some((file) => isTestFilePath(file));
   let testDiff: string | null = null;
   if (
     comparableBase.ok && removedAssertionGateCouldApply &&
@@ -2949,8 +3158,8 @@ async function completionBody(
   // prose parser over `prBody` — the same paths `validateBranchOutcomes`
   // checks, so a test-shaped entry `path` or a test named in prose after the
   // marker is looked up too. A facts file that cannot be read or does
-  // not validate, or that sits beside a hand-written Branch outcomes list in
-  // the summary, blocks whether or not the gate is otherwise applicable: a
+  // not validate, or whose block ownership is ambiguous, blocks whether
+  // or not the gate is otherwise applicable: a
   // broken facts file is a fault, not an absent list.
   // ---------------------------------------------------------------------
   // The not-applicable `: []` arm and the empty-list `new Set()` arm both
@@ -2967,16 +3176,11 @@ async function completionBody(
     prSummaryContent: prBody,
     testsAtHead,
   });
-  let branchOutcomesFactsProblem: string | null = null;
+  let branchOutcomesFactsProblem: string | null = branchOutcomesRenderProblem;
   if (branchOutcomesFacts.kind === "error") {
     branchOutcomesFactsProblem = branchOutcomesFacts.reason;
-  } else if (
-    branchOutcomesFacts.kind === "valid" &&
-    parseBranchOutcomes(rawSummaryContent).present
-  ) {
-    branchOutcomesFactsProblem =
-      `Branch outcomes facts file ${branchOutcomesFacts.relativePath} is present, but the PR summary also carries a hand-written \`Branch outcomes\` list — remove the prose list and leave the \`${BRANCH_OUTCOMES_MARKER}\` marker where the rendered list belongs`;
   }
+
   const branchOutcomesBlocked = branchOutcomesFactsProblem !== null ||
     (branchOutcomes.applicable && !branchOutcomes.valid);
   const branchOutcomesReason =
@@ -3120,18 +3324,23 @@ async function completionBody(
   /**
    * The late summary-rule verdicts, in the fixed order they are folded into
    * an earlier gate's block: docs sweep, removed assertions, result
-   * placeholder, branch outcomes, mutation check, the summary claim check,
-   * then the pre-PR verifier (Issue #3147 added branch outcomes; Issue #3393
-   * the mutation check; Issue #3257 the claim check; Issue #3395 added the
+   * placeholder, branch outcomes, mutation check, coverage carry-over, the
+   * summary claim check, then the pre-PR verifier (Issue #3147 added branch
+   * outcomes; Issue #3393 the mutation check; Issue #3795 the coverage
+   * carry-over check; Issue #3257 the claim check; Issue #3395 added the
    * verifier last). One
    * source of truth for both the ordered fold below and the gates' own
    * standalone blocks further down.
    */
   interface LateSummaryVerdict {
+    categories?: readonly FailureCategory[];
     blocked: boolean;
     reason: string;
     comment: () => string;
-    /** Only a test change satisfies this verdict (the mutation gate). */
+    /**
+     * Only a test change satisfies this verdict (the mutation gate, Issue
+     * #3393, and the coverage carry-over gate, Issue #3795).
+     */
     needsTestChanges?: boolean;
   }
   const docsSweepVerdict: LateSummaryVerdict = {
@@ -3175,84 +3384,44 @@ async function completionBody(
   // ---------------------------------------------------------------------
   let mutationVerdict: LateSummaryVerdict;
   {
-    let mutationResult: MutationCheckResult | null = null;
-    if (
-      getRepoConfig(config.repoConfig, repo, "skipMutationCheck") === "true"
-    ) {
-      logger.info("mutation check skipped by skip_mutation_check", { repo });
-      mutationResult = {
-        kind: "not_applicable",
-        reason: "skipped by skip_mutation_check",
-      };
-    } else if (!deps.quality.runMutationCheck) {
-      logger.warn("Mutation runner not wired — mutation check not applicable");
-      mutationResult = {
-        kind: "not_applicable",
-        reason: "mutation runner not wired",
-      };
-    } else {
-      const budgetSeconds = resolveMutationBudgetSeconds(
-        getRepoConfig(config.repoConfig, repo, "mutationCheckBudgetSeconds"),
-        (message, context) => logger.warn(message, context),
-      );
-      let mutationDiff: string | null = null;
-      if (comparableBase.ok) {
+    const mutationResult = await invokeMutationCheck({
+      repo,
+      repoPath: state.repoPath,
+      repoConfigs: config.repoConfig,
+      runner: deps.quality.runMutationCheck,
+      logger,
+      collectDiff: async (): Promise<Result<string>> => {
+        if (!comparableBase.ok) {
+          return {
+            ok: false,
+            error: new Error(
+              `could not collect the PR diff against ${baseBranch}`,
+            ),
+          };
+        }
         try {
-          mutationDiff = await runGitOrThrow(
-            ["diff", "--unified=0", `${comparableBase.value}...HEAD`],
-            state.repoPath,
-            deps,
-          );
+          return {
+            ok: true,
+            value: await runGitOrThrow(
+              ["diff", "--unified=0", `${comparableBase.value}...HEAD`],
+              state.repoPath,
+              deps,
+            ),
+          };
         } catch (error) {
           logger.warn("Could not collect the PR diff for the mutation check", {
             base: comparableBase.value,
             error: error instanceof Error ? error.message : String(error),
           });
-        }
-      }
-      if (mutationDiff === null) {
-        mutationResult = {
-          kind: "error",
-          reason: `could not collect the PR diff against ${baseBranch}`,
-        };
-      } else {
-        // The quality gate's child gets the credentials this repository
-        // declared, and its tests need them here too or the baseline fails
-        // before mutation. A failed mint is not run without them: that would
-        // block the PR on a fault that is not its code.
-        const credentials = await resolveRepoCredentials(
-          repo,
-          config.repoConfig?.[repo]?.qualityCredentials,
-        );
-        if (!credentials.ok) {
-          logger.warn(
-            "Could not resolve quality_credentials for the mutation check",
-            { repo, error: credentials.error.message },
-          );
-          mutationResult = {
-            kind: "not_applicable",
-            reason:
-              `the repository's quality_credentials could not be resolved (${credentials.error.message})`,
+          return {
+            ok: false,
+            error: new Error(
+              `could not collect the PR diff against ${baseBranch}`,
+            ),
           };
-        } else {
-          try {
-            mutationResult = await deps.quality.runMutationCheck({
-              repoPath: state.repoPath,
-              diff: mutationDiff,
-              budgetSeconds,
-              credentialEnv: credentials.value.env,
-            });
-          } catch (error) {
-            mutationResult = {
-              kind: "error",
-              reason: `mutation runner failed: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            };
-          }
         }
-      }
-    }
+      },
+    });
     const gate = evaluateMutationGate(mutationResult, prBody);
     if (gate.budgetExhausted) {
       logger.warn(gate.note, { repo, issueNumber });
@@ -3269,9 +3438,133 @@ async function completionBody(
       });
     }
     mutationVerdict = {
+      categories: [
+        mutationResult.kind === "error" ? "internal_error" : "quality_check",
+      ],
       blocked: gate.blocked,
       reason: gate.reason,
       comment: () => buildMutationGateComment(gate),
+      needsTestChanges: true,
+    };
+  }
+  // ---------------------------------------------------------------------
+  // Coverage carry-over verdict (Issue #3795), computed once alongside the
+  // mutation verdict so a summary that fails an earlier gate AND leaves a
+  // line that an edited or removed test used to reach untested is told
+  // about both in the one recovery turn. The runner names each such line no
+  // test covers any more; it blocks unless the summary exempts it. A diff or
+  // runner that cannot answer fails closed (`error`); a runner that is not
+  // wired, or a repo that opts out, never blocks.
+  // ---------------------------------------------------------------------
+  let coverageCarryOverVerdict: LateSummaryVerdict;
+  {
+    let coverageResult: CoverageCarryOverResult | null = null;
+    if (
+      getRepoConfig(config.repoConfig, repo, "skipCoverageCarryOverCheck") ===
+        "true"
+    ) {
+      logger.info(
+        "coverage carry-over check skipped by skip_coverage_carryover_check",
+        { repo },
+      );
+      coverageResult = {
+        kind: "not_applicable",
+        reason: "skipped by skip_coverage_carryover_check",
+      };
+    } else if (!deps.quality.runCoverageCarryOverCheck) {
+      logger.warn(
+        "Coverage carry-over runner not wired — coverage carry-over check not applicable",
+      );
+      coverageResult = {
+        kind: "not_applicable",
+        reason: "coverage carry-over runner not wired",
+      };
+    } else {
+      let coverageDiff: string | null = null;
+      if (comparableBase.ok) {
+        try {
+          coverageDiff = await runGitOrThrow(
+            [
+              "diff",
+              "--unified=0",
+              "--no-renames",
+              `${comparableBase.value}...HEAD`,
+            ],
+            state.repoPath,
+            deps,
+          );
+        } catch (error) {
+          logger.warn(
+            "Could not collect the PR diff for the coverage carry-over check",
+            {
+              base: comparableBase.value,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
+      }
+      if (!comparableBase.ok || coverageDiff === null) {
+        coverageResult = {
+          kind: "error",
+          reason: `could not collect the PR diff against ${baseBranch}`,
+        };
+      } else {
+        // As for the mutation check: the runner's tests need the credentials
+        // this repository declared, and a failed mint is not run without them.
+        const credentials = await resolveRepoCredentials(
+          repo,
+          config.repoConfig?.[repo]?.qualityCredentials,
+        );
+        if (!credentials.ok) {
+          logger.warn(
+            "Could not resolve quality_credentials for the coverage carry-over check",
+            { repo, error: credentials.error.message },
+          );
+          coverageResult = {
+            kind: "not_applicable",
+            reason:
+              `the repository's quality_credentials could not be resolved (${credentials.error.message})`,
+          };
+        } else {
+          try {
+            coverageResult = await deps.quality.runCoverageCarryOverCheck({
+              repoPath: state.repoPath,
+              base: comparableBase.value,
+              diff: coverageDiff,
+              budgetSeconds: DEFAULT_COVERAGE_CARRYOVER_BUDGET_SECONDS,
+              credentialEnv: credentials.value.env,
+            });
+          } catch (error) {
+            coverageResult = {
+              kind: "error",
+              reason: `coverage carry-over runner failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            };
+          }
+        }
+      }
+    }
+    const gate = evaluateCoverageCarryOverGate(coverageResult, prBody);
+    if (coverageResult.kind === "budget_exhausted") {
+      logger.warn(gate.note, { repo, issueNumber });
+    } else if (gate.note !== "") {
+      logger.info(gate.note, { repo, issueNumber });
+    }
+    if (gate.blocked) {
+      logger.warn(
+        "Coverage carry-over check found lines the edited or removed tests reached that no test covers",
+        {
+          uncovered: gate.uncovered.map((l) => `${l.file}:${l.line}`),
+          exempted: gate.exempted.map((l) => `${l.file}:${l.line}`),
+          reason: gate.reason,
+        },
+      );
+    }
+    coverageCarryOverVerdict = {
+      blocked: gate.blocked,
+      reason: gate.reason,
+      comment: () => buildCoverageCarryOverGateComment(gate),
       needsTestChanges: true,
     };
   }
@@ -3282,6 +3575,14 @@ async function completionBody(
       claimCheck !== null ? buildSummaryClaimGateComment(claimCheck) : "",
   };
   const prePrVerifierVerdict: LateSummaryVerdict = {
+    categories: prePrVerifier?.status === "checked" &&
+        prePrVerifier.review.findings.length > 0
+      ? [
+        ...new Set(prePrVerifier.review.findings.map((finding) =>
+          finding.category ?? "quality_check"
+        )),
+      ]
+      : ["quality_check"],
     blocked: prePrVerifier !== null && prePrVerifierBlocked(prePrVerifier),
     reason: prePrVerifier?.status === "checked"
       ? prePrVerifierBlockReason(prePrVerifier.review)
@@ -3304,6 +3605,7 @@ async function completionBody(
     placeholderVerdict,
     branchOutcomesVerdict,
     mutationVerdict,
+    coverageCarryOverVerdict,
     claimCheckVerdict,
     prePrVerifierVerdict,
   ];
@@ -3347,11 +3649,12 @@ async function completionBody(
 
   /**
    * Fold every blocked late verdict (docs sweep, removed assertions, result
-   * placeholder, branch outcomes, mutation check, summary claim check, pre-PR
-   * verifier — in that order) other than those in `skip` into an earlier
-   * gate's block.
+   * placeholder, branch outcomes, mutation check, coverage carry-over, summary
+   * claim check, pre-PR verifier — in that order) other than those in `skip`
+   * into an earlier gate's block.
    * `allowsTestChanges` is set on the result when the block, or any verdict
-   * folded in, is one that only a test change satisfies (the mutation check).
+   * folded in, is one that only a test change satisfies (the mutation check
+   * or the coverage carry-over check).
    */
   function foldInLateSummaryVerdicts(
     reason: string,
@@ -3361,11 +3664,20 @@ async function completionBody(
     let foldedReason = reason;
     let foldedComment = comment;
     const sections = [comment];
+    const categories = new Set<FailureCategory>(
+      skip.length > 0
+        ? skip.flatMap((v) => v.categories ?? ["summary_incomplete"])
+        : ["summary_incomplete"],
+    );
+    if (standingViolations.length > 0) categories.add("quality_check");
     // `skip` names the verdicts already represented by `reason`/`comment`, so a
     // blocked mutation verdict there still means the recovery turn must test.
     let allowsTestChanges = skip.some((v) => v.blocked && v.needsTestChanges);
     for (const verdict of lateSummaryVerdicts) {
       if (skip.includes(verdict) || !verdict.blocked) continue;
+      for (const category of verdict.categories ?? ["summary_incomplete"]) {
+        categories.add(category);
+      }
       if (verdict.needsTestChanges) allowsTestChanges = true;
       foldedReason = `${foldedReason}; ${verdict.reason}`;
       const verdictComment = verdict.comment();
@@ -3373,6 +3685,7 @@ async function completionBody(
       sections.push(verdictComment);
     }
     return {
+      categories: [...categories],
       reason: foldedReason,
       comment: foldedComment,
       sections,
@@ -3500,8 +3813,9 @@ async function completionBody(
   // ---------------------------------------------------------------------
   // Late summary gates: docs sweep (Issue #3073), removed assertions
   // (Issue #3131), result placeholder (Issue #3124), branch outcomes
-  // (Issue #3147), the mutation check (Issue #3393), the summary claim check
-  // (Issue #3257), and the pre-PR verifier (Issue #3395) — in that order.
+  // (Issue #3147), the mutation check (Issue #3393), the coverage carry-over
+  // check (Issue #3795), the summary claim check (Issue #3257), and the
+  // pre-PR verifier (Issue #3395) — in that order.
   //
   // The PR-summary contract already asked for a one-line Docs sweep entry
   // and now also a `Branch outcomes:` list, but nothing checked either: a
@@ -3638,9 +3952,9 @@ async function completionBody(
   // list naming, for every new branch, the test that reaches it — but
   // nothing checked it: fleet PRs shipped a new branch with no test
   // reaching it, or named a test that did not exist at the head. Folds in
-  // the mutation check (Issue #3393), the summary claim check (Issue #3257)
-  // and the pre-PR verifier (Issue #3395), the late verdicts still named
-  // below it.
+  // the mutation check (Issue #3393), the coverage carry-over check (Issue
+  // #3795), the summary claim check (Issue #3257) and the pre-PR verifier
+  // (Issue #3395), the late verdicts still named below it.
   // ---------------------------------------------------------------------
   if (branchOutcomesBlocked) {
     logger.warn("Branch-outcomes gate blocked PR creation", {
@@ -3676,8 +3990,9 @@ async function completionBody(
   // change nothing checks. Blocked like the other summary-rule gates so the
   // single recovery turn is told the `file:line` and the mutation and either
   // adds a test that kills it or records an exemption in the summary. Folds
-  // in the summary claim check and the pre-PR verifier (Issue #3395), the late
-  // verdicts still named below it.
+  // in the coverage carry-over check (Issue #3795), the summary claim check
+  // and the pre-PR verifier (Issue #3395), the late verdicts still named
+  // below it.
   // ---------------------------------------------------------------------
   if (mutationVerdict.blocked) {
     logger.warn("Mutation gate blocked PR creation", {
@@ -3692,6 +4007,42 @@ async function completionBody(
         placeholderVerdict,
         branchOutcomesVerdict,
         mutationVerdict,
+      ],
+    );
+    return await reportSummaryRuleBlock(
+      folded,
+      ctx,
+      state,
+      prBody,
+      deps,
+      docsSweepHitsComment,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Coverage carry-over gate (Issue #3795).
+  //
+  // A test the PR edits or removes may have been the only thing reaching a
+  // line; if the PR leaves that line uncovered, nothing checks it any more.
+  // Blocked like the mutation gate so the single recovery turn is told the
+  // `file:line` and either adds a test that reaches it or records an
+  // exemption in the summary. Folds in the summary claim check and the
+  // pre-PR verifier (Issue #3395), the late verdicts still named below it.
+  // ---------------------------------------------------------------------
+  if (coverageCarryOverVerdict.blocked) {
+    logger.warn("Coverage carry-over gate blocked PR creation", {
+      reason: coverageCarryOverVerdict.reason,
+    });
+    const folded = foldInLateSummaryVerdicts(
+      coverageCarryOverVerdict.reason,
+      coverageCarryOverVerdict.comment(),
+      [
+        docsSweepVerdict,
+        removedAssertionsVerdict,
+        placeholderVerdict,
+        branchOutcomesVerdict,
+        mutationVerdict,
+        coverageCarryOverVerdict,
       ],
     );
     return await reportSummaryRuleBlock(
@@ -3751,7 +4102,11 @@ async function completionBody(
           "one narrow claim correction turn (Issues #3324, #3865)",
         { repo, issueNumber, reason: claimCheckVerdict.reason },
       );
-      return { status: "failure", reason: claimCheckVerdict.reason };
+      return {
+        category: "summary_incomplete",
+        status: "failure",
+        reason: claimCheckVerdict.reason,
+      };
     }
     return await reportSummaryRuleBlock(
       foldInLateSummaryVerdicts(
@@ -3792,6 +4147,7 @@ async function completionBody(
     const comment = prePrVerifierVerdict.comment();
     return await reportSummaryRuleBlock(
       {
+        categories: prePrVerifierVerdict.categories ?? ["quality_check"],
         reason: prePrVerifierVerdict.reason,
         comment,
         sections: [comment],
@@ -4087,7 +4443,11 @@ async function completionBody(
           },
         );
       } else {
-        return { status: "failure", reason: `PR creation failed: ${errorMsg}` };
+        return {
+          category: "unknown",
+          status: "failure",
+          reason: `PR creation failed: ${errorMsg}`,
+        };
       }
     }
   }

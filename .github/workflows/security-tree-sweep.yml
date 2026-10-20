@@ -77,8 +77,8 @@ jobs:
           # Exact key only, no restore-keys (Issue #4404, GHA-SUPPLY-010).
 
       - name: Initialise CodeQL (JavaScript/TypeScript, SARIF kept local)
-        # github/codeql-action/init@v4.38.3
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d
+        # github/codeql-action/init@v4.39.0
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee
         with:
           languages: javascript-typescript
           # The default query pack; the sweep, not CodeQL, decides severity
@@ -86,8 +86,8 @@ jobs:
           queries: security-and-quality
 
       - name: Analyse with CodeQL
-        # github/codeql-action/analyze@v4.38.3
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d
+        # github/codeql-action/analyze@v4.39.0
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee
         with:
           category: security-tree-sweep
           upload: never

@@ -219,3 +219,112 @@ Deno.test("pass counts a dismissed logged change-request with an unchanged diff 
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("pass binds the version exception to findings from this PR's exact sent-back head (Issue #3713)", async () => {
+  const record = {
+    at: "2026-10-14T00:00:00Z",
+    repo: "acme/app",
+    number: 41,
+    title: "feat: add widget",
+    url: "https://github.com/acme/app/pull/41",
+    headSha: "X",
+    outcome: "changes_requested",
+    summary: "Fix the widget",
+    findings: [{ file: "a.ts", line: 1, problem: "Unfixed" }],
+    testChangeNotes: [],
+    removedTests: [],
+  };
+  const wrongFinding = [{ file: "VERSION", line: 1, problem: "Wrong version" }];
+  for (
+    const [records, awaiting] of [
+      [[record], true],
+      [[], false],
+      [[{ ...record, findings: wrongFinding }], false],
+      [
+        [record, { ...record, repo: "elsewhere/app", findings: wrongFinding }],
+        true,
+      ],
+      [[record, { ...record, number: 42, findings: wrongFinding }], true],
+      [[record, { ...record, headSha: "other", findings: wrongFinding }], true],
+      [
+        [record, { ...record, outcome: "approved", findings: wrongFinding }],
+        true,
+      ],
+    ] as [typeof record[], boolean][]
+  ) {
+    const dir = await Deno.makeTempDir();
+    try {
+      await Deno.writeTextFile(
+        `${dir}/log.jsonl`,
+        records.map((r) => JSON.stringify(r)).join("\n") + "\n",
+      );
+      const pr = {
+        ...fleetPr(),
+        headRefOid: "head",
+        reviews: {
+          nodes: [{
+            author: { login: REVIEWER },
+            state: "CHANGES_REQUESTED",
+            body: "",
+            commit: { oid: "X" },
+          }],
+        },
+      };
+      const gh = (args: string[]) => {
+        if (args[0] === "api" && args[1] === "graphql") {
+          return Promise.resolve(
+            JSON.stringify({
+              data: {
+                search: {
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [pr],
+                },
+              },
+            }),
+          );
+        }
+        const path = args[1] ?? "";
+        if (path.endsWith("compare/X...head")) {
+          return Promise.resolve(
+            JSON.stringify({
+              status: "ahead",
+              total_commits: 2,
+              commits: [{
+                sha: "merge",
+                parents: [{ sha: "p0" }, { sha: "p1" }],
+              }, { sha: "bump", parents: [{ sha: "merge" }] }],
+            }),
+          );
+        }
+        const files = (from: string, to: string) =>
+          JSON.stringify({
+            files: [{
+              filename: "VERSION",
+              status: "modified",
+              patch: `@@ -1 +1 @@\n-${from}\n+${to}`,
+            }],
+          });
+        if (path.endsWith("compare/main...X")) {
+          return Promise.resolve(files("1.32.4", "1.32.5"));
+        }
+        if (path.endsWith("compare/main...head")) {
+          return Promise.resolve(files("1.32.5", "1.32.6"));
+        }
+        if (path.includes("/files")) return Promise.resolve("[]");
+        if (path.includes("/contents/review-checklists.json")) {
+          throw new Error("gh: Not Found (HTTP 404)");
+        }
+        throw new Error(`unexpected gh ${args.join(" ")}`);
+      };
+      const result = await pass(REPOS, FLEET, REVIEWER, { gh, dir });
+      assertEquals(
+        result.skipped["awaiting-fix"] ?? 0,
+        awaiting ? 1 : 0,
+        JSON.stringify(records),
+      );
+      assertEquals(result.ready.length, awaiting ? 0 : 1);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});

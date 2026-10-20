@@ -26,8 +26,8 @@ export const CODEX_HOME_ENV_VAR = "CODEX_HOME";
  * Keep this list API-key-only: the provider descriptor and setup scripts use
  * it as the contract for pasteable/provisionable credential values.
  * `CODEX_HOME` is a persistent state-directory selector, not a secret value
- * to paste into provider.env, and is handled separately by the Codex runtime
- * path (Issue #1924).
+ * to paste into setup. The descriptor accepts it separately through
+ * `stateEnvVars` when loading provider.env at runtime.
  */
 export const CODEX_CREDENTIAL_ENV_VARS: readonly string[] = [
   ...CODEX_API_KEY_ENV_VARS,

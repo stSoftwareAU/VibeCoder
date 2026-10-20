@@ -1237,21 +1237,7 @@ function evaluateApplicable(
     // Each header's own `bodyLineIndexGroups` entry is likewise kept as its own
     // unit rather than joined across headers, so a citation in one header
     // cannot clear a weak admission in another (PR #3312 review, round 6).
-    const blanked: BlankedUnits = {
-      entries: record.entryLineIndices.map((idxs) =>
-        blankedUnitText(lines, idxs)
-      ),
-      body: record.bodyLineIndexGroups.map((idxs) =>
-        blankedUnitText(lines, idxs)
-      ),
-      uncapturedLines: groupUncapturedIndices(
-        lines,
-        record.uncapturedLineIndices,
-      )
-        .map((idxs) => blankedUnitText(lines, idxs))
-        .filter((text) => text.length > 0),
-    };
-    const admission = evaluateUnreachedAdmissions(blanked);
+    const admission = checkBranchOutcomeAdmissions(record, lines);
     problems.push(...admission.problems);
     unreachedEntries = admission.unreachedEntries;
   }
@@ -1267,6 +1253,28 @@ function evaluateApplicable(
     unreachedEntries,
     problems,
   };
+}
+
+/** Reuse the admission check before replacing legacy evidence with facts. */
+export function checkBranchOutcomeAdmissions(
+  record: BranchOutcomesRecord,
+  lines: readonly string[],
+): { problems: string[]; unreachedEntries: string[] } {
+  const blanked: BlankedUnits = {
+    entries: record.entryLineIndices.map((idxs) =>
+      blankedUnitText(lines, idxs)
+    ),
+    body: record.bodyLineIndexGroups.map((idxs) =>
+      blankedUnitText(lines, idxs)
+    ),
+    uncapturedLines: groupUncapturedIndices(
+      lines,
+      record.uncapturedLineIndices,
+    )
+      .map((idxs) => blankedUnitText(lines, idxs))
+      .filter((text) => text.length > 0),
+  };
+  return evaluateUnreachedAdmissions(blanked);
 }
 
 /**
