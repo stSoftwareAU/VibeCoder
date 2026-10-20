@@ -57,12 +57,14 @@ function escapeRegExp(text: string): string {
 }
 
 /**
- * Joins shell line continuations: a `\` at the end of a line, with any spaces
- * before it, becomes one space, and the next line's indentation goes with it.
- * ci_install_pin_scanner.ts has its own version of this, but it is private.
+ * Joins shell line continuations the way bash does: a `\` and the newline
+ * after it are removed, so `--soft-\` then `fail` on the next line is
+ * `--soft-fail`. Indentation survives as spaces, so callers collapse blanks
+ * before comparing adjacent tokens. ci_install_pin_scanner.ts has its own
+ * version of this, but it is private.
  */
 function joinContinuations(text: string): string {
-  return text.replace(/[ \t]*\\[ \t]*\r?\n[ \t]*/g, " ");
+  return text.replace(/\\\r?\n/g, "");
 }
 
 function triggerNames(on: unknown): string[] {
@@ -124,8 +126,11 @@ function lockStepProblems(
   }
 
   // 3. Exactly one step runs docker, with the pinned image and the scan args
-  // straight after it. The joined run text is what the shell sees.
-  const runs = runSteps(checkov).map(joinContinuations);
+  // straight after it. The joined run text is what the shell sees, with runs
+  // of blanks collapsed so adjacent tokens compare as single spaces.
+  const runs = runSteps(checkov).map((run) =>
+    joinContinuations(run).replace(/[ \t]+/g, " ")
+  );
   const scans = runs.filter((run) => run.includes("docker run"));
   const scan = scans.length === 1 ? scans[0] : undefined;
   if (scan === undefined) {
@@ -275,6 +280,18 @@ Deno.test("checkov_workflow - a weakening flag on its own continuation line is r
   );
   assert(fixture !== checkov, "fixture did not add the continuation");
   assertProblem(lockStepProblems(fixture, quality), "--skip-check");
+});
+
+Deno.test("checkov_workflow - a weakening flag split mid-word across a continuation is reported", async () => {
+  const { checkov, quality } = await readWorkflows();
+  // The run block's content indent is 10 spaces, which the YAML parser strips,
+  // so the parsed run text reads `--soft-\` newline `fail`.
+  const fixture = checkov.replace(
+    "--skip-download",
+    "--soft-\\\n          fail --skip-download",
+  );
+  assert(fixture !== checkov, "fixture did not split the flag");
+  assertProblem(lockStepProblems(fixture, quality), "--soft-fail");
 });
 
 Deno.test("checkov_workflow - checkov removed from gate.needs is reported", async () => {
