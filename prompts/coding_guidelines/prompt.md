@@ -146,6 +146,16 @@ progress survives.
   `grep -r SIMPLE-ON-PURPOSE` lists every cut:
   `// SIMPLE-ON-PURPOSE: linear scan, fine to 10,000 rows — upgrade when a table exceeds 10,000 rows`.
 - **DRY** — Avoid duplication; maintain a single source of truth.
+- **Change every copy of a twinned rule** — Before changing a rule, gate,
+  matcher or check, search for text that declares a second copy of it
+  ("mirrors", "runs the same gate as", "shared copy of", "both carry") and for
+  its function or rule name. Change every copy in the same PR, or make one call
+  the other. If both copies must stay, add a test that fails when they
+  disagree. The Test Plan names the copies found, or says none was found. In
+  the Vibe Coder repository, `CODING-STANDARDS.md` and this guidelines template
+  (`prompts/coding_guidelines/prompt.md`) are one such pair, and the worker's
+  completion-phase PR-summary gates and `deno task pr-summary-check` are
+  another.
 - **Boy Scout Rule** — Leave the lines you change cleaner than you found
   them, and never beyond them: tidying code the change does not touch is
   the scope creep **Stay in scope** rules out.

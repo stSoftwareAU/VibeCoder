@@ -1249,9 +1249,14 @@ comma-separated), and fix everything it reports as blocked before you finish.
 It runs the closure, two-axis review, reproduction, docs-sweep, placeholder and
 branch-outcomes gates the worker applies when it raises the PR. A gate it
 reports as not checked is not a pass. It does not run the removed-assertion
-gate or the claim check, which run only when the worker raises the PR. In a
-repository without that task, follow the rules in this section as written; they
-also say why each check exists.
+gate or the claim check, which run only when the worker raises the PR.
+`deno task pr-summary-check` (`worker/deno/lib/pr_summary_check.ts`) is the twin
+of the completion phase's PR-summary gates
+(`worker/deno/lib/phases/completion_phase.ts`): a change to how the completion
+phase runs one of those gates, or prepares its input, changes
+`pr_summary_check.ts` the same way in the same PR. A change inside a validator
+both files call reaches both already. In a repository without that task, follow
+the rules in this section as written; they also say why each check exists.
 
 The file MUST contain:
 
