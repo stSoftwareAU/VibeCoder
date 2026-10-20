@@ -28,6 +28,7 @@ import {
   setConfiguredAgentProviderId,
   setConfiguredEnabledAgentProviderIds,
 } from "./agent_provider.ts";
+import { isAutomaticProviderRoutingActive } from "./provider_auto_state.ts";
 import { resolveProviderFallbackPolicy } from "./provider_fallback_policy.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
 import { resolveRunMode } from "./run_mode.ts";
@@ -588,7 +589,18 @@ export async function loadConfig(
     configured: file.agent_provider,
     env,
   });
-  setConfiguredAgentProviderId(agentProvider);
+  // (Issue #4024) Automatic routing owns the active provider between its
+  // refreshes: a best-effort config reload — the allowlist and
+  // trusted-author readers call this full loader for one small field — must
+  // not reset the seam to the file's preferred id, or every maintenance
+  // phase after the reload runs the provider the router just deselected
+  // (GRQ-23: PR feedback ran Codex while the router had switched to Claude).
+  // The run override is already immune (Issue #2062), so only the
+  // auto-router's selection needs this guard; a pinned-mode host — routing
+  // inactive — keeps the historical reload behaviour.
+  if (!isAutomaticProviderRoutingActive()) {
+    setConfiguredAgentProviderId(agentProvider);
+  }
 
   // The providers enabled for this run (Issue #4108). Each one is provisioned,
   // preflighted and mounted separately; a provider outside the set has no
