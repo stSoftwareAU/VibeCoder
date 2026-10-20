@@ -608,3 +608,139 @@ async function realGit(
     stderr: new TextDecoder().decode(out.stderr),
   };
 }
+
+/**
+ * Issue #4060: the fixture, but with the milestone branch checked out in the
+ * PRIMARY clone rather than a lane worktree — the shape that made
+ * `git branch -D` fail with "used by worktree at '<primary clone>'" on every
+ * scan.
+ */
+async function makePrimaryCloneFixture(): Promise<Fixture> {
+  const fx = await makeFixture();
+  await git(fx.repoPath, "worktree", "remove", fx.worktreePath);
+  await git(fx.repoPath, "checkout", MILESTONE_BRANCH);
+  return fx;
+}
+
+Deno.test("sweepClosedMilestones - a clean primary clone holding the milestone branch is detached at its tip and the branch deleted (#4060)", async () => {
+  const fx = await makePrimaryCloneFixture();
+  try {
+    const tip = (await git(fx.repoPath, "rev-parse", MILESTONE_BRANCH)).trim();
+
+    const logs: string[] = [];
+    const result = await sweepClosedMilestones(
+      { repo: REPO, workDir: fx.workDir, repoPath: fx.repoPath },
+      { gh: makeGh(), log: (m) => logs.push(m) },
+    );
+
+    assertEquals(result.failures, [], logs.join(" | "));
+    assertEquals(result.deferred, []);
+    assertEquals(result.swept, [MILESTONE_TITLE]);
+    assertEquals(
+      (await localBranches(fx.repoPath)).includes(MILESTONE_BRANCH),
+      false,
+    );
+    // HEAD moved off the branch without moving the tree: detached at the tip.
+    assertEquals(
+      (await git(fx.repoPath, "rev-parse", "--abbrev-ref", "HEAD")).trim(),
+      "HEAD",
+    );
+    assertEquals((await git(fx.repoPath, "rev-parse", "HEAD")).trim(), tip);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("sweepClosedMilestones - a dirty primary clone holding the milestone branch is deferred quietly, not failed (#4060)", async () => {
+  const fx = await makePrimaryCloneFixture();
+  try {
+    await Deno.writeTextFile(`${fx.repoPath}/README.md`, "# edited\n");
+
+    const logs: string[] = [];
+    const result = await sweepClosedMilestones(
+      { repo: REPO, workDir: fx.workDir, repoPath: fx.repoPath },
+      { gh: makeGh(), log: (m) => logs.push(m) },
+    );
+
+    assertEquals(result.failures, [], "a deferral is not a WARNING");
+    assertEquals(result.errors, []);
+    assert(
+      result.deferred.some((d) => d.includes(MILESTONE_BRANCH)),
+      `the branch is recorded as deferred: ${result.deferred.join(" | ")}`,
+    );
+    assertEquals(result.swept, [], "a deferred milestone is retried");
+    assert((await localBranches(fx.repoPath)).includes(MILESTONE_BRANCH));
+    assertEquals(
+      (await git(fx.repoPath, "rev-parse", "--abbrev-ref", "HEAD")).trim(),
+      MILESTONE_BRANCH,
+    );
+    assertEquals(
+      await Deno.readTextFile(`${fx.repoPath}/README.md`),
+      "# edited\n",
+      "the uncommitted edit survives",
+    );
+    assert(
+      !logs.some((l) => l.includes("failed to remove")),
+      `nothing is logged as a failure: ${logs.join(" | ")}`,
+    );
+
+    // Once the tree is clean the next scan finishes the job.
+    await git(fx.repoPath, "checkout", "--", "README.md");
+    const retry = await sweepClosedMilestones(
+      { repo: REPO, workDir: fx.workDir, repoPath: fx.repoPath },
+      { gh: makeGh(), log: () => {} },
+    );
+    assertEquals(retry.considered, [MILESTONE_TITLE]);
+    assertEquals(retry.swept, [MILESTONE_TITLE]);
+    assertEquals(
+      (await localBranches(fx.repoPath)).includes(MILESTONE_BRANCH),
+      false,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("sweepClosedMilestones - a primary clone whose repo lease is held is deferred, not touched (#4060)", async () => {
+  const fx = await makePrimaryCloneFixture();
+  try {
+    const result = await sweepClosedMilestones(
+      { repo: REPO, workDir: fx.workDir, repoPath: fx.repoPath },
+      { gh: makeGh(), log: () => {}, acquireLease: () => null },
+    );
+
+    assertEquals(result.failures, []);
+    assert(
+      result.deferred.some((d) => d.includes(MILESTONE_BRANCH)),
+      `the branch is recorded as deferred: ${result.deferred.join(" | ")}`,
+    );
+    assertEquals(result.swept, []);
+    assertEquals(
+      (await git(fx.repoPath, "rev-parse", "--abbrev-ref", "HEAD")).trim(),
+      MILESTONE_BRANCH,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("sweepClosedMilestones - a stale worktree whose directory is gone no longer blocks the branch (#4060)", async () => {
+  const fx = await makeFixture();
+  try {
+    await Deno.remove(fx.worktreePath, { recursive: true });
+
+    const result = await sweepClosedMilestones(
+      { repo: REPO, workDir: fx.workDir, repoPath: fx.repoPath },
+      { gh: makeGh(), log: () => {} },
+    );
+
+    assertEquals(result.failures, []);
+    assertEquals(result.swept, [MILESTONE_TITLE]);
+    assertEquals(
+      (await localBranches(fx.repoPath)).includes(MILESTONE_BRANCH),
+      false,
+    );
+  } finally {
+    await fx.cleanup();
+  }
+});

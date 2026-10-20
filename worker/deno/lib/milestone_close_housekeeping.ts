@@ -29,6 +29,17 @@
  * the milestone is **not** recorded as swept, so the next scan retries it;
  * nothing here ever fails a run.
  *
+ * ## The primary clone (Issue #4060)
+ *
+ * The shared clone itself can be the one holding a closed milestone's branch,
+ * and nothing else ever moves it off. When the branch has no unpushed work
+ * the sweep takes the repository's maintenance lease (as the shared-clone ref
+ * sweep does), detaches the clone's `HEAD` at the branch tip — the tree does
+ * not change, and a detached shared clone is a state `setupRepo` already
+ * handles — and then deletes the branch. A dirty tree or a held lease is a
+ * **deferral**, not a failure: logged at INFO, the milestone left unswept,
+ * and retried next scan rather than warned about on every one.
+ *
  * This runs regardless of `enable_session_resume`: with the flag off there is
  * simply no stream session record to remove, and the worktree and branch sweep
  * is unchanged.
@@ -46,6 +57,10 @@ import {
 } from "./resume_state_store.ts";
 import { parseWorktreeList } from "./worktree_cleanup.ts";
 import { parseJsonArrayPages } from "./json_array_pages.ts";
+import {
+  acquireMaintenanceRepoLease,
+  type RepoLease,
+} from "./maintenance_lane.ts";
 
 /** How a `gh` invocation is made — args in, stdout out, throws on failure. */
 export type GhCommandFn = (args: string[]) => Promise<string>;
@@ -98,6 +113,11 @@ export interface ClosedMilestoneSweepDeps {
   log(message: string): void;
   /** Epoch milliseconds. */
   now(): number;
+  /**
+   * Take the repository's maintenance lease before moving the primary
+   * clone's `HEAD`; `null` when a slot or pass holds it (Issue #4060).
+   */
+  acquireLease(repo: string): RepoLease | null;
 }
 
 /** What one scan of one repository did. */
@@ -112,6 +132,12 @@ export interface ClosedMilestoneSweepResult {
   skipped: string[];
   /** One entry per failed removal — logged loud and retried on the next scan. */
   failures: string[];
+  /**
+   * One entry per artefact left for the next scan because the primary clone
+   * was busy or dirty (Issue #4060) — logged at INFO, never a failure, and
+   * the milestone stays unswept.
+   */
+  deferred: string[];
   /** Whether the closed-milestone listing came from the cached copy. */
   listedFromCache: boolean;
   /** Non-fatal problems. A sweep never throws and never fails a run. */
@@ -190,6 +216,7 @@ export function createDefaultSweepDeps(): ClosedMilestoneSweepDeps {
     },
     log: (message) => console.log(message),
     now: () => Date.now(),
+    acquireLease: (repo) => acquireMaintenanceRepoLease(repo),
   };
 }
 
@@ -216,6 +243,7 @@ export async function sweepClosedMilestones(
     removed: [],
     skipped: [],
     failures: [],
+    deferred: [],
     listedFromCache: false,
     errors: [],
   };
@@ -288,12 +316,16 @@ export async function sweepClosedMilestones(
     result.removed.push(...outcome.removed);
     result.skipped.push(...outcome.skipped);
     result.failures.push(...outcome.failures);
+    result.deferred.push(...outcome.deferred);
     result.errors.push(...outcome.errors);
     // "Swept" is positively confirmed, never inferred from the absence of a
     // failure: a milestone whose worktrees or branches could not even be read
     // stays unswept and is retried, rather than being recorded forever as
     // done on the strength of a fault.
-    if (outcome.failures.length === 0 && outcome.errors.length === 0) {
+    if (
+      outcome.failures.length === 0 && outcome.errors.length === 0 &&
+      outcome.deferred.length === 0
+    ) {
       swept.add(milestone.title);
       result.swept.push(milestone.title);
     }
@@ -318,6 +350,7 @@ interface MilestoneOutcome {
   removed: string[];
   skipped: string[];
   failures: string[];
+  deferred: string[];
   errors: string[];
 }
 
@@ -337,6 +370,7 @@ async function sweepMilestone(
     removed: [],
     skipped: [],
     failures: [],
+    deferred: [],
     errors: [],
   };
 
@@ -355,6 +389,24 @@ async function sweepMilestone(
     outcome.skipped.push(`${subject} (closed milestone ${title}): ${reason}`);
     deps.log(`SELF-HEALING: skipped ${subject} (${reason})`);
   };
+  const deferredLine = (subject: string, reason: string) => {
+    outcome.deferred.push(`${subject} (closed milestone ${title}): ${reason}`);
+    deps.log(
+      `milestone-close housekeeping: deferred ${subject} for closed ` +
+        `milestone ${title} (${reason}) — retrying next scan`,
+    );
+  };
+  const deleteBranch = async (branch: string) => {
+    const deleted = await deps.git(["branch", "-D", branch], repoPath);
+    if (deleted.code !== 0) {
+      failedLine(
+        `local branch ${branch}`,
+        deleted.stderr.trim() || `exit ${deleted.code}`,
+      );
+      return;
+    }
+    removedLine(`local branch ${branch}`);
+  };
 
   // 1. Which local branches belong to this milestone?
   const targets = await milestoneBranches(context, deps, outcome);
@@ -362,7 +414,12 @@ async function sweepMilestone(
   // 2. Worktrees holding one of them. Removed before the branches, because a
   //    branch a worktree has checked out cannot be deleted.
   const blocked = new Set<string>();
+  // The primary clone's path, per target branch it has checked out (#4060).
+  const heldByPrimary = new Map<string, string>();
   if (targets.size > 0) {
+    // Drop the records of worktrees whose directory is gone: a stale record
+    // still "uses" its branch and would block the delete for ever.
+    await deps.git(["worktree", "prune"], repoPath);
     const listed = await deps.git(
       ["worktree", "list", "--porcelain"],
       repoPath,
@@ -375,9 +432,13 @@ async function sweepMilestone(
       );
     } else {
       for (const worktree of parseWorktreeList(listed.stdout)) {
-        if (worktree.isMain || worktree.branch === null) continue;
+        if (worktree.branch === null) continue;
         const branch = worktree.branch.replace(/^refs\/heads\//, "");
         if (!targets.has(branch)) continue;
+        if (worktree.isMain) {
+          heldByPrimary.set(branch, worktree.path);
+          continue;
+        }
 
         const held = await holdsUnfinishedWork(
           { repoPath, worktreePath: worktree.path, branch },
@@ -414,15 +475,29 @@ async function sweepMilestone(
       skippedLine(branch, "unpushed work");
       continue;
     }
-    const deleted = await deps.git(["branch", "-D", branch], repoPath);
-    if (deleted.code !== 0) {
-      failedLine(
+    const primaryPath = heldByPrimary.get(branch);
+    if (primaryPath === undefined) {
+      await deleteBranch(branch);
+      continue;
+    }
+    const lease = deps.acquireLease(repo);
+    if (lease === null) {
+      deferredLine(
         `local branch ${branch}`,
-        deleted.stderr.trim() || `exit ${deleted.code}`,
+        `the primary clone ${primaryPath} has it checked out and is in use`,
       );
       continue;
     }
-    removedLine(`local branch ${branch}`);
+    try {
+      const refused = await releasePrimaryClone(primaryPath, deps);
+      if (refused !== null) {
+        deferredLine(`local branch ${branch}`, refused);
+        continue;
+      }
+      await deleteBranch(branch);
+    } finally {
+      lease.release();
+    }
   }
 
   // 4. The stream's session record — every provider's, in one file. Absent
@@ -549,6 +624,32 @@ async function holdsUnfinishedWork(
   return await hasUnpushedCommits(context.repoPath, context.branch, deps)
     ? "unpushed work"
     : null;
+}
+
+/**
+ * Move the primary clone off the branch it has checked out (Issue #4060):
+ * detach `HEAD` where it stands, so the tree is untouched and only the branch
+ * is released. Returns `null` once detached, or why it was left alone — a
+ * dirty tree (uncommitted work is never moved under) or a refused checkout.
+ * Called with the repository's maintenance lease held.
+ */
+async function releasePrimaryClone(
+  primaryPath: string,
+  deps: ClosedMilestoneSweepDeps,
+): Promise<string | null> {
+  const status = await deps.git(["status", "--porcelain"], primaryPath);
+  if (status.code !== 0 || status.stdout.trim().length > 0) {
+    return `the primary clone ${primaryPath} has it checked out with ` +
+      `uncommitted work`;
+  }
+  // The same move `detachLaneWorktreeHead` makes for a lane worktree.
+  const detached = await deps.git(["checkout", "--detach"], primaryPath);
+  if (detached.code !== 0) {
+    return `could not detach the primary clone ${primaryPath}: ${
+      detached.stderr.trim() || `exit ${detached.code}`
+    }`;
+  }
+  return null;
 }
 
 /**
