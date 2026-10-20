@@ -217,6 +217,8 @@ export function resolveCodexEffort(
 
 /** What {@link buildCodexArgs} needs to build one invocation. */
 export interface CodexInvocation extends CodexPromptParts {
+  /** External role calls opt into the CLI sandbox instead of bypassing it. */
+  orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Explicit model id; omitted leaves Codex on its configured default. */
   model?: string;
   /** Explicit reasoning effort; omitted leaves Codex on its default. */
@@ -346,7 +348,25 @@ export function buildCodexArgs(invocation: CodexInvocation): string[] {
     args.push(RESUME_SUBCOMMAND, invocation.resumeSessionId);
   }
 
-  args.push(...STANDARD_FLAGS);
+  if (invocation.orchestrationRole) {
+    args.push(
+      ...STANDARD_FLAGS.filter((flag) =>
+        flag !== "--dangerously-bypass-approvals-and-sandbox"
+      ),
+      "--sandbox",
+      invocation.orchestrationRole === "executor"
+        ? "workspace-write"
+        : "read-only",
+      "-c",
+      'approval_policy="never"',
+      "-c",
+      "features.multi_agent=false",
+      "-c",
+      "sandbox_workspace_write.network_access=false",
+    );
+  } else {
+    args.push(...STANDARD_FLAGS);
+  }
 
   if (invocation.model) args.push("--model", invocation.model);
   if (invocation.effort) {

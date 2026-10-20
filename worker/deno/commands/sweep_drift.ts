@@ -15,6 +15,7 @@ import {
   driftSince,
   listSweptModulesForRoots,
   readCoverageLedger,
+  recordSweepTopUp,
   type SliceDrift,
   type SweepCoverageLedger,
   type SweepGitRunner,
@@ -22,6 +23,7 @@ import {
   verifySweptAtsOnDefaultBranch,
 } from "../lib/lib_sweep_coverage.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { redactSecrets } from "../lib/secret_redaction.ts";
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 
 /** One printed slice block. */
@@ -103,7 +105,7 @@ export async function collectSweepDrift(
 export const sweepDriftCommand: Command = {
   name: "sweep-drift",
   description:
-    "Report modules added or modified since each sweep slice's sweptAt commit",
+    "Report sweep drift, or create a top-up with --record-top-up <payload.json>",
 
   async execute(
     args: Record<string, unknown>,
@@ -112,14 +114,53 @@ export const sweepDriftCommand: Command = {
     const repoRoot = typeof args.repo === "string" && args.repo.length > 0
       ? args.repo
       : Deno.cwd();
-    const ledger = await readCoverageLedger(repoRoot);
-    const onDisk = await listSweptModulesForRoots(repoRoot, ledger.roots);
     const runGit = typeof args.runGit === "function"
       ? args.runGit as SweepGitRunner
       : sweepGitRunnerFor(repoRoot);
     const defaultRef = typeof args["default-branch"] === "string"
       ? args["default-branch"].trim()
       : "";
+    if (args["record-top-up"] !== undefined) {
+      if (
+        typeof args["record-top-up"] !== "string" ||
+        !args["record-top-up"].trim()
+      ) {
+        return {
+          success: false,
+          message:
+            "Sweep record unavailable: --record-top-up requires a JSON payload path",
+        };
+      }
+      let payload: unknown;
+      try {
+        payload = JSON.parse(await Deno.readTextFile(args["record-top-up"]));
+      } catch (error) {
+        return {
+          success: false,
+          message: redactSecrets(
+            `Sweep record unavailable: cannot read payload: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          ),
+        };
+      }
+      const recorded = await recordSweepTopUp(
+        repoRoot,
+        payload,
+        runGit,
+        defaultRef,
+      );
+      return recorded.ok
+        ? {
+          success: true,
+          message:
+            `Recorded ${recorded.value.chunk} at ${recorded.value.sweptAt}`,
+          data: { blocks: [] },
+        }
+        : { success: false, message: recorded.error.message };
+    }
+    const ledger = await readCoverageLedger(repoRoot);
+    const onDisk = await listSweptModulesForRoots(repoRoot, ledger.roots);
     if (defaultRef.length > 0) {
       try {
         await verifySweptAtsOnDefaultBranch(ledger, defaultRef, runGit);

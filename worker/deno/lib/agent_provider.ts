@@ -57,6 +57,7 @@ import {
   claudeAuthActionableMessage,
   isClaudeAuthError,
 } from "./claude_auth.ts";
+import { resolveClaudeMaxTurns } from "./claude_turn_limit.ts";
 import type { AgentOutputAdapter } from "./agent_output.ts";
 import {
   CLAUDE_OUTPUT_ADAPTER,
@@ -89,7 +90,10 @@ import {
   codexAuthActionableMessage,
   isCodexAuthError,
 } from "./codex_auth.ts";
-import { resolveCodexAuthMode, resolveCodexHome } from "./codex_auth_mode.ts";
+import {
+  initialiseCodexHome,
+  resolveCodexAuthMode,
+} from "./codex_auth_mode.ts";
 import {
   buildGeminiArgs,
   resolveGeminiEffort,
@@ -277,7 +281,9 @@ export interface AgentProviderBilling {
    * persistent ChatGPT login under `CODEX_HOME`. Consulted before the
    * declared metered variables, so a provider whose CLI gives an API key
    * precedence can say so. Absent means the declared variables are the only
-   * proof; `undefined` means this probe proved nothing.
+   * proof; `undefined` means this probe proved nothing. The probe must read
+   * only the home the child is actually given, so a provider whose child
+   * gets no home may answer `undefined` rather than guess one.
    */
   resolveStoredBilling?(
     context: AgentProviderBillingContext,
@@ -292,6 +298,10 @@ export interface AgentProviderCredentials {
   file: string;
   /** Environment variables that carry a usable credential. */
   envVars: readonly string[];
+  /** Non-secret runtime selectors, separate from setup's pasteable credentials. */
+  stateEnvVars?: readonly string[];
+  /** Prepare durable login state after the credential environment is loaded. */
+  initialiseState?: (directory: string, env: EnvLookup) => Promise<void>;
   /** The `setup.sh` variable that provisions the credential file. */
   provisionEnvVar: string;
   /**
@@ -343,6 +353,8 @@ export interface AgentDefinition {
 
 /** One invocation of the provider's CLI. */
 export interface AgentInvocationRequest {
+  /** Enforced sandbox for orchestrator-owned Codex role calls. */
+  orchestrationRole?: "manager" | "executor" | "reviewer";
   /** The user prompt. */
   prompt: string;
   /** Static system prompt passed separately so the CLI can cache it. */
@@ -368,7 +380,8 @@ export interface AgentInvocationRequest {
    * **Absent — the default — emits no argument at all**, so an invocation
    * that does not ask for the split is byte-for-byte the argv the worker has
    * always built and every sub-agent inherits the phase's model. Only the
-   * Claude CLI takes the flag; the other providers keep single-model routing.
+   * Claude CLI takes the flag; the other providers' argv never carries it,
+   * and the runner refuses a native run that asked for it (Issue #4010).
    */
   agents?: Readonly<Record<string, AgentDefinition>>;
   /** Session continuity state, when session resume is enabled. */
@@ -401,9 +414,11 @@ export interface AgentInvocationRequest {
    * `PreToolUse` guard, which denies the advisor's own `Edit`/`Write` calls
    * while allowing an executor's — a distinction `disallowedTools` cannot
    * express, because a tool removed from the session pool is gone for
-   * sub-agents too — and RTK's `PreToolUse` Bash entry. Absent or empty —
-   * every run that has not opted into either — emits no argument, and the
-   * argv is the one every host spawned before. Claude-only: DeepSeek shares
+   * sub-agents too — and RTK's `PreToolUse` Bash entry. Absent or empty — a
+   * run with neither the split guard nor RTK's hook (the split is on by
+   * default for `issue` runs; `issue_executor_split: false` turns it off) —
+   * emits no argument, and the argv is the one every host spawned before.
+   * Claude-only: DeepSeek shares
    * the CLI but its endpoint implements no hooks, so that descriptor strips
    * the field, and no other provider takes the flag.
    */
@@ -601,16 +616,18 @@ function buildClaudeCliArgs(
   if (routing.model) args.push("--model", routing.model);
   if (routing.effort) args.push("--effort", routing.effort);
 
+  args.push("--max-turns", String(resolveClaudeMaxTurns(request.env)));
   args.push("--dangerously-skip-permissions");
   const disallowed = request.disallowedTools ?? [];
   if (disallowed.length > 0) {
     args.push("--disallowed-tools", disallowed.join(","));
   }
   // Sub-agent definitions (Issue #2342), beside the tool policy they extend.
-  // Absent — every invocation that has not opted into the split — pushes
-  // nothing, so the argv below it is unchanged. There is no fallback if the
-  // CLI rejects the flag: an older binary fails the run with its own error
-  // rather than quietly reverting to single-model routing.
+  // Absent — no sub-agent definitions were built (see `buildIssueRunAgents` in
+  // `issue_executor_agents.ts`) — pushes nothing, so the argv below it is
+  // unchanged. There is no fallback if the CLI rejects the flag: an older
+  // binary fails the run with its own error rather than quietly reverting to
+  // single-model routing.
   if (request.agents) {
     args.push("--agents", JSON.stringify(request.agents));
   }
@@ -785,48 +802,38 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     subdir: "codex",
     file: "provider.env",
     envVars: CODEX_CREDENTIAL_ENV_VARS,
+    stateEnvVars: [CODEX_HOME_ENV_VAR],
+    initialiseState: initialiseCodexHome,
     provisionEnvVar: "VIBE_LAUNCHAGENT_OPENAI_API_KEY",
   },
   // Fixed-price subscription vs metered spend (Issue #1923). No environment
   // variable carries a ChatGPT subscription: it lives in the auth state the
   // CLI persists under CODEX_HOME, so the proof is a probe rather than a
-  // name. `resolveCodexAuthMode` gives an environment API key precedence,
-  // exactly as the CLI does, so the probe answers metered in that case.
+  // name. The probe reads only an EXPLICIT CODEX_HOME (Issue #3955): that is
+  // the one home `buildIsolatedCodexChildEnv` gives the child. Without it the
+  // child gets no home, the CLI falls back to $HOME/.codex, which the worker
+  // never probes, so the answer comes from the metered-key check instead.
   billing: {
     subscriptionEnvVars: [],
     meteredEnvVars: CODEX_API_KEY_ENV_VARS,
     resolveStoredBilling(context) {
-      const home = resolveCodexHome(context.workDir, context.env);
-      if (!home) return undefined;
-      // Classify the way `buildChildEnv` above actually builds the child, or
-      // the two drift apart and the run is told the wrong billing mode.
-      // `buildIsolatedCodexChildEnv` honours an **explicit** CODEX_HOME: it
-      // hands that directory to the child and withholds OPENAI_API_KEY /
-      // CODEX_API_KEY, so a persisted ChatGPT login is what the run spends
-      // even when a metered key sits in the worker's own environment —
-      // asking `resolveCodexAuthMode` with no environment is what says so.
-      // Without an explicit CODEX_HOME those keys do reach the child, so
-      // there the environment keeps its precedence.
       const explicitHome = (context.env(CODEX_HOME_ENV_VAR) ?? "").trim();
-      const modeEnv: EnvLookup = explicitHome ? () => undefined : context.env;
-      const { mode, source, detail } = resolveCodexAuthMode(home, modeEnv);
+      if (!explicitHome) return undefined;
+      // An explicit CODEX_HOME withholds OPENAI_API_KEY / CODEX_API_KEY from
+      // the child, so the environment is not consulted here: a persisted
+      // ChatGPT login is what the run spends even when a metered key sits in
+      // the worker's own environment.
+      const { mode, source, detail } = resolveCodexAuthMode(
+        explicitHome,
+        () => undefined,
+      );
       if (mode === "chatgpt") {
         return { mode: "fixed-subscription", reason: "codex-chatgpt-login" };
       }
       if (mode === "api-key") {
-        // Name the credential that is actually in play. An unattended
-        // operator reads this reason to know what to change, so reporting
-        // OPENAI_API_KEY for a key held in CODEX_API_KEY — or in auth.json,
-        // where no variable is set at all — sends them to the wrong place.
-        const variable = source === "env"
-          ? CODEX_API_KEY_ENV_VARS.find(
-            (name) => (context.env(name) ?? "").trim().length > 0,
-          )
-          : undefined;
-        return {
-          mode: "metered",
-          reason: variable ?? "codex-auth-json-api-key",
-        };
+        // With the environment withheld, a key can only come from auth.json,
+        // where no variable is set at all.
+        return { mode: "metered", reason: "codex-auth-json-api-key" };
       }
       if (source === "read-error") {
         // A login that cannot be read is a fault, not an absent login. Say
@@ -889,6 +896,7 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     }
     return buildCodexArgs({
       prompt: request.prompt,
+      orchestrationRole: request.orchestrationRole,
       systemPrompt: request.systemPrompt,
       disallowedTools: request.disallowedTools,
       model: routing.model,
@@ -1106,11 +1114,12 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
     if (routing.effort) {
       warnDeepSeekEffortUnsupported(routing.effort, request.phase);
     }
-    // The same treatment for sub-agent definitions (Issue #2342): they name
-    // Anthropic tier aliases this endpoint cannot resolve, so DeepSeek keeps
-    // today's single-model routing. Dropped from the argv — but stated, never
-    // in silence, so a split configured under DeepSeek is visible rather than
-    // a run that looks split and is not.
+    // Sub-agent definitions (Issue #2342) name Anthropic tier aliases this
+    // endpoint cannot resolve, so they are dropped from the argv — but stated,
+    // never in silence. The runner then refuses a native run whose argv lost
+    // its `--agents` before spawn (Issue #4010), so a split configured under
+    // DeepSeek fails loud rather than running as one that looks split and is
+    // not.
     // The advisor edit guard goes with them (Issue #2344): without executors
     // to make the edits, a guard here would deny the advisor's own and leave
     // the run unable to edit anything.

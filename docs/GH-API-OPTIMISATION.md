@@ -25,12 +25,11 @@ different freshness requirements.
 | --- | --- | --- | --- | --- |
 | `IssueCache` | `worker/deno/lib/issue_cache.ts` | 600s (10 min) | File-backed JSON under `${TMPDIR}/vibe-issue-cache-deno-<user>/` — or the caller's `${WORK_DIR}/.gh-scan-cache` — created `0700` and ownership-checked wherever it sits (Issues #1215, #1261), entries written `0600` with every string value redacted on the way in (Issue #1261) | Issue and PR list responses (`gh issue list`, `gh pr list`). Shared across worker invocations on the same host. |
 | Rate-limit pre-flight cache | `worker/deno/lib/rate_limit_preflight_cache.ts` | 90s | File-backed JSON in `workDir` | Skips `gh api rate_limit` round-trips between back-to-back respawns when remaining quota is comfortably above the threshold. |
-| `TimelineCache` | `worker/deno/lib/timeline_cache.ts` | 300s (5 min) | File-backed JSON under `${TMPDIR}/vibe-timeline-cache-deno-<user>/`, created `0700` and ownership-checked | Caches `gh api repos/{repo}/issues/{N}/timeline` results to remove the per-candidate N+1 calls. A hit may **deny** the reserved-label trust gate but never **grant** it — a trust-granting entry is re-confirmed against a freshly paginated timeline. |
+| `TimelineCache` | `worker/deno/lib/timeline_cache.ts` | 300s (5 min) | File-backed JSON under `${TMPDIR}/vibe-timeline-cache-deno-<user>/`, created `0700` and ownership-checked | Caches `gh api repos/{repo}/issues/{N}/timeline` results to remove the per-candidate N+1 calls. A hit may **deny** the reserved-label trust gate but never **grant** it — a trust-granting entry is re-confirmed against API-backed timeline data (the current iteration’s GraphQL batch or the paginated REST fallback). |
 
-Note: The timeline cache has shipped; the GraphQL batch path
-
-has not. This document covers the latter as a planned layer; the
-sections below mark unimplemented behaviour explicitly.
+The timeline cache and GraphQL batch path are implemented. The file-backed
+cache and the iteration-scoped batch have different trust and freshness
+contracts, described below.
 
 ## Request flow
 
@@ -315,27 +314,36 @@ reviews, …) must page explicitly.
   then guaranteed present regardless of how many older events exist — strictly
   more correct than `first: N` with no pagination.
 
-## Batch path (GraphQL) — planned
+## Batch path (GraphQL)
 
-Issue
-will replace the per-issue REST timeline call inside
-`wasLabelAddedByAllowedAuthor` and `getLabelLastAddInfo` with a single
-GraphQL query that fetches `LabeledEvent` nodes for up to 25 issues at
-once via `gh api graphql`. The expected behaviour:
+`fetchTimelineBatch` in `worker/deno/lib/timeline_batch.ts` fetches the most
+recent 100 `LabeledEvent` nodes for each requested issue, with up to 25 issues
+per `gh api graphql` call. `wrapGhWithBatchedTimeline` supplies that data to
+`wasLabelAddedByAllowedAuthor`, `getLabelLastAddInfo` and other timeline
+consumers. `TimelineBatchRegistry` reuses fetched issue entries within one
+main-loop iteration and resets them at the iteration boundary.
 
-- Collect candidate issue numbers in a single pass.
-- Issue `ceil(N / 25)` GraphQL calls instead of N REST calls.
-- Fall back to the per-issue REST path on GraphQL failure (the existing
-  code remains as a safety net).
+- A successful fetch of N distinct issues uses `ceil(N / 25)` GraphQL calls.
+  Registry entries already fetched in the iteration need no additional call.
+- Matching timeline requests receive the batch for page 1 (or no page
+  parameter), and `[]` for page 2 and later. This terminates the REST-shaped
+  pagination adapter even when the batch has exactly 100 events (Issue #3974).
+- This is a bounded tail of label adds, not the issue's full event history.
+  Its most recent add is present; a label absent from the tail cannot grant
+  label-author trust. The wrapper does not request older GraphQL pages.
+- On a GraphQL failure, callers retain the per-issue REST fallback, whose
+  pagination reads through to a short page or fails closed at the page cap.
+  The discovery collectors catch a throwing label-author check per issue and
+  log a warning. Work-on, configured-label and low-priority collection skip
+  that issue; idle-task collection still honours its separate trusted-author
+  origin exception.
 
-The batch path is **complementary** to the timeline cache:
-batching reduces calls **within** an iteration; the cache reduces calls
-**across** iterations. When both ship the steady-state cost approaches
-zero on a quiet repo.
-
-Until lands, the worker uses the per-issue REST path; the
-metrics line described below shows it as `api=N` for an iteration that
-processes N candidates.
+The batch and file-backed cache are **complementary**. Batching shares live
+data within an iteration; file-backed cache hits can deny reserved-label trust
+across iterations. A file-cache entry that would grant trust still requires
+an API-backed check, which may use the current iteration's GraphQL batch or
+the REST fallback. The batch itself is fetched again in a later iteration;
+the combination does not promise zero calls on a quiet repository.
 
 ## Invalidation rules
 
@@ -687,11 +695,12 @@ every deferrable handler while the previous cycle's reading put the
 window at or below its reserve — `isInReserve(limit, remaining)`, the
 same `remaining ≤ limit·reserve` rule the pacing decision reports.
 
-Exactly four handlers are tiered, all of them sweeps whose work keeps
+Exactly five handlers are tiered, all of them sweeps whose work keeps
 until the next cycle:
 
 | Priority | Handler                            |
 | -------- | ---------------------------------- |
+| 1.64     | Reconcile PR Body Digests          |
 | 1.67     | Close Issues for Merged PRs        |
 | 1.68     | Recover Assigned with Closed PRs   |
 | 1.7      | Milestone Completions              |
@@ -700,13 +709,15 @@ until the next cycle:
 Nothing that services in-flight work is tiered — Issue Scanning, PR
 Feedback, CI Fix and Auto-Merge always run — and neither is the
 local-only Closed Milestone Housekeeping, which spends no GraphQL
-budget to skip.
+budget to skip. The reconcile pass (1.64) is tiered as well: it services no
+in-flight run, and a body it skips in the reserve stays as it is until a cycle
+outside the reserve reads it.
 
 A cycle that skips says so once, at WARNING beside the pacing line that
 set the flag:
 
 ```
-budget-pacing: in reserve — skipped deferrable sweeps: Close Issues for Merged PRs, Recover Assigned with Closed PRs, Milestone Completions, Failure-Detection Repair Resume
+budget-pacing: in reserve — skipped deferrable sweeps: Reconcile PR Body Digests, Close Issues for Merged PRs, Recover Assigned with Closed PRs, Milestone Completions, Failure-Detection Repair Resume
 ```
 
 No reading is no evidence. The flag is **consumed** by the cycle that
@@ -750,7 +761,7 @@ flowchart TD
   simpler to call, but the timeline endpoint returns a large payload
   that must be filtered client-side. GraphQL lets us request only
   `LabeledEvent` fields and batch up to 25 issues per call, at the
-  cost of more complex query construction. The plan in keeps
+  cost of more complex query construction. The batch implementation keeps
   REST as a fallback so a GraphQL outage does not block the worker.
 
 ## Related issues
@@ -758,7 +769,7 @@ flowchart TD
 - — Reduce GH calls (umbrella)
 - — Per-iteration call telemetry (shipped)
 - — Pass availability-check list to candidate scan (shipped)
-- — Cache `gh api timeline` results (planned)
-- — Batch label-author verification via GraphQL (planned)
+- — Cache `gh api timeline` results (shipped)
+- — Batch label-author verification via GraphQL (shipped)
 - — Cache rate-limit pre-flight result (shipped)
 - — This document

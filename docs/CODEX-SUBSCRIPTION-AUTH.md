@@ -18,7 +18,8 @@ VibeCoder already has a persistent, writable `vibe-agent-state` named volume for
 coding-agent configuration and session state. Use a Codex home beneath that
 volume rather than making the provider credential mount writable. The provider
 credential mount stays read-only; it may identify the selected `CODEX_HOME`,
-while the token-bearing `auth.json` lives only in persistent agent state.
+while the live, refreshable `auth.json` lives in persistent agent state. The
+read-only credential directory may also hold the one-time login seed.
 
 The important containment rule is unchanged: only the selected Codex invocation
 receives its `CODEX_HOME`. Claude and other providers must never receive Codex
@@ -55,6 +56,26 @@ volume, for example:
 
 The exact container user/path follows the VibeCoder container manifest; do not
 replace it with a mount of the host home directory.
+
+Provision `~/.vibe-coder/credentials/codex/provider.env` with:
+
+```text
+CODEX_HOME=/home/vibe/auto-issue-work-agent-state/codex
+```
+
+Place the existing ChatGPT `auth.json` beside `provider.env`, with both files
+owner-only (`0600`) and the directory `0700`. The startup credential loader
+recognises `CODEX_HOME` as a state selector, separate from pasteable API keys.
+Before automatic provider selection, it seeds a missing persistent login from
+that file. Subsequent starts retain the refreshed login and never overwrite it
+with the original seed. A missing, metered or over-permissioned seed fails
+loudly; no interactive login or API-key fallback is attempted.
+
+No host home directory or conversation history needs to be mounted. A newly
+seeded home has unknown quota until its first Codex session records rate limits;
+unknown subscription quota remains eligible after providers with fresh known
+capacity. An exhausted Claude subscription cannot outrank it.
+
 
 ## Billing fail-closed rule
 

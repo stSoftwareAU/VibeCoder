@@ -164,6 +164,7 @@ function buildHarness(opts: {
 
   const failedResult: WorkOnIssueResult = {
     success: false,
+    category: "unknown",
     phase: "execute",
     reason: "orchestrator should not have been called for idle-task wrapper",
     timings: {},

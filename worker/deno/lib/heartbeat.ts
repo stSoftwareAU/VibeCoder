@@ -267,12 +267,14 @@ export async function startHeartbeat(
 /**
  * Stop periodic heartbeat updates and clear the heartbeat.
  *
- * Clears the interval and calls clearFn for a final cleanup.
+ * Clears the interval and releases its lifetime pin. Normally calls clearFn
+ * for final cleanup; deferClear leaves publication to the final release owner.
  * Safe to call even if the heartbeat is not running or has already been stopped.
  */
 export async function stopHeartbeat(
   handle: HeartbeatHandle,
   outcome?: RunOutcome,
+  options: { deferClear?: boolean } = {},
 ): Promise<void> {
   const active = activeHeartbeats.get(handle.id);
   if (!active) {
@@ -281,6 +283,13 @@ export async function stopHeartbeat(
 
   if (active.intervalId !== null) clearInterval(active.intervalId);
   activeHeartbeats.delete(handle.id);
+
+  // Production still owns this claim until its final failure reconciliation.
+  // Stop the timer and release its pin; the caller publishes exactly once.
+  if (options.deferClear) {
+    unpinWriteRepo(active.options.repo);
+    return;
+  }
 
   // The run outcome rides the final clear (Issue #4330): parked for the
   // marker path, whatever `clearFn` wiring the caller supplied, so the
@@ -310,7 +319,7 @@ export async function stopHeartbeat(
     takePendingReleaseOutcome(active.options.repo, active.options.issueNumber);
   }
 
-  // Issue #3760: release the allowlist pin taken by startHeartbeat — after
+  // On the immediate-clear path, release the pin taken by startHeartbeat after
   // clearFn, because the final stale-marker PATCH is itself a GitHub write
   // to this repo and must still be allowed.
   unpinWriteRepo(active.options.repo);

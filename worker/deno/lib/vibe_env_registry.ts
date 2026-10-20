@@ -457,6 +457,10 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     note:
       "where the launcher mounted each custom prompt path, host → guest (Issue #850)",
   },
+  VIBE_CLAUDE_MAX_TURNS: {
+    role: "launch_plumbing",
+    note: "driver-set per-invocation turn cap from claude_max_turns",
+  },
   VIBE_AGENT_TRANSCRIPT: {
     role: "launch_plumbing",
     note:

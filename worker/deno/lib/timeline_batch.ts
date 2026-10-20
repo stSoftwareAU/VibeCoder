@@ -299,6 +299,17 @@ export function wrapGhWithBatchedTimeline(
         const num = Number(m[1]);
         const cached = events.get(num);
         if (cached !== undefined) {
+          // A batched entry holds at most `last: 100` events and may itself be
+          // truncated, so there is no reliable page 2 to serve. Returning `[]`
+          // for `?page=2` (and beyond) makes `paginateTimeline` stop on a short
+          // page instead of looping forever on the same full 100-event array
+          // (Issue #3974). Page 1 (or no page param) is still served from the
+          // batch as before.
+          const pageMatch = /[?&]page=(\d+)/.exec(args[1] ?? "");
+          const page = pageMatch ? Number(pageMatch[1]) : 1;
+          if (page >= 2) {
+            return Promise.resolve("[]");
+          }
           return Promise.resolve(JSON.stringify(cached));
         }
       }

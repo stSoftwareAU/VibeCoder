@@ -36,6 +36,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { isProviderUnavailableFailure } from "./agent_output.ts";
 import {
   failedRunOutcome,
   outcomeForNonCodingResult,
@@ -2016,6 +2017,35 @@ async function _processGrillMeWithHeartbeat(
       "Claude timed out",
       logger,
     );
+  }
+
+  // Issue #4035: the provider refused to serve (model refused, quota spent,
+  // credential rejected, outage) — nothing about this issue failed, and the
+  // wait clears by itself. Release the claim WITHOUT the failure marker, so
+  // the consecutive-failure counter cannot escalate a healthy issue to
+  // needs-human for a provider's outage (GRQ-AutoTrader#3788: two rounds
+  // Codex refused in five seconds each). The next cycle retries the round.
+  const agentFailure = claudeResult.value.agentFailure;
+  if (
+    claudeResult.value.exitCode !== 0 &&
+    isProviderUnavailableFailure(agentFailure)
+  ) {
+    const reason = `provider unavailable (${agentFailure!.category}) — ` +
+      `round not attempted, retried on a later cycle`;
+    logger.warn("Grill-me round skipped: provider unavailable", {
+      repo,
+      issueNumber,
+      category: agentFailure!.category,
+    });
+    await releaseAllWorkerClaims(
+      ghClient,
+      repo,
+      issueNumber,
+      githubUser,
+      logger,
+      { outcome: failedRunOutcome("grill-me", reason, 0) },
+    );
+    return { ok: false, error: new Error(reason) };
   }
 
   // Issue #2561: the query tallies the Graft and CodeGraph lines report.

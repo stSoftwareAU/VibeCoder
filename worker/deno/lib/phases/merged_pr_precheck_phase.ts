@@ -242,6 +242,7 @@ export async function workOnIssueMergedPrPrecheck(
     // Still short-circuit — the PR is merged, so running the full pipeline
     // would waste cycles. A subsequent run will retry the close.
     return {
+      category: "unknown",
       status: "early_exit",
       reason: MERGED_PR_PRECHECK_EARLY_EXIT_REASON,
     };
@@ -268,6 +269,7 @@ export async function workOnIssueMergedPrPrecheck(
       { repo, issueNumber, prNumber, landingReason: unlanded.reason },
     );
     return {
+      category: "unknown",
       status: "early_exit",
       reason:
         `${MERGED_PR_PRECHECK_UNRESOLVED_REASON}: ${closeResult.value.reason}`,
@@ -275,7 +277,11 @@ export async function workOnIssueMergedPrPrecheck(
     };
   }
 
-  return { status: "early_exit", reason: MERGED_PR_PRECHECK_EARLY_EXIT_REASON };
+  return {
+    category: "unknown",
+    status: "early_exit",
+    reason: MERGED_PR_PRECHECK_EARLY_EXIT_REASON,
+  };
 }
 
 /**

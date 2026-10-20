@@ -277,17 +277,27 @@ export async function collectIdleTaskCandidates(
     // `idleTaskTrustedAdders`, so a bot in `authorized_commenters` may add
     // the label; the author check below still uses the narrower
     // `idleTaskTrustedAuthors` set.
-    const labelAddedByTrusted = await wasLabelAddedByAllowedAuthor(
-      repo,
-      issue.number,
-      IDLE_TASK_LABEL,
-      idleTaskTrustedAdders,
-      batchedGh,
-      options.timelineCache,
-      // No fleet exclusion: `idle-task` is the one label the worker may
-      // self-apply, so a fleet login here is a legitimate adder.
-      [],
-    );
+    let labelAddedByTrusted: boolean;
+    try {
+      labelAddedByTrusted = await wasLabelAddedByAllowedAuthor(
+        repo,
+        issue.number,
+        IDLE_TASK_LABEL,
+        idleTaskTrustedAdders,
+        batchedGh,
+        options.timelineCache,
+        // No fleet exclusion: `idle-task` is the one label the worker may
+        // self-apply, so a fleet login here is a legitimate adder.
+        [],
+      );
+    } catch (err) {
+      console.warn(
+        `timeline trust read failed for ${repo}#${issue.number}: ${
+          (err as Error).message
+        }`,
+      );
+      labelAddedByTrusted = false;
+    }
     if (
       !labelAddedByTrusted &&
       !isFleetAuthor(issue.author, idleTaskTrustedAuthors)

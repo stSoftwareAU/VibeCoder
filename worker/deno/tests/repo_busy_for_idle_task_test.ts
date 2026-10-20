@@ -544,6 +544,48 @@ Deno.test(
 );
 
 Deno.test(
+  "anyRepoHasUnblockedRealWork - a work-on issue in a paced milestone does not count (Issue #3587)",
+  async () => {
+    // The hold predicate is handed the issue's milestone title, and the
+    // pacing ledger paces "Paced Milestone", so the issue is held and the
+    // fleet gate reports no startable work.
+    const recorder = makeRepoRecorder((repo, _label) =>
+      repo === "org/paced"
+        ? '[{"number":21,"labels":[{"name":"work-on"}],"assignees":[],' +
+          '"milestone":{"title":"Paced Milestone"}}]'
+        : "[]"
+    );
+    const hasWork = await anyRepoHasUnblockedRealWork({
+      repos: ["org/paced"],
+      ghCommandFn: recorder.fn,
+      runLocalHoldFn: (_repo, _num, milestone) =>
+        milestone === "Paced Milestone",
+    });
+    assertEquals(hasWork, false);
+  },
+);
+
+Deno.test(
+  "anyRepoHasUnblockedRealWork - a hold for a different milestone leaves the paced-milestone issue startable (Issue #3587)",
+  async () => {
+    // Positive control: the same fixture, but the hold names another milestone.
+    const recorder = makeRepoRecorder((repo, _label) =>
+      repo === "org/paced"
+        ? '[{"number":21,"labels":[{"name":"work-on"}],"assignees":[],' +
+          '"milestone":{"title":"Paced Milestone"}}]'
+        : "[]"
+    );
+    const hasWork = await anyRepoHasUnblockedRealWork({
+      repos: ["org/paced"],
+      ghCommandFn: recorder.fn,
+      runLocalHoldFn: (_repo, _num, milestone) =>
+        milestone === "Other Milestone",
+    });
+    assertEquals(hasWork, true);
+  },
+);
+
+Deno.test(
   "anyRepoHasUnblockedRealWork - surfaces gh errors to the caller",
   async () => {
     const fn = (_args: string[]): Promise<string> =>

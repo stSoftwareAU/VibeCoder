@@ -94,6 +94,11 @@ progress survives.
   opened. Read the file, run the command, or check the API before asserting how
   something behaves. If you genuinely cannot verify a claim, say so rather than
   presenting a guess as fact.
+- **End with what you did not do.** Close every run summary — the final message,
+  the PR summary, a hand-off — with what was skipped or not checked, and any
+  risk that remains. Write "none" when nothing was; never leave the reader to
+  infer that everything was checked. This agrees with **Investigate before you
+  answer** above: an unverified claim is reported as unverified, not as fact.
 - **Clean up after yourself.** Delete scratch scripts, temporary logs, and
   helper files you created for the run before you commit — working files must
   not reach the PR.
@@ -133,19 +138,32 @@ progress survives.
 
 - **KISS** — Favour simplicity. When choosing between two approaches, prefer the
   one with fewer moving parts and less indirection, even if it requires a few
-  more lines of code. Work down the **smallest-change-first ladder** and stop at
-  the first rung that solves the problem: skip what is not needed, reuse what
-  the codebase has, use the standard library, use a native platform feature, use
-  a dependency already installed, write one line, and only then write new code.
-  The floor is never cut: input validation at a trust boundary, error handling
-  that prevents data loss, security, accessibility, and whatever the issue
-  explicitly asks for all stay in — see **Secure Coding Principles** and **Never
-  Fail Silently — Fail Loud** below. Mark each deliberate corner cut with
-  exactly one comment line opening with `// SIMPLE-ON-PURPOSE:` — the ceiling
-  first, then the condition that lifts it after `upgrade when` — so
-  `grep -r SIMPLE-ON-PURPOSE` lists every cut:
+  more lines of code. Before picking a rung, read the code the change touches —
+  its callers, the helpers it could reuse and the tests that cover it: be lazy
+  about the solution, never about the reading. Work down the
+  **smallest-change-first ladder** and stop at the first rung that solves the
+  problem: skip what is not needed, reuse what the codebase has, use the
+  standard library, use a native platform feature, use a dependency already
+  installed, write one line, and only then write new code. The floor is never
+  cut: input validation at a trust boundary, error handling that prevents data
+  loss, security, accessibility, and whatever the issue explicitly asks for all
+  stay in — see **Secure Coding Principles** and **Never Fail Silently — Fail
+  Loud** below. Mark each deliberate corner cut with exactly one comment line
+  opening with `// SIMPLE-ON-PURPOSE:` — the ceiling first, then the condition
+  that lifts it after `upgrade when` — so `grep -r SIMPLE-ON-PURPOSE` lists
+  every cut:
   `// SIMPLE-ON-PURPOSE: linear scan, fine to 10,000 rows — upgrade when a table exceeds 10,000 rows`.
 - **DRY** — Avoid duplication; maintain a single source of truth.
+- **Change every copy of a twinned rule** — Before changing a rule, gate,
+  matcher or check, search for text that declares a second copy of it
+  ("mirrors", "runs the same gate as", "shared copy of", "both carry") and for
+  its function or rule name. Change every copy in the same PR, or make one call
+  the other. If both copies must stay, add a test that fails when they
+  disagree. The Test Plan names the copies found, or says none was found. In
+  the Vibe Coder repository, `CODING-STANDARDS.md` and this guidelines template
+  (`prompts/coding_guidelines/prompt.md`) are one such pair, and the worker's
+  completion-phase PR-summary gates and `deno task pr-summary-check` are
+  another.
 - **Boy Scout Rule** — Leave the lines you change cleaner than you found
   them, and never beyond them: tidying code the change does not touch is
   the scope creep **Stay in scope** rules out.
@@ -216,6 +234,15 @@ a fault must never be masked as success.
   summary. Observe the real tool's output for each failure class the reason
   claims to tell apart (see **Observe the real tool before you rely on it**),
   and test it as **A failure-reason test asserts the cause** says.
+- **A recorded failure reason that quotes text the worker did not write opens
+  with a worker-written marker.** When a recorded reason quotes tool output,
+  agent text, or issue or comment text, open it with a marker the worker writes,
+  which every classifier of that reason checks before its free-text rules (a
+  `startsWith` on the reason itself, or a test of the category derived from
+  it), so a quoted `rate limit`, `timeout` or `Error:` cannot pick the
+  category. In the Vibe Coder repository, register the marker in
+  `WORKER_GATE_MARKERS` in `worker/deno/lib/failure_diagnosis.ts` (see
+  `CODING-STANDARDS.md`).
 
 <!-- guidelines-layer: code -->
 
@@ -235,6 +262,16 @@ breaks. Update every doc and doc comment that names the key, and say in the
 PR summary which of the two the change chose. A persisted shape changed with
 neither a bumped key nor an old-shape test is a blocking self-review finding
 (Issue #3328).
+
+**A cached API response is persisted data.** A client that reads an API response
+through a cache that outlives a deployment — a service worker, an HTTP cache, an
+offline store — still holds the previous release's bodies after the update, so
+its parser is held to the rule above. Making a newly served field required, or
+renaming one, is a shape change. Unless the cache key is bumped, read the old
+shape: a renamed field under its old name too, and a newly served field's
+absence as unknown (null) — never as an error, and never as a made-up default.
+The old-shape test seeds a body the previous release served. An issue or plan
+that says a missing value throws does not override this (Issue #3564).
 
 ## Don't regress Deno repos to Node.js
 
@@ -632,12 +669,12 @@ Use these patterns instead:
   tail -n 50 /tmp/run.log
   head -n 50 /tmp/run.log
   ```
-- **Live stream you must follow** — bound the wait with the project timeout
-  helper:
+- **Live stream you must follow** — bound the wait with a time limit:
   ```bash
-  $TIMEOUT_CMD 30 tail -f /tmp/run.log | head -50
+  timeout 30 tail -f /tmp/run.log | head -50
   ```
-  `$TIMEOUT_CMD` resolves to `gtimeout` on macOS and `timeout` on Linux.
+  On a macOS host with no `timeout`, use `gtimeout` (Homebrew coreutils).
+  Nothing sets a `$TIMEOUT_CMD` variable for you.
 
 **Never** write `tail -f … | head` (or any unbounded `tail -f`) in a Bash-tool
 command. Reach for `tail -n N <file>` first; only fall back to a guarded
@@ -674,12 +711,15 @@ Run only the test files relevant to your changes:
 
 ### Test Timeout Protection
 
-Wrap long-running test commands with `$TIMEOUT_CMD` (set to `gtimeout` on macOS,
-`timeout` on Linux):
+Wrap long-running test commands in a time bound — `timeout`, or `gtimeout` on a
+macOS host with no `timeout`:
 
 ```bash
-$TIMEOUT_CMD 900 npx cypress run --spec "cypress/e2e/specific-test.cy.ts" --config video=false
+timeout 900 npx cypress run --spec "cypress/e2e/specific-test.cy.ts" --config video=false
 ```
+
+In a committed script, pick the bounding command as the **`timeout` command**
+bullet under **Cross-Platform Bash Compatibility** shows.
 
 - Cap test execution at **10–15 minutes** (600–900 seconds).
 - On timeout, report the timeout rather than retrying blindly.
@@ -720,32 +760,51 @@ separate.
   and friends are flaky across machines (loaded CI runner, shared laptop, ARM
   vs x86) and parallel execution makes them worse. Use dedicated benchmarks
   when you need numbers.
-- **Ratio timing assertions are the exception, and they are permitted.**
-  Catastrophic backtracking has no wrong output, only a runtime one, so a few
-  tests must measure. `assertLinearGrowth` in
-  `worker/deno/tests/support/growth.ts` times the same work at size N and 4N
-  and fails only when the cost grew faster than the input — a slower host
-  inflates both readings and stays green, which is exactly what an absolute
-  budget cannot do (Issue #530). Compare two readings of the same work; never
-  a reading against a constant.
+- **The target repository's own testing standard wins on timing.** When the
+  repository you are working in keeps timing out of unit tests — "no
+  `Instant`/`elapsed` for pass/fail", "timing belongs in `benches/`", no
+  `performance.now()` deltas — that rule covers a ratio of two wall-clock
+  readings too. A ratio between two timings is still a timing threshold: a
+  loaded host skews the two readings differently, and a ratio assertion has
+  gone red reading 30 ms against 355 ms for work that is linear.
+- **Guard super-linear cost by output, then by counted work.** First assert
+  what the code **produces** on the hostile input: catastrophic backtracking
+  on an input of real size never returns, so the case hangs on every host.
+  When the output cannot tell the two apart, count **deterministic work**
+  through an injected observer or counter (steps, comparisons, nodes visited)
+  at size N and 4N and assert the count grows linearly — the count is the
+  same on every host under every load. Timing comparisons belong in the
+  repository's benchmark harness. A wall-clock ratio inside a unit test is a
+  last resort, used only where the repository's own standard explicitly
+  allows ratio tests and neither the output nor a work count distinguishes
+  the two; even then, compare two readings of the same work, never a reading
+  against a constant.
+- **Cite only what exists in the repository you are working.** A helper,
+  test file or issue number from another repository is not a precedent
+  there — the issue numbers this guidance cites belong to
+  stSoftwareAU/VibeCoder. Before you name a precedent file or helper in a
+  test, PR body or issue, confirm it exists in the target repository.
 - **Vet every regex on untrusted text, one hostile case per pattern.** Every
-  regex a change adds or edits that runs on untrusted or agent-written text
-  (an issue body, a PR summary, agent output) gets its own check, not one per
+  regex a change adds or edits that runs on untrusted or agent-written text (an
+  issue body, a PR summary, agent output) gets its own check, not one per
   module. Read each pattern for two quantifiers that can match the same
   characters with only optional tokens between them: `\s*:?\s*$`,
   `\s*[:\-–—]\s*(.+)$`, or an unanchored `[.!\s]+$` or `\s+$`. Remove the
   overlap: trim the line first and drop the redundant quantifier, make the
   pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
-  trailing whitespace, or cap the run. A `(.*)$` tail can fail too, because
-  `.` stops at a lone `\r`: after an unanchored label such as `reason:`, the
-  search restarts at every later occurrence of the label and rescans to the
-  end each time, so read the value with `([^\n]*)` and no `$` (Issue #3186).
-  Then add one hostile case per pattern: a long run of the shared character
-  followed by a character the pattern rejects. A parser with several
-  patterns needs a case for each. stSoftwareAU/VibeCoder#3085
-  capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
-  with the same defect, and #3160's hostile cases covered the inline form while
-  `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
+  trailing whitespace, or cap the run. A `(.*)$` tail can fail too, because `.`
+  stops at a lone `\r`: after an unanchored label such as `reason:`, the search
+  restarts at every later occurrence of the label and rescans to the end each
+  time, so read the value with `([^\n]*)` and no `$`. Then add one
+  hostile case per pattern: a long run of the shared character followed by a
+  character the pattern rejects. A parser with several patterns needs a case for
+  each. Each case asserts the pattern's result on an input long enough that
+  catastrophic backtracking never returns, so it hangs on every host, or a
+  deterministic step count: guard super-linear cost by output, then by counted
+  work, as the timing bullets above say. It is not a wall-clock ratio where the
+  repository's own testing standard keeps timing out of unit tests.
+  Capping one pattern and leaving its sibling in the same file with the same
+  defect is the usual miss.
 - **Keep iteration counts honest** — do not shrink them to make a "performance
   test" fit inside a unit test. Write a proper benchmark and include the results
   in the PR summary.
@@ -1218,8 +1277,32 @@ This project uses `set -euo pipefail` and must run on **macOS (bash 3.2)**,
 - **Empty arrays under `set -u`**: bash 3.2 treats `${arr[@]}` on an empty array
   as an unbound variable error. Use the safe pattern `${arr[@]+"${arr[@]}"}`, or
   guard access with `if [[ ${#arr[@]} -gt 0 ]]; then`.
-- **`timeout` command**: macOS has no native `timeout`. Use `$TIMEOUT_CMD`
-  (resolved to `gtimeout` on macOS by `check_dependencies()`).
+- **`timeout` command**: macOS has no native `timeout`; Homebrew coreutils
+  installs it as `gtimeout`. Do not rely on an inherited `$TIMEOUT_CMD` or a
+  shared helper to choose one: a script that bounds a command picks the
+  bounding command itself — `timeout`, else `gtimeout`, else run the command
+  unbounded — so a host with neither still runs it instead of failing:
+
+  ```bash
+  TIMEOUT_CMD=""
+  for candidate in timeout gtimeout; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      TIMEOUT_CMD="$candidate"
+      break
+    fi
+  done
+
+  # Usage: bounded <seconds> <command> [args...]
+  bounded() {
+    local seconds="$1"
+    shift
+    if [[ -n "$TIMEOUT_CMD" ]]; then
+      "$TIMEOUT_CMD" "$seconds" "$@"
+    else
+      "$@"
+    fi
+  }
+  ```
 - **GNU vs BSD tools**: prefer POSIX-compatible flags. Document the dependency
   when GNU-specific flags are needed, and give any GNU-only form in shell code a
   test runs a portable fallback: macOS fleet hosts run the same tests too, where
@@ -1349,8 +1432,19 @@ section the test reads (`git show <base>:<doc>`, narrowed to the same section
 title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
 <doc> <section> <phrase>...` from `worker/deno` does this), and record in the
 Test Plan that each pinned phrase is absent from the base section; a phrase
-the base section already held is a blocking self-review finding. A pin a
-change only moves, while converting an existing whole-file drift test to
+the base section already held is a blocking self-review finding. A pin that
+names a value a module or a checked-in config file already holds — a flag, a
+command line, a function or export name, a status, marker, key, default,
+version or tag — is built from that module or file, never typed in: import it,
+call it, or read the JSON, and use `fn.name` for a function name (condition 3
+of **Documentation-drift tests** in `CODING-STANDARDS.md` is the canonical
+rule). Removing the doc change does not catch a typed-in value, because the
+test still goes red without the new sentence; so for each such value, change
+it in the module or file that produces it, run the drift test, see it fail,
+then restore it. Record one Test Plan line per value, for example
+`buildShallowCloneArgs --depth=1 → --filter=blob:none: test red`. A pin that
+stays green when its source value changes is a blocking self-review finding. A
+pin a change only moves, while converting an existing whole-file drift test to
 `section()`, is meant to be on base, so this check does not apply to it:
 **Re-scoping an existing drift test** in `CODING-STANDARDS.md` red-checks
 each moved check in its own section instead. A test that only pins current
@@ -1619,18 +1713,28 @@ a Docs Change** above on a change that alters what an existing state
 means. List the messages checked in the PR summary's Test Plan
 (Issue #3259).
 
-**Narrowing a shared helper changes every caller.** Before a helper that
-other code already calls starts rejecting, throwing on or dropping a value it
-used to accept (a validator, type guard, allowed-value set, required field,
-ref/name check), list its existing callers and the real values each can
-receive. Check those values against the tool or API's actual output, not its
-documentation's happy path (see **Observe the real tool before you rely on
-it**). If any existing caller can legitimately pass a value the new rule
-rejects, keep the shared helper as it was and apply the stricter rule at the
-new call site. Otherwise add a test showing an existing caller still accepts
-its real inputs. List the callers checked in the PR summary. A narrowed shared
-helper with no callers-checked list is a blocking self-review finding
-(Issue #3100).
+**Changing what a shared helper returns, refuses or finds changes every
+caller.** Before a helper that other code already calls starts rejecting,
+refusing, throwing on, dropping, finding or returning something different for
+an input it already handled — a validator, type guard, allowed-value set,
+required field or ref/name check that narrows, a lookup that gains a fallback,
+a routine that gains a refusal or precondition — list its existing callers and
+the real values each can receive. Check those values against the tool or API's
+actual output, not its documentation's happy path (see **Observe the real tool
+before you rely on it**). For each existing caller, decide whether its
+behaviour changes under the new result. When one depends on the old result (it
+passes a value the new rule rejects, reads "nothing found" as "leave it
+alone", or runs where the new refusal fires), keep the shared helper as it was
+and apply the new behaviour at the new call site, or change that caller too.
+Add a test that exercises each existing caller whose behaviour the change
+touches, under the new result; a callers-checked list alone does not count,
+because nothing checks a wrong conclusion in it. List the callers checked in
+the PR summary. When the worker's pre-PR verifier runs, it is also given the
+callers outside the diff of each function whose body the diff changes, found
+by the worker's own word search and capped per function, and a listed caller
+left without a verdict, or reported `regressed`, blocks the PR. A changed
+shared helper with no test through an existing caller whose behaviour it
+touches is a blocking self-review finding (Issues #3100, #3779).
 
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a

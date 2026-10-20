@@ -634,7 +634,13 @@ The body has three parts (per the Phase 4 instructions in
    - `## Exploit sketch` — what the attacker gains (data leak, RCE,
      privilege bump, …).
    - `## Suggested fix` — a one- or two-paragraph proposal that the
-     downstream issue run will treat as the starting point.
+     downstream issue run will treat as the starting point. A
+     regression test it proposes asserts the output on the trigger
+     input or counts deterministic work through an injected counter —
+     never a wall-clock ratio test, even in a repository whose standard
+     allows one as a last resort — and it names a precedent test file
+     or helper only after confirming it exists in the scanned
+     repository (Issue #3680).
 
 **Secret values are redacted.** A finding about a hard-coded or
 committed secret cites it by `file:line` and shows at most the
@@ -785,12 +791,40 @@ file rather than a directory, owned as-is with no further walk — this is
 how the root-level launcher scripts (`loop.sh`, `run.sh`, `setup.sh`,
 `quality.sh` and their `.ps1` counterparts) are tracked (#2760).
 
+**Create top-ups with the existing `sweep-drift` command (Issue #3976).**
+From `worker/deno/`, run:
+
+```sh
+deno run --allow-all mod.ts sweep-drift --repo /path/to/repo --record-top-up /path/to/payload.json
+```
+
+The payload has only `issue`, `title`, `ledger`, `definition`, `status`
+(`claimed` or `swept`) and `paths`. Run it when generating the file list. The
+producer owns `chunk` and `sweptAt`: it resolves the actual remote default,
+fetches it explicitly even in a narrow clone, deepens shallow history if needed,
+and calculates the merge-base with HEAD. It reuses the existing ancestry
+validator, file lock and atomic writer. Missing Git/history/ref/tool or I/O
+results return `Sweep record unavailable`, with no passing coverage record.
+The command returns success only after validating and writing the record.
+
+Repeated generation is idempotent. Existing records keep their original
+coverage horizon, even when main advances; only `claimed` → `swept` may update
+with the same scope, after the audit is actually complete. A changed list needs
+a new issue/top-up. Existing invalid records are refused without modification:
+use the historical repoint procedure below, preserving its original landed
+coverage rather than replacing it with today's tip. Never edit a SHA manually
+to make a new top-up pass. The CI and pre-push ancestry guards remain required
+and catch invalid records written outside this supported producer.
+
 **`sweptAt` is a commit reachable from the default branch.** For a new record
-take it from `git merge-base origin/main HEAD` at list-generation time; when
-repointing an existing slice use the commit the record *landed* at on `main` —
+the supported producer takes it from the default-branch merge-base at
+list-generation time. When repointing an existing slice use the commit the record *landed* at on `main` —
 `git log --diff-filter=A -1 --format=%H origin/main -- <record>`, the commit
 that added it, not the last commit to touch it, so a later edit to the record
-cannot skip drift. Never a feature-branch commit: squash-merge deletes it, so
+cannot skip drift. For a per-issue top-up, `<record>` is the local
+`docs/audits/lib-sweep-coverage/top-up-<issue>.json` file, even when the
+`ledger` provenance field is a GitHub issue URL; do not pass that URL as a git
+pathspec. Never a feature-branch commit: squash-merge deletes it, so
 `git diff <sweptAt> HEAD` later dies with
 `fatal: bad object …` and the whole drift report fails. `driftSince` wraps that
 git exit in a `SweepLedgerError` naming the slice, its `sweptAt` and this
@@ -808,6 +842,35 @@ with `git merge-base --is-ancestor <sweptAt> origin/<default>` and fails naming
 each offending slice, its commit and the repoint command above. A merge-base
 commit is already on the default branch, so a new slice passes while its PR is
 still open.
+
+### Producer/build evidence and deployment verification
+
+The [17 October failed run for #3647](https://github.com/stSoftwareAU/VibeCoder/issues/3647#issuecomment-6236914974)
+identifies `top-up-3647` and branch-only `sweptAt`
+`a6d4f8b330039754b02a3211ce409f7ae00cf4b4`. That commit is the target
+repository's implementation commit, not an observed worker build. Its public
+commit message includes run ID `vibe-mvcjltbg-9e39f5`; the public failure and
+claim comments do not record the installed worker SHA or prompt revision.
+Those build values are unavailable, so this evidence does not attribute the
+historical recurrence to current main or prove a deployment is fixed.
+
+The source path reviewed at base `90a8da73bdd8266f15ac150f4f84dd568b5e7876`
+had agent-authored JSON and manual SHA guidance in the security-scan prompt;
+`sweep-drift` only read/reported records and the completion pre-push check
+rejected the invalid SHA. No deterministic record-creation tool was wired to
+that prompt. This change repairs that path: prompt → existing `sweep-drift
+--record-top-up` command → existing ledger validation/ancestry guard → atomic
+record. Historical agent transcripts and the installed prompt revision were
+not available; the source trace is not a claim to have recovered those logs.
+
+After merging #3976, record the PR's actual merge SHA and the deployed worker's
+source/artifact SHA, and verify the installed checkout contains that change
+(or its documented build provenance). The package's `1.0.0` string alone does
+not identify a build. Exercise the documented command in a disposable feature
+clone with a payload lacking `chunk`/`sweptAt`, then run the existing ancestry
+check and repeat generation: its record must keep the same SHA and bytes.
+The real-git regression also covers a shallow feature-only clone and later
+squash/default advances. No live fleet deployment is claimed by these fixtures.
 
 ```mermaid
 flowchart LR

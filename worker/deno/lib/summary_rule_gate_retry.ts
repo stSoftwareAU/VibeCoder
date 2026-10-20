@@ -84,6 +84,8 @@ import type { StandingViolation } from "./standing_violation_routing.ts";
 
 /** One summary-rule gate verdict observed during a single run. */
 export interface SummaryRuleRunVerdict {
+  /** All source-declared causes; documentary findings cannot hide code defects. */
+  categories?: readonly import("./failure_diagnosis.ts").FailureCategory[];
   /** The phase-failure reason the gate reported. */
   reason: string;
   /** The gate's remediation comment — the agent's brief on the retry. */

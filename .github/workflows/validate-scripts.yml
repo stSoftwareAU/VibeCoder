@@ -358,6 +358,23 @@ jobs:
             mod.ts sweep-drift --repo ../.. \
             --default-branch "origin/$DEFAULT_BRANCH"
 
+      # Issue #3768: a review-fix push made outside the worker (a laptop or
+      # cloud session, a human) reaches none of the worker's summary checks,
+      # so the archived PR summary kept describing the previous head. Every
+      # push to a PR that carries docs/archive/pr-summaries/pr-summary-<N>.md
+      # now fails here when a code commit is newer than the summary, or when
+      # a PR-summary gate blocks. Needs this job's full history
+      # (fetch-depth: 0). Refs pass through env, never interpolated into run.
+      - name: PR summary freshness and gates
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          echo "=== PR summary freshness and gates (Issue #3768) ==="
+          cd worker/deno
+          deno task pr-summary-ci --base "$BASE_REF" --head-branch "$HEAD_REF"
+
       # Issue #4066: the run.ps1 launcher tests only run where PowerShell
       # exists, and a skipped test is not a passed one. The runner image ships
       # PowerShell 7 — fail loud here if that ever changes, rather than letting

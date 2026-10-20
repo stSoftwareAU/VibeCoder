@@ -216,6 +216,76 @@ Deno.test("applyDependencyConflictRules - a failed stage restores the conflict a
   );
 });
 
+/** A logger that records each line with its level (Issue #4063). */
+function makeLevelLogger(): {
+  lines: { level: string; message: string }[];
+  logger: {
+    warn(message: string): void;
+    info(message: string): void;
+  };
+} {
+  const lines: { level: string; message: string }[] = [];
+  return {
+    lines,
+    logger: {
+      warn: (message: string) => void lines.push({ level: "warn", message }),
+      info: (message: string) => void lines.push({ level: "info", message }),
+    },
+  };
+}
+
+Deno.test("applyDependencyConflictRules - a rule declining a file hands it to the AI at INFO (Issue #4063)", async () => {
+  const workingDir = await makeWorkingDir({
+    "deno.json": UNDECIDABLE_DENO_JSON,
+    "SECURITY.md": "conflicted\n",
+  });
+  const { lines, logger } = makeLevelLogger();
+
+  // An empty registry: SECURITY.md (and deno.json) have no rule at all.
+  const report = await applyDependencyConflictRules({
+    workingDir,
+    conflictedFiles: ["deno.json", "SECURITY.md"],
+    git: makeGit({ args: [] }),
+    registry: createManifestRuleRegistry(),
+    logger,
+  });
+  // The shared registry, whose deno.json rule declines the undecidable range.
+  await applyDependencyConflictRules({
+    workingDir,
+    conflictedFiles: ["deno.json"],
+    git: makeGit({ args: [] }),
+    logger,
+  });
+
+  assertEquals(report.deferred.length, 2);
+  const handOffs = lines.filter((l) =>
+    l.message.startsWith("Conflicted file left for the AI fallback")
+  );
+  assertEquals(handOffs.length, 3, JSON.stringify(lines));
+  assertEquals(
+    handOffs.map((l) => l.level),
+    ["info", "info", "info"],
+    "the routine hand-off to the AI resolver is the expected path, not a warning",
+  );
+});
+
+Deno.test("applyDependencyConflictRules - a failed stage still defers at WARNING (Issue #4063)", async () => {
+  const workingDir = await makeWorkingDir({ "deno.json": DENO_JSON_CONFLICT });
+  const { lines, logger } = makeLevelLogger();
+
+  await applyDependencyConflictRules({
+    workingDir,
+    conflictedFiles: ["deno.json"],
+    git: makeGit({ args: [] }, (args) => args[0] === "add"),
+    logger,
+  });
+
+  const handOffs = lines.filter((l) =>
+    l.message.startsWith("Conflicted file left for the AI fallback")
+  );
+  assertEquals(handOffs.map((l) => l.level), ["warn"], JSON.stringify(lines));
+});
+
 // ---------------------------------------------------------------------------
 // Lock files
 // ---------------------------------------------------------------------------

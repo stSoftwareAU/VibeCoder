@@ -168,14 +168,19 @@ export const executeClaudePhaseCommand: Command = {
       // The CodeGraph repo-context trial switch (Issue #2159, part of #2145).
       codegraphContextEnabled: config.codegraphContext.enabled,
       rtkOutputEnabled: config.rtkOutput.enabled,
-      // The advisor/executor split switch (Issue #2342, part of #2320); off
-      // on every host that has not opted in.
+      // The advisor/executor split switch (Issue #2342, part of #2320); on by
+      // default since Issue #2812, `issue_executor_split: false` opts out.
       issueExecutorSplit: config.issueExecutorSplit,
-      // The reviewer sub-agent switch (Issue #2575); off by default.
+      // The reviewer sub-agent switch (Issue #2575); on by default since
+      // Issue #2812, `issue_reviewer_agents: false` opts out.
       issueReviewerAgents: config.issueReviewerAgents,
       // The host-wide sub-agent tier (Issue #3402); the repo override is
       // layered over it inside the phase.
       issueSubAgentTier: config.issueSubAgentTier,
+      // The external orchestrator switch and its validated settings (Issue
+      // #3642); off on every host that has not opted in.
+      externalOrchestration: config.externalOrchestration,
+      externalOrchestrationSettings: config.externalOrchestrationSettings,
       // Issue #2930: this host's operator-configured fleet run archive.
       fleetRunArchive: config.fleetRunArchive,
       // Context budget thresholds, including the hard ceiling (Issue #3713)

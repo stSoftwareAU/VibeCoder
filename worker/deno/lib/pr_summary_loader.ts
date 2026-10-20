@@ -14,6 +14,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { normaliseSummaryVersionBumps } from "./pr_summary_facts.ts";
 
 /** Result of loading a PR summary file. */
 export interface PrSummaryResult {
@@ -25,7 +26,8 @@ export interface PrSummaryResult {
  * Load PR summary content from the repo work directory.
  *
  * Checks three file locations in precedence order and returns the
- * content from the first non-empty file found.
+ * content from the first non-empty file found, with standalone project-bump
+ * statements normalised to durable wording.
  *
  * @param repoPath - Absolute path to the repo work directory
  * @param issueNumber - The issue number to look up
@@ -46,7 +48,13 @@ export async function loadPrSummary(
     try {
       const content = await Deno.readTextFile(fullPath);
       if (content.trim().length > 0) {
-        return { ok: true, value: { content, source: relativePath } };
+        return {
+          ok: true,
+          value: {
+            content: normaliseSummaryVersionBumps(content),
+            source: relativePath,
+          },
+        };
       }
     } catch (err) {
       if (!(err instanceof Deno.errors.NotFound)) {

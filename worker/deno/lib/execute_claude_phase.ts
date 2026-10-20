@@ -1,3 +1,4 @@
+import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 /**
  * Claude execution phase orchestration (Issue #1227).
  *
@@ -22,6 +23,7 @@ import { browserGranted } from "./browser_grant.ts";
 import type {
   CiProviderConfig,
   CustomLabelPromptMapping,
+  ExternalOrchestrationSettings,
   IssueSubAgentTier,
   Logger,
   RepoConfig,
@@ -67,6 +69,8 @@ import { setActiveRepoCodexModelEffortOverrides } from "./codex_executor.ts";
 import { setActiveRepoGeminiModelOverrides } from "./gemini_executor.ts";
 import { setActiveRepoDeepSeekModelOverrides } from "./deepseek_executor.ts";
 import type { AgentProviderSelector } from "./agent_provider.ts";
+import { resolveOrchestrationSettings } from "./orchestration/role_config.ts";
+import { runOrchestratedIssueRun } from "./orchestration/issue_run_gate.ts";
 import { resolveInvocationAgentProvider } from "./agent_provider.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import {
@@ -157,6 +161,7 @@ export type ExecuteClaudeAction =
 export type ExecuteClaudeFailureType =
   | "timeout"
   | "rate_limit"
+  | "turn_limit"
   | "out_of_memory"
   /** SIGKILLed with no watchdog firing — possible VM OOM (Issue #4202). */
   | "killed"
@@ -330,19 +335,23 @@ export interface ExecuteClaudePhaseOptions {
    */
   codegraphContextEnabled?: boolean;
   /**
-   * Whether this host splits issue work between an advisor and Sonnet
-   * executor sub-agents (Issue #2342, part of #2320, default: false).
+   * Whether this host splits issue work between an advisor and executor
+   * sub-agents on the run's sub-agent tier (Issue #2342, part of #2320). The
+   * host key defaults to on since Issue #2812; an unset option here reads as
+   * off.
    *
    * Threaded from `config.issueExecutorSplit` by this path's production
    * wiring site (`commands/execute_claude_phase.ts`); the main-loop issue
    * phase reads the same key straight off its own `config`. The repository's
-   * own `repo_config` override is layered over it here. Off, the invocation
-   * carries no `--agents` and is byte-for-byte the argv built today.
+   * own `repo_config` override is layered over it here. Off, no executor
+   * definitions are built; `--agents` is still emitted for the reviewer
+   * agents or the Haiku-tier explorer (see `buildIssueRunAgents`).
    */
   issueExecutorSplit?: boolean;
   /**
    * Whether this host dispatches the Spec and Standards reviewers as defined
-   * cheaper sub-agents (Issue #2575, default: false). Threaded from
+   * cheaper sub-agents (Issue #2575). The host key defaults to on since Issue
+   * #2812; an unset option here reads as off. Threaded from
    * `config.issueReviewerAgents`; host-wide, no per-repository override.
    */
   issueReviewerAgents?: boolean;
@@ -350,11 +359,26 @@ export interface ExecuteClaudePhaseOptions {
    * Host-wide `issue_sub_agent_tier` (Issue #3402), threaded from
    * `config.issueSubAgentTier` by `commands/execute_claude_phase.ts`. The
    * repository's own `repo_config` override is layered over it here by
-   * `resolveIssueSubAgentTier`. Unset — the default — resolves to `"sonnet"`,
-   * whose `--agents` JSON is byte-identical to a run from before this key
-   * existed.
+   * `resolveIssueSubAgentTier`. Unset resolves to `"sonnet"` only when no
+   * options are passed; production always passes the host value, which
+   * defaults to `"haiku"` (Issue #3402). `"sonnet"` yields a `--agents` JSON
+   * byte-identical to a run from before this key existed.
    */
   issueSubAgentTier?: IssueSubAgentTier;
+  /**
+   * Whether this host routes the issue run through the external orchestrator
+   * (Issue #3642). Off by default. On, no `--agents` definitions are built and
+   * the run goes through the orchestration gate in place of the single Claude
+   * call; there is no fallback to the native path. Threaded from
+   * `config.externalOrchestration`.
+   */
+  externalOrchestration?: boolean;
+  /**
+   * Validated `external_orchestration_settings` (Issue #3642), threaded from
+   * `config.externalOrchestrationSettings`. Read only when
+   * {@link externalOrchestration} is on.
+   */
+  externalOrchestrationSettings?: ExternalOrchestrationSettings;
   /**
    * Whether to filter this run's shell output through RTK (Issue #2383, part
    * of #2328, default: false).
@@ -388,12 +412,39 @@ export interface ExecuteClaudePhaseOptions {
   agentProvider?: AgentProviderSelector;
 }
 
+/**
+ * What the external orchestration gate receives for one issue run (Issue
+ * #3642). `claudeOptions` and `retryOptions` are the exact values the native
+ * path would have passed to `runClaudeWithRetry`, minus any `--agents`.
+ */
+export interface ExternalIssueRunInput {
+  claudeOptions: RunClaudeOptions;
+  retryOptions: RetryOptions;
+  /** The work volume (`config.workDir`); checkpoints sit beside it, not in it. */
+  workDir: string;
+  /** The `owner/name` repository, which scopes the checkpoint directory. */
+  repo: string;
+  issueNumber: number;
+  branch: string;
+  workspaceDir: string;
+  brief: string;
+  settings: ExternalOrchestrationSettings;
+}
+
 /** Injectable dependencies for testing. */
 export interface ExecuteClaudePhaseDeps {
   /** Run Claude with retry and timeout. */
   runClaudeWithRetry: (
     options: RunClaudeOptions,
     retryOptions?: RetryOptions,
+  ) => Promise<Result<ClaudeRunResult>>;
+  /**
+   * Run the issue through the external orchestrator (Issue #3642). Consulted
+   * only when `externalOrchestration` is on. Absent, that path fails closed
+   * with an `execution_error`; it never falls back to `--agents`.
+   */
+  runExternalOrchestratedIssueRun?: (
+    input: ExternalIssueRunInput,
   ) => Promise<Result<ClaudeRunResult>>;
   /** Build the issue prompt (returns PromptParts for caching, Issue #1262). */
   buildIssuePrompt: (
@@ -867,6 +918,8 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
   return {
     escalateContextBudget: defaultEscalateContextBudget,
     runClaudeWithRetry,
+    runExternalOrchestratedIssueRun: (input) =>
+      runOrchestratedIssueRun(input, { runClaudeWithRetry }),
     buildIssuePrompt,
     buildCachedIssuePrompt,
     buildCiFailureContext,
@@ -1265,18 +1318,29 @@ async function executeClaudePhaseBody(
 
   // The issue-executor split (Issue #2342): with the key on, the invocation
   // carries `--agents` definitions so the advisor delegates mechanical edit
-  // work to executors on the run's sub-agent tier — Sonnet by default, Haiku
-  // under `issue_sub_agent_tier: "haiku"` (Issue #3402) — and the prompt
-  // carries the advisor/executor block that tells it to (Issue #2343). Off —
-  // the default — `agents` stays
-  // absent, no argument is emitted, the block renders as nothing, and every
-  // sub-agent inherits the phase's model exactly as it does today. Resolved
+  // work to executors on the run's sub-agent tier — Haiku by default, Sonnet
+  // under `issue_sub_agent_tier: "sonnet"` (Issue #3402) — and the prompt
+  // carries the advisor/executor block that tells it to (Issue #2343). Off
+  // (`issue_executor_split: false`), no executor definitions are built and the
+  // advisor/executor block renders nothing. `--agents` is still emitted when
+  // reviewer agents are on (`issue_reviewer_agents`, default on), or when the
+  // Haiku sub-agent tier adds the explorer definition (see
+  // `buildIssueRunAgents` in `issue_executor_agents.ts`). Resolved
   // before the prompt is built so the prompt and the argv cannot disagree.
-  const issueExecutorSplit = isIssueExecutorSplitEnabled(
-    "issue",
-    repoConfig,
-    { issueExecutorSplit: options.issueExecutorSplit === true },
+  // Issue #3642: with external orchestration on, the native split is never
+  // resolved, so no executor definition reaches the prompt or the argv.
+  const externalOrchestration = (repoConfigs?.[repo]?.externalOrchestration ??
+    options.externalOrchestration) === true;
+  const effectiveOrchestrationSettings = resolveOrchestrationSettings(
+    options.externalOrchestrationSettings ?? {},
+    repoConfigs?.[repo]?.externalOrchestrationSettings,
   );
+  const issueExecutorSplit = !externalOrchestration &&
+    isIssueExecutorSplitEnabled(
+      "issue",
+      repoConfig,
+      { issueExecutorSplit: options.issueExecutorSplit === true },
+    );
   // The sub-agent tier (Issue #3402): host-wide `issueSubAgentTier`, with the
   // repository's own `repo_config` override layered over it here. Resolved
   // and logged unconditionally, every issue run, before the prompt is built.
@@ -1288,13 +1352,16 @@ async function executeClaudePhaseBody(
   deps.log(
     `Issue sub-agent tier resolved to '${issueSubAgentTier}' (Issue #3402)`,
   );
-  // The reviewer sub-agents (Issue #2575): host-wide, off by default until
-  // the pilot in docs/MODEL-AND-CACHING.md clears it.
-  const issueRunAgents = buildIssueRunAgents({
-    executorSplit: issueExecutorSplit,
-    reviewerAgents: options.issueReviewerAgents === true,
-    subAgentTier: issueSubAgentTier,
-  });
+  // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
+  // #2812); `issue_reviewer_agents: false` opts out.
+  // Issue #3642: no `--agents` is built on the external path (fail closed).
+  const issueRunAgents = externalOrchestration
+    ? undefined
+    : buildIssueRunAgents({
+      executorSplit: issueExecutorSplit,
+      reviewerAgents: options.issueReviewerAgents === true,
+      subAgentTier: issueSubAgentTier,
+    });
   if (issueExecutorSplit) {
     const executorModel = issueSubAgentTier === "haiku"
       ? HAIKU_ISSUE_EXECUTOR_MODEL
@@ -1517,74 +1584,100 @@ async function executeClaudePhaseBody(
   deps.log("Starting Claude Code to work on the issue...");
   let claudeResult: Result<ClaudeRunResult>;
   try {
-    claudeResult = await deps.runClaudeWithRetry(
-      {
-        prompt: userPrompt,
-        systemPrompt,
-        // Route the coding run through the documented `issue` phase (Issue
-        // #2709) so model/effort resolve via the phase precedence chain
-        // (CLAUDE_MODEL_ISSUE / phase_model_overrides.issue → PHASE_MODEL_DEFAULTS.issue,
-        // CLAUDE_EFFORT_ISSUE / phase_effort_overrides.issue → PHASE_EFFORT_DEFAULTS.issue)
-        // rather than silently landing on the CLI default.
-        phase: "issue",
-        timeoutSeconds: claudeTimeout,
-        killAfterSeconds: claudeKillAfter,
-        logger,
-        creditLogDir,
-        workerName,
-        repo,
-        promptSha,
-        promptCacheHit,
-        sessionResumeState,
-        // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
-        issueNumber: options.issueNumber,
-        // Per-invocation provider selection (Issue #4109) with the repo pin
-        // layered in (Issue #2048); undefined keeps the active provider,
-        // exactly as before.
-        agentProvider: invocationAgentProvider,
-        // The checkout the agent works in (Issue #2159). Without it the
-        // runner's `mcpRequest && cwd` gate writes no MCP configuration at
-        // all, so this path would append the CodeGraph prompt line and
-        // silently drop the server that line tells the agent to call — and
-        // Issue #192's browser grant below was inert here for the same
-        // reason. Naming it states what the phase already assumes: every git
-        // call it makes runs against the process working directory, which is
-        // this checkout.
-        cwd: repoDir,
-        // The rate/usage-limit signal belongs on the work volume, never in
-        // the per-issue clone the `cwd` above now names (Issue #4315).
-        workDir,
-        // The Playwright MCP browser is granted on every run unless the repo
-        // sets `skip_screenshot_check` (Issue #2925): the screenshot gate
-        // judges "UI change" from the diff afterwards, so the tool must be
-        // there up front. Issue #2159 layers the `codegraph` server beside
-        // that grant on an enabled run whose index built.
-        mcpConfig: graft.mcpConfig(
-          codegraph.mcpConfig(browserGranted(repoConfigs, repo)),
-        ),
-        // Issue #2342: only a split run carries the executor definition, and
-        // only a split run carries the guard that keeps every `Edit`/`Write`
-        // inside one of them (Issue #2344). `claude_runner.ts` merges that
-        // guard's hooks with the ones below rather than one replacing the
-        // other. Issue #2575: a host with `issue_reviewer_agents` on adds the
-        // Spec and Standards reviewer definitions. Both off, no `agents`.
-        ...(issueRunAgents ? { agents: issueRunAgents } : {}),
-        ...(issueExecutorSplit ? { issueExecutorSplit: true } : {}),
-        // This spawn's hooks (Issue #2383), carried on the command line. A run
-        // that installs none leaves the key absent, so the argv is the one it
-        // always spawned; when the split-executor guard lands on this path its
-        // entry merges into the same object rather than replacing this one.
-        ...settingsJsonOption(undefined, rtk.hookSettings()),
-        // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
-        ...(options.progressExtension
-          ? { progressExtension: options.progressExtension }
-          : {}),
-      },
-      {
-        maxRetries: maxRateLimitRetries,
-        maxWaitSeconds: maxRateLimitWait,
-      },
-    );
+    const claudeRunOptions: RunClaudeOptions = {
+      prompt: userPrompt,
+      systemPrompt,
+      // Route the coding run through the documented `issue` phase (Issue
+      // #2709) so model/effort resolve via the phase precedence chain
+      // (CLAUDE_MODEL_ISSUE / phase_model_overrides.issue → PHASE_MODEL_DEFAULTS.issue,
+      // CLAUDE_EFFORT_ISSUE / phase_effort_overrides.issue → PHASE_EFFORT_DEFAULTS.issue)
+      // rather than silently landing on the CLI default.
+      phase: "issue",
+      timeoutSeconds: claudeTimeout,
+      killAfterSeconds: claudeKillAfter,
+      logger,
+      creditLogDir,
+      workerName,
+      repo,
+      promptSha,
+      promptCacheHit,
+      sessionResumeState,
+      // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
+      issueNumber: options.issueNumber,
+      // Per-invocation provider selection (Issue #4109) with the repo pin
+      // layered in (Issue #2048); undefined keeps the active provider,
+      // exactly as before.
+      agentProvider: invocationAgentProvider,
+      // The checkout the agent works in (Issue #2159). Without it the
+      // runner's `mcpRequest && cwd` gate writes no MCP configuration at
+      // all, so this path would append the CodeGraph prompt line and
+      // silently drop the server that line tells the agent to call — and
+      // Issue #192's browser grant below was inert here for the same
+      // reason. Naming it states what the phase already assumes: every git
+      // call it makes runs against the process working directory, which is
+      // this checkout.
+      cwd: repoDir,
+      // The rate/usage-limit signal belongs on the work volume, never in
+      // the per-issue clone the `cwd` above now names (Issue #4315).
+      workDir,
+      // The Playwright MCP browser is granted on every run unless the repo
+      // sets `skip_screenshot_check` (Issue #2925): the screenshot gate
+      // judges "UI change" from the diff afterwards, so the tool must be
+      // there up front. Issue #2159 layers the `codegraph` server beside
+      // that grant on an enabled run whose index built.
+      mcpConfig: graft.mcpConfig(
+        codegraph.mcpConfig(browserGranted(repoConfigs, repo)),
+      ),
+      // Issue #2342: only a split run carries the executor definition, and
+      // only a split run carries the guard that keeps every `Edit`/`Write`
+      // inside one of them (Issue #2344). `claude_runner.ts` merges that
+      // guard's hooks with the ones below rather than one replacing the
+      // other. Issue #2575: a host with `issue_reviewer_agents` on adds the
+      // Spec and Standards reviewer definitions. Both off, no `agents`.
+      ...(issueRunAgents ? { agents: issueRunAgents } : {}),
+      ...(issueExecutorSplit ? { issueExecutorSplit: true } : {}),
+      // This spawn's hooks (Issue #2383), carried on the command line. A run
+      // that installs none leaves the key absent, so the argv is the one it
+      // always spawned; when the split-executor guard lands on this path its
+      // entry merges into the same object rather than replacing this one.
+      ...settingsJsonOption(undefined, rtk.hookSettings()),
+      // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
+      ...(options.progressExtension
+        ? { progressExtension: options.progressExtension }
+        : {}),
+    };
+    const claudeRetryOptions: RetryOptions = {
+      maxRetries: maxRateLimitRetries,
+      maxWaitSeconds: maxRateLimitWait,
+    };
+    if (externalOrchestration) {
+      // Issue #3642: the gate replaces the single Claude call. It fails closed:
+      // with no orchestrator wired, the run fails rather than falling back to
+      // the native `--agents` path.
+      claudeResult = deps.runExternalOrchestratedIssueRun
+        ? await deps.runExternalOrchestratedIssueRun({
+          claudeOptions: claudeRunOptions,
+          retryOptions: claudeRetryOptions,
+          workDir,
+          repo,
+          issueNumber,
+          branch: branchName,
+          workspaceDir: repoDir,
+          brief: userPrompt,
+          settings: effectiveOrchestrationSettings,
+        })
+        : {
+          ok: false,
+          error: new Error(
+            "External orchestration is enabled but no orchestrator is wired (Issue #3642)",
+          ),
+        };
+    } else {
+      claudeResult = await deps.runClaudeWithRetry(
+        claudeRunOptions,
+        claudeRetryOptions,
+      );
+    }
   } finally {
     // Always stop heartbeat
     if (heartbeatHandle) {
@@ -1609,14 +1702,21 @@ async function executeClaudePhaseBody(
   if (!claudeResult.ok) {
     return {
       action: "failure",
-      failureType: "execution_error",
+      failureType: claudeResult.error instanceof AgentTurnLimitError
+        ? "turn_limit"
+        : "execution_error",
       failureMessage: `Claude execution failed: ${claudeResult.error.message}`,
       elapsedSeconds,
     };
   }
 
-  const { exitCode, output: claudeOutput, timedOut, outOfMemory, killed } =
-    claudeResult.value;
+  const {
+    exitCode,
+    output: claudeOutput,
+    timedOut,
+    outOfMemory,
+    killed,
+  } = claudeResult.value;
 
   // --- Handle out-of-memory (Issue #2742, parent #2721) ---
   // OOM is terminal and must be classified BEFORE the timeout / rate-limit

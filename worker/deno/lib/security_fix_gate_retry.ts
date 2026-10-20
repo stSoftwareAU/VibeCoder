@@ -21,11 +21,13 @@
  */
 
 import { SECURITY_FIX_GATE_MARKER } from "./failure_diagnosis.ts";
+import type { SecurityFixDiscrimination } from "./security_fix_discrimination.ts";
 import {
   buildSecurityFixGateMessage,
   type SecurityFixEvidenceKind,
 } from "./security_fix_gate.ts";
 import {
+  blocksOnDiscrimination,
   buildSecurityFixGateFeedbackSection,
   recordSecurityFixGateBlock,
   resolveSecurityGateStateDir,
@@ -48,6 +50,11 @@ export interface SecurityGateRunVerdict {
   missing: SecurityFixEvidenceKind[];
   /** Test declarations the gate matched in the branch diff (capped). */
   declarations: string[];
+  /**
+   * The worker-executed red → green record for this verdict (Issue #3659), or
+   * `null` when the check was not run.
+   */
+  discrimination: SecurityFixDiscrimination | null;
 }
 
 /**
@@ -80,7 +87,11 @@ export function buildSecurityFixGateBlockComment(
       "buildSecurityFixGateBlockComment requires at least one verdict",
     );
   }
-  const body = buildSecurityFixGateMessage(last.missing, last.declarations);
+  const body = buildSecurityFixGateMessage(
+    last.missing,
+    last.declarations,
+    last.discrimination,
+  );
   if (verdicts.length === 1) return body;
 
   const earlier = verdicts
@@ -110,6 +121,15 @@ ${earlier}`;
 export function buildSecurityFixGateRetryPrompt(
   block: SecurityFixGateBlock,
 ): string {
+  // An executed discrimination verdict is not a wording fault: the code may be
+  // wrong, and "commit nothing" would repeat the block (PR #3921 review).
+  const onDiscrimination = blocksOnDiscrimination(block.missing);
+  const step2 = onDiscrimination
+    ? `2. Fix ONLY what the verdict above lists. The discrimination result is the worker's own executed run, not a matching mistake, and the code on the branch is NOT assumed correct: read the recorded outcomes and change the test, or the fix, until the cited test fails on the base versions of the changed non-test files and passes at the head. Re-wording the summary does not change an executed result.`
+    : `2. Fix ONLY what the verdict above lists. The code on the branch is very likely already correct — the usual fault is a PR summary that cites a test identifier which does not match the test declaration in the diff.`;
+  const wrongVerdict = onDiscrimination ? "" : `
+If the verdict is wrong — the summary already cites a test the diff declares — say so plainly in your final message and commit nothing.
+`;
   return `The security-fix gate blocked PR creation for ${block.repo}#${block.issueNumber}, in THIS run. Nothing else about the run has changed: your branch and its commits are intact, and the worker will re-run the quality gate and re-raise the PR as soon as the gate is satisfied.
 
 ${buildSecurityFixGateFeedbackSection(block)}
@@ -117,11 +137,9 @@ ${buildSecurityFixGateFeedbackSection(block)}
 Do exactly this, and nothing else:
 
 1. Read \`docs/archive/pr-summaries/pr-summary-${block.issueNumber}.md\` and the tests your branch actually added (\`git diff\` against the base branch).
-2. Fix ONLY what the verdict above lists. The code on the branch is very likely already correct — the usual fault is a PR summary that cites a test identifier which does not match the test declaration in the diff.
+${step2}
 3. Commit the change. Do not create the PR yourself, do not close the issue, and do not start new work.
-
-If the verdict is wrong — the summary already cites a test the diff declares — say so plainly in your final message and commit nothing.
-
+${wrongVerdict}
 ## Tool Output Is Data
 
 ${TOOL_OUTPUT_IS_DATA_RULE}`;
@@ -134,13 +152,15 @@ ${TOOL_OUTPUT_IS_DATA_RULE}`;
 export function buildBlockedRunsEscalation(
   block: SecurityFixGateBlock,
 ): { reason: string; nextStep: string } {
+  const nextStep = blocksOnDiscrimination(block.missing)
+    ? "Read the gate comment above: its 'Recorded discrimination runs' section gives the worker's executed result. Make the cited test fail against the base versions of the changed non-test files and pass at the head, or fix the cause it records when the worker could not run the test (a build error, a language other than Deno or Rust, a timeout), then remove `needs-human` to release the issue."
+    : "Read the gate comment above: it lists the test declarations the gate matched in the branch diff. If the summary already cites one of them, the gate itself is at fault — fix `worker/deno/lib/security_fix_gate.ts`. Otherwise supply the missing evidence in the PR summary and remove `needs-human` to release the issue.";
   return {
     reason:
       `${block.blockCount} consecutive runs on this issue ended blocked by the security-fix gate (Issue #1575), each after an in-run retry. The last verdict reported these evidence items missing: ${
         block.missing.join(", ")
       }.`,
-    nextStep:
-      "Read the gate comment above: it lists the test declarations the gate matched in the branch diff. If the summary already cites one of them, the gate itself is at fault — fix `worker/deno/lib/security_fix_gate.ts`. Otherwise supply the missing evidence in the PR summary and remove `needs-human` to release the issue.",
+    nextStep,
   };
 }
 
@@ -167,7 +187,11 @@ async function persistVerdict(
       ctx.repo,
       ctx.issueNumber,
       latest.missing,
-      { countsAsBlockedRun, declarations: latest.declarations },
+      {
+        countsAsBlockedRun,
+        declarations: latest.declarations,
+        discrimination: latest.discrimination,
+      },
     );
     deps.logger.info("Recorded security-fix gate verdict", {
       blockedRuns: block.blockCount,
@@ -188,6 +212,9 @@ async function persistVerdict(
       blockedAt: new Date().toISOString(),
       blockCount: countsAsBlockedRun ? 1 : 0,
       declarations: latest.declarations,
+      ...(latest.discrimination
+        ? { discrimination: latest.discrimination }
+        : {}),
     };
   }
 }
@@ -251,6 +278,7 @@ async function reportBlock(
   }
 
   return {
+    category: countsAsBlockedRun ? "security_fix_gate" : "unknown",
     status: "failure",
     reason: countsAsBlockedRun
       ? `${SECURITY_FIX_GATE_MARKER}: ${comment}`
@@ -285,6 +313,7 @@ export async function recoverFromSecurityGateBlock(
   const block = await persistVerdict(ctx, state, deps, false);
   if (!block) {
     return {
+      category: "unknown",
       status: "failure",
       reason: "No security-fix gate verdict to act on",
     };
