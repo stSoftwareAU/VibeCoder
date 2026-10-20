@@ -133,6 +133,13 @@ failure makes that provider unavailable to subsequent work; quota failures are
 rechecked at the stated reset, or after a five-minute cooldown when no reset was
 reported. If no safe candidate remains, the host waits.
 
+While automatic routing is active, auxiliary configuration reloads preserve
+the router's active provider between refreshes. The loaded `agentProvider`
+still reports the file's preference to callers; it does not overwrite the
+process-wide selection used to invoke work. With automatic routing inactive,
+reloads retain the historical pinned-provider behaviour. A per-run health-gate
+override continues to take precedence in either mode.
+
 Provision Codex's persistent subscription home using
 [Codex subscription authentication](CODEX-SUBSCRIPTION-AUTH.md). The router
 reads the same explicit `CODEX_HOME` that the child receives and ignores parent

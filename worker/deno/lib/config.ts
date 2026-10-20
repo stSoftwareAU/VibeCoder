@@ -554,9 +554,10 @@ export async function loadConfig(
 
   // Coding-agent provider selection (Issue #4067). Resolved here so an
   // unsupported id fails loudly at startup, naming the supported providers,
-  // rather than surfacing as a missing binary mid-run. The selection is also
-  // recorded on the seam, because the low-level modules that spawn the agent
-  // hold no configuration handle.
+  // rather than surfacing as a missing binary mid-run. Outside automatic
+  // routing the selection is also recorded on the seam, because the low-level
+  // modules that spawn the agent hold no configuration handle. While routing
+  // is active, the router owns that seam between its refreshes (Issue #4024).
   // The resolver consults the per-run provider override (Issue #2062)
   // before the file's value: the health gate's fallback switch therefore
   // survives every in-process config reload, which would otherwise reset
