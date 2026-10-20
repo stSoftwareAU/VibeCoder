@@ -145,3 +145,50 @@ export function nextFallbackProvider(
   }
   return null;
 }
+
+/**
+ * The policy `loadConfig` resolved (Issue #4034). The agent runner holds no
+ * configuration handle, so the loader records it here, as it does the
+ * active and enabled provider ids. Undefined until a config is loaded, which
+ * reads as pinned.
+ */
+let configuredPolicy: ProviderFallbackPolicy | undefined;
+
+/** Record the configured policy, or undefined to clear it (Issue #4034). */
+export function setConfiguredProviderFallbackPolicy(
+  policy: ProviderFallbackPolicy | undefined,
+): void {
+  configuredPolicy = policy;
+}
+
+/** The configured policy, or undefined when none is loaded (Issue #4034). */
+export function configuredProviderFallbackPolicy():
+  | ProviderFallbackPolicy
+  | undefined {
+  return configuredPolicy;
+}
+
+/**
+ * The provider to retry an invocation on after `current` refused its model
+ * (Issue #4034), or null when the run must give up.
+ *
+ * A refusal is terminal for the provider, not the moment: a ChatGPT login that
+ * does not offer a model never will, so waiting is futile and a ladderless
+ * provider has nothing cheaper to try. The configured alternatives are the
+ * remaining remedy, under the same switch cap as every other fallback.
+ *
+ * @param policy - The configured policy; undefined reads as pinned.
+ * @param current - The provider that refused.
+ * @param switchedFrom - Providers this invocation already switched away from.
+ */
+export function providerAfterModelRefusal(
+  policy: ProviderFallbackPolicy | undefined,
+  current: string,
+  switchedFrom: readonly string[],
+): string | null {
+  if (!policy) return null;
+  if (!mayFallbackOn(policy, "model-unavailable", switchedFrom.length)) {
+    return null;
+  }
+  return nextFallbackProvider(policy, current, switchedFrom);
+}

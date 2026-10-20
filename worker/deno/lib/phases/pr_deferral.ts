@@ -217,6 +217,7 @@ export async function deferPrCreation(
       { repo, issueNumber, error: stored.error.message },
     );
     return {
+      category: "unknown",
       status: "failure",
       reason: `PR creation failed: ${request.message}`,
     };
@@ -250,6 +251,7 @@ export async function deferPrCreation(
   }
 
   return {
+    category: "unknown",
     status: "early_exit",
     reason:
       `PR deferred by GitHub's secondary rate limit (${request.why}); the ` +

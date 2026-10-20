@@ -3,6 +3,13 @@
 **Status:** reference gap analysis for Issue #3652. Point-in-time. The verdicts
 are recorded and follow-ups #3698–#3703 are filed.
 
+**Owner correction, 19 October 2026:** VibeCoder runs fully automatically on
+unattended machines and must self-heal without human intervention. The G1
+supervised-test recommendation was rejected and #3703 closed as not planned.
+The correction below supersedes that recommendation; the other observations
+remain a record of the original audit, not current implementation status. See
+[the operating intent](../../DESIGN-PRINCIPLES.md#fully-unattended-operation-and-self-healing).
+
 **Comparison axis:** _containment of the running agent_ — sandbox, network,
 credentials, permissions, run limits, monitoring and incident response. It does
 not compare detection or scanning methods.
@@ -46,7 +53,7 @@ flowchart LR
 
 ## Gaps and recommendations
 
-### G1 — Sandbox — **ADOPT**
+### G1 — Sandbox — **SKIP supervised testing**
 
 - **Article claim:** a hardware-virtualised sandbox, one microVM per agent, and
   a supervised sandbox-escape test per new host, sandbox change or model.
@@ -58,17 +65,17 @@ flowchart LR
   `supportsCapDrop: false` and `supportsReadOnly: false`. C22 is at
   `docs/THREAT-MODEL.md:199`.
 - **Gap:** no escape test has been run or recorded against the actual boundary.
-- **Verdict:** ADOPT the supervised test; it is the cheapest way to learn how
-  strong C22 really is. This analysis supplies the human-run test plan below, and
-  makes no autonomous escape attempt. → **follow-up filed: #3703.**
-- **Human-run escape test plan.** An operator runs these checks on a throwaway
-  test host, once per supported runtime (Docker, Podman, Apple `container`),
-  from a shell inside a launched agent container. Each check observes what the container was given,
-  except check 5, which attempts one ordinary write to the root filesystem;
-  none attempts a breakout. The
-  expected result is what the launcher asks for
-  (`container_launch.ts:1145-1166`). Record pass, fail or not applicable per
-  check, with the date, runtime and versions.
+- **Verdict:** SKIP the supervised-test proposal. It conflicts with unattended
+  operation and self-healing; #3703 is closed as not planned. No escape test
+  result is claimed, and closing the proposal does not resolve the coverage gap.
+- **Automatable containment observations.** The observations below may inform
+  bounded automated checks on authorised disposable test environments for
+  Docker, Podman and Apple `container`. They are not a manual runbook or an
+  instruction for a live worker to attempt a breakout. Each observes what the
+  container was given, except check 5, which attempts one ordinary root-file
+  write. The expected result is what the launcher asks for
+  (`container_launch.ts:1145-1166`). Automated evidence must identify the date,
+  runtime and versions and report pass, fail, not applicable or not checked.
 
   | # | C22 property         | Check (what to observe from inside the container)                                | Expected on Docker and Podman                                   | Expected on Apple `container`                                  |
   | - | -------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -80,12 +87,14 @@ flowchart LR
   | 6 | No host networking   | Compare the container's network interfaces with the host's.                      | Own network namespace; host interfaces not visible              | Own VM and IP address                                          |
   | 7 | No published ports   | From the host, list the container's published ports.                             | None                                                            | None                                                           |
 
-  A check whose result differs from the expected column is a failed check and
-  gets its own issue. A runtime whose dialect cannot take a flag (Apple
+  A check whose result differs from the expected column is a failed check;
+  retain evidence and reconcile an existing actionable defect before filing
+  another issue. An unavailable runtime is not checked, not passed. A runtime
+  whose dialect cannot take a flag (Apple
   `container`: `supportsCapDrop`, `supportsSecurityOpt` and `supportsReadOnly`
   are all `false`) records what it observed instead of failing; its own VM is
-  the compensating control named in `container_runtime.ts:400-415`. The
-  deliverable of #3703 is running this plan and recording the verdicts.
+  the compensating control named in `container_runtime.ts:400-415`. These
+  observations do not assert that an automated harness has been implemented.
 
 ### G2 — Network — **ADOPT**
 
@@ -161,7 +170,7 @@ flowchart LR
 | ----------------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Anthropic-account items (escape-classifier score; notifying the account team) | Anthropic account feature    | The fleet runs the Claude Code CLI, where the score is not available                                                                                                           |
 | Auto permission mode (G4)                                                     | Auto permission mode         | The container is the permission boundary; depends on Anthropic-side classifier features                                                                                        |
-| microVM for every agent on Linux                                              | Hardware-virtualised sandbox | C22 already gives cap-dropped, read-only, non-privileged containers; a VM runtime per host is a platform migration larger than the gap; #3703 measures the real boundary first |
+| microVM for every agent on Linux                                              | Hardware-virtualised sandbox | C22 already gives cap-dropped, read-only, non-privileged containers; a VM runtime per host is a platform migration larger than the gap; closing #3703 supplies no additional boundary evidence |
 
 **Related claims.** R6 (`THREAT-MODEL.md:239`) and R13 (`:246`) mention egress
 control via C12/C13. R6 now carries a pointer to R9 and #3698 (C12/C13 cover
@@ -171,8 +180,11 @@ pointer. Both are related to G2.
 
 ## Summary
 
-1. Seven areas were compared against the article; six are ADOPT and one is SKIP.
-2. G1 Sandbox — ADOPT: supervised escape test plan (#3703).
+1. Seven areas were compared; after the owner's correction, five are ADOPT and
+   two are SKIP.
+2. G1 Sandbox — SKIP supervised testing: #3703 closed as not planned. Any
+   containment validation must be automated and unattended; coverage remains
+   unproven until actual evidence is recorded.
 3. G2 Network — ADOPT: default-deny egress with an allowlist (#3698).
 4. G3 Credentials — ADOPT: keep credentials out of the agent's reach (#3699).
 5. G4 Permissions — SKIP: the container is the permission boundary.

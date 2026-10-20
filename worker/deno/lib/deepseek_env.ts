@@ -83,6 +83,7 @@ export const DEEPSEEK_ENV_DENYLIST: readonly string[] = [
   ...CLAUDE_CREDENTIAL_ENV_VARS,
   "OPENAI_API_KEY",
   "CODEX_API_KEY",
+  "CODEX_HOME",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
 ];

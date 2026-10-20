@@ -1,0 +1,18 @@
+{
+  "issue": 3646,
+  "chunk": "top-up-3646",
+  "title": "top-up: fleet experiment evidence and subscription allocation",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3646",
+  "definition": "Read-only report and synthetic experiment modules plus bounded subscription allocation policy, command and durable runtime.",
+  "status": "claimed",
+  "sweptAt": "977a3496b3c98f35e0c92e270f7a15266f14a6af",
+  "paths": [
+    "worker/deno/commands/fleet_experiment_report.ts",
+    "worker/deno/commands/subscription_allocation.ts",
+    "worker/deno/lib/fleet_experiment_arms.ts",
+    "worker/deno/lib/fleet_experiment_report.ts",
+    "worker/deno/lib/fleet_experiment_synthetic.ts",
+    "worker/deno/lib/subscription_allocation.ts",
+    "worker/deno/lib/subscription_allocation_runtime.ts"
+  ]
+}

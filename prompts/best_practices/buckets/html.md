@@ -78,7 +78,25 @@ source that defines the bar — cite it, do not restate it.
     `user-scalable=no` or `maximum-scale=1`, or a fixed-pixel layout that
     scrolls sideways at narrow widths —
     <https://www.w3.org/WAI/WCAG22/Understanding/reflow.html>.
-15. **Open overlay or pinned bar off-screen.** A popover, menu, dropdown,
+15. **Change leaking past its breakpoint.** A rule, wrapper or event
+    handler meant for one side of a width breakpoint (its sibling rules sit
+    in a media query or responsive utility) but written at every width, so
+    the other side's layout or behaviour changes at the breakpoint itself
+    or a device width just past it — a one-row toolbar that wraps onto two
+    rows from 768 to about 845px, or a hover handler that reflows rows on a
+    phone. Confine it with a media query, a responsive utility or
+    `matchMedia` —
+    <https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Media_queries/Using>.
+16. **Control buried under a clickable container's overlay.** A button,
+    toggle or link inside a row or card whose whole area is a link (a
+    stretched-link `::after`, an `inset: 0` layer), with no stacking
+    position above that overlay, so a tap opens the row's target instead
+    of the control — often while a sibling control in the same row is
+    already raised above it. See WCAG 2.2 Target Size (Minimum) (2.5.8)
+    and Pointer Cancellation (2.5.2) —
+    <https://www.w3.org/WAI/WCAG22/Understanding/target-size-minimum.html>,
+    <https://www.w3.org/WAI/WCAG22/Understanding/pointer-cancellation.html>.
+17. **Open overlay or pinned bar off-screen.** A popover, menu, dropdown,
     in-place confirm panel or sticky/fixed bar that fits when closed but,
     once open at a phone portrait (e.g. 390x844) or short landscape size
     (e.g. 844x390), runs past a viewport edge, sits under a fixed tab bar,
@@ -86,9 +104,9 @@ source that defines the bar — cite it, do not restate it.
     with no `max-height` and overflow of its own (a `white-space: nowrap`
     absolute popover is the usual culprit) —
     <https://www.w3.org/WAI/WCAG22/Understanding/focus-not-obscured-minimum.html>.
-16. **Motion with no opt-out.** Auto-playing, parallax or large animated
+18. **Motion with no opt-out.** Auto-playing, parallax or large animated
     transitions with no `prefers-reduced-motion` fallback —
     <https://www.w3.org/WAI/WCAG22/Understanding/animation-from-interactions.html>.
-17. **Layout shift.** Images, embeds or late banners without reserved
+19. **Layout shift.** Images, embeds or late banners without reserved
     space (no `width`/`height` or `aspect-ratio`), so content jumps under
     the reader's cursor — <https://web.dev/articles/cls>.

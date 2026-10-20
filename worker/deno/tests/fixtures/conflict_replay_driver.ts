@@ -541,7 +541,10 @@ export class ReplayGitHub {
       sha,
       openedAtMs: this.fake.nowMs,
     });
-    return Promise.resolve({ ok: true, value: { branch, opened: true } });
+    return Promise.resolve({
+      ok: true,
+      value: { branch, opened: true, pushed: true },
+    });
   };
 
   /** The combined `gh` seam: a handful of intercepts, else the fake. */

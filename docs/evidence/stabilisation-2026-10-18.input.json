@@ -1,0 +1,98 @@
+{
+  "start": "2026-10-07T00:00:00.000Z",
+  "end": "2026-10-14T23:59:59.999Z",
+  "source": "Public #3690 historical baseline; no live host lifecycle ledgers collected for #3980",
+  "historyComplete": false,
+  "missing": [
+    "No live host lifecycle ledgers were available for this baseline; the empty input represents missing collection, not zero fleet activity.",
+    "Accepted implementation/default delivery, all attempts, blocking review rounds and first-pass decisions are unobserved.",
+    "Deployed worker commits and actual manager/executor/reviewer configuration are unavailable; planned control is not deployment evidence.",
+    "Historical identical-sync observations cover the selected #3690 corpus, not proof of fleet-wide absence or causal benefit.",
+    "No linked live root-cause records or safeguard check/call/time measurements were collected."
+  ],
+  "deliveries": [],
+  "rootCauses": [],
+  "safeguards": [
+    {
+      "id": "identical-sync-3690",
+      "source": "observed",
+      "failuresPrevented": 0,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": 0
+    },
+    {
+      "id": "issue-3976",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null
+    },
+    {
+      "id": "issue-3977",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null
+    },
+    {
+      "id": "issue-3978",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null
+    },
+    {
+      "id": "issue-3979",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null
+    },
+    {
+      "id": "issue-3738",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null
+    },
+    {
+      "id": "issue-3954",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null
+    },
+    {
+      "id": "issue-3910",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null
+    },
+    {
+      "id": "issue-3961",
+      "source": "observed",
+      "failuresPrevented": null,
+      "extraChecks": null,
+      "extraModelCalls": null,
+      "extraSeconds": null,
+      "residualRecurrence": null
+    }
+  ]
+}

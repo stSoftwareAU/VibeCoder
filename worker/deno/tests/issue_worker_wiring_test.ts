@@ -5,7 +5,12 @@
  * Issue #962: Create issue_worker_wiring.ts — dependency injection and module wiring.
  */
 
-import { assertEquals, assertExists, assertNotEquals } from "@std/assert";
+import {
+  assertEquals,
+  assertExists,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import type { Logger } from "../types.ts";
 import {
   type ClaudeDeps,
@@ -513,4 +518,52 @@ Deno.test("createDefaultDeps - uses the caller's logger so issue-phase lines rea
   // no file, such as CLI commands and tests, are unchanged.
   const fallback = createDefaultDeps();
   assertEquals(typeof fallback.logger.info, "function");
+});
+
+Deno.test("createDefaultDeps - wires the coverage carry-over runner (Issue #3795)", async () => {
+  const deps = createDefaultDeps();
+  const run = deps.quality.runCoverageCarryOverCheck;
+  assertExists(run, "quality.runCoverageCarryOverCheck must be wired");
+
+  const repoPath = await Deno.makeTempDir();
+  try {
+    const result = await run({
+      repoPath,
+      base: "HEAD",
+      diff: "",
+      budgetSeconds: 1,
+    });
+    assertEquals(result, {
+      kind: "not_applicable",
+      reason: "the diff removes no lines from an existing Deno test file",
+    });
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("createDefaultDeps - wires the real security-fix discrimination runner (Issue #3659)", async () => {
+  const deps = createDefaultDeps();
+  const runner = deps.quality.runSecurityFixDiscrimination;
+  assertEquals(typeof runner, "function");
+
+  const repoPath = await Deno.makeTempDir();
+  try {
+    // No cited test to run, so the real runner answers without
+    // spawning anything.
+    const result = await runner!({
+      repoPath,
+      baseRef: "main",
+      productionFiles: [],
+      tests: [],
+      budgetSeconds: 5,
+    });
+    assertEquals(result.kind, "not_checked");
+    assertStringIncludes(
+      result.kind === "not_checked" ? result.reason : "",
+      "cites no test the worker can execute",
+    );
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
 });

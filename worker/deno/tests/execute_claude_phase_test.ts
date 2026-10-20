@@ -24,6 +24,7 @@ import {
   type ExecuteClaudePhaseOptions,
   runExecuteClaudePhase,
 } from "../lib/execute_claude_phase.ts";
+import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 
 // =============================================================================
@@ -1120,4 +1121,25 @@ Deno.test("runExecuteClaudePhase - an explicit provider stays absolute over the 
   // A Quorum draft naming its own provider is the operator's per-invocation
   // choice and beats the repo's pin (Issue #4109's precedence).
   assertEquals(capturedProvider, "codex");
+});
+
+Deno.test("runExecuteClaudePhase - turn limit never credits partial changes or self-heals", async () => {
+  let attemptedSelfHealing = false;
+  const result = await runExecuteClaudePhase(
+    createTestOptions(),
+    createMockDeps({
+      runClaudeWithRetry: async () => ({
+        ok: false,
+        error: new AgentTurnLimitError("Reached error_max_turns"),
+      }),
+      findExistingPrForBranch: async () => {
+        attemptedSelfHealing = true;
+        return { ok: false, error: new Error("No PR") };
+      },
+    }),
+  );
+  assertEquals(result.action, "failure");
+  assertEquals(result.failureType, "turn_limit");
+  assertStringIncludes(result.failureMessage ?? "", "error_max_turns");
+  assertEquals(attemptedSelfHealing, false);
 });

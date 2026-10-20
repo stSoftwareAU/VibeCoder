@@ -122,11 +122,13 @@ export async function pushCommittedBranchForHandoff(
     // Completion reports it the same way (Issue #1952).
     if (!pushed.ok && isWorkflowScopePushRefusal(pushed.error.message)) {
       return {
+        category: "token_scope",
         status: "failure",
         reason: workflowScopePushRefusalMessage(pushed.error.message),
       };
     }
     return {
+      category: "push_failure",
       status: "failure",
       // "Git push failed" is the phrase detectFailureCategory reads as
       // push_failure, so the infra retry treats this like completion's push.
@@ -408,6 +410,7 @@ export async function handOffDeclaredOutcome(
       blocked,
       declared: true,
       result: {
+        category: "unknown",
         status: "early_exit",
         reason: `deferred: depends on ${result.ref}`,
         expectedSkip: true,
@@ -477,6 +480,7 @@ export async function handOffDeclaredOutcome(
         blocked,
         declared: true,
         result: {
+          category: "unknown",
           status: "early_exit",
           reason: `deferred: until ${timeDeferral.request.until}`,
           expectedSkip: true,
@@ -520,7 +524,11 @@ export async function handOffDeclaredOutcome(
     return {
       blocked,
       declared: true,
-      result: { status: "early_exit", reason: "analysis_only_handed_off" },
+      result: {
+        category: "unknown",
+        status: "early_exit",
+        reason: "analysis_only_handed_off",
+      },
     };
   }
 
@@ -594,6 +602,7 @@ export async function handOffDeclaredOutcome(
         blocked,
         declared: true,
         result: {
+          category: "unknown",
           status: "early_exit",
           reason: "handed off to planning",
           expectedSkip: true,

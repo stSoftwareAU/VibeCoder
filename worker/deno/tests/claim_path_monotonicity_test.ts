@@ -75,10 +75,12 @@ Deno.test(
 Deno.test(
   "claim path - a work-on issue refused for an untrusted label must not starve the backlog (Issue #524)",
   async () => {
-    // `label-author-not-allowed` is not a gate the census can see, so no
-    // differential test reaches it — only the invariant does. The scan strips
-    // the untrusted label and explains itself (#3575), which means the issue
-    // is not work anybody is waiting on, and it must not park the backlog.
+    // `label-author-not-allowed` is modelled by the census through
+    // `untrustedLabelIssues` (Issue #3571); the differential test's
+    // `untrustedLabel` cases pin census-vs-scan agreement, and this one pins
+    // the scan's side of the invariant. The scan
+    // strips the untrusted label and explains itself (#3575), which means the
+    // issue is not work anybody is waiting on, and it must not park the backlog.
     const after = await runClaimScan({
       repo: "owner/monotone",
       issues: [

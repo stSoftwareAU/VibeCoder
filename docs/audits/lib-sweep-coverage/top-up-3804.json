@@ -1,0 +1,12 @@
+{
+  "issue": 3804,
+  "chunk": "top-up-3804",
+  "title": "top-up: agent-raised PR body adoption",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3804",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/agent_pr_adoption.ts, the completion-phase adoption of an agent-raised PR body on the run's own branch (#3804)",
+  "status": "claimed",
+  "sweptAt": "addaa06f645c2a2ada3c45d6cb334840094fc4f9",
+  "paths": [
+    "worker/deno/lib/agent_pr_adoption.ts"
+  ]
+}

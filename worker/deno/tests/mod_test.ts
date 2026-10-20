@@ -233,14 +233,19 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issues #2070–#2073 added `toolchain-selfcheck` (count 150 → 151).
   // Issue #3293 added `review-round` (count 151 → 152).
   // Issue #3744 added `route-issue` (count 152 → 153).
-  assertEquals(commands.length, 153);
+  // Provider feasibility and fleet experiment reporting add two commands.
+
+  assertEquals(commands.length, 156);
   assertEquals(commands.includes("route-issue"), true);
+  assertEquals(commands.includes("fleet-experiment-report"), true);
+  assertEquals(commands.includes("subscription-allocation"), true);
   assertEquals(commands.includes("sweep-drift"), true);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);
   assertEquals(commands.includes("container-egress-probe"), true);
   assertEquals(commands.includes("log-dir"), true);
   assertEquals(commands.includes("codex-budget"), true);
+  assertEquals(commands.includes("provider-feasibility"), true);
   assertEquals(commands.includes("callback-conformance"), true);
   // The command Issue #805 removed stays removed: a merge that quietly
   // brought it back would restore the built-in reporting that issue deleted.
