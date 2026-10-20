@@ -101,6 +101,8 @@ other hits outside `docs/archive/`.
   `best_practices_bucket_guides_consumer_test.ts`,
   `best_practices_bucket_picker_test.ts`, the anti-pattern test) — 71 passed, 0
   failed.
+- `./quality.sh < /dev/null` on the head — `Result: PASSED (with skipped checks)`
+  (config integration skipped by the gate itself), exit 0.
 
 <!-- vibe-branch-outcomes -->
 
