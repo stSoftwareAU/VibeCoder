@@ -271,10 +271,12 @@ function formatOccurrenceLine(report: RunFailureReport, epoch: number): string {
 export async function fileRunFailureIssue(
   opts: FileRunFailureIssueOptions,
 ): Promise<RunFailureFilingDecision> {
-  const classification = classifyRunFailure(
-    opts.report.outcome.category,
-    opts.report.outcome.message,
-  );
+  const classification = opts.report.outcome.classification ??
+    classifyRunFailure(
+      opts.report.outcome.category,
+      opts.report.outcome.message,
+      false,
+    );
   const failureClass = classification.failureClass;
   const log = opts.log ?? (() => {});
   const decide = (d: RunFailureFilingDecision): RunFailureFilingDecision => {

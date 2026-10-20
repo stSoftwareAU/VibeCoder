@@ -1,3 +1,12 @@
+import {
+  AllocationAdmissionError,
+  type IssueAllocationSelection,
+} from "../subscription_allocation_runtime.ts";
+import {
+  effectiveRoleSelections,
+  resolveOrchestrationSettings,
+} from "../orchestration/role_config.ts";
+import { classifyRunFailure } from "../run_outcome_classifier.ts";
 /**
  * Phase 3 — Execute Claude.
  *
@@ -15,7 +24,11 @@
 import { redactSecrets } from "../secret_redaction.ts";
 import { activateLifecycleAssignment } from "../lifecycle_recording.ts";
 
-import type { IssueSubAgentTier, Logger } from "../../types.ts";
+import type {
+  ExternalOrchestrationSettings,
+  IssueSubAgentTier,
+  Logger,
+} from "../../types.ts";
 import { browserGranted } from "../browser_grant.ts";
 import {
   type IssueContext,
@@ -68,7 +81,7 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "../fleet_authors.ts";
 import { issueRunRoleTreatments } from "../issue_assignment.ts";
-import { selectAgentProvider } from "../agent_provider.ts";
+import { agentProviderById, selectAgentProvider } from "../agent_provider.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
 import {
   buildInterruptedWipCommitMessage,
@@ -101,7 +114,6 @@ import {
 } from "../infra_retry.ts";
 import {
   buildScheduledReleaseReason,
-  detectFailureCategory,
   getFailureCategoryDisplay,
 } from "../failure_diagnosis.ts";
 import {
@@ -273,6 +285,7 @@ function supersededResult(
     },
   );
   return {
+    category: "unknown",
     status: "early_exit",
     reason,
     outcome: supersededOutcome({
@@ -347,7 +360,7 @@ export async function workOnIssueExecuteClaude(
         "(VibeCoder#174)",
       {
         phase: "execute",
-        category: detectFailureCategory(result.reason),
+        category: result.category,
         runwaySeconds: Math.max(
           0,
           Math.round(((ctx.cycleDeadlineEpochMs ?? 0) - Date.now()) / 1000),
@@ -363,6 +376,7 @@ export async function workOnIssueExecuteClaude(
     state,
     deps.logger,
     {
+      category: result.category,
       backoffMs: ctx.config.infraRetryBackoffMs,
       cycleDeadlineEpochMs: ctx.cycleDeadlineEpochMs,
     },
@@ -442,6 +456,7 @@ async function executeWithRefusalRetry(
   );
   await postWorkOnRunStats(ctx, state, deps, { recordFigures: false });
   return {
+    category: "unknown",
     status: "failure",
     reason: buildRefusalFailureReason(state.agentRefusal),
   };
@@ -480,6 +495,7 @@ async function executeWithFreshSessionFallback(
       },
     );
     return {
+      category: "prompt_too_long",
       status: "failure",
       reason: buildPromptTooLongReason(state.claudeOutput),
     };
@@ -518,6 +534,8 @@ async function recordRunAssignment(
   state: PhaseState,
   deps: WorkerDeps,
   agents: ReturnType<typeof buildIssueRunAgents>,
+  orchestration?: ExternalOrchestrationSettings,
+  cohort?: string,
 ): Promise<void> {
   const { repo, issueNumber, config } = ctx;
   try {
@@ -526,16 +544,26 @@ async function recordRunAssignment(
       fleetPrAuthors: config.fleetPrAuthors,
       serviceAccounts: config.serviceAccounts,
     });
-    const roles = issueRunRoleTreatments({
-      provider: selectAgentProvider(),
-      claudeModel: config.claudeModel || undefined,
-      agents,
-    });
+    const roles = orchestration
+      ? Object.entries(effectiveRoleSelections(orchestration)).map((
+        [role, value],
+      ) => ({
+        role: role as "manager" | "executor" | "reviewer",
+        provider: value.provider,
+        ...(value.model ? { model: value.model } : {}),
+        ...(value.effort ? { effort: value.effort } : {}),
+      }))
+      : issueRunRoleTreatments({
+        provider: cohort ? agentProviderById("claude")! : selectAgentProvider(),
+        claudeModel: cohort ? "sonnet" : config.claudeModel || undefined,
+        agents,
+      });
     const assignment = await deps.infrastructure.recordIssueAssignment({
       workDir: config.workDir,
       repo,
       issueNumber,
       trustedAuthors,
+      ...(cohort ? { cohort } : {}),
       roles,
       ...(config.subscriptionAllocationLabel
         ? { subscriptionAllocation: config.subscriptionAllocationLabel }
@@ -602,6 +630,7 @@ async function executeClaudeBody(
       { reason: freshness.reason, detail: freshness.detail },
     );
     return {
+      category: "unknown",
       status: "early_exit",
       reason: formatStaleClaimReason(freshness),
       outcome: claimStaleOutcome({
@@ -621,6 +650,7 @@ async function executeClaudeBody(
   );
   if (!repoValidation.ok) {
     return {
+      category: "unknown",
       status: "failure",
       reason: `Repository validation failed: ${repoValidation.error.message}`,
     };
@@ -713,37 +743,81 @@ async function executeClaudeBody(
     logger.info(describeGraftContext(graftContext), { repo, issueNumber });
   }
 
-  // The issue-executor split (Issue #2342): on, the invocation carries
-  // `--agents` definitions so the advisor delegates mechanical edit work to
-  // executors on the run's sub-agent tier — Sonnet by default, Haiku under
-  // `issue_sub_agent_tier: "haiku"` (Issue #3402) — and the prompt carries
-  // the advisor/executor block that tells it to (Issue #2343). Off — the
-  // default — `agents` stays absent, no
-  // argument is emitted, the block renders as nothing, and every sub-agent
-  // inherits the phase's model as before. Resolved once, before the prompt is
-  // built, so the prompt and the argv cannot disagree. Wired here as well as
+  // The issue-executor split (Issue #2342): on — the default since Issue
+  // #2812 — the invocation carries `--agents` definitions so the advisor
+  // delegates mechanical edit work to executors on the run's sub-agent tier —
+  // Haiku by default, Sonnet under `issue_sub_agent_tier: "sonnet"` (Issue
+  // #3402) — and the prompt carries the advisor/executor block that tells it
+  // to (Issue #2343). Off (`issue_executor_split: false`), no executor
+  // definitions are built and the advisor/executor block renders nothing.
+  // `--agents` is still emitted when reviewer agents are on
+  // (`issue_reviewer_agents`, default on), or when the Haiku sub-agent tier
+  // adds the explorer definition (see `buildIssueRunAgents` in
+  // `issue_executor_agents.ts`). Resolved once, before the prompt is built,
+  // so the prompt and the argv cannot disagree. Wired here as well as
   // on the standalone command path, or the key would be inert on exactly the
   // runs the fleet actually makes.
-  const issueExecutorSplit = isIssueExecutorSplitEnabled(
-    "issue",
-    config.repoConfig?.[repo],
-    config,
-  );
+  let allocation: IssueAllocationSelection | undefined;
+  try {
+    allocation = await deps.infrastructure.resolveIssueAllocation(
+      config,
+      repo,
+      issueNumber,
+    );
+  } catch (error) {
+    logger.error("Subscription allocation blocked this run", {
+      error: redactSecrets(
+        error instanceof Error ? error.message : String(error),
+      ),
+    });
+    return {
+      status: "failure",
+      category: error instanceof AllocationAdmissionError
+        ? "rate_limit"
+        : "repo_config",
+      reason: error instanceof AllocationAdmissionError
+        ? "Subscription allocation has no eligible provider capacity."
+        : "Subscription allocation configuration or evidence is unavailable; see allocation diagnostics.",
+    };
+  }
+  if (allocation) {
+    logger.info(
+      `Subscription allocation ${allocation.cohort} selected for ${repo}#${issueNumber}`,
+    );
+  }
+  const externalOrchestration = allocation?.external ??
+    ((config.repoConfig?.[repo]?.externalOrchestration ??
+      config.externalOrchestration) === true);
+  const effectiveOrchestrationSettings = allocation?.settings ??
+    resolveOrchestrationSettings(
+      config.externalOrchestrationSettings ?? {},
+      config.repoConfig?.[repo]?.externalOrchestrationSettings,
+    );
+  const issueExecutorSplit = !externalOrchestration &&
+    isIssueExecutorSplitEnabled(
+      "issue",
+      config.repoConfig?.[repo],
+      config,
+    );
   // The sub-agent tier (Issue #3402): host-wide `config.issueSubAgentTier`,
   // with the repository's own `repo_config` override layered over it.
   // Resolved and logged unconditionally, every issue run.
-  const issueSubAgentTier = runSubAgentTier(config, repo, state, logger);
+  const issueSubAgentTier = allocation && !allocation.external
+    ? "haiku"
+    : runSubAgentTier(config, repo, state, logger);
   logger.info(
     `Issue sub-agent tier resolved to '${issueSubAgentTier}' for ${repo} ` +
       `(Issue #3402)`,
   );
-  // The reviewer sub-agents (Issue #2575): host-wide, off by default until
-  // the pilot in docs/MODEL-AND-CACHING.md clears it.
-  const issueRunAgents = buildIssueRunAgents({
-    executorSplit: issueExecutorSplit,
-    reviewerAgents: config.issueReviewerAgents === true,
-    subAgentTier: issueSubAgentTier,
-  });
+  // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
+  // #2812); `issue_reviewer_agents: false` opts out.
+  const issueRunAgents = externalOrchestration
+    ? undefined
+    : buildIssueRunAgents({
+      executorSplit: issueExecutorSplit,
+      reviewerAgents: config.issueReviewerAgents === true,
+      subAgentTier: issueSubAgentTier,
+    });
   if (issueExecutorSplit) {
     const executorModel = issueSubAgentTier === "haiku"
       ? HAIKU_ISSUE_EXECUTOR_MODEL
@@ -797,6 +871,7 @@ async function executeClaudeBody(
   });
   if (!promptResult.ok) {
     return {
+      category: "internal_error",
       status: "failure",
       reason: `Failed to build prompt: ${promptResult.error.message}`,
     };
@@ -919,7 +994,11 @@ async function executeClaudeBody(
       deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
       logger,
     });
-    return { status: "early_exit", reason: "context_budget_exceeded" };
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "context_budget_exceeded",
+    };
   }
 
   // Record the prompt revision for traceability (Issue #1190, #844).
@@ -1075,7 +1154,27 @@ async function executeClaudeBody(
   ) => {
     const checkpoints = startCheckpoints();
     try {
-      return await deps.claude.runClaudeWithRetry(
+      const run = async (
+        runOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[0],
+        retryOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[1],
+      ) =>
+        externalOrchestration
+          ? await deps.claude.runOrchestratedIssueRun({
+            claudeOptions: runOptions,
+            retryOptions: retryOptions ?? {},
+            workDir: config.workDir,
+            repo,
+            issueNumber,
+            branch: state.branchName,
+            workspaceDir: state.repoPath,
+            brief: userPrompt,
+            settings: effectiveOrchestrationSettings,
+          }, {
+            runClaudeWithRetry: deps.claude.runClaudeWithRetry,
+            log: (message) => logger.info(message),
+          })
+          : await deps.claude.runClaudeWithRetry(runOptions, retryOptions);
+      return await run(
         {
           prompt: userPrompt,
           systemPrompt,
@@ -1089,7 +1188,16 @@ async function executeClaudeBody(
           repo,
           timeoutSeconds,
           killAfterSeconds: config.claudeKillAfter,
-          model: config.claudeModel || undefined,
+          model: allocation && !allocation.external
+            ? "sonnet"
+            : config.claudeModel || undefined,
+          ...(allocation && !allocation.external
+            ? {
+              agentProvider: "claude",
+              effort: "high",
+              enableModelFallback: false,
+            }
+            : {}),
           cwd: state.repoPath,
           // The browser on every run unless `skip_screenshot_check`
           // (Issue #2925). Issue #2159 layers the `codegraph` server beside
@@ -1148,7 +1256,14 @@ async function executeClaudeBody(
   // invocation by design, so the event exists before any billed work it
   // describes. It sits after every early exit, so only a run that actually
   // invokes the agent records one.
-  await recordRunAssignment(ctx, state, deps, issueRunAgents);
+  await recordRunAssignment(
+    ctx,
+    state,
+    deps,
+    issueRunAgents,
+    externalOrchestration ? effectiveOrchestrationSettings : undefined,
+    allocation?.cohort,
+  );
 
   let claudeResult = await invokeAgent(executeTimeoutSeconds);
   /** What the usage-limit checkpoint preserved, when one ran (Issue #1670). */
@@ -1244,6 +1359,7 @@ async function executeClaudeBody(
 
   if (!claudeResult.ok) {
     return {
+      category: "internal_error",
       status: "failure",
       reason: `Claude execution failed: ${claudeResult.error.message}`,
     };
@@ -1267,6 +1383,17 @@ async function executeClaudeBody(
   syncGraftFacts();
 
   // Check for timeout (Issue #1188 — detailed failure messages)
+  const termination = {
+    timedOut: claudeResult.value.timedOut,
+    timeoutReason: claudeResult.value.timeoutReason,
+    scheduledRelease: claudeResult.value.scheduledRelease,
+    terminated: claudeResult.value.terminated,
+    killed: claudeResult.value.killed,
+    externalSigterm: claudeResult.value.externalSigterm,
+    rawExitCode: claudeResult.value.rawExitCode,
+    watchdogLateSeconds: claudeResult.value.watchdogLateSeconds,
+    killIncompleteSeconds: claudeResult.value.killIncompleteSeconds,
+  };
   if (claudeResult.value.timedOut) {
     // A hard-cap release fires the same watchdog and exits with the same
     // status as a genuine timeout (Issue #424, parent #397). Only the runner
@@ -1410,7 +1537,25 @@ async function executeClaudeBody(
       watchdogLateSeconds: claudeResult.value.watchdogLateSeconds,
       killIncompleteSeconds: claudeResult.value.killIncompleteSeconds,
     });
-    return { status: "failure", reason };
+    return {
+      category: scheduled
+        ? "scheduled_release"
+        : !stalled && state.claudeOutput.length === 0
+        ? "zero_output"
+        : "timeout",
+      status: "failure",
+      termination,
+      classification: classifyRunFailure(
+        scheduled
+          ? "scheduled_release"
+          : !stalled && state.claudeOutput.length === 0
+          ? "zero_output"
+          : "timeout",
+        reason,
+        true,
+      ),
+      reason,
+    };
   }
 
   // A killed run (Issue #4202): SIGKILLed with no watchdog firing — the
@@ -1488,7 +1633,13 @@ async function executeClaudeBody(
         killDiagnostics: claudeResult.value.killDiagnostics,
       },
     );
-    return { status: "failure", reason };
+    return {
+      category: "killed",
+      status: "failure",
+      termination,
+      classification: classifyRunFailure("killed", reason, true),
+      reason,
+    };
   }
 
   // The worker's own shutdown ended the agent run (Issue #4369): the cycle is
@@ -1553,7 +1704,13 @@ async function executeClaudeBody(
         rawExitCode: claudeResult.value.rawExitCode ?? 143,
       },
     );
-    return { status: "failure", reason };
+    return {
+      category: "scheduled_release",
+      status: "failure",
+      termination,
+      classification: classifyRunFailure("scheduled_release", reason, true),
+      reason,
+    };
   }
 
   // Issue #46: a SIGTERM the worker never requested — an external kill (a tool
@@ -1621,7 +1778,13 @@ async function executeClaudeBody(
         killDiagnostics: claudeResult.value.killDiagnostics,
       },
     );
-    return { status: "failure", reason };
+    return {
+      category: "killed",
+      status: "failure",
+      termination,
+      classification: classifyRunFailure("killed", reason, true),
+      reason,
+    };
   }
 
   // Check for auth errors (Issue #1188 — detailed failure messages).
@@ -1671,7 +1834,12 @@ async function executeClaudeBody(
           lastOutputSnippet: authSnippet,
         },
       );
-      return { status: "failure", reason };
+      return {
+        category: "internal_error",
+        status: "failure",
+
+        reason,
+      };
     }
   }
 
@@ -1727,7 +1895,12 @@ async function executeClaudeBody(
         ? { preservedBranch: usageLimitWip.preserved.branch }
         : {}),
     });
-    return { status: "failure", reason };
+    return {
+      category: "rate_limit",
+      status: "failure",
+
+      reason,
+    };
   }
 
   // Record session phase completion for resume support (Issue #1324).
@@ -1819,7 +1992,9 @@ async function executeClaudeBody(
       return { status: "continue" };
     }
     return {
+      category: "internal_error",
       status: "failure",
+
       reason:
         `change detection could not resolve base ref '${state.baseBranch}': ${baseRef.error.message}`,
     };
@@ -1879,7 +2054,9 @@ async function executeClaudeBody(
     // conclude no_changes (which escalates to analysis-only).
     if (!logOk) {
       return {
+        category: "internal_error",
         status: "failure",
+
         reason: `change detection failed: git log ${baseRef.value}..HEAD ` +
           (logResult.ok
             ? `exited ${logResult.value.code}: ${logResult.value.stderr.trim()}`
@@ -1887,7 +2064,11 @@ async function executeClaudeBody(
       };
     }
 
-    return { status: "early_exit", reason: "no_changes" };
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "no_changes",
+    };
   }
 
   return { status: "continue" };

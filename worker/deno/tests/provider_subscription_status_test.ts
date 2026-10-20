@@ -214,4 +214,9 @@ Deno.test("Codex ChatGPT snapshot maps to fixed subscription", () => {
   assertEquals(status.billingMode, "fixed-subscription");
   assertEquals(status.availability, "available");
   assertEquals(status.windows[0]?.remainingPercent, 60);
+  assertEquals(
+    status.observedAt,
+    3_900,
+    "rereading a rollout must preserve its evidence age",
+  );
 });

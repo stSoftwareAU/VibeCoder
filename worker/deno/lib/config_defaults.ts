@@ -1,3 +1,5 @@
+import { modelsForPhaseTiers } from "./phase_routing.ts";
+import { DEFAULT_CLAUDE_MAX_TURNS } from "./claude_turn_limit.ts";
 /**
  * Configuration defaults — single source of truth for TypeScript.
  *
@@ -13,6 +15,7 @@
 
 import type {
   CopilotCodeReviewMode,
+  ExternalOrchestrationSettings,
   IssueSubAgentTier,
   UpdateMode,
   WorkerConfig,
@@ -203,6 +206,7 @@ export const OPERATIONAL_DEFAULTS = {
   // and starved other repositories. If issue work genuinely needs more
   // than an hour, the escape hatch should raise a sub-issue.
   claudeTimeout: 3600,
+  claudeMaxTurns: DEFAULT_CLAUDE_MAX_TURNS,
   /**
    * Claim-runway floor in seconds (Issue #289). Five minutes: enough to rule
    * out a claim that cannot finish setup, small enough that a run keeps
@@ -337,12 +341,12 @@ export const OPERATIONAL_DEFAULTS = {
   claudeKillAfter: 30,
   maxClarificationRounds: 3,
   /**
-   * Seconds slept between scan cycles (Issue #2446). Raised from 30 to 120:
-   * each cycle carries a fixed GraphQL cost, so a quarter as many cycles an
-   * hour is the cheapest reduction in quota spend (#2409). An explicit
+   * Seconds slept between scan cycles. Raised from 120 to 300 because each
+   * cycle carries a fixed GraphQL cost; fewer cycles reduce shared-account
+   * quota spend. An explicit
    * `sleep_interval` in `.config.json` still wins.
    */
-  sleepInterval: 120,
+  sleepInterval: 300,
   // Concurrent-issue slots (Issues #4174/#4177, VibeCoder#170): two by
   // default — the intended cadence is "work as many issues as possible in
   // each hourly run", and the slot governor (#4179) lowers the effective
@@ -497,9 +501,10 @@ export const OPERATIONAL_DEFAULTS = {
    */
   enableSessionResume: true,
   /**
-   * Whether `issue`-phase runs use the split executor (Issue #2341): an Opus
-   * advisor plans and Sonnet executors edit. On by default since Sonnet 5.5
-   * costs half of Opus 5.5 (Issue #2812); `issue_executor_split: false` opts out.
+   * Whether `issue`-phase runs use the split executor (Issue #2341): the
+   * manager plans and dispatches sub-agent executors that edit, on the
+   * sub-agent tier (`issue_sub_agent_tier`, Haiku by default, Issue #3402). On
+   * by default since Issue #2812; `issue_executor_split: false` opts out.
    */
   issueExecutorSplit: true,
   /**
@@ -518,6 +523,17 @@ export const OPERATIONAL_DEFAULTS = {
    * `issue_reviewer_agents: false` opts out, and they inherit the phase model.
    */
   issueReviewerAgents: true,
+  /**
+   * Whether `issue`-phase runs go through the external orchestrator (Issue
+   * #3642) instead of Claude-native `--agents`. Off by default;
+   * `external_orchestration: true` opts in. Host-wide only.
+   */
+  externalOrchestration: false,
+  /**
+   * Optional provider, model, effort and bounds for the orchestrated path
+   * (Issue #3642). Empty by default, so the built-in role defaults apply.
+   */
+  externalOrchestrationSettings: {} as ExternalOrchestrationSettings,
   /** Maximum session store size in bytes before compaction (50 MB) (Issue #1328). */
   maxSessionSizeBytes: 50 * 1024 * 1024,
   /** Maximum session age in days before cleanup (Issue #1328). */
@@ -1218,24 +1234,12 @@ export function getCheaperModel(currentModel: string): string | null {
  * regardless of the CLI's own default, while the override chain keeps tier
  * fully tunable.
  */
-export const PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
-  planning: DEFAULT_CLAUDE_MODEL_PLANNING,
-  grill_me: DEFAULT_CLAUDE_MODEL_GRILL_ME,
-  // Issue #4112: both Quorum phases join the planning-shaped top tier.
-  quorum: DEFAULT_CLAUDE_MODEL_QUORUM,
-  quorum_judge: DEFAULT_CLAUDE_MODEL_QUORUM,
-  issue: DEFAULT_CLAUDE_MODEL_ISSUE,
-  refinement: DEFAULT_CLAUDE_MODEL_REFINEMENT,
-  revision: DEFAULT_CLAUDE_MODEL_REVISION,
-  ci_fix: DEFAULT_CLAUDE_MODEL_CI_FIX,
-  quality_fix: DEFAULT_CLAUDE_MODEL_QUALITY_FIX,
-  pr_feedback: DEFAULT_CLAUDE_MODEL_PR_FEEDBACK,
-  spelling_fix: DEFAULT_CLAUDE_MODEL_SPELLING_FIX,
-  question: DEFAULT_CLAUDE_MODEL_QUESTION,
-  clarification: DEFAULT_CLAUDE_MODEL_CLARIFICATION,
-  summarise: DEFAULT_CLAUDE_MODEL_SUMMARISE,
-  health: DEFAULT_CLAUDE_MODEL_HEALTH,
-} as const;
+export const PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
+  modelsForPhaseTiers({
+    best: DEFAULT_CLAUDE_MODEL_TOP_TIER,
+    standard: DEFAULT_CLAUDE_MODEL_ISSUE,
+    fast: DEFAULT_CLAUDE_MODEL_HEALTH,
+  });
 
 // ---------------------------------------------------------------------------
 // Codex per-phase routing (Issue #363, parent #357)
@@ -1301,23 +1305,12 @@ export const CODEX_EFFORT_LEVELS = {
  * revision, question, clarification) take the top tier; the trivial trio takes
  * the cheap tier; everything else runs on the base tier and varies effort.
  */
-export const CODEX_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
-  planning: DEFAULT_CODEX_MODEL_TOP_TIER,
-  grill_me: DEFAULT_CODEX_MODEL_TOP_TIER,
-  quorum: DEFAULT_CODEX_MODEL_TOP_TIER,
-  quorum_judge: DEFAULT_CODEX_MODEL_TOP_TIER,
-  refinement: DEFAULT_CODEX_MODEL_TOP_TIER,
-  revision: DEFAULT_CODEX_MODEL_TOP_TIER,
-  question: DEFAULT_CODEX_MODEL_TOP_TIER,
-  clarification: DEFAULT_CODEX_MODEL_TOP_TIER,
-  issue: DEFAULT_CODEX_MODEL,
-  ci_fix: DEFAULT_CODEX_MODEL,
-  pr_feedback: DEFAULT_CODEX_MODEL,
-  quality_fix: DEFAULT_CODEX_MODEL,
-  spelling_fix: DEFAULT_CODEX_MODEL_CHEAP_TIER,
-  summarise: DEFAULT_CODEX_MODEL_CHEAP_TIER,
-  health: DEFAULT_CODEX_MODEL_CHEAP_TIER,
-} as const;
+export const CODEX_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
+  modelsForPhaseTiers({
+    best: DEFAULT_CODEX_MODEL_TOP_TIER,
+    standard: DEFAULT_CODEX_MODEL,
+    fast: DEFAULT_CODEX_MODEL_CHEAP_TIER,
+  });
 
 /**
  * Per-phase Codex reasoning-effort defaults (Issue #363).
@@ -1397,23 +1390,12 @@ export const DEFAULT_GEMINI_MODEL_CHEAP_TIER = "gemini-2.5-flash-lite" as const;
  * revision, question, clarification) take the top tier; the trivial trio takes
  * the cheap tier; everything else runs on the base tier.
  */
-export const GEMINI_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
-  planning: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  grill_me: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  quorum: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  quorum_judge: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  refinement: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  revision: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  question: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  clarification: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  issue: DEFAULT_GEMINI_MODEL,
-  ci_fix: DEFAULT_GEMINI_MODEL,
-  pr_feedback: DEFAULT_GEMINI_MODEL,
-  quality_fix: DEFAULT_GEMINI_MODEL,
-  spelling_fix: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
-  summarise: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
-  health: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
-} as const;
+export const GEMINI_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
+  modelsForPhaseTiers({
+    best: DEFAULT_GEMINI_MODEL_TOP_TIER,
+    standard: DEFAULT_GEMINI_MODEL,
+    fast: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
+  });
 
 // ---------------------------------------------------------------------------
 // DeepSeek per-phase routing (Issue #413, parent #396)
@@ -1468,22 +1450,35 @@ export const DEFAULT_DEEPSEEK_MODEL = "deepseek-flash" as const;
  * `health`) runs on `deepseek-flash` too. That is a deliberate absence, not an
  * omission.
  */
-export const DEEPSEEK_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
-  planning: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  grill_me: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  quorum: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  quorum_judge: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  refinement: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  revision: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  question: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  clarification: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  issue: DEFAULT_DEEPSEEK_MODEL,
-  ci_fix: DEFAULT_DEEPSEEK_MODEL,
-  pr_feedback: DEFAULT_DEEPSEEK_MODEL,
-  quality_fix: DEFAULT_DEEPSEEK_MODEL,
-  spelling_fix: DEFAULT_DEEPSEEK_MODEL,
-  summarise: DEFAULT_DEEPSEEK_MODEL,
-  health: DEFAULT_DEEPSEEK_MODEL,
+export const DEEPSEEK_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
+  modelsForPhaseTiers({
+    best: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+    standard: DEFAULT_DEEPSEEK_MODEL,
+    fast: DEFAULT_DEEPSEEK_MODEL,
+  });
+
+/** Concrete provider models for the shared best/standard/fast policy. */
+export const PROVIDER_MODEL_TIERS = {
+  claude: {
+    best: DEFAULT_CLAUDE_MODEL_TOP_TIER,
+    standard: DEFAULT_CLAUDE_MODEL_ISSUE,
+    fast: DEFAULT_CLAUDE_MODEL_HEALTH,
+  },
+  codex: {
+    best: DEFAULT_CODEX_MODEL_TOP_TIER,
+    standard: DEFAULT_CODEX_MODEL,
+    fast: DEFAULT_CODEX_MODEL_CHEAP_TIER,
+  },
+  gemini: {
+    best: DEFAULT_GEMINI_MODEL_TOP_TIER,
+    standard: DEFAULT_GEMINI_MODEL,
+    fast: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
+  },
+  deepseek: {
+    best: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+    standard: DEFAULT_DEEPSEEK_MODEL,
+    fast: DEFAULT_DEEPSEEK_MODEL,
+  },
 } as const;
 
 /**
@@ -1561,6 +1556,7 @@ export function buildDefaultWorkerConfig(
     // Issue #2654: configured best planning model for degraded-model detection.
     bestPlanningModel: DEFAULT_BEST_PLANNING_MODEL,
     claudeTimeout: OPERATIONAL_DEFAULTS.claudeTimeout,
+    claudeMaxTurns: OPERATIONAL_DEFAULTS.claudeMaxTurns,
     minClaimRunwaySeconds: OPERATIONAL_DEFAULTS.minClaimRunwaySeconds,
     // Adaptive claim floor (Issue #245): the labels that mark a long job.
     claimLongJobLabels: [...DEFAULT_LONG_JOB_LABELS],
@@ -1644,6 +1640,8 @@ export function buildDefaultWorkerConfig(
     issueExecutorSplit: OPERATIONAL_DEFAULTS.issueExecutorSplit,
     issueSubAgentTier: OPERATIONAL_DEFAULTS.issueSubAgentTier,
     issueReviewerAgents: OPERATIONAL_DEFAULTS.issueReviewerAgents,
+    externalOrchestration: OPERATIONAL_DEFAULTS.externalOrchestration,
+    externalOrchestrationSettings: {},
     includeRecentActivity: OPERATIONAL_DEFAULTS.includeRecentActivity,
     recentActivityMergedPrLimit:
       OPERATIONAL_DEFAULTS.recentActivityMergedPrLimit,

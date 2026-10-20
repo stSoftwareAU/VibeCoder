@@ -329,8 +329,15 @@ export interface AnyRepoHasUnblockedRealWorkOptions {
    * `find_oldest_issue.ts` filters every tier against. Work in cooldown
    * cannot be started this cycle, so it must not suppress idle filing.
    * Best-effort: a throw falls back to no holds.
+   *
+   * It also receives the issue's milestone title (`""` when none), so a
+   * milestone the persisted pacing ledger paces can be held (Issue #3587).
    */
-  runLocalHoldFn?: (repo: string, issueNumber: number) => boolean;
+  runLocalHoldFn?: (
+    repo: string,
+    issueNumber: number,
+    milestone: string,
+  ) => boolean;
 }
 
 /**
@@ -572,9 +579,8 @@ async function repoHasStartableWork(
   if (opts.runLocalHoldFn) {
     try {
       runLocalHolds = new Set(
-        issues.filter((i) => opts.runLocalHoldFn!(repo, i.number)).map((i) =>
-          i.number
-        ),
+        issues.filter((i) => opts.runLocalHoldFn!(repo, i.number, i.milestone))
+          .map((i) => i.number),
       );
     } catch {
       runLocalHolds = new Set<number>();

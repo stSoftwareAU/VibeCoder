@@ -511,3 +511,22 @@ Deno.test("classifyCodingFailure - a marked security-fix gate refusal quoting a 
   assertEquals(decision.cooldownKind, "non_transient");
   assertEquals(decision.category, "security_fix_gate");
 });
+
+Deno.test("declared failure causes outrank quoted deadline and timeout wording (Issue #3738)", () => {
+  const reason = "quoted " + DEADLINE_BOUND_TIMEOUT_MARKER + "; timed out";
+  const defect = classifyCodingFailure(reason, "quality_check");
+  assertEquals(defect.disposition, "ladder");
+  assertEquals(defect.cooldownKind, "non_transient");
+  assertEquals(
+    classifyCodingFailure("quoted timeout", "quality_check").cooldownKind,
+    "non_transient",
+  );
+  const execution = classifyCodingFailure("plain wrapper", "timeout");
+  assertEquals(execution.disposition, "ladder");
+  assertEquals(execution.cooldownKind, "timeout");
+  assertEquals(
+    classifyCodingFailure("plain wrapper", "push_failure").disposition,
+    "transient",
+  );
+  assertEquals(classifyCodingFailure(reason).disposition, "transient");
+});

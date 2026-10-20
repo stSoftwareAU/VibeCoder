@@ -2069,6 +2069,117 @@ What follows is what an **operator** does about them:
 | Repository-supplied build scripts execute (R6) | Only monitor repositories whose quality gate you are willing to run on your host |
 | Context window pressure from trusted comments | Keep discussion focused; use separate channels for extended conversations about implementation details |
 
+## Agent-incident runbook
+
+Use this procedure for suspected credential exposure, unexpected network
+activity or a disallowed-tool attempt. An alert is a lead to investigate,
+not a verdict. Record the UTC time, worker/host, run id, repository, issue/PR
+and the reason for suspicion in an access-controlled incident record.
+
+### Detect and scope
+
+Check `[AGENT_TRANSCRIPT_SIGNAL]`, `[AGENT_TURN_LIMIT]`, guard refusals,
+`[AUDIT_JOURNAL_REFUSED]` and unexpected provider/GitHub account activity.
+The [scheduled transcript scan](docs/CONFIGURATION.md#scheduled-security-scan)
+records local file and line references, with its limits and cadence documented
+there. Do not interpret absent alerts as safety: capture may be off, the
+worker may not have been idle, or the behaviour may be outside its heuristics.
+Compare the run with the [C16 audit journal](docs/AGENT-ACCOUNTABILITY.md)
+and the [R9 and R11 credential risks](docs/THREAT-MODEL.md#%EF%B8%8F-residual-risks).
+
+### Contain and preserve
+
+1. **Stop new work and isolate the affected worker.** Disable its scheduler
+   so it cannot restart; use the commands for the host's
+   [deployment method](docs/DEPLOYMENT.md). On a macOS LaunchAgent host:
+
+   ```bash
+   launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.vibe.auto-issue-worker.plist
+   ```
+
+   Stop the identified worker container, and block its network at the host
+   if it cannot be stopped promptly. Confirm no worker container or child
+   agent remains running. Do not run another worker cycle, `quality.sh`,
+   cleanup, volume prune or an agent-generated diagnostic command.
+
+2. **Preserve evidence before pruning or rebuilding.** Use a trusted operator
+   shell. Keep the original logs, transcripts (including rotations), audit
+   directory, chain anchors, `audit.roster.jsonl`, `audit.roster.seen` and
+   roster recovery sidecars. Record container/image identity and mounts.
+   Copy the affected working tree if malicious edits need investigation.
+   This Docker example uses a verified known-good local archive-reader image
+   with `sh` and `tar`, and reads the evidence volume without networking.
+   Choose that image independently of the affected worker; set its immutable
+   digest, the container id and actual host log directory
+   from the deployment's configuration first. If the scheduler already removed
+   the container, obtain its image and volume names from the launch record.
+
+   ```bash
+   incident_container='REPLACE_WITH_WORKER_CONTAINER_ID'
+   incident_reader_image='REPLACE_WITH_VERIFIED_LOCAL_IMAGE_DIGEST'
+   incident_log_dir='/REPLACE_WITH_HOST_LOG_DIRECTORY'
+   incident_dir="$(mktemp -d "${TMPDIR:-/tmp}/vibe-incident.XXXXXXXX")"
+   chmod 700 "$incident_dir"
+   docker inspect "$incident_container" > "$incident_dir/container.json"
+   incident_volume="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/home/vibe/auto-issue-work"}}{{.Name}}{{end}}{{end}}' "$incident_container")"
+   test -n "$incident_volume"
+   docker stop "$incident_container"
+   cp -Rp "$incident_log_dir" "$incident_dir/logs"
+   docker run --rm --pull never --network none --read-only \
+     --cap-drop ALL --security-opt no-new-privileges \
+     --mount "type=volume,src=$incident_volume,dst=/evidence,readonly" \
+     --entrypoint sh "$incident_reader_image" \
+     -c 'cd /evidence && tar -cf - audit audit.roster.*' \
+     > "$incident_dir/audit.tar"
+   ```
+
+   Check each command's exit status; a missing journal or sidecar is evidence
+   of a gap, not permission to claim the capture is complete. Podman uses
+   the equivalent commands. For Apple `container`, retain the stopped named
+   work volume untouched until an operator has confirmed a supported
+   host-level backup or read-only volume-copy procedure. A container filesystem
+   export must not be assumed to include mounted volumes. Do not prune or
+   resume the worker while that evidence remains unpreserved. Hash the evidence
+   archives with the host's SHA-256 tool, record the hashes and copy the
+   evidence to restricted storage before local retention resumes. Container
+   inspection and transcripts may contain secrets; do not post them to a
+   public issue, PR, chat or callback repository. Verify a **copy** of the
+   journal with `deno task audit-log-tail --file <copied-journal> --verify`
+   from `worker/deno`; preserve a reported chain/anchor failure unchanged.
+
+3. **Revoke and replace exposed credentials from a clean machine.** Revoke
+   the affected provider API keys/OAuth sessions and GitHub PATs or App
+   installation tokens; rotate an App private key if it was reachable.
+   Replace the host's provisioned provider and GitHub credentials, including
+   scheduler copies, and invalidate the old values. Review provider usage
+   and GitHub audit/security logs for activity since the earliest plausible
+   exposure. Do not wait for the transcript scan to prove exfiltration before
+   revoking a credential known to have been exposed. Stop other hosts sharing
+   that credential until replacements are installed.
+
+### Recover and disclose
+
+Identify the entry point and affected repositories, accounts and data. Inspect
+unmerged branches, PRs, releases and workflow changes made during the window;
+freeze affected automation while reviewing and revert unauthorised changes
+through the repository's normal review path. Rebuild from a known-good image
+and trusted checkout, restore only reviewed state, install replacement
+credentials, and verify containment and audit logging in a bounded automated
+validation run before restoring the scheduler. Automated checks must confirm
+expected destinations, permissions and scan findings; an unavailable or failed
+check keeps the affected automation contained and schedules a recovery recheck.
+No person supervising the run is required. Preserve incident evidence separately
+from live retention. This is the required recovery outcome under
+[unattended self-healing](DESIGN-PRINCIPLES.md#fully-unattended-operation-and-self-healing),
+not evidence that every step is already automated in the current worker.
+
+Notify repository/account owners through a private channel, with scope, UTC
+timeline, affected credentials/data, containment actions and remaining unknowns.
+Follow the [responsible disclosure policy](#-responsible-disclosure-policy)
+for a vulnerability in VibeCoder and the provider's incident channel for
+provider-account misuse. Record the recovery decision, owners and follow-up
+issues; publish only a scrubbed account once disclosure is agreed.
+
 ## 📢 Responsible Disclosure Policy
 
 We take security seriously. If you discover a security vulnerability, please follow these steps:

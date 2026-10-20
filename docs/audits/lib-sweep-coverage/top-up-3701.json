@@ -1,0 +1,12 @@
+{
+  "issue": 3701,
+  "chunk": "top-up-3701",
+  "title": "top-up: claude_turn_limit",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3701",
+  "definition": "Containment module claude_turn_limit.ts",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/claude_turn_limit.ts"
+  ],
+  "sweptAt": "a900fa7b68486ab83562887d66675be6d5cc3535"
+}

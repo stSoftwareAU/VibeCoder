@@ -10,7 +10,7 @@
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertExists, assertStringIncludes } from "@std/assert";
 import {
   classifyProviderBilling,
   isFixedPriceSubscription,
@@ -21,9 +21,11 @@ import { resolveCodexHome } from "../lib/codex_auth_mode.ts";
 /**
  * Run `body` with a work directory this test owns.
  *
- * The Codex probe resolves `<workDir>-agent-state/codex/auth.json`, so a
- * hard-coded path would make the result depend on whatever happens to exist on
- * the host. A fresh directory makes "nothing is logged in" a fact of the test.
+ * The Codex probe reads only an explicit CODEX_HOME, never the state volume
+ * beside the work directory (`<workDir>-agent-state/codex`) unless a case names
+ * it. Cases that plant a login there clean it up themselves. A fresh directory
+ * keeps the host's own state out of every result, so "nothing is logged in" is
+ * a fact of the test.
  */
 async function withTempWorkDir(
   body: (workDir: string) => void | Promise<void>,
@@ -186,6 +188,67 @@ Deno.test("classifyProviderBilling - without an explicit CODEX_HOME the environm
       await Deno.remove(`${workDir}-agent-state`, { recursive: true });
     }
   });
+});
+
+Deno.test("classifyProviderBilling - with CODEX_HOME unset the billing evidence and the child env name the same home (Issue #3955)", async () => {
+  // The probe and the child must agree on the Codex home. With CODEX_HOME
+  // unset the child is given no home (the CLI then reads $HOME/.codex), so a
+  // ChatGPT login parked on the state volume is not the home either of them
+  // uses and must not be reported as the subscription the run will spend.
+  await withTempWorkDir(async (workDir) => {
+    const stateHome = `${workDir}-agent-state/codex`;
+    await Deno.mkdir(stateHome, { recursive: true });
+    try {
+      await Deno.writeTextFile(
+        `${stateHome}/auth.json`,
+        JSON.stringify({ auth_mode: "chatgpt", tokens: { id_token: "x" } }),
+      );
+      const record: Record<string, string> = {};
+      const codex = agentProviderById("codex");
+      assertExists(codex);
+      const evidence = classifyProviderBilling("codex", {
+        workDir,
+        env: envOf(record),
+      });
+      const child = codex.buildChildEnv(record);
+      // The home the probe reads is the trimmed explicit CODEX_HOME of this
+      // same record, which is none; the child must be given that same home.
+      const probedHome = record.CODEX_HOME?.trim() || undefined;
+      assertEquals(child.CODEX_HOME, probedHome);
+      assertEquals(child.CODEX_HOME, undefined);
+      assertEquals(evidence.billingMode, "unknown");
+      assertEquals(evidence.reason, "subscription-credential-missing");
+      assertEquals(isFixedPriceSubscription(evidence), false);
+    } finally {
+      await Deno.remove(`${workDir}-agent-state`, { recursive: true });
+    }
+  });
+});
+
+Deno.test("classifyProviderBilling - an explicit CODEX_HOME is the home both the probe and the child use (Issue #3955)", async () => {
+  // The companion case: once CODEX_HOME is explicit, the child is given that
+  // directory and the probe reads the same one, so the login there is what
+  // bills and the two agree.
+  const home = await Deno.makeTempDir({ prefix: "vibe-codex-home-" });
+  try {
+    await Deno.writeTextFile(
+      `${home}/auth.json`,
+      JSON.stringify({ auth_mode: "chatgpt", tokens: { id_token: "x" } }),
+    );
+    const record = { CODEX_HOME: home };
+    const codex = agentProviderById("codex");
+    assertExists(codex);
+    const evidence = classifyProviderBilling("codex", {
+      workDir: UNUSED_WORK_DIR,
+      env: envOf(record),
+    });
+    const child = codex.buildChildEnv(record);
+    assertEquals(child.CODEX_HOME, home);
+    assertEquals(evidence.billingMode, "fixed-subscription");
+    assertEquals(evidence.reason, "codex-chatgpt-login");
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
 });
 
 Deno.test("classifyProviderBilling - an unreadable Codex login is a named fault, not a silent 'never configured' (Issue #1923)", async () => {

@@ -594,6 +594,7 @@ match**:
 | 1.5      | Spelling/quality check failures on open PRs     | [pr_spelling_processor.ts](../worker/deno/lib/pr_spelling_processor.ts) |
 | 1.55     | CI/integration test failures on open PRs        | [pr_ci_processor.ts](../worker/deno/lib/pr_ci_processor.ts)             |
 | 1.6      | Update open PR branches (merge base in)         | [pr_branch_update.ts](../worker/deno/lib/pr_branch_update.ts)           |
+| 1.64     | Reconcile PR body digests                       | [pr_body_reconcile.ts](../worker/deno/lib/pr_body_reconcile.ts)         |
 | 1.65     | Auto-merge catch-up (retry transient failures)  | [pr_auto_merge.ts](../worker/deno/lib/pr_auto_merge.ts)                 |
 | 1.66     | Branch cleanup (delete branches for merged PRs) | [branch_cleanup.ts](../worker/deno/lib/branch_cleanup.ts)               |
 | 1.67     | Issue closure (close issues for merged PRs)     | [issue_lifecycle.ts](../worker/deno/lib/issue_lifecycle.ts)             |
@@ -1720,9 +1721,10 @@ find_oldest_issue(github_user)
    backstop (`verifyOperationalLabels`,). **Cache may deny, never grant:** the
    file-backed timeline cache can short-circuit the gate only to a `false`
    (untrusted) result. A cached entry that _would_ grant trust is re-confirmed
-   against a freshly paginated timeline, so a tampered-with cache file under
-   `TMPDIR` can never make an attacker-applied `work-on` look trusted. The same
-   exhaustive read backs the untrusted-`work-on` hand-off
+   against API-backed timeline data: the current iteration's GraphQL label-add
+   batch, or the paginated REST fallback. A tampered-with file-cache entry under
+   `TMPDIR` cannot by itself make an attacker-applied `work-on` look trusted.
+   The same timeline owner backs the untrusted-`work-on` hand-off
    (`strip_untrusted_work_on.ts`), which adds `needs-human` and names the
    adder publicly, but never removes `work-on` (Issue #2734).
 2b. **Self-scheduled worker diagnostic** — no label at all. An issue the worker
@@ -3157,7 +3159,8 @@ ran. Tracker, summary PR and milestone froze forever. Four guards in
    unchanged.
 2. **Nothing-to-merge closes directly.** `hasNothingToMerge()` is checked
    _before_ creating a tracker. When the milestone branch is missing, or exists
-   but is 0 commits ahead of the default branch, no tracker/PR is created — any
+   but is 0 commits ahead of the default branch or its comparison reports no
+   changed files, no tracker/PR is created — any
    open trackers are closed and the milestone is closed directly with a one-line
    log. Fails safe: an ambiguous compare leaves the milestone open.
 3. **Duplicate-tracker self-heal.** Each pass,
@@ -3645,7 +3648,7 @@ those matters most: a host that cannot find `deno` fails the baseline and the
 post-change gate with byte-identical output, so without that guard a broken host
 would read as a broken repository — silencing the health failure an operator
 needs and filing a tracker on an innocent repo. The class comes from
-`detectFailureCategory`, the single diagnosis path.
+`detectFailureCategory` applied to the raw quality-gate output.
 
 ```mermaid
 flowchart TD
@@ -4003,6 +4006,14 @@ Four boundaries make it safe to run on every scan:
   complements rather than replaces. "Pushed" is measured against every remote
   ref, not `origin/<branch>` — a merged milestone branch is routinely deleted
   on the remote while its commits live on the default branch.
+- **The primary clone is released, not fought.** When the shared clone
+  (`<work root>/<repo>`) itself has the closed milestone's branch checked out,
+  the sweep takes the repository's maintenance lease, detaches the clone's
+  `HEAD` at the branch tip (the tree does not change) and then deletes the
+  branch. A dirty tree or a held lease is a *deferral* — one INFO line, the
+  milestone left unswept, retried next scan — never a warning on every scan
+  (Issue #4060). Stale worktree records are pruned first, so a worktree whose
+  directory is gone no longer holds its branch.
 - **Never fatal.** A failed removal is logged loud and the milestone is *not*
   recorded as swept, so the next scan retries it; the run itself always
   completes. The sweep is independent of `enable_session_resume` — with resume
@@ -4785,7 +4796,13 @@ deferred and commented on again on every scan cycle. The idle-decision
 census reads the same ledger through the same `milestonePacedUntil` and counts
 a paced milestone's issues as `run_local_hold` rather than claimable
 (Issue #3464), so a persistently paced milestone no longer raises a false
-`inversion_signal`. A branch with one
+`inversion_signal`. The idle-detect audit and the idle-task filer's
+fleet-wide startable-work gate read it through the shared
+`loadIdleDetectionHold` (Issue #3587), so a paced milestone no longer fires
+`ALERT mis_classification` and no longer holds idle-task filing back across the
+fleet. The filer's per-repo busy check (`isRepoBusyForIdleTask`) does not take
+that hold, so it still counts a paced issue as unblocked and blocks filing into
+the paced repo itself as `approved_work_in_flight`. A branch with one
 charged failure and an attempt still in hand is *not* paced: its children may
 be claimed, and the next child run's own pre-cut sync is what tries again.
 
@@ -5085,6 +5102,34 @@ repairing the host's clone for the issue to become claimable again. See
 [docs/workflows/README.md](workflows/README.md#per-lane-worktrees-issue-394)
 for the sweep-then-re-clone repair ladder that produces this category.
 
+#### Worker gate markers are one registry (Issue #3735)
+
+Each failure reason that opens with a worker-written marker (the
+`summary_incomplete`, `security_fix_gate` and `pre_push_gate` markers below) is
+one entry in `WORKER_GATE_MARKERS` in `failure_diagnosis.ts`: the marker mapped
+to its `FailureCategory`. `detectFailureCategory` and `detectHostFault`
+(`host_fault.ts`) read the registry with `startsWith` on the message
+(`workerGateCategoryOf`) before their free-text rules. `classifyRunFailure`
+(`run_outcome_classifier.ts`) and `classifyCodingFailure`
+(`coding_failure_ladder.ts`) instead first test the category they are given
+with `isWorkerGateCategory`, which compares it with the registry's categories;
+`classifyCodingFailure` and `shouldRetryInfrastructureFailure` retain a supplied
+source category and call `detectFailureCategory` only for raw reasons.
+`detectHostFault` also honours a declared source cause before reading the
+message. The host-fault and milestone-refusal label-release sweeps skip any
+posted failure comment that `isWorkerGateFailureRecord` recognises: one whose
+head `**Category:**` line names a registered gate category's display
+(`summary-incomplete`, `security-fix-gate`, `pre-push-gate`). They separately
+preserve substantive `quality-failure` records through
+`isSummaryOrQualityFailureRecord`, including verifier records without a
+repository-quality Source line.
+`PRE_PUSH_LOOKUP_FAILED_MARKER` is deliberately not registered: a failed git or
+remote lookup stays `push_failure`, an infrastructure category. A new gate is one
+registry entry with its own category, plus its hostile quotes in
+`worker/deno/tests/worker_gate_markers_3735_test.ts`, which runs every entry
+through every classifier for the raw reason, and checks the posted comment is a
+worker gate record that neither label-release sweep releases.
+
 #### `summary_incomplete` is its own failure category (Issue #3431)
 
 When the completion phase's PR-summary gates refuse a run, the refusal text
@@ -5115,9 +5160,12 @@ below. The posted failure comment embeds
 the reason under a heading, so the marker no longer opens the body; the
 host-fault and milestone-refusal label-release sweeps, which re-classify posted
 bodies, therefore skip a record whose worker-written `**Category:**` line at the
-head of the comment is `summary-incomplete` (`isSummaryGateFailureRecord` in
+head of the comment names a registered gate category or `quality-failure`
+(`isWorkerGateFailureRecord` and `isSummaryOrQualityFailureRecord` in
 `failure_diagnosis.ts`). A quoted `ignoring broken ref` or milestone `GH013`
-rejection in a refused summary cannot strip `failed-once` or `failed`.
+rejection in a refused summary, gate or substantive verifier finding cannot
+strip `failed-once` or `failed`. Quality findings retain their category without
+a `quality gate` Source line: that line is reserved for actual repository output.
 
 #### `security_fix_gate` is its own failure category (Issue #3454)
 
@@ -5135,8 +5183,8 @@ from the in-run retry (`reportBlock` in `security_fix_gate_retry.ts` with
 `countsAsBlockedRun` true). The completion phase's first-block reason
 (`completion_phase.ts`) stays unmarked, because `recoverFromSecurityGateBlock`
 always replaces it, so it never ends a run.
-`detectFailureCategory` matches it with `startsWith`, right after the
-summary-gate marker, giving `security_fix_gate` (display `security-fix-gate`),
+`detectFailureCategory` matches it with `startsWith` from the
+`WORKER_GATE_MARKERS` registry, giving `security_fix_gate` (display `security-fix-gate`),
 which is `not_code_fixable` (class `agent-outcome`), not infrastructure, and
 follows the normal retry and `failed-once` rules. `classifyCodingFailure`
 returns a `ladder` decision with cooldown `non_transient` for it,
@@ -5145,8 +5193,7 @@ returns a `ladder` decision with cooldown `non_transient` for it,
 quotes the marker later keeps its own category. A retry that could not be
 launched at all (a rate limit, a failed spawn) is deliberately not marked: that
 is a real launch fault and its own error text must still be classified. The
-posted issue comment is unchanged. Unlike `summary_incomplete`, there is no
-`isSummaryGateFailureRecord`-style record check for the label-release sweeps.
+posted issue comment is unchanged. The host-fault and milestone-refusal label-release sweeps also skip the separate failure record that `markIssueAsFailedOnce` or `markIssueAsFailed` posts for the marked reason, because its head `**Category:** \`security-fix-gate\`` line names a registered gate category (`isWorkerGateFailureRecord`), so a quoted test declaration cannot strip `failed-once` or `failed`.
 
 #### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
 
@@ -5163,13 +5210,14 @@ removed. The shared mechanism is the one described under
 prefixed to the gate's message in `gateBeforePush()`, which redacts
 and cuts that message first; an error that is not a `PrePushGateBlockedError`
 is reported without the marker (see "Two limits" below).
-`detectFailureCategory` matches it with `startsWith` after the summary-gate and
-security-fix markers, giving `pre_push_gate` (display `pre-push-gate`), which is
+`detectFailureCategory` matches it with `startsWith` from the
+`WORKER_GATE_MARKERS` registry, giving `pre_push_gate` (display `pre-push-gate`), which is
 `not_code_fixable` (class `agent-outcome`) and not infrastructure, so
 `shouldRetryInfrastructureFailure` declines it. `classifyCodingFailure` returns
 a `ladder` decision with cooldown `non_transient`, `classifyRunFailure` answers
 it before the free-text rules and `detectHostFault` returns `null`, so a block
 always gets one normal attempt and a failure comment carrying the gate output.
+The label-release sweeps skip that comment too (`isWorkerGateFailureRecord`).
 A message that merely quotes the marker later keeps its own category. The final
 mile of `commitAndPushPending` (Step 1b) returns the same unmarked
 `[PRE_PUSH_BLOCKED]` error to its PR-processor callers, which log it and do not
@@ -5192,15 +5240,27 @@ non-infrastructure error from `runPrePushGate` (such as malformed hook input),
 which `gateUnpushedCommits` wraps in one. A git or remote lookup that failed or timed out (a
 `describeUnpushedCommits` `ls-remote`, the `git log` or `ls-files` call in
 `runPrePushGate`, a failed history deepen in the sweep check, a `rev-list` of
-the base range) comes back as a plain error or a `PrePushGateInfrastructureError`
+the base range) comes back as a `PrePushGateInfrastructureError`
 with no gate marker, and `gateBeforePush()` reports it as
 `PRE_PUSH_LOOKUP_FAILED_MARKER` ("Git push failed: the pre-push gate could not
 read the branch state") followed by the cut git text. `detectFailureCategory`
-matches that prefix with `startsWith` ahead of its timeout rule, so the quoted
+retains that prefix as a legacy adapter. New results declare `push_failure`
+from the error kind, so the quoted
 git text (`TIMEOUT: git rev-list ... timed out after 30s`, `Connection timed
 out`) cannot make it a `timeout`: it is the `push_failure` infrastructure
 category, retried in-run, as the push path's own failures are (Issue #1550). With a `baseRef` the gate reads no remote head at all, because
 the base range is local.
+
+The existing failure results now require their source category. The completion
+phase distinguishes the pre-push error kinds exhaustively and forwards that
+category through infrastructure retry, the coding ladder and label handler.
+The existing `RunFailureClassification` can be captured at a raw CLI boundary
+and retained on the outcome; callback and filing consumers prefer that source
+record. Summary-rule verdicts retain all simultaneous categories, and existing-PR
+outcomes keep evidence and substantive finding diagnostics. Stop provenance uses
+the existing runner fields on the outcome/callback, including unknown/absent
+watchdog information. See the source-declared failure section of the issue
+workflow for the contract.
 
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
@@ -5552,9 +5612,12 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [issue_dependencies.ts](../worker/deno/lib/issue_dependencies.ts)                                                 | Dependency resolution and cycle detection                                                                                                                                                                                       |
 | **PR management**           |                                                                                                                   |                                                                                                                                                                                                                                 |
 |                             | [pr_body.ts](../worker/deno/lib/pr_body.ts)                                                                       | PR body construction                                                                                                                                                                                                            |
-|                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from its pr-summary file (and optional facts file, whose Branch outcomes list it renders) after a fix run when the summary differs from the digest recorded in the body (Issues #3089, #3315, #3535)         |
+|                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from its pr-summary file (and optional facts file, whose Branch outcomes list it renders) after a fix run when the summary differs from the digest recorded in the body (Issues #3089, #3315, #3535; Issue #3678: files the follow-up when a fix run newly reports a gap); also adopts a marker-less agent-raised PR on the run's own `issue-<N>` branch (Issue #3804), and is called by the Priority 1.64 reconcile pass (Issue #3760) |
+|                             | [agent_pr_adoption.ts](../worker/deno/lib/agent_pr_adoption.ts) | Adopts the agent-raised PR on the run's own `issue-<N>` branch at every issue-run completion exit, rebuilding its body with the worker marker and digest (Issue #3804) |
+|                             | [pr_body_reconcile.ts](../worker/deno/lib/pr_body_reconcile.ts)                                                   | Priority 1.64 sweep: re-syncs an open fleet-authored PR body whose recorded `vibe-pr-summary` digest differs from the summary at its head after a push the worker did not make, rebuilding in a disposable shallow clone (Issue #3760) |
+|                             | [pr_body_sync_follow_up.ts](../worker/deno/lib/pr_body_sync_follow_up.ts)                                         | Files or reuses the parent's `idle-task` follow-up when a PR-body re-sync finds that a fix run newly reports a `partial` or `missing` criterion, after re-verifying the issue's content (Issue #3678)                           |
 |                             | [pr_summary_facts.ts](../worker/deno/lib/pr_summary_facts.ts)                                                     | Loads and validates `pr-summary-<N>.facts.json` and renders its Branch outcomes list into the PR summary (Issue #3535)                                                                                                          |
-|                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts)                                       | Post-agent drift check on review-fix runs: model pass, Test Plan recount and docs-sweep re-check, one recovery turn (Issue #3143); given the change request, flags quoted summary sentences still present (Issue #3244); maps Branch-outcomes `path:line` citations through the push's diff and flags stale ones (Issue #3341); uses the shared changed-comment/affected-manual scope and question (Issues #3715, #3731); reads the citations from `pr-summary-<N>.facts.json` when present at either ref, reporting a malformed one as not checked (Issue #3536) |
+|                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts)                                       | Post-agent drift check on review-fix runs: model pass, Test Plan recount and docs-sweep re-check, one recovery turn (Issue #3143), which also takes each Test Plan figure the recount could not check (Issue #3740); given the change request, flags quoted summary sentences still present (Issue #3244); maps Branch-outcomes `path:line` citations through the push's diff and flags stale ones (Issue #3341); also runs the model pass on a push that edits manual or prompt Markdown, asking the shared doc-prose question (Issue #3347); uses the shared changed-comment/affected-manual scope and question (Issues #3715, #3731); runs a mutation check over the lines a review-fix push adds, reporting surviving mutants under its own residual heading (Issue #3750); reads the citations from `pr-summary-<N>.facts.json` when present at either ref, reporting a malformed one as not checked (Issue #3536) |
 |                             | [summary_claim_check.ts](../worker/deno/lib/summary_claim_check.ts)                                               | First-run PR-summary claim check: model pass and Test Plan backstop, one recovery turn (Issue #3257); also questions changed source comments, attached headers, and affected manual sections (Issues #3715, #3731)                                                |
 |                             | [summary_claim_correction.ts](../worker/deno/lib/summary_claim_correction.ts)                                     | Narrow correction when claim checks alone block a later attempt; worker-owned indexed sentence replacements for manual/prompt findings, file-writing tools and Bash denied, unchanged findings carried forward (Issues #3324, #3865)                                       |
 |                             | [doc_prose_claims.ts](../worker/deno/lib/doc_prose_claims.ts)                                                     | Safe manual/source path selection and the shared prose-against-code question (Issues #3347, #3715, #3731)                                                                               |
@@ -5562,7 +5625,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [summary_scrub_gate.ts](../worker/deno/lib/summary_scrub_gate.ts) | Refuses prompt-scrubbed HTML-comment/Mermaid markers in PR summaries at completion and in the local checker (Issue #3710) |
 |                             | [change_request_quotes.ts](../worker/deno/lib/change_request_quotes.ts)                                           | Parses a change request's findings and quoted spans; flags quoted PR-summary sentences still present in a summary; called by the drift check (Issue #3244)                                                                      |
 |                             | [branch_outcome_citations.ts](../worker/deno/lib/branch_outcome_citations.ts)                                     | Parses Branch-outcomes `path:line` citations and maps them through a `git diff -U0` to flag ones left at the previous head's numbers; called by the drift check (Issue #3341); reads citations from the facts file when present (Issue #3536)                                               |
-|                             | [test_plan_recount.ts](../worker/deno/lib/test_plan_recount.ts)                                                   | Counts test declarations at the head and flags stale Test Plan counts (Issue #3143), including a paired `N passed, M failed` result checked as N + M (Issue #3381); several counts over several files are compared file by file or reported unchecked (Issue #3356)                                                              |
+|                             | [test_plan_recount.ts](../worker/deno/lib/test_plan_recount.ts)                                                   | Counts test declarations at the head and flags stale Test Plan counts (Issue #3143), including a paired `N passed, M failed` result checked as N + M (Issue #3381); several counts over several files are compared file by file or reported unchecked (Issue #3356); each count in a mixed unit is decided on its own, so a whole-file count is compared and only a partial figure is unchecked (Issue #3740)                                                              |
 |                             | [pr_comments.ts](../worker/deno/lib/pr_comments.ts)                                                               | PR comment/feedback detection and processing                                                                                                                                                                                    |
 |                             | [pr_evidence.ts](../worker/deno/lib/pr_evidence.ts)                                                               | Screenshot processing and evidence validation                                                                                                                                                                                   |
 |                             | [pr_issue_linking.ts](../worker/deno/lib/pr_issue_linking.ts)                                                     | Ensure PRs reference closing issues                                                                                                                                                                                             |
@@ -5655,7 +5718,8 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [security_finding_id.ts](../worker/deno/lib/security_finding_id.ts)                                               | Finding-id hashing for the dedup marker comment                                                                                                                                                                                 |
 |                             | [suppression_comments.ts](../worker/deno/lib/suppression_comments.ts)                                             | In-source `security-scan-ignore` marker grammar (`noqa`, `eslint-disable-next-line`, …) with mandatory `author=` / `expires=` / reason governance and the per-run suppression report                                            |
 |                             | [label_security.ts](../worker/deno/lib/label_security.ts)                                                         | Strips workflow labels from filed `security` issues on each scan                                                                                                                                                                |
-|                             | [security_fix_gate.ts](../worker/deno/lib/security_fix_gate.ts)                                                   | Patch-verification gate for PRs closing a `security` finding — diff-asserted test evidence plus prose linkage                                                                                                                   |
+|                             | [security_fix_gate.ts](../worker/deno/lib/security_fix_gate.ts)                                                   | Patch-verification gate for PRs closing a `security` finding — diff-asserted test evidence, executed red-to-green check and a self-reported trigger-closed statement                                                            |
+|                             | [security_fix_discrimination.ts](../worker/deno/lib/security_fix_discrimination.ts)                               | Runs the security fix's named Deno or Rust test at the head and at the merge-base in a disposable checkout (Issue #3659)                                                                                                                     |
 |                             | [security_fix_gate_feedback.ts](../worker/deno/lib/security_fix_gate_feedback.ts)                                 | States the gate's evidence contract in the prompt and carries a blocked verdict into the next attempt via run state                                                                                                             |
 | **Configuration**           |                                                                                                                   |                                                                                                                                                                                                                                 |
 |                             | [config.ts](../worker/deno/lib/config.ts)                                                                         | Configuration loading                                                                                                                                                                                                           |

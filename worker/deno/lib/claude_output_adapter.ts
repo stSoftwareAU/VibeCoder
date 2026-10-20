@@ -256,6 +256,21 @@ function classifyClaudeFailure(
   const httpStatus = extractHttpStatus(surface);
   const say = (headline: string) => failureMessage(headline, evidenceText);
 
+  if (
+    decoded.errors.some((error) =>
+      error.source === "result" && error.code === "error_max_turns"
+    )
+  ) {
+    return agentFailure({
+      category: "turn-limit",
+      message: say(
+        "The Claude CLI reached its per-run turn limit (error_max_turns)",
+      ),
+      evidence: "structured",
+      errors: decoded.errors,
+    });
+  }
+
   // Memory first: a V8 heap abort's "heap limit" wording matches the
   // secondary rate-limit pattern, and waiting cannot reclaim memory.
   if (detectOutOfMemory(surface)) {

@@ -31,6 +31,7 @@ import { recordRepoFastFailure } from "../lib/repo_fast_failure_tracker.ts";
 
 const REPO = "org/backed-off-fixture";
 const WORKER_USER = "worker-bot";
+const TRUSTED = "alice";
 
 /** Eight unassigned `low-priority` issues — the shape of the incident. */
 function fixtureIssues(): Array<Record<string, unknown>> {
@@ -44,10 +45,24 @@ function fixtureIssues(): Array<Record<string, unknown>> {
   }));
 }
 
-/** Issue list from the fixture; every PR probe answers empty. */
+/**
+ * Issue list from the fixture; every PR probe answers empty. The timeline
+ * answers with a `low-priority` add by the trusted author (Issue #3571).
+ */
 function stubGh(args: string[]): Promise<string> {
   if (args[0] === "issue" && args[1] === "list") {
     return Promise.resolve(JSON.stringify(fixtureIssues()));
+  }
+  if (
+    args[0] === "api" && /\/issues\/(\d+)\/timeline/.test(args[1] ?? "")
+  ) {
+    return Promise.resolve(JSON.stringify([{
+      id: 1,
+      event: "labeled",
+      label: { name: "low-priority" },
+      actor: { login: TRUSTED },
+      created_at: "2026-01-01T00:00:00Z",
+    }]));
   }
   return Promise.resolve("[]");
 }
@@ -86,8 +101,18 @@ async function idleLinesWith(backedOff: boolean): Promise<string[]> {
       githubUser: WORKER_USER,
       logger: createLogger({ write: (line: string) => lines.push(line) }),
       config: { ...buildDefaultWorkerConfig(), repos: [REPO], workDir },
+      // Issue #3571: the census models the label-author gate, so trust the adder.
+      resolveTrustedAuthors: () =>
+        Promise.resolve({
+          ok: true,
+          byRepo: new Map([[
+            REPO,
+            { allowedAuthors: [TRUSTED], authorisedCommenters: [TRUSTED] },
+          ]]),
+        }),
       idleDetectGhCommandFn: stubGh,
     });
+    assertEquals((await deps.refreshTrustedAuthors!()).ok, true);
     // The audit first, so its stubbed probes warm the shared issue and PR
     // caches the census reads — the production ordering, and what keeps this
     // test offline.
@@ -118,6 +143,7 @@ Deno.test(
     assert(repoLine !== undefined, "the census logged no line for the repo");
     // The backlog is real, so the idle-task filer stays suppressed.
     assert(repoLine.includes("low_priority=8"), repoLine);
+    assert(repoLine.includes("claim_refused=0"), repoLine);
     assert(repoLine.includes("inversion_signal=true"), repoLine);
     // But the claim scan was never shown the repository.
     assert(repoLine.includes("scanned=false"), repoLine);
@@ -149,6 +175,7 @@ Deno.test(
       l.includes("[idle-census]") && l.includes(`repo=${REPO}`)
     );
     assert(repoLine !== undefined, "the census logged no line for the repo");
+    assert(repoLine.includes("claim_refused=0"), repoLine);
     assert(repoLine.includes("scanned=true"), repoLine);
     assert(repoLine.includes("skip_reason=scanned"), repoLine);
     assert(

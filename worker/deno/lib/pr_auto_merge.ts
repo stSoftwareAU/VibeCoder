@@ -133,6 +133,10 @@ const SUCCESSFUL_OUTCOMES: ReadonlySet<AutoMergeResult> = new Set([
   // Issue #1800: a draft is the author's choice, not a fault of the worker's
   // — logged at info so a long-lived draft is not a warning per cycle.
   AutoMergeResult.Draft,
+  // Issue #4063: a milestone summary PR waiting on its open children or on
+  // a declared dependency is the normal state, not a degradation.
+  AutoMergeResult.BlockedOpenChildren,
+  AutoMergeResult.BlockedPendingDependencies,
 ]);
 
 /**
@@ -1386,7 +1390,8 @@ async function refuseMilestoneMerge(
       gate.milestoneTitle,
       gate.dependencies,
     );
-    log(warning);
+    // Issue #4063: not logged here — the outcome message carries the line,
+    // which `logAutoMergeOutcome` writes once at INFO.
     const outcome = await postPendingDependenciesBlockComment({
       repo,
       prNumber,
@@ -1410,7 +1415,8 @@ async function refuseMilestoneMerge(
     gate.milestoneTitle,
     gate.children,
   );
-  log(warning);
+  // Issue #4063: not logged here — the outcome message carries the line,
+  // which `logAutoMergeOutcome` writes once at INFO.
   const outcome = await postOpenChildrenBlockComment({
     repo,
     prNumber,

@@ -32,6 +32,10 @@
 
 import { resolveHostConfigPath } from "./lib/host_config_path.ts";
 import { loadConfig, validateConfig } from "./lib/config.ts";
+import {
+  CLAUDE_MAX_TURNS_ENV,
+  DEFAULT_CLAUDE_MAX_TURNS,
+} from "./lib/claude_turn_limit.ts";
 import { applyServiceAccountEnv } from "./lib/service_account_env.ts";
 import { createLogger } from "./lib/logger.ts";
 import { installConsoleRedaction } from "./lib/console_redaction.ts";
@@ -123,6 +127,7 @@ import { gitOperationsCommand } from "./commands/git_operations.ts";
 import { branchCleanupCommand } from "./commands/branch_cleanup.ts";
 import { claudeAuthCommand } from "./commands/claude_auth.ts";
 import { codexBudgetCommand } from "./commands/codex_budget.ts";
+import { providerFeasibilityCommand } from "./commands/provider_feasibility.ts";
 import { claudeRunnerCommand } from "./commands/claude_runner.ts";
 import { reviewRoundCommand } from "./commands/review_round.ts";
 import { answerSanitiserCommand } from "./commands/answer_sanitiser.ts";
@@ -151,6 +156,8 @@ import { prMaintenanceCommand } from "./commands/pr_maintenance.ts";
 import { runCoreCommand } from "./commands/run_core.ts";
 import { creditSummaryCommand } from "./commands/credit_summary.ts";
 import { backlogReportCommand } from "./commands/backlog_report.ts";
+import { subscriptionAllocationCommand } from "./commands/subscription_allocation.ts";
+import { fleetExperimentReportCommand } from "./commands/fleet_experiment_report.ts";
 import { greenGateReportCommand } from "./commands/green_gate_report.ts";
 import { stripContainerfileCommand } from "./commands/strip_containerfile.ts";
 import { toolchainSelfcheckCommand } from "./commands/toolchain_selfcheck.ts";
@@ -325,6 +332,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(branchCleanupCommand);
   registry.register(claudeAuthCommand);
   registry.register(codexBudgetCommand);
+  registry.register(providerFeasibilityCommand);
   registry.register(claudeRunnerCommand);
   registry.register(reviewRoundCommand);
   registry.register(answerSanitiserCommand);
@@ -353,6 +361,8 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(runCoreCommand);
   registry.register(creditSummaryCommand);
   registry.register(backlogReportCommand);
+  registry.register(fleetExperimentReportCommand);
+  registry.register(subscriptionAllocationCommand);
   registry.register(greenGateReportCommand);
   registry.register(stripContainerfileCommand);
   registry.register(repoSettingsHardenCommand);
@@ -818,6 +828,23 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       logger.error(`Configuration error: ${(error as Error).message}`);
       Deno.exit(1);
     }
+  }
+
+  // Standalone commands also invoke the agent without runWorker. The loaded
+  // config is authoritative; overwrite stale inherited internal transport.
+  // Read-only commands such as check-mermaid deliberately lack access to this
+  // variable. Preserve their narrow permissions; an agent invocation still
+  // requires that access when its argument builder reads the transported cap.
+  if (
+    (await Deno.permissions.query({
+      name: "env",
+      variable: CLAUDE_MAX_TURNS_ENV,
+    })).state === "granted"
+  ) {
+    Deno.env.set(
+      CLAUDE_MAX_TURNS_ENV,
+      String(config.claudeMaxTurns ?? DEFAULT_CLAUDE_MAX_TURNS),
+    );
   }
 
   // Execute the command
