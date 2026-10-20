@@ -110,6 +110,11 @@ timeout, a provider the running image does not carry, a prompt that will not
 load — fails loudly the same way, posting `## Quorum Failed` with the reason
 before it releases the issue.
 
+For quota-aware hosts, `quorum_planners: ["auto", "auto"]` and
+`quorum_judge: "auto"` bind all three roles to the currently selected provider
+at the start of the run. The two drafts remain independent invocations. An
+explicit provider id still pins that role, even in automatic provider mode.
+
 ## 5. 🕶️ The judge never sees a vendor
 
 The judging prompt receives the two drafts as **Plan A** and **Plan B** only.

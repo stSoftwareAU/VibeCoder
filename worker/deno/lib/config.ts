@@ -17,6 +17,7 @@ import { parseAllocationPolicy } from "./subscription_allocation.ts";
 import { registerAgentPreFlightConfigs } from "./agent_pre_flight.ts";
 import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { modelTierOverrides } from "./phase_routing.ts";
 import {
   EXCLUSION_TEAM_PATTERN,
   validateConfigFileJson,
@@ -78,6 +79,7 @@ import {
   defaultQuorumPlanners,
   LABEL_DEFAULTS,
   OPERATIONAL_DEFAULTS,
+  PROVIDER_MODEL_TIERS,
 } from "./config_defaults.ts";
 import type { VerbosityLevel } from "../types.ts";
 import type { DuplicateRepoSlug } from "./repo_slug.ts";
@@ -976,27 +978,41 @@ export async function loadConfig(
   const repoFastFailureWindowHours = file.repo_fast_failure_window_hours ??
     OPERATIONAL_DEFAULTS.repoFastFailureWindowHours;
 
+  const tierModels = modelTierOverrides(
+    file.phase_model_tiers,
+    file.provider_model_tiers,
+    PROVIDER_MODEL_TIERS,
+  );
+
   // Phase-specific model overrides (Issue #1265)
-  const phaseModelOverrides: Record<string, string> =
-    file.phase_model_overrides ?? {};
+  const phaseModelOverrides: Record<string, string> = {
+    ...tierModels.claude,
+    ...(file.phase_model_overrides ?? {}),
+  };
 
   // Phase-specific effort overrides (Issue #1403)
   const phaseEffortOverrides: Record<string, string> =
     file.phase_effort_overrides ?? {};
 
   // Phase-specific Codex model/effort overrides (Issue #363)
-  const codexPhaseModelOverrides: Record<string, string> =
-    file.codex_phase_model_overrides ?? {};
+  const codexPhaseModelOverrides: Record<string, string> = {
+    ...tierModels.codex,
+    ...(file.codex_phase_model_overrides ?? {}),
+  };
   const codexPhaseEffortOverrides: Record<string, string> =
     file.codex_phase_effort_overrides ?? {};
 
   // Phase-specific Gemini model overrides (Issue #364)
-  const geminiPhaseModelOverrides: Record<string, string> =
-    file.gemini_phase_model_overrides ?? {};
+  const geminiPhaseModelOverrides: Record<string, string> = {
+    ...tierModels.gemini,
+    ...(file.gemini_phase_model_overrides ?? {}),
+  };
 
   // Phase-specific DeepSeek model overrides (Issue #413)
-  const deepseekPhaseModelOverrides: Record<string, string> =
-    file.deepseek_phase_model_overrides ?? {};
+  const deepseekPhaseModelOverrides: Record<string, string> = {
+    ...tierModels.deepseek,
+    ...(file.deepseek_phase_model_overrides ?? {}),
+  };
 
   // Issue-executor split, host-wide (Issue #2341). A `repo_config` entry of
   // the same name overrides it per repository.

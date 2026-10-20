@@ -169,6 +169,30 @@ post-fix behaviour.
 
 > **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — all four route each phase to a model through their own tables, but only Claude and Codex carry a reasoning-effort lever, and the Fable tier, its rate-limit ladder and the degraded-model machinery below are Claude's alone. DeepSeek routes every phase through `DEEPSEEK_PHASE_MODEL_DEFAULTS` and carries no effort lever at all, because its endpoint implements none.
 
+Labels choose work phases, and one shared `PHASE_MODEL_TIERS` policy maps
+those phases to provider-independent `best`, `standard` or `fast` tiers.
+Planning, questions, refinement, revision and Quorum use `best`; implementation
+and reactive fixes use `standard`; spelling, summaries and health use `fast`.
+Only the provider's tier catalogue contains concrete model names.
+
+Operators can change that policy once in `.config.json`:
+
+```json
+{
+  "phase_model_tiers": { "issue": "best" },
+  "provider_model_tiers": {
+    "claude": { "best": "opus", "standard": "sonnet", "fast": "haiku" },
+    "codex": { "best": "gpt-6-astra", "standard": "gpt-6.1-sol", "fast": "gpt-6-luna" }
+  }
+}
+```
+
+The Codex ids above are an example for an account whose model catalogue offers
+them; verify access with a live turn. Unspecified tiers keep the built-in model
+ids. Existing explicit provider phase overrides, per-repo settings and phase
+environment overrides retain precedence over the shared tier policy. Invalid
+tier names, phases, providers and empty model ids fail at configuration load.
+
 VibeCoder uses **effort-first cost routing**: the worker varies
 **effort** (`max`/`xhigh`/`high`/`medium`/`low`) as the *primary* cost lever rather than
 switching model families per phase. Model tier is the *secondary* lever, and

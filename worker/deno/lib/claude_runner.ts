@@ -854,7 +854,9 @@ export interface HealthCheckResult {
   /**
    * 0 = healthy, 1 = unresponsive, 2 = auth failure,
    * 3 = rate/usage limited (Issue #4315 — the caller pauses instead of
-   * re-probing; every probe is a billed invocation).
+   * re-probing; every probe is a billed invocation) or another classified
+   * provider outage — quota exhaustion, rate limit or model unavailability —
+   * read from the provider's structured events (Issue #4014).
    */
   exitCode: number;
   /** Human-readable message. */
@@ -3784,6 +3786,42 @@ export async function checkClaudeHealth(
       exitCode: 3,
       message: summary.message,
       pauseSeconds,
+    };
+  }
+
+  // (Issue #4014) A provider whose CLI reports its refusal only as structured
+  // events — Codex writes errors into its JSONL stream, not stderr — leaves
+  // the text summariser above with nothing to classify, and the probe read as
+  // a generic exit-1 failure that skipped the cycle for ever. The provider's
+  // own classifier (Issue #1695) decoded those events onto the result; when
+  // the text evidence was unclassifiable, its verdict stands in.
+  const classified = result.value.agentFailure;
+  if (classified?.category === "authentication") {
+    // A structured auth refusal is the same verdict the text branch above
+    // returns, reached without text evidence (Issue #4014).
+    const actionable = provider.authActionableMessage();
+    logger?.error(
+      `${provider.displayName} requires login (structured refusal)`,
+    );
+    logger?.error(`ACTION REQUIRED: ${actionable}`);
+    return { healthy: false, exitCode: 2, message: actionable };
+  }
+  if (
+    classified &&
+    (classified.category === "quota-exhausted" ||
+      classified.category === "rate-limit" ||
+      classified.category === "model-unavailable")
+  ) {
+    // The same failure classes the invocation-layer fallback policy fires on
+    // (PROVIDER_OUTAGE_CLASSES): the health gate must probe the configured
+    // alternatives rather than skip the cycle. Deliberately no `pauseSeconds`
+    // — writing a usage signal for the provider would pause auto-mode claim
+    // routing, defeating the fallback this verdict exists to reach.
+    logger?.warn(classified.message);
+    return {
+      healthy: false,
+      exitCode: 3,
+      message: classified.message,
     };
   }
 

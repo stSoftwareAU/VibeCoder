@@ -1,3 +1,4 @@
+import { modelsForPhaseTiers } from "./phase_routing.ts";
 import { DEFAULT_CLAUDE_MAX_TURNS } from "./claude_turn_limit.ts";
 /**
  * Configuration defaults — single source of truth for TypeScript.
@@ -1233,24 +1234,12 @@ export function getCheaperModel(currentModel: string): string | null {
  * regardless of the CLI's own default, while the override chain keeps tier
  * fully tunable.
  */
-export const PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
-  planning: DEFAULT_CLAUDE_MODEL_PLANNING,
-  grill_me: DEFAULT_CLAUDE_MODEL_GRILL_ME,
-  // Issue #4112: both Quorum phases join the planning-shaped top tier.
-  quorum: DEFAULT_CLAUDE_MODEL_QUORUM,
-  quorum_judge: DEFAULT_CLAUDE_MODEL_QUORUM,
-  issue: DEFAULT_CLAUDE_MODEL_ISSUE,
-  refinement: DEFAULT_CLAUDE_MODEL_REFINEMENT,
-  revision: DEFAULT_CLAUDE_MODEL_REVISION,
-  ci_fix: DEFAULT_CLAUDE_MODEL_CI_FIX,
-  quality_fix: DEFAULT_CLAUDE_MODEL_QUALITY_FIX,
-  pr_feedback: DEFAULT_CLAUDE_MODEL_PR_FEEDBACK,
-  spelling_fix: DEFAULT_CLAUDE_MODEL_SPELLING_FIX,
-  question: DEFAULT_CLAUDE_MODEL_QUESTION,
-  clarification: DEFAULT_CLAUDE_MODEL_CLARIFICATION,
-  summarise: DEFAULT_CLAUDE_MODEL_SUMMARISE,
-  health: DEFAULT_CLAUDE_MODEL_HEALTH,
-} as const;
+export const PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
+  modelsForPhaseTiers({
+    best: DEFAULT_CLAUDE_MODEL_TOP_TIER,
+    standard: DEFAULT_CLAUDE_MODEL_ISSUE,
+    fast: DEFAULT_CLAUDE_MODEL_HEALTH,
+  });
 
 // ---------------------------------------------------------------------------
 // Codex per-phase routing (Issue #363, parent #357)
@@ -1316,23 +1305,12 @@ export const CODEX_EFFORT_LEVELS = {
  * revision, question, clarification) take the top tier; the trivial trio takes
  * the cheap tier; everything else runs on the base tier and varies effort.
  */
-export const CODEX_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
-  planning: DEFAULT_CODEX_MODEL_TOP_TIER,
-  grill_me: DEFAULT_CODEX_MODEL_TOP_TIER,
-  quorum: DEFAULT_CODEX_MODEL_TOP_TIER,
-  quorum_judge: DEFAULT_CODEX_MODEL_TOP_TIER,
-  refinement: DEFAULT_CODEX_MODEL_TOP_TIER,
-  revision: DEFAULT_CODEX_MODEL_TOP_TIER,
-  question: DEFAULT_CODEX_MODEL_TOP_TIER,
-  clarification: DEFAULT_CODEX_MODEL_TOP_TIER,
-  issue: DEFAULT_CODEX_MODEL,
-  ci_fix: DEFAULT_CODEX_MODEL,
-  pr_feedback: DEFAULT_CODEX_MODEL,
-  quality_fix: DEFAULT_CODEX_MODEL,
-  spelling_fix: DEFAULT_CODEX_MODEL_CHEAP_TIER,
-  summarise: DEFAULT_CODEX_MODEL_CHEAP_TIER,
-  health: DEFAULT_CODEX_MODEL_CHEAP_TIER,
-} as const;
+export const CODEX_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
+  modelsForPhaseTiers({
+    best: DEFAULT_CODEX_MODEL_TOP_TIER,
+    standard: DEFAULT_CODEX_MODEL,
+    fast: DEFAULT_CODEX_MODEL_CHEAP_TIER,
+  });
 
 /**
  * Per-phase Codex reasoning-effort defaults (Issue #363).
@@ -1412,23 +1390,12 @@ export const DEFAULT_GEMINI_MODEL_CHEAP_TIER = "gemini-2.5-flash-lite" as const;
  * revision, question, clarification) take the top tier; the trivial trio takes
  * the cheap tier; everything else runs on the base tier.
  */
-export const GEMINI_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
-  planning: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  grill_me: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  quorum: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  quorum_judge: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  refinement: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  revision: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  question: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  clarification: DEFAULT_GEMINI_MODEL_TOP_TIER,
-  issue: DEFAULT_GEMINI_MODEL,
-  ci_fix: DEFAULT_GEMINI_MODEL,
-  pr_feedback: DEFAULT_GEMINI_MODEL,
-  quality_fix: DEFAULT_GEMINI_MODEL,
-  spelling_fix: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
-  summarise: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
-  health: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
-} as const;
+export const GEMINI_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
+  modelsForPhaseTiers({
+    best: DEFAULT_GEMINI_MODEL_TOP_TIER,
+    standard: DEFAULT_GEMINI_MODEL,
+    fast: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
+  });
 
 // ---------------------------------------------------------------------------
 // DeepSeek per-phase routing (Issue #413, parent #396)
@@ -1483,22 +1450,35 @@ export const DEFAULT_DEEPSEEK_MODEL = "deepseek-flash" as const;
  * `health`) runs on `deepseek-flash` too. That is a deliberate absence, not an
  * omission.
  */
-export const DEEPSEEK_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
-  planning: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  grill_me: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  quorum: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  quorum_judge: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  refinement: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  revision: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  question: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  clarification: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
-  issue: DEFAULT_DEEPSEEK_MODEL,
-  ci_fix: DEFAULT_DEEPSEEK_MODEL,
-  pr_feedback: DEFAULT_DEEPSEEK_MODEL,
-  quality_fix: DEFAULT_DEEPSEEK_MODEL,
-  spelling_fix: DEFAULT_DEEPSEEK_MODEL,
-  summarise: DEFAULT_DEEPSEEK_MODEL,
-  health: DEFAULT_DEEPSEEK_MODEL,
+export const DEEPSEEK_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
+  modelsForPhaseTiers({
+    best: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+    standard: DEFAULT_DEEPSEEK_MODEL,
+    fast: DEFAULT_DEEPSEEK_MODEL,
+  });
+
+/** Concrete provider models for the shared best/standard/fast policy. */
+export const PROVIDER_MODEL_TIERS = {
+  claude: {
+    best: DEFAULT_CLAUDE_MODEL_TOP_TIER,
+    standard: DEFAULT_CLAUDE_MODEL_ISSUE,
+    fast: DEFAULT_CLAUDE_MODEL_HEALTH,
+  },
+  codex: {
+    best: DEFAULT_CODEX_MODEL_TOP_TIER,
+    standard: DEFAULT_CODEX_MODEL,
+    fast: DEFAULT_CODEX_MODEL_CHEAP_TIER,
+  },
+  gemini: {
+    best: DEFAULT_GEMINI_MODEL_TOP_TIER,
+    standard: DEFAULT_GEMINI_MODEL,
+    fast: DEFAULT_GEMINI_MODEL_CHEAP_TIER,
+  },
+  deepseek: {
+    best: DEFAULT_DEEPSEEK_MODEL_TOP_TIER,
+    standard: DEFAULT_DEEPSEEK_MODEL,
+    fast: DEFAULT_DEEPSEEK_MODEL,
+  },
 } as const;
 
 /**

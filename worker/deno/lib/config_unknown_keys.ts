@@ -66,6 +66,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "claude_model",
   "best_planning_model",
   "phase_model_overrides",
+  "phase_model_tiers",
+  "provider_model_tiers",
   "phase_effort_overrides",
   // Codex per-phase routing overrides (Issue #363).
   "codex_phase_model_overrides",

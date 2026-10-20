@@ -423,11 +423,14 @@ Deno.test({
 
 Deno.test({
   name:
-    "checkClaudeHealth - surfaces real exit code + stderr instead of misleading 'rate-limited' (Issue #1980)",
+    "checkClaudeHealth - surfaces real stderr instead of misleading 'rate-limited' (Issue #1980, #4014)",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
     // Stub claude that fails with a clear non-rate-limit stderr message.
+    // Issue #4014: a "model not found" refusal is a classified
+    // model-unavailable outage, so the verdict is fallback-eligible (exit 3)
+    // rather than the historical generic exit 1.
     const stubBody =
       `printf '%s\\n' 'Error: model claude-bogus not found' 1>&2\n` +
       `exit 7\n`;
@@ -436,8 +439,7 @@ Deno.test({
     });
 
     assertEquals(result.healthy, false);
-    // Must include the real exit code, not just exit 1.
-    assertStringIncludes(result.message, "exited 7");
+    assertEquals(result.exitCode, 3);
     // Must include the real stderr.
     assertStringIncludes(result.message, "model claude-bogus not found");
     // Must NOT claim rate-limited when stderr has no rate-limit evidence.
@@ -514,6 +516,122 @@ Deno.test("checkClaudeHealth - a runner that fails before spawning logs the unde
     ),
     `expected a logged ERROR line naming the cause, got:\n${lines.join("\n")}`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Structured provider refusals at the health gate (Issue #4014)
+// ---------------------------------------------------------------------------
+
+/** One classified provider failure as the runner carries it (Issue #1695). */
+function classifiedFailure(
+  category: string,
+  message: string,
+): NonNullable<ClaudeExecutionResult["agentFailure"]> {
+  return {
+    category: category as NonNullable<
+      ClaudeExecutionResult["agentFailure"]
+    >["category"],
+    message,
+    evidence: "structured",
+    terminal: true,
+    errors: [],
+  };
+}
+
+/** A failed health probe whose refusal exists only as structured events. */
+function structuredRefusalRunner(
+  failure: NonNullable<ClaudeExecutionResult["agentFailure"]>,
+): (options: RunClaudeOptions) => Promise<Result<ClaudeExecutionResult>> {
+  return (_options) =>
+    Promise.resolve<Result<ClaudeExecutionResult>>({
+      ok: true,
+      value: {
+        exitCode: 1,
+        output: "",
+        stderr: "",
+        timedOut: false,
+        agentFailure: failure,
+      },
+    });
+}
+
+Deno.test("checkClaudeHealth - a structured model-unavailable refusal is fallback-eligible (Issue #4014)", async () => {
+  // GRQ-23: Codex writes its refusals into the JSONL stream only — stdout and
+  // stderr are both empty — so the text summariser had nothing to classify
+  // and the health gate skipped cycles instead of probing the fallback list.
+  const result = await checkClaudeHealth(
+    10,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    structuredRefusalRunner(classifiedFailure(
+      "model-unavailable",
+      "Codex refused the requested model (…): the 'gpt-6-luna' model is not supported",
+    )),
+  );
+
+  assertEquals(result.healthy, false);
+  assertEquals(
+    result.exitCode,
+    3,
+    "a classified provider outage must be fallback-eligible",
+  );
+  assertStringIncludes(result.message, "refused the requested model");
+});
+
+Deno.test("checkClaudeHealth - a structured quota-exhausted refusal is fallback-eligible (Issue #4014)", async () => {
+  const result = await checkClaudeHealth(
+    10,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    structuredRefusalRunner(classifiedFailure(
+      "quota-exhausted",
+      "Codex's subscription window is exhausted (…): usage limit reached",
+    )),
+  );
+
+  assertEquals(result.healthy, false);
+  assertEquals(result.exitCode, 3);
+  assertStringIncludes(result.message, "subscription window is exhausted");
+});
+
+Deno.test("checkClaudeHealth - a structured authentication refusal keeps exit 2 (Issue #4014)", async () => {
+  const result = await checkClaudeHealth(
+    10,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    structuredRefusalRunner(classifiedFailure(
+      "authentication",
+      "Codex refused the credential (…): unauthorized",
+    )),
+  );
+
+  assertEquals(result.healthy, false);
+  assertEquals(result.exitCode, 2);
+});
+
+Deno.test("checkClaudeHealth - a classified ordinary task failure keeps the generic path (Issue #4014)", async () => {
+  // Only provider *outages* are fallback-eligible. A structured ordinary
+  // failure must keep the historical exit-1 skip-cycle verdict.
+  const result = await checkClaudeHealth(
+    10,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    structuredRefusalRunner(classifiedFailure(
+      "task-failure",
+      "The Codex CLI exited 1",
+    )),
+  );
+
+  assertEquals(result.healthy, false);
+  assertEquals(result.exitCode, 1);
 });
 
 // ---------------------------------------------------------------------------
