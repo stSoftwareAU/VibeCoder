@@ -4763,6 +4763,11 @@ export async function createProductionRunCoreDeps(
         issueBody: issueData.body ?? "",
         issueLabels: issueData.labels ?? [],
         issueComments: commentContext.issueComments,
+        // Issue #4061: the same comments with their authors, for the clarity
+        // phase's round count (Issue #1263). Left out, every issue warned
+        // "No authored comment rows", counted zero rounds, and the
+        // `maxClarificationRounds` escape could never trigger.
+        issueCommentRows: issueData.comments ?? [],
         ...(commentContext.commentBoundaryId
           ? { commentBoundaryId: commentContext.commentBoundaryId }
           : {}),
