@@ -12,11 +12,11 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import {
   MAX_MUTATION_BUDGET_SECONDS,
   resolveMutationBudgetSeconds,
-  workOnIssueCompletion,
-} from "../lib/phases/completion_phase.ts";
+} from "../lib/mutation_check_invocation.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";

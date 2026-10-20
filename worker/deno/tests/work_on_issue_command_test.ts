@@ -317,6 +317,7 @@ Deno.test("runWorkOnIssueCommand - failed orchestration returns failure", async 
 
   const failedResult: WorkOnIssueResult = {
     success: false,
+    category: "unknown",
     phase: "setup",
     reason: "Failed to claim issue",
     timings: { setup: 0.5 },

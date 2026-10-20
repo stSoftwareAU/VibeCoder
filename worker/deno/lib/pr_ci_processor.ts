@@ -1,3 +1,4 @@
+import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 /**
  * PR CI fix processor (Issue #967).
  *
@@ -12,6 +13,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { isProviderUnavailableFailure } from "./agent_output.ts";
 import type { CiProviderConfig, Logger, RepoConfig, Result } from "../types.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
@@ -97,6 +99,7 @@ import {
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import { assertSafeGitRef } from "./git_ref_args.ts";
 import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
+import type { SyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
 import { getRunId } from "./run_id.ts";
 import {
   buildAutoFixCapSummary,
@@ -429,6 +432,14 @@ export interface CiProcessorDeps {
    * {@link syncPrBodyFromSummary}.
    */
   syncPrBodyFn?: typeof syncPrBodyFromSummary;
+  /**
+   * Files the follow-up a PR-body sync needs when this run's rewritten summary
+   * newly marks a criterion `partial` or `missing` on a body with no leading
+   * section (Issue #3678). Production wiring passes
+   * `buildSyncFollowUpFiling(config, githubUser)`; when absent, such a sync
+   * fails loudly instead of filing.
+   */
+  syncFollowUpFiling?: SyncFollowUpFiling;
   /**
    * Configured worker name, used in the refreshed PR body's footer
    * (Issue #3089). Omitted → empty string.
@@ -1927,6 +1938,34 @@ async function _processCiWithHeartbeat(
     };
   }
 
+  // Issue #4038: the provider refused to serve (model refused, quota spent,
+  // credential rejected, outage), so the agent never looked at the failure.
+  // An empty working tree here is not "no change required": record no
+  // attempt marker, post nothing and escalate nothing — the next scan
+  // retries. GRQ-AutoTrader#3811 went to needs-human on attempt 1 of 3 after
+  // Codex refused `gpt-5` in five seconds.
+  const agentFailure = claudeResult.value.agentFailure;
+  if (
+    claudeResult.value.exitCode !== 0 &&
+    isProviderUnavailableFailure(agentFailure)
+  ) {
+    logger.warn(
+      "CI-fix run skipped: provider unavailable — no attempt recorded",
+      { repo, prNumber, checkName, category: agentFailure!.category },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        retryCount: newRetryCount,
+        summary: `PR #${prNumber} (${checkName}) — provider unavailable ` +
+          `(${agentFailure!.category}); no attempt recorded, retried next scan`,
+      },
+    };
+  }
+
   // Post-Claude quality check (Issue #1456).
   // Mirrors shell work_on_ci_failure: if Claude left uncommitted changes,
   // run quality.sh, give Claude a retry on fixable failures, and commit the
@@ -1940,6 +1979,16 @@ async function _processCiWithHeartbeat(
     runStatsSink,
     lifecycleStatsSink,
   );
+
+  if (postQualityResult.turnLimitFailure) {
+    await replyToComment(
+      repo,
+      prNumber,
+      postQualityResult.turnLimitFailure.message,
+      deps,
+    );
+    return { ok: false, error: postQualityResult.turnLimitFailure };
+  }
 
   // Always commit and push any pending work (Issue #1643).
   // Previously this was gated on `claudeOutput.length > 0`, but Claude
@@ -2227,11 +2276,13 @@ async function _processCiWithHeartbeat(
         githubUser: processorDeps.githubUser ??
           Deno.env.get("GITHUB_USER") ?? "",
         runId: getRunId(),
+        branchName: input.branchName,
       },
       {
         runGhCommand: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
         runGitCommand: deps.git.runGitCommand,
         logger,
+        followUpFiling: processorDeps.syncFollowUpFiling,
       },
       syncFn,
     );
@@ -2786,6 +2837,8 @@ async function _appendAttemptInPlace(opts: {
 
 /** Result of the post-Claude quality check phase. */
 interface PostClaudeQualityResult {
+  /** A capped retry must not publish its partial work. */
+  turnLimitFailure?: Error;
   /** Whether a new commit was created during the quality phase. */
   committedChanges: boolean;
 }
@@ -2918,6 +2971,9 @@ async function _runPostClaudeQualityCheck(
     if (retryResult.ok) graft.record(retryResult.value.runStats);
     // Re-read against the first baseline, so the figure covers both spawns.
     await rtk.record();
+    if (!retryResult.ok && retryResult.error instanceof AgentTurnLimitError) {
+      return { committedChanges: false, turnLimitFailure: retryResult.error };
+    }
     if (!retryResult.ok) {
       logger.warn(
         "Claude quality retry failed — committing any remaining changes anyway",

@@ -94,7 +94,11 @@ export async function workOnIssueClarityPhase(
       issueNumber,
     });
     await releaseClaimForRouting(ctx, deps, "refine_label_routing");
-    return { status: "early_exit", reason: "refine_label_routing" };
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "refine_label_routing",
+    };
   }
   if (issueLabels.includes(config.questionLabel)) {
     logger.info("Issue has question label, routing to question handler", {
@@ -102,7 +106,11 @@ export async function workOnIssueClarityPhase(
       issueNumber,
     });
     await releaseClaimForRouting(ctx, deps, "question_label_routing");
-    return { status: "early_exit", reason: "question_label_routing" };
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "question_label_routing",
+    };
   }
   if (issueLabels.includes(config.planningLabel)) {
     // The issue finder already excludes planning-labelled issues, so if we
@@ -257,7 +265,11 @@ export async function workOnIssueClarityPhase(
       issueNumber,
     });
 
-    return { status: "early_exit", reason: "waiting_for_clarification" };
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "waiting_for_clarification",
+    };
   }
 
   // No questions generated but unclear — proceed anyway

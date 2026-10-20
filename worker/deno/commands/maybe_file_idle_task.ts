@@ -355,12 +355,18 @@ interface TestDeps {
    * True when this run is holding `issueNumber` in `repo` back whatever
    * GitHub says (Issue #1050) — the persisted retry cooldown plus this run's
    * processed-issue registry. Work in cooldown cannot be started this cycle,
-   * so it must not suppress idle filing.
+   * so it must not suppress idle filing. The milestone argument is the
+   * issue's milestone title (`""` when none), so a milestone the persisted
+   * pacing ledger paces can be held (Issue #3587).
    *
    * Supplied by `run_core_production_deps.ts`, which owns that set; a bare
    * CLI invocation has no run to hold anything and passes nothing.
    */
-  runLocalHoldFn?: (repo: string, issueNumber: number) => boolean;
+  runLocalHoldFn?: (
+    repo: string,
+    issueNumber: number,
+    milestone: string,
+  ) => boolean;
   /**
    * Output-backlog count for the active template (Issue #2082, "backlog
    * gate"). Returns the number of open issues in `repo` that carry the

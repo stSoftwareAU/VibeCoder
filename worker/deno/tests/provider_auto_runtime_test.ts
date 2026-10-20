@@ -432,3 +432,29 @@ Deno.test("auto routing emits the soak status line without credential material",
     assertEquals((soakLine ?? "").includes("secret"), false);
   });
 });
+
+Deno.test("auto Codex status uses the child's subscription home despite ambient API keys", async () => {
+  const home = await Deno.makeTempDir({ prefix: "codex-auto-home-" });
+  try {
+    await Deno.writeTextFile(
+      `${home}/auth.json`,
+      JSON.stringify({ auth_mode: "chatgpt", tokens: {} }),
+    );
+    const status = await resolveAutomaticProviderStatus("codex", {
+      workDir: "/unused-work",
+      now: Date.now(),
+      env: statedEnv({ CODEX_HOME: home, OPENAI_API_KEY: "must-not-bill" }),
+    });
+    assertEquals(status.billingMode, "fixed-subscription");
+    assertEquals(status.availability, "unknown");
+    const absent = await resolveAutomaticProviderStatus("codex", {
+      workDir: "/unused-work",
+      now: Date.now(),
+      env: statedEnv({ OPENAI_API_KEY: "explicit-metered" }),
+    });
+    assertEquals(absent.billingMode, "metered");
+    assertEquals(absent.availability, "unavailable");
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});

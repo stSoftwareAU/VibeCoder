@@ -136,6 +136,7 @@ Deno.test(
 
     assertEquals(result, {
       status: "early_exit",
+      category: "unknown",
       reason: MERGED_PR_PRECHECK_EARLY_EXIT_REASON,
     });
     assertEquals(closeCalls, [42]);
@@ -183,6 +184,7 @@ Deno.test(
 
     assertEquals(result, {
       status: "early_exit",
+      category: "unknown",
       reason: MERGED_PR_PRECHECK_EARLY_EXIT_REASON,
     });
     // Idempotent: no close comment posted when the issue is already closed.
@@ -518,6 +520,7 @@ Deno.test(
 
     assertEquals(result, {
       status: "early_exit",
+      category: "unknown",
       reason: MERGED_PR_PRECHECK_EARLY_EXIT_REASON,
     });
     // No rollup repair for a merge that landed.

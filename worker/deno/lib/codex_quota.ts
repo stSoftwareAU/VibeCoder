@@ -70,11 +70,15 @@ export function subscriptionStatusFromCodexSnapshot(
   const candidate = quotaCandidateFromCodexSnapshot(credentialLabel, snapshot);
 
   if (snapshot.authMode === "api-key") {
-    return subscriptionStatusFromQuotaCandidate(candidate, snapshot.readAt, {
-      billingMode: "metered",
-      confidence: "authoritative",
-      reason: "api-key-account",
-    });
+    return subscriptionStatusFromQuotaCandidate(
+      candidate,
+      snapshot.evidenceAt,
+      {
+        billingMode: "metered",
+        confidence: "authoritative",
+        reason: "api-key-account",
+      },
+    );
   }
 
   const billingMode = snapshot.authMode === "chatgpt"
@@ -85,7 +89,7 @@ export function subscriptionStatusFromCodexSnapshot(
     ? "authoritative" as const
     : "inferred" as const;
 
-  return subscriptionStatusFromQuotaCandidate(candidate, snapshot.readAt, {
+  return subscriptionStatusFromQuotaCandidate(candidate, snapshot.evidenceAt, {
     billingMode,
     confidence,
     ...(snapshot.budget.known ? {} : { reason: snapshot.budget.reason }),

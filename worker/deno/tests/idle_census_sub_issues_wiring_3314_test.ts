@@ -32,6 +32,7 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 const REPO = "org/sub-issue-fixture";
 const WORKER_USER = "worker-bot";
+const TRUSTED = "alice";
 
 /** Every field the fixture's one issue could carry, keyed by gh field name. */
 const FIXTURE_FIELDS: Record<string, unknown> = {
@@ -52,6 +53,7 @@ const calls: string[][] = [];
  * only the fields named in `--json`, nothing else. A production line that
  * stops requesting `subIssuesSummary` therefore makes this stub stop
  * returning it too — the same failure a live `gh` call would produce.
+ * The timeline answers with a `work-on` add by the trusted author (Issue #3571).
  */
 function stubGh(args: string[]): Promise<string> {
   calls.push(args);
@@ -64,6 +66,17 @@ function stubGh(args: string[]): Promise<string> {
       if (requested.has(field)) row[field] = FIXTURE_FIELDS[field];
     }
     return Promise.resolve(JSON.stringify([row]));
+  }
+  if (
+    args[0] === "api" && /\/issues\/(\d+)\/timeline/.test(args[1] ?? "")
+  ) {
+    return Promise.resolve(JSON.stringify([{
+      id: 1,
+      event: "labeled",
+      label: { name: "work-on" },
+      actor: { login: TRUSTED },
+      created_at: "2026-01-01T00:00:00Z",
+    }]));
   }
   return Promise.resolve("[]");
 }
@@ -83,8 +96,18 @@ async function idleLines(): Promise<string[]> {
       githubUser: WORKER_USER,
       logger: createLogger({ write: (line: string) => lines.push(line) }),
       config: { ...buildDefaultWorkerConfig(), repos: [REPO], workDir },
+      // Issue #3571: the census models the label-author gate, so trust the adder.
+      resolveTrustedAuthors: () =>
+        Promise.resolve({
+          ok: true,
+          byRepo: new Map([[
+            REPO,
+            { allowedAuthors: [TRUSTED], authorisedCommenters: [TRUSTED] },
+          ]]),
+        }),
       idleDetectGhCommandFn: stubGh,
     });
+    assertEquals((await deps.refreshTrustedAuthors!()).ok, true);
     await deps.runIdleDetectAudit!({
       tick: 1,
       scanFoundClaimable: false,
@@ -139,6 +162,7 @@ Deno.test(
       l.includes("[idle-census]") && l.includes(`repo=${REPO}`)
     );
     assert(repoLine !== undefined, "the census logged no line for the repo");
+    assert(repoLine.includes("claim_refused=0"), repoLine);
     assert(repoLine.includes("dependency_blocked=1"), repoLine);
     assert(repoLine.includes("work_on=0"), repoLine);
     // The audit and census agree, so no false inversion/mis_classification.

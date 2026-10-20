@@ -39,7 +39,7 @@
  * runs `log-rotation` — which size-rotates the worker's own logs, transcripts
  * among them (Issue #1267) — and then
  * `worker-log-cleanup`, whose `AGENT_TRANSCRIPT_PATTERN` ages transcripts out
- * with the worker logs: three days, and a 200-file hard cap. Local retention
+ * after 30 days, with a separate 2,000-file hard cap (Issue #3700). Local retention
  * is therefore bounded without an operator doing anything; exporting a
  * transcript anywhere else is the callback hook's decision.
  *

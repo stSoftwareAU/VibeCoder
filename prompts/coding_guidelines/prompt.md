@@ -94,6 +94,11 @@ progress survives.
   opened. Read the file, run the command, or check the API before asserting how
   something behaves. If you genuinely cannot verify a claim, say so rather than
   presenting a guess as fact.
+- **End with what you did not do.** Close every run summary — the final message,
+  the PR summary, a hand-off — with what was skipped or not checked, and any
+  risk that remains. Write "none" when nothing was; never leave the reader to
+  infer that everything was checked. This agrees with **Investigate before you
+  answer** above: an unverified claim is reported as unverified, not as fact.
 - **Clean up after yourself.** Delete scratch scripts, temporary logs, and
   helper files you created for the run before you commit — working files must
   not reach the PR.
@@ -133,17 +138,20 @@ progress survives.
 
 - **KISS** — Favour simplicity. When choosing between two approaches, prefer the
   one with fewer moving parts and less indirection, even if it requires a few
-  more lines of code. Work down the **smallest-change-first ladder** and stop at
-  the first rung that solves the problem: skip what is not needed, reuse what
-  the codebase has, use the standard library, use a native platform feature, use
-  a dependency already installed, write one line, and only then write new code.
-  The floor is never cut: input validation at a trust boundary, error handling
-  that prevents data loss, security, accessibility, and whatever the issue
-  explicitly asks for all stay in — see **Secure Coding Principles** and **Never
-  Fail Silently — Fail Loud** below. Mark each deliberate corner cut with
-  exactly one comment line opening with `// SIMPLE-ON-PURPOSE:` — the ceiling
-  first, then the condition that lifts it after `upgrade when` — so
-  `grep -r SIMPLE-ON-PURPOSE` lists every cut:
+  more lines of code. Before picking a rung, read the code the change touches —
+  its callers, the helpers it could reuse and the tests that cover it: be lazy
+  about the solution, never about the reading. Work down the
+  **smallest-change-first ladder** and stop at the first rung that solves the
+  problem: skip what is not needed, reuse what the codebase has, use the
+  standard library, use a native platform feature, use a dependency already
+  installed, write one line, and only then write new code. The floor is never
+  cut: input validation at a trust boundary, error handling that prevents data
+  loss, security, accessibility, and whatever the issue explicitly asks for all
+  stay in — see **Secure Coding Principles** and **Never Fail Silently — Fail
+  Loud** below. Mark each deliberate corner cut with exactly one comment line
+  opening with `// SIMPLE-ON-PURPOSE:` — the ceiling first, then the condition
+  that lifts it after `upgrade when` — so `grep -r SIMPLE-ON-PURPOSE` lists
+  every cut:
   `// SIMPLE-ON-PURPOSE: linear scan, fine to 10,000 rows — upgrade when a table exceeds 10,000 rows`.
 - **DRY** — Avoid duplication; maintain a single source of truth.
 - **Change every copy of a twinned rule** — Before changing a rule, gate,
@@ -226,6 +234,15 @@ a fault must never be masked as success.
   summary. Observe the real tool's output for each failure class the reason
   claims to tell apart (see **Observe the real tool before you rely on it**),
   and test it as **A failure-reason test asserts the cause** says.
+- **A recorded failure reason that quotes text the worker did not write opens
+  with a worker-written marker.** When a recorded reason quotes tool output,
+  agent text, or issue or comment text, open it with a marker the worker writes,
+  which every classifier of that reason checks before its free-text rules (a
+  `startsWith` on the reason itself, or a test of the category derived from
+  it), so a quoted `rate limit`, `timeout` or `Error:` cannot pick the
+  category. In the Vibe Coder repository, register the marker in
+  `WORKER_GATE_MARKERS` in `worker/deno/lib/failure_diagnosis.ts` (see
+  `CODING-STANDARDS.md`).
 
 <!-- guidelines-layer: code -->
 
@@ -1696,18 +1713,28 @@ a Docs Change** above on a change that alters what an existing state
 means. List the messages checked in the PR summary's Test Plan
 (Issue #3259).
 
-**Narrowing a shared helper changes every caller.** Before a helper that
-other code already calls starts rejecting, throwing on or dropping a value it
-used to accept (a validator, type guard, allowed-value set, required field,
-ref/name check), list its existing callers and the real values each can
-receive. Check those values against the tool or API's actual output, not its
-documentation's happy path (see **Observe the real tool before you rely on
-it**). If any existing caller can legitimately pass a value the new rule
-rejects, keep the shared helper as it was and apply the stricter rule at the
-new call site. Otherwise add a test showing an existing caller still accepts
-its real inputs. List the callers checked in the PR summary. A narrowed shared
-helper with no callers-checked list is a blocking self-review finding
-(Issue #3100).
+**Changing what a shared helper returns, refuses or finds changes every
+caller.** Before a helper that other code already calls starts rejecting,
+refusing, throwing on, dropping, finding or returning something different for
+an input it already handled — a validator, type guard, allowed-value set,
+required field or ref/name check that narrows, a lookup that gains a fallback,
+a routine that gains a refusal or precondition — list its existing callers and
+the real values each can receive. Check those values against the tool or API's
+actual output, not its documentation's happy path (see **Observe the real tool
+before you rely on it**). For each existing caller, decide whether its
+behaviour changes under the new result. When one depends on the old result (it
+passes a value the new rule rejects, reads "nothing found" as "leave it
+alone", or runs where the new refusal fires), keep the shared helper as it was
+and apply the new behaviour at the new call site, or change that caller too.
+Add a test that exercises each existing caller whose behaviour the change
+touches, under the new result; a callers-checked list alone does not count,
+because nothing checks a wrong conclusion in it. List the callers checked in
+the PR summary. When the worker's pre-PR verifier runs, it is also given the
+callers outside the diff of each function whose body the diff changes, found
+by the worker's own word search and capped per function, and a listed caller
+left without a verdict, or reported `regressed`, blocks the PR. A changed
+shared helper with no test through an existing caller whose behaviour it
+touches is a blocking self-review finding (Issues #3100, #3779).
 
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a

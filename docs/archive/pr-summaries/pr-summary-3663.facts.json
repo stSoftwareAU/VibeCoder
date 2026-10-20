@@ -1,0 +1,216 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/dependabot.ts",
+        "line": 30,
+        "outcome": "conflict waits rather than taking auto-merge action",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "Dependabot upkeep leaves unapproved, stale, other-reviewer, draft and conflicting heads untouched (Issue #3663)",
+        "flipWentRed": "Isolated conflict guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/dependabot.ts",
+        "line": 33,
+        "outcome": "behind waits for the approved branch-update path",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "a Dependabot PR behind or conflicting waits without a bot command",
+        "flipWentRed": "Isolated behind guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 60,
+        "outcome": "Dependabot approvals are filtered by reviewer",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "Dependabot upkeep leaves unapproved, stale, other-reviewer, draft and conflicting heads untouched (Issue #3663)",
+        "flipWentRed": "Isolated reviewer-filter guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 62,
+        "outcome": "fleet approvals retain any-reviewer eligibility",
+        "test": "worker/deno/tests/review_fleet_prs_backlog_3225_test.ts",
+        "testName": "pass: a fleet PR approved at its head but behind is brought up to date once per head, including an approved Dependabot one (Issue #3225)",
+        "flipWentRed": "Isolated fleet-approval guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 61,
+        "outcome": "matching reviewer approval reaches the update",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "Dependabot upkeep updates an approved behind head once, using its head lease and no comment (Issue #3663)",
+        "flipWentRed": "Isolated reviewer-match guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 63,
+        "outcome": "draft blocks update",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "Dependabot upkeep leaves unapproved, stale, other-reviewer, draft and conflicting heads untouched (Issue #3663)",
+        "flipWentRed": "Isolated draft guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 63,
+        "outcome": "conflict blocks update",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "Dependabot upkeep leaves unapproved, stale, other-reviewer, draft and conflicting heads untouched (Issue #3663)",
+        "flipWentRed": "Isolated conflicting guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 65,
+        "outcome": "absent or stale approval blocks update",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "Dependabot upkeep leaves unapproved, stale, other-reviewer, draft and conflicting heads untouched (Issue #3663)",
+        "flipWentRed": "Isolated unapproved guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 66,
+        "outcome": "same-head request is deduplicated, changed head can update",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "Dependabot upkeep updates an approved behind head once, using its head lease and no comment (Issue #3663)",
+        "flipWentRed": "Isolated once-per-head guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 786,
+        "outcome": "conflict reason produces a waiting line",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "Dependabot upkeep leaves unapproved, stale, other-reviewer, draft and conflicting heads untouched (Issue #3663)",
+        "flipWentRed": "Isolated wait-report guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 786,
+        "outcome": "other no-action reasons produce no waiting line",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "Dependabot upkeep leaves unapproved, stale, other-reviewer, draft and conflicting heads untouched (Issue #3663)",
+        "flipWentRed": "Isolated other-none-no-report guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/post.ts",
+        "line": 347,
+        "outcome": "live draft blocks post update",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "post approves a Dependabot PR before the leased update and refuses stale, draft or conflicting updates (Issue #3663)",
+        "flipWentRed": "Isolated post-draft guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/post.ts",
+        "line": 347,
+        "outcome": "live conflict blocks post update",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "post approves a Dependabot PR before the leased update and refuses stale, draft or conflicting updates (Issue #3663)",
+        "flipWentRed": "Isolated post-conflict guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/post.ts",
+        "line": 347,
+        "outcome": "approval allows the post update",
+        "test": "worker/deno/tests/review_fleet_prs_backlog_3225_test.ts",
+        "testName": "shouldUpdateBranch: only an approval of a PR that is behind its base (Issue #3225)",
+        "flipWentRed": "Isolated post-approved guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/post.ts",
+        "line": 348,
+        "outcome": "current branch does not update",
+        "test": "worker/deno/tests/review_fleet_prs_backlog_3225_test.ts",
+        "testName": "shouldUpdateBranch: only an approval of a PR that is behind its base (Issue #3225)",
+        "flipWentRed": "Isolated post-current guard mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 115,
+        "outcome": "a gate or post success suppresses another request at the same head",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "post and gate share successful and refused branch-update memory across heads (Issue #3663)",
+        "flipWentRed": "Isolated success-cache mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 116,
+        "outcome": "a gate or post refusal suppresses another request at the same head",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "post and gate share successful and refused branch-update memory across heads (Issue #3663)",
+        "flipWentRed": "Isolated refusal-cache mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 119,
+        "outcome": "accepted updates persist their head for the next gate or post",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "post and gate share successful and refused branch-update memory across heads (Issue #3663)",
+        "flipWentRed": "Isolated success-write mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 121,
+        "outcome": "refused updates persist their head without replacing other action entries",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "post and gate share successful and refused branch-update memory across heads (Issue #3663)",
+        "flipWentRed": "Isolated refusal-write mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": "worker/deno/lib/github_errors.ts",
+        "line": 123,
+        "outcome": "the observed gh connection diagnostic remains unavailable evidence rather than an unknown failure",
+        "test": "worker/deno/tests/release_tag_ruleset_check_test.ts",
+        "testName": "checkReleaseTagRuleset - gh's connection diagnostic reports unavailable evidence as SKIPPED",
+        "flipWentRed": "Before adding the diagnostic, the classifier and integrated ruleset regressions failed (57 passed, 2 failed); restored code passed 67 related tests."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 108,
+        "outcome": "parallel posts for the same head send only one API request",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "overlapping posts request a shared PR head only once (Issue #3663)",
+        "flipWentRed": "Isolated per-pr-lock mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/upkeep_memory.ts",
+        "line": 35,
+        "outcome": "parallel updates preserve both PRs in the shared cache",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "overlapping post processes preserve both PRs in shared upkeep memory (Issue #3663)",
+        "flipWentRed": "Isolated merge-entries mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/upkeep_memory.ts",
+        "line": 40,
+        "outcome": "an atomic replacement failure remains a loud persistence failure",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "upkeep memory surfaces an atomic replacement failure (Issue #3663)",
+        "flipWentRed": "Isolated write-error mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/gate.ts",
+        "line": 854,
+        "outcome": "a post that updates after the gate snapshot produces no second upkeep request or false success",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "gate rechecks a post update written after its initial cache read (Issue #3663)",
+        "flipWentRed": "Isolated concurrent-noop mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 133,
+        "outcome": "PR lock contention reports its cause and continues without caching an unsent request",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "a contended PR lock reports its cause without caching an unsent update or stopping other PRs (Issue #3663)",
+        "flipWentRed": "Isolated lock-timeout-report mutation caused an assertion failure; restored code passed."
+      },
+      {
+        "path": ".claude/skills/review-fleet-prs/scripts/branch_update.ts",
+        "line": 133,
+        "outcome": "a persistence lock timeout after the request stays a loud write failure",
+        "test": "worker/deno/tests/review_fleet_prs_dependabot_test.ts",
+        "testName": "a persistence lock timeout after the API request stays a loud write failure (Issue #3663)",
+        "flipWentRed": "Isolated persistence-timeout-loud mutation caused an assertion failure; restored code passed."
+      }
+    ]
+  }
+}

@@ -150,6 +150,13 @@ export function callbackOutcomeFromRun(
     };
   }
   const result: CallbackRunOutcome = { kind: outcome.kind };
+  if ("categories" in outcome && outcome.categories) {
+    result.categories = outcome.categories;
+  }
+  if (outcome.kind === "summary_incomplete" && outcome.category) {
+    result.category = outcome.category;
+    result.failureClass = outcome.classification?.failureClass;
+  }
   if ("phase" in outcome && typeof outcome.phase === "string") {
     result.phase = outcome.phase;
   } else if (run.phase) {
@@ -157,20 +164,26 @@ export function callbackOutcomeFromRun(
   }
   if (outcome.kind === "no_pr") {
     result.category = outcome.category;
-    result.failureClass = classifyRunFailure(
+    if (outcome.termination) result.termination = outcome.termination;
+    result.failureClass = (outcome.classification ?? classifyRunFailure(
       outcome.category,
       outcome.message,
-    ).failureClass;
+      false,
+    )).failureClass;
   } else if (outcome.kind === "pr" && outcome.blocked) {
     // A PR-then-later-step failure (Issue #2044): the archive reads the PR
     // number AND why the run still failed, so "delivered, one finding
     // outstanding" is countable separately from "delivered nothing".
     result.phase = outcome.blocked.phase;
     result.category = outcome.blocked.category;
-    result.failureClass = classifyRunFailure(
+    if (outcome.blocked.categories) {
+      result.categories = outcome.blocked.categories;
+    }
+    result.failureClass = (outcome.blocked.classification ?? classifyRunFailure(
       outcome.blocked.category,
       outcome.blocked.reason,
-    ).failureClass;
+      false,
+    )).failureClass;
   }
   if ("prNumber" in outcome && typeof outcome.prNumber === "number") {
     result.prNumber = outcome.prNumber;

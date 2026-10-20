@@ -27,7 +27,10 @@ import {
   isQualityGateFailureRecord,
   parseHostFaultMarker,
 } from "./host_fault.ts";
-import { isSummaryGateFailureRecord } from "./failure_diagnosis.ts";
+import {
+  isSummaryOrQualityFailureRecord,
+  isWorkerGateFailureRecord,
+} from "./failure_diagnosis.ts";
 import {
   FAILURE_RECORD_HEADING_PATTERN,
   parseCommentRows,
@@ -126,9 +129,10 @@ function isFailureRecord(body: string): boolean {
  * comment is authoritative. A body with no marker predates this change
  * (Issue #2890); the only pre-change failure this sweep is allowed to treat
  * as a host fault is `clone-corrupt` — a corrupt shared object store or a
- * broken ref, both unambiguous and narrow (`detectHostFault`). A
- * summary-gate refusal record (`isSummaryGateFailureRecord`) is never one:
- * the text it quotes is the agent's summary, not host output. Likewise a
+ * broken ref, both unambiguous and narrow (`detectHostFault`). Registered worker
+ * gate records and substantive quality records retain their declared cause,
+ * even when quoted agent, verifier or repository evidence resembles host output.
+ * Likewise a
  * quality-gate record (`isQualityGateFailureRecord`, Issue #3445): its body
  * is the repository's own test output.
  */
@@ -136,9 +140,11 @@ function classifyFailureRecord(body: string): HostFaultKind | null {
   if (!HOST_FAULT_CANDIDATE_RE.test(body.trimStart())) return null;
   const marked = parseHostFaultMarker(body);
   if (marked !== null) return marked;
-  // A summary-gate refusal quotes the agent's own summary, so text such as
-  // `ignoring broken ref` in it is not host output (Issue #3431; PR #3440).
-  if (isSummaryGateFailureRecord(body)) return null;
+  // Preserve registered worker gates and substantive quality verdicts before
+  // examining quoted evidence (Issues #3735 and #3738).
+  if (
+    isWorkerGateFailureRecord(body) || isSummaryOrQualityFailureRecord(body)
+  ) return null;
   // A quality-gate record is the repository's own test output (Issue #3445).
   if (isQualityGateFailureRecord(body)) return null;
   return detectHostFault(body) === "clone-corrupt" ? "clone-corrupt" : null;

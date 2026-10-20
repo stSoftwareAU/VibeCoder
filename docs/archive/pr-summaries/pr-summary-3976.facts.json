@@ -1,0 +1,330 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 247,
+        "outcome": "payload type preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "payload-type mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 247,
+        "outcome": "payload null preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "payload-null mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 247,
+        "outcome": "payload array preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "payload-array mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 260,
+        "outcome": "owned fields preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "owned-fields mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 266,
+        "outcome": "safe integer preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "safe-integer mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 267,
+        "outcome": "issue cutoff preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "issue-cutoff mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 276,
+        "outcome": "git failure preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer reports missing default, stale fetch and shallow history without writing coverage (Issue #3976)",
+        "flipWentRed": "git-failure mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 296,
+        "outcome": "advertised default preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer reports missing default, stale fetch and shallow history without writing coverage (Issue #3976)",
+        "flipWentRed": "advertised-default mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 303,
+        "outcome": "requested default preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "requested-default mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 308,
+        "outcome": "explicit fetch preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer bootstraps the actual default in a shallow feature-only clone (Issue #3976)",
+        "flipWentRed": "explicit-fetch mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 315,
+        "outcome": "history cause preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer reports missing default, stale fetch and shallow history without writing coverage (Issue #3976)",
+        "flipWentRed": "history-cause mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 317,
+        "outcome": "merge base shape preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer reports missing default, stale fetch and shallow history without writing coverage (Issue #3976)",
+        "flipWentRed": "merge-base-shape mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 347,
+        "outcome": "original horizon preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "original-horizon mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 364,
+        "outcome": "unique paths preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "unique-paths mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 371,
+        "outcome": "immutable scope preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "immutable-scope mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 372,
+        "outcome": "status monotonic preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "status-monotonic mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 384,
+        "outcome": "status finalisation preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "status-finalisation mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 384,
+        "outcome": "no repeat write preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "no-repeat-write mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 392,
+        "outcome": "write failure preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "write-failure mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 401,
+        "outcome": "record redaction preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer redacts remote error secrets at the command result sink (Issue #3976)",
+        "flipWentRed": "record-redaction mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/commands/sweep_drift.ts",
+        "line": 140,
+        "outcome": "payload redaction preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer redacts remote error secrets at the command result sink (Issue #3976)",
+        "flipWentRed": "payload-redaction mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/commands/sweep_drift.ts",
+        "line": 125,
+        "outcome": "invalid command path preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer leaves unavailable refs and invalid input visible without a record (Issue #3976)",
+        "flipWentRed": "invalid-command-path mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 331,
+        "outcome": "output confinement preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "output-confinement mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 354,
+        "outcome": "path scope preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "path-scope mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/commands/sweep_drift.ts",
+        "line": 123,
+        "outcome": "command mode preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "command-mode mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 278,
+        "outcome": "git error fallback preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer leaves unavailable refs and invalid input visible without a record (Issue #3976)",
+        "flipWentRed": "git-error-fallback mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 403,
+        "outcome": "non error message preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer leaves unavailable refs and invalid input visible without a record (Issue #3976)",
+        "flipWentRed": "non-error-message mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 294,
+        "outcome": "remote head suffix preserves the supported producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer reports missing default, stale fetch and shallow history without writing coverage (Issue #3976)",
+        "flipWentRed": "remote-head-suffix mutation failed the named regression assertion"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 294,
+        "outcome": "remote head prefix operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer reports missing default, stale fetch and shallow history without writing coverage (Issue #3976)",
+        "flipWentRed": "remote-head-prefix operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 303,
+        "outcome": "requested default presence operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "requested-default-presence operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 303,
+        "outcome": "requested default mismatch operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "requested-default-mismatch operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 351,
+        "outcome": "absolute path operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "absolute-path operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 352,
+        "outcome": "parent segment operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "parent-segment operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 352,
+        "outcome": "current segment operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "current-segment operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 352,
+        "outcome": "empty segment operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "empty-segment operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 355,
+        "outcome": "exact root operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "exact-root operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 355,
+        "outcome": "root descendant operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer uses the default merge-base and preserves it through squash and later main changes (Issue #3976)",
+        "flipWentRed": "root-descendant operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/commands/sweep_drift.ts",
+        "line": 125,
+        "outcome": "command path type operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer leaves unavailable refs and invalid input visible without a record (Issue #3976)",
+        "flipWentRed": "command-path-type operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/commands/sweep_drift.ts",
+        "line": 126,
+        "outcome": "command path empty operand independently controls the producer contract",
+        "test": "worker/deno/tests/sweep_drift_command_test.ts",
+        "testName": "sweep-drift producer leaves unavailable refs and invalid input visible without a record (Issue #3976)",
+        "flipWentRed": "command-path-empty operand flip failed the named regression assertion, including accepted controls"
+      },
+      {
+        "path": "worker/deno/lib/lib_sweep_coverage.ts",
+        "line": 335,
+        "endLine": 341,
+        "outcome": "defensive lstat rejects a symlink introduced after canonical confinement or ledger validation",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "Searched worker/deno/tests/sweep_drift_command_test.ts: its stable symlink setup exits during ledger validation or confinePath before this post-validation guard. A deterministic race between realPath and lstat requires a new filesystem scheduling seam or an unreliable concurrent writer. Neither is justified for this defensive guard; stable symlink outputs and directories are exercised and the guard remains intact."
+        }
+      }
+    ]
+  }
+}

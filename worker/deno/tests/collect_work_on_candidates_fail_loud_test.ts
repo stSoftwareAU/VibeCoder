@@ -143,3 +143,117 @@ Deno.test("collectWorkOnCandidates - untrusted work-on is flagged needs-human an
   assertStringIncludes(recorder.comments[0]!.body, "mallory");
   assertStringIncludes(recorder.comments[0]!.body, "trusted-author allowlist");
 });
+
+/**
+ * Throwing mock gh for a single open work-on issue #50 whose label-author
+ * trust read (REST timeline) fails. The collector must catch that read
+ * failure per issue and treat it as a fail-closed skip — resolve normally,
+ * select nothing, and strip nothing (Issue #3974).
+ */
+function createThrowingGh(recorder: StripRecorder): (
+  args: string[],
+) => Promise<string> {
+  const listEntry = {
+    number: 50,
+    title: "Trust-read-failing work-on issue",
+    url: "https://github.com/owner/repo/issues/50",
+    assignees: [],
+    labels: [{ name: "work-on" }],
+    createdAt: "2026-07-26T00:00:00Z",
+    author: { login: "alice" },
+    milestone: null,
+    body: "Some body",
+  };
+
+  return (args: string[]): Promise<string> => {
+    const command = args.join(" ");
+
+    // The collector wraps this mock with buildBatchedGh, which first issues a
+    // GraphQL batch call whose query string contains "timelineItems" (so it
+    // also matches the timeline branch below). Returning "[]" makes
+    // JSON.parse yield an Array, so fetchTimelineBatch returns {ok:false} and
+    // buildBatchedGh falls through to calling this mock directly for the REST
+    // timeline. This branch MUST come first.
+    if (command.includes("graphql")) {
+      return Promise.resolve("[]");
+    }
+    if (command.includes("issue list")) {
+      return Promise.resolve(JSON.stringify([listEntry]));
+    }
+    if (
+      command.includes("issue view") &&
+      (command.includes("title") || command.includes("body"))
+    ) {
+      return Promise.resolve("{}");
+    }
+    // The label-author trust read — and the strip's own adder read — is the
+    // REST timeline call. Make it throw; the collector must skip fail-closed.
+    if (command.includes("timeline") || command.includes("timelineItems")) {
+      return Promise.reject(new Error("simulated timeline read failure"));
+    }
+    // Comment thread read for dedup — no prior marker.
+    if (command.includes("/comments")) {
+      return Promise.resolve("[]");
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      recorder.comments.push({ issue: Number(args[2]), body: args[6] ?? "" });
+      return Promise.resolve("");
+    }
+    if (
+      args[0] === "issue" && args[1] === "edit" &&
+      args.includes("--remove-label")
+    ) {
+      const idx = args.indexOf("--remove-label");
+      recorder.removed.push({ issue: Number(args[2]), label: args[idx + 1]! });
+      return Promise.resolve("");
+    }
+    if (
+      args[0] === "issue" && args[1] === "edit" &&
+      args.includes("--add-label")
+    ) {
+      const idx = args.indexOf("--add-label");
+      recorder.added.push({ issue: Number(args[2]), label: args[idx + 1]! });
+      return Promise.resolve("");
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+Deno.test("collectWorkOnCandidates - label-author trust-read failure is a fail-closed skip, not a rejection (Issue #3974)", async () => {
+  const recorder: StripRecorder = { removed: [], added: [], comments: [] };
+  const throwingGh = createThrowingGh(recorder);
+  const config = makeConfig();
+
+  const cache = new IssueCache(
+    Deno.makeTempDirSync({ prefix: "work-on-trust-read-cache-" }),
+    600,
+  );
+  const options: FindIssuesOptions = {
+    githubUser: "bot",
+    ghCommandFn: throwingGh,
+    cache,
+  };
+  const fetcher = createIssueFetcher(throwingGh);
+  const repoPRs: OpenPR[] = [];
+  const repoClosedPRs: ClosedPR[] = [];
+  const repoAllIssues: FilterableIssue[] = [];
+
+  const result = await collectWorkOnCandidates(
+    "owner/repo",
+    config,
+    options,
+    repoPRs,
+    repoAllIssues,
+    fetcher,
+    repoClosedPRs,
+  );
+
+  // The `await` above completing is itself the not-reject assertion: a
+  // timeline trust-read failure must be caught and skipped, never propagated.
+  assertEquals(result.candidates.length, 0);
+
+  // Fail-closed: no strip fired, so no labels changed and no comment posted.
+  assertEquals(recorder.added, []);
+  assertEquals(recorder.removed, []);
+  assertEquals(recorder.comments, []);
+});

@@ -1665,3 +1665,34 @@ Deno.test("label manager - ensureLabelExists surfaces the rate-limit cause, not 
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("failure label handler retains declared substantive cause despite quoted host and rate text (Issue #3738)", async () => {
+  const dir = await makeTempDir();
+  try {
+    const { ghCommandFn, calls } = createMockGh({
+      "issue view": "bug",
+      "label list": "failed-once\n",
+    });
+    const result = await handleIssueFailure({
+      repo: "org/repo",
+      issueNumber: 42,
+      githubUser: "worker-user",
+      failureMessage:
+        "quoted rate limit exceeded; warning: ignoring broken ref refs/heads/main",
+      category: "quality_check",
+    }, { ghCommandFn, cacheDir: dir });
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.failureCategory, "quality_check");
+      assertEquals(result.value.isInfrastructure, false);
+      assertEquals(result.value.markedAsFailedOnce, true);
+    }
+    const comments = calls.filter((args) =>
+      args[0] === "issue" && args[1] === "comment"
+    ).flat().join(" ");
+    assertEquals(comments.includes("**Category:** `quality-failure`"), true);
+    assertEquals(comments.includes("<!-- vibe-host-fault"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

@@ -31,6 +31,102 @@
 
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 
+/** Semantic model tiers shared by all providers. */
+export type ModelTier = "best" | "standard" | "fast";
+
+/** Work labels select phases; phases select a provider-independent tier. */
+export const PHASE_MODEL_TIERS: Readonly<Record<string, ModelTier>> = {
+  planning: "best",
+  grill_me: "best",
+  quorum: "best",
+  quorum_judge: "best",
+  refinement: "best",
+  revision: "best",
+  question: "best",
+  clarification: "best",
+  issue: "standard",
+  ci_fix: "standard",
+  pr_feedback: "standard",
+  quality_fix: "standard",
+  spelling_fix: "fast",
+  summarise: "fast",
+  health: "fast",
+};
+
+/** Translate the shared policy into a provider's concrete model ids. */
+export function modelsForPhaseTiers(
+  models: Readonly<Record<ModelTier, string>>,
+  phases: Readonly<Record<string, ModelTier>> = PHASE_MODEL_TIERS,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(phases).map(([phase, tier]) => [phase, models[tier]]),
+  );
+}
+
+/** Validate operator tier settings and derive the existing routing maps. */
+export function modelTierOverrides(
+  rawPhases: unknown,
+  rawProviders: unknown,
+  defaults: Readonly<Record<string, Readonly<Record<ModelTier, string>>>>,
+): Record<string, Record<string, string>> {
+  const record = (value: unknown, key: string): Record<string, unknown> => {
+    if (value === undefined) return {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(`${key} must be an object`);
+    }
+    return value as Record<string, unknown>;
+  };
+  const phases: Record<string, ModelTier> = { ...PHASE_MODEL_TIERS };
+  for (
+    const [phase, tier] of Object.entries(
+      record(rawPhases, "phase_model_tiers"),
+    )
+  ) {
+    if (
+      !Object.hasOwn(PHASE_MODEL_TIERS, phase) || typeof tier !== "string" ||
+      !["best", "standard", "fast"].includes(tier)
+    ) {
+      throw new Error(
+        `phase_model_tiers.${phase} must name a known phase and best, standard or fast tier`,
+      );
+    }
+    phases[phase] = tier as ModelTier;
+  }
+  const providers = record(rawProviders, "provider_model_tiers");
+  for (const provider of Object.keys(providers)) {
+    if (!Object.hasOwn(defaults, provider)) {
+      throw new Error(
+        `provider_model_tiers.${provider} is not a registered provider`,
+      );
+    }
+  }
+  const result: Record<string, Record<string, string>> = {};
+  for (const [provider, models] of Object.entries(defaults)) {
+    const merged = { ...models };
+    for (
+      const [tier, model] of Object.entries(
+        record(providers[provider], `provider_model_tiers.${provider}`),
+      )
+    ) {
+      if (
+        !Object.hasOwn(models, tier) || typeof model !== "string" ||
+        !model.trim()
+      ) {
+        throw new Error(
+          `provider_model_tiers.${provider}.${tier} must name best, standard or fast and a non-empty model`,
+        );
+      }
+      merged[tier as ModelTier] = model.trim();
+    }
+    // Unconfigured deployments retain their existing empty override maps.
+    result[provider] =
+      rawPhases !== undefined || Object.hasOwn(providers, provider)
+        ? modelsForPhaseTiers(merged, phases)
+        : {};
+  }
+  return result;
+}
+
 /** Where one provider's routing values come from, in precedence order. */
 export interface PhaseRoutingSources {
   /** Log prefix for the fail-loud warning, e.g. `"codex-executor"`. */

@@ -1012,3 +1012,80 @@ Deno.test(
     assertEquals(c.conflictRedo, undefined);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Issue #3974: fail-closed skip when the label-author trust read throws
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "collect_idle_task_candidates - Issue #3974: skips an untrusted-author issue when the label-add trust read throws",
+  async () => {
+    // The `idle-task` label-add trust read (`wasLabelAddedByAllowedAuthor`)
+    // surfaces a timeline API failure as a rejection. The collector must fail
+    // closed: catch the throw, treat the label add as untrusted, and — because
+    // the issue author is also untrusted — skip the issue rather than reject
+    // the whole scan (or, worse, claim attacker-authored content).
+    const config = makeConfig();
+
+    // Own throwing mock. The batched GraphQL call must resolve to `[]` so
+    // `buildBatchedGh` falls through to this function for the REST timeline,
+    // which is where the trust read throws.
+    const throwingGh = (args: string[]): Promise<string> => {
+      const command = args.join(" ");
+      // The batched GraphQL query string contains `timelineItems`, so it also
+      // matches `command.includes("timeline")` — match `graphql` FIRST.
+      if (command.includes("graphql")) {
+        return Promise.resolve("[]");
+      }
+      if (command.includes("issue list")) {
+        return Promise.resolve(
+          JSON.stringify([
+            {
+              number: 501,
+              title: SECURITY_SCAN_ISSUE_TITLE,
+              url: "https://github.com/owner/repo/issues/501",
+              assignees: [],
+              labels: [{ name: IDLE_TASK_LABEL }],
+              createdAt: "2024-04-01T00:00:00Z",
+              author: { login: "mallory" },
+              milestone: null,
+            },
+          ]),
+        );
+      }
+      if (command.includes("issue view") && command.includes("title,body")) {
+        return Promise.resolve(
+          JSON.stringify({
+            title: SECURITY_SCAN_ISSUE_TITLE,
+            body: "<!-- idle-task: template=security-scan -->",
+          }),
+        );
+      }
+      if (command.includes("timeline")) {
+        return Promise.reject(new Error("simulated timeline read failure"));
+      }
+      if (command.includes("/comments?")) {
+        return Promise.resolve("[]");
+      }
+      return Promise.resolve("[]");
+    };
+
+    const cache = createTestCache();
+    const fetcher = createIssueFetcher(throwingGh);
+    const repoPRs: OpenPR[] = [];
+    const repoClosedPRs: ClosedPR[] = [];
+    const repoAllIssues: FilterableIssue[] = [];
+
+    const candidates = await collectIdleTaskCandidates(
+      "owner/repo",
+      config,
+      buildOptions(throwingGh, cache),
+      repoPRs,
+      repoAllIssues,
+      fetcher,
+      repoClosedPRs,
+    );
+
+    assertEquals(candidates.length, 0);
+  },
+);
