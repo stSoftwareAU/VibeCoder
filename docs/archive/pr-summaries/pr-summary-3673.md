@@ -34,6 +34,7 @@ Backend-only change, with no UI files. Tests in `worker/deno/tests/milestone_chi
 - Added `decideMilestoneBaseMerge - a closed milestone's detail names it by title, not as #N (Issue #3673)`. It fails against the base production file, which renders `milestone #7 "Clean up" is closed`.
 - Added `renderRouteClosedHoldComment - names a closed milestone by title and links its page, never as #N (Issue #3673)`. It covers four cases: linked, title-only, a hostile `Release #5` title, and no title. It fails against the base production file.
 - Added `holdOrphanBoundPr - the posted hold comment links the closed milestone in the PR's own repo (Issue #3673)`. It is the call-site check: changing the caller to `renderRouteClosedHoldComment(gate, "")` turned it red, and it passed again once the caller was restored.
+- `./quality.sh < /dev/null` was run on the final head: `Result: PASSED (with skipped checks)`. The skipped check was `config integration`, which the gate itself skips.
 - Callers checked: `renderRouteClosedHoldComment` has one production caller, `holdOrphanBoundPr`. It passes `repo`, and `repo` is required, not defaulted.
 
 <!-- vibe-branch-outcomes -->
