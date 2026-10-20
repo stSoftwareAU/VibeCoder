@@ -111,7 +111,10 @@ import type {
   BlockedCandidateInfo,
   DiagnosticSummary,
 } from "./issue_finder_logger.ts";
-import { claimRefusalReason } from "./issue_finder_logger.ts";
+import {
+  claimRefusalReason,
+  isRoutineClaimRefusal,
+} from "./issue_finder_logger.ts";
 import {
   fetchAllOpenPRs,
   fetchOpenMilestoneClosedCounts,
@@ -4309,8 +4312,10 @@ export async function createProductionRunCoreDeps(
       lastScanParkedRepos = new Set(result.parkedRepos ?? []);
       lastScanIdleDeferred = quotaReading !== null &&
         pollingGateVerdict(0, quotaReading, gateThresholds).deferIdle;
+      // Issue #4063: the gate parking or deferring is the expected path —
+      // quota exhaustion is normal and parks quietly, so INFO, not WARNING.
       if (lastScanParkedRepos.size > 0 && quotaReading !== null) {
-        logger.warn(
+        logger.info(
           formatPollingGateParkLine(
             quotaReading,
             lastScanParkedRepos.size,
@@ -4319,7 +4324,7 @@ export async function createProductionRunCoreDeps(
         );
       }
       if (lastScanIdleDeferred && quotaReading !== null) {
-        logger.warn(formatPollingGateIdleLine(quotaReading, gateThresholds));
+        logger.info(formatPollingGateIdleLine(quotaReading, gateThresholds));
       }
 
       // Issue #219: hand the scan's counts to the caller before returning,
@@ -4812,9 +4817,15 @@ export async function createProductionRunCoreDeps(
       const isExpectedSkip = isExpectedSkipResult(result);
       if (!result.success) {
         if (isExpectedSkip) {
-          logger.warn(
-            `Skipped ${issue.repo}#${issue.issueNumber}: ${result.reason}`,
-          );
+          // Issue #4063: another worker holding the issue (or it already
+          // being done) is the expected path; any other skip stays loud.
+          const line =
+            `Skipped ${issue.repo}#${issue.issueNumber}: ${result.reason}`;
+          if (isRoutineClaimRefusal(result.reason)) {
+            logger.info(line);
+          } else {
+            logger.warn(line);
+          }
         } else {
           logger.error(
             `Issue ${issue.repo}#${issue.issueNumber} failed at phase '${result.phase}': ${result.reason}`,
