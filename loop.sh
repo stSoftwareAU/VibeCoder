@@ -234,6 +234,25 @@ on_signal() {
 trap 'on_signal SIGTERM' SIGTERM
 trap 'on_signal SIGHUP'  SIGHUP
 
+# Sleep for the whole backoff, whatever signals arrive (Issue #4062).
+#
+# The traps above keep loop.sh alive, but a plain foreground `sleep` child
+# keeps the default disposition, so the same SIGHUP/SIGTERM killed it and the
+# backoff was skipped: a host whose launcher failed every cycle relaunched it
+# every few seconds for hours. The sleep runs with both signals ignored (an
+# ignored disposition survives exec), and any other early end — SIGKILL, a
+# clock jump — re-sleeps whatever remains of the wall-clock deadline. SIGINT
+# still ends it, so Ctrl+C stops the loop as before.
+sleep_full() {
+    local deadline=$(( $(date +%s) + $1 ))
+    local remaining="$1"
+    while (( remaining > 0 )); do
+        ( trap '' SIGHUP SIGTERM; exec sleep "${remaining}" ) || \
+            echo "loop.sh: sleep interrupted — sleeping out the rest of the backoff"
+        remaining=$(( deadline - $(date +%s) ))
+    done
+}
+
 # This supervisor records every launcher outcome itself, so run.sh must not
 # also record it — one failure must be counted once (Issue #4072).
 export VIBE_SUPERVISOR_RECORDS_OUTCOME=1
@@ -510,8 +529,7 @@ while true; do
 
     sleep_seconds="$(next_sleep_seconds "${run_status}")"
     echo "Sleeping ${sleep_seconds}s..."
-    sleep "${sleep_seconds}" || \
-        echo "loop.sh: sleep interrupted — continuing"
+    sleep_full "${sleep_seconds}"
 
     if git pull; then
         :

@@ -222,10 +222,14 @@ function warnUntrusted(dir: string, reason: string): void {
  * An absent directory is the ordinary cold-cache case and stays silent; it
  * is never created here, so a read still creates nothing. A directory that
  * exists but is group/other accessible or owned by another account is
- * refused loudly — its entries could have been planted, and a planted
- * `passed: true` would skip the gate.
+ * refused — its entries could have been planted, and a planted
+ * `passed: true` would skip the gate. `onUntrusted` reports the refusal:
+ * a WARNING for the primary cache directory, DEBUG for the legacy one.
  */
-async function readableCacheFile(path: string): Promise<boolean> {
+async function readableCacheFile(
+  path: string,
+  onUntrusted: (dir: string, reason: string) => void,
+): Promise<boolean> {
   const dir = directoryOf(path);
   if (dir === null) return true;
   try {
@@ -234,13 +238,34 @@ async function readableCacheFile(path: string): Promise<boolean> {
     return false; // no cache directory yet — an ordinary miss
   }
   const trust = await hardenStateDir(dir);
-  if (!trust.trusted) warnUntrusted(dir, trust.reason ?? "unknown");
+  if (!trust.trusted) onUntrusted(dir, trust.reason ?? "unknown");
   return trust.trusted;
 }
 
+/**
+ * Note a refused legacy `$HOME/.vibe-coder` location at DEBUG.
+ *
+ * In container mode that directory is root-owned `0755` — the parent of the
+ * read-only config mounts — so it is refused on every issue. That is the
+ * normal path, not a degradation: the real cache on the work volume is
+ * unaffected and only the optional migration read is skipped, so it must
+ * not warn that the cache is disabled. The content is still never read
+ * (Issue #1261).
+ */
+function noteUntrustedLegacy(dir: string, reason: string): void {
+  defaultLogger.debug(
+    "Legacy baseline quality cache location not used — not worker-private " +
+      "(Issue #1261)",
+    { cacheDir: dir, reason },
+  );
+}
+
 /** Read a cache file, or null when its directory is untrusted or the read fails. */
-async function readCacheFile(path: string): Promise<string | null> {
-  if (!await readableCacheFile(path)) return null;
+async function readCacheFile(
+  path: string,
+  onUntrusted: (dir: string, reason: string) => void = warnUntrusted,
+): Promise<string | null> {
+  if (!await readableCacheFile(path, onUntrusted)) return null;
   try {
     return await Deno.readTextFile(path);
   } catch {
@@ -266,6 +291,7 @@ async function loadCache(
     if (path !== baselineQualityCachePath(roots)) return new Map();
     text = await readCacheFile(
       legacyHomeCachePath(BASELINE_QUALITY_CACHE_FILE, roots),
+      noteUntrustedLegacy,
     );
     if (text === null) return new Map();
   }

@@ -11,6 +11,7 @@ import {
   createDiagnostics,
   formatScanOutcome,
   formatScanSummary,
+  isRoutineClaimRefusal,
   type IssueFinderDiagnostics,
   sanitiseLogField,
 } from "../lib/issue_finder_logger.ts";
@@ -839,4 +840,32 @@ Deno.test("claimRefusalReason - a refusal that names a winner, or nothing parsea
 Deno.test("claimRefusalReason - anything that is not a claim refusal is not one (Issue #2404)", () => {
   assertEquals(claimRefusalReason("quality gate failed"), null);
   assertEquals(claimRefusalReason(""), null);
+});
+
+Deno.test("issue_finder_logger - isRoutineClaimRefusal separates expected refusals from degraded ones (Issue #4063)", () => {
+  for (
+    const reason of [
+      "Issue not available: already_assigned",
+      "Issue not available: already_closed",
+      "Issue not available: race_lost: winner=host-b",
+      "Issue not available: heartbeat_active: live marker",
+      "Issue not available: recent_claim",
+      "Issue not available: fleet_pr_exists: #12",
+    ]
+  ) {
+    assertEquals(isRoutineClaimRefusal(reason), true, reason);
+  }
+  for (
+    const reason of [
+      "Issue not available: not_assignable: bot is not a collaborator",
+      "Issue not available: forbidden",
+      "Issue not available: verification_failed",
+      "Issue not available: comment_failed",
+      "Issue not available: Some free text",
+      "claim_churn_escalation",
+      "Merged PR already resolves the issue",
+    ]
+  ) {
+    assertEquals(isRoutineClaimRefusal(reason), false, reason);
+  }
 });
