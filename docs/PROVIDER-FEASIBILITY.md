@@ -43,7 +43,7 @@ This change offers no API-key workaround. A subscription run withholds `OPENAI_A
 | Capability | claude | codex | gemini | deepseek |
 | --- | --- | --- | --- | --- |
 | Fixed-price subscription billing | Yes: `CLAUDE_CODE_OAUTH_TOKEN` (`agent_provider.ts:706`) | Yes, when a ChatGPT login is stored under `CODEX_HOME`; a probe, not a variable (`agent_provider.ts:798-818`) | None declared (`agent_provider.ts:965`) | None declared (`agent_provider.ts:1057`) |
-| `--agents` carried | Yes (`agent_provider.ts:617-618`) | No, dropped silently (`agent_provider.ts:870-906`) | No, dropped silently (contract section 7) | Stripped with a warning (`agent_provider.ts:1120-1121`) |
+| `--agents` carried | Yes (`agent_provider.ts:617-618`) | No, dropped silently (`agent_provider.ts:870-906`); a native `issue` run carrying them is refused before spawn (`claude_runner.ts`, Issue #4010) | No, dropped silently (contract section 7); a native `issue` run carrying them is refused before spawn (`claude_runner.ts`, Issue #4010) | Stripped with a warning (`agent_provider.ts:1120-1121`); a native `issue` run carrying them is refused before spawn (`claude_runner.ts`, Issue #4010) |
 | Advisor edit guard (`--settings`) | Yes, gated to Claude (`claude_runner.ts:1228`; `agent_provider.ts:622-623`, `:638-639`) | No | No | Dropped silently (`agent_provider.ts:1132`; contract section 7) |
 | Compaction lever | Yes (`stream_compaction.ts:67-70`) | No (`stream_compaction.ts:160-162`; `compaction unavailable` at `:297`) | No | Yes (`stream_compaction.ts:67-70`) |
 | Session resume | Session flags from stored state (`agent_provider.ts:656-659`) | `exec resume <thread id>` (`codex_executor.ts:345-347`) | `--resume latest`, not by id (`gemini_executor.ts:66-67`, `:239-241`) | Claude-shaped flags (`agent_provider.ts:1125-1129`) |
@@ -165,7 +165,7 @@ Observed header: `[feasibility] rows=40 go=9 no-go=6 unavailable=25`. The rows m
 In the order [Manager-worker contract](MANAGER-WORKER-CONTRACT.md) section 9 sets (steps 3 to 7):
 
 1. An explicit provider capability record (step 3). Today the evaluator reads `buildInvocation` output instead.
-2. A fail-loud refusal when the split is on and a provider cannot carry the contract (section 8 invariant; step 4). Until then Codex, Gemini and DeepSeek drop agents or settings silently (sections 6 and 7 of the contract).
+2. A fail-loud refusal when the split is on and a provider cannot carry the contract (section 8 invariant; step 4). For `--agents` on the native split path this is now delivered (`runClaudeWithTimeoutBody` in `claude_runner.ts`, Issue #4010): a run carrying `--agents` is refused before spawn under Codex, Gemini and DeepSeek. DeepSeek still drops `settings` silently at the descriptor layer, but the edit-guard hook is only requested for Claude.
 3. A provider-neutral edit guard (step 6). Today the guard exists only for Claude (contract section 6).
 4. Cross-provider dispatch. Only this lifts `cross-provider-dispatch-not-implemented` for Sol, or any Codex executor, under a Claude manager. It is not implemented.
 5. A pricing row for any newly routed model. The comment at `token_usage.ts:452-459` says to add the row with the routing change, including a row for any `gpt-5.x` id before it is routed.

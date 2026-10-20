@@ -1022,6 +1022,38 @@ Deno.test({
 
 Deno.test({
   name:
+    "runClaudeWithTimeout - a non-Claude provider with no agents is not refused (Issue #4010)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // Positive control: the refusal keys on agents being present, so the same
+    // provider without agents still reaches the spawn.
+    const result = await withAgentStub(
+      `printf 'stub-agent-ok\\n'`,
+      (stub) =>
+        runClaudeWithTimeout({
+          clock: fakeClock(),
+          prompt: "test",
+          phase: "issue",
+          agentProvider: "codex",
+          agentBinaryPath: stub.path,
+          env: emptyEnv,
+          timeoutSeconds: 30,
+          killAfterSeconds: 2,
+        }),
+      { prefix: "codex_noagents_" },
+    );
+    assert(
+      result.ok || !result.error.message.includes("cannot carry"),
+      `A provider without agents must not be refused: ${
+        !result.ok && result.error.message
+      }`,
+    );
+  },
+});
+
+Deno.test({
+  name:
     "runClaudeWithTimeout - spawns unguarded only with the operator opt-in (Issue #3869)",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",

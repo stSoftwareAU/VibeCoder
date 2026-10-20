@@ -362,9 +362,9 @@ refuses loudly before spawn when `--agents` is dropped (Issue #4010).
 | Provider | Prompt transport | `--agents` | `--settings` (edit guard) | `supportsCompaction` | Behaviour with split on |
 | --- | --- | --- | --- | --- | --- |
 | `claude` | stdin (`agent_provider.ts:720`) | Emitted (`:617-618`) | Emitted (`:622-623`) | Yes (`stream_compaction.ts:67-70`) | Prompt block renders; executors defined; edit guard active. |
-| `codex` | stdin (`:853`) | Not carried, silent | Not carried, silent | No | Prompt block renders; no executor definitions; no edit guard. |
-| `gemini` | argv (`:973`) | Not carried, silent | Not carried, silent | No | Prompt block renders; no executor definitions; no edit guard. |
-| `deepseek` | stdin (`:1067`) | Stripped, warned (`:1120-1121`) | Stripped, silent (`:1120`, `:1132`) | Yes | Prompt block renders; no executor definitions; warning for `agents` only. No edit guard. |
+| `codex` | stdin (`:853`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; no edit guard. |
+| `gemini` | argv (`:973`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; no edit guard. |
+| `deepseek` | stdin (`:1067`) | Stripped, warned (`:1120-1121`) | Stripped, silent (`:1120`, `:1132`) | Yes | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; the descriptor warns for `agents` only. No edit guard. |
 
 **The prompt block renders on every provider (confirmed).** The advisor/executor
 block is not gated on the provider. `isIssueExecutorSplitEnabled` takes the
@@ -437,7 +437,10 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
 - **No default change.** `issue_executor_split` stays `true`,
   `issue_sub_agent_tier` stays `"haiku"` and `issue_reviewer_agents` stays
   `true`. `external_orchestration` stays `false` until a host opts in. Nothing
-  in the rollout changes them.
+  in the rollout changes them. The defaults keep `--agents` on every native
+  `issue` run, so with them a host whose `issue` phase runs on `codex`,
+  `gemini` or `deepseek` is refused until it applies the full rollback below or
+  opts into external orchestration (Issue #4010).
 - **Rollback.** Native: setting `issue_executor_split: false` and
   `issue_reviewer_agents: false` alone does not remove `--agents` on the default
   `haiku` tier. `buildIssueRunAgents` (`worker/deno/lib/issue_executor_agents.ts:420-434`)
@@ -445,7 +448,9 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   (`worker/deno/lib/issue_executor_agents.ts:374`) when `issue_sub_agent_tier`
   is `"haiku"`. A full rollback to no `--agents` argument also sets
   `issue_sub_agent_tier: "sonnet"`. The run is then a single session, as it was
-  before the split. External orchestration: set `external_orchestration` to
+  before the split. The full rollback (all three keys) is also what lets a
+  non-Claude provider run the native `issue` phase. External orchestration: set
+  `external_orchestration` to
   `false` on the host or repository and restart the worker; the native path
   resumes with the existing configuration keys.
 
