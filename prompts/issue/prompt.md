@@ -221,6 +221,24 @@ guessing — the analysis-only hand-off then routes it to a human.
    390px viewport, and a sticky header holding a confirm panel grew to
    486px at 844x390, pushing Confirm out of reach. Name both sizes and the
    open state in the PR summary's Test Plan (Issue #3335).
+   **Check both sides of a breakpoint the issue names.** When the issue
+   limits a UI change to one side of a width breakpoint ("below 768px",
+   "576px and wider") and says the other side stays as it is, scope every
+   new rule, class, wrapper and event handler to that range: a media query,
+   a responsive utility, or `matchMedia` in script. A rule written at every
+   width is wrong even where it looks harmless. The browser check then
+   measures the protected side at the breakpoint itself and at a common
+   device width just past it (for a 768px breakpoint: 768 and 820), drives
+   the interaction the change adds (hover as well as click), and asserts the
+   old layout or behaviour still holds there: the same rows, the same boxes,
+   no reflow on hover. It also measures the changed side just inside the
+   breakpoint (767 for a change below 768px). A check at a desktop width far
+   from the breakpoint, or on the changed side alone, stays green while the
+   change leaks onto the widths next to it: new button padding written at
+   every width wrapped a one-row toolbar onto two rows from 768px to about
+   845px while the check measured only 1024px, and a hover handler with no
+   width guard reflowed rows on phones while the phone check only clicked.
+   Name the widths in the PR summary's Test Plan (Issue #3656).
    **Change only what the issue changes.** Edit only the expectation the
    issue changes and keep every other assertion the test made; renaming or
    rewriting the whole test is how still-true assertions get lost. Before
