@@ -1190,6 +1190,20 @@ guidance under **Unit tests** below.
   the open-only class absent) rather than `toBeVisible()`/`isHidden()`.
   Measure only after the UI has committed the change (await the state or the
   next frame), never in the same synchronous `page.evaluate` as the click.
+  **Check both sides of a breakpoint the issue names.** When the issue limits
+  a UI change to one side of a width breakpoint and says the other side stays
+  as it is, scope every new rule, class, wrapper and event handler to that
+  range — a media query, a responsive utility, or `matchMedia` in script; a
+  rule written at every width is wrong even where it looks harmless. The
+  browser check measures the protected side at the breakpoint itself and at a
+  common device width just past it (for a 768px breakpoint: 768 and 820),
+  drives the interaction the change adds (hover as well as click), and asserts
+  the old layout or behaviour still holds there: the same rows, the same
+  boxes, no reflow on hover. It also measures the changed side just inside the
+  breakpoint (767 for a change below 768px). A check at a desktop width far
+  from the breakpoint, or on the changed side alone, stays green while the
+  change leaks onto the widths next to it. Name the widths in the Test Plan
+  (Issue #3656).
 - **APIs:** Check successful responses and schema/semantics, invalid inputs,
   authorisation, relevant boundaries, documented errors, and retry/idempotency
   where applicable. Incompatible supported contract changes need a new version

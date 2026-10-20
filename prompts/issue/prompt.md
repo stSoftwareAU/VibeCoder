@@ -227,6 +227,47 @@ guessing — the analysis-only hand-off then routes it to a human.
    390px viewport, and a sticky header holding a confirm panel grew to
    486px at 844x390, pushing Confirm out of reach. Name both sizes and the
    open state in the PR summary's Test Plan (Issue #3335).
+   **A control inside a clickable row must win the tap.** When a change
+   adds an interactive control (a button, toggle, disclosure or link), or
+   makes an element interactive, inside a row, card or tile that is itself
+   clickable, check what covers that container: a full-area link overlay
+   (Bootstrap's `.stretched-link`, or any `::after` layer with `inset: 0`),
+   an `onClick` on the container, or another absolutely positioned layer.
+   Give the control its own stacking position above that layer, the way
+   any sibling control already raised in the same row does it, and stop
+   its activation reaching the row. The browser check taps it through the
+   real input layer at its on-screen centre (Playwright `locator.click()`
+   or `tap()` without `force: true`, or `page.mouse.click`), or asserts
+   that `document.elementFromPoint` at that centre is the control or
+   inside it. Then it asserts that the content was revealed and the URL
+   did not change; it asserts that behaviour, never the z-index value
+   itself. `element.click()` and `dispatchEvent` skip hit-testing, and a
+   unit test of the handler only proves event bubbling; neither shows what
+   a finger hits. Two fleet PRs left a toggle and a status-badge button
+   under a row's stretched-link overlay, so a tap opened the detail page
+   while their handler tests passed. The handler test that **Every changed
+   call site needs a test that goes red without it** in the guidelines
+   asks for still stands; this check is in addition to it. Name the
+   real-input tap (or the `elementFromPoint` check) and the unchanged URL
+   in the PR summary's Test Plan (Issue #3681).
+   **Check both sides of a breakpoint the issue names.** When the issue
+   limits a UI change to one side of a width breakpoint ("below 768px",
+   "576px and wider") and says the other side stays as it is, scope every
+   new rule, class, wrapper and event handler to that range: a media query,
+   a responsive utility, or `matchMedia` in script. A rule written at every
+   width is wrong even where it looks harmless. The browser check then
+   measures the protected side at the breakpoint itself and at a common
+   device width just past it (for a 768px breakpoint: 768 and 820), drives
+   the interaction the change adds (hover as well as click), and asserts the
+   old layout or behaviour still holds there: the same rows, the same boxes,
+   no reflow on hover. It also measures the changed side just inside the
+   breakpoint (767 for a change below 768px). A check at a desktop width far
+   from the breakpoint, or on the changed side alone, stays green while the
+   change leaks onto the widths next to it: new button padding written at
+   every width wrapped a one-row toolbar onto two rows from 768px to about
+   845px while the check measured only 1024px, and a hover handler with no
+   width guard reflowed rows on phones while the phone check only clicked.
+   Name the widths in the PR summary's Test Plan (Issue #3656).
    **Change only what the issue changes.** Edit only the expectation the
    issue changes and keep every other assertion the test made; renaming or
    rewriting the whole test is how still-true assertions get lost. Before
