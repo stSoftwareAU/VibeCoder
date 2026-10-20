@@ -1252,6 +1252,27 @@ async function runClaudeWithTimeoutBody(
     ...invocationRequest,
     promptViaStdin,
   });
+  // Fail loud on the native split (Issue #4010): the native `issue` run hands
+  // the CLI `--agents` sub-agent definitions (executor, reviewers, or the
+  // Haiku-tier explorer). A provider whose argv cannot carry them drops them —
+  // Codex and Gemini silently, DeepSeek with a warning — so the advisor would
+  // be told to dispatch sub-agents the CLI never defines. Refuse before spawn
+  // instead. `invocationRequest.agents` is present only when the run's flags
+  // resolved some definition, and the check asks the provider's own argv rather
+  // than a provider-id table.
+  if (invocationRequest.agents && !args.includes("--agents")) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refused to start the agent: ${provider.displayName} cannot carry ` +
+          `the issue run's sub-agent definitions (--agents), so the advisor ` +
+          `would be told to dispatch executors and reviewers the CLI never ` +
+          `defines. Turn the definitions off (issue_executor_split: false, ` +
+          `issue_reviewer_agents: false, issue_sub_agent_tier: "sonnet") or ` +
+          `run the issue phase on the Claude provider. (Issue #4010)`,
+      ),
+    };
+  }
   const stdinPayload = promptViaStdin
     ? (provider.stdinBody?.(invocationRequest) ?? prompt)
     : prompt;

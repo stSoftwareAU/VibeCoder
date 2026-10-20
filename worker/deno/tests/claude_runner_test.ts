@@ -965,6 +965,127 @@ Deno.test({
 
 Deno.test({
   name:
+    "runClaudeWithTimeout - refuses providers that drop --agents on the split (Issue #4010)",
+  permissions: { read: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const agents = buildIssueExecutorAgents("sonnet");
+    for (const agentProvider of ["codex", "gemini", "deepseek"]) {
+      const result = await runClaudeWithTimeout({
+        clock: fakeClock(),
+        prompt: "test",
+        phase: "issue",
+        agentProvider,
+        agents,
+        env: emptyEnv,
+        timeoutSeconds: 30,
+        killAfterSeconds: 2,
+      });
+      // Strictly `false`: a refusal that lost its `ok` would read as falsy
+      // here but break callers that discriminate on `ok === false`.
+      assert(
+        result.ok === false,
+        `${agentProvider} must be refused before spawn`,
+      );
+      assertStringIncludes(result.error.message, "cannot carry");
+      assertStringIncludes(result.error.message, "Issue #4010");
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - Claude carrying --agents is not refused (Issue #4010)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const agents = buildIssueExecutorAgents("sonnet");
+    const { result, spawned } = await withAgentStub(
+      `printf 'spawned\\n' > "$(dirname "$0")/spawned"`,
+      async (stub) => {
+        const result = await runClaudeWithTimeout({
+          clock: fakeClock(),
+          prompt: "test",
+          phase: "issue",
+          agentBinaryPath: stub.path,
+          agents,
+          env: emptyEnv,
+          timeoutSeconds: 30,
+          killAfterSeconds: 2,
+        });
+        return {
+          result,
+          spawned: await Deno.stat(`${stub.dir}/spawned`).then(
+            () => true,
+            () => false,
+          ),
+        };
+      },
+      { prefix: "claude_agents_" },
+    );
+    // Claude carries --agents, so the refusal must not fire. The stub marks its
+    // own spawn (the `spawned` file beside it), so the run is proven to have got
+    // through to the spawn whatever the stub prints. The stub writes no stream
+    // result, so ok may be false with a parse error — but never the --agents
+    // refusal.
+    assert(
+      spawned,
+      "the runner must reach the spawn — the refusal must not fire",
+    );
+    assert(
+      result.ok || !result.error.message.includes("cannot carry"),
+      `Claude must not be refused: ${!result.ok && result.error.message}`,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - a non-Claude provider with no agents is not refused (Issue #4010)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // Positive control: the refusal keys on agents being present, so the same
+    // provider without agents still reaches the spawn. The stub marks its own
+    // spawn, so the assertion proves the run got through to it.
+    const { result, spawned } = await withAgentStub(
+      `printf 'spawned\\n' > "$(dirname "$0")/spawned"`,
+      async (stub) => {
+        const result = await runClaudeWithTimeout({
+          clock: fakeClock(),
+          prompt: "test",
+          phase: "issue",
+          agentProvider: "codex",
+          agentBinaryPath: stub.path,
+          env: emptyEnv,
+          timeoutSeconds: 30,
+          killAfterSeconds: 2,
+        });
+        return {
+          result,
+          spawned: await Deno.stat(`${stub.dir}/spawned`).then(
+            () => true,
+            () => false,
+          ),
+        };
+      },
+      { prefix: "codex_noagents_" },
+    );
+    assert(
+      spawned,
+      "a provider without agents must reach the spawn — the refusal must not fire",
+    );
+    assert(
+      result.ok || !result.error.message.includes("cannot carry"),
+      `A provider without agents must not be refused: ${
+        !result.ok && result.error.message
+      }`,
+    );
+  },
+});
+
+Deno.test({
+  name:
     "runClaudeWithTimeout - spawns unguarded only with the operator opt-in (Issue #3869)",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
