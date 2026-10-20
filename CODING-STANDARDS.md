@@ -24,13 +24,16 @@ summarise, authorised.
 
 - **KISS** — Favour simplicity; avoid unnecessary complexity. Prefer the
   approach with fewer moving parts and less indirection, even if it costs a few
-  more lines. Work down the **smallest-change-first ladder** and stop at the
-  first rung that solves the problem: skip what is not needed, reuse what the
-  codebase has, use the standard library, use a native platform feature, use a
-  dependency already installed, write one line, and only then write new code.
-  The floor is never cut: input validation at a trust boundary, error handling
-  that prevents data loss, security, accessibility, and whatever the issue
-  explicitly asks for all stay in — see
+  more lines. Before picking a rung, read the code the change touches — its
+  callers, the helpers it could reuse and the tests that cover it: be lazy about
+  the solution, never about the reading. Work down the
+  **smallest-change-first ladder** and stop at the first rung that solves the
+  problem: skip what is not needed, reuse what the codebase has, use the
+  standard library, use a native platform feature, use a dependency already
+  installed, write one line, and only then write new code. The floor is never
+  cut: input validation at a trust boundary, error handling that prevents data
+  loss, security, accessibility, and whatever the issue explicitly asks for all
+  stay in — see
   [Never Fail Silently — Fail Loud](#never-fail-silently--fail-loud) below and
   [SECURITY.md](SECURITY.md). Mark each deliberate corner cut with exactly one
   comment line opening with `// SIMPLE-ON-PURPOSE:` — the ceiling first, then
@@ -38,6 +41,16 @@ summarise, authorised.
   `grep -r SIMPLE-ON-PURPOSE` lists every cut:
   `// SIMPLE-ON-PURPOSE: linear scan, fine to 10,000 rows — upgrade when a table exceeds 10,000 rows`.
 - **DRY** — Avoid code duplication; maintain a single source of truth.
+- **Change every copy of a twinned rule** — Before changing a rule, gate,
+  matcher or check, search for text that declares a second copy of it
+  ("mirrors", "runs the same gate as", "shared copy of", "both carry") and for
+  its function or rule name. Change every copy in the same PR, or make one call
+  the other. If both copies must stay, add a test that fails when they
+  disagree. The Test Plan names the copies found, or says none was found. This
+  document and `prompts/coding_guidelines/prompt.md` are one such pair (see
+  [Language-Agnostic Standards vs Per-Language Buckets](#language-agnostic-standards-vs-per-language-buckets)),
+  and the completion phase's PR-summary gates and `deno task pr-summary-check`
+  are another (see [PR Summary and Evidence](#pr-summary-and-evidence)).
 - **Boy Scout Rule** — Leave the code cleaner than you found it.
 - **Single Responsibility / Smaller Files** — Favour many smaller, focused
   source files over large monolithic ones.
@@ -86,6 +99,65 @@ the fault immediately rather than swallowing it into a green result.
   summary. Observe the real tool's output for each failure class the reason
   claims to tell apart (see **Observe the real tool before you rely on it**),
   and test it as **A failure-reason test asserts the cause** says.
+- **A failure reason that quotes text the worker did not write opens with a
+  registered worker marker** — a reason that embeds tool output (formatter
+  diffs, linter context, cspell words, test output), agent text (the PR summary,
+  test declarations) or issue or comment text opens with a worker-written
+  constant from `worker/deno/lib/failure_diagnosis.ts`, registered with its own
+  category in `WORKER_GATE_MARKERS`. `detectFailureCategory` and
+  `detectHostFault` read that registry with `startsWith` on the message
+  (`workerGateCategoryOf`) before their free-text rules; `classifyRunFailure`
+  and `classifyCodingFailure` first test the category they classify with
+  `isWorkerGateCategory`, a comparison with the registry's categories
+  (`classifyCodingFailure` and `shouldRetryInfrastructureFailure` retain a
+  supplied source category and use `detectFailureCategory` for raw reasons);
+  the label-release sweeps skip any worker gate record
+  (`isWorkerGateFailureRecord`). A new gate refusal is one registry entry,
+  which each reader above then sees with no edit of its own.
+  Without such a marker, the quoted cause line that the bullet above asks for
+  lets a quoted `rate limit`, `timeout`, `SIGKILL`, `command not found`,
+  `ENOSPC` or `Error:` turn a gate block into a transient, killed,
+  missing-tools, disk-full or worker-crash run, with no ladder attempt or
+  failure comment, re-claimed every cycle (VibeCoder#3440, #3716). Reading the
+  marker back is a gate over text (rule 5 of **Writing a gate over text**).
+  Each new entry's hostile quotes go in
+  `worker/deno/tests/worker_gate_markers_3735_test.ts`, which asserts the gate's
+  own category, a `ladder` disposition and no host fault for the raw reason,
+  and for the posted failure comment that it is a worker gate record
+  (`isWorkerGateFailureRecord`) that neither label-release sweep releases
+  (Issue #3735).
+
+## Worker failure causes
+
+Worker-written failures declare their existing `FailureCategory` at the source.
+`PhaseResult` failure/early-exit results and unsuccessful `WorkOnIssueResult`
+values require a category. A helper returning both a branch verdict and an
+infrastructure failure exposes the distinction in its result/error type; callers
+map every case explicitly. Do not derive a worker result's category from its own
+reason text. The phase source-scan regression covers direct and assigned result
+objects, nested expressions, comments and literal lookalikes.
+
+Carry the source category through retry, failure bookkeeping and the existing
+outcome/callback. Legacy records and raw external tool/CLI output may use the
+existing text adapter; choosing raw versus declared input to
+`classifyRunFailure` is explicit. Capture a known host refinement at that external
+boundary and retain the existing classification, rather than reparsing quoted
+check output later. Unknown causes remain unknown. Worker-authored kill
+probes remain distinct from agent narration about billing, crashes or memory.
+
+Evidence/documentation-contract findings use `summary_incomplete`; substantive
+implementation or test findings use `quality_check`. Preserve every simultaneous
+cause in the existing diagnostic/event output and select a substantive cause
+when present. Every verifier finding remains blocking; a finding cannot declare
+itself an infrastructure error. Existing PR outcomes keep these diagnostics even
+when they retain their established PR-attached outcome kind.
+
+A scheduled handover remains `scheduled_release`; an exhausted execution budget
+remains a timeout. Retain the runner's known stop fields (raw exit status,
+watchdog reason/lateness, incomplete kill and scheduled/termination flags) in the
+existing outcome/callback. Do not infer a missing cause, exempt all timeouts or
+discard preserved work. Semantic already-landed decisions reuse the existing
+outcome contract and their own provenance checks.
 
 ## Changing the Shape of Persisted Data
 
@@ -104,9 +176,20 @@ PR summary which of the two the change chose. A persisted shape changed with
 neither a bumped key nor an old-shape test is a blocking self-review finding
 (Issue #3328).
 
-This covers data the code writes and later reads back itself. An interface a
-deployed extension reads from outside this repository follows
-[A Contract a Deployed Extension Reads Is Additive-Only](#a-contract-a-deployed-extension-reads-is-additive-only)
+**A cached API response is persisted data.** A client that reads an API response
+through a cache that outlives a deployment — a service worker, an HTTP cache, an
+offline store — still holds the previous release's bodies after the update, so
+its parser is held to the rule above. Making a newly served field required, or
+renaming one, is a shape change. Unless the cache key is bumped, read the old
+shape: a renamed field under its old name too, and a newly served field's
+absence as unknown (null) — never as an error, and never as a made-up default.
+The old-shape test seeds a body the previous release served. An issue or plan
+that says a missing value throws does not override this (Issue #3564).
+
+This covers data the code writes and later reads back itself, a client's cached
+copy of its own API's responses included. An interface a deployed extension
+reads from outside this repository follows [A Contract a Deployed Extension
+Reads Is Additive-Only](#a-contract-a-deployed-extension-reads-is-additive-only)
 instead, where a version bump is a release decision.
 
 Past regressions: VibeCoder#3325 moved `getSubIssues` from `number[]` to
@@ -117,7 +200,11 @@ parent/child gate; GRQ-AutoTrader#2481 made `cashChange` read only
 `row.interest_charged` while the service worker's `grq-api-v1:` partitions
 still served rows with the old `interest` key. The precedent for the fix is
 Issue #2173, which bumped `issue_state_v1_` to `issue_state_v2_` when that
-payload gained `milestone`.
+payload gained `milestone`. Issue #3564 records the same fault after this rule
+landed: a planner-written sub-issue told the coder that a newly served response
+field's missing value throws, the sub-PR did exactly that, and every installed
+client's service-worker cache still held the previous release's body without
+the field.
 
 ## Automation and Shared GitHub State
 
@@ -290,6 +377,19 @@ earns its place by meeting all four conditions:
    A retyped constant stays green while the page and the test agree with each
    other and the code has moved on — the very drift the suite was written to
    catch.
+
+   The same holds for a flag, a command line, a function or export name, a
+   version or a tag, and for a value a checked-in config file holds: call the
+   function that builds it, read the file (the `tag` of an entry in
+   `container/tools.json`, say), and use `fn.name` for a function name.
+   Deleting the new doc sentence does not catch a typed-in value, because the
+   test still goes red, so the red check for each code-held value is a source
+   mutation: change the value in the module or file that produces it, run the
+   drift test, see it fail, then restore it, and record one Test Plan line per
+   value. VibeCoder#3478 typed in the Floci tag that `container/tools.json`
+   holds, and VibeCoder#3654 typed in the clone flags that
+   `buildShallowCloneArgs` returns; a reviewer changed each source value and
+   the test stayed green.
 4. **Every pinned phrase occurs only in the rule being added.** A phrase the
    section already held before the change stays green when the new rule is
    deleted — VibeCoder#3091 pinned "blocking self-review finding", which the
@@ -566,8 +666,19 @@ section the test reads (`git show <base>:<doc>`, narrowed to the same section
 title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
 <doc> <section> <phrase>...` from `worker/deno` does this), and record in the
 Test Plan that each pinned phrase is absent from the base section; a phrase
-the base section already held is a blocking self-review finding. A pin a
-change only moves, while converting an existing whole-file drift test to
+the base section already held is a blocking self-review finding. A pin that
+names a value a module or a checked-in config file already holds — a flag, a
+command line, a function or export name, a status, marker, key, default,
+version or tag — is built from that module or file, never typed in: import it,
+call it, or read the JSON, and use `fn.name` for a function name (condition 3
+of **Documentation-drift tests** in `CODING-STANDARDS.md` is the canonical
+rule). Removing the doc change does not catch a typed-in value, because the
+test still goes red without the new sentence; so for each such value, change
+it in the module or file that produces it, run the drift test, see it fail,
+then restore it. Record one Test Plan line per value, for example
+`buildShallowCloneArgs --depth=1 → --filter=blob:none: test red`. A pin that
+stays green when its source value changes is a blocking self-review finding. A
+pin a change only moves, while converting an existing whole-file drift test to
 `section()`, is meant to be on base, so this check does not apply to it:
 **Re-scoping an existing drift test** in `CODING-STANDARDS.md` red-checks
 each moved check in its own section instead. A test that only pins current
@@ -722,18 +833,28 @@ a Docs Change** below on a change that alters what an existing state
 means. List the messages checked in the PR summary's Test Plan
 (Issue #3259).
 
-**Narrowing a shared helper changes every caller.** Before a helper that
-other code already calls starts rejecting, throwing on or dropping a value it
-used to accept (a validator, type guard, allowed-value set, required field,
-ref/name check), list its existing callers and the real values each can
-receive. Check those values against the tool or API's actual output, not its
-documentation's happy path (see **Observe the real tool before you rely on
-it**). If any existing caller can legitimately pass a value the new rule
-rejects, keep the shared helper as it was and apply the stricter rule at the
-new call site. Otherwise add a test showing an existing caller still accepts
-its real inputs. List the callers checked in the PR summary. A narrowed shared
-helper with no callers-checked list is a blocking self-review finding
-(Issue #3100).
+**Changing what a shared helper returns, refuses or finds changes every
+caller.** Before a helper that other code already calls starts rejecting,
+refusing, throwing on, dropping, finding or returning something different for
+an input it already handled — a validator, type guard, allowed-value set,
+required field or ref/name check that narrows, a lookup that gains a fallback,
+a routine that gains a refusal or precondition — list its existing callers and
+the real values each can receive. Check those values against the tool or API's
+actual output, not its documentation's happy path (see **Observe the real tool
+before you rely on it**). For each existing caller, decide whether its
+behaviour changes under the new result. When one depends on the old result (it
+passes a value the new rule rejects, reads "nothing found" as "leave it
+alone", or runs where the new refusal fires), keep the shared helper as it was
+and apply the new behaviour at the new call site, or change that caller too.
+Add a test that exercises each existing caller whose behaviour the change
+touches, under the new result; a callers-checked list alone does not count,
+because nothing checks a wrong conclusion in it. List the callers checked in
+the PR summary. When the worker's pre-PR verifier runs, it is also given the
+callers outside the diff of each function whose body the diff changes, found
+by the worker's own word search and capped per function, and a listed caller
+left without a verdict, or reported `regressed`, blocks the PR. A changed
+shared helper with no test through an existing caller whose behaviour it
+touches is a blocking self-review finding (Issues #3100, #3779).
 
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the
@@ -800,8 +921,12 @@ non-empty and at most 1,000 chars. Caps: the raw file at most 100,000 chars
 rule blocks PR creation with the field path and reason (for example
 `branchOutcomes.entries[0].exempt.reason: needs at least 3 words`); it is never
 treated as absent. The worker renders the list at the first
-`<!-- vibe-branch-outcomes -->` marker, appending it when there is none; a facts
-file plus a hand-written `Branch outcomes:` list blocks. The rendered list is
+`<!-- vibe-branch-outcomes -->` marker and owns the block through
+`<!-- /vibe-branch-outcomes -->`. Re-rendering replaces that block idempotently.
+Structured facts are authoritative: safely identified legacy lists are replaced,
+with unrelated narrative preserved. Ambiguous ownership and unreached-outcome
+admissions block rather than being discarded. Write the facts and marker, not a
+second independently maintained list. The rendered list is
 then checked like a prose one, including that each named test exists at the
 head. With no facts file, the `Branch outcomes:` list in the Test Plan is read
 as before.
@@ -1050,6 +1175,34 @@ stale. Before calling a gate done (Issue #3149):
    way — escapes, whitespace, comments — and use equality on the normalised
    forms rather than substring containment, unless containment is the
    contract.
+5. **Reading the worker's own marker is a gate over text.** Code that asks
+   "does this body carry my marker?" — an HTML-comment marker or a reason
+   prefix the worker writes — is a gate over text whenever the body also
+   holds agent-written, issue or comment text: a PR body that opens with the
+   agent's PR summary, a failure reason that quotes the agent's summary or
+   test lines, or a failure comment that embeds that reason. Summaries
+   routinely quote a feature's own marker in a code span, so the control path
+   trips with no attacker involved (VibeCoder#3353, #3440, #3676). Read the
+   marker only where the worker writes it: at the anchored position — the
+   block that opens the body (`extractLeadingSection` in
+   `worker/deno/lib/pr_body_sync.ts`), the opening heading with the marker on
+   the next line (`hasFollowUpChainStop` in
+   `worker/deno/lib/missing_criterion_close_guard.ts`), or a `startsWith` on
+   the worker-written prefix (`SUMMARY_RULE_GATE_MARKER` in
+   `worker/deno/lib/failure_diagnosis.ts`, one of the gate-refusal prefixes
+   registered in `WORKER_GATE_MARKERS` and read by
+   `workerGateCategoryOf`) — or after the agent part has been
+   neutralised before the worker appends its own marker
+   (`neutraliseAgentMarkers` in
+   `worker/deno/lib/agent_marker_neutralisation.ts`,
+   `neutraliseSubAgentTierMarkers` in `worker/deno/lib/pr_body.ts`). Never
+   use `includes()` or a first-occurrence match over such a mixed body.
+   Reuse the anchoring a sibling marker already uses rather than writing a
+   new helper, widening its export where it is private. Rule 1's look-alike
+   tests include the agent's text quoting the marker in a code span and in
+   plain prose after the summary heading, each asserting the control path
+   does **not** fire, plus one for the body after any later re-wrapping the
+   worker does, such as a reason embedded in a failure comment (Issue #3696).
 
 A gate's matcher must also stay cheap on hostile input — see the ReDoS
 guidance under **Unit tests** below.
@@ -1086,6 +1239,20 @@ guidance under **Unit tests** below.
   the open-only class absent) rather than `toBeVisible()`/`isHidden()`.
   Measure only after the UI has committed the change (await the state or the
   next frame), never in the same synchronous `page.evaluate` as the click.
+  **Check both sides of a breakpoint the issue names.** When the issue limits
+  a UI change to one side of a width breakpoint and says the other side stays
+  as it is, scope every new rule, class, wrapper and event handler to that
+  range — a media query, a responsive utility, or `matchMedia` in script; a
+  rule written at every width is wrong even where it looks harmless. The
+  browser check measures the protected side at the breakpoint itself and at a
+  common device width just past it (for a 768px breakpoint: 768 and 820),
+  drives the interaction the change adds (hover as well as click), and asserts
+  the old layout or behaviour still holds there: the same rows, the same
+  boxes, no reflow on hover. It also measures the changed side just inside the
+  breakpoint (767 for a change below 768px). A check at a desktop width far
+  from the breakpoint, or on the changed side alone, stays green while the
+  change leaks onto the widths next to it. Name the widths in the Test Plan
+  (Issue #3656).
 - **APIs:** Check successful responses and schema/semantics, invalid inputs,
   authorisation, relevant boundaries, documented errors, and retry/idempotency
   where applicable. Incompatible supported contract changes need a new version
@@ -1165,7 +1332,10 @@ A unit test is **behavioural**, **self-contained**, **fast** and
   script is a `test-audit` finding (check 13) whatever the test happens to cost
   on your machine — unless the file is **declared**, in the integration
   manifest or in `IN_GATE_SCRIPT_SUITES`, where the spawn is the point and its
-  cost is recorded beside it.
+  cost is recorded beside it. The real signal-cleanup suite also keeps its
+  process and polling assertions in the required serial pass, with its measured
+  reason in `SUBPROCESS_TIMING_TEST_FILES` (see "Real signal cleanup stays in the
+  required gate" below).
 - **Parallel-safe** — it does not mutate process-wide state (`Deno.env.set`,
   `Deno.env.delete`, `Deno.chdir`, or a module-level singleton the rest of the
   suite reads). Take the value as a parameter or an injected seam instead.
@@ -1225,19 +1395,34 @@ simply no longer waits out a stopwatch to do it.
   unfixed pattern to see it hang or fail the growth check before counting it:
   Issue #3085's growth test fed dots that ran to the end of the value, which
   never backtracks, when the input that does is dots followed by `x`.
-- **If, and only if, no observable output distinguishes the two, guard by
-  shape rather than by clock** — catastrophic backtracking has no wrong output,
-  only a runtime one, so such a test must measure. Use
+- **The target repository's own testing standard wins on timing.** Fleet
+  runs work in repositories whose standards keep timing out of unit tests
+  ("no `Instant`/`elapsed` for pass/fail", "timing belongs in `benches/`");
+  there that rule covers a ratio of two readings too, because the PR #1170
+  lesson above is a ratio going red on linear work. Guard super-linear cost
+  there by the output first, then by **deterministic work** counted through
+  an injected observer or counter and asserted to grow linearly
+  (stSoftwareAU/NEAT-AI-Discovery PRs #2321 and #2345 replaced fleet-written
+  ratio tests that way), and put timing comparisons in the repository's
+  benchmark harness. Never cite this repository's helpers or issue numbers
+  (`assertLinearGrowth`, Issue #530) as a precedent in another repository,
+  and confirm a precedent file exists before naming it (Issue #3680).
+- **If, and only if, neither the output nor a work count distinguishes the
+  two, this repository allows a ratio as a last resort** — catastrophic
+  backtracking has no wrong output, only a runtime one, and a regex engine
+  exposes no step counter, so such a test must measure. It is a last resort,
+  not a safe default: by the lesson above, a ratio can still flake under
+  load, so it runs in the serial pass, where the machine is its own. Use
   [`tests/support/growth.ts`](worker/deno/tests/support/growth.ts)
   (`assertLinearGrowth`), which times the same work at size N and 4N and fails
   only when the cost grew faster than the input. A slower fleet host inflates
-  both readings and stays green; an absolute millisecond budget does not
+  both readings, where an absolute millisecond budget simply goes red
   (Issue #530). The rule in one line: **compare two readings of the same work,
-  never a reading against a constant.** A ratio assertion is permitted and is
-  not a `test-audit` finding; an absolute wall-clock threshold is forbidden and
-  is one (Issue #786). Such a test measures deliberately, so it runs in the
-  serial pass — and it is still a unit test. Prefer the behavioural form where
-  it works: PR #1170 moved twelve ReDoS guards onto asserting what the code
+  never a reading against a constant.** Because this standard explicitly
+  allows it, such a ratio assertion is not a `test-audit` finding in this
+  repository; an absolute wall-clock threshold is forbidden and is one
+  (Issue #786). It is still a unit test. Prefer the behavioural form where it
+  works: PR #1170 moved twelve ReDoS guards onto asserting what the code
   *produces* for an adversarial input, because a pattern that never returns
   hangs the case on every host. It only works when the pre-fix cost is large
   enough to hang — `plan_coverage_gate_bounds_1245_test.ts` guards a pattern
@@ -1245,23 +1430,26 @@ simply no longer waits out a stopwatch to do it.
   stalls a planning close but finishes well inside a test timeout, so the
   ratio is the only detector it has (Issue #1245).
 - **Vet every regex on untrusted text, one hostile case per pattern.** Every
-  regex a change adds or edits that runs on untrusted or agent-written text
-  (an issue body, a PR summary, agent output) gets its own check, not one per
+  regex a change adds or edits that runs on untrusted or agent-written text (an
+  issue body, a PR summary, agent output) gets its own check, not one per
   module. Read each pattern for two quantifiers that can match the same
   characters with only optional tokens between them: `\s*:?\s*$`,
   `\s*[:\-–—]\s*(.+)$`, or an unanchored `[.!\s]+$` or `\s+$`. Remove the
   overlap: trim the line first and drop the redundant quantifier, make the
   pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
-  trailing whitespace, or cap the run. A `(.*)$` tail can fail too, because
-  `.` stops at a lone `\r`: after an unanchored label such as `reason:`, the
-  search restarts at every later occurrence of the label and rescans to the
-  end each time, so read the value with `([^\n]*)` and no `$` (Issue #3186).
-  Then add one hostile case per pattern: a long run of the shared character
-  followed by a character the pattern rejects. A parser with several
-  patterns needs a case for each. stSoftwareAU/VibeCoder#3085
-  capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
-  with the same defect, and #3160's hostile cases covered the inline form while
-  `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
+  trailing whitespace, or cap the run. A `(.*)$` tail can fail too, because `.`
+  stops at a lone `\r`: after an unanchored label such as `reason:`, the search
+  restarts at every later occurrence of the label and rescans to the end each
+  time, so read the value with `([^\n]*)` and no `$`. Then add one
+  hostile case per pattern: a long run of the shared character followed by a
+  character the pattern rejects. A parser with several patterns needs a case for
+  each. Each case asserts the pattern's result on an input long enough that
+  catastrophic backtracking never returns, so it hangs on every host, or a
+  deterministic step count: guard super-linear cost by output, then by counted
+  work, as the timing bullets above say. It is not a wall-clock ratio where the
+  repository's own testing standard keeps timing out of unit tests.
+  Capping one pattern and leaving its sibling in the same file with the same
+  defect is the usual miss.
 
 ### Integration tests
 
@@ -1326,6 +1514,15 @@ at all.
 A benchmark disguised as a unit test is a gate failure, not a style point. The
 benchmark-audit stage scans `worker/deno/tests/` and fails any `Deno.test`
 whose name contains `benchmark` or `bench_` (Issue #583).
+
+### Real signal cleanup stays in the required gate
+
+`worker/deno/tests/run_core_signal_cleanup_test.ts` exercises SIGINT/SIGTERM against a real
+Deno entrypoint and descendant process. It remains in the required serial unit pass,
+with every cleanup assertion intact. Its process startup and graceful-termination
+polling have a named reason in `SUBPROCESS_TIMING_TEST_FILES`, inherited by
+`SLOW_UNIT_TEST_KEEP_FILES`; the one-second mockable
+unit-work budget is not a signal-cleanup performance requirement.
 
 ### When a test does not fit
 
@@ -1764,13 +1961,50 @@ for every PR summary — containing:
 
 In this repository, `deno task pr-summary-check --base <base-branch>
 <summary-file>` from `worker/deno` runs most of the PR-summary gates against a
-draft summary before the PR is raised. A gate it reports as not checked is not
-a pass. For a summary named `pr-summary-<N>.md` it also reads
+summary at either stage: a draft before the PR is raised, or the archived
+summary once it is open. A gate it reports as not checked is not a pass. For a
+summary named `pr-summary-<N>.md` it also reads
 `docs/archive/pr-summaries/pr-summary-<N>.facts.json` under the repository
 root, as the worker does (it takes only `<N>` from the summary's file name):
 the Branch outcomes gate sees the list rendered at the
-`<!-- vibe-branch-outcomes -->` marker, and blocks on an invalid facts file or
-on a facts file beside a hand-written list.
+`<!-- vibe-branch-outcomes -->` marker. It blocks on invalid facts, ambiguous
+block ownership or unresolved evidence; a safely identified legacy duplicate is
+regenerated from the facts.
+
+`deno task pr-summary-check`
+(`worker/deno/lib/pr_summary_check.ts`) is the twin of the completion phase's
+PR-summary gates (`worker/deno/lib/phases/completion_phase.ts`): a change to how
+the completion phase runs one of those gates, or prepares its input, changes
+`pr_summary_check.ts` the same way in the same PR. A change inside a validator
+both files call reaches both already.
+
+Pending required CI/quality execution and routine clean code review belong in
+`## Merge verification` on the originating PR, with an honest pending status.
+Waiting for these checks alone is not unfinished implementation and does not
+warrant a partial-delivery follow-up or nested escalation. When the issue
+explicitly states a merge-check criterion, retain its truthful closure entry;
+use a clear pending reason such as `CI not yet verified` or `awaiting code
+review`, without claiming it passed. A mixed criterion whose implementation
+is complete can state its only remainder explicitly:
+`reason: CI not yet verified — remaining: merge-verification-only` (also accepts
+`awaiting code review` or `quality gate not yet run`). Record unavailable local
+tooling and observed results in Evidence. This annotation is not for unfinished
+implementation, absent tests or known failing checks. Failed checks, absent tests,
+known defects and mixed criteria with unfinished product work remain gaps.
+Required CI, review and acceptance gates still apply.
+
+CI runs the same gates on every push to a pull request: the `PR summary
+freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
+`deno task pr-summary-ci --base <base-branch> --head-branch <head-branch>`
+(Issue #3768). On an `issue-<N>-…` head branch whose diff carries
+`pr-summary-<N>.md` (or its facts file), it fails when the PR's newest non-merge
+commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
+commit changing that summary or its facts file. Rewrite the summary for the head
+in that push, whoever makes it. The step then runs the `pr-summary-check` gates
+and fails on a blocked one; gates needing the issue body or labels are reported
+as not checked. A PR carrying no summary passes with a log line. On a head
+branch that is not an `issue-<N>` branch (milestone roll-ups, sync PRs) the
+summary is reported as not checked.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
@@ -1866,6 +2100,17 @@ before the lookup (VibeCoder#3231); a PR summary said "every arm" of three parse
 script's header comments listed "three things" that are deliberately not
 faults when the script skips and allows several more (GRQ-AutoTrader#2479)
 (Issue #3232).
+
+**Project version wording (Issue #3954).** Write the summary's own version-bump
+statement in Summary using durable wording, for example:
+``Version bump: `VERSION` updated for this change; the merged commit records the final version.``
+Do not predict a literal before/after pair that CI can change after your push.
+Name a specific relation to the actual target branch, such as one patch above
+it, only after checking that repository's workflow guarantees that policy.
+Otherwise keep the policy-neutral wording; manual or minor version changes do
+not imply an automatic patch policy. Exact release/build evidence belongs in
+Evidence with its final commit or release provenance. Preserve dependency pins,
+historical reproduction versions, migration examples and changelog entries.
 
 The worker checks this mechanically too (Issues #3347, #3715, #3731).
 Whenever a PR summary was loaded, the first-run claim check asks a read-only
@@ -2003,6 +2248,11 @@ gate if a model-generation name reappears in this document.
   reaches for it — e.g. "Use the `gh` CLI to check the current PR status".
 - **Mind the token economy.** Reduce redundancy — a single clear statement beats
   the same instruction paraphrased three ways.
+- **End with what you did not do.** Close every run summary — the final message,
+  the PR summary, a hand-off — with what was skipped or not checked, and any
+  risk that remains. Write "none" when nothing was; never leave the reader to
+  infer that everything was checked. An unverified claim is reported as
+  unverified, not as fact.
 - **Prefer positive instructions over negative ones.** "Use Australian English
   spelling" is more effective than "Do not use American English spelling".
 - **Structure prompts with clear sections** — headings and bullet points aid

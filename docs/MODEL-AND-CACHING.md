@@ -5,6 +5,8 @@ optimises costs through prompt caching, and tracks token usage. It also records
 why the Anthropic Batch API was evaluated and deliberately **not** wired into
 the worker.
 
+See also: [Manager-worker contract](MANAGER-WORKER-CONTRACT.md) for how the manager hands work to sub-agents across providers.
+
 ## Table of Contents
 
 - [Provider Applicability](#provider-applicability) — which behaviours apply
@@ -104,10 +106,10 @@ a section without a marker, fails `deno test`.
 | [Design note — effort-first vs tier-first](#design-note--effort-first-vs-tier-first) | ✅ | ⚠️ | ❌ | ❌ | Codex has four effort levels (no `xhigh`/`max`); neither the Gemini CLI nor DeepSeek's endpoint has an effort control, so both vary tier alone |
 | [Per-phase decision log](#per-phase-decision-log) | ✅ | ❌ | ❌ | ❌ | The decisions are Claude tier/price ones; the other tables copy the shape (top/base/cheap), not the rows — DeepSeek copies it without a cheap rung |
 | [Model/effort precedence chain](#%EF%B8%8F-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
-| [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns |
-| [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. The spawn caps are Claude Code environment variables |
+| [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`. |
+| [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`. The spawn caps are Claude Code environment variables |
 | [Pre-PR verifier (issue phase)](#pre-pr-verifier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The verifier is one extra pass through the Claude runner with the `issue` phase's model; it is not a `--agents` definition, and the `claude` provider is the one that runs it |
-| [Haiku sub-agent tier (issue phase)](#haiku-sub-agent-tier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The tier picks the model of Claude CLI `--agents` definitions (executor, Standards reviewer, explorer): `codex` and `gemini` never build the argument, and `deepseek` strips it and warns |
+| [Haiku sub-agent tier (issue phase)](#haiku-sub-agent-tier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The tier picks the model of Claude CLI `--agents` definitions (executor, Standards reviewer, explorer): `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`. |
 | [Codex per-phase routing](#-codex-per-phase-routing) | ❌ | ✅ | ❌ | ❌ | Claude uses the precedence chain; Gemini and DeepSeek use their own sections |
 | [Gemini per-phase routing](#-gemini-per-phase-routing) | ❌ | ❌ | ✅ | ❌ | Claude uses the precedence chain; Codex and DeepSeek use their own sections |
 | [DeepSeek per-phase routing](#-deepseek-per-phase-routing) | ❌ | ❌ | ❌ | ✅ | Claude uses the precedence chain; Codex and Gemini use their own sections |
@@ -166,6 +168,30 @@ post-fix behaviour.
 ## Model Selection
 
 > **Applies to:** `claude` ✅ · `codex` ⚠️ · `gemini` ⚠️ · `deepseek` ⚠️ — all four route each phase to a model through their own tables, but only Claude and Codex carry a reasoning-effort lever, and the Fable tier, its rate-limit ladder and the degraded-model machinery below are Claude's alone. DeepSeek routes every phase through `DEEPSEEK_PHASE_MODEL_DEFAULTS` and carries no effort lever at all, because its endpoint implements none.
+
+Labels choose work phases, and one shared `PHASE_MODEL_TIERS` policy maps
+those phases to provider-independent `best`, `standard` or `fast` tiers.
+Planning, questions, refinement, revision and Quorum use `best`; implementation
+and reactive fixes use `standard`; spelling, summaries and health use `fast`.
+Only the provider's tier catalogue contains concrete model names.
+
+Operators can change that policy once in `.config.json`:
+
+```json
+{
+  "phase_model_tiers": { "issue": "best" },
+  "provider_model_tiers": {
+    "claude": { "best": "opus", "standard": "sonnet", "fast": "haiku" },
+    "codex": { "best": "gpt-6-astra", "standard": "gpt-6.1-sol", "fast": "gpt-6-luna" }
+  }
+}
+```
+
+The Codex ids above are an example for an account whose model catalogue offers
+them; verify access with a live turn. Unspecified tiers keep the built-in model
+ids. Existing explicit provider phase overrides, per-repo settings and phase
+environment overrides retain precedence over the shared tier policy. Invalid
+tier names, phases, providers and empty model ids fail at configuration load.
 
 VibeCoder uses **effort-first cost routing**: the worker varies
 **effort** (`max`/`xhigh`/`high`/`medium`/`low`) as the *primary* cost lever rather than
@@ -503,7 +529,7 @@ override is visible in the cost logs. The resolution logic lives in
 
 ### Advisor and executor split (issue phase)
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the split is built from the Claude CLI's `--agents` definitions, so only the `claude` provider ever assembles them; `codex` and `gemini` never build the arguments, and `deepseek` (the same binary against another endpoint) strips them and warns.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the split is built from the Claude CLI's `--agents` definitions, so only the `claude` provider ever assembles them; `codex` and `gemini` never build the arguments, and `deepseek` (the same binary against another endpoint) strips them and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`.
 
 The `issue_executor_split` configuration key
 ([CONFIGURATION.md](CONFIGURATION.md)) changes **who** does the work on an
@@ -699,7 +725,7 @@ flowchart TD
 
 ### Reviewer sub-agents (issue phase)
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the reviewers are Claude CLI `--agents` definitions, built the same way as the split's executors; `codex` and `gemini` never build the argument, and `deepseek` strips it and warns.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the reviewers are Claude CLI `--agents` definitions, built the same way as the split's executors; `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`.
 
 Every `issue` run whose body states acceptance criteria dispatches two
 independent reviewers before writing the PR summary (the *Independent Review
@@ -803,7 +829,11 @@ The repository-owned checklists it also applies are in
 > **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the
 > tier only changes `--agents` definitions, built the same way as the split's
 > executors and the reviewers above; `codex` and `gemini` never build the
-> argument, and `deepseek` strips it and warns.
+> argument, and `deepseek` strips it and warns. A native `issue` run carrying
+> these definitions is refused before spawn under `codex`, `gemini` and
+> `deepseek` (Issue #4010); roll back with `issue_executor_split: false`,
+> `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run
+> the `issue` phase on `claude`.
 
 The `issue_sub_agent_tier` configuration key
 ([CONFIGURATION.md](CONFIGURATION.md), Issue #3402; the host-wide key with a
@@ -1262,6 +1292,16 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
   base tier. The substitution is **per-run and config keeps pointing at Fable**,
   so once Fable returns the next run requests it again with no manual change
   (self-heal) — there is no persistent "Fable is down" circuit-breaker.
+- **A refused model with no cheaper rung moves provider** (Issue #4034).
+  When the provider refuses the model and has no ladder, or is already on its
+  cheapest rung, the same invocation is retried on the next provider in
+  `agent_provider_fallback`. A ChatGPT login that does not offer a model is
+  the usual case: Codex returns HTTP 400 "not supported when using Codex with
+  a ChatGPT account" (Issue #4019). The fallback resolves its own model for
+  the phase and starts a fresh session. It is capped at one switch per
+  invocation and logged as `[provider-fallback] <from> refused model … retrying
+  on <to>`. With the list empty (pinned, the default) the run still gives up
+  with `no cheaper fallback available`, as before.
 - Fallback transitions are recorded in credit logs as `fallbackFrom`: `runClaudeWithRetry` threads the pre-fallback model into the
   re-invocation via the `fallbackFrom` option, so the post-fallback
   `logInvocation()` records the original→cheaper transition and the
@@ -1735,8 +1775,9 @@ flowchart TD
   run's `modelUsage` breakdown is attributed per served model rather than
   charging the whole invocation to the first one (Issues #2346, #3603). A run
   serving two or more models therefore lists each model's own token counts and
-  its own cost line, and the estimated USD — and so the cumulative issue total
-  and the per-tier fleet telemetry — is their sum; the CLI's own `costUSD`
+  its own cost line, and the estimated USD — and so the cumulative issue total,
+  the per-tier fleet telemetry, and the daily credit log and spend ceiling
+  (Issue #3616) — is their sum; the CLI's own `costUSD`
   figure is never used. The breakdown is trusted whenever every entry reads
   cleanly: on a split run the result's `usage` covers only the main session (or
   is all zero) while `modelUsage` covers every model, so a breakdown larger than
@@ -2780,6 +2821,14 @@ assign initial issue-run costs to either PR: only the abandoned PR's explicitly
 attributed follow-on costs are counted as wasted. Missing assignment records
 produce an `unknown` cohort; conflicting recorded cohorts are refused.
 
+The read-only `deno task stabilisation-report --evidence <snapshot.json>
+<host-ledger.jsonl> [...]` extends this reconciliation with a bounded operational
+view: unique accepted default-branch deliveries, full active-cohort rework,
+separate milestone/pending/failed work and explicit missing evidence. It adds no
+telemetry store, experiment arm or routing decision. See the
+[stabilisation baseline and comparable follow-up procedure](evidence/stabilisation-2026-10-18.md)
+for snapshot provenance, attribution and limitations.
+
 ### Lifecycle outcomes and gated success
 
 > **Applies to:** `claude` ✅ · `codex` ✅ · `gemini` ✅ · `deepseek` ✅ — outcomes depend on the PR's observed state and gates, independently of its coding provider.
@@ -3302,6 +3351,12 @@ delimited JSON):
 | `outputTokens` | Output tokens generated |
 | `cacheCreationTokens` | Tokens written to prompt cache |
 | `cacheReadTokens` | Tokens read from prompt cache |
+| `usageByModel` | Per-model counters (`inputTokens`, `outputTokens`, `cacheCreationInputTokens`, `cacheReadInputTokens`) for every model that served the invocation, split-run sub-agents included; present only when the run recorded a `modelUsage` breakdown (Issue #3616) |
+
+The four top-level token fields are the invocation's total across every model
+that served it. On a split run the CLI's top-level `usage` covers only the main
+session, so they are the sum of `usageByModel` when that field is present
+(Issue #3616).
 
 **Log location:** `creditLogDir` (configurable) — files named
 `.credit_log_YYYY-MM-DD.json`, defaulting to the worker-private
@@ -3319,7 +3374,12 @@ Per-phase cost is summed from per-invocation costs, so a phase that spans
 several models (for example an Opus run that fell back to Sonnet) accumulates
 the correct blended cost. Cache-read and cache-write tokens are priced with
 their dedicated rates in every breakdown, so prompt-cache savings are visible
-per phase.
+per phase. Per-model tokens and cost come from `usageByModel`, so a split run's
+executor and reviewer tokens are priced at their own model's rate and counted by
+the spend ceiling (Issue #3616). An entry without the field (written before
+Issue #3616, or by a run with no breakdown) is charged whole to its `model`, and
+a breakdown that does not read cleanly falls back the same way. Credit logs
+written before this fix count the advisor session only.
 
 #### Unpriced model ids
 

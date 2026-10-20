@@ -1,3 +1,4 @@
+import { resolveIssueAllocation } from "./subscription_allocation_runtime.ts";
 /**
  * Dependency injection and module wiring for the issue worker.
  *
@@ -130,6 +131,7 @@ import {
 import { checkCiStatus, directMergePr } from "./direct_merge.ts";
 
 // Claude operations
+import { runOrchestratedIssueRun } from "./orchestration/issue_run_gate.ts";
 import { checkClaudeHealth, runClaudeWithRetry } from "./claude_runner.ts";
 import { prepareCodegraphContext } from "./codegraph_context.ts";
 import { prepareRtkRun, rtkProviderId } from "./rtk_output.ts";
@@ -208,6 +210,16 @@ import {
   type MutationRunInput,
   runMutationCheck,
 } from "./mutation_runner.ts";
+import type { CoverageCarryOverResult } from "./coverage_carryover_gate.ts";
+import {
+  type CoverageCarryOverInput,
+  runCoverageCarryOverCheck,
+} from "./coverage_carryover_runner.ts";
+import {
+  type DiscriminationRunInput,
+  runSecurityFixDiscrimination,
+  type SecurityFixDiscrimination,
+} from "./security_fix_discrimination.ts";
 import {
   fileBaselineCarryoverTracker,
   fileRedCheckTracker,
@@ -342,6 +354,7 @@ export interface PrDeps {
 
 /** Claude operations — runner, executor, auth, health. */
 export interface ClaudeDeps {
+  runOrchestratedIssueRun: typeof runOrchestratedIssueRun;
   runClaudeWithRetry: typeof runClaudeWithRetry;
   /**
    * The read-only question the completion phase asks about the PR summary's
@@ -453,6 +466,7 @@ export interface CrashHandlingDeps {
 
 /** Infrastructure — file I/O, temp files, disk, logs, prompts, misc. */
 export interface InfrastructureDeps {
+  resolveIssueAllocation: typeof resolveIssueAllocation;
   /** Record a PR follow-on cycle without changing the existing tier counters (Issue #3720). */
   recordPrFollowOn: (
     input: Parameters<typeof recordPrFollowOnFromGithub>[0],
@@ -521,13 +535,32 @@ export interface QualityDeps {
   /** Record a baseline gate outcome for reuse (Issue #4283). */
   writeBaselineQualityCache: typeof writeBaselineQualityCache;
   /**
-   * Run the diff-scoped mutation check over the PR diff (Issue #3393).
+   * Run the diff-scoped mutation check over the PR diff (Issue #3393). Used
+   * by both the PR-raise gate and the review-fix drift check (Issue #3750).
    * Optional: when absent the mutation gate is not applicable and never
    * blocks, so fixtures that build their own deps never run real mutants.
    */
   runMutationCheck?: (
     input: MutationRunInput,
   ) => Promise<MutationCheckResult>;
+  /**
+   * Run the coverage carry-over check over the PR diff (Issue #3795): every
+   * line a test edited or removed by the PR reached must still be covered.
+   * Optional: when absent the coverage carry-over gate is not applicable and
+   * never blocks, so fixtures that build their own deps never run the check.
+   */
+  runCoverageCarryOverCheck?: (
+    input: CoverageCarryOverInput,
+  ) => Promise<CoverageCarryOverResult>;
+  /**
+   * Run the cited security test red→green: against the base production files,
+   * then against the fix (Issue #3659). Optional: when absent, a security-fix
+   * PR whose discrimination check is due blocks as `discrimination-not-checked`
+   * — it never passes unchecked.
+   */
+  runSecurityFixDiscrimination?: (
+    input: DiscriminationRunInput,
+  ) => Promise<SecurityFixDiscrimination>;
 }
 
 // ---------------------------------------------------------------------------
@@ -727,6 +760,7 @@ export function createDefaultDeps(
     },
 
     claude: {
+      runOrchestratedIssueRun,
       runClaudeWithRetry,
       runSummaryClaimQuestion: runClaudeWithRetry,
       runPrePrVerifier: (input) => runPrePrVerifier(input),
@@ -782,6 +816,7 @@ export function createDefaultDeps(
       buildPrompt: buildIssuePrompt,
       collectGraftContext,
       getCodebaseMap: getOrGenerateCodebaseMap,
+      resolveIssueAllocation,
       recordPrFollowOn: (input) =>
         recordPrFollowOnFromGithub(input, runGhCommand),
       recordIssueAssignment: ({ workDir, ...input }) =>
@@ -806,6 +841,10 @@ export function createDefaultDeps(
       writeBaselineQualityCache,
       runMutationCheck: (input) =>
         runMutationCheck(input, defaultMutationRunnerSeams()),
+      runCoverageCarryOverCheck: (input) =>
+        runCoverageCarryOverCheck(input, defaultMutationRunnerSeams()),
+      runSecurityFixDiscrimination: (input) =>
+        runSecurityFixDiscrimination(input, defaultMutationRunnerSeams()),
     },
   };
 }
@@ -1219,6 +1258,10 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
   };
 
   const mockClaude: ClaudeDeps = {
+    runOrchestratedIssueRun: async () => ({
+      ok: true,
+      value: { output: "mock orchestrated", exitCode: 0, timedOut: false },
+    }),
     runClaudeWithRetry: mockFn<ClaudeDeps["runClaudeWithRetry"]>(() =>
       Promise.resolve({
         ok: true,
@@ -1452,6 +1495,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     recordPrFollowOn: mockFn<InfrastructureDeps["recordPrFollowOn"]>(() =>
       Promise.resolve()
     ),
+    resolveIssueAllocation: async () => undefined,
     // Issue #3718: a mocked run posts no assignment marker and writes no ledger.
     recordIssueAssignment: mockFn<InfrastructureDeps["recordIssueAssignment"]>(
       () =>

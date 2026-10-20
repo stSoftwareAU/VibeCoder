@@ -269,11 +269,28 @@ Deno.test("pr_auto_merge - blocks summary-PR auto-merge while milestone has open
   // Issue #2479: a genuine block keeps the gate's own comment and adds none.
   assertEquals(state.posted[0]!.includes(OPEN_CHILDREN_LOOKUP_MARKER), false);
   assertEquals(result.blockCommented, true);
-  // Observable warning naming milestone, PR and blocking children.
-  assertEquals(logs.length, 1);
-  assertStringIncludes(logs[0]!, "owner/repo#900");
-  assertStringIncludes(logs[0]!, "#53");
-  assertStringIncludes(logs[0]!, "#3866");
+  // Issue #4063: waiting on open children is the normal state of a summary
+  // PR, so the gate does not log through its warning sink; the outcome
+  // message carries the line and `logAutoMergeOutcome` writes it ONCE, at
+  // INFO, with no embedded "WARNING: " prefix.
+  assertEquals(logs, []);
+  assertStringIncludes(result.message, "owner/repo#900");
+  assertStringIncludes(result.message, "#53");
+  assertStringIncludes(result.message, "#3866");
+  assertEquals(result.message.includes("WARNING"), false, result.message);
+  const sink: { level: string; message: string }[] = [];
+  logAutoMergeOutcome(
+    {
+      info: (m: string) => void sink.push({ level: "info", message: m }),
+      warn: (m: string) => void sink.push({ level: "warn", message: m }),
+    },
+    "owner/repo",
+    GATE_PR,
+    result,
+  );
+  assertEquals(sink.length, 1);
+  assertEquals(sink[0]!.level, "info");
+  assertEquals(sink[0]!.message.includes("WARNING"), false, sink[0]!.message);
 });
 
 Deno.test("pr_auto_merge - merges summary PR when open-children count is zero", async () => {
@@ -421,9 +438,23 @@ Deno.test("pr_auto_merge - blocks summary-PR auto-merge on a pending declared de
   assertEquals(state.posted.length, 1);
   assertStringIncludes(state.posted[0]!, "#3866 depends on #50");
   assertEquals(result.blockCommented, true);
-  assertEquals(logs.length, 1);
-  assertStringIncludes(logs[0]!, "owner/repo#900");
-  assertStringIncludes(logs[0]!, "#3866 depends on #50");
+  // Issue #4063: a declared dependency not merged yet is a normal wait —
+  // one INFO line from `logAutoMergeOutcome`, none through the warning sink.
+  assertEquals(logs, []);
+  assertStringIncludes(result.message, "owner/repo#900");
+  assertStringIncludes(result.message, "#3866 depends on #50");
+  assertEquals(result.message.includes("WARNING"), false, result.message);
+  const sink: { level: string; message: string }[] = [];
+  logAutoMergeOutcome(
+    {
+      info: (m: string) => void sink.push({ level: "info", message: m }),
+      warn: (m: string) => void sink.push({ level: "warn", message: m }),
+    },
+    "owner/repo",
+    GATE_PR,
+    result,
+  );
+  assertEquals(sink.map((l) => l.level), ["info"]);
 });
 
 Deno.test("pr_auto_merge - a failed dependency lookup names the dependencies, not the open-children count", async () => {

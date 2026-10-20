@@ -466,3 +466,19 @@ Deno.test("host fault - a marked security-fix gate refusal quoting ENOSPC or a c
   assertEquals(detectHostFault(quoted) === null, false);
   assertEquals(detectHostFault(`${SECURITY_FIX_GATE_MARKER}: ${quoted}`), null);
 });
+
+Deno.test("host diagnosis honours declared causes and retains raw internal diagnostics (Issue #3738)", () => {
+  assertEquals(
+    detectHostFault("a neutral wrapper", "clone_corrupt"),
+    "clone-corrupt",
+  );
+  assertEquals(
+    detectHostFault(
+      "ENOSPC; warning: ignoring broken ref refs/heads/main",
+      "quality_check",
+    ),
+    null,
+  );
+  assertEquals(detectHostFault("ENOSPC", "internal_error"), "disk-full");
+  assertEquals(detectHostFault("ENOSPC"), "disk-full");
+});

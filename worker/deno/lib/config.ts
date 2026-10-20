@@ -9,9 +9,15 @@
  * Use setup.sh to configure via .config.json.
  */
 
+import {
+  DEFAULT_CLAUDE_MAX_TURNS,
+  validateClaudeMaxTurns,
+} from "./claude_turn_limit.ts";
+import { parseAllocationPolicy } from "./subscription_allocation.ts";
 import { registerAgentPreFlightConfigs } from "./agent_pre_flight.ts";
 import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { modelTierOverrides } from "./phase_routing.ts";
 import {
   EXCLUSION_TEAM_PATTERN,
   validateConfigFileJson,
@@ -22,7 +28,11 @@ import {
   setConfiguredAgentProviderId,
   setConfiguredEnabledAgentProviderIds,
 } from "./agent_provider.ts";
-import { resolveProviderFallbackPolicy } from "./provider_fallback_policy.ts";
+import { isAutomaticProviderRoutingActive } from "./provider_auto_state.ts";
+import {
+  resolveProviderFallbackPolicy,
+  setConfiguredProviderFallbackPolicy,
+} from "./provider_fallback_policy.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
 import { resolveRunMode } from "./run_mode.ts";
 import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
@@ -39,6 +49,10 @@ import { parseRtkOutput } from "./rtk_output_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
 import { assertGraftContextConfig } from "./graft_context_config.ts";
 import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
+import {
+  parseOrchestrationSettings,
+  validateRoleProviders,
+} from "./orchestration/role_config.ts";
 import { resolveHostIssueSubAgentTier } from "./issue_sub_agent_tier.ts";
 import {
   CUSTOM_PROMPT_PATH_MAP_ENV,
@@ -69,6 +83,7 @@ import {
   defaultQuorumPlanners,
   LABEL_DEFAULTS,
   OPERATIONAL_DEFAULTS,
+  PROVIDER_MODEL_TIERS,
 } from "./config_defaults.ts";
 import type { VerbosityLevel } from "../types.ts";
 import type { DuplicateRepoSlug } from "./repo_slug.ts";
@@ -200,6 +215,8 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   // Diff-scoped mutation gate (Issue #3393).
   skip_mutation_check: "skipMutationCheck",
   mutation_check_budget_seconds: "mutationCheckBudgetSeconds",
+  // Coverage carry-over gate (Issue #3795).
+  skip_coverage_carryover_check: "skipCoverageCarryOverCheck",
   // Credentials this repository's checks need (Issues #573, #574).
   quality_credentials: "qualityCredentials",
   docker_image: "dockerImage",
@@ -231,6 +248,8 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   deepseek_phase_model_overrides: "deepseekPhaseModelOverrides",
   // Per-repo coding-agent provider pin (Issue #2048).
   agent_provider: "agentProvider",
+  external_orchestration: "externalOrchestration",
+  external_orchestration_settings: "externalOrchestrationSettings",
   // Pre-flight enforcement gate (Issue #3577). Accept the kebab-case form
   // shown in the issue/docs example (`"pre-flight"`) and the snake_case form
   // (`pre_flight`); camelCase (`preFlight`) passes through unchanged.
@@ -267,6 +286,17 @@ function normaliseRepoConfig(raw: Record<string, unknown>): RepoConfig {
     }
   }
 
+  if (
+    normalised.externalOrchestration !== undefined &&
+    typeof normalised.externalOrchestration !== "boolean"
+  ) {
+    throw new Error("repo external_orchestration must be boolean");
+  }
+  if (normalised.externalOrchestrationSettings !== undefined) {
+    normalised.externalOrchestrationSettings = parseOrchestrationSettings(
+      normalised.externalOrchestrationSettings,
+    );
+  }
   return normalised as RepoConfig;
 }
 
@@ -545,9 +575,10 @@ export async function loadConfig(
 
   // Coding-agent provider selection (Issue #4067). Resolved here so an
   // unsupported id fails loudly at startup, naming the supported providers,
-  // rather than surfacing as a missing binary mid-run. The selection is also
-  // recorded on the seam, because the low-level modules that spawn the agent
-  // hold no configuration handle.
+  // rather than surfacing as a missing binary mid-run. Outside automatic
+  // routing the selection is also recorded on the seam, because the low-level
+  // modules that spawn the agent hold no configuration handle. While routing
+  // is active, the router owns that seam between its refreshes (Issue #4024).
   // The resolver consults the per-run provider override (Issue #2062)
   // before the file's value: the health gate's fallback switch therefore
   // survives every in-process config reload, which would otherwise reset
@@ -562,7 +593,18 @@ export async function loadConfig(
     configured: file.agent_provider,
     env,
   });
-  setConfiguredAgentProviderId(agentProvider);
+  // (Issue #4024) Automatic routing owns the active provider between its
+  // refreshes: a best-effort config reload — the allowlist and
+  // trusted-author readers call this full loader for one small field — must
+  // not reset the seam to the file's preferred id, or every maintenance
+  // phase after the reload runs the provider the router just deselected
+  // (GRQ-23: PR feedback ran Codex while the router had switched to Claude).
+  // The run override is already immune (Issue #2062), so only the
+  // auto-router's selection needs this guard; a pinned-mode host — routing
+  // inactive — keeps the historical reload behaviour.
+  if (!isAutomaticProviderRoutingActive()) {
+    setConfiguredAgentProviderId(agentProvider);
+  }
 
   // The providers enabled for this run (Issue #4108). Each one is provisioned,
   // preflighted and mounted separately; a provider outside the set has no
@@ -586,11 +628,15 @@ export async function loadConfig(
 
   // Opt-in ordered fallback (Issue #1700). Validated here so an unconfigured
   // alternative fails at startup, not mid-run. The empty default is pinned.
-  const agentProviderFallback = resolveProviderFallbackPolicy({
+  // Recorded on the seam for the agent runner, which moves a phase whose
+  // model the provider refused onto these alternatives (Issue #4034).
+  const providerFallbackPolicy = resolveProviderFallbackPolicy({
     preferred: agentProvider,
     enabled: enabledAgentProviderIds,
     fallback: file.agent_provider_fallback,
-  }).alternatives;
+  });
+  setConfiguredProviderFallbackPolicy(providerFallbackPolicy);
+  const agentProviderFallback = providerFallbackPolicy.alternatives;
 
   // Claude model selection (Issue #260)
   const claudeModel = file.claude_model ?? DEFAULT_CLAUDE_MODEL;
@@ -601,6 +647,9 @@ export async function loadConfig(
     DEFAULT_BEST_PLANNING_MODEL;
 
   // Operational settings — all from .config.json with defaults (Issue #277)
+  const claudeMaxTurns = validateClaudeMaxTurns(
+    file.claude_max_turns ?? DEFAULT_CLAUDE_MAX_TURNS,
+  );
   const claudeTimeout = file.claude_timeout ??
     OPERATIONAL_DEFAULTS.claudeTimeout;
   // Claim-runway floor (Issue #289). Config first, then the legacy
@@ -949,27 +998,41 @@ export async function loadConfig(
   const repoFastFailureWindowHours = file.repo_fast_failure_window_hours ??
     OPERATIONAL_DEFAULTS.repoFastFailureWindowHours;
 
+  const tierModels = modelTierOverrides(
+    file.phase_model_tiers,
+    file.provider_model_tiers,
+    PROVIDER_MODEL_TIERS,
+  );
+
   // Phase-specific model overrides (Issue #1265)
-  const phaseModelOverrides: Record<string, string> =
-    file.phase_model_overrides ?? {};
+  const phaseModelOverrides: Record<string, string> = {
+    ...tierModels.claude,
+    ...(file.phase_model_overrides ?? {}),
+  };
 
   // Phase-specific effort overrides (Issue #1403)
   const phaseEffortOverrides: Record<string, string> =
     file.phase_effort_overrides ?? {};
 
   // Phase-specific Codex model/effort overrides (Issue #363)
-  const codexPhaseModelOverrides: Record<string, string> =
-    file.codex_phase_model_overrides ?? {};
+  const codexPhaseModelOverrides: Record<string, string> = {
+    ...tierModels.codex,
+    ...(file.codex_phase_model_overrides ?? {}),
+  };
   const codexPhaseEffortOverrides: Record<string, string> =
     file.codex_phase_effort_overrides ?? {};
 
   // Phase-specific Gemini model overrides (Issue #364)
-  const geminiPhaseModelOverrides: Record<string, string> =
-    file.gemini_phase_model_overrides ?? {};
+  const geminiPhaseModelOverrides: Record<string, string> = {
+    ...tierModels.gemini,
+    ...(file.gemini_phase_model_overrides ?? {}),
+  };
 
   // Phase-specific DeepSeek model overrides (Issue #413)
-  const deepseekPhaseModelOverrides: Record<string, string> =
-    file.deepseek_phase_model_overrides ?? {};
+  const deepseekPhaseModelOverrides: Record<string, string> = {
+    ...tierModels.deepseek,
+    ...(file.deepseek_phase_model_overrides ?? {}),
+  };
 
   // Issue-executor split, host-wide (Issue #2341). A `repo_config` entry of
   // the same name overrides it per repository.
@@ -985,6 +1048,20 @@ export async function loadConfig(
   // Reviewer sub-agents, host-wide only (Issue #2575).
   const issueReviewerAgents = file.issue_reviewer_agents ??
     OPERATIONAL_DEFAULTS.issueReviewerAgents;
+
+  // External orchestrator, host-wide only (Issue #3642). Off by default, so
+  // an unconfigured host keeps the Claude-native `--agents` path.
+  const externalOrchestration = file.external_orchestration ??
+    OPERATIONAL_DEFAULTS.externalOrchestration;
+  if (typeof externalOrchestration !== "boolean") {
+    throw new Error(
+      `external_orchestration must be true or false, got ` +
+        `${JSON.stringify(file.external_orchestration)}`,
+    );
+  }
+  const externalOrchestrationSettings = parseOrchestrationSettings(
+    file.external_orchestration_settings,
+  );
 
   // Fleet-wide run archive repo slug for measurement issues (Issue #2930).
   // Unset (or blank) leaves the feature off.
@@ -1174,6 +1251,7 @@ export async function loadConfig(
     claudeModel,
     bestPlanningModel,
     claudeTimeout,
+    claudeMaxTurns,
     minClaimRunwaySeconds,
     claimLongJobLabels,
     progressExtensionEnabled,
@@ -1249,6 +1327,8 @@ export async function loadConfig(
     issueExecutorSplit,
     issueSubAgentTier,
     issueReviewerAgents,
+    externalOrchestration,
+    externalOrchestrationSettings,
     fleetRunArchive,
     subscriptionAllocationLabel,
     includeRecentActivity,
@@ -1290,11 +1370,13 @@ export async function loadConfig(
     // operator believes Graft is on.
     graftContext: assertGraftContextConfig(file.graft_context),
     repoConfig: normaliseRepoConfigs(file.repo_config),
+    subscriptionAllocation: parseAllocationPolicy(file.subscription_allocation),
   };
 
   // Issue #3577: reject a malformed pre-flight gate loudly at config load,
   // rather than silently ignoring it and running the repo unguarded.
   validatePreFlightConfigs(config.repoConfig);
+  validateRoleProviders(config);
   // Issue #3394: make the pre-flight commands available to agent spawns.
   registerAgentPreFlightConfigs(config.repoConfig);
 

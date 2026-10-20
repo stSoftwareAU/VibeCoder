@@ -7,7 +7,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertStrictEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   buildFeedbackCommitMessage,
   decodeCommentBody,
@@ -16,6 +20,8 @@ import {
   processPrFeedback,
   summariseLargeComment,
 } from "../lib/pr_feedback_processor.ts";
+import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
+import type { SyncFollowUpFiling } from "../lib/pr_body_sync_follow_up.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -486,6 +492,38 @@ Deno.test("processPrFeedback - syncs the PR body once after a verified push", as
   assertEquals(calls[0]?.prNumber, 42);
   assertEquals(calls[0]?.repo, "org/repo");
   assertEquals(calls[0]?.beforeSha, DEFAULT_MOCK_HEAD_SHA);
+});
+
+Deno.test("processPrFeedback - forwards the sync follow-up filer to the PR body sync (Issue #3678)", async () => {
+  const sentinel: SyncFollowUpFiling = {
+    verifyIssueContent: () =>
+      Promise.reject(new Error("sentinel filer must not be called")),
+    ensureLabelExists: () =>
+      Promise.reject(new Error("sentinel filer must not be called")),
+    fleetAuthors: [],
+  };
+  let syncCalls = 0;
+  let forwarded: SyncFollowUpFiling | undefined;
+  const syncPrBodyFn: PrFeedbackProcessorDeps["syncPrBodyFn"] = (
+    _input,
+    deps,
+  ) => {
+    syncCalls++;
+    forwarded = deps.followUpFiling;
+    return Promise.resolve({
+      ok: true,
+      value: { status: "updated", issueNumber: 42 },
+    });
+  };
+  const processorDeps: PrFeedbackProcessorDeps = {
+    ...makeSuccessfulPushDeps(syncPrBodyFn),
+    syncFollowUpFiling: sentinel,
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  assertEquals(syncCalls, 1);
+  assertStrictEquals(forwarded, sentinel);
 });
 
 Deno.test("processPrFeedback - syncs the PR body when nothing was pushed and nothing is left unpushed (Issue #3315)", async () => {
@@ -1839,4 +1877,220 @@ Deno.test("processPrFeedback - an unreadable PR state skips the cycle, never cla
     [],
     "an unreadable state must produce no claim comment",
   );
+});
+
+Deno.test("feedback turn limit aborts initial and placeholder recovery before settlement or push", async () => {
+  for (const capAt of [1, 2]) {
+    const dir = await Deno.makeTempDir();
+    try {
+      await Deno.writeTextFile(
+        `${dir}/.pr_response_message`,
+        "Full quality.sh: QUALITY_RESULT_PLACEHOLDER",
+      );
+      let calls = 0, pushes = 0, settled = 0, driftCalls = 0;
+      const deps = createMockDeps({
+        github: { runGhCommand: openPrGh() },
+        claude: {
+          runClaudeWithRetry: async () => {
+            calls++;
+            if (calls >= capAt) {
+              return {
+                ok: false,
+                error: new AgentTurnLimitError("error_max_turns"),
+              };
+            }
+            return {
+              ok: true,
+              value: { output: "partial work", exitCode: 0, timedOut: false },
+            };
+          },
+        },
+        pr: {
+          markCommentProcessed: async () => {
+            settled++;
+            return { ok: true, value: undefined };
+          },
+        },
+        git: {
+          commitAndPushPending: async () => {
+            pushes++;
+            return {
+              ok: true,
+              value: {
+                committedNewChanges: true,
+                commitsPushed: 1,
+                finalUnpushedCount: 0,
+                finalUnpushedSource: "remote-head",
+              },
+            };
+          },
+        },
+      });
+      const result = await processPrFeedback(makeInput(), {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        workDir: dir,
+        workRoot: dir,
+        qualityInstructions: "",
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        driftCheckFn: () => {
+          driftCalls++;
+          return Promise.resolve({ status: "clean", checked: [] });
+        },
+      });
+      assertEquals(result.ok, false);
+      if (!result.ok) {
+        assertStringIncludes(result.error.message, "error_max_turns");
+      }
+      assertEquals(calls, capAt);
+      assertEquals(pushes, 0);
+      assertEquals(settled, 0);
+      assertEquals(driftCalls, 0);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("feedback turn limit stops drift and verifier recovery before publishing", async () => {
+  for (
+    const stage of [
+      "drift",
+      "verifier",
+      "verifier-recovery",
+      "second-verifier",
+      "push-recovery",
+      "push-retry",
+    ]
+  ) {
+    const dir = await Deno.makeTempDir();
+    try {
+      await Deno.writeTextFile(
+        `${dir}/.pr_response_message`,
+        "A complete rebuttal.",
+      );
+      let calls = 0, pushes = 0, verifications = 0, finalisations = 0;
+      const capAt = stage === "push-retry"
+        ? 4
+        : (stage === "second-verifier" || stage === "push-recovery")
+        ? 3
+        : 2;
+      const deps = createMockDeps({
+        github: { runGhCommand: openPrGh() },
+        claude: {
+          runClaudeWithRetry: async () => {
+            calls++;
+            if (calls >= capAt) {
+              return {
+                ok: false,
+                error: new AgentTurnLimitError("error_max_turns"),
+              };
+            }
+            return {
+              ok: true,
+              value: { output: "partial work", exitCode: 0, timedOut: false },
+            };
+          },
+        },
+        git: {
+          recoverFromPushRejection: async (
+            _branch,
+            _options,
+            _run,
+            beforePush,
+          ) => {
+            if (beforePush) {
+              const verified = await beforePush();
+              if (!verified.ok) return verified;
+            }
+            return { ok: true, value: "recovered" };
+          },
+          commitAndPushPending: async (
+            _branch,
+            _message,
+            _options,
+            _allow,
+            _gate,
+            _run,
+            _format,
+            beforePush,
+          ) => {
+            finalisations++;
+            if (beforePush) {
+              const verified = await beforePush();
+              if (!verified.ok) return verified;
+            }
+            if (stage.startsWith("push-") && calls < capAt) {
+              return {
+                ok: true,
+                value: {
+                  committedNewChanges: true,
+                  commitsPushed: 0,
+                  finalUnpushedCount: 1,
+                  finalUnpushedSource: "remote-head",
+                },
+              };
+            }
+            pushes++;
+            return {
+              ok: true,
+              value: {
+                committedNewChanges: true,
+                commitsPushed: 1,
+                finalUnpushedCount: 0,
+                finalUnpushedSource: "remote-head",
+              },
+            };
+          },
+        },
+      });
+      const result = await processPrFeedback(
+        makeInput({ commentType: "pr_review" }),
+        {
+          promptsDir: PROMPTS_DIR,
+          logger: makeSilentLogger(),
+          deps,
+          workDir: dir,
+          workRoot: dir,
+          qualityInstructions: "",
+          driftCheckFn: async (_input, driftDeps) => {
+            if (stage === "drift") {
+              await driftDeps.runAgent({ prompt: "check", readOnly: true });
+              await driftDeps.runAgent({ prompt: "repair", readOnly: false });
+            }
+            return { status: "clean", checked: [] };
+          },
+          feedbackVerifierFn: async (_input, verifierDeps) => {
+            verifications++;
+            if (
+              stage === "verifier-recovery" ||
+              (stage === "second-verifier" && verifications === 1)
+            ) {
+              return { ok: false, error: new Error("needs correction") };
+            }
+            await verifierDeps.ask({ prompt: "verify" });
+            return { ok: true, value: undefined };
+          },
+        },
+      );
+      assertEquals(result.ok, false);
+      if (!result.ok) {
+        assertStringIncludes(result.error.message, "error_max_turns");
+      }
+      assertEquals(calls, capAt, stage);
+      assertEquals(pushes, 0, stage);
+      assertEquals(
+        finalisations,
+        stage === "drift"
+          ? 0
+          : (stage === "second-verifier" || stage === "push-retry")
+          ? 2
+          : 1,
+        stage,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });

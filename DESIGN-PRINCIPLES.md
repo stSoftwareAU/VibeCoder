@@ -13,6 +13,45 @@ canonical operator manual under [`docs/`](docs/) for the full detail.
 
 ## Design Principles
 
+### Fully unattended operation and self-healing
+
+**VibeCoder must run fully automatically on unattended machines and self-heal
+without human intervention.** This is the owner's operating requirement,
+clarified on 19 October 2026. A person watching the run, answering a prompt,
+performing a supervised test or giving a routine manual sign-off is not part
+of the design.
+
+- **Detect, repair, verify and resume.** Detect failures, preserve useful work
+  and diagnostics, identify the cause, apply a recovery within the worker's
+  existing authority, verify the result and resume from durable progress.
+  Recovery must cover the worker lifecycle as well as the code it produces.
+- **Retries must make progress.** Bound each attempt, back off where needed
+  and retain recovery state across restarts. Repeating the same failed setup
+  indefinitely is not self-healing. Diagnose persistent failures and choose
+  another supported recovery or execution path while continuing independent
+  eligible work.
+- **Do not turn routine failures into human work.** Infrastructure faults,
+  stale state, interrupted runs, CI failures and review rework need automated
+  recovery paths, not a terminal `needs-human` hand-off or a new issue whose
+  only action is to wait for a person. Required CI and code review remain
+  enforced through automation.
+- **Keep recovery inside the boundary.** Automation does not authorise
+  bypassing permissions, exposing credentials, weakening security or quality
+  gates, or discarding unmerged work. When an external dependency prevents
+  recovery, fail closed for the affected action, record the precise blocker
+  and arrange an automatic recheck and resumption; do not require an operator
+  to babysit it or report the attempt as successful.
+- **Validation must also be unattended.** Use automated checks in authorised,
+  disposable environments. Record unavailable coverage as not checked. Do
+  not prescribe a human-supervised escape test or treat closing that proposal
+  as proof that containment passed.
+
+These are requirements for implementation and issue triage, not a claim that
+every existing recovery path already satisfies them. A gap needs a concrete
+automated remedy and observable recovery evidence. The rejected supervised
+test proposal is recorded in
+[the containment analysis](docs/security/agent-containment-gap-analysis.md).
+
 ### Generous resources, strict boundary
 
 The containment trade the operator has chosen is asymmetric, and every
@@ -99,7 +138,7 @@ at once.
 - **F2a — milestone streams flow without waiting on review.** A milestone
   branch carries **no approval gate** until the milestone completes and the
   fleet merges it to the default branch. That is precisely why milestone work
-  parallelises: a milestone stream never stalls on a human reviewer mid-flight,
+  parallelises: a milestone stream never stalls on a review gate mid-flight,
   so adding milestones adds throughput rather than adding queue.
 - **F2b — `top-priority` and `work-on` never wait for a busy stream**
   (Issue #2530). The fleet-wide one-run-per-stream lock — the rule that keeps a
@@ -445,8 +484,9 @@ parked the whole default-branch work stream for ~21 hours while unassigned
 The worker serialises its work per work stream (each milestone is a work stream;
 non-milestone issues share the default branch work stream). A milestone stream
 runs one PR at a time so each piece of work builds on the previous, and the
-milestone's single consolidation PR is the human review gate. The default-branch
-stream is bounded by slots instead: the owner's rule (2026-09-26) is **one fleet
+milestone's single consolidation PR carries the automated review and CI gate.
+The default-branch stream is bounded by slots instead: the owner's rule
+(2026-09-26) is **one fleet
 PR per slot — multiple milestones mean multiple PRs** (Issue #2663). Every free
 slot can have its own default-branch PR in flight, up to `fleet_pr_slots`
 (default `8`; per repository in `repo_config`); only at that cap is a

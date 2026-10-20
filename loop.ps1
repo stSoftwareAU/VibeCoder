@@ -327,6 +327,9 @@ while ($true) {
 
     $sleepSeconds = Get-NextSleepSeconds -Status $status -LaunchLog $LaunchLog
     Write-LoopLine "Sleeping ${sleepSeconds}s..."
+    # The whole backoff elapses (Issue #4062): Start-Sleep runs in-process, so
+    # there is no child for a signal to kill and cut it short, which is what
+    # loop.sh's sleep_full guards against with its ignored-signal sleep.
     Start-Sleep -Seconds $sleepSeconds
 
     # Refresh the checkout at the end of every cycle, the same point loop.sh

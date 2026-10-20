@@ -733,7 +733,11 @@ export async function postPendingDependenciesBlockComment(
   );
 }
 
-/** Render the warning log line for a blocked merge (scope item 3). */
+/**
+ * Render the log line for a blocked merge (scope item 3). Waiting on open
+ * children is the normal state of a summary PR, so it carries no level
+ * prefix; the caller logs it once, at INFO (Issue #4063).
+ */
 export function renderBlockWarning(
   repo: string,
   prNumber: number,
@@ -742,12 +746,15 @@ export function renderBlockWarning(
   children: readonly OpenMilestoneChild[],
 ): string {
   const numbers = children.map((c) => `#${c.number}`).join(", ");
-  return `WARNING: refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
+  return `refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
     `for milestone #${milestoneNumber} '${milestoneTitle}' — ` +
     `${children.length} open child/children remain: ${numbers} (Issue #3909)`;
 }
 
-/** Render the warning log line for a merge blocked on pending dependencies (Issue #3014). */
+/**
+ * Render the log line for a merge blocked on pending dependencies (Issue
+ * #3014). A normal wait: no level prefix, logged once at INFO (Issue #4063).
+ */
 export function renderPendingDependenciesWarning(
   repo: string,
   prNumber: number,
@@ -757,7 +764,7 @@ export function renderPendingDependenciesWarning(
 ): string {
   const descriptions = dependencies.map((dep) => describePendingDependency(dep))
     .join("; ");
-  return `WARNING: refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
+  return `refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
     `for milestone #${milestoneNumber} '${
       scrubUntrustedText(milestoneTitle)
     }' — declared dependencies are not merged yet: ${descriptions} (Issue #3014)`;

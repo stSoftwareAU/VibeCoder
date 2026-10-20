@@ -557,6 +557,10 @@ Deno.test("gateUnpushedCommits - unresolvable or option-like base ref fails clos
     if (!missing.ok) {
       // A failed git lookup is no verdict on the branch (PR #3716 review).
       assert(!(missing.error instanceof PrePushGateBlockedError));
+      assertEquals(
+        "kind" in missing.error ? missing.error.kind : undefined,
+        "infrastructure",
+      );
       assert(!missing.error.message.includes("[PRE_PUSH_BLOCKED]"));
       assert(missing.error.message.includes("origin/does-not-exist..HEAD"));
     }
@@ -571,6 +575,10 @@ Deno.test("gateUnpushedCommits - unresolvable or option-like base ref fails clos
     assert(!optionLike.ok);
     if (!optionLike.ok) {
       assert(optionLike.error instanceof PrePushGateBlockedError);
+      assertEquals(
+        "kind" in optionLike.error ? optionLike.error.kind : undefined,
+        "verdict",
+      );
       assert(optionLike.error.message.includes("[PRE_PUSH_BLOCKED]"));
     }
   } finally {
@@ -603,6 +611,10 @@ Deno.test("gateUnpushedCommits - whole-branch mode never looks the remote up: an
     assert(!unpushedOnly.ok);
     if (!unpushedOnly.ok) {
       assert(!(unpushedOnly.error instanceof PrePushGateBlockedError));
+      assertEquals(
+        "kind" in unpushedOnly.error ? unpushedOnly.error.kind : undefined,
+        "infrastructure",
+      );
     }
 
     const wholeBranch = await gateUnpushedCommits(

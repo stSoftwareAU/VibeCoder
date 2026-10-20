@@ -31,6 +31,11 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    and on each read), confirm that each new test named for a later step has a
    fixture that gets past every earlier step giving the same outcome; a test
    an earlier step stops leaves its own step untested, which is a finding.
+   For a documentation-drift test, check each pin that names a value a module
+   or checked-in config file holds (a flag, command line, function name, key,
+   version or tag): it must be built from that source, not typed in, and
+   changing the value at its source must turn the test red; a typed-in copy is
+   a finding.
 5. Judge every change to an existing test: {{TEST_CHANGES}}, plus any
    inline test module (e.g. Rust `#[cfg(test)]`) the diff touches. A change
    is **meaningful** if it removes a test case, weakens or deletes an
@@ -110,7 +115,13 @@ diff and a concrete failure scenario. A problem the change introduces,
 widens or newly exposes is always a finding, never an unrelated issue.
 
 Reply with only this JSON:
-`{"summary": "<one or two sentences>", "earlierFindings": [{"index": 1, "verdict": "fixed" | "partly" | "not fixed", "note": "<evidence covering every ask in this earlier finding>"}], "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}], "closure": [{"criterion": "<text as listed>", "verdict": "met" | "partial" | "missing", "note": "<what is left out, or why every case is delivered>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
+`{"summary": "<one or two sentences>", "earlierFindings": [{"index": 1, "verdict": "fixed" | "partly" | "not fixed", "note": "<evidence covering every ask in this earlier finding>"}], "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "...", "category": "quality_check" | "summary_incomplete"}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}], "closure": [{"criterion": "<text as listed>", "verdict": "met" | "partial" | "missing", "note": "<what is left out, or why every case is delivered>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
 Use `[]` for `checklist` when there is no checklist section, and for `closure` when no closure entry is listed.
+
+For each finding, use `quality_check` for an implementation or test defect and
+`summary_incomplete` only for an evidence or documentation-contract defect.
+Every finding remains blocking, including evidence-only findings. Never classify
+a review finding as a git, network or host failure; availability failures belong
+to the tool boundary. Omitted or unsupported categories are substantive.
 
 For each numbered earlier finding, return exactly one `earlierFindings` verdict. Check every problem and Fix ask against the current code and tests. Partial fixes, narrower wording and documented limitations are not fixed. A false-positive rebuttal counts as fixed only when you independently verify its evidence. Use `[]` when there are no earlier findings.
