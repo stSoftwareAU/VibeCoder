@@ -24,13 +24,16 @@ summarise, authorised.
 
 - **KISS** — Favour simplicity; avoid unnecessary complexity. Prefer the
   approach with fewer moving parts and less indirection, even if it costs a few
-  more lines. Work down the **smallest-change-first ladder** and stop at the
-  first rung that solves the problem: skip what is not needed, reuse what the
-  codebase has, use the standard library, use a native platform feature, use a
-  dependency already installed, write one line, and only then write new code.
-  The floor is never cut: input validation at a trust boundary, error handling
-  that prevents data loss, security, accessibility, and whatever the issue
-  explicitly asks for all stay in — see
+  more lines. Before picking a rung, read the code the change touches — its
+  callers, the helpers it could reuse and the tests that cover it: be lazy about
+  the solution, never about the reading. Work down the
+  **smallest-change-first ladder** and stop at the first rung that solves the
+  problem: skip what is not needed, reuse what the codebase has, use the
+  standard library, use a native platform feature, use a dependency already
+  installed, write one line, and only then write new code. The floor is never
+  cut: input validation at a trust boundary, error handling that prevents data
+  loss, security, accessibility, and whatever the issue explicitly asks for all
+  stay in — see
   [Never Fail Silently — Fail Loud](#never-fail-silently--fail-loud) below and
   [SECURITY.md](SECURITY.md). Mark each deliberate corner cut with exactly one
   comment line opening with `// SIMPLE-ON-PURPOSE:` — the ceiling first, then
@@ -2156,6 +2159,11 @@ gate if a model-generation name reappears in this document.
   reaches for it — e.g. "Use the `gh` CLI to check the current PR status".
 - **Mind the token economy.** Reduce redundancy — a single clear statement beats
   the same instruction paraphrased three ways.
+- **End with what you did not do.** Close every run summary — the final message,
+  the PR summary, a hand-off — with what was skipped or not checked, and any
+  risk that remains. Write "none" when nothing was; never leave the reader to
+  infer that everything was checked. An unverified claim is reported as
+  unverified, not as fact.
 - **Prefer positive instructions over negative ones.** "Use Australian English
   spelling" is more effective than "Do not use American English spelling".
 - **Structure prompts with clear sections** — headings and bullet points aid
