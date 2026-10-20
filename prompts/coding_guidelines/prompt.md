@@ -94,6 +94,11 @@ progress survives.
   opened. Read the file, run the command, or check the API before asserting how
   something behaves. If you genuinely cannot verify a claim, say so rather than
   presenting a guess as fact.
+- **End with what you did not do.** Close every run summary — the final message,
+  the PR summary, a hand-off — with what was skipped or not checked, and any
+  risk that remains. Write "none" when nothing was; never leave the reader to
+  infer that everything was checked. This agrees with **Investigate before you
+  answer** above: an unverified claim is reported as unverified, not as fact.
 - **Clean up after yourself.** Delete scratch scripts, temporary logs, and
   helper files you created for the run before you commit — working files must
   not reach the PR.
@@ -133,17 +138,20 @@ progress survives.
 
 - **KISS** — Favour simplicity. When choosing between two approaches, prefer the
   one with fewer moving parts and less indirection, even if it requires a few
-  more lines of code. Work down the **smallest-change-first ladder** and stop at
-  the first rung that solves the problem: skip what is not needed, reuse what
-  the codebase has, use the standard library, use a native platform feature, use
-  a dependency already installed, write one line, and only then write new code.
-  The floor is never cut: input validation at a trust boundary, error handling
-  that prevents data loss, security, accessibility, and whatever the issue
-  explicitly asks for all stay in — see **Secure Coding Principles** and **Never
-  Fail Silently — Fail Loud** below. Mark each deliberate corner cut with
-  exactly one comment line opening with `// SIMPLE-ON-PURPOSE:` — the ceiling
-  first, then the condition that lifts it after `upgrade when` — so
-  `grep -r SIMPLE-ON-PURPOSE` lists every cut:
+  more lines of code. Before picking a rung, read the code the change touches —
+  its callers, the helpers it could reuse and the tests that cover it: be lazy
+  about the solution, never about the reading. Work down the
+  **smallest-change-first ladder** and stop at the first rung that solves the
+  problem: skip what is not needed, reuse what the codebase has, use the
+  standard library, use a native platform feature, use a dependency already
+  installed, write one line, and only then write new code. The floor is never
+  cut: input validation at a trust boundary, error handling that prevents data
+  loss, security, accessibility, and whatever the issue explicitly asks for all
+  stay in — see **Secure Coding Principles** and **Never Fail Silently — Fail
+  Loud** below. Mark each deliberate corner cut with exactly one comment line
+  opening with `// SIMPLE-ON-PURPOSE:` — the ceiling first, then the condition
+  that lifts it after `upgrade when` — so `grep -r SIMPLE-ON-PURPOSE` lists
+  every cut:
   `// SIMPLE-ON-PURPOSE: linear scan, fine to 10,000 rows — upgrade when a table exceeds 10,000 rows`.
 - **DRY** — Avoid duplication; maintain a single source of truth.
 - **Boy Scout Rule** — Leave the lines you change cleaner than you found
