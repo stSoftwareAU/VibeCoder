@@ -177,6 +177,8 @@ function makeHarness(
     updateFails?: boolean;
     /** Serve a client with no `updateComment` at all. */
     noUpdateSupport?: boolean;
+    /** The provider refuses the model, as Codex did on GRQ-23 (#4038). */
+    providerRefuses?: boolean;
   } = {},
 ): Harness {
   const captured: CapturedGh = { comments: [], labelsAdded: [], edits: [] };
@@ -185,6 +187,24 @@ function makeHarness(
   const mockClaude: Partial<ClaudeDeps> = {
     runClaudeWithRetry: ((() => {
       harness.claudeRuns++;
+      if (faults.providerRefuses) {
+        return Promise.resolve({
+          ok: true,
+          value: {
+            output: "",
+            exitCode: 1,
+            timedOut: false,
+            agentFailure: {
+              category: "model-unavailable",
+              message:
+                "Codex refused the requested model: The 'gpt-5' model is not supported when using Codex with a ChatGPT account.",
+              evidence: "structured",
+              terminal: true,
+              errors: [],
+            },
+          },
+        });
+      }
       return Promise.resolve({
         ok: true,
         value: { output: "fixed the import", exitCode: 0, timedOut: false },
@@ -263,11 +283,17 @@ function makeHarness(
       commitAndPushPending: (() =>
         Promise.resolve({
           ok: true,
-          value: {
-            committedNewChanges: true,
-            commitsPushed: 1,
-            finalUnpushedCount: 0,
-          },
+          value: faults.providerRefuses
+            ? {
+              committedNewChanges: false,
+              commitsPushed: 0,
+              finalUnpushedCount: 0,
+            }
+            : {
+              committedNewChanges: true,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
         })) as unknown as GitDeps["commitAndPushPending"],
     },
   });
@@ -682,6 +708,42 @@ Deno.test("processCiFailure - infrastructure failures are not charged and write 
         !c.includes(CI_FIX_ATTEMPT_MARKER_NAME)
       ),
       "an uncharged attempt records no marker",
+    );
+    await assertNoAutoFixState(stateDir);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a provider refusal spends no attempt and never escalates (#4038)", async () => {
+  // GRQ-AutoTrader#3811 on GRQ-23: Codex refused `gpt-5` in five seconds, the
+  // agent changed nothing, and attempt 1 of 3 went straight to needs-human —
+  // although nothing about the CI failure had been looked at.
+  const tmpDir = await Deno.makeTempDir();
+  const stateDir = `${tmpDir}/.ci_check_state`;
+  try {
+    const harness = makeHarness(stateDir, tmpDir, [], {
+      providerRefuses: true,
+    });
+
+    for (const checkRunId of ["8001", "8002", "8003", "8004"]) {
+      const result = await processCiFailure(
+        makeInput(COMPILE_ANNOTATIONS, checkRunId),
+        harness.processorDeps,
+      );
+      assertEquals(result.ok, true);
+      if (result.ok) {
+        assertEquals(result.value.processed, false, "the next scan retries");
+        assertStringIncludes(result.value.summary, "provider unavailable");
+      }
+    }
+
+    assertEquals(harness.claudeRuns, 4, "no cap binds on a provider outage");
+    assertEquals(harness.captured.labelsAdded.includes("needs-human"), false);
+    assertEquals(
+      harness.captured.comments,
+      [],
+      "nothing is posted: an outage is not a diagnosis",
     );
     await assertNoAutoFixState(stateDir);
   } finally {
