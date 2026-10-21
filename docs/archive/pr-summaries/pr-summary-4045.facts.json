@@ -121,7 +121,7 @@
         "outcome": "imgbb operand 1: file.imgbb_api_key is non-empty (|| operand 1 of 2)",
         "exempt": {
           "kind": "untestable",
-          "reason": "imgbb key read from file or env; the harness search over worker/deno/tests for imgbb env keys found config_precedence_test.ts staging VIBE_IMGBB_API_KEY, but loadConfig discards the egress list, so flipping this operand changes no asserted result"
+          "reason": "imgbb key read from file or env; the harness search over worker/deno/tests for imgbb env keys found worker/deno/tests/config_precedence_test.ts staging VIBE_IMGBB_API_KEY, but loadConfig discards the egress list, so flipping this operand changes no asserted result"
         }
       },
       {
@@ -130,7 +130,7 @@
         "outcome": "imgbb operand 2: readImgbbApiKeyFromEnv(env) is non-empty (|| operand 2 of 2)",
         "exempt": {
           "kind": "untestable",
-          "reason": "imgbb key read from file or env; the harness search over worker/deno/tests for imgbb env keys found config_precedence_test.ts staging VIBE_IMGBB_API_KEY, but loadConfig discards the egress list, so flipping this operand changes no asserted result"
+          "reason": "imgbb key read from file or env; the harness search over worker/deno/tests for imgbb env keys found worker/deno/tests/config_precedence_test.ts staging VIBE_IMGBB_API_KEY, but loadConfig discards the egress list, so flipping this operand changes no asserted result"
         }
       },
       {

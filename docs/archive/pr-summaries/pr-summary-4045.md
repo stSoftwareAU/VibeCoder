@@ -1,6 +1,6 @@
 ## Summary
 
-Closes #4045. A single module, `worker/deno/lib/egress_allowlist.ts`, owns the egress host list: GitHub and the package registries are always on, agent-provider hosts follow the enabled providers, the imgbb host follows imgbb being configured, and the `ANTHROPIC_BASE_URL` host is appended last. One config key, `egress_allow_hosts`, adds operator hosts. Each entry is validated and normalised, and an invalid entry makes config load throw, naming the entry, with no fallback to a partial list. Enforcement is NOT yet in place: the list is validated but not enforced, and enforcement is deferred to #4046 (CONNECT egress proxy). The trigger (a bad operator entry launching with a partial list) is closed. Validation runs before any host is used, and no path skips it: `loadConfig` is the only caller of `resolveEgressAllowlist` (`worker/deno/lib/config.ts:633`), no `return` precedes it inside `loadConfig` (`config.ts:449`–`631`), and a failure there rethrows as `Config file ... is invalid` (`config.ts:642`).
+Closes #4045. A single module, `worker/deno/lib/egress_allowlist.ts`, owns the egress host list: GitHub and the package registries are always on, agent-provider hosts follow the enabled providers, the imgbb host follows imgbb being configured, and the `ANTHROPIC_BASE_URL` host is appended last. One config key, `egress_allow_hosts`, adds operator hosts. Each entry is validated and normalised, and an invalid entry makes config load throw, naming the entry, with no fallback to a partial list. Enforcement is NOT yet in place: the list is validated but not enforced, and enforcement is deferred to #4046 (CONNECT egress proxy). The trigger (a bad operator entry launching with a partial list) is closed. Validation runs before any host is used, and no path skips it: `loadConfig` in `worker/deno/lib/config.ts` is the only caller of `resolveEgressAllowlist`, no `return` precedes the call inside `loadConfig`, and a failure there rethrows as `Config file ... is invalid`. The new module is claimed by the lib-sweep top-up slice `docs/audits/lib-sweep-coverage/top-up-4045.json`, and `tests/egress_allowlist_test.ts` is registered in `WALL_CLOCK_TEST_FILES` (`worker/deno/lib/parallel_unsafe_test_manifest.ts`) because it uses `assertLinearGrowth`.
 
 ## Spec
 
@@ -33,46 +33,47 @@ Closes #4045. A single module, `worker/deno/lib/egress_allowlist.ts`, owns the e
 ## Evidence
 
 - Backend-only / docs-only change; no UI, no screenshot.
-- Docs sweep: files: docs/CONFIGURATION.md, docs/CONTAINMENT.md, worker/deno/types.ts, worker/deno/lib/config_unknown_keys.ts; siblings: `agent_providers`, `imgbb_api_key`, `agent_provider_fallback`; stale-sentence candidates: docs/THREAT-MODEL.md:240, docs/THREAT-MODEL.md:244, docs/SETUP.md:985 — still true for general egress (re-read: line 240 says general egress is open until #3698; line 244 says egress is not restricted; SETUP.md:985 is a fragment saying the container can leave until egress is default-deny (#3698)). None of the three says the host list is unenforced or unchanged, so they are not claimed as describing the list.
-- Security-fix evidence: `worker/deno/tests/config_test.ts::config - egress_allow_hosts rejects an IP literal (Issue #4045)` is the evidence test. Recorded as red on the base and green at head; not re-run in this check.
+- Docs sweep: section: `docs/CONTAINMENT.md` "Egress allowlist" and the `egress_allow_hosts` row in `docs/CONFIGURATION.md`; grep "egress_allow_hosts", "egress allowlist", "allowlist" over `docs`, `README.md`, `prompts`, `worker/deno/lib`; siblings: `agent_providers`, `imgbb_api_key`, `agent_provider_fallback`; updated: docs/CONFIGURATION.md, docs/CONTAINMENT.md, worker/deno/types.ts, worker/deno/lib/config_unknown_keys.ts, worker/deno/lib/parallel_unsafe_test_manifest.ts, docs/audits/lib-sweep-coverage/top-up-4045.json; left alone: the general-egress sentences in `docs/THREAT-MODEL.md` and the default-deny fragment in `docs/SETUP.md` — still true, because each says general egress stays open until #3698 and none describes the host list.
+- Security-fix evidence: `worker/deno/tests/config_test.ts::config - egress_allow_hosts rejects an IP literal (Issue #4045)` is the evidence test. Recorded as red on the base and green at head.
 - The trigger is closed with no trivial bypass: mixed case is normalised to lower case and `:443` is stripped; any other port, whitespace, control characters and IP literals are refused by tests, and config load throws on any invalid entry.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
-reviewer: AC1 disabled and enabled provider hosts: met. Tests: "resolveEgressAllowlist - a disabled provider contributes no hosts (Issue #4045)"; "resolveEgressAllowlist - each enabled provider contributes exactly its documented hosts (Issue #4045)".
-reviewer: AC2 ANTHROPIC_BASE_URL and egress_allow_hosts added, duplicates collapsed: met. Tests: "resolveEgressAllowlist - ANTHROPIC_BASE_URL host is added, lower-cased (Issue #4045)"; "resolveEgressAllowlist - operator extras are appended after the base URL host (Issue #4045)"; "resolveEgressAllowlist - duplicates collapse to one entry each, first occurrence wins (Issue #4045)".
-reviewer: AC3 invalid entries fail config load naming the entry: met. Tests: "config - egress_allow_hosts rejects an IP literal (Issue #4045)"; "validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)".
-reviewer: AC4 docs-drift test fails both ways: met. Tests: "CONTAINMENT.md's egress allowlist lists exactly the module's hosts"; "CONTAINMENT.md says the egress allowlist is not enforced until #4046".
-reviewer: AC5 quality gate passes: pending — run in this PR's quality step.
+- **met** — A disabled provider contributes no hosts, and an enabled provider contributes exactly its documented hosts. — evidence: `worker/deno/tests/egress_allowlist_test.ts::resolveEgressAllowlist - a disabled provider contributes no hosts (Issue #4045)`; `worker/deno/tests/egress_allowlist_test.ts::resolveEgressAllowlist - each enabled provider contributes exactly its documented hosts (Issue #4045)` — reviewer: met
+- **met** — The `ANTHROPIC_BASE_URL` host and `egress_allow_hosts` entries are added, and duplicates collapse. — evidence: `worker/deno/tests/egress_allowlist_test.ts::resolveEgressAllowlist - ANTHROPIC_BASE_URL host is added, lower-cased (Issue #4045)`; `worker/deno/tests/egress_allowlist_test.ts::resolveEgressAllowlist - operator extras are appended after the base URL host (Issue #4045)`; `worker/deno/tests/egress_allowlist_test.ts::resolveEgressAllowlist - duplicates collapse to one entry each, first occurrence wins (Issue #4045)` — reviewer: met
+- **met** — An invalid entry fails config load with an error naming the entry. — evidence: `worker/deno/tests/config_test.ts::config - egress_allow_hosts rejects an IP literal (Issue #4045)`; `worker/deno/tests/egress_allowlist_test.ts::validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)` — reviewer: met
+- **met** — The docs-drift test fails both ways. — evidence: `worker/deno/tests/containment_docs_test.ts::CONTAINMENT.md's egress allowlist lists exactly the module's hosts`; `worker/deno/tests/containment_docs_test.ts::CONTAINMENT.md says the egress allowlist is not enforced until #4046` — reviewer: met
+- **met** — The quality gate passes. — evidence: `./quality.sh` ended "Result: PASSED (with skipped checks)"; the only skip is the config integration check, which needs a local `.config.json` this checkout does not have — reviewer: met
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-- One violation found by the standards reviewer (refusal tests lacked per-rule assertions and legal twins) was fixed.
-- Open notes: the `reason` and `provider` fields are unread by code; the facts file was not in the diff at review time and is now added.
+- **violation** — A refusal test must be refused by the rule it names: the refusal tests lacked per-rule assertions and legal twins — evidence: `worker/deno/tests/egress_allowlist_test.ts` — reason: fixed in this diff — each refusal now asserts the entry and its rule, and the same input made legal is accepted.
+- **clean** — Tests exercise real code, docs follow the code change, commit safety, Deno tooling only, and input validation at the config trust boundary. Open notes: the `reason` and `provider` fields are unread by code (recorded under Undiscoverable Facts).
 
 ## Test Plan
 
 <!-- vibe-branch-outcomes -->
-Branch outcomes: see pr-summary-4045.facts.json
 
-- Tests run: "150 tests passed via `deno task test:unit` on the touched files" — unconfirmed. This check ran `deno test` on the three named files (egress_allowlist_test.ts, containment_docs_test.ts, config_test.ts): 156 passed, 0 failed. `deno fmt --check` and `deno lint` clean on the touched source (`worker/deno/lib/egress_allowlist.ts`, `worker/deno/lib/config.ts`). `docs/CONTAINMENT.md` has a pre-existing `deno fmt --check` failure at the base, left alone.
+- `./quality.sh`: "Result: PASSED (with skipped checks)"; config integration skipped (no `.config.json`).
+- `deno task check:manifests` passed (793 entries), and the registry tests passed (70 tests).
+- `deno test` on `worker/deno/tests/egress_allowlist_test.ts`, `worker/deno/tests/containment_docs_test.ts` and `worker/deno/tests/config_test.ts`: 156 passed, 0 failed. `deno fmt --check` and `deno lint` clean on `worker/deno/lib/egress_allowlist.ts` and `worker/deno/lib/config.ts`. `docs/CONTAINMENT.md` has a pre-existing `deno fmt --check` failure at the base, left alone.
 - Named tests (repo-root paths):
   - `worker/deno/tests/egress_allowlist_test.ts`: 18 tests, all "(Issue #4045)".
-  - `worker/deno/tests/config_test.ts`: "config - egress_allow_hosts … (Issue #4045)".
+  - `worker/deno/tests/config_test.ts`: "config - egress_allow_hosts rejects an IP literal (Issue #4045)".
   - `worker/deno/tests/containment_docs_test.ts`: "CONTAINMENT.md's egress allowlist lists exactly the module's hosts" and "CONTAINMENT.md says the egress allowlist is not enforced until #4046".
 - Drift pins verified ABSENT on base: "nothing enforces it yet" and "#4046" in the CONTAINMENT.md egress section (checked with `git show milestone/agent-containment-egress-and-credential-isolation:docs/CONTAINMENT.md`, not present).
-- Red-check: non-443 port message. Recorded result: 3 tests went red when the port message was broken. Not re-run in this check. Flips for the other refusal branches were not run individually.
-- Hostile regex tests use assertLinearGrowth (LABEL_PATTERN, DIGITS_ONLY, WHITESPACE_OR_CONTROL).
-- Evidence test red on base, green at head: recorded result, not re-run in this check.
-- Quality gate: to be run once by the advisor at the end of this run; result recorded in the PR body. Not claimed as passed.
+- Red-check: non-443 port message. Recorded result: 3 tests went red when the port message was broken. Flips for the other refusal branches were not run individually.
+- Hostile regex tests use `assertLinearGrowth` (LABEL_PATTERN, DIGITS_ONLY, WHITESPACE_OR_CONTROL).
+- Evidence test red on base, green at head: recorded result.
 
 ## Skipped / not checked / remaining risk
 
 - Enforcement is not done; it is deferred to #4046.
 - Provider and OAuth hostnames are unverified against the provider modules.
-- The imgbb operands in `config.ts` (`config.ts:635`–`636`) are recorded as exempt (untestable).
+- The two imgbb operands in `loadConfig` are recorded as exempt (untestable) in the facts file.
 - `loadConfig` discards the resolved list until #4046.
 - Local-host skip for `ANTHROPIC_BASE_URL` is a minor deviation from the issue text.
-- Quality gate result is not yet confirmed at write time.
+- The quality gate's config integration check was skipped: no `.config.json` in this checkout.
+- Most refusal-branch flips were not run individually; only the non-443 port flip is recorded.
