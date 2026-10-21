@@ -9,8 +9,10 @@
  * Windows counterpart a follow-up rather than a rewrite.
  *
  * The conversation:
- *   1. `dynamic` or `frozen`, defaulting to `frozen` on a fresh host and, on a
- *      re-run, to whatever the host already says.
+ *   1. `dynamic` or `frozen`. The default is `frozen` only when no
+ *      `.config.json` existed before this run; on a re-run it is whatever the
+ *      host already says, and a config that predates the key is read as
+ *      `dynamic` (`DEFAULT_UPDATE_MODE`).
  *   2. Under `frozen`, the pinned ref — defaulting to the latest release tag
  *      (Issue #689), validated by resolving it in this very checkout after a
  *      fetch, so an unresolvable pin is rejected here rather than at the next
@@ -23,8 +25,10 @@
  *      stated in one line rather than leaving a prompt blank.
  *
  * A non-interactive run never prompts: existing values are left untouched, and
- * a fresh config is pinned to the latest release when one resolves with a
- * manifest — otherwise it stays `dynamic` with one warning line saying why.
+ * a config that did not exist before this run is pinned to the latest release
+ * when one resolves with a manifest — otherwise it stays `dynamic` with one
+ * warning line saying why. A pre-existing config with no `update_mode` is left
+ * as it is and reported as `dynamic`.
  *
  * Every line is styled through `lib/console_style.ts` (Issue #870), so the
  * conversation reads in the same `ℹ`/`✓`/`⚠` house style as the `setup.sh`
@@ -34,7 +38,8 @@
  *
  * The load-time default is untouched: an absent `update_mode` still resolves
  * to `dynamic` (`DEFAULT_UPDATE_MODE`), because an existing host carries no
- * pins and frozen is all-or-nothing (Issue #622).
+ * pins and frozen is all-or-nothing (Issue #622). The setup-time default is
+ * `frozen` (`SETUP_DEFAULT_UPDATE_MODE`) only for a config created by this run.
  */
 
 import { fetchOrigin, resolveRefCommit } from "../lib/checkout_update.ts";
@@ -503,11 +508,15 @@ export async function promptUpdateMode(
   repoDir: string,
   existing: UpdateModeSettings,
   deps: UpdateModeSetupDeps,
+  configExisted: boolean,
 ): Promise<Result<UpdateModeSettings>> {
-  // A fresh host defaults to `frozen` (Issue #692); a re-run defaults to
-  // whatever the host already says, so pressing Enter throughout is a no-op.
+  // A config created by this run defaults to `frozen` (Issue #692). A re-run
+  // defaults to whatever the host already says, so pressing Enter throughout is
+  // a no-op; a config that predates the key is offered `dynamic`, which is what
+  // it already behaves as.
   const mode = await askMode(
-    existing.update_mode ?? SETUP_DEFAULT_UPDATE_MODE,
+    existing.update_mode ??
+      (configExisted ? DEFAULT_UPDATE_MODE : SETUP_DEFAULT_UPDATE_MODE),
     deps,
   );
   if (!mode.ok) return mode;
@@ -613,6 +622,13 @@ export interface UpdateModeSetupOptions {
   repoDir: string;
   /** Path to `.config.json`. */
   configPath: string;
+  /**
+   * Whether `.config.json` existed before this run. Only a config this run
+   * creates defaults to `frozen`; a pre-existing config with no `update_mode`
+   * is read as `dynamic`. The caller checks this before anything writes the
+   * file.
+   */
+  configExisted: boolean;
   /** Overrides for the real side effects; tests supply all of them. */
   deps?: Partial<UpdateModeSetupDeps>;
 }
@@ -634,15 +650,24 @@ export async function runUpdateModeSetup(
   const existing = await readUpdateModeSettings(options.configPath);
   if (!existing.ok) return existing;
 
-  // No operator to answer: keep what the host already says, and pin a fresh
-  // config to the latest release when one resolves with a manifest (Issue
-  // #692). A host that cannot be pinned stays `dynamic` — what it behaved as
-  // before the key existed — with one line saying why, never a partial pin.
+  // No operator to answer: keep what the host already says, and pin a config
+  // this run creates to the latest release when one resolves with a manifest
+  // (Issue #692). A host that cannot be pinned stays `dynamic` — what it
+  // behaved as before the key existed — with one line saying why, never a
+  // partial pin. A pre-existing config with no `update_mode` is left unwritten
+  // and reported as `dynamic`.
   if (!deps.interactive()) {
-    if (existing.value.update_mode !== undefined) {
+    if (options.configExisted || existing.value.update_mode !== undefined) {
       return {
         ok: true,
-        value: { settings: existing.value, changed: false, prompted: false },
+        value: {
+          settings: {
+            ...existing.value,
+            update_mode: existing.value.update_mode ?? DEFAULT_UPDATE_MODE,
+          },
+          changed: false,
+          prompted: false,
+        },
       };
     }
     const settings = await nonInteractiveSettings(options.repoDir, deps);
@@ -658,6 +683,7 @@ export async function runUpdateModeSetup(
     options.repoDir,
     existing.value,
     deps,
+    options.configExisted,
   );
   if (!answers.ok) return answers;
 
