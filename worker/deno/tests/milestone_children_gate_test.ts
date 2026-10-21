@@ -498,6 +498,23 @@ Deno.test("decideMilestoneBaseMerge - a closed milestone blocks even with no rol
   if (d.decision === "block") assertEquals(d.reason, "milestone-closed");
 });
 
+Deno.test("decideMilestoneBaseMerge - a closed milestone's detail names it by title, not as #N (Issue #3673)", async () => {
+  const d = await decideMilestoneBaseMerge({
+    repo: "org/repo",
+    prNumber: 1,
+    baseRefName: "milestone/clean-up",
+    ghCommandFn: ghForBaseGate({
+      rollups: [],
+      milestones: [{ number: 7, title: "Clean up", state: "closed" }],
+    }),
+  });
+  assertEquals(d.decision, "block");
+  if (d.decision === "block") {
+    assertEquals(d.detail, 'milestone "Clean up" is closed');
+    assertEquals(d.detail.match(/#\d+/g), null);
+  }
+});
+
 Deno.test("decideMilestoneBaseMerge - a milestone base that cannot be verified DEFERS, it does not block (Issue #477)", async () => {
   // Business-logic change from Issue #4396, which blocked here. A `block`
   // then retargeted the PR at the default branch, so an unreadable route — a
@@ -928,7 +945,7 @@ Deno.test("renderRouteClosedHoldComment - carries no bare #N apart from the roll
         milestoneNumber: 7,
         detail: "milestone closed",
       },
-      expected: ["#7"],
+      expected: [],
     },
     {
       gate: {
@@ -942,8 +959,90 @@ Deno.test("renderRouteClosedHoldComment - carries no bare #N apart from the roll
   ];
   for (const { gate, expected } of cases) {
     assertEquals(
-      renderRouteClosedHoldComment(gate).match(/#\d+/g) ?? [],
+      renderRouteClosedHoldComment(gate, "o/r").match(/#\d+/g) ?? [],
       expected,
     );
   }
+});
+
+Deno.test("renderRouteClosedHoldComment - names a closed milestone by title and links its page, never as #N (Issue #3673)", () => {
+  // inertCodeSpan pads the title inside its fence, so the span reads
+  // `` ` Clean up ` `` in the rendered Markdown.
+  const linked = renderRouteClosedHoldComment({
+    decision: "block",
+    reason: "milestone-closed",
+    milestoneBranch: "milestone/clean-up",
+    milestoneNumber: 7,
+    milestoneTitle: "Clean up",
+    detail: "milestone closed",
+  }, "o/r");
+  assertStringIncludes(
+    linked,
+    "its milestone [` Clean up `](https://github.com/o/r/milestone/7) is closed",
+  );
+  assertEquals(linked.includes("#7"), false);
+
+  const titleOnly = renderRouteClosedHoldComment({
+    decision: "block",
+    reason: "milestone-closed",
+    milestoneBranch: "milestone/clean-up",
+    milestoneTitle: "Clean up",
+    detail: "milestone closed",
+  }, "o/r");
+  assertStringIncludes(
+    titleOnly,
+    "its milestone ` Clean up ` is closed",
+  );
+  assertEquals(titleOnly.includes("](https://"), false);
+
+  const hostile = renderRouteClosedHoldComment({
+    decision: "block",
+    reason: "milestone-closed",
+    milestoneBranch: "milestone/release",
+    milestoneNumber: 7,
+    milestoneTitle: "Release #5",
+    detail: "milestone closed",
+  }, "o/r");
+  assertStringIncludes(
+    hostile,
+    "[` Release #5 `](https://github.com/o/r/milestone/7)",
+  );
+
+  const untitled = renderRouteClosedHoldComment({
+    decision: "block",
+    reason: "milestone-closed",
+    milestoneBranch: "milestone/clean-up",
+    milestoneNumber: 7,
+    detail: "milestone closed",
+  }, "o/r");
+  assertStringIncludes(untitled, "its milestone is closed");
+  assertEquals(untitled.includes("#7"), false);
+  assertEquals(untitled.includes("](https://"), false);
+});
+
+Deno.test("holdOrphanBoundPr - the posted hold comment links the closed milestone in the PR's own repo (Issue #3673)", async () => {
+  const calls: string[][] = [];
+  const ghCommandFn = (args: string[]): Promise<string> => {
+    calls.push(args);
+    return Promise.resolve(args[0] === "api" ? "[]" : "");
+  };
+  await holdOrphanBoundPr({
+    repo: "o/r",
+    prNumber: 9,
+    gate: {
+      decision: "block",
+      reason: "milestone-closed",
+      milestoneBranch: "milestone/clean-up",
+      milestoneNumber: 7,
+      milestoneTitle: "Clean up",
+      detail: 'milestone "Clean up" is closed',
+    },
+    ghCommandFn,
+    log: () => {},
+    authorOptions: { fleetAuthors: ["bot"] },
+  });
+  const comment = calls.find((c) => c[0] === "pr" && c[1] === "comment") ?? [];
+  assertEquals(comment.length > 0, true);
+  const body = comment[comment.indexOf("--body") + 1] ?? "";
+  assertStringIncludes(body, "(https://github.com/o/r/milestone/7)");
 });

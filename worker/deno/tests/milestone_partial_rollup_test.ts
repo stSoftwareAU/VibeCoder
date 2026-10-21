@@ -182,6 +182,16 @@ Deno.test("createPartialRollup - level milestone snapshots the tip and opens a m
   assertFalse(/\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*#\d/i.test(pr.body));
 });
 
+// Issue #3674: the PR is raised in the target repo, which autolinks a bare #N
+// to its own issue of that number, so the body must cite no VibeCoder issue.
+Deno.test("createPartialRollup - the PR body cites no bare #N (Issue #3674)", async () => {
+  const gh = new FakeGitHub();
+  const result = await gh.run();
+  assertEquals(result.outcome, "created");
+  const pr = gh.first();
+  assertEquals(pr.body.match(/#\d+/g), null);
+});
+
 Deno.test("createPartialRollup - second call with an open marked PR reports exists and creates nothing", async () => {
   const gh = new FakeGitHub();
   const first = await gh.run();
