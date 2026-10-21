@@ -43,7 +43,7 @@ Tests changed:
   - Widen `[nrt]` to `[a-z]`: red on the backslash-before-non-escape-letter test.
 - `deno fmt`, `deno lint` and `deno check` are clean.
 
-QUALITY_GATE_RESULT_PLACEHOLDER
+Quality gate: `./quality.sh < /dev/null` passed (exit 0) on head 8126dcd7; config integration SKIPPED by the gate.
 
 <!-- vibe-branch-outcomes -->
 
