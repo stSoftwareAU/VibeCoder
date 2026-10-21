@@ -626,7 +626,7 @@ function driftGhFn(graphqlWorks: boolean): (a: string[]) => Promise<string> {
 
 async function driftFor(
   graphqlWorks: boolean,
-): Promise<{ aheadBy: number; behindBy: number }> {
+): Promise<{ name: string; aheadBy: number; behindBy: number }> {
   return await withFreshCaches(async (cachePath) => {
     const result = await getMilestoneHealth({
       defaultBranchCachePath: cachePath,
@@ -637,7 +637,11 @@ async function driftFor(
     if (!result.ok) throw new Error("unreachable");
     const branch = result.value.repos[0]!.milestones[0]!.branch;
     if (!branch) throw new Error("branch drift missing from report");
-    return { aheadBy: branch.aheadBy, behindBy: branch.behindBy };
+    return {
+      name: branch.name,
+      aheadBy: branch.aheadBy,
+      behindBy: branch.behindBy,
+    };
   });
 }
 
@@ -664,6 +668,11 @@ Deno.test("getMilestoneHealth - milestone branch ahead of default is not reporte
     drift.behindBy,
     DRIFT_BEHIND,
     "the default branch carries two commits the milestone branch lacks",
+  );
+  assertEquals(
+    drift.name,
+    "milestone/oidc",
+    "the GraphQL compare must report the milestone branch it compared (Issue #3856)",
   );
 });
 
@@ -818,6 +827,7 @@ Deno.test("getMilestoneHealth - GraphQL errors payload is a failed branch compar
   assertEquals(result.ok, true);
   if (!result.ok) throw new Error("unreachable");
   const branch = result.value.repos[0]!.milestones[0]!.branch;
+  assertEquals(branch?.name, "milestone/oidc");
   assertEquals(branch?.aheadBy, 2);
   assertEquals(branch?.behindBy, 1);
 });
@@ -836,6 +846,7 @@ Deno.test("getMilestoneHealth - GraphQL compare with null compare payload falls 
   assertEquals(result.ok, true);
   if (!result.ok) throw new Error("unreachable");
   const branch = result.value.repos[0]!.milestones[0]!.branch;
+  assertEquals(branch?.name, "milestone/oidc");
   assertEquals(branch?.aheadBy, 2);
   assertEquals(branch?.behindBy, 1);
 });

@@ -560,8 +560,12 @@ async function getRepoMilestoneHealth(
 /**
  * Get milestone health across all configured repositories.
  *
- * A repo whose gh call fails at transport level is skipped. Non-JSON GraphQL
- * output falls back to REST; valid JSON of an invalid shape fails the report (#3856).
+ * A repo is skipped only when its health lookup throws something other than a
+ * MalformedGhResponseError, e.g. its default branch cannot be resolved. A
+ * failed milestone-list call still reports the repo with no milestones, and a
+ * failed issue fetch or REST branch call leaves that milestone's issues or
+ * branch out. Non-JSON GraphQL output falls back to REST; valid JSON of an
+ * invalid shape fails the report (#3856).
  *
  * @param deps - Injected dependencies
  * @returns Result with the milestone health report

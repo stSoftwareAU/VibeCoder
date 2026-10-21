@@ -205,7 +205,7 @@
       },
       {
         "path": "worker/deno/lib/milestone_health.ts",
-        "line": 591,
+        "line": 595,
         "outcome": "getMilestoneHealth catch: MalformedGhResponseError is returned as a failed result",
         "test": "worker/deno/tests/milestone_health_test.ts",
         "testName": "getMilestoneHealth - non-array milestone list fails naming the endpoint and root (Issue #3856)",

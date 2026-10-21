@@ -846,18 +846,22 @@ Deno.test("validation - validateGraphQLBranchCompareJson rejects null data", () 
 });
 
 Deno.test("validation - validateGraphQLBranchCompareJson rejects missing repository", () => {
+  const result = validateGraphQLBranchCompareJson({ data: {} });
+  assertEquals(failedField(result), "data.repository");
   assertEquals(
-    failedField(validateGraphQLBranchCompareJson({ data: {} })),
-    "data.repository",
+    result.ok ? undefined : result.error.message,
+    "Expected object, got undefined",
   );
 });
 
 Deno.test("validation - validateGraphQLBranchCompareJson rejects null repository", () => {
+  const result = validateGraphQLBranchCompareJson({
+    data: { repository: null },
+  });
+  assertEquals(failedField(result), "data.repository");
   assertEquals(
-    failedField(
-      validateGraphQLBranchCompareJson({ data: { repository: null } }),
-    ),
-    "data.repository",
+    result.ok ? undefined : result.error.message,
+    "Expected object, got null",
   );
 });
 
