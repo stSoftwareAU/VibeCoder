@@ -1,0 +1,216 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1023,
+        "outcome": "validation guard: GraphQL branch compare root is not an object",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson rejects non-object root",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1032,
+        "outcome": "validation guard: GraphQL errors is not an array",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson rejects non-array errors",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1038,
+        "outcome": "validation guard: GraphQL errors element is not an object",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson rejects non-object errors element",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1044,
+        "outcome": "validation guard: GraphQL errors message is not a string",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson rejects non-string errors message",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1058,
+        "outcome": "validation guard: GraphQL data is not an object",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson rejects missing data",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1065,
+        "outcome": "validation guard: GraphQL data.repository is not an object",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson rejects missing repository",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1078,
+        "outcome": "validation guard: GraphQL ref is the wrong type",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson rejects wrong-type ref",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1089,
+        "outcome": "validation guard: GraphQL compare is the wrong type",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson rejects wrong-type compare",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1095,
+        "outcome": "validation guard: GraphQL compare.aheadBy is not a number",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson rejects missing aheadBy",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1101,
+        "outcome": "validation guard: GraphQL compare.behindBy is not a number",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson rejects string behindBy",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1130,
+        "outcome": "validation guard: REST compare root is not an object",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateRestCompareJson rejects null root",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1136,
+        "outcome": "validation guard: REST ahead_by is not a number",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateRestCompareJson rejects missing ahead_by",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1142,
+        "outcome": "validation guard: REST behind_by is not a number",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateRestCompareJson rejects string behind_by",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1075,
+        "outcome": "validation ok return: GraphQL branch absent",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson treats a null ref as absent",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1086,
+        "outcome": "validation ok return: GraphQL compare unavailable",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson treats a null compare as unavailable",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "line": 1107,
+        "outcome": "validation ok return: GraphQL compare counts",
+        "test": "worker/deno/tests/validation_test.ts",
+        "testName": "validation - validateGraphQLBranchCompareJson accepts a compare",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/milestone_health.ts",
+        "line": 291,
+        "outcome": "MalformedGhResponseError throw: GraphQL branch compare JSON invalid",
+        "test": "worker/deno/tests/milestone_health_test.ts",
+        "testName": "getMilestoneHealth - GraphQL data without repository fails naming the field (Issue #3856)",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/milestone_health.ts",
+        "line": 362,
+        "outcome": "MalformedGhResponseError throw: REST compare output not JSON",
+        "test": "worker/deno/tests/milestone_health_test.ts",
+        "testName": "getMilestoneHealth - REST compare that is not JSON fails (Issue #3856)",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/milestone_health.ts",
+        "line": 371,
+        "outcome": "MalformedGhResponseError throw: REST compare JSON invalid",
+        "test": "worker/deno/tests/milestone_health_test.ts",
+        "testName": "getMilestoneHealth - REST compare missing ahead_by fails naming the field (Issue #3856)",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/milestone_health.ts",
+        "line": 463,
+        "outcome": "MalformedGhResponseError throw: milestone list output not JSON",
+        "test": "worker/deno/tests/milestone_health_test.ts",
+        "testName": "getMilestoneHealth - milestone list that is not JSON fails (Issue #3856)",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/milestone_health.ts",
+        "line": 471,
+        "outcome": "MalformedGhResponseError throw: milestone list JSON invalid",
+        "test": "worker/deno/tests/milestone_health_test.ts",
+        "testName": "getMilestoneHealth - non-array milestone list fails naming the endpoint and root (Issue #3856)",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/milestone_health.ts",
+        "line": 301,
+        "outcome": "branch compare arm: GraphQL errors payload is a failed compare",
+        "test": "worker/deno/tests/milestone_health_test.ts",
+        "testName": "getMilestoneHealth - GraphQL errors payload is a failed branch compare (Issue #3856)",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/milestone_health.ts",
+        "line": 304,
+        "outcome": "branch compare arm: branch absent",
+        "test": "worker/deno/tests/milestone_health_test.ts",
+        "testName": "getMilestoneHealth - handles missing milestone branch gracefully",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/milestone_health.ts",
+        "line": 306,
+        "outcome": "branch compare arm: compare unavailable",
+        "test": "worker/deno/tests/milestone_health_test.ts",
+        "testName": "getMilestoneHealth - REST compare missing ahead_by fails naming the field (Issue #3856)",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/milestone_health.ts",
+        "line": 316,
+        "outcome": "branch compare arm: GraphQL compare counts",
+        "test": "worker/deno/tests/milestone_health_test.ts",
+        "testName": "getMilestoneHealth - GraphQL reports milestone drift the same way round as REST (Issue #470)",
+        "flipWentRed": true
+      },
+      {
+        "path": "worker/deno/lib/milestone_health.ts",
+        "line": 591,
+        "outcome": "getMilestoneHealth catch: MalformedGhResponseError is returned as a failed result",
+        "test": "worker/deno/tests/milestone_health_test.ts",
+        "testName": "getMilestoneHealth - non-array milestone list fails naming the endpoint and root (Issue #3856)",
+        "flipWentRed": true
+      }
+    ]
+  }
+}
