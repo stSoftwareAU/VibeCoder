@@ -524,6 +524,11 @@ Deno.test("aws-cloudformation — only cfn-lint invoked in CI is not configured"
       assertEquals(r.linter, "cfn-lint");
       assertStringIncludes(r.details, "invokes `Checkov`");
       assertEquals(r.details.includes("invokes `cfn-lint`"), false);
+      assertStringIncludes(
+        r.details,
+        "checkov -d . --framework cloudformation",
+      );
+      assertEquals(r.details.includes("cfn-lint templates/**/*.yaml"), false);
     },
   );
 });
@@ -548,6 +553,11 @@ Deno.test("aws-cloudformation — only Checkov invoked in CI is not configured",
       assertEquals(r.linter, "cfn-lint");
       assertStringIncludes(r.details, "invokes `cfn-lint`");
       assertEquals(r.details.includes("invokes `Checkov`"), false);
+      assertStringIncludes(r.details, "cfn-lint templates/**/*.yaml");
+      assertEquals(
+        r.details.includes("checkov -d . --framework cloudformation"),
+        false,
+      );
     },
   );
 });
