@@ -1,8 +1,9 @@
 /**
  * Socket scenarios for the CONNECT egress proxy (Issue #4046).
  *
- * `deno task test:unit` grants no `--allow-net`, so tests/egress_proxy_test.ts
- * runs this script in a child process granted `--allow-net=127.0.0.1` only.
+ * `deno task test:unit` grants no `--allow-net`, so
+ * worker/deno/tests/egress_proxy_test.ts runs this script in a child process
+ * granted `--allow-net=127.0.0.1` only.
  * Each scenario binds real sockets on 127.0.0.1: the proxy listens on port 0,
  * the upstream is a local echo server, and DNS and dialling are injected.
  *

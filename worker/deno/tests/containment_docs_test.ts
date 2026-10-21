@@ -49,6 +49,7 @@ import {
   IMGBB_EGRESS_RULES,
   PROVIDER_EGRESS_RULES,
 } from "../lib/egress_allowlist.ts";
+import { readRepoDoc, section as docSection } from "./support/markdown_docs.ts";
 
 // tests/ → worker/deno/ → worker/ → repo root
 function repoPath(relative: string): URL {
@@ -294,8 +295,11 @@ Deno.test("CONTAINMENT.md says the egress allowlist is not enforced for the cont
 // docs/CONTAINMENT.md — the egress proxy (Issue #4046)
 // ---------------------------------------------------------------------------
 
-Deno.test("CONTAINMENT.md documents the egress proxy as the one outbound proxy #3699 extends", () => {
-  const body = section(read("docs/CONTAINMENT.md"), "Egress proxy");
+Deno.test("CONTAINMENT.md documents the egress proxy as the one outbound proxy #3699 extends", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
   for (
     const phrase of [
       "#3699",
@@ -312,8 +316,11 @@ Deno.test("CONTAINMENT.md documents the egress proxy as the one outbound proxy #
   }
 });
 
-Deno.test("CONTAINMENT.md's egress proxy section does not claim the container is routed through it yet", () => {
-  const body = section(read("docs/CONTAINMENT.md"), "Egress proxy");
+Deno.test("CONTAINMENT.md's egress proxy section does not claim the container is routed through it yet", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
   for (
     const phrase of ["#4047", "The container is not routed through it yet"]
   ) {
@@ -324,8 +331,11 @@ Deno.test("CONTAINMENT.md's egress proxy section does not claim the container is
   }
 });
 
-Deno.test("CONTAINMENT.md's egress proxy section states the proxy reads no files and keeps no cache", () => {
-  const body = section(read("docs/CONTAINMENT.md"), "Egress proxy");
+Deno.test("CONTAINMENT.md's egress proxy section states the proxy reads no files and keeps no cache", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
   const phrase = "reads no files and keeps no cache";
   assert(
     body.includes(phrase),

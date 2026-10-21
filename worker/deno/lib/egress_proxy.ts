@@ -285,7 +285,7 @@ export async function startEgressProxy(
       try {
         listener.close();
       } catch {
-        // Already closed by the accept loop; nothing left to stop.
+        // Already closed; closing twice is harmless here.
       }
       for (const conn of [...registry.clients, ...registry.upstreams]) {
         closeQuietly(conn);
@@ -525,6 +525,7 @@ function hostOfAbsoluteTarget(target: string): { host: string; port: number } {
       port: url.port === "" ? 0 : Number(url.port),
     };
   } catch {
+    // Not a parseable URL: the refusal is still logged, with an unknown host.
     return { host: "-", port: 0 };
   }
 }
@@ -597,6 +598,7 @@ async function readHead(
     try {
       count = await conn.read(chunk);
     } catch {
+      // Peer reset or idle close: no request arrived, so nothing to refuse.
       return { kind: "closed" };
     }
     if (count === null) return { kind: "closed" };

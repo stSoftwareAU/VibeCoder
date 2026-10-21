@@ -2,8 +2,9 @@
  * Tests for the CONNECT egress proxy (Issue #4046).
  *
  * `deno task test:unit` grants no network access by design, so the socket
- * scenarios run in a child process (tests/support/egress_proxy_socket_scenarios.ts)
- * granted `--allow-net=127.0.0.1` only. Each socket test spawns the child for
+ * scenarios run in a child process
+ * (worker/deno/tests/support/egress_proxy_socket_scenarios.ts) granted
+ * `--allow-net=127.0.0.1` only. Each socket test spawns the child for
  * one scenario and asserts on its JSON result. The child exits on its own; the
  * parent also bounds it with a timer and kills it in a finally block.
  *
