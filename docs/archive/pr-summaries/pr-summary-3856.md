@@ -20,6 +20,16 @@ Closes #3856.
 - Malformed required fields must fail with the command context and field name,
   without the raw response text or credentials, and must never become a success.
 
+Consumed-field gaps found at the inspected boundaries:
+
+| Boundary | Consumed fields | Before | Now |
+|---|---|---|---|
+| GraphQL branch compare, `milestone_health.ts:284` | `data.repository.ref.compare.aheadBy/behindBy`, `errors[].message` | unchecked cast | `validateGraphQLBranchCompareJson` |
+| REST compare, `milestone_health.ts:360` | `ahead_by`, `behind_by` | unchecked cast | `validateRestCompareJson` |
+| Milestone list, `milestone_health.ts:461` | `[].number`, `title` | unchecked cast | `validateGitHubMilestonesJson` (existing) |
+| `github.ts:438` rate-limit read | `resources.graphql.reset`, `resources.core.reset` | no gap | unchanged: already guarded by `typeof`/`isFinite` with a fallback |
+| `issue_query.ts:652-693` milestone fetchers | `title`, `closed_issues` | no gap | unchanged: already guarded |
+
 ### Essential Design Decisions
 
 - No new validation framework and no JSONC dependency. The diff adds no JSONC
@@ -33,99 +43,70 @@ Closes #3856.
 - Transport failures keep their existing behaviour. The REST branch transport
   catch still returns `undefined` (`milestone_health.ts:354`) and the milestone
   list transport catch still returns `{ repo, milestones: [] }`
-  (`milestone_health.ts:454`). The second is pinned by a new test.
+  (`milestone_health.ts:454`). The second is pinned by a new test. This is a
+  deliberate departure from a literal reading of AC4: a transport failure is not
+  a malformed response, and the issue scopes the change to parsing gaps.
 
 ### Undiscoverable Facts
 
-- `worker/deno/lib/github.ts:431` (`readGraphqlResetEpoch`) was inspected and is
+- `worker/deno/lib/github.ts:438` (`readGraphqlResetEpoch`) was inspected and is
   already guarded, so it is unchanged.
-- The brief gave "~L1110-1135" for the `milestone_branch_sync.ts` precedent. The
-  Issue #2607 precedent sits at `milestone_branch_sync.ts:1086`, `:1123` and
-  `:1134`.
+- The Issue #2607 fail-loud precedent sits at `milestone_branch_sync.ts:1086`,
+  `:1123` and `:1134`.
 
 ## Evidence
 
-Changed code files (`git diff --numstat f5b0c628`, including the uncommitted new
-test; 4 files, 666 insertions, 73 deletions):
+Changed files (`git diff --shortstat main`): 6 files changed, 1088 insertions,
+73 deletions. Of these, four are code and tests; the other two are this summary
+and its facts file.
 
-- `worker/deno/lib/milestone_health.ts` (193 lines): the malformed-response
-  error class (`:43`), the GraphQL branch throw (`:291-295`), the `switch
-  (outcome.kind)` (`:299`), the REST and milestone-list throws (`:362-366`,
-  `:371-375`, `:463-467`, `:471-475`).
-- `worker/deno/lib/validation.ts` (149 added): `GraphQLBranchCompare` (`:1004`),
+- `worker/deno/lib/milestone_health.ts`: the malformed-response error class
+  (`:43`), the GraphQL branch throw (`:291-295`), the `switch (outcome.kind)`
+  (`:299`), the REST and milestone-list throws (`:362-366`, `:371-375`,
+  `:463-467`, `:471-475`), and the `getMilestoneHealth` catch (`:591`).
+- `worker/deno/lib/validation.ts`: `GraphQLBranchCompare` (`:1004`),
   `validateGraphQLBranchCompareJson` (`:1019`), `RestCompareJson` (`:1115`) and
   `validateRestCompareJson` (`:1126`). Their guards reuse `isObject` (`:261`),
   `fail` (`:265`) and `ok` (`:269`).
-- `worker/deno/tests/validation_test.ts` (206 added) and
-  `worker/deno/tests/milestone_health_test.ts` (191 added: 173 committed, plus 18
-  for the new `unavailable` test).
+- `worker/deno/tests/validation_test.ts` and
+  `worker/deno/tests/milestone_health_test.ts`.
 
-Checks run on the four changed files: `deno fmt --check`, `deno lint` and
-`deno check` each exited 0. The unit run reported `ok | 147 passed | 0 failed (142ms)`.
+Checks run on the four changed code and test files: `deno fmt --check`,
+`deno lint` and `deno check` each exited 0. The unit run reported
+`ok | 150 passed | 0 failed`.
 
-Errors arm: the `case "errors":` arm of the GraphQL switch
-(`milestone_health.ts:300-301`) is covered by the test at
-`milestone_health_test.ts:807` (GraphQL errors payload is a failed branch
-compare). That test asserts the REST fallback values (`aheadBy` 2, `behindBy` 1),
-because `fetchBranchInfo` discards the GraphQL error text, so the message is not
-visible through the public API. Flipping the arm made 1 test fail. The other arms
-are covered: `absent` by the existing test at `milestone_health_test.ts:277`,
-`compare` by the Issue #470 tests at `:644` and `:655`.
+GraphQL switch arms (`milestone_health.ts:299`):
 
-Unavailable arm: the `case "unavailable":` arm (`milestone_health.ts:305-309`)
-is covered directly by the test at `milestone_health_test.ts:825` (GraphQL
-compare with null compare payload falls back to REST). That test asserts the
-REST fallback values (`aheadBy` 2, `behindBy` 1), because the arm returns
-`ok: false` and the caller falls back. The validator's `kind: "unavailable"`
-is covered by `validation_test.ts:749`. Flipping the arm to `ok: true` made 1
-test fail.
+- `errors` (`:301`) is covered by `milestone_health_test.ts:807`.
+- `unavailable` (`:306`) is covered by `milestone_health_test.ts:825`.
+- `absent` (`:304`) is covered by the existing test at
+  `milestone_health_test.ts:277`.
+- `compare` (`:316`) is covered by the Issue #470 tests at `:644` and `:655`.
 
-**Docs sweep** — grep: `milestone_health`, `MalformedGhResponseError`,
-`validateGraphQLBranchCompareJson`, `validateRestCompareJson`,
-`getMilestoneHealth`; section: `docs/INTERNALS.md#-milestone-health-diagnostics`;
-siblings: `validateGitHubMilestonesJson` (existing member of the milestone
-validator set in `worker/deno/lib/validation.ts`), `validateGraphQLBranchCompareJson`
-and `validateRestCompareJson` (both added to that set by this diff); updated:
-none — no docs or prompt surface was edited; the `milestone_health` hits in
-`docs/INTERNALS.md` (`:3157`, `:5794`) were not changed.
+The `errors` and `unavailable` tests assert the REST fallback values (`aheadBy` 2,
+`behindBy` 1). Both arms return `ok: false` and the caller falls back to REST,
+and `fetchBranchInfo` discards the GraphQL error text, so the fallback values are
+what the public API shows. Flipping each arm to `ok: true` made 1 test fail.
+
+**Docs sweep** — grep: `milestone_health`, `MalformedGhResponseError`, `validateGraphQLBranchCompareJson`, `validateRestCompareJson`, `getMilestoneHealth`; section: `docs/INTERNALS.md#-milestone-health-diagnostics`; siblings: `validateGitHubMilestonesJson`; updated: none — the `milestone_health` hits at `docs/INTERNALS.md:3157` and `:5794` describe the health report, which is still true.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-Reviewer: spec-reviewer (diff+issue-body)
-
-- Inspect the unchecked gh response boundaries in `milestone_health.ts` and the cited `github.ts` / `issue_query.ts` callers; list concrete consumed-field gaps before changing them.
-  reviewer: PARTIAL
-  reason: The three `milestone_health.ts` boundaries are fixed. `github.ts` (`readGraphqlResetEpoch`, see Spec) and the `issue_query.ts` milestone fetchers were inspected with no change: their consumed fields are already guarded or validated.
-- Reuse or extend the existing guards and result types. Do not introduce a second validation framework or a JSONC dependency for schema validation.
-  reviewer: MET
-  reason: Reuses `validateGitHubMilestonesJson`, `ValidationResult`, `ok`, `fail` and `isObject`. No JSONC dependency.
-- Accept documented nullable/optional GitHub fields; reject malformed required fields with the command/context and field name, without logging credentials or the full response.
-  reviewer: MET
-  reason: `MalformedGhResponseError` carries context and field. RAW_MARKER tests assert the raw response is absent.
-- Invalid input cannot become a false success or an empty successful result. Preserve existing valid-response behaviour.
-  reviewer: MET
-  reason: Behaviour change noted by the spec reviewer: a GraphQL body with a null repository, which used to mean branch absent, now fails loud. This is the intended gap fix, not a regression, and it aborts the report for that repo.
-- Tests exercise missing, null and wrong-type consumed fields and the production caller's error handling. Already-validated paths need no rewrite.
-  reviewer: MET
-  reason: Validation tests cover missing, null and wrong-type fields. Production caller tests cover the error handling in `milestone_health_test.ts`.
+- **met** — Inspect the unchecked gh response boundaries in `milestone_health.ts` and the cited `github.ts` / `issue_query.ts` callers; list concrete consumed-field gaps before changing them. — evidence: `worker/deno/lib/milestone_health.ts:284` (gap table in Spec) — reviewer: met
+- **met** — Reuse or extend the existing guards and result types. Do not introduce a second validation framework or a JSONC dependency for schema validation. — evidence: `worker/deno/lib/validation.ts:1019` — reviewer: met
+- **met** — Accept documented nullable/optional GitHub fields; reject malformed required fields with the command/context and field name, without logging credentials or the full response. — evidence: `worker/deno/tests/validation_test.ts::validation - validateGraphQLBranchCompareJson treats an omitted ref as absent` — reviewer: met
+- **met** — Invalid input cannot become a false success or an empty successful result. Preserve existing valid-response behaviour. — evidence: `worker/deno/tests/milestone_health_test.ts::getMilestoneHealth - non-array milestone list fails naming the endpoint and root (Issue #3856)` — reviewer: partial — reason: a milestone-list transport failure still gives an empty repo; a transport failure is not a malformed response, the issue scopes the change to parsing gaps, and the behaviour is pinned by `worker/deno/tests/milestone_health_test.ts:843`
+- **met** — Tests exercise missing, null and wrong-type consumed fields and the production caller's error handling. Already-validated paths need no rewrite. — evidence: `worker/deno/tests/milestone_health_test.ts:671` — reviewer: met
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- Rule: `Do not swallow errors` (CODING-STANDARDS.md, Never Fail Silently)
-  Evidence: worker/deno/lib/milestone_health.ts, the `} catch { return undefined; }` around the branch-existence ghCommandFn call (in fetchBranchInfoRest, unchanged context line), and the new docstring line that states a failed gh call is reported as branch absent.
-  reason: NOT fixed in this diff. It is a pre-existing transport-failure path outside the parsing gaps the issue scopes (`Keep this bounded to evidenced parsing gaps`). A follow-up issue is the route. It is left as a documented known departure.
-
-Clean checks:
-
-- Failure reason names the cause without the raw response.
-- No persisted shape changed.
-- No field exists only for tests (`RestCompareJson` and `GraphQLBranchCompare` are read by production code).
-- Australian English in added lines.
-- Tests call real functions.
+- **violation** — Every outcome of a branch you add needs a test that reaches it (compound operands) — evidence: `worker/deno/lib/validation.ts:1030` — reason: fixed in this diff
+- **violation** — Change every copy of a twinned rule ("mirrors Issue #2607" comment declared a twin) — evidence: `worker/deno/lib/milestone_health.ts:590` — reason: fixed in this diff
+- **clean** — failure reason names cause without raw response; no persisted shape changed; no test-only members; Australian English; tests call real functions
 
 ## Test Plan
 
@@ -134,18 +115,19 @@ Clean checks:
 Validation guards (`worker/deno/tests/validation_test.ts`, section at `:720`):
 
 - `validateGraphQLBranchCompareJson` accepts a compare (`:732`), treats a null
-  ref as absent (`:742`), treats a null compare as unavailable (`:749`), reports
-  non-empty errors ahead of data (`:756`), treats an empty errors array as no
-  errors (`:767`).
-- `validateGraphQLBranchCompareJson` rejects a non-object root (`:778`), a null
-  root (`:785`), non-array errors (`:789`), a non-object errors element (`:796`),
-  a non-string errors message (`:803`), missing data (`:812`), null data
-  (`:816`), missing repository (`:823`), null repository (`:830`), a wrong-type
-  ref (`:839`), a wrong-type compare (`:850`), missing aheadBy (`:857`), null
-  aheadBy (`:866`) and string behindBy (`:877`).
-- `validateRestCompareJson` accepts counts and ignores extra fields (`:888`),
-  rejects a null root (`:898`), missing `ahead_by` (`:902`), null `ahead_by`
-  (`:909`) and string `behind_by` (`:916`).
+  ref as absent (`:742`), treats a null compare as unavailable (`:749`), accepts
+  a compare with null errors (`:756`), treats an omitted ref as absent (`:767`),
+  treats an omitted compare as unavailable (`:774`), reports non-empty errors
+  (`:781`), treats an empty errors array as no errors (`:792`).
+- `validateGraphQLBranchCompareJson` rejects a non-object root (`:803`), a null
+  root (`:810`), non-array errors (`:814`), a non-object errors element
+  (`:821`), a non-string errors message (`:828`), missing data (`:837`), null
+  data (`:841`), missing repository (`:848`), null repository (`:855`), a
+  wrong-type ref (`:864`), a wrong-type compare (`:875`), missing aheadBy
+  (`:882`), null aheadBy (`:891`) and string behindBy (`:902`).
+- `validateRestCompareJson` accepts counts and ignores extra fields (`:913`),
+  rejects a null root (`:923`), missing `ahead_by` (`:927`), null `ahead_by`
+  (`:934`) and string `behind_by` (`:941`).
 
 Production caller (`worker/deno/tests/milestone_health_test.ts`, section at
 `:671`):
@@ -164,18 +146,21 @@ Production caller (`worker/deno/tests/milestone_health_test.ts`, section at
   direct test of the `unavailable` arm (`:825`).
 - Failed milestone list transport still gives an empty repo (`:843`).
 
-Moved to: worker/deno/tests/milestone_health_test.ts (failed-milestone transport test). Reason: the empty-repo transport catch (`milestone_health.ts:454`) is kept by design (see Spec), and this test pins it in the production-caller section.
-
-Assertions removed: none removed.
+Assertions removed: none.
 
 Red checks: each validation guard, each validation `ok` return and each
 `milestone_health.ts` arm was flipped in turn, its named test file run, and the
-file restored and confirmed unchanged. Every flip made its test fail. The
-`errors` arm flip made 1 test fail (see Evidence). The `unavailable` arm flipped
-to `ok: true` made 1 test fail (`worker/deno/tests/milestone_health_test.ts:825`), run with type
-checking on.
+file restored and confirmed unchanged. Every flip made its test fail.
+
+Compound-condition operand flips (`worker/deno/lib/validation.ts`):
+
+- `:1030` `errors !== null` operand removed → `validation_test.ts:756` red.
+- `:1074` `ref === undefined` operand removed → `validation_test.ts:767` red.
+- `:1085` `compare === undefined` operand removed → `validation_test.ts:774` red.
 
 Unit run for the changed suites (`deno task test:unit` on
 `worker/deno/tests/validation_test.ts`, `worker/deno/tests/milestone_health_test.ts`
 and `worker/deno/tests/milestone_health_cache_test.ts`):
-`ok | 147 passed | 0 failed (142ms)`.
+`ok | 150 passed | 0 failed`.
+
+Not done: the full integration suite was not run beyond `./quality.sh`.
