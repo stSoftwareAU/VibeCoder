@@ -676,6 +676,103 @@ Deno.test("config - loadConfig throws for config with invalid structure", async 
 });
 
 // =============================================================================
+// egress_allow_hosts validation (Issue #4045)
+// =============================================================================
+
+/** Load a config whose only extra egress host is `entry`; expects a rejection. */
+async function assertEgressHostRejected(entry: string): Promise<void> {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+    egress_allow_hosts: [entry],
+  }, async (configPath) => {
+    const error = await assertRejects(
+      () => loadConfig(configPath, { env: statedEnv() }),
+      Error,
+    );
+    assertStringIncludes(error.message, JSON.stringify(entry));
+    assertStringIncludes(error.message, "is invalid");
+  });
+}
+
+Deno.test("config - egress_allow_hosts rejects an IP literal (Issue #4045)", async () => {
+  await assertEgressHostRejected("1.2.3.4");
+});
+
+Deno.test("config - egress_allow_hosts rejects a bare wildcard (Issue #4045)", async () => {
+  await assertEgressHostRejected("*");
+});
+
+Deno.test("config - egress_allow_hosts rejects a non-443 port (Issue #4045)", async () => {
+  await assertEgressHostRejected("example.com:22");
+});
+
+Deno.test("config - egress_allow_hosts rejects an empty entry (Issue #4045)", async () => {
+  await assertEgressHostRejected("");
+});
+
+Deno.test("config - egress_allow_hosts rejects an entry with whitespace (Issue #4045)", async () => {
+  await assertEgressHostRejected("a b");
+});
+
+Deno.test("config - egress_allow_hosts rejects an entry with a control character (Issue #4045)", async () => {
+  await assertEgressHostRejected("a\nb");
+});
+
+Deno.test("config - egress_allow_hosts rejects a non-array value (Issue #4045)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  const configPath = `${tempDir}/.config.json`;
+  await Deno.writeTextFile(
+    configPath,
+    JSON.stringify({
+      allowed_authors: ["testuser"],
+      repos: ["org/repo"],
+      egress_allow_hosts: "github.com",
+    }),
+  );
+  try {
+    const error = await assertRejects(
+      () => loadConfig(configPath, { env: statedEnv() }),
+      Error,
+    );
+    assertStringIncludes(error.message, "egress_allow_hosts");
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("config - egress_allow_hosts accepts hostnames, wildcards and :443 (Issue #4045)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+    egress_allow_hosts: [
+      "llm-gateway.example.com",
+      "*.example.org",
+      "example.net:443",
+    ],
+  }, async (configPath) => {
+    const config = await loadConfig(configPath, { env: statedEnv() });
+    assertEquals(config.repos, ["org/repo"]);
+  });
+});
+
+Deno.test("config - loadConfig rejects an unparseable ANTHROPIC_BASE_URL (Issue #4045)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+  }, async (configPath) => {
+    const error = await assertRejects(
+      () =>
+        loadConfig(configPath, {
+          env: statedEnv({ ANTHROPIC_BASE_URL: "not a url" }),
+        }),
+      Error,
+    );
+    assertStringIncludes(error.message, "ANTHROPIC_BASE_URL");
+  });
+});
+
+// =============================================================================
 // getEnvNumberOrDefault tests (Issue #218)
 // =============================================================================
 

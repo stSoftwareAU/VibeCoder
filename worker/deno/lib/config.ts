@@ -66,6 +66,8 @@ import {
   detectUnknownConfigKeys,
   formatUnknownKeyWarnings,
 } from "./config_unknown_keys.ts";
+import { resolveEgressAllowlist } from "./egress_allowlist.ts";
+import { IMGBB_API_KEY_ENV } from "./imgbb_upload.ts";
 import {
   FLEET_LOGIN_CONFIG_KEYS,
   resolveVibeCoderLogins,
@@ -625,6 +627,20 @@ export async function loadConfig(
     configuredProviders: file.agent_providers,
   });
   setConfiguredEnabledAgentProviderIds(enabledAgentProviderIds);
+
+  // Egress allowlist (Issue #4045): validation only until #4046 consumes the list.
+  try {
+    resolveEgressAllowlist({
+      enabledProviderIds: enabledAgentProviderIds,
+      imgbbConfigured: (file.imgbb_api_key ?? "").trim() !== "" ||
+        (env(IMGBB_API_KEY_ENV) ?? "").trim() !== "",
+      anthropicBaseUrl: env("ANTHROPIC_BASE_URL"),
+      extraHosts: file.egress_allow_hosts,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Config file ${configPath} is invalid: ${message}`);
+  }
 
   // Opt-in ordered fallback (Issue #1700). Validated here so an unconfigured
   // alternative fails at startup, not mid-run. The empty default is pinned.

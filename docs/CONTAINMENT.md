@@ -331,8 +331,61 @@ leaves `${HOME}` untouched.
   inferring it from the launcher's arguments.
 - **Never host networking.** `--network host` (and any host namespace) is
   rejected by the plan builder before the arguments are returned.
-- Fine-grained outbound allowlisting is deliberately out of scope for this
-  boundary.
+- The network boundary itself does not filter hosts. Per-host allowlisting is
+  the job of the [egress allowlist](#egress-allowlist) below, which the CONNECT
+  egress proxy in #4046 will enforce.
+
+## Egress allowlist
+
+The agent container may reach outbound only the hosts in one list, defined in
+`worker/deno/lib/egress_allowlist.ts`. The list is accepted and validated when
+the config loads today, but **nothing enforces it yet**. The CONNECT egress
+proxy in #4046 will enforce it, so until then the network boundary above does
+not restrict which hosts the container reaches.
+
+| Host | Purpose | Included when | Reason |
+| --- | --- | --- | --- |
+| `github.com` | GitHub | always | Git over HTTPS and the web |
+| `api.github.com` | GitHub | always | REST and GraphQL API for issues, labels and pull requests |
+| `uploads.github.com` | GitHub | always | Release asset uploads |
+| `codeload.github.com` | GitHub | always | Source archive downloads |
+| `objects.githubusercontent.com` | GitHub | always | Release asset and LFS object downloads |
+| `raw.githubusercontent.com` | GitHub | always | Raw file downloads |
+| `registry.npmjs.org` | Registry | always | npm packages |
+| `jsr.io` | Registry | always | JSR packages |
+| `deno.land` | Registry | always | Deno standard modules and binaries |
+| `crates.io` | Registry | always | Cargo registry API |
+| `index.crates.io` | Registry | always | Cargo sparse index |
+| `static.crates.io` | Registry | always | Cargo crate downloads |
+| `pypi.org` | Registry | always | Python package index |
+| `files.pythonhosted.org` | Registry | always | Python package files |
+| `static.rust-lang.org` | Registry | always | Rust toolchain downloads |
+| `cdn.playwright.dev` | Registry | always | Playwright browser downloads |
+| `api.anthropic.com` | Agent provider | `claude` provider enabled | Messages API |
+| `console.anthropic.com` | Agent provider | `claude` provider enabled | OAuth token refresh |
+| `platform.claude.com` | Agent provider | `claude` provider enabled | OAuth token refresh (newer CLI) |
+| `api.openai.com` | Agent provider | `codex` provider enabled | Responses API |
+| `auth.openai.com` | Agent provider | `codex` provider enabled | ChatGPT sign-in token refresh |
+| `chatgpt.com` | Agent provider | `codex` provider enabled | Codex backend for ChatGPT plans |
+| `generativelanguage.googleapis.com` | Agent provider | `gemini` provider enabled | Gemini API |
+| `cloudcode-pa.googleapis.com` | Agent provider | `gemini` provider enabled | Gemini CLI Google sign-in backend |
+| `oauth2.googleapis.com` | Agent provider | `gemini` provider enabled | Google OAuth token refresh |
+| `api.deepseek.com` | Agent provider | `deepseek` provider enabled | Anthropic-compatible endpoint |
+| `api.imgbb.com` | imgbb | `VIBE_IMGBB_API_KEY` / `imgbb_api_key` set | Evidence screenshot upload |
+
+**Operator additions.** An operator can add hosts under the `egress_allow_hosts`
+key in `.config.json` ([CONFIGURATION.md](CONFIGURATION.md)). Each entry is a
+hostname or `*.hostname`, on port 443 only (an optional `:443` suffix is
+accepted). Refused: IP literals, a bare `*`, any other port, whitespace or
+control characters, and empty entries. A bad entry fails config load at worker
+start, and the error names the entry.
+
+**`ANTHROPIC_BASE_URL`.** When an operator sets it, its host is added to the
+list. Loopback, IP-literal and single-label hosts are skipped, as they are local
+rather than external egress. Duplicate hosts collapse to one entry.
+
+**Not egress.** Local dev servers inside the container are not egress and stay
+reachable. The list does not grant arbitrary external browsing.
 
 ## GitHub is the control plane
 
