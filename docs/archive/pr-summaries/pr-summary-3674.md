@@ -48,6 +48,7 @@ Backend-only change; verified by unit tests.
 - `deno task test:unit tests/pr_base_integrity_test.ts tests/auto_merge_sweep_test.ts` — 56 passed, 0 failed.
 - `deno task test:unit tests/milestone_partial_rollup_test.ts` — 21 passed, 0 failed.
 - `deno fmt` and `deno lint` on the four changed files — clean.
+- `./quality.sh` on the code commit — `Result: PASSED (with skipped checks)`; only `config integration` was skipped.
 
 <!-- vibe-branch-outcomes -->
 
