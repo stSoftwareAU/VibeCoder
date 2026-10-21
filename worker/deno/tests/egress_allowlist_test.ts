@@ -262,36 +262,46 @@ Deno.test("validateEgressHost - rejects invalid entries, naming the entry (Issue
   }
 });
 
-Deno.test("validateEgressHost - a long run of label characters is rejected in linear time (Issue #4045)", () => {
+/** A run that is true only when the input is rejected for `reason`. */
+function rejectsFor(reason: string): (input: string) => boolean {
+  return (input) => {
+    try {
+      validateEgressHost(input);
+      return false;
+    } catch (error) {
+      return error instanceof Error && error.message.includes(reason);
+    }
+  };
+}
+
+// Inputs stay within MAX_HOST_LENGTH (253) at the largest size (4 x 50 = 200).
+Deno.test("validateEgressHost - a long label run reaches LABEL_PATTERN and is rejected in linear time (Issue #4045)", () => {
   const result = assertLinearGrowth(
     "validateEgressHost, hostile label run",
-    (chars) => "a".repeat(chars) + "!",
-    (input) => {
-      try {
-        validateEgressHost(input);
-        return false;
-      } catch {
-        return true;
-      }
-    },
-    { baseChars: 10_000 },
+    (chars) => "a".repeat(chars) + "!.com",
+    rejectsFor("must be a hostname or *.hostname"),
+    { baseChars: 50 },
   );
   assertEquals(result, true);
 });
 
-Deno.test("validateEgressHost - a long run of label dots is rejected in linear time (Issue #4045)", () => {
+Deno.test("validateEgressHost - a long digit run reaches DIGITS_ONLY and is rejected in linear time (Issue #4045)", () => {
+  // Ends in a digit run, not a letter, so the last label is all digits.
   const result = assertLinearGrowth(
-    "validateEgressHost, hostile dotted run",
-    (chars) => "a.".repeat(chars / 2) + "!",
-    (input) => {
-      try {
-        validateEgressHost(input);
-        return false;
-      } catch {
-        return true;
-      }
-    },
-    { baseChars: 10_000 },
+    "validateEgressHost, hostile digit run",
+    (chars) => "a." + "1".repeat(chars),
+    rejectsFor("IP literals are not allowed"),
+    { baseChars: 50 },
+  );
+  assertEquals(result, true);
+});
+
+Deno.test("validateEgressHost - a long control-character run reaches WHITESPACE_OR_CONTROL and is rejected in linear time (Issue #4045)", () => {
+  const result = assertLinearGrowth(
+    "validateEgressHost, hostile control run",
+    (chars) => "a".repeat(chars) + "\u0001",
+    rejectsFor("contains whitespace or a control character"),
+    { baseChars: 50 },
   );
   assertEquals(result, true);
 });

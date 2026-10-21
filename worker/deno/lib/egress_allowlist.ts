@@ -269,7 +269,8 @@ export function validateEgressHost(entry: unknown): string {
 
 /**
  * The hostname of `ANTHROPIC_BASE_URL`, or undefined when it names nothing
- * external (unset, localhost, an IP literal, or a single label).
+ * external (unset, a single label such as localhost or [::1], or an IPv4
+ * literal).
  *
  * @param raw - The environment value
  * @returns The lower-case external hostname, or undefined
@@ -285,13 +286,7 @@ function anthropicBaseUrlHost(raw: string | undefined): string | undefined {
   } catch {
     throw new Error("ANTHROPIC_BASE_URL is not a valid URL");
   }
-  // Local, not external egress: localhost, IPv6 literal, IPv4 literal, or single label.
-  if (
-    hostname === "localhost" || hostname.includes(":") ||
-    hostname.startsWith("[")
-  ) {
-    return undefined;
-  }
+  // Local, not external: a single label (localhost, [::1]) or an IPv4 literal.
   const labels = hostname.split(".");
   if (labels.length < 2 || DIGITS_ONLY.test(labels.at(-1) ?? "")) {
     return undefined;

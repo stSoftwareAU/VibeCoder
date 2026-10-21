@@ -67,7 +67,7 @@ import {
   formatUnknownKeyWarnings,
 } from "./config_unknown_keys.ts";
 import { resolveEgressAllowlist } from "./egress_allowlist.ts";
-import { IMGBB_API_KEY_ENV } from "./imgbb_upload.ts";
+import { readImgbbApiKeyFromEnv } from "./imgbb_upload.ts";
 import {
   FLEET_LOGIN_CONFIG_KEYS,
   resolveVibeCoderLogins,
@@ -633,7 +633,7 @@ export async function loadConfig(
     resolveEgressAllowlist({
       enabledProviderIds: enabledAgentProviderIds,
       imgbbConfigured: (file.imgbb_api_key ?? "").trim() !== "" ||
-        (env(IMGBB_API_KEY_ENV) ?? "").trim() !== "",
+        readImgbbApiKeyFromEnv(env) !== "",
       anthropicBaseUrl: env("ANTHROPIC_BASE_URL"),
       extraHosts: file.egress_allow_hosts,
     });
