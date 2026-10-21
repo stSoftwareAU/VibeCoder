@@ -60,7 +60,7 @@ Consumed-field gaps found at the inspected boundaries:
 
 ## Evidence
 
-Changed files (`git diff --shortstat origin/main`): 6 files changed, 1146
+Changed files (`git diff --shortstat origin/main`): 6 files changed, 1229
 insertions, 75 deletions. Of these, four are code and tests; the other two are
 this summary and its facts file.
 
@@ -232,16 +232,16 @@ Mutation-check survivors, each applied by hand and run with
   mutant. Deleting `ok: false` leaves `ok` undefined, and the only caller,
   `fetchBranchInfo` (`worker/deno/lib/milestone_health.ts:206`), tests
   `graphqlResult.ok` for truthiness, so both values take the same REST fallback.
-  Deleting the property ran `ok | 143 passed`.
+  Deleting the property ran `ok | 151 passed | 0 failed`.
 - `worker/deno/lib/milestone_health.ts:308` exempt (untestable): an equivalent
   mutant. `fetchBranchInfo` discards the error on the `ok: false` path and never
   reads `.error`, so no public result carries this text. Deleting the property
-  ran `ok | 143 passed`.
+  ran `ok | 151 passed | 0 failed`.
 
 Unit run for the changed suites (`deno task test:unit` on
 `worker/deno/tests/validation_test.ts`,
-`worker/deno/tests/milestone_health_test.ts` and
-`worker/deno/tests/milestone_health_cache_test.ts`):
-`ok | 151 passed | 0 failed`.
+`worker/deno/tests/milestone_health_test.ts`, plus the unchanged
+`worker/deno/tests/milestone_health_cache_test.ts` (7 tests at head), which the
+run also covered): `ok | 151 passed | 0 failed`.
 
 Not done: the full integration suite was not run beyond `./quality.sh`.
