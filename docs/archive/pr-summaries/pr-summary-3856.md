@@ -80,8 +80,14 @@ REST fallback values (`aheadBy` 2, `behindBy` 1), because the arm returns
 is covered by `validation_test.ts:749`. Flipping the arm to `ok: true` made 1
 test fail.
 
-Docs sweep: the content greps run for this PR returned exit 1 (no hits), so no
-docs or prompt surface was edited.
+**Docs sweep** — grep: `milestone_health`, `MalformedGhResponseError`,
+`validateGraphQLBranchCompareJson`, `validateRestCompareJson`,
+`getMilestoneHealth`; section: `docs/INTERNALS.md#-milestone-health-diagnostics`;
+siblings: `validateGitHubMilestonesJson` (existing member of the milestone
+validator set in `worker/deno/lib/validation.ts`), `validateGraphQLBranchCompareJson`
+and `validateRestCompareJson` (both added to that set by this diff); updated:
+none — no docs or prompt surface was edited; the `milestone_health` hits in
+`docs/INTERNALS.md` (`:3157`, `:5794`) were not changed.
 
 ## Acceptance Criteria
 
@@ -166,9 +172,10 @@ Red checks: each validation guard, each validation `ok` return and each
 `milestone_health.ts` arm was flipped in turn, its named test file run, and the
 file restored and confirmed unchanged. Every flip made its test fail. The
 `errors` arm flip made 1 test fail (see Evidence). The `unavailable` arm flipped
-to `ok: true` made 1 test fail (`milestone_health_test.ts:825`), run with type
+to `ok: true` made 1 test fail (`worker/deno/tests/milestone_health_test.ts:825`), run with type
 checking on.
 
-Unit run for the changed suites (`deno task test:unit` on `validation_test.ts`,
-`milestone_health_test.ts` and `milestone_health_cache_test.ts`):
+Unit run for the changed suites (`deno task test:unit` on
+`worker/deno/tests/validation_test.ts`, `worker/deno/tests/milestone_health_test.ts`
+and `worker/deno/tests/milestone_health_cache_test.ts`):
 `ok | 147 passed | 0 failed (142ms)`.
