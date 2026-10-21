@@ -331,17 +331,21 @@ leaves `${HOME}` untouched.
   inferring it from the launcher's arguments.
 - **Never host networking.** `--network host` (and any host namespace) is
   rejected by the plan builder before the arguments are returned.
-- The network boundary itself does not filter hosts. Per-host allowlisting is
-  the job of the [egress allowlist](#egress-allowlist) below, which the CONNECT
-  egress proxy in #4046 will enforce.
+- The network boundary itself does not filter hosts. The
+  [egress proxy](#egress-proxy) now exists (#4046), but the container is not
+  routed through it until #4047, so the network boundary still does not filter
+  which hosts the container reaches. Per-host allowlisting is the job of the
+  [egress allowlist](#egress-allowlist) below.
 
 ## Egress allowlist
 
 The agent container may reach outbound only the hosts in one list, defined in
 `worker/deno/lib/egress_allowlist.ts`. The list is accepted and validated when
-the config loads today, but **nothing enforces it yet**. The CONNECT egress
-proxy in #4046 will enforce it, so until then the network boundary above does
-not restrict which hosts the container reaches.
+the config loads today, but **nothing enforces it yet**. The
+[egress proxy](#egress-proxy) (#4046) can enforce it, but the container is not
+routed through the proxy until #4047. Until then nothing enforces the list for
+the container, and the network boundary above does not restrict which hosts it
+reaches.
 
 | Host | Purpose | Included when | Reason |
 | --- | --- | --- | --- |
@@ -386,6 +390,81 @@ rather than external egress. Duplicate hosts collapse to one entry.
 
 **Not egress.** Local dev servers inside the container are not egress and stay
 reachable. The list does not grant arbitrary external browsing.
+
+## Egress proxy
+
+`worker/deno/lib/egress_proxy.ts` is the single outbound proxy the worker
+ships, run by the `egress-proxy` command. It is a CONNECT proxy: it accepts
+only `CONNECT host:443` for an allowlisted host, and it dials that host itself
+after checking where the name resolves.
+
+**The container is not routed through it yet.** Issue #4046 adds the proxy
+only. Routing the agent container through it is #4047, so until then the
+container reaches the network directly and the proxy enforces nothing for it.
+
+```bash
+deno run --allow-env --allow-net worker/deno/mod.ts egress-proxy \
+  --allow github.com,*.example.org --listen 127.0.0.1:3128
+```
+
+- **Allowlist source.** Hosts come from `--allow` (comma-separated) or from the
+  `VIBE_EGRESS_ALLOW_HOSTS` environment variable. They never come from a file or
+  a writable mount, so the agent cannot widen the list.
+- **Entries.** Each entry is validated by `validateEgressHost`, with the same
+  rules as the [egress allowlist](#egress-allowlist): an exact host or a `*.`
+  wildcard matching strict subdomains, and IP literals refused.
+- **Listen address.** `--listen` defaults to `127.0.0.1:3128`.
+- **Accepted requests.** Only `CONNECT host:443` to an allowlisted host.
+  Plain-HTTP forwarding, every other method, IP-literal targets and non-443
+  ports are refused.
+- **Address check.** The name is resolved through an injectable resolver. The
+  connection is refused if any address is loopback, RFC 1918, 169.254/16
+  link-local (cloud metadata), CGNAT 100.64/10, IPv6 ULA `fc00::/7` or IPv6
+  link-local `fe80::/10`. The proxy connects to exactly the address it checked,
+  so DNS rebinding between the check and the connect cannot redirect it.
+- **Bounds.** Concurrent connections default to 256, idle time defaults to 60 s
+  (while reading the request head and while tunnelling), and the request head
+  defaults to 8 KiB at most.
+
+```mermaid
+flowchart TD
+    C["Client sends a request"] --> M{"CONNECT host:443?"}
+    M -->|no| X1["403 method, bad-port or bad-request"]
+    M -->|yes| A{"Host on the allowlist?"}
+    A -->|no| X2["403 not-allowlisted or ip-literal"]
+    A -->|yes| R{"Every address public?"}
+    R -->|no| X3["403 private-address"]
+    R -->|yes| T["Connect to the checked address and tunnel"]
+    style X1 fill:#d00000,stroke:#9d0208,color:#fff
+    style X2 fill:#d00000,stroke:#9d0208,color:#fff
+    style X3 fill:#d00000,stroke:#9d0208,color:#fff
+    style T fill:#2d6a4f,stroke:#1b4332,color:#fff
+```
+
+**Refusals.** A refused connection gets HTTP `403` whose body opens
+`[EGRESS_DENIED] host=<host> reason=<class>`. The proxy also writes one stderr
+line per refused connection, `[EGRESS_DENIED] host=<host> port=<n>
+reason=<class>`. The host is sanitised first: control characters are stripped
+and it is capped at 64 characters. The tunnel payload is never logged.
+
+| Reason class | Refused when |
+| ------------ | ------------ |
+| `method` | the method is not `CONNECT` |
+| `not-allowlisted` | the host is not on the allowlist |
+| `ip-literal` | the target is an IP literal |
+| `private-address` | a resolved address is in a range listed above |
+| `bad-request` | the request head is malformed |
+| `header-too-large` | the request head exceeds its size bound |
+| `idle-timeout` | the client is idle while reading the head or tunnelling |
+| `resolve-failed` | the name does not resolve |
+| `bad-port` | the port is not 443 |
+| `connect-failed` | the upstream connection fails |
+| `capacity` | the concurrent-connection bound is reached |
+
+**Per-host routes.** The `routes` option maps an allowlisted host to a handler
+that receives the accepted client connection, instead of the proxy dialling
+upstream. This is the seam where #3699's credential broker attaches. **#3699
+extends this proxy; it adds no second outbound proxy.**
 
 ## GitHub is the control plane
 

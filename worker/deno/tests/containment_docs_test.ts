@@ -278,16 +278,50 @@ Deno.test("CONTAINMENT.md's egress allowlist lists exactly the module's hosts", 
   );
 });
 
-Deno.test("CONTAINMENT.md says the egress allowlist is not enforced until #4046", () => {
+Deno.test("CONTAINMENT.md says the egress allowlist is not enforced for the container until #4047", () => {
   const body = section(read("docs/CONTAINMENT.md"), "Egress allowlist");
   assert(
     body.includes("nothing enforces it yet"),
     "the egress-allowlist section must say nothing enforces the list yet",
   );
   assert(
-    body.includes("#4046"),
-    "the egress-allowlist section must name #4046 as the issue that enforces the list",
+    body.includes("#4047"),
+    "the egress-allowlist section must name #4047 as the issue that routes the container through the proxy",
   );
+});
+
+// ---------------------------------------------------------------------------
+// docs/CONTAINMENT.md — the egress proxy (Issue #4046)
+// ---------------------------------------------------------------------------
+
+Deno.test("CONTAINMENT.md documents the egress proxy as the one outbound proxy #3699 extends", () => {
+  const body = section(read("docs/CONTAINMENT.md"), "Egress proxy");
+  for (
+    const phrase of [
+      "#3699",
+      "no second outbound proxy",
+      "[EGRESS_DENIED] host=",
+      "VIBE_EGRESS_ALLOW_HOSTS",
+      "worker/deno/lib/egress_proxy.ts",
+    ]
+  ) {
+    assert(
+      body.includes(phrase),
+      `the egress-proxy section must include "${phrase}"`,
+    );
+  }
+});
+
+Deno.test("CONTAINMENT.md's egress proxy section does not claim the container is routed through it yet", () => {
+  const body = section(read("docs/CONTAINMENT.md"), "Egress proxy");
+  for (
+    const phrase of ["#4047", "The container is not routed through it yet"]
+  ) {
+    assert(
+      body.includes(phrase),
+      `the egress-proxy section must say the container is not routed through the proxy until #4047 (missing "${phrase}")`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

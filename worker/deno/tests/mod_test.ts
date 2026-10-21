@@ -234,9 +234,11 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #3293 added `review-round` (count 151 → 152).
   // Issue #3744 added `route-issue` (count 152 → 153).
   // Provider feasibility and fleet experiment reporting add two commands.
+  // Issue #4046 added egress-proxy (count 156 → 157).
 
-  assertEquals(commands.length, 156);
+  assertEquals(commands.length, 157);
   assertEquals(commands.includes("route-issue"), true);
+  assertEquals(commands.includes("egress-proxy"), true);
   assertEquals(commands.includes("fleet-experiment-report"), true);
   assertEquals(commands.includes("subscription-allocation"), true);
   assertEquals(commands.includes("sweep-drift"), true);
