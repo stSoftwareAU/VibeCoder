@@ -149,6 +149,7 @@ Deno.test("egress-proxy - execute with no allowlist fails with exit 2 and never 
     {},
     CONFIG,
     {
+      env: {},
       start: () => {
         started++;
         return Promise.reject(new Error("must not start"));
@@ -161,4 +162,33 @@ Deno.test("egress-proxy - execute with no allowlist fails with exit 2 and never 
   assertEquals(result.success, false);
   assertEquals(result.exitCode, 2);
   assertStringIncludes(result.message, "no allowlist");
+});
+
+Deno.test("egress-proxy - execute takes the allowlist from env when --allow is absent", async () => {
+  const started: Array<Parameters<typeof startEgressProxy>[0]> = [];
+
+  const result = await egressProxyCommand.execute(
+    { listen: "127.0.0.1:4001" },
+    CONFIG,
+    {
+      env: { [EGRESS_ALLOW_HOSTS_ENV]: "api.github.com,crates.io" },
+      start: (opts) => {
+        started.push(opts);
+        return Promise.resolve({
+          addr: {
+            transport: "tcp",
+            hostname: opts.hostname ?? "",
+            port: opts.port,
+          },
+          close: () => Promise.resolve(),
+        });
+      },
+      waitForStop: () => Promise.resolve(),
+    },
+  );
+
+  assertEquals(result.success, true);
+  assertEquals(started.length, 1);
+  assertEquals(started[0]!.allowlist, ["api.github.com", "crates.io"]);
+  assertEquals(started[0]!.port, 4001);
 });

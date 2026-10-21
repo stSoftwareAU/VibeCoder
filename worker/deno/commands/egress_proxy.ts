@@ -32,10 +32,15 @@ export interface EgressProxyArgs {
   readonly allowlist: string[];
 }
 
-/** The seams of the command: the proxy start and the wait for a stop signal. */
+/**
+ * The seams of the command: the proxy start, the wait for a stop signal, and
+ * the environment the allowlist fallback reads (defaults to the process
+ * environment).
+ */
 export interface EgressProxyCommandSeams {
   start?: typeof startEgressProxy;
   waitForStop?: () => Promise<void>;
+  env?: Record<string, string>;
 }
 
 export interface EgressProxyCommand extends Command {
@@ -137,7 +142,7 @@ export const egressProxyCommand: EgressProxyCommand = {
   ): Promise<CommandResult> {
     let parsed: EgressProxyArgs;
     try {
-      parsed = parseEgressProxyArgs(args, Deno.env.toObject());
+      parsed = parseEgressProxyArgs(args, seams.env ?? Deno.env.toObject());
     } catch (error) {
       return {
         success: false,
