@@ -652,8 +652,12 @@ Deno.test("github - createGitHubIssuesWithPartialFailures warns once per strippe
     { ...ROUTING, ghCommandFn: fake.ghCommandFn, logger },
   );
 
-  // One WARNING per stripped reserved label, naming the label + context.
-  const warnings = lines.filter((l) => l.includes("WARNING"));
+  // One WARNING per stripped reserved label, naming the label + context. The
+  // owned-lookup warning on the recheck (an unresolved fleet, Issue #3854) is
+  // a separate signal and is not counted here.
+  const warnings = lines.filter((l) =>
+    l.includes("WARNING") && l.includes("Stripped reserved label")
+  );
   assertEquals(warnings.length, 2);
   assertEquals(warnings.some((l) => l.includes("work-on")), true);
   assertEquals(warnings.some((l) => l.includes("claude")), true);

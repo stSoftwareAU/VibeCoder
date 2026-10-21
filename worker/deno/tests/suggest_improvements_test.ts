@@ -37,6 +37,12 @@ const NOW = () => new Date("2026-10-15T00:00:00Z");
 const CTX = { vibeCoderRepo: VIBE, productRepos: [GRQ] };
 /** A worker change: the router files it in VibeCoder (Issue #3745). */
 const WORKER_NOTE = "`worker/deno/lib/foo.ts` needs work.";
+/**
+ * The routing marker an issue this tool filed carries. A seeded issue must
+ * carry it to be reused: an unowned same-titled issue is never reused (Issue #3854).
+ */
+const OWNED_BODY =
+  `<!-- issue-routing owner=${VIBE} subject=${VIBE} kind=implementation -->`;
 
 // Mock config for tests
 function createMockConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
@@ -570,7 +576,7 @@ Deno.test("suggest-improvements - a non-Error thrown outside the router is repor
 
 Deno.test("suggest-improvements - an existing open issue with the same title is reused, not refiled (Issue #3745)", async () => {
   const store = fakeStore([], { [VIBE]: "WRITE" });
-  const existing = addIssue(store, VIBE, "Worker one");
+  const existing = addIssue(store, VIBE, "Worker one", OWNED_BODY);
   const gh = routingFakeGh(store);
   const result = await createGitHubIssuesWithPartialFailures(
     [{
@@ -723,7 +729,7 @@ Deno.test("suggest-improvements - the summary counts created, reused and would-b
   for (const c of cases) {
     const store = fakeStore([], { [VIBE]: "WRITE" });
     for (const improvement of generateImprovements().slice(0, c.seeded)) {
-      addIssue(store, VIBE, improvement.title);
+      addIssue(store, VIBE, improvement.title, OWNED_BODY);
     }
     const gh = routingFakeGh(store);
     const result = await createSuggestImprovementsCommand({
@@ -761,7 +767,7 @@ Deno.test("suggest-improvements - the command's injected clock sets the duplicat
   // (2026) it is far outside the window, so a new issue would be filed instead.
   const title = generateImprovements()[0]!.title;
   const store = fakeStore([], { [VIBE]: "WRITE" });
-  const existing = addIssue(store, VIBE, title);
+  const existing = addIssue(store, VIBE, title, OWNED_BODY);
   existing.closedAt = "2020-01-01T00:00:00Z";
   const gh = routingFakeGh(store);
   const result = await createSuggestImprovementsCommand({

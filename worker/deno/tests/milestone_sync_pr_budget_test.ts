@@ -72,8 +72,11 @@ function makeGhCommandFn(
       return Promise.resolve(MILESTONE_SHA);
     }
     if (args[0] === "pr" && args[1] === "list") {
-      if (args.includes("--base") && state.basePrListRaw !== undefined) {
-        return Promise.resolve(state.basePrListRaw);
+      if (args.includes("--base")) {
+        // The fix-PR lookup lists open PRs against the milestone branch.
+        // Unless a test sets one, there is no such PR; the head-PR row
+        // in prListRaw is the wrong shape for that listing.
+        return Promise.resolve(state.basePrListRaw ?? "[]");
       }
       return Promise.resolve(state.prListRaw);
     }
@@ -501,6 +504,7 @@ Deno.test(
         number: 77,
         url: "https://github.com/owner/repo/pull/77",
         headRefName: `${prefix}takeover-abc`,
+        state: "OPEN",
         isCrossRepository: false,
         author: { login: FLEET },
       }]),
@@ -520,6 +524,7 @@ Deno.test(
       number: 78,
       url: "https://github.com/owner/repo/pull/78",
       headRefName: `${prefix}ci-abc`,
+      state: "OPEN",
     }]);
     const proceeded = await syncMilestoneBranches(
       baseDeps(calls, state, syncBranchFn),
@@ -640,6 +645,7 @@ Deno.test(
         number: 77,
         url: "https://github.com/owner/repo/pull/77",
         headRefName: `${prefix}takeover-abc`,
+        state: "OPEN",
         isCrossRepository: true,
         author: { login: FLEET },
       }]),
