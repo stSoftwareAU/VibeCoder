@@ -1689,7 +1689,7 @@ guides:
 **CI-gate configuration check (linter + compile).** For language-targeted runs
 (bucket != `general`), the template inspects `.github/workflows/*.yml` for the
 standard linter invocation (Clippy, ESLint, Checkstyle, htmlhint, actionlint,
-cfn-lint, tflint) AND — for the four buckets where it is meaningful (`rust`,
+cfn-lint + Checkov, tflint) AND — for the four buckets where it is meaningful (`rust`,
 `typescript`, `react`, `java`) — the standard compile/syntax gate
 (`cargo
 check`/`cargo build`, `deno check`/`tsc --noEmit`,
