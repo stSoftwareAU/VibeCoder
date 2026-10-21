@@ -1411,22 +1411,22 @@ starts from that exact input, and the PR summary quotes it.
 **A test must be able to fail on the wrong input (Issues #3060, #3851).** The
 base-branch red run covers bug fixes, but a new guard has no unfixed base to
 go red against. Fleet PRs were sent back for negative tests whose fixture
-never held the
-forbidden value — a "GH_TOKEN is unset" test whose mint step already returned
-an empty token, a "null rather than carried over" test whose only earlier line
-had no prices either — so each passed with or without its guard. The
-guidelines and the issue prompt's Test Plan step now require a fixture that
-contains the forbidden thing and a run with the guard broken on purpose that
-goes red; a negative test that stays green without its guard is a blocking
-self-review finding. Fleet PRs also added tests pinning which of two similar
-values the code reads — a percentage stated against one of two bases, a
-displayed and a derived figure meant to read the same record — on fixtures
+never held the forbidden value — a "GH_TOKEN is unset" test whose mint step
+already returned an empty token, a "null rather than carried over" test whose
+only earlier line had no prices either — so each passed with or without its
+guard. The guidelines and the issue prompt's Test Plan step now require a
+fixture that contains the forbidden thing and a run with the guard broken on
+purpose that goes red; a negative test that stays green without its guard is a
+blocking self-review finding. Fleet PRs also added tests pinning which of two
+similar values the code reads — a percentage stated against one of two bases,
+a displayed and a derived figure meant to read the same record — on fixtures
 where the two candidates were equal, so each passed whichever value the code
-read; one stayed green while the code really read the wrong record (Issue
-#3851). The same rule now requires such a fixture to give the candidates
-different values, and the break is to point the code at the sibling value,
-recorded in the Test Plan as, for example, `reads base B instead of A → red`;
-a fixture where the candidates are equal is a blocking self-review finding.
+read; one stayed green while the code really read the wrong record
+(Issue #3851). The same rule now requires such a fixture to give the
+candidates different values, and the break is to point the code at the sibling
+value, recorded in the Test Plan as, for example,
+`reads base B instead of A → red`; a fixture where the candidates are equal is
+a blocking self-review finding.
 
 **A refusal test must be refused by the rule it names (Issue #3162).** A
 test that only checks *that* an input was refused passes on a refusal from
