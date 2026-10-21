@@ -54,7 +54,7 @@ Related existing rules checked: **A new test must go red without its change** (i
   - 3060 "both surfaces" test: restoring the base `CODING-STANDARDS.md` and guidelines made it go red.
   - 3060 "Choosing assertions" test: restoring the base `CODING-STANDARDS.md` made it go red.
   - 3374 "both surfaces" test: with the base docs, the ordering assertion went red.
-- `./quality.sh < /dev/null`: run once on the final head; the result is recorded in the next bullet.
+- `./quality.sh < /dev/null` on the final head passed: every check reported PASSED except `config integration`, which reported SKIPPED; the overall result line was `Result: PASSED (with skipped checks)`.
 
 <!-- vibe-branch-outcomes -->
 
