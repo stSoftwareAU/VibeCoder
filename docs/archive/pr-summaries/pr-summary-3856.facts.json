@@ -53,7 +53,7 @@
       },
       {
         "path": "worker/deno/lib/validation.ts",
-        "line": 1078,
+        "line": 1080,
         "outcome": "validation guard: GraphQL ref is the wrong type",
         "test": "worker/deno/tests/validation_test.ts",
         "testName": "validation - validateGraphQLBranchCompareJson rejects wrong-type ref",
@@ -61,7 +61,7 @@
       },
       {
         "path": "worker/deno/lib/validation.ts",
-        "line": 1089,
+        "line": 1091,
         "outcome": "validation guard: GraphQL compare is the wrong type",
         "test": "worker/deno/tests/validation_test.ts",
         "testName": "validation - validateGraphQLBranchCompareJson rejects wrong-type compare",
@@ -69,7 +69,7 @@
       },
       {
         "path": "worker/deno/lib/validation.ts",
-        "line": 1095,
+        "line": 1097,
         "outcome": "validation guard: GraphQL compare.aheadBy is not a number",
         "test": "worker/deno/tests/validation_test.ts",
         "testName": "validation - validateGraphQLBranchCompareJson rejects missing aheadBy",
@@ -77,7 +77,7 @@
       },
       {
         "path": "worker/deno/lib/validation.ts",
-        "line": 1101,
+        "line": 1103,
         "outcome": "validation guard: GraphQL compare.behindBy is not a number",
         "test": "worker/deno/tests/validation_test.ts",
         "testName": "validation - validateGraphQLBranchCompareJson rejects string behindBy",
@@ -85,7 +85,7 @@
       },
       {
         "path": "worker/deno/lib/validation.ts",
-        "line": 1130,
+        "line": 1132,
         "outcome": "validation guard: REST compare root is not an object",
         "test": "worker/deno/tests/validation_test.ts",
         "testName": "validation - validateRestCompareJson rejects null root",
@@ -93,7 +93,7 @@
       },
       {
         "path": "worker/deno/lib/validation.ts",
-        "line": 1136,
+        "line": 1138,
         "outcome": "validation guard: REST ahead_by is not a number",
         "test": "worker/deno/tests/validation_test.ts",
         "testName": "validation - validateRestCompareJson rejects missing ahead_by",
@@ -101,7 +101,7 @@
       },
       {
         "path": "worker/deno/lib/validation.ts",
-        "line": 1142,
+        "line": 1144,
         "outcome": "validation guard: REST behind_by is not a number",
         "test": "worker/deno/tests/validation_test.ts",
         "testName": "validation - validateRestCompareJson rejects string behind_by",
@@ -109,7 +109,7 @@
       },
       {
         "path": "worker/deno/lib/validation.ts",
-        "line": 1075,
+        "line": 1077,
         "outcome": "validation ok return: GraphQL branch absent",
         "test": "worker/deno/tests/validation_test.ts",
         "testName": "validation - validateGraphQLBranchCompareJson treats a null ref as absent",
@@ -117,7 +117,7 @@
       },
       {
         "path": "worker/deno/lib/validation.ts",
-        "line": 1086,
+        "line": 1088,
         "outcome": "validation ok return: GraphQL compare unavailable",
         "test": "worker/deno/tests/validation_test.ts",
         "testName": "validation - validateGraphQLBranchCompareJson treats a null compare as unavailable",
@@ -125,7 +125,7 @@
       },
       {
         "path": "worker/deno/lib/validation.ts",
-        "line": 1107,
+        "line": 1109,
         "outcome": "validation ok return: GraphQL compare counts",
         "test": "worker/deno/tests/validation_test.ts",
         "testName": "validation - validateGraphQLBranchCompareJson accepts a compare",
@@ -221,19 +221,27 @@
       },
       {
         "path": "worker/deno/lib/validation.ts",
+        "line": 1080,
+        "outcome": "validation guard: GraphQL omitted ref is rejected, not treated as absent",
         "test": "worker/deno/tests/validation_test.ts",
-        "flipWentRed": "flip: operand removed -> test went red",
-        "line": 1074,
-        "outcome": "omitted ref is treated as absent",
-        "testName": "validation - validateGraphQLBranchCompareJson treats an omitted ref as absent"
+        "testName": "validation - validateGraphQLBranchCompareJson rejects an omitted ref",
+        "flipWentRed": "flip: production fix reverted -> test went red"
       },
       {
         "path": "worker/deno/lib/validation.ts",
+        "line": 1091,
+        "outcome": "validation guard: GraphQL omitted compare is rejected, not treated as unavailable",
         "test": "worker/deno/tests/validation_test.ts",
-        "flipWentRed": "flip: operand removed -> test went red",
-        "line": 1085,
-        "outcome": "omitted compare is treated as unavailable",
-        "testName": "validation - validateGraphQLBranchCompareJson treats an omitted compare as unavailable"
+        "testName": "validation - validateGraphQLBranchCompareJson rejects an omitted compare",
+        "flipWentRed": "flip: production fix reverted -> test went red"
+      },
+      {
+        "path": "worker/deno/lib/milestone_health.ts",
+        "line": 291,
+        "outcome": "MalformedGhResponseError throw: GraphQL repository omits ref, so no false branch-absent success",
+        "test": "worker/deno/tests/milestone_health_test.ts",
+        "testName": "getMilestoneHealth - GraphQL repository without ref fails naming the field (Issue #3856)",
+        "flipWentRed": "flip: production fix reverted -> test went red"
       }
     ]
   }

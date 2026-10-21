@@ -757,6 +757,18 @@ Deno.test("getMilestoneHealth - GraphQL data without repository fails naming the
   ]);
 });
 
+Deno.test("getMilestoneHealth - GraphQL repository without ref fails naming the field (Issue #3856)", async () => {
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,
+    "graphql": `{"data":{"repository":{}},"extra":"${RAW_MARKER}"}`,
+    ".default_branch": "main",
+  }));
+  assertMalformedFailure(result, [
+    "gh api graphql",
+    "data.repository.ref",
+  ]);
+});
+
 Deno.test("getMilestoneHealth - GraphQL aheadBy of the wrong type fails naming the field (Issue #3856)", async () => {
   const result = await healthWithGh(buildMockGhFn({
     "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,

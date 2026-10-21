@@ -1071,24 +1071,26 @@ export function validateGraphQLBranchCompareJson(
   }
 
   const ref = repository.ref;
-  if (ref === null || ref === undefined) {
+  // GraphQL returns every selected field, null when unresolved: only an
+  // explicit null means "branch absent"; an omitted key is malformed.
+  if (ref === null) {
     return ok({ kind: "absent" });
   }
   if (!isObject(ref)) {
     return fail(
       "data.repository.ref",
-      `Expected object, got ${ref === null ? "null" : typeof ref}`,
+      `Expected object or null, got ${typeof ref}`,
     );
   }
 
   const compare = ref.compare;
-  if (compare === null || compare === undefined) {
+  if (compare === null) {
     return ok({ kind: "unavailable" });
   }
   if (!isObject(compare)) {
     return fail(
       "data.repository.ref.compare",
-      `Expected object, got ${typeof compare}`,
+      `Expected object or null, got ${typeof compare}`,
     );
   }
   if (typeof compare.aheadBy !== "number") {

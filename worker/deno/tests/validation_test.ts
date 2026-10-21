@@ -764,18 +764,26 @@ Deno.test("validation - validateGraphQLBranchCompareJson accepts a compare with 
   });
 });
 
-Deno.test("validation - validateGraphQLBranchCompareJson treats an omitted ref as absent", () => {
+Deno.test("validation - validateGraphQLBranchCompareJson rejects an omitted ref", () => {
   const result = validateGraphQLBranchCompareJson({
     data: { repository: {} },
   });
-  assertEquals(result, { ok: true, value: { kind: "absent" } });
+  assertEquals(failedField(result), "data.repository.ref");
+  assertEquals(
+    result.ok ? undefined : result.error.message,
+    "Expected object or null, got undefined",
+  );
 });
 
-Deno.test("validation - validateGraphQLBranchCompareJson treats an omitted compare as unavailable", () => {
+Deno.test("validation - validateGraphQLBranchCompareJson rejects an omitted compare", () => {
   const result = validateGraphQLBranchCompareJson({
     data: { repository: { ref: {} } },
   });
-  assertEquals(result, { ok: true, value: { kind: "unavailable" } });
+  assertEquals(failedField(result), "data.repository.ref.compare");
+  assertEquals(
+    result.ok ? undefined : result.error.message,
+    "Expected object or null, got undefined",
+  );
 });
 
 Deno.test("validation - validateGraphQLBranchCompareJson reports non-empty errors ahead of data", () => {
