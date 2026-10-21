@@ -54,15 +54,10 @@ export type MutationCheckResult =
     limit?: "mutant_cap";
   }
   /**
-   * A changed script with no test that runs it: its mutants cannot be judged.
-   * `survivors` carries up to a few mutants from covered scripts of the same run.
+   * Changed code no test runs: its mutants cannot be judged. Never a pass, and
+   * never survivors (any covered-script survivors are named in `reason`).
    */
-  | {
-    kind: "not_checked";
-    language: MutationLanguage;
-    reason: string;
-    survivors?: Mutant[];
-  }
+  | { kind: "not_checked"; language: MutationLanguage; reason: string }
   | { kind: "error"; reason: string };
 
 export interface MutationGateVerdict {

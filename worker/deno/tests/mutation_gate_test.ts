@@ -10,11 +10,16 @@ import {
   assertFalse,
   assertStringIncludes,
 } from "@std/assert";
+import { assertLinearGrowth } from "./support/growth.ts";
 import {
   buildMutationGateComment,
   evaluateMutationGate,
   generateDenoMutants,
   generateDenoMutantsDetailed,
+  generateShellMutantsDetailed,
+  hasShellShebang,
+  isShellScriptPath,
+  isShellTestFile,
   type MutationCheckResult,
   parseAddedLines,
   parseMutationExemptions,
@@ -672,4 +677,329 @@ Deno.test("wiring mutants - a key holding $ is matched as a name, not as a patte
       m.description === "reverted property `$state` to shorthand"
     ),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Shell script mutants
+// ---------------------------------------------------------------------------
+
+const SHELL_FILE = "scripts/deploy.sh";
+
+function shell(source: string, lines: number[], cap = 40) {
+  return generateShellMutantsDetailed(SHELL_FILE, source, lines, cap);
+}
+
+function shellDescriptions(source: string, lines: number[]): string[] {
+  return shell(source, lines).mutants.map((m) => m.description);
+}
+
+function mutantFor(
+  source: string,
+  lines: number[],
+  description: string,
+): string | undefined {
+  return shell(source, lines).mutants.find((m) => m.description === description)
+    ?.mutatedSource;
+}
+
+Deno.test("isShellScriptPath - matches .sh and .bash paths only", () => {
+  assert(isShellScriptPath("scripts/deploy.sh"));
+  assert(isShellScriptPath("scripts/deploy.bash"));
+  assertFalse(isShellScriptPath("scripts/deploy.sh.txt"));
+  assertFalse(isShellScriptPath("lib/x.ts"));
+  assertFalse(isShellScriptPath("scripts/deploy"));
+});
+
+Deno.test("isShellTestFile - recognises shell and bats test files by name", () => {
+  for (
+    const f of [
+      "tests/foo_test.sh",
+      "scripts/check.test.sh",
+      "test_deploy.sh",
+      "scripts/test_deploy.sh",
+      "tests/run.bats",
+    ]
+  ) {
+    assert(isShellTestFile(f), f);
+  }
+  for (
+    const f of [
+      "scripts/deploy.sh",
+      "scripts/latest.sh",
+      "scripts/contest.sh",
+      "lib/x_test.ts",
+    ]
+  ) {
+    assertFalse(isShellTestFile(f), f);
+  }
+});
+
+Deno.test("hasShellShebang - accepts sh and bash interpreters, direct or via env", () => {
+  for (
+    const first of [
+      "#!/bin/sh",
+      "#!/bin/bash",
+      "#!/usr/bin/env bash",
+      "#!/usr/bin/env -S bash -e",
+      "#!/usr/bin/env -i sh",
+      "#!/bin/bash ",
+    ]
+  ) {
+    assert(hasShellShebang(`${first}\necho hi\n`), first);
+  }
+  assert(hasShellShebang("#!/bin/sh\r\necho hi\n"));
+});
+
+Deno.test("hasShellShebang - rejects other interpreters, a missing shebang, or a shebang not on line one", () => {
+  for (
+    const src of [
+      "#!/usr/bin/python3\nprint(1)\n",
+      "#!/usr/bin/env python3\n",
+      "#!/bin/zsh\n",
+      "echo hi\n#!/bin/sh\n",
+      "",
+      "#!/usr/bin/env\n",
+    ]
+  ) {
+    assertFalse(hasShellShebang(src), src);
+  }
+});
+
+Deno.test("generateShellMutantsDetailed - deletes an export statement to a no-op", () => {
+  const { mutants, dropped } = shell("export FOO=1\n", [1]);
+  assertEquals(dropped, 0);
+  assertEquals(mutants.length, 1);
+  assertEquals(mutants[0]?.description, "deleted statement");
+  assertEquals(mutants[0]?.mutatedSource, ":\n");
+});
+
+Deno.test("generateShellMutantsDetailed - flips each test operator to its opposite", () => {
+  const pairs: Array<[string, string]> = [
+    ["-eq", "-ne"],
+    ["-ne", "-eq"],
+    ["-lt", "-ge"],
+    ["-ge", "-lt"],
+    ["-gt", "-le"],
+    ["-le", "-gt"],
+    ["==", "!="],
+    ["!=", "=="],
+    ["-z", "-n"],
+    ["-n", "-z"],
+  ];
+  for (const [from, to] of pairs) {
+    assertEquals(
+      mutantFor(
+        `  test "$a" ${from} "$b"\n`,
+        [1],
+        `flipped \`${from}\` to \`${to}\``,
+      ),
+      `  test "$a" ${to} "$b"\n`,
+      from,
+    );
+  }
+});
+
+Deno.test("generateShellMutantsDetailed - swaps the first && and || connective", () => {
+  assertEquals(
+    mutantFor("cmd1 && cmd2 || cmd3\n", [1], "swapped `&&` for `||`"),
+    "cmd1 || cmd2 || cmd3\n",
+  );
+  assertEquals(
+    mutantFor("a || b\n", [1], "swapped `||` for `&&`"),
+    "a && b\n",
+  );
+});
+
+Deno.test("generateShellMutantsDetailed - flips a return or exit status", () => {
+  assertEquals(
+    mutantFor("return 0\n", [1], "replaced `return 0` with `return 1`"),
+    "return 1\n",
+  );
+  assertEquals(
+    mutantFor("return 1\n", [1], "replaced `return 1` with `return 0`"),
+    "return 0\n",
+  );
+  assertEquals(
+    mutantFor("exit 0\n", [1], "replaced `exit 0` with `exit 1`"),
+    "exit 1\n",
+  );
+  assertEquals(
+    mutantFor("exit 5\n", [1], "replaced `exit 5` with `exit 0`"),
+    "exit 0\n",
+  );
+  // A return status other than 0 or 1 has no flip.
+  assertEquals(shellDescriptions("return 2\n", [1]), ["deleted statement"]);
+});
+
+Deno.test("generateShellMutantsDetailed - removes a [[ ]] guard", () => {
+  assertEquals(
+    mutantFor('  [[ -f "$f" ]] || touch "$f"\n', [1], "removed `[[ ]]` guard"),
+    '  touch "$f"\n',
+  );
+});
+
+Deno.test("generateShellMutantsDetailed - structural lines are never deleted", () => {
+  for (
+    const line of [
+      "if true; then",
+      "else",
+      "fi",
+      "done",
+      "esac",
+      "}",
+      "{",
+      "then",
+      "case $x in",
+      "for f in a; do",
+      "function f {",
+      "cmd \\",
+      "cat x |",
+      "foo &&",
+      ")",
+    ]
+  ) {
+    assertFalse(
+      shellDescriptions(`${line}\n`, [1]).includes("deleted statement"),
+      line,
+    );
+  }
+});
+
+Deno.test("generateShellMutantsDetailed - bare structural keywords yield no mutants", () => {
+  for (const line of ["fi", "else", "done", "esac", "then", "}", "{", ")"]) {
+    assertEquals(shell(`${line}\n`, [1]).mutants, [], line);
+  }
+});
+
+Deno.test("generateShellMutantsDetailed - comment and blank lines yield nothing", () => {
+  const src = "# export FOO=1\n  # if [ $a -eq 1 ]; then\n\n   \n#!/bin/sh\n";
+  assertEquals(shell(src, [1, 2, 3, 4, 5]).mutants, []);
+});
+
+Deno.test("generateShellMutantsDetailed - keeps CRLF line endings on a mutated line", () => {
+  assertEquals(
+    shell("export FOO=1\r\n", [1]).mutants[0]?.mutatedSource,
+    ":\r\n",
+  );
+});
+
+Deno.test("generateShellMutantsDetailed - a 400-character line is processed and a 401-character line is dropped", () => {
+  const at400 = "export X=" + "1".repeat(391);
+  assertEquals(at400.length, 400);
+  const ok = shell(`${at400}\n`, [1]);
+  assertEquals(ok.mutants.length, 1);
+  assertEquals(ok.dropped, 0);
+  const over = shell(`${at400}1\n`, [1]);
+  assertEquals(over.mutants, []);
+  assertEquals(over.dropped, 1);
+});
+
+Deno.test("generateShellMutantsDetailed - stops at the cap and counts what it dropped", () => {
+  // One line with two candidates: a deletion and a flip.
+  const src = '  [ "$a" -eq 1 ]\n';
+  const capped = shell(src, [1], 1);
+  assertEquals(capped.mutants.map((m) => m.description), [
+    "deleted statement",
+  ]);
+  assertEquals(capped.dropped, 1);
+  const none = shell(src, [1], 0);
+  assertEquals(none.mutants, []);
+  assertEquals(none.dropped, 2);
+});
+
+Deno.test("generateShellMutantsDetailed - the default cap is 40 mutants", () => {
+  const lines = Array.from({ length: 50 }, (_, i) => `export V${i}=1`);
+  const src = lines.join("\n") + "\n";
+  const all = generateShellMutantsDetailed(
+    SHELL_FILE,
+    src,
+    lines.map((_, i) => i + 1),
+  );
+  assertEquals(all.mutants.length, 40);
+  assertEquals(all.dropped, 10);
+});
+
+Deno.test("generateShellMutantsDetailed - a shell test file yields no mutants", () => {
+  for (
+    const file of [
+      "tests/foo_test.sh",
+      "scripts/check.test.sh",
+      "test_deploy.sh",
+      "tests/run.bats",
+    ]
+  ) {
+    assertEquals(
+      generateShellMutantsDetailed(file, "export A=1\n", [1]),
+      { mutants: [], dropped: 0 },
+      file,
+    );
+  }
+});
+
+Deno.test("generateShellMutantsDetailed - a 50_000-character line is dropped without work", () => {
+  const src = "export A=" + "1".repeat(50_000) + "\n";
+  assertEquals(shell(src, [1]), { mutants: [], dropped: 1 });
+});
+
+Deno.test("generateShellMutantsDetailed - a 50_000-character file completes at the cap", () => {
+  const src = "export V=1\n".repeat(4_545);
+  const lines = Array.from({ length: 4_545 }, (_, i) => i + 1);
+  const { mutants, dropped } = generateShellMutantsDetailed(
+    SHELL_FILE,
+    src,
+    lines,
+  );
+  assertEquals(mutants.length, 40);
+  assertEquals(dropped, 4_505);
+});
+
+Deno.test("generateShellMutantsDetailed - growth stays linear on hostile input", () => {
+  const build = (chars: number) =>
+    "export V=1\n".repeat(Math.max(1, Math.floor(chars / 11)));
+  const run = (input: string) => {
+    const count = input.split("\n").length;
+    return generateShellMutantsDetailed(
+      SHELL_FILE,
+      input,
+      Array.from({ length: count }, (_, i) => i + 1),
+    );
+  };
+  const out = assertLinearGrowth("shell mutant generation", build, run, {
+    baseChars: 12_500,
+  });
+  assertEquals(out.mutants.length, 40);
+});
+
+// ---------------------------------------------------------------------------
+// evaluateMutationGate for shell results
+// ---------------------------------------------------------------------------
+
+const NOT_CHECKED_REASON =
+  'no test runs scripts/deploy.sh (searched for "scripts/deploy.sh" and its basename)';
+
+function notChecked(): MutationCheckResult {
+  return { kind: "not_checked", language: "shell", reason: NOT_CHECKED_REASON };
+}
+
+Deno.test("evaluateMutationGate - not_checked blocks and never reports survivors", () => {
+  const v = evaluateMutationGate(notChecked(), "");
+  assert(v.blocked);
+  assertFalse(v.budgetExhausted);
+  assertEquals(v.survivors, []);
+  assertEquals(v.exempted, []);
+  assertStringIncludes(v.reason, "mutation check not checked:");
+  assertStringIncludes(
+    v.reason,
+    "add a test that names each script (its repo-relative path or basename) so its mutants can run",
+  );
+  assertEquals(v.note, `not checked: ${NOT_CHECKED_REASON}`);
+});
+
+Deno.test("evaluateMutationGate - an exemption does not unblock not_checked", () => {
+  const v = evaluateMutationGate(
+    notChecked(),
+    "`scripts/deploy.sh:3` exempt (untestable): logging only",
+  );
+  assert(v.blocked);
+  assertEquals(v.exempted, []);
 });

@@ -378,6 +378,20 @@ function joinReasons(sides: readonly MutationCheckResult[]): string {
 }
 
 /**
+ * Reason text for a not_checked result. A not_checked result carries no
+ * survivor list, so survivors from covered scripts are named here instead.
+ */
+function notCheckedReason(base: string, survivors: readonly Mutant[]): string {
+  if (survivors.length === 0) return base;
+  const shown = survivors
+    .slice(0, NOT_CHECKED_SURVIVOR_LIMIT)
+    .map((m) => `${m.file}:${m.line} ${m.description}`);
+  return `${base}; also ${survivors.length} surviving mutant(s): ${
+    shown.join(", ")
+  }`;
+}
+
+/**
  * Combine the primary pass with the shell pass. The more severe kind wins
  * (error, not_checked, budget_exhausted, completed, not_applicable, with the
  * primary winning a tie). Survivors are concatenated, and killed, tested and
@@ -404,7 +418,11 @@ export function mergeMutationResults(
   }
   const survivors = sides.flatMap(survivorsOf);
   if (winner.kind === "not_checked") {
-    return { kind: "not_checked", language, reason, survivors };
+    return {
+      kind: "not_checked",
+      language,
+      reason: notCheckedReason(reason, survivors),
+    };
   }
   let killed = 0;
   let total = 0;
@@ -481,10 +499,22 @@ async function changedShellScripts(
     if (!named && rel.slice(rel.lastIndexOf("/") + 1).includes(".")) continue;
     const abs = await confinePath(repoPath, rel, seams);
     if (abs === null || !(await seams.exists(abs))) continue;
-    if (!named && !hasShellShebang(await seams.readTextFile(abs))) continue;
+    if (!named && !(await hasShellShebangAt(abs, seams))) continue;
     out.push({ file: rel, lines, abs });
   }
   return out;
+}
+
+/** Does the file at `abs` open with a shell shebang? Unreadable means no. */
+async function hasShellShebangAt(
+  abs: string,
+  seams: MutationRunnerSeams,
+): Promise<boolean> {
+  try {
+    return hasShellShebang(await seams.readTextFile(abs));
+  } catch {
+    return false;
+  }
 }
 
 /** Deno test invocation from the test's project directory, or a shell one. */
@@ -517,7 +547,8 @@ async function shellInvocations(
 /**
  * The shell pass. A script that no test names is `not_checked`, and its mutants
  * are never run, so none of them can survive. If other scripts are covered,
- * their survivors (up to {@link NOT_CHECKED_SURVIVOR_LIMIT}) ride on the result.
+ * their survivors are named in the reason text (up to
+ * {@link NOT_CHECKED_SURVIVOR_LIMIT}), not in a survivor list.
  */
 async function runShell(
   input: MutationRunInput,
@@ -584,7 +615,11 @@ async function runShell(
     if (tests.length === 0) uncovered.push(plan.file);
     else covered.push({ ...plan, tests });
   }
-  const reason = `no test runs ${uncovered.join(", ")}`;
+  const reason = `no test runs ${
+    uncovered.map((f) => `${f} (searched for "${f}" and its basename)`).join(
+      ", ",
+    )
+  }`;
   if (covered.length === 0) {
     return { kind: "not_checked", language: "shell", reason };
   }
@@ -594,8 +629,7 @@ async function runShell(
   return {
     kind: "not_checked",
     language: "shell",
-    reason,
-    survivors: survivorsOf(result).slice(0, NOT_CHECKED_SURVIVOR_LIMIT),
+    reason: notCheckedReason(reason, survivorsOf(result)),
   };
 }
 
@@ -753,11 +787,9 @@ function stripAnsi(text: string): string {
 async function runDeno(
   input: MutationRunInput,
   seams: MutationRunnerSeams,
+  budget: Budget,
 ): Promise<MutationCheckResult> {
-  const { repoPath, budgetSeconds } = input;
-  const start = seams.now();
-  const budgetMs = budgetSeconds * 1000;
-  const remaining = () => budgetMs - (seams.now() - start);
+  const { repoPath } = input;
 
   const added = parseAddedLines(input.diff);
   const modules: Array<{
@@ -786,9 +818,7 @@ async function runDeno(
   const originals = new Map<string, string>();
   const absFor = new Map<string, string>();
   const configDirFor = new Map<string, string>();
-  const mutants: Array<
-    ReturnType<typeof generateDenoMutantsDetailed>["mutants"][number]
-  > = [];
+  const mutants: DenoMutant[] = [];
   // Candidates the cap or the line-length limit kept from being tried.
   let dropped = 0;
   for (const mod of modules) {
@@ -833,23 +863,10 @@ async function runDeno(
     return configDir === "" ? repoPath : `${repoPath}/${configDir}`;
   };
 
-  const survivors: Mutant[] = [];
-  let killed = 0;
-  let tested = 0;
-  const total = mutants.length + dropped;
-  const exhausted = (limit?: "mutant_cap"): MutationCheckResult => ({
-    kind: "budget_exhausted",
-    language: "deno",
-    survivors,
-    killed,
-    tested,
-    total,
-    budgetSeconds,
-    ...(limit === undefined ? {} : { limit }),
-  });
-
   // Mutants of modules no test imports cannot be killed.
-  const runnable: typeof mutants = [];
+  const survivors: Mutant[] = [];
+  const runnable: DenoMutant[] = [];
+  let tested = 0;
   for (const m of mutants) {
     if ((testsFor.get(m.file) ?? []).length === 0) {
       survivors.push({
@@ -861,68 +878,32 @@ async function runDeno(
     } else runnable.push(m);
   }
 
-  const childEnv = input.credentialEnv === undefined
-    ? {}
-    : { env: input.credentialEnv };
-
-  // Baseline: the importing tests must pass unmutated.
-  const baselined = new Set<string>();
-  for (const m of runnable) {
-    const tests = testsFor.get(m.file) ?? [];
-    const key = `${configDirFor.get(m.file) ?? ""}\n${tests.join("\n")}`;
-    if (baselined.has(key)) continue;
-    baselined.add(key);
-    if (remaining() <= 0) return exhausted();
-    const base = await seams.runProcess("deno", denoTestArgs(tests), {
-      cwd: cwdFor(m.file),
-      timeoutMs: remaining(),
-      ...childEnv,
+  const plans = new Map<string, MutantPlan>();
+  for (const file of new Set(runnable.map((m) => m.file))) {
+    const abs = absFor.get(file);
+    if (abs === undefined) continue;
+    const tests = testsFor.get(file) ?? [];
+    plans.set(file, {
+      abs,
+      original: originals.get(file) ?? "",
+      invocations: [{
+        cmd: "deno",
+        args: denoTestArgs(tests),
+        cwd: cwdFor(file),
+      }],
+      label: tests.join(", "),
     });
-    if (base.timedOut) return exhausted();
-    if (base.code !== 0) {
-      return {
-        kind: "error",
-        reason: `baseline tests fail before mutation (${
-          tests.join(", ")
-        }); cannot judge mutants`,
-      };
-    }
   }
 
-  for (const m of runnable) {
-    if (remaining() <= 0) return exhausted();
-    const tests = testsFor.get(m.file) ?? [];
-    const path = absFor.get(m.file);
-    if (path === undefined) continue;
-    const original = originals.get(m.file) ?? "";
-    let result: ProcessResult;
-    try {
-      await seams.writeTextFile(path, m.mutatedSource);
-      result = await seams.runProcess("deno", denoTestArgs(tests), {
-        cwd: cwdFor(m.file),
-        timeoutMs: remaining(),
-        ...childEnv,
-      });
-    } finally {
-      await seams.writeTextFile(path, original);
-    }
-    if (result.timedOut) return exhausted();
-    tested++;
-    // A mutant the parser rejects is unviable: no test ran, so it is neither
-    // killed nor a survivor.
-    if (result.code !== 0 && isParseFailure(result)) continue;
-    if (result.code !== 0) killed++;
-    else {
-      survivors.push({
-        file: m.file,
-        line: m.line,
-        description: m.description,
-      });
-    }
-  }
-  // A capped run is never a clean pass: candidates past the cap were not tried.
-  if (dropped > 0) return exhausted("mutant_cap");
-  return { kind: "completed", language: "deno", survivors, killed, total };
+  return await runMutantLoop(
+    seams,
+    budget,
+    "deno",
+    runnable,
+    plans,
+    { survivors, tested, total: mutants.length + dropped, dropped },
+    input.credentialEnv,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1239,18 +1220,22 @@ const DEFAULT_KILL_GRACE_MS = 5_000;
 const SKIP_DIRS = new Set(["node_modules", ".git", "target"]);
 const TEST_FILE = /(?:_test|\.test)\.(?:ts|tsx|js|mjs)$/;
 
+/** Walk `root`, collecting files whose basename `isTest` accepts. */
 async function walkTests(
   root: string,
   rel: string,
   out: string[],
+  isTest: (name: string) => boolean,
 ): Promise<void> {
   const dir = rel === "" ? root : `${root}/${rel}`;
   for await (const entry of Deno.readDir(dir)) {
     if (entry.isSymlink) continue;
     const childRel = rel === "" ? entry.name : `${rel}/${entry.name}`;
     if (entry.isDirectory) {
-      if (!SKIP_DIRS.has(entry.name)) await walkTests(root, childRel, out);
-    } else if (entry.isFile && TEST_FILE.test(entry.name)) {
+      if (!SKIP_DIRS.has(entry.name)) {
+        await walkTests(root, childRel, out, isTest);
+      }
+    } else if (entry.isFile && isTest(entry.name)) {
       out.push(childRel);
     }
   }
@@ -1359,7 +1344,12 @@ export function defaultMutationRunnerSeams(
     makeTempDir: () => Deno.makeTempDir({ prefix: "vibe-mutation-" }),
     async listTestFiles(repoPath) {
       const out: string[] = [];
-      await walkTests(repoPath, "", out);
+      await walkTests(repoPath, "", out, (name) => TEST_FILE.test(name));
+      return out.sort();
+    },
+    async listShellTestFiles(repoPath) {
+      const out: string[] = [];
+      await walkTests(repoPath, "", out, isShellTestFile);
       return out.sort();
     },
   };
