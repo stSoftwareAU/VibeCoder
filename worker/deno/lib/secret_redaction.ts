@@ -466,10 +466,15 @@ const RULES: readonly RedactionRule[] = [
   // The window is bounded (the Issue #3942 linearity rule) and the value is
   // excluded from being pure lowercase hex — a git commit SHA is exactly 40
   // hex characters and appears beside redacted material constantly.
+  //
+  // Issue #3857: in JSON-encoded or escaped text the secret follows a literal
+  // `\n`, `\r` or `\t`, so the escape letter abuts it and `\b` never fires.
+  // Only those three escapes are accepted, so a word glued to 40 characters
+  // is still not a match.
   {
     name: "aws-secret-access-key",
     pattern:
-      /((?:AKIA|ASIA)[0-9A-Z]{16}[\s\S]{0,120}?)\b(?![0-9a-f]{40}\b)([A-Za-z0-9/+=]{40})\b/g,
+      /((?:AKIA|ASIA)[0-9A-Z]{16}[\s\S]{0,120}?)(?:\b|(?<=\\[nrt]))(?![0-9a-f]{40}\b)([A-Za-z0-9/+=]{40})\b/g,
     replace: (_m, lead: string) => `${lead}${REDACTION_PLACEHOLDER}`,
   },
   // AWS access key id.
