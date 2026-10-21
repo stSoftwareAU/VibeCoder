@@ -1064,7 +1064,9 @@ export function validateGraphQLBranchCompareJson(
   if (!isObject(repository)) {
     return fail(
       "data.repository",
-      `Expected object, got ${repository === null ? "null" : typeof repository}`,
+      `Expected object, got ${
+        repository === null ? "null" : typeof repository
+      }`,
     );
   }
 

@@ -767,7 +767,7 @@ Deno.test("validation - validateGraphQLBranchCompareJson reports non-empty error
 Deno.test("validation - validateGraphQLBranchCompareJson treats an empty errors array as no errors", () => {
   const result = validateGraphQLBranchCompareJson({
     errors: [],
-    ...graphQLCompareResponse({ aheadBy: 3, behindBy: 0 }),
+    data: { repository: { ref: { compare: { aheadBy: 3, behindBy: 0 } } } },
   });
   assertEquals(result, {
     ok: true,
@@ -829,7 +829,9 @@ Deno.test("validation - validateGraphQLBranchCompareJson rejects missing reposit
 
 Deno.test("validation - validateGraphQLBranchCompareJson rejects null repository", () => {
   assertEquals(
-    failedField(validateGraphQLBranchCompareJson({ data: { repository: null } })),
+    failedField(
+      validateGraphQLBranchCompareJson({ data: { repository: null } }),
+    ),
     "data.repository",
   );
 });

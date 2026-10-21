@@ -336,7 +336,8 @@ async function fetchBranchInfoRest(
   defaultBranch: string,
   ghCommandFn: GhCommandFn,
 ): Promise<MilestoneBranchInfo | undefined> {
-  const compareContext = `gh api repos/${repo}/compare/${defaultBranch}...${milestoneBranch}`;
+  const compareContext =
+    `gh api repos/${repo}/compare/${defaultBranch}...${milestoneBranch}`;
   let compareOutput: string;
   try {
     // Check if branch exists
