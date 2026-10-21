@@ -184,8 +184,10 @@ would only drift.
     configured identity, not an empty set". Both flips were restored, and
     `git diff` on `milestone_fix_pr.ts` is empty afterwards.
 
-Not checked: the full `deno task test` suite and `./quality.sh` were not run for
-this change.
+Quality gate: `./quality.sh < /dev/null` passed on the final head (every check
+passed; `config integration` skipped, as it needs a live worker config).
+
+Not checked: the `config integration` check, which `quality.sh` skips here.
 
 ## Follow-ups / out of scope
 
