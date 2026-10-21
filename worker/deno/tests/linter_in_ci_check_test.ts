@@ -460,7 +460,7 @@ Deno.test("github-actions — no actionlint invocation is not configured", async
 // AWS CloudFormation — cfn-lint
 // ---------------------------------------------------------------------------
 
-Deno.test("aws-cloudformation — cfn-lint invoked in CI is configured", async () => {
+Deno.test("aws-cloudformation — cfn-lint and Checkov invoked in CI is configured", async () => {
   await withTempRepo(
     {
       "template.yaml": "AWSTemplateFormatVersion: 2010-09-09",
@@ -472,6 +472,7 @@ Deno.test("aws-cloudformation — cfn-lint invoked in CI is configured", async (
         "    runs-on: ubuntu-latest",
         "    steps:",
         "      - run: cfn-lint template.yaml",
+        "      - run: checkov -d . --framework cloudformation",
       ].join("\n"),
     },
     async (tmp) => {
@@ -499,6 +500,99 @@ Deno.test("aws-cloudformation — no cfn-lint invocation is not configured", asy
     async (tmp) => {
       const r = await checkLinterInCI(tmp, "aws-cloudformation");
       assertEquals(r.configured, false);
+    },
+  );
+});
+
+Deno.test("aws-cloudformation — only cfn-lint invoked in CI is not configured", async () => {
+  await withTempRepo(
+    {
+      "template.yaml": "AWSTemplateFormatVersion: 2010-09-09",
+      ".github/workflows/lint.yml": [
+        "name: Lint",
+        "on: [push]",
+        "jobs:",
+        "  cfn:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: cfn-lint template.yaml",
+      ].join("\n"),
+    },
+    async (tmp) => {
+      const r = await checkLinterInCI(tmp, "aws-cloudformation");
+      assertEquals(r.configured, false);
+      assertEquals(r.linter, "cfn-lint");
+      assertStringIncludes(r.details, "invokes `Checkov`");
+      assertEquals(r.details.includes("invokes `cfn-lint`"), false);
+    },
+  );
+});
+
+Deno.test("aws-cloudformation — only Checkov invoked in CI is not configured", async () => {
+  await withTempRepo(
+    {
+      "template.yaml": "AWSTemplateFormatVersion: 2010-09-09",
+      ".github/workflows/lint.yml": [
+        "name: Lint",
+        "on: [push]",
+        "jobs:",
+        "  cfn:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: checkov -d . --framework cloudformation",
+      ].join("\n"),
+    },
+    async (tmp) => {
+      const r = await checkLinterInCI(tmp, "aws-cloudformation");
+      assertEquals(r.configured, false);
+      assertEquals(r.linter, "cfn-lint");
+      assertStringIncludes(r.details, "invokes `cfn-lint`");
+      assertEquals(r.details.includes("invokes `Checkov`"), false);
+    },
+  );
+});
+
+Deno.test("aws-cloudformation — neither cfn-lint nor Checkov invoked in CI is not configured", async () => {
+  await withTempRepo(
+    {
+      "template.yaml": "AWSTemplateFormatVersion: 2010-09-09",
+      ".github/workflows/ci.yml": [
+        "name: CI",
+        "on: [push]",
+        "jobs:",
+        "  build:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: aws cloudformation validate-template --template-body file://template.yaml",
+      ].join("\n"),
+    },
+    async (tmp) => {
+      const r = await checkLinterInCI(tmp, "aws-cloudformation");
+      assertEquals(r.configured, false);
+      assertStringIncludes(r.details, "`cfn-lint` or `Checkov`");
+    },
+  );
+});
+
+Deno.test("aws-cloudformation — mixed-case CheckOV with cfn-lint invoked in CI is configured", async () => {
+  await withTempRepo(
+    {
+      "template.yaml": "AWSTemplateFormatVersion: 2010-09-09",
+      ".github/workflows/lint.yml": [
+        "name: Lint",
+        "on: [push]",
+        "jobs:",
+        "  cfn:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: cfn-lint template.yaml",
+        "      - run: CheckOV -d .",
+      ].join("\n"),
+    },
+    async (tmp) => {
+      const r = await checkLinterInCI(tmp, "aws-cloudformation");
+      assertEquals(r.configured, true);
+      assertEquals(r.linter, "cfn-lint");
     },
   );
 });
@@ -1103,6 +1197,7 @@ Deno.test("github-actions / cfn / terraform #2177 — gates field stays undefine
         "    steps:",
         "      - uses: rhysd/actionlint@v1",
         "      - run: cfn-lint template.yaml",
+        "      - run: checkov -d . --framework cloudformation",
         "      - run: tflint --recursive",
       ].join("\n"),
     },
