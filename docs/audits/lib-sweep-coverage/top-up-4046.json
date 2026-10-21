@@ -1,0 +1,13 @@
+{
+  "issue": 4046,
+  "chunk": "top-up-4046",
+  "title": "top-up: allowlisting CONNECT egress proxy and its command",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4046",
+  "definition": "CONNECT-only proxy that admits allowlisted host:443 targets resolved to public addresses, dials the checked address, and logs one sanitised denial line per refusal; plus the egress-proxy CLI command that parses the allowlist from argv or env.",
+  "status": "claimed",
+  "sweptAt": "dfc7cf9930349898b0010c3ede13bb9ddceca323",
+  "paths": [
+    "worker/deno/commands/egress_proxy.ts",
+    "worker/deno/lib/egress_proxy.ts"
+  ]
+}

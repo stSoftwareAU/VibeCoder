@@ -46,7 +46,9 @@ function expectEqual(actual: unknown, expected: unknown, label: string): void {
 function expectIncludes(haystack: string, needle: string, label: string): void {
   expect(
     haystack.includes(needle),
-    `${label}: expected ${JSON.stringify(needle)} in ${JSON.stringify(haystack)}`,
+    `${label}: expected ${JSON.stringify(needle)} in ${
+      JSON.stringify(haystack)
+    }`,
   );
 }
 
@@ -585,7 +587,11 @@ async function handsOffToRoute(): Promise<void> {
       "HTTP/1.1 200 Connection Established",
       "route status",
     );
-    expectEqual(decoder.decode(await wire.readExact(6)), "ROUTED", "route bytes");
+    expectEqual(
+      decoder.decode(await wire.readExact(6)),
+      "ROUTED",
+      "route bytes",
+    );
 
     expectEqual(
       targets,
