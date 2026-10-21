@@ -20,6 +20,12 @@ import {
   type OpenMilestoneIssue,
 } from "./issue_query.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
+import {
+  type GitHubMilestoneJson,
+  validateGitHubMilestonesJson,
+  validateGraphQLBranchCompareJson,
+  validateRestCompareJson,
+} from "./validation.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,6 +33,19 @@ import { getRepoDefaultBranch } from "./shell_helpers.ts";
 
 /** Function signature for running gh CLI commands. */
 export type GhCommandFn = (args: string[]) => Promise<string>;
+
+/**
+ * A gh response that was not JSON or failed validation (Issue #3856).
+ *
+ * Thrown so malformed data is a fault, not a skipped repo. The raw response
+ * text is never part of the message.
+ */
+class MalformedGhResponseError extends Error {
+  constructor(context: string, field: string, detail: string) {
+    super(`Malformed gh response from ${context}: ${field}: ${detail}`);
+    this.name = "MalformedGhResponseError";
+  }
+}
 
 /** Dependencies for the milestone health check. */
 export interface MilestoneHealthDeps {
@@ -85,12 +104,6 @@ export interface RepoMilestoneHealth {
 /** Top-level milestone health report across all repositories. */
 export interface MilestoneHealthReport {
   repos: RepoMilestoneHealth[];
-}
-
-/** A GitHub milestone from the API. */
-interface GitHubMilestoneApi {
-  title: string;
-  number: number;
 }
 
 /** A closed issue from the gh CLI. */
@@ -203,20 +216,6 @@ async function fetchBranchInfo(
   );
 }
 
-interface GraphQLBranchResponse {
-  data?: {
-    repository?: {
-      ref?: {
-        compare?: {
-          aheadBy: number;
-          behindBy: number;
-        } | null;
-      } | null;
-    } | null;
-  } | null;
-  errors?: Array<{ message: string }>;
-}
-
 /**
  * Combined branch existence + compare lookup via GraphQL (Issue #1805).
  *
@@ -224,8 +223,10 @@ interface GraphQLBranchResponse {
  *   - `{ ok: true, value: BranchInfo }` when the branch exists.
  *   - `{ ok: true, value: undefined }` when the branch does not exist
  *     (the `ref` is `null`).
- *   - `{ ok: false }` on any GraphQL error so the caller can fall back
- *     to REST.
+ *   - `{ ok: false }` on a transport failure, non-JSON output, a GraphQL
+ *     error, or an unavailable compare, so the caller can fall back to REST.
+ *
+ * Throws MalformedGhResponseError when the JSON fails validation (Issue #3856).
  */
 async function fetchBranchInfoGraphQL(
   repo: string,
@@ -278,54 +279,56 @@ async function fetchBranchInfoGraphQL(
     };
   }
 
-  let parsed: GraphQLBranchResponse;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw) as GraphQLBranchResponse;
+    parsed = JSON.parse(raw);
   } catch {
     return { ok: false, error: new Error("GraphQL response was not JSON") };
   }
 
-  if (parsed.errors && parsed.errors.length > 0) {
-    return {
-      ok: false,
-      error: new Error(parsed.errors.map((e) => e.message).join("; ")),
-    };
+  const validated = validateGraphQLBranchCompareJson(parsed);
+  if (!validated.ok) {
+    throw new MalformedGhResponseError(
+      "gh api graphql (milestone branch compare)",
+      validated.error.field,
+      validated.error.message,
+    );
   }
 
-  const ref = parsed.data?.repository?.ref;
-  if (ref === null || ref === undefined) {
-    // Branch does not exist — definitive answer, no fallback needed.
-    return { ok: true, value: undefined };
+  const outcome = validated.value;
+  switch (outcome.kind) {
+    case "errors":
+      return { ok: false, error: new Error(outcome.messages.join("; ")) };
+    case "absent":
+      // Branch does not exist — definitive answer, no fallback needed.
+      return { ok: true, value: undefined };
+    case "unavailable":
+      return {
+        ok: false,
+        error: new Error("GraphQL compare payload missing aheadBy/behindBy"),
+      };
+    case "compare":
+      // The query above compares from the default ref (base) to the milestone
+      // ref (head), matching the REST fallback's `compare/${default}...${milestone}`
+      // exactly: `aheadBy` = commits the milestone branch has that default does
+      // not, `behindBy` = commits default has that the milestone branch does
+      // not. The two paths are held to that agreement by a test (Issue #470).
+      return {
+        ok: true,
+        value: {
+          name: milestoneBranch,
+          aheadBy: outcome.aheadBy,
+          behindBy: outcome.behindBy,
+        },
+      };
   }
-
-  const compare = ref.compare;
-  if (
-    !compare || typeof compare.aheadBy !== "number" ||
-    typeof compare.behindBy !== "number"
-  ) {
-    return {
-      ok: false,
-      error: new Error("GraphQL compare payload missing aheadBy/behindBy"),
-    };
-  }
-
-  // The query above compares from the default ref (base) to the milestone
-  // ref (head), matching the REST fallback's `compare/${default}...${milestone}`
-  // exactly: `aheadBy` = commits the milestone branch has that default does
-  // not, `behindBy` = commits default has that the milestone branch does
-  // not. The two paths are held to that agreement by a test (Issue #470).
-  return {
-    ok: true,
-    value: {
-      name: milestoneBranch,
-      aheadBy: compare.aheadBy,
-      behindBy: compare.behindBy,
-    },
-  };
 }
 
 /**
  * REST fallback for branch existence + compare (pre-#1805 path).
+ *
+ * Returns undefined when either gh call fails (branch absent). Throws
+ * MalformedGhResponseError when the compare output is not valid (Issue #3856).
  */
 async function fetchBranchInfoRest(
   repo: string,
@@ -333,6 +336,8 @@ async function fetchBranchInfoRest(
   defaultBranch: string,
   ghCommandFn: GhCommandFn,
 ): Promise<MilestoneBranchInfo | undefined> {
+  const compareContext = `gh api repos/${repo}/compare/${defaultBranch}...${milestoneBranch}`;
+  let compareOutput: string;
   try {
     // Check if branch exists
     await ghCommandFn([
@@ -341,23 +346,39 @@ async function fetchBranchInfoRest(
     ]);
 
     // Get comparison
-    const compareOutput = await ghCommandFn([
+    compareOutput = await ghCommandFn([
       "api",
       `repos/${repo}/compare/${defaultBranch}...${milestoneBranch}`,
     ]);
-    const comparison = JSON.parse(compareOutput) as {
-      ahead_by: number;
-      behind_by: number;
-    };
-
-    return {
-      name: milestoneBranch,
-      aheadBy: comparison.ahead_by,
-      behindBy: comparison.behind_by,
-    };
   } catch {
     return undefined;
   }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(compareOutput);
+  } catch {
+    throw new MalformedGhResponseError(
+      compareContext,
+      "root",
+      "response was not JSON",
+    );
+  }
+
+  const validated = validateRestCompareJson(parsed);
+  if (!validated.ok) {
+    throw new MalformedGhResponseError(
+      compareContext,
+      validated.error.field,
+      validated.error.message,
+    );
+  }
+
+  return {
+    name: milestoneBranch,
+    aheadBy: validated.value.ahead_by,
+    behindBy: validated.value.behind_by,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -423,16 +444,36 @@ async function getRepoMilestoneHealth(
   }
 
   // List open milestones
-  let milestones: GitHubMilestoneApi[];
+  let msOutput: string;
   try {
-    const msOutput = await ghCommandFn([
+    msOutput = await ghCommandFn([
       "api",
       `repos/${repo}/milestones`,
     ]);
-    milestones = JSON.parse(msOutput) as GitHubMilestoneApi[];
   } catch {
     return { repo, milestones: [] };
   }
+
+  const milestonesContext = `gh api repos/${repo}/milestones`;
+  let msParsed: unknown;
+  try {
+    msParsed = JSON.parse(msOutput);
+  } catch {
+    throw new MalformedGhResponseError(
+      milestonesContext,
+      "root",
+      "response was not JSON",
+    );
+  }
+  const msValidated = validateGitHubMilestonesJson(msParsed);
+  if (!msValidated.ok) {
+    throw new MalformedGhResponseError(
+      milestonesContext,
+      msValidated.error.field,
+      msValidated.error.message,
+    );
+  }
+  const milestones: GitHubMilestoneJson[] = msValidated.value;
 
   const milestoneStatuses: MilestoneStatus[] = [];
 
@@ -518,6 +559,9 @@ async function getRepoMilestoneHealth(
 /**
  * Get milestone health across all configured repositories.
  *
+ * A repo whose gh call fails at transport level is skipped. Malformed gh
+ * output fails the whole report (Issue #3856).
+ *
  * @param deps - Injected dependencies
  * @returns Result with the milestone health report
  */
@@ -541,7 +585,9 @@ export async function getMilestoneHealth(
         deps.defaultBranchCachePath,
       );
       repoReports.push(repoHealth);
-    } catch {
+    } catch (e) {
+      // Issue #3856: malformed data is a fault, not a skipped repo (mirrors Issue #2607).
+      if (e instanceof MalformedGhResponseError) return { ok: false, error: e };
       // Skip repos that fail — continue with remaining repos
       continue;
     }

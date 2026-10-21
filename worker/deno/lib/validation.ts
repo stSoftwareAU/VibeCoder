@@ -998,6 +998,153 @@ export function validateGitHubMilestonesJson(
   return ok(data as GitHubMilestoneJson[]);
 }
 
+// --- Branch compare (milestone health) ---
+
+/** Classified outcome of a GraphQL branch compare query (Issue #3856). */
+export type GraphQLBranchCompare =
+  | { kind: "errors"; messages: string[] }
+  | { kind: "absent" }
+  | { kind: "unavailable" }
+  | { kind: "compare"; aheadBy: number; behindBy: number };
+
+/**
+ * Validate unknown `gh api graphql` output for a branch compare (Issue #3856).
+ *
+ * Non-empty `errors` win over `data`. A null `ref` means the branch is absent;
+ * a null `compare` means the comparison is unavailable.
+ *
+ * @param data - Unknown data (typically from JSON.parse)
+ * @returns The classified outcome or a ValidationError
+ */
+export function validateGraphQLBranchCompareJson(
+  data: unknown,
+): ValidationResult<GraphQLBranchCompare> {
+  if (!isObject(data)) {
+    return fail(
+      "root",
+      `Expected object, got ${data === null ? "null" : typeof data}`,
+    );
+  }
+
+  const errors = data.errors;
+  if (errors !== undefined && errors !== null) {
+    if (!Array.isArray(errors)) {
+      return fail("errors", `Expected array, got ${typeof errors}`);
+    }
+    const messages: string[] = [];
+    for (let i = 0; i < errors.length; i++) {
+      const item = errors[i];
+      if (!isObject(item)) {
+        return fail(
+          `errors[${i}]`,
+          `Expected object, got ${item === null ? "null" : typeof item}`,
+        );
+      }
+      if (typeof item.message !== "string") {
+        return fail(
+          `errors[${i}].message`,
+          `Expected string, got ${typeof item.message}`,
+        );
+      }
+      messages.push(item.message);
+    }
+    if (messages.length > 0) {
+      return ok({ kind: "errors", messages });
+    }
+  }
+
+  const payload = data.data;
+  if (!isObject(payload)) {
+    return fail(
+      "data",
+      `Expected object, got ${payload === null ? "null" : typeof payload}`,
+    );
+  }
+  const repository = payload.repository;
+  if (!isObject(repository)) {
+    return fail(
+      "data.repository",
+      `Expected object, got ${repository === null ? "null" : typeof repository}`,
+    );
+  }
+
+  const ref = repository.ref;
+  if (ref === null || ref === undefined) {
+    return ok({ kind: "absent" });
+  }
+  if (!isObject(ref)) {
+    return fail(
+      "data.repository.ref",
+      `Expected object, got ${ref === null ? "null" : typeof ref}`,
+    );
+  }
+
+  const compare = ref.compare;
+  if (compare === null || compare === undefined) {
+    return ok({ kind: "unavailable" });
+  }
+  if (!isObject(compare)) {
+    return fail(
+      "data.repository.ref.compare",
+      `Expected object, got ${typeof compare}`,
+    );
+  }
+  if (typeof compare.aheadBy !== "number") {
+    return fail(
+      "data.repository.ref.compare.aheadBy",
+      `Expected number, got ${typeof compare.aheadBy}`,
+    );
+  }
+  if (typeof compare.behindBy !== "number") {
+    return fail(
+      "data.repository.ref.compare.behindBy",
+      `Expected number, got ${typeof compare.behindBy}`,
+    );
+  }
+
+  return ok({
+    kind: "compare",
+    aheadBy: compare.aheadBy,
+    behindBy: compare.behindBy,
+  });
+}
+
+/** Compare payload from the REST `repos/{repo}/compare/...` endpoint (Issue #3856). */
+export interface RestCompareJson {
+  ahead_by: number;
+  behind_by: number;
+}
+
+/**
+ * Validate unknown REST compare output (Issue #3856). Extra fields are ignored.
+ *
+ * @param data - Unknown data (typically from JSON.parse)
+ * @returns Validated counts or a ValidationError
+ */
+export function validateRestCompareJson(
+  data: unknown,
+): ValidationResult<RestCompareJson> {
+  if (!isObject(data)) {
+    return fail(
+      "root",
+      `Expected object, got ${data === null ? "null" : typeof data}`,
+    );
+  }
+  if (typeof data.ahead_by !== "number") {
+    return fail(
+      "ahead_by",
+      `Expected number, got ${typeof data.ahead_by}`,
+    );
+  }
+  if (typeof data.behind_by !== "number") {
+    return fail(
+      "behind_by",
+      `Expected number, got ${typeof data.behind_by}`,
+    );
+  }
+  return ok({ ahead_by: data.ahead_by, behind_by: data.behind_by });
+}
+
 // --- Issue number list (used for closed issue checks, etc.) ---
 
 /**

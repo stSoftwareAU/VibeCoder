@@ -14,13 +14,16 @@ import {
   validateGhIssueJson,
   validateGhIssueViewJson,
   validateGitHubMilestonesJson,
+  validateGraphQLBranchCompareJson,
   validateIssueBodyJson,
   validateIssueLabelsJson,
   validateIssueMilestoneJson,
   validateIssueNumberListJson,
   validateIssueStateJson,
+  validateRestCompareJson,
   validateTimelineLabelEventsJson,
 } from "../lib/validation.ts";
+import type { ValidationResult } from "../lib/validation.ts";
 
 // --- GhIssueJson validation tests ---
 
@@ -712,6 +715,207 @@ Deno.test("validation - validateGitHubMilestonesJson rejects wrong number type",
   if (!result.ok) {
     assertEquals(result.error.field, "milestones[0].number");
   }
+});
+
+// --- validateGraphQLBranchCompareJson / validateRestCompareJson (Issue #3856) ---
+
+/** Return the failing field name, or undefined when the result is ok. */
+function failedField<T>(result: ValidationResult<T>): string | undefined {
+  return result.ok ? undefined : result.error.field;
+}
+
+/** Wrap a compare value in the GraphQL response shape (Issue #3856). */
+function graphQLCompareResponse(compare: unknown): unknown {
+  return { data: { repository: { ref: { compare } } } };
+}
+
+Deno.test("validation - validateGraphQLBranchCompareJson accepts a compare", () => {
+  const result = validateGraphQLBranchCompareJson(
+    graphQLCompareResponse({ aheadBy: 5, behindBy: 2 }),
+  );
+  assertEquals(result, {
+    ok: true,
+    value: { kind: "compare", aheadBy: 5, behindBy: 2 },
+  });
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson treats a null ref as absent", () => {
+  const result = validateGraphQLBranchCompareJson({
+    data: { repository: { ref: null } },
+  });
+  assertEquals(result, { ok: true, value: { kind: "absent" } });
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson treats a null compare as unavailable", () => {
+  const result = validateGraphQLBranchCompareJson(
+    graphQLCompareResponse(null),
+  );
+  assertEquals(result, { ok: true, value: { kind: "unavailable" } });
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson reports non-empty errors ahead of data", () => {
+  const result = validateGraphQLBranchCompareJson({
+    errors: [{ message: "boom" }, { message: "bang" }],
+    data: { repository: { ref: { compare: { aheadBy: 1, behindBy: 1 } } } },
+  });
+  assertEquals(result, {
+    ok: true,
+    value: { kind: "errors", messages: ["boom", "bang"] },
+  });
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson treats an empty errors array as no errors", () => {
+  const result = validateGraphQLBranchCompareJson({
+    errors: [],
+    ...graphQLCompareResponse({ aheadBy: 3, behindBy: 0 }),
+  });
+  assertEquals(result, {
+    ok: true,
+    value: { kind: "compare", aheadBy: 3, behindBy: 0 },
+  });
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects non-object root", () => {
+  assertEquals(
+    failedField(validateGraphQLBranchCompareJson("not an object")),
+    "root",
+  );
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects null root", () => {
+  assertEquals(failedField(validateGraphQLBranchCompareJson(null)), "root");
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects non-array errors", () => {
+  assertEquals(
+    failedField(validateGraphQLBranchCompareJson({ errors: "boom" })),
+    "errors",
+  );
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects non-object errors element", () => {
+  assertEquals(
+    failedField(validateGraphQLBranchCompareJson({ errors: ["boom"] })),
+    "errors[0]",
+  );
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects non-string errors message", () => {
+  assertEquals(
+    failedField(
+      validateGraphQLBranchCompareJson({ errors: [{ message: 42 }] }),
+    ),
+    "errors[0].message",
+  );
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects missing data", () => {
+  assertEquals(failedField(validateGraphQLBranchCompareJson({})), "data");
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects null data", () => {
+  assertEquals(
+    failedField(validateGraphQLBranchCompareJson({ data: null })),
+    "data",
+  );
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects missing repository", () => {
+  assertEquals(
+    failedField(validateGraphQLBranchCompareJson({ data: {} })),
+    "data.repository",
+  );
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects null repository", () => {
+  assertEquals(
+    failedField(validateGraphQLBranchCompareJson({ data: { repository: null } })),
+    "data.repository",
+  );
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects wrong-type ref", () => {
+  assertEquals(
+    failedField(
+      validateGraphQLBranchCompareJson({
+        data: { repository: { ref: "main" } },
+      }),
+    ),
+    "data.repository.ref",
+  );
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects wrong-type compare", () => {
+  assertEquals(
+    failedField(validateGraphQLBranchCompareJson(graphQLCompareResponse("x"))),
+    "data.repository.ref.compare",
+  );
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects missing aheadBy", () => {
+  assertEquals(
+    failedField(
+      validateGraphQLBranchCompareJson(graphQLCompareResponse({ behindBy: 1 })),
+    ),
+    "data.repository.ref.compare.aheadBy",
+  );
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects null aheadBy", () => {
+  assertEquals(
+    failedField(
+      validateGraphQLBranchCompareJson(
+        graphQLCompareResponse({ aheadBy: null, behindBy: 1 }),
+      ),
+    ),
+    "data.repository.ref.compare.aheadBy",
+  );
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson rejects string behindBy", () => {
+  assertEquals(
+    failedField(
+      validateGraphQLBranchCompareJson(
+        graphQLCompareResponse({ aheadBy: 1, behindBy: "2" }),
+      ),
+    ),
+    "data.repository.ref.compare.behindBy",
+  );
+});
+
+Deno.test("validation - validateRestCompareJson accepts counts and ignores extra fields", () => {
+  const result = validateRestCompareJson({
+    ahead_by: 3,
+    behind_by: 1,
+    status: "ahead",
+    total_commits: 4,
+  });
+  assertEquals(result, { ok: true, value: { ahead_by: 3, behind_by: 1 } });
+});
+
+Deno.test("validation - validateRestCompareJson rejects null root", () => {
+  assertEquals(failedField(validateRestCompareJson(null)), "root");
+});
+
+Deno.test("validation - validateRestCompareJson rejects missing ahead_by", () => {
+  assertEquals(
+    failedField(validateRestCompareJson({ behind_by: 1 })),
+    "ahead_by",
+  );
+});
+
+Deno.test("validation - validateRestCompareJson rejects null ahead_by", () => {
+  assertEquals(
+    failedField(validateRestCompareJson({ ahead_by: null, behind_by: 1 })),
+    "ahead_by",
+  );
+});
+
+Deno.test("validation - validateRestCompareJson rejects string behind_by", () => {
+  assertEquals(
+    failedField(validateRestCompareJson({ ahead_by: 1, behind_by: "x" })),
+    "behind_by",
+  );
 });
 
 // --- validateIssueNumberListJson ---
