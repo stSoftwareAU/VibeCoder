@@ -1643,6 +1643,10 @@ function Invoke-VibeSetupMain {
         exit (Invoke-VibeSetupCliPassthrough -Arguments @("repos"))
     }
 
+    # Whether .config.json predates this run, for update-mode (Issue #4119).
+    # Taken before any step below, all of which run before the config step.
+    $configExisted = if (Test-Path -LiteralPath $ConfigFile) { "true" } else { "false" }
+
     # Prerequisites check via Deno — a gap here stops setup (Issue #3234).
     # -AutoInstall consents in advance to every offered install (Issue #33).
     if ($AutoInstall) {
@@ -1675,6 +1679,10 @@ function Invoke-VibeSetupMain {
     # Write config from VIBE_* env vars, then merge the remaining answers.
     Invoke-VibeSetupCliOrExit -Arguments @("config")
     Write-VibeInteractiveConfig -Answers $answers
+
+    # Ask for the update mode and, when frozen, the pinned ref and the exact
+    # tool versions (Issue #626). Fatal, as in setup.sh.
+    Invoke-VibeSetupCliOrExit -Arguments @("update-mode", "--config-existed=$configExisted")
 
     # Ask whether repo-settings-harden turns Copilot code review on, off, or
     # leaves it (Issue #2701): each automatic review is billed to the PR

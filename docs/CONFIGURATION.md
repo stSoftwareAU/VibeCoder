@@ -1055,23 +1055,27 @@ deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 
 ### 🧊 Update Mode
 
-`update_mode` names how a host tracks Vibe Coder releases. `frozen` — the
-default answer `./setup.sh` offers a host being configured (Issue #692) —
-holds the host at a pinned checkout with pinned tool versions. `dynamic`
-follows the latest, and is both the deliberate opt-in answer at setup and what
-an **absent** `update_mode` resolves to at config load.
+`update_mode` names how a host tracks Vibe Coder releases. `dynamic` follows
+the latest, and is what an **absent** `update_mode` resolves to at config load.
+`frozen` holds the host at a pinned checkout with pinned tool versions. Setup
+offers `frozen` only when no `.config.json` existed before the setup run — a
+fresh host (Issue #692). A `.config.json` that already exists with no
+`update_mode` is read as `dynamic`, the mode the host already runs, and setup
+keeps it, interactive or not.
 
-**Two different defaults, deliberately.** The setup conversation defaults to
-`frozen`, because a new host should reproduce a released, tested combination.
-The *load-time* default for a missing key stays `dynamic`, because an existing
-host carries no pins and frozen is all-or-nothing — resolving an absent key to
-`frozen` would fail that host's config validation at its very next launch. So:
-a `.config.json` with no `update_mode` loads as `dynamic` with no warning and
-no new pin requirement, whatever setup would offer a fresh host.
+**Two different defaults, deliberately.** The setup conversation offers
+`frozen` to a fresh host, because a new host should reproduce a released,
+tested combination. The *load-time* default for a missing key stays `dynamic`,
+because an existing host carries no pins and frozen is all-or-nothing —
+resolving an absent key to `frozen` would fail that host's config validation at
+its very next launch. So: a `.config.json` with no `update_mode` loads as
+`dynamic` with no warning and no new pin requirement, and setup keeps it as
+`dynamic`, whether or not a terminal is attached. A non-interactive setup run on
+such a config writes no pins.
 
 | Field | Accepted values | Default | Read in |
 | --- | --- | --- | --- |
-| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` at config load — and the behaviour of any host with the key absent; `"frozen"` is the answer setup offers a host being configured | both modes |
+| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` at config load — and the behaviour of any host with the key absent, including an existing config with no key; `"frozen"` is the answer setup offers only on a fresh host (no `.config.json` before the run) | both modes |
 | `pinned_ref` | A commit SHA or a tag name: starts with a letter or digit, and contains only letters, digits and `. _ + - / @` | _(unset)_ | `frozen` only |
 | `pinned_tool_versions` | An object with an exact version string for each of `claude`, `gh` and `deno`, same character rules as `pinned_ref` | _(unset)_ | `frozen` only |
 
@@ -1139,9 +1143,11 @@ because an absent `update_mode` resolves to `dynamic`:
 - **Dynamic ignores the pins, it does not reject them.** Flipping back to
   `dynamic` needs one edit — the stale pins stay in the file and nothing reads
   them.
-- **Setup asks for all of it, and defaults to `frozen`.** `./setup.sh` runs
-  `setup update-mode`, which asks for the mode — defaulting to `frozen` on a
-  fresh host and, on a re-run, to whatever the host already says — and then,
+- **Setup asks for all of it, and offers `frozen` only on a fresh host.**
+  `./setup.sh` runs `setup update-mode`, which asks for the mode — defaulting to
+  `frozen` when no `.config.json` existed before the run, and otherwise to the
+  mode the host already has, so an existing config with no `update_mode` keeps
+  `dynamic` — and then,
   under `frozen`, for the pinned ref and one exact version per tool. The ref
   defaults to the latest release tag and is validated by resolving it in the
   worker checkout after a fetch, so a ref that does not resolve is rejected by
@@ -1152,9 +1158,10 @@ because an absent `update_mode` resolves to `dynamic`:
   install today and setup says so in one line. Blank accepts the default
   everywhere, so a re-run that presses Enter throughout leaves `.config.json`
   unchanged — on a `dynamic` host as well as a frozen one. A run with no
-  terminal never asks: existing values are left alone, and a fresh config is
-  pinned to the latest release when it resolves with a manifest, or left
-  `dynamic` with one warning line when it does not. `setup.ps1` does not ask yet —
+  terminal never asks: an existing `.config.json` is left alone — a host with no
+  `update_mode` stays `dynamic` and gets no pins — and a fresh config is pinned
+  to the latest release when it resolves with a manifest, or left `dynamic` with
+  one warning line when it does not. `setup.ps1` does not ask yet —
   a Windows host sets these keys by hand, and the Windows counterpart is a
   follow-up. The prompts in the order they are asked are
   [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
@@ -1168,7 +1175,7 @@ because an absent `update_mode` resolves to `dynamic`:
   content, a frozen checkout holds the image steady too.
 - **Frozen says when it is behind.** A pin holds the host still; it does not
   hide that the world moved on. When a release newer than `pinned_ref` exists,
-  each launch prints one notice line naming both versions and the command that
+  each launch logs one WARNING line naming both versions and the command that
   installs the new one (Issue #690) — see
   [New-Release Notice](#-new-release-notice).
 
@@ -1248,7 +1255,7 @@ happens at the launch you choose to make.
 flowchart TD
     L["Launch — ./run.sh"] --> C["release check:<br/>newest release vs pinned_ref"]
     C -->|"dynamic host, SHA pin,<br/>already newest, or check failed"| S["silent — the launch continues"]
-    C -->|"frozen and behind"| N["one notice line on stderr<br/>and in run_core.log"]
+    C -->|"frozen and behind"| N["one WARNING line on stderr<br/>and in run_core.log"]
     N --> U["./run.sh upgrade — rewrites pinned_ref<br/>and all three pinned_tool_versions"]
     U --> W["nothing installed,<br/>no checkout moved"]
     W --> X["Next launch: checkout onto the new pinned_ref,<br/>claude, gh and deno at the pinned versions"]
@@ -1256,7 +1263,9 @@ flowchart TD
 ```
 
 1. **The launch tells you.** A frozen host pinned behind the newest release
-   prints one line per launch, to stderr and `run_core.log`:
+   logs one line per launch at WARNING: on stderr as `[run.sh] WARNING: …`, and
+   in `run_core.log` as `WARNING: …`. The host is degraded but continuing on its
+   pin. The line reads:
 
    ```text
    A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
@@ -1507,8 +1516,9 @@ flowchart TD
 ### 🔔 New-Release Notice
 
 Beside the checkout update, each launch asks whether this host is pinned behind
-the newest release (Issue #690). When it is, one line goes to stderr and to
-`run_core.log`:
+the newest release (Issue #690). When it is, the launcher logs one line at
+WARNING — `[run.sh] WARNING: …` on stderr and `WARNING: …` in `run_core.log` —
+and the host is degraded but continuing on its pin. The notice wording is:
 
 ```text
 A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
@@ -1557,7 +1567,7 @@ flowchart TD
     L --> C{"pinned_ref vs latest"}
     C -->|"commit SHA — not orderable"| S
     C -->|"already newest"| S
-    C -->|"behind"| N["one notice line:<br/>1.0.4 → 1.0.5, run ./run.sh upgrade"]
+    C -->|"behind"| N["one WARNING line:<br/>1.0.4 → 1.0.5, run ./run.sh upgrade"]
 ```
 
 ### 🧠 Phase Model Overrides

@@ -13,8 +13,9 @@
  *     mod.ts release-notice --base-dir /path/to/checkout
  *
  * Stdout carries the notice and nothing else, so `run.sh` captures it with
- * `$(…)` and — only when it is non-empty — prints it to stderr and records it
- * in `run_core.log`. A host with nothing to be told produces empty output and
+ * `$(…)` and — only when it is non-empty — prints it to stderr as
+ * `[run.sh] WARNING: <notice>` and records it in `run_core.log` as
+ * `WARNING: <notice>`. A host with nothing to be told produces empty output and
  * stays silent.
  *
  * It runs beside `worker-checkout-update`, before the configuration load, so
