@@ -4844,7 +4844,9 @@ The hook runs two stages:
    completion phase widens the range to every non-merge commit ahead of the PR
    base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
-   config would check, see below):
+   config would check, see below). The one exception is the Floci deploy test
+   below: a changed file only triggers it, and it is passed no files, so it
+   deploys every template in `infra/cloudformation/`, changed or not:
    - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
      cts, json, jsonc, md, markdown) and `deno lint --permit-no-files` (the
      ts/js family), per outermost `deno.json` / `deno.jsonc` directory. Only
@@ -4892,13 +4894,16 @@ The hook runs two stages:
      the repo tracks `infra/cloudformation/test-floci.sh`: it runs
      `bash infra/cloudformation/test-floci.sh` from the repo root, after the
      other changed-file checks. That is the same script
-     `.github/workflows/floci.yml` runs in CI. The script starts the baked
-     `floci` on `127.0.0.1:4566` when nothing answers there. In the worker
-     container there is no Docker socket and no `aws` CLI, so a template that
-     creates an `AWS::EC2::Instance` is printed
-     `SKIPPED (needs Docker): <template>` and left to CI. Today's only template
-     does, so inside the container this check deploys nothing; only a host with
-     Docker and the `aws` CLI exercises it.
+     `.github/workflows/floci.yml` runs in CI. Outside CI, a template that
+     creates an `AWS::EC2::Instance` when there is no Docker socket is printed
+     `SKIPPED (needs Docker): <template>` and left to CI. When every template
+     is skipped the script exits 0 there, before it checks for the `aws` CLI
+     or starts anything. Otherwise it exits 1 when the `aws` CLI is missing,
+     and only then starts the baked `floci` on `127.0.0.1:4566` if nothing
+     answers there. The worker container has no Docker socket and no `aws`
+     CLI, and today's only template creates an `AWS::EC2::Instance`, so inside
+     the container this check skips it, exits 0 and never starts `floci`; only
+     a host with Docker and the `aws` CLI exercises it.
 2. **Configured `pre-flight` commands.** The commands are resolved by the
    run's repo from `repo_config`, so every agent run that names its repo gets
    that repo's `pre-flight` commands in the hook; a run that names no repo gets
