@@ -298,7 +298,10 @@ function viewOf(overrides: Record<string, unknown> = {}): string {
   });
 }
 
-function verify(stdout: string, extra: { authors?: { fleetAuthors: string[] } } = {}) {
+function verify(
+  stdout: string,
+  extra: { authors?: { fleetAuthors: string[] } } = {},
+) {
   const { gh, calls } = ghReturning(stdout);
   return {
     calls,
@@ -333,7 +336,9 @@ Deno.test("owned open artefact - verify refuses a closed issue and names the sta
 Deno.test("owned open artefact - verify refuses a body without the marker", async () => {
   const verdict = await verify(viewOf({ body: "plain body" })).run();
   assertEquals(verdict.ok, false);
-  if (!verdict.ok) assert(verdict.reason.includes("does not contain the marker"));
+  if (!verdict.ok) {
+    assert(verdict.reason.includes("does not contain the marker"));
+  }
 });
 
 Deno.test("owned open artefact - verify refuses a foreign-authored issue", async () => {

@@ -243,7 +243,10 @@ function issueFields(issue: FakeIssue): Record<string, unknown> {
 }
 
 /** The fields a `--json` list names, refusing an unmodelled one. */
-function pick(all: Record<string, unknown>, json: string): Record<string, unknown> {
+function pick(
+  all: Record<string, unknown>,
+  json: string,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const field of json.split(",")) {
     if (!Object.hasOwn(all, field)) fail(`Unknown JSON field: "${field}"`);
@@ -262,7 +265,9 @@ function issueView(store: FakeStore, args: string[]): string {
 /** `gh issue list --state open [--search] --json … --limit N`, open issues only. */
 function issueList(store: FakeStore, args: string[]): string {
   const { positional, flags } = flagsOf(args, 2, new Set());
-  if (positional.length > 0) fail(`unmodelled issue list argument ${positional[0]}`);
+  if (positional.length > 0) {
+    fail(`unmodelled issue list argument ${positional[0]}`);
+  }
   const repo = requireRepo(store, one(flags, "--repo"));
   if (one(flags, "--state") !== "open") {
     fail("fake gh models only `issue list --state open`");

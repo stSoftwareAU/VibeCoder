@@ -339,7 +339,9 @@ export async function resolveWrongRepoDuplicate(
         }));
       if (!verdict.ok) {
         return refuse(
-          `${formatIssueRef(correct!)} is not an owned, open issue in ${owner} ` +
+          `${
+            formatIssueRef(correct!)
+          } is not an owned, open issue in ${owner} ` +
             `(${verdict.reason}), so ${wrongText} is not retired in its favour; ` +
             `nothing changed`,
           formatIssueRef(correct!),

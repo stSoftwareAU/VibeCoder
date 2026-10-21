@@ -116,21 +116,33 @@ Deno.test("owned reuse - every exempt entry gives a reason", () => {
 
 Deno.test("owned reuse - the manifests are sorted and free of duplicates", () => {
   const unverified = [...OWNED_REUSE_UNVERIFIED_FILES];
-  assertEquals(unverified, [...unverified].sort(), "the unverified list is not sorted");
+  assertEquals(
+    unverified,
+    [...unverified].sort(),
+    "the unverified list is not sorted",
+  );
   assertEquals(
     new Set(unverified).size,
     unverified.length,
     "the unverified list has duplicates",
   );
-  assertEquals(EXEMPT_FILES, [...EXEMPT_FILES].sort(), "the exempt list is not sorted");
+  assertEquals(
+    EXEMPT_FILES,
+    [...EXEMPT_FILES].sort(),
+    "the exempt list is not sorted",
+  );
 });
 
 Deno.test("owned reuse - every manifest entry names a file that exists", async () => {
   const present = new Set(await scannedFiles());
-  const missing = [...OWNED_REUSE_UNVERIFIED_FILES, ...EXEMPT_FILES].filter((f) =>
-    !present.has(f)
+  const missing = [...OWNED_REUSE_UNVERIFIED_FILES, ...EXEMPT_FILES].filter((
+    f,
+  ) => !present.has(f));
+  assertEquals(
+    missing,
+    [],
+    "the manifests name files that are not in the tree",
   );
-  assertEquals(missing, [], "the manifests name files that are not in the tree");
 });
 
 // ---------------------------------------------------------------------------
@@ -188,7 +200,8 @@ export const settle = () => ({ action: "reused" });`,
 
 Deno.test("owned reuse - declaring the lookup without calling it does not exempt", async () => {
   // The declaration of a helper is not a call, so it must not exempt a module.
-  const source = `export async function findOwnedOpenArtefact(p: unknown) { return p; }
+  const source =
+    `export async function findOwnedOpenArtefact(p: unknown) { return p; }
 export const settle = () => ({ action: "reused" });`;
   assert(
     findUnownedReuseSites(source).length > 0,

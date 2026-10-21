@@ -22,9 +22,11 @@ import type { WorkerConfig } from "../types.ts";
 import { makeRecordingLogger } from "./support/fake_claim_hub.ts";
 import {
   type FakeGh,
+  type FakeGhHooks,
   type FakeIssue,
   type FakeStore,
   fakeStore,
+  FLEET_LOGIN,
   isWriteCall,
   routingFakeGh,
 } from "./support/routing_fake_gh.ts";
@@ -76,6 +78,7 @@ async function resolve(args: Record<string, unknown>, gh: FakeGh) {
     ghCommandFn: gh.ghCommandFn,
     now: () => new Date("2026-10-15T00:00:00Z"),
     logger: makeRecordingLogger().logger,
+    authors: { fleetAuthors: [FLEET_LOGIN] },
   };
   const result = await routeIssueCommand.execute(
     { ...args, __testDeps: deps },
@@ -331,18 +334,23 @@ Deno.test("route-issue --resolve-duplicate - a malformed reference or a create-m
   assertEquals(gh.calls, []);
 });
 
-/** X (open, VibeCoder#3607) plus a same-titled issue in the owner repository. */
+/** The owned-issue marker this tool writes for the owner repository (AUTOTRADER). */
+const OWNED_MARKER =
+  `<!-- issue-routing owner=${AUTOTRADER} subject=${VIBE} kind=implementation -->`;
+
+/** X (open, VibeCoder#3607) plus a same-titled, owned issue in the owner repository. */
 function sameTitledStore(closedAt: string | null): FakeStore {
   const store = pairStore();
   const at = issue(store, AUTOTRADER, 3242);
   at.number = 50;
   at.title = issue(store, VIBE, 3607).title;
+  at.body = `${OWNED_MARKER}\n\n${at.body}`;
   at.closedAt = closedAt;
   return store;
 }
 
 for (const dryRun of [false, true]) {
-  Deno.test(`route-issue --resolve-duplicate - with no --correct, a same-titled owner issue closed within the window is refused and X stays open (dry-run ${dryRun})`, async () => {
+  Deno.test(`route-issue --resolve-duplicate - with no --correct, a same-titled owner issue closed within the window is not reused: a fresh issue is filed (dry-run ${dryRun})`, async () => {
     const store = sameTitledStore("2026-10-10T00:00:00Z");
     const gh = routingFakeGh(store);
     const { result, data } = await resolve({
@@ -350,18 +358,25 @@ for (const dryRun of [false, true]) {
       ...(dryRun ? { "dry-run": true } : {}),
     }, gh);
 
-    assertEquals(result.success, false);
-    assertEquals(data?.outcome, "refused");
-    assertStringIncludes(result.message, `${AUTOTRADER}#50`);
-    assertStringIncludes(result.message, "not open");
-    assertEquals(issue(store, VIBE, 3607).closedAt, null);
+    assertEquals(result.success, true);
     assertEquals(issue(store, AUTOTRADER, 50).comments, []);
-    assertEquals(gh.calls.filter(isWriteCall), []);
-    assertEquals(store.issues.length, 2, "no fresh Y was filed");
+    assertEquals(issue(store, AUTOTRADER, 50).closedAt, "2026-10-10T00:00:00Z");
+    if (dryRun) {
+      assertEquals(data?.outcome, "would-resolve");
+      assertEquals(issue(store, VIBE, 3607).closedAt, null);
+      assertEquals(gh.calls.filter(isWriteCall), []);
+      assertEquals(store.issues.length, 2, "nothing was filed in a dry run");
+    } else {
+      assertEquals(data?.outcome, "resolved");
+      assertEquals(data?.correct_issue, `${AUTOTRADER}#51`);
+      assert(issue(store, VIBE, 3607).closedAt !== null, "#3607 is closed");
+      assertEquals(issue(store, AUTOTRADER, 51).closedAt, null);
+      assertEquals(store.issues.length, 3, "one fresh issue was filed");
+    }
   });
 }
 
-Deno.test("route-issue --resolve-duplicate - with no --correct, a same-titled owner issue that is open is reused (positive control)", async () => {
+Deno.test("route-issue --resolve-duplicate - with no --correct, an open owned same-titled owner issue is reused (positive control)", async () => {
   const store = sameTitledStore(null);
   const gh = routingFakeGh(store);
   const { result, data } = await resolve({
@@ -374,3 +389,62 @@ Deno.test("route-issue --resolve-duplicate - with no --correct, a same-titled ow
   assertEquals(issue(store, AUTOTRADER, 50).closedAt, null);
   assertEquals(issue(store, AUTOTRADER, 50).comments.length, 1);
 });
+
+/**
+ * Hooks gh so that the owner issue changes between the lookup and the verify:
+ * `mutate` runs on the first view of AUTOTRADER#50, which is the verify call.
+ */
+function mutateOnVerify(
+  store: FakeStore,
+  mutate: (owner: FakeIssue) => void,
+): FakeGhHooks {
+  let done = false;
+  return {
+    failWhen: (args) => {
+      if (
+        !done && args[0] === "issue" && args[1] === "view" &&
+        args[2] === "50" && args.includes(AUTOTRADER)
+      ) {
+        done = true;
+        mutate(issue(store, AUTOTRADER, 50));
+      }
+      return undefined;
+    },
+  };
+}
+
+const VERIFY_PROBES: [string, (owner: FakeIssue) => void, string][] = [
+  [
+    "the owned marker is gone",
+    (owner) => {
+      owner.body = owner.body.replace(OWNED_MARKER, "");
+    },
+    "body does not contain the marker",
+  ],
+  [
+    "the author is not a fleet account",
+    (owner) => {
+      owner.author = "someone-else";
+    },
+    "author is not a fleet account",
+  ],
+];
+
+for (const [label, mutate, reason] of VERIFY_PROBES) {
+  Deno.test(`route-issue --resolve-duplicate - refuses when the owned-issue check fails at verify time (${label}), with the reason in the error`, async () => {
+    const store = sameTitledStore(null);
+    const gh = routingFakeGh(store, mutateOnVerify(store, mutate));
+    const { result, data } = await resolve({
+      "resolve-duplicate": `${VIBE}#3607`,
+    }, gh);
+
+    assertEquals(result.success, false);
+    assertEquals(data?.outcome, "refused");
+    assertStringIncludes(
+      result.message,
+      `${AUTOTRADER}#50 is not an owned, open issue in ${AUTOTRADER} (${reason})`,
+    );
+    assertEquals(issue(store, VIBE, 3607).closedAt, null);
+    assertEquals(gh.calls.filter(isWriteCall), []);
+  });
+}
