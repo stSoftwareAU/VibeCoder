@@ -901,7 +901,7 @@ flowchart TD
     G -- unreadable --> W
     G --> H{"required_status_checks<br/>or pull_request rule?"}
     H -- no --> W
-    H -- yes --> I{"Any open milestone-fix<br/>PR for this PR already?"}
+    H -- yes --> I{"Open same-repository milestone-fix<br/>PR for this PR, opened by a fleet author?"}
     I -- yes --> J["Stand down silently: no agent run,<br/>no attempt, no retry, no comment"]
     I -- no --> K["Fix on milestone-fix/pr-N-ci-n,<br/>PR into the gated head,<br/>auto-merge armed"]
     M -- review feedback --> G2[GET /rules/branches/head]
@@ -1114,7 +1114,7 @@ default tip never refills the attempt count.
 | Ruleset write **fails for one repo**                | Logged as a non-fatal warning                              | Setup continues; the next setup run retries idempotently                       |
 | Required check is **unsatisfiable** on the repo     | Check is dropped from the required set                     | The merge is never blocked by a check that can never pass                      |
 | PR head is a **ruleset-gated** `milestone/**` branch (spelling pass) | Pass stands down before the agent runs; one comment names the rule | Changes land through a PR into the milestone branch, or an operator adds a bypass actor |
-| PR head is a **ruleset-gated** `milestone/**` branch (CI fix / review feedback) | Fix runs on a `milestone-fix/**` branch and is raised as an auto-merge-armed PR into the gated head (Issue #2907); the CI-fix pass alone stands down without spending a retry while any fix PR for the head is already open | The fix PR's own CI runs and it auto-merges into the gated head once green |
+| PR head is a **ruleset-gated** `milestone/**` branch (CI fix / review feedback) | Fix runs on a `milestone-fix/**` branch and is raised as an auto-merge-armed PR into the gated head (Issue #2907); the CI-fix pass alone stands down without spending a retry while an open fix PR for the head exists that the fleet opened from this repository (a same-repository head), or when the check for one fails | The fix PR's own CI runs and it auto-merges into the gated head once green |
 
 ## Related implementation
 

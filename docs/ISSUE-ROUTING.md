@@ -138,7 +138,8 @@ when the same-titled Y the search step found is not an owned, open,
 fleet-authored issue. With no `--correct` that last case is a same-titled issue
 or PR in the owner repository that is closed (within the last 30 days), is a
 PR, lacks the routing marker or was filed by someone else; the reused Y is
-checked again just before X is closed. X stays open rather than closing in
+checked again right after it is found, before either linking comment is
+written and before X is closed. X stays open rather than closing in
 favour of work this tool does not own or that is no longer tracked, so reopen
 Y or name the open owning issue with `--correct`. A failed step exits
 non-zero, names the step and leaves X open. Each linking comment carries a
