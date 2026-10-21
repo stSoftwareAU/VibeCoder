@@ -1,13 +1,16 @@
 ## Summary
 
-Worker paths that reuse an existing issue or PR now adopt only an artefact that
-is **owned** (it carries this tool's marker or discriminator), **open** and
-**fleet-authored**. A lookup that answers "is there something that makes filing
-redundant?" no longer answers "may I write to it?" on its own. A shared helper,
-`findOwnedOpenArtefact` in `worker/deno/lib/owned_open_artefact.ts`, now backs
-the routed-issue search and recheck, the `--resolve-duplicate` and `--part`
-paths, and the milestone fix-PR takeover. A cap test (`owned_reuse_cap_test.ts`)
-fails any new module that reports a reuse without that lookup. Closes #3854.
+Worker paths that reuse an existing issue or PR, or write to one, now adopt only
+an artefact that is **owned** (it carries this tool's marker or discriminator),
+**open** and **fleet-authored**. The dedup that decides whether to file at all
+is unchanged. A shared helper, `findOwnedOpenArtefact` in
+`worker/deno/lib/owned_open_artefact.ts`, now picks the artefact for the
+routed-issue reuse and recheck, the `--resolve-duplicate` and `--part` paths,
+and the milestone fix-PR takeover. A cap test (`owned_reuse_cap_test.ts`) fails
+a module that holds a quoted `"reused"` or `"*-reused"` literal that is not a
+comparison operand, or a `reused: true` field, when the module calls none of
+`findOwnedOpenArtefact`, `findOpenMilestoneFixPr` or `findOpenIssueByFindingId`
+and is not in the manifest. Closes #3854.
 
 ## Spec
 
@@ -26,18 +29,35 @@ fails any new module that reports a reuse without that lookup. Closes #3854.
 - The helper fails loud. A `gh` failure, invalid JSON, a row of the wrong shape
   or a page at its limit throws, rather than reading as "nothing to reuse",
   which would file a duplicate.
-- An unresolved fleet author set discards every row, so the failure direction is
-  toward filing, not reuse.
+- An unresolved fleet author set discards every row, so nothing is reused or
+  written to. After a routing dedup hit the result is `suppressed`, and nothing
+  is filed. The fix-PR lookup returns no PR, so the caller raises its own.
 - `verifyOwnedOpenIssue` decides whether an existing issue may be reused or
   closed as a duplicate, and names the failed check in its verdict (state,
   marker, caller's `accept`, or author). A refusal therefore says which check
   failed.
 - The cap test's manifests are shrink-only. `OWNED_REUSE_UNVERIFIED_FILES` is
-  now empty, and `OWNED_REUSE_NOT_ARTEFACT_FILES` lists four modules that report
-  a reuse outcome for something other than an issue or PR.
-- The routed-issue lookup keeps its dedup meaning for `search`, and adds a
-  second check for the write that follows it: `recheck` closes the new issue
-  only for an owned, open, lower-numbered match.
+  now empty, and `OWNED_REUSE_NOT_ARTEFACT_FILES` lists four exempt modules,
+  each with the reason its `reused` string is not an artefact reuse.
+- The routed-issue `search` step keeps its dedup meaning. `findRoutingDuplicates`
+  (open, or closed in the last 30 days, issues and PRs, any author) still
+  decides whether to file at all. It is restored unchanged from `main`, with
+  its tests. Only after a dedup hit does `findOwnedOpenArtefact` look for an
+  owned, open, fleet-authored issue with that title. When it finds one,
+  `fileRoutedIssue` returns `reused` or `would-reuse`. Otherwise it returns a
+  new action, `suppressed`, with the lowest-numbered dedup match and no write.
+  On `main` such a match (closed, a PR, unmarked or foreign) was reported as
+  `reused`. It is still not refiled, but it is no longer called a reuse.
+- Each caller handles `suppressed` with no write. `--resolve-duplicate` refuses
+  and leaves X open (`issue_routing_resolve.ts`). `--part` fails that part and
+  leaves the match unedited (`issue_routing_split.ts`). `route-issue` create
+  mode prints `route-issue suppressed: <repo>#<n>` and succeeds.
+  `suggest-improvements` lists the action in `routed` and adds, for example,
+  `; 1 improvement not filed, because a same-titled issue or PR exists that is
+  not reused` to its summary.
+- `recheck` closes the new issue only for an owned, open, fleet-authored,
+  lower-numbered match. A racing copy that fails those checks does not close
+  this one, so the new issue stays open beside it.
 
 ### Undiscoverable Facts
 
@@ -55,9 +75,14 @@ This is a code change with its tests in `worker/deno/`. Changed surfaces:
   fleet-authored lookup and the verify verdict.
 - `worker/deno/lib/owned_reuse_manifest.ts` (new): the scanner and the
   shrink-only manifests.
-- `worker/deno/lib/issue_routing_filing.ts`, `issue_routing_resolve.ts` and
-  `issue_routing_split.ts`: the routed-issue search and recheck, the
-  `--resolve-duplicate` verify, and the `--part` reuse check.
+- `worker/deno/lib/issue_routing_filing.ts`: the `search` step runs the dedup,
+  then the owned lookup after a hit, and returns `reused` or `suppressed`. The
+  `recheck` step uses the owned lookup.
+- `worker/deno/lib/issue_routing_resolve.ts` and `issue_routing_split.ts`:
+  refuse a `suppressed` match, verify a reused one with `verifyOwnedOpenIssue`,
+  and check a reused `--part` with `requireReusablePart`.
+- `worker/deno/lib/issue_routing_github.ts`: no diff against `main`.
+  `findRoutingDuplicates` is kept.
 - `worker/deno/lib/milestone_fix_pr.ts`: `findOpenMilestoneFixPr` delegates to
   the shared lookup.
 - `worker/deno/commands/route_issue.ts`: threads the fleet author options
@@ -67,11 +92,13 @@ This is a code change with its tests in `worker/deno/`. Changed surfaces:
   when they are set.
 - `worker/deno/lib/github.ts` (option at 638, forwarding at 708):
   `createGitHubIssuesWithPartialFailures` takes `dedupAuthors` and passes it to
-  the alert dedup as `authors`.
+  `fileRoutedIssue` as `authors`.
 - `worker/deno/commands/suggest_improvements.ts` (option at 209, forwarding at
-  267): the command takes `dedupAuthors` and passes it on to the github helper.
+  267, suppressed count at 285-291): the command takes `dedupAuthors`, passes
+  it on to the github helper, and counts `suppressed` results in its summary.
 
-**Docs sweep** — grep: `--resolve-duplicate`, `--part`, `route-issue`; section:
+**Docs sweep** — grep: `--resolve-duplicate`, `--part`, `route-issue`,
+`findOpenMilestoneFixPr`, `stands down`; section:
 `docs/ISSUE-ROUTING.md#retiring-a-wrong-repository-duplicate`,
 `docs/ISSUE-ROUTING.md#splitting-work-across-codebases`; siblings: none — this
 change adds no member to an existing set of documented surfaces; updated:
@@ -92,112 +119,105 @@ would only drift.
 
 ## Test Plan
 
-- Added `worker/deno/tests/owned_open_artefact_test.ts` (22 tests),
-  `worker/deno/tests/owned_reuse_cap_test.ts` (14 tests), and extended
-  `issue_routing_filing_test.ts`, `route_issue_resolve_duplicate_test.ts`,
-  `route_issue_split_test.ts` and `milestone_fix_pr_owned_test.ts`. All are
-  green on the final head.
-- Suggest test expectation: `worker/deno/tests/suggest_improvements_test.ts:771`,
-  "suggest-improvements - a closed owned match is not reused, whatever the clock
-  (Issue #3854)". Its Task 1 red check went red because the fake `gh` threw on
-  a non-`open` state argument, not on the closed-match assertion the test name
-  describes, so that red is not evidence for the check. It was not re-run for
-  this summary.
-- Red checks. Each one changes a single line or file, runs `deno task test:unit`
-  on the covering test files, and restores with `git checkout`:
-  - 2a1: a fake path added to `OWNED_REUSE_UNVERIFIED_FILES` and an entry
-    removed from `OWNED_REUSE_NOT_ARTEFACT_FILES` → red
-    (`FAILED | 12 passed | 2 failed`). Named: "every manifest entry names a file
-    that exists", "the unverified list holds no file that was fixed".
-  - 2a2: an entry removed from `OWNED_REUSE_NOT_ARTEFACT_FILES` → red. Named:
-    "no new module reports a reuse without an owned lookup".
-  - 2b: a temporary module with a bare `"reused"` literal → red
-    (`FAILED | 13 passed | 1 failed`).
-  - 2c1: the `OPEN` state check removed → red. Named: "a closed owned issue is
-    not reused".
-  - 2c2: the marker check removed → red. Named: "an issue missing the marker is
-    not reused".
-  - 2c3: the `selectFleetAuthoredMatches` call replaced by the unfiltered list →
-    red (`FAILED | 19 passed | 3 failed`). Named: "a foreign-authored owned
-    issue is not reused", "a prefix match by a foreign author is not reused",
-    "an unresolved fleet set returns null and logs it".
-  - 2c4: the `gh` catch returns `null` → red. Named: "a gh failure throws with
-    repo, kind and stderr".
-  - 2d: the verify-time refusal in `issue_routing_resolve.ts` disabled → red.
-    Named: two `--resolve-duplicate` refusals, one for the author and one for
-    the missing marker.
-  - 2e: `requireReusablePart` returns early → red (four `--part` tests named).
-  - 2f: the `findOwned` marker blanked → red (`FAILED | 20 passed | 1 failed`).
-    Named: "an open same-titled issue with no owned marker is not reused, and is
-    not closed".
-  - 2g: `milestone_fix_pr.ts` reverted to the base commit → red. Named: three
-    `findOpenMilestoneFixPr` tests (closed or merged, gh failure, empty fleet
-    set).
-  - B1: `milestone_fix_pr.ts:167` changed from `? {}` to `? { fleetAuthors: [] }`
-    (the omitted-fleetAuthors arm) → red at
-    `milestone_fix_pr_owned_test.ts:199:6` ("omitted fleetAuthors reads the
-    configured identity, not an empty set"). Run with `deno test -A --no-check`
-    on that file, stdin from `/dev/null`. Restored; `git diff` on the file is
-    empty afterwards.
-  - B2: `pr_ci_processor.ts` wiring reverted from the fleet spread to `{ gh: ghFn }`
-    → red at `gated_head_passes_test.ts:168` (1 failing). Restored; `git diff`
-    on the file is empty afterwards.
-- Flips (one arm of the branch outcomes each; the facts file records the
-  testName):
-  - X1 (prefix check removed, `owned_open_artefact.ts:157`) → red. Named: "a
-    discriminator narrows the match (Issue #3065)".
-  - X2 (state check in `verifyOwnedOpenIssue` disabled) → red. Named: "verify
-    refuses a closed issue and names the state".
-  - X3 (`recheck` lower-number condition disabled) → red (three tests, including
-    the concurrent-filer convergence test).
-  - X4 (reuse branch in `fileRoutedIssue` disabled) → red
-    (`FAILED | 18 passed | 3 failed`).
-  - X5 (reuse gate in `requireReusablePart` disabled) → red
-    (`FAILED | 14 passed | 4 failed`).
-  - X6 (same-repository check replaced by `true`) → red
-    (`FAILED | 29 passed | 2 failed`).
-  - X7 (limit check disabled) → red (`FAILED | 20 passed | 2 failed`).
-  - X10 (verify marker check disabled) → red (`FAILED | 65 passed | 3 failed`).
-  - X11 (verify author gate disabled) → red (`FAILED | 65 passed | 3 failed`).
-  - X12 (verify `accept` check disabled) → red
-    (`FAILED | 66 passed | 2 failed`).
-  - X8 (the open-state check at `issue_routing_resolve.ts:292`,
-    `if (view.state !== "OPEN")`) → red at
-    `route_issue_resolve_duplicate_test.ts:268` (the test declaration), with the
-    failing assertion at `:275`. The earlier `view.state !== "OPEN"` arm at former
-    line 351 was removed, not flipped, because `verifyOwnedOpenIssue` checks the
-    state first, so that arm was unreachable.
-  - Production spread at `github.ts:708` replaced by `{}` → red (2 failing) in
-    `suggest_improvements_test.ts`, "an existing open issue with the same title
-    is reused, not refiled (Issue #3745)".
-  - Production spread at `suggest_improvements.ts:267` replaced by `{}` → red
-    (1 failing) in `suggest_improvements_test.ts`, "the summary counts created,
-    reused and would-be issues with the right plurals (Issue #3745)". The
-    `:582` reuse test calls the github helper directly, so only the `:694`
-    summary-count test reaches this arm.
-  - X9a (`milestone_fix_pr.ts:165`, arm forced to `{}`) → red
-    (`FAILED | 7 passed | 3 failed`). Named: "a fleet-authored owned open fix PR
-    is returned", "a discriminator narrows the match", and "omitted fleetAuthors
-    reads the configured identity, not an empty set".
-  - X9b (`milestone_fix_pr.ts:165`, arm forced to `deps.fleetAuthors ?? []`) →
-    red (`FAILED | 9 passed | 1 failed`). Named: "omitted fleetAuthors reads the
-    configured identity, not an empty set". Both flips were restored, and
-    `git diff` on `milestone_fix_pr.ts` is empty afterwards.
+- Removed from `worker/deno/tests/suggest_improvements_test.ts`: `assertEquals(routed?.action, "reused");`
+  Required by: "a dedup hit may suppress a filing; only an owned, open match may be reused or written to"
+  Replaced by: `assertEquals(routed?.action, "suppressed");`
+- Restored from `main` with no diff: `worker/deno/lib/issue_routing_github.ts`
+  and `worker/deno/tests/issue_routing_github_test.ts` (every
+  `findRoutingDuplicates` assertion). These base expectations are restored
+  verbatim:
+  - the `dry-run` filing test's
+    `assert(gh.calls.some((c) => c[0] === "search"));`;
+  - the `--resolve-duplicate` test "with no --correct, a same-titled owner
+    issue closed within the window is refused and X stays open";
+  - the `--part` tests "an unrelated same-titled issue (…) is neither reused
+    nor edited" and "a dry run flags an unrelated same-titled issue instead of
+    planning to reuse it";
+  - the exact WARNING count in `github_test.ts` "warns once per stripped
+    reserved label". That test now passes
+    `dedupAuthors: { fleetAuthors: [FLEET_LOGIN] }`, so it is hermetic.
+- `suggest_improvements_test.ts` "the command's injected clock sets the
+  duplicate-search window (Issue #3745)" keeps its number and store
+  assertions. The action assertion is replaced (above), and two assertions are
+  added: no comment on the match, and the summary's suppressed sentence.
+- New tests:
+  - `issue_routing_filing_test.ts`: "a same-titled match {closed within the
+    window, by another author, with no owned marker, a pull request}
+    suppresses the filing, is not reused and is not written to", each with
+    dry-run false and true. "a suppressed filing logs the match it did not
+    reuse, and the author check logs the foreign row" pins the log context
+    `{ repo, duplicate }`.
+  - `route_issue_resolve_duplicate_test.ts`: "an open same-titled owner issue
+    {by another author, with no owned marker} is refused, not reused, and no
+    fresh Y is filed".
+  - `route_issue_split_test.ts`: the unrelated-issue loop also covers "open,
+    carrying this tool's marker, by another author" and "a pull request
+    carrying this tool's marker".
+  - `route_issue_test.ts`: "under the injected clock a same-titled owned issue
+    {that is open is reused, closed inside the window suppresses the filing},
+    with no write (Issue #3854)".
+  - `owned_open_artefact_test.ts` (23 tests): "verify with an unresolved fleet
+    set refuses and logs the consequence". `owned_reuse_cap_test.ts` has 14
+    tests.
+- Mutation check. Each listed mutant was applied by deleting the line, and the
+  named file went red (`deno test -A --no-check`, stdin from `/dev/null`). Each
+  was restored with `cp`.
+  - `route_issue.ts` `now: deps.now` → `FAILED | 56 passed | 1 failed`, in
+    `route_issue_test.ts` "…closed inside the window suppresses the filing…".
+  - `issue_routing_filing.ts` `search:` → `FAILED | 25 passed | 1 failed`. The
+    reuse test asserts the lookup's `--search` value is
+    `"<title>" in:title`.
+  - `issue_routing_filing.ts` `log:` → `FAILED | 25 passed | 1 failed`, in "a
+    suppressed filing logs the match it did not reuse…".
+  - `issue_routing_resolve.ts` `log:` → `FAILED | 21 passed | 1 failed`. The
+    verify-time probe asserts the foreign author is logged.
+  - `milestone_fix_pr.ts` `kind: "pr"` → `FAILED | 44 passed | 1 failed`. The
+    gh-failure test asserts `Owned pr lookup in <repo>`.
+- Coverage carry-over: `milestone_sync_pr_budget_test.ts`'s fake again returns
+  `prListRaw` for the sync-PR listing, which names `--head`. Only the fix-PR
+  lookup, a `--base` listing with no `--head`, gets `[]`. So
+  `milestone_sync_landing.ts:224-229` is reached again: lcov reports `DA:224,1`
+  through `DA:229,1`. The `routing_fake_gh.ts` lines 152-154, 202-230 and
+  331-332 (the `search` command) are reached again by the restored dedup.
+- Flips. Each changes one line and goes red, and the file is restored with
+  `cp`. The facts file records the testName for each.
+  - `issue_routing_filing.ts:279` `duplicates.length > 0` → `false`:
+    `FAILED | 15 passed | 11 failed`.
+  - `issue_routing_filing.ts:286` `owned !== null` → `false`:
+    `FAILED | 16 passed | 10 failed`.
+  - `issue_routing_filing.ts:233` marker → `""`: `FAILED | 24 passed |
+    2 failed` (the two "with no owned marker" cases).
+  - `issue_routing_filing.ts:345` lower-number condition → `false`:
+    `FAILED | 23 passed | 3 failed`.
+  - `issue_routing_resolve.ts:328` suppressed refusal → `false`:
+    `FAILED | 18 passed | 4 failed`. `:351` verify refusal → `false`:
+    `FAILED | 19 passed | 3 failed`.
+  - `issue_routing_split.ts:275` suppressed failure → `false`:
+    `FAILED | 15 passed | 6 failed`. `:284` reuse gate → `false`:
+    `FAILED | 15 passed | 6 failed`.
+  - `suggest_improvements.ts:286` `suppressed > 0` → `false`:
+    `FAILED | 34 passed | 1 failed`.
+  - The previous round ran the flips on lines this round did not change, and
+    their facts entries are unchanged: the cap manifest (2a1, 2a2, 2b), the
+    owned lookup (2c1-2c4, X1, X6, X7), verify (X2, X10-X12),
+    `milestone_fix_pr.ts` (2g, X9a, X9b, B1), `pr_ci_processor.ts` (B2), and
+    the `github.ts:708` and `suggest_improvements.ts:267` spreads.
+- Targeted run with type checking: `deno test -A` over the routing, suggest,
+  github, owned, milestone fix-PR, sync budget, gated-head, takeover and cap
+  test files → `ok | 398 passed | 0 failed | 1 ignored`. `deno lint` and
+  `deno fmt --check` on `lib`, `commands` and `tests` are clean.
 
-Quality gate: `./quality.sh < /dev/null` passed on the final head (every check
-passed; `config integration` skipped, as it needs a live worker config).
+Quality gate: `./quality.sh < /dev/null` passed on code head `eb64ebf9`
+(`Result: PASSED (with skipped checks)`, exit 0). The parallel and serial Deno
+test runs, type check, lint and fmt all passed. `config integration` was
+skipped because it needs a live worker config.
 
 Not checked: the `config integration` check, which `quality.sh` skips here.
 
 ## Follow-ups / out of scope
 
-- `now?: () => Date` on the options at `worker/deno/lib/github.ts:636`,
-  `worker/deno/commands/suggest_improvements.ts:207` and
-  `worker/deno/lib/issue_routing_github.ts:23` is vestigial, because the
-  closed-owner window it served was removed. Removing it is a separate change.
-- The test "a same-titled owner issue closed within the window is not reused" in
-  `worker/deno/tests/route_issue_resolve_duplicate_test.ts` still names the
-  removed window. Renaming it is left for a follow-up.
+- None. The `now` option is live again, because the restored dedup window uses
+  it.
 
 <!-- vibe-branch-outcomes -->
 
