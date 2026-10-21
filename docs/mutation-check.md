@@ -231,21 +231,29 @@ whatever the repository's primary language.
 | Swap `&&` and `\|\|`         | `a && b` becomes `a \|\| b` and the reverse                                                                                                                                                                             |
 | Swap a return status         | `return 0` becomes `return 1` and the reverse                                                                                                                                                                           |
 | Flip an `exit` status        | `exit 0` becomes `exit 1`, and a non-zero `exit` becomes `exit 0`                                                                                                                                                       |
-| Drop a guard                 | A guarded assignment `[[ cond ]] \|\| x=y` becomes `x=y`; the `&&` and `\|\|` swap covers the reverse direction                                                                                                         |
+| Drop or add a guard          | `[[ cond ]] \|\| x=y` becomes `x=y`, and a plain statement `x=y` becomes `false && x=y`, which never runs it                                                                                                            |
+
+The guard-adding mutant never runs the statement, as `:` does, but its status is
+1 where `:` leaves 0, so it is a separate mutant. It applies to one simple
+command only. Lines with `;`, `&`, `|` or parentheses, and lines that already
+have `&&` or `||`, get no added guard.
 
 Like the Deno mutator, it is hand-scanned, skips added lines over 400
 characters, and is capped at 40 mutants shared across the changed shell scripts
 of the run.
 
-Covering tests for a changed script are the shell test files whose text
-contains the script's repository-relative path or its basename. Each covering
-test runs as `bash <test>` from the repository root, in the same allowlisted
-environment as the other child processes (see
-[Child environment](#child-environment)). Before any mutant, each covering test
-must pass unmutated; a failing baseline is an error, and a passing one also
-shows that the selected test ran. With a mutant in place, a covering test that
-exits non-zero kills the mutant; when every covering test exits zero, the mutant
-is a survivor.
+Covering tests for a changed script are the shell test files whose text contains
+the script's repository-relative path or its basename. Each covering test runs
+as `bash <test>` from the repository root, in the same allowlisted environment
+as the other child processes (see [Child environment](#child-environment)).
+Before any mutant, each covering test must pass unmutated; a failing baseline is
+an error. A passing baseline shows only that the selected test exits 0 on the
+unmutated script. Discovery matches a test by the script's repository-relative
+path or basename in its text, so a test that names a script without running it
+can let mutants survive. With a mutant in place, a covering test that exits
+non-zero kills the mutant; when every covering test exits zero, the mutant is a
+survivor. A survivor is then reported for human review or recorded as an
+`exempt (untestable):` entry.
 
 A changed script that has mutants but that no test names is **not checked**.
 That is a verdict of its own, not a survivor: nothing of it ran, so the result

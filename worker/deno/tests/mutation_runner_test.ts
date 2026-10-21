@@ -11,17 +11,27 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { assertLinearGrowth } from "./support/growth.ts";
 import {
   confinePath,
   defaultMutationRunnerSeams,
   detectMutationLanguage,
   importsModule,
+  mergeMutationResults,
   type MutationRunnerSeams,
   type ProcessResult,
   runMutationCheck,
 } from "../lib/mutation_runner.ts";
+import {
+  evaluateMutationGate,
+  type MutationCheckResult,
+} from "../lib/mutation_gate.ts";
 import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
 
 const REPO = "/repo";
@@ -1047,4 +1057,500 @@ Deno.test("defaultMutationRunnerSeams runProcess - a child that ignores SIGTERM 
   );
   assertEquals(r.timedOut, true);
   assertEquals(r.code, 137);
+});
+
+// ---------------------------------------------------------------------------
+// Shell scripts (changed .sh files, mutated on a shared budget)
+// ---------------------------------------------------------------------------
+
+const SCRIPT = "scripts/run.sh";
+const SCRIPT_PATH = `${REPO}/${SCRIPT}`;
+/** One export, so its mutants sit on line 1. */
+const SH = "export FOO=bar\n";
+/** A shell test whose text names the script by its repo-relative path. */
+const SH_TEST = `bash ${SCRIPT}\n`;
+
+/** A unified diff that adds the lines of `body` to `file` from line 1. */
+function shellDiff(file: string, body: string): string {
+  const lines = body.split("\n").filter((l) => l !== "");
+  return `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n` +
+    `@@ -0,0 +1,${lines.length} @@\n` +
+    lines.map((l) => "+" + l).join("\n") + "\n";
+}
+
+const SH_DIFF = shellDiff(SCRIPT, "export FOO=bar");
+
+/** A fake that also lists shell and bats test files, as the real seams do. */
+function shellFake(
+  files: Record<string, string>,
+  run: Parameters<typeof fake>[1],
+  tick = 0,
+): Fake {
+  const f = fake(files, run, tick);
+  f.seams.listShellTestFiles = () =>
+    Promise.resolve(
+      [...f.files.keys()]
+        .filter((k) => k.startsWith(`${REPO}/tests/`) && /\.(sh|bats)$/.test(k))
+        .map((k) => k.slice(REPO.length + 1)),
+    );
+  return f;
+}
+
+/** A shell-only repository: a script and a shell test that names it. */
+const shellFiles = (extra: Record<string, string> = {}) => ({
+  [SCRIPT_PATH]: SH,
+  [`${REPO}/tests/run_test.sh`]: SH_TEST,
+  ...extra,
+});
+
+const shellInput = (diff: string) => ({ ...input(), diff });
+
+/** Fails only while the script is mutated, so every mutant is killed. */
+const killedWhenMutated = (
+  _c: string,
+  _a: string[],
+  fs: Map<string, string>,
+) => ok(fs.get(SCRIPT_PATH) === SH ? 0 : 1);
+
+/** Asserts the result kind and narrows to it. */
+function asKind<K extends MutationCheckResult["kind"]>(
+  r: MutationCheckResult,
+  kind: K,
+): Extract<MutationCheckResult, { kind: K }> {
+  assertEquals(r.kind, kind, JSON.stringify(r));
+  return r as Extract<MutationCheckResult, { kind: K }>;
+}
+
+Deno.test("runMutationCheck shell - a changed .sh in a Deno repo gets shell mutants and takes its language from the primary", async () => {
+  const f = shellFake(
+    denoFiles({ [SCRIPT_PATH]: SH, [`${REPO}/tests/run_test.sh`]: SH_TEST }),
+    () => ok(0),
+  );
+  const r = await runMutationCheck(
+    { ...input(), diff: DIFF + SH_DIFF },
+    f.seams,
+  );
+  const c = asKind(r, "completed");
+  assertEquals(c.language, "deno");
+  assert(
+    c.survivors.some((s) => s.file === SCRIPT),
+    JSON.stringify(c.survivors),
+  );
+  assert(f.calls.some((call) => call.cmd === "bash"), "shell test not run");
+});
+
+Deno.test("runMutationCheck shell - the shell pass draws on the same budget clock as the Deno pass", async () => {
+  const f = shellFake(
+    denoFiles({ [SCRIPT_PATH]: SH, [`${REPO}/tests/run_test.sh`]: SH_TEST }),
+    () => ok(0),
+    1000,
+  );
+  const r = await runMutationCheck(
+    { ...input(), diff: DIFF + SH_DIFF },
+    f.seams,
+  );
+  assertEquals(r.kind, "completed", JSON.stringify(r));
+  assert(f.calls.some((call) => call.cmd === "bash"), "shell test not run");
+  // Each call starts where the previous one left the shared clock, so the
+  // timeouts fall strictly from one call to the next across both passes.
+  for (let i = 1; i < f.calls.length; i++) {
+    assert(
+      f.calls[i]!.timeoutMs < f.calls[i - 1]!.timeoutMs,
+      `call ${i} timeout ${f.calls[i]!.timeoutMs} not below ${
+        f.calls[i - 1]!.timeoutMs
+      }`,
+    );
+  }
+});
+
+Deno.test("runMutationCheck shell - a surviving export deletion mutant blocks the gate until a matching exempt entry is added", async () => {
+  const f = shellFake(shellFiles(), () => ok(0));
+  const r = await runMutationCheck(shellInput(SH_DIFF), f.seams);
+  asKind(r, "completed");
+  const blocked = evaluateMutationGate(r, "");
+  assertEquals(blocked.blocked, true);
+  assert(
+    blocked.survivors.some((s) =>
+      s.file === SCRIPT && s.line === 1 && s.description === "deleted statement"
+    ),
+    JSON.stringify(blocked.survivors),
+  );
+  const summary =
+    "`scripts/run.sh:1` exempt (untestable): only exports a variable";
+  const unblocked = evaluateMutationGate(r, summary);
+  assertEquals(unblocked.blocked, false, unblocked.reason);
+  assert(
+    unblocked.exempted.some((s) =>
+      s.file === SCRIPT && s.line === 1 && s.description === "deleted statement"
+    ),
+    JSON.stringify(unblocked.exempted),
+  );
+});
+
+Deno.test("runMutationCheck shell - a test that runs the script with bash kills its mutants", async () => {
+  const f = shellFake(shellFiles(), killedWhenMutated);
+  const c = asKind(
+    await runMutationCheck(shellInput(SH_DIFF), f.seams),
+    "completed",
+  );
+  assertEquals(c.survivors, []);
+  assert(c.killed > 0, JSON.stringify(c));
+  assert(
+    f.calls.some((call) =>
+      call.cmd === "bash" && call.args[0] === "tests/run_test.sh"
+    ),
+    "bash did not run the named test",
+  );
+});
+
+Deno.test("runMutationCheck shell - a Deno test naming the script by basename kills its mutants", async () => {
+  const f = shellFake(
+    {
+      [SCRIPT_PATH]: SH,
+      [`${REPO}/tests/n_test.ts`]: 'Deno.test("n", () => run("run.sh"));\n',
+    },
+    killedWhenMutated,
+  );
+  const c = asKind(
+    await runMutationCheck(shellInput(SH_DIFF), f.seams),
+    "completed",
+  );
+  assertEquals(c.survivors, []);
+  assert(c.killed > 0, JSON.stringify(c));
+  assert(
+    f.calls.some((call) =>
+      call.cmd === "deno" && call.args.includes("tests/n_test.ts")
+    ),
+    "deno did not run the named test",
+  );
+});
+
+Deno.test("runMutationCheck shell - a bats test that names the script kills its mutants", async () => {
+  const f = shellFake(
+    { [SCRIPT_PATH]: SH, [`${REPO}/tests/run.bats`]: SH_TEST },
+    killedWhenMutated,
+  );
+  const c = asKind(
+    await runMutationCheck(shellInput(SH_DIFF), f.seams),
+    "completed",
+  );
+  assertEquals(c.survivors, []);
+  assert(c.killed > 0, JSON.stringify(c));
+  assert(
+    f.calls.some((call) =>
+      call.cmd === "bats" && call.args[0] === "tests/run.bats"
+    ),
+    "bats did not run the named test",
+  );
+});
+
+Deno.test("runMutationCheck shell - a script no test runs is not_checked, its mutants never run, and the gate blocks", async () => {
+  const f = shellFake(
+    { [SCRIPT_PATH]: SH, [`${REPO}/tests/other_test.sh`]: "echo hi\n" },
+    () => ok(0),
+  );
+  const r = await runMutationCheck(shellInput(SH_DIFF), f.seams);
+  const nc = asKind(r, "not_checked");
+  assertStringIncludes(nc.reason, `no test runs ${SCRIPT} (searched for`);
+  assertEquals(f.calls.length, 0, "no process may run for an uncovered script");
+  assertEquals(f.files.get(SCRIPT_PATH), SH);
+  const verdict = evaluateMutationGate(r, "");
+  assertEquals(verdict.blocked, true);
+  assertStringIncludes(verdict.reason, "not checked");
+});
+
+Deno.test("runMutationCheck shell - a covered script's survivors are named when another script is not_checked", async () => {
+  const other = "scripts/other.sh";
+  const f = shellFake(
+    shellFiles({ [`${REPO}/${other}`]: "export BAR=baz\n" }),
+    () => ok(0),
+  );
+  const r = await runMutationCheck(
+    shellInput(SH_DIFF + shellDiff(other, "export BAR=baz")),
+    f.seams,
+  );
+  const nc = asKind(r, "not_checked");
+  assertStringIncludes(nc.reason, `no test runs ${other}`);
+  assertStringIncludes(nc.reason, `also `);
+  assertStringIncludes(nc.reason, `${SCRIPT}:1 deleted statement`);
+  assert(
+    f.calls.some((call) => call.cmd === "bash"),
+    "the covered script's mutants did not run",
+  );
+  const verdict = evaluateMutationGate(r, "");
+  assertEquals(verdict.blocked, true);
+  assertStringIncludes(verdict.reason, "not checked");
+});
+
+Deno.test("runMutationCheck shell - a baseline failure is an error and the script is left unchanged", async () => {
+  const f = shellFake(shellFiles(), () => ok(1));
+  const e = asKind(
+    await runMutationCheck(shellInput(SH_DIFF), f.seams),
+    "error",
+  );
+  assertStringIncludes(e.reason, "baseline tests fail before mutation");
+  assertEquals(f.files.get(SCRIPT_PATH), SH);
+});
+
+Deno.test("runMutationCheck shell - a baseline timeout is budget_exhausted with nothing tested", async () => {
+  const f = shellFake(shellFiles(), () => ({
+    code: 1,
+    stdout: "",
+    stderr: "",
+    timedOut: true,
+  }));
+  const b = asKind(
+    await runMutationCheck(shellInput(SH_DIFF), f.seams),
+    "budget_exhausted",
+  );
+  assertEquals(b.tested, 0);
+  assertEquals(f.files.get(SCRIPT_PATH), SH);
+});
+
+Deno.test("runMutationCheck shell - a comment-only change is not_applicable and runs nothing", async () => {
+  const f = shellFake(
+    shellFiles({ [SCRIPT_PATH]: "# just a note\n" }),
+    () => ok(0),
+  );
+  const n = asKind(
+    await runMutationCheck(
+      shellInput(shellDiff(SCRIPT, "# just a note")),
+      f.seams,
+    ),
+    "not_applicable",
+  );
+  assertStringIncludes(n.reason, "no mutable statements");
+  assertEquals(f.calls.length, 0);
+});
+
+Deno.test("runMutationCheck shell - Deno sources and Rust files are never treated as shell scripts", async () => {
+  const body = "#!/bin/sh\nexport X=1\n";
+  const f = shellFake(
+    {
+      [`${REPO}/tools/gen.sh.ts`]: body,
+      [`${REPO}/src/x.rs`]: body,
+    },
+    () => ok(0),
+  );
+  const diff = shellDiff("tools/gen.sh.ts", "#!/bin/sh\nexport X=1") +
+    shellDiff("src/x.rs", "#!/bin/sh\nexport X=1");
+  const n = asKind(
+    await runMutationCheck(shellInput(diff), f.seams),
+    "not_applicable",
+  );
+  assert(!n.reason.includes("shell"), n.reason);
+  assertEquals(f.calls.length, 0);
+});
+
+Deno.test("runMutationCheck shell - a script reached through a symlink out of the repo is refused", async () => {
+  await realRepo(async (repo, outside) => {
+    await Deno.writeTextFile(`${outside}/run.sh`, SH);
+    await Deno.symlink(outside, `${repo}/link`);
+    await Deno.mkdir(`${repo}/tests`);
+    await Deno.writeTextFile(`${repo}/tests/run_test.sh`, "bash link/run.sh\n");
+    const writes: string[] = [];
+    const r = await runMutationCheck({
+      repoPath: repo,
+      diff: shellDiff("link/run.sh", "export FOO=bar"),
+      budgetSeconds: 60,
+    }, realSeams(writes));
+    asKind(r, "not_applicable");
+    assertEquals(writes, []);
+    assertEquals(await Deno.readTextFile(`${outside}/run.sh`), SH);
+  });
+});
+
+Deno.test("runMutationCheck shell - the original script is restored when runProcess throws", async () => {
+  const f = shellFake(shellFiles(), (_c, _a, fs) => {
+    if (fs.get(SCRIPT_PATH) !== SH) throw new Error("runner blew up");
+    return ok(0);
+  });
+  const e = asKind(
+    await runMutationCheck(shellInput(SH_DIFF), f.seams),
+    "error",
+  );
+  assertEquals(e.reason, "runner blew up");
+  assertEquals(f.files.get(SCRIPT_PATH), SH);
+});
+
+Deno.test("runMutationCheck shell - the original script is restored when a mutant times out", async () => {
+  const f = shellFake(
+    shellFiles(),
+    (_c, _a, fs) =>
+      fs.get(SCRIPT_PATH) === SH ? ok(0) : {
+        code: 1,
+        stdout: "",
+        stderr: "",
+        timedOut: true,
+      },
+  );
+  asKind(
+    await runMutationCheck(shellInput(SH_DIFF), f.seams),
+    "budget_exhausted",
+  );
+  assertEquals(f.files.get(SCRIPT_PATH), SH);
+});
+
+// ---------------------------------------------------------------------------
+// mergeMutationResults
+// ---------------------------------------------------------------------------
+
+Deno.test("mergeMutationResults - the more severe kind wins whichever side it is on", () => {
+  const ranked: MutationCheckResult[] = [
+    { kind: "error", reason: "boom" },
+    { kind: "not_checked", language: "shell", reason: "no test runs x" },
+    {
+      kind: "budget_exhausted",
+      language: "deno",
+      survivors: [],
+      killed: 0,
+      tested: 0,
+      total: 1,
+      budgetSeconds: 1,
+    },
+    {
+      kind: "completed",
+      language: "deno",
+      survivors: [],
+      killed: 1,
+      total: 1,
+    },
+    { kind: "not_applicable", reason: "skip" },
+  ];
+  for (const [i, hi] of ranked.entries()) {
+    for (const lo of ranked.slice(i + 1)) {
+      assertEquals(
+        mergeMutationResults(lo, hi).kind,
+        hi.kind,
+        `${lo.kind} then ${hi.kind}`,
+      );
+      assertEquals(
+        mergeMutationResults(hi, lo).kind,
+        hi.kind,
+        `${hi.kind} then ${lo.kind}`,
+      );
+    }
+  }
+});
+
+Deno.test("mergeMutationResults - a tie keeps the primary's language, budget and limit", () => {
+  const primary: MutationCheckResult = {
+    kind: "budget_exhausted",
+    language: "deno",
+    survivors: [],
+    killed: 0,
+    tested: 0,
+    total: 1,
+    budgetSeconds: 10,
+    limit: "mutant_cap",
+  };
+  const secondary: MutationCheckResult = {
+    kind: "budget_exhausted",
+    language: "shell",
+    survivors: [],
+    killed: 0,
+    tested: 0,
+    total: 2,
+    budgetSeconds: 20,
+  };
+  assertEquals(mergeMutationResults(primary, secondary), {
+    kind: "budget_exhausted",
+    language: "deno",
+    survivors: [],
+    killed: 0,
+    tested: 0,
+    total: 3,
+    budgetSeconds: 10,
+    limit: "mutant_cap",
+  });
+  assertEquals(
+    mergeMutationResults(
+      { kind: "not_checked", language: "deno", reason: "a" },
+      { kind: "not_checked", language: "shell", reason: "b" },
+    ),
+    { kind: "not_checked", language: "deno", reason: "a; b" },
+  );
+});
+
+Deno.test("mergeMutationResults - survivors are concatenated in order and counts are summed", () => {
+  const a: MutationCheckResult = {
+    kind: "completed",
+    language: "deno",
+    survivors: [{
+      file: "lib/a.ts",
+      line: 1,
+      description: "deleted statement",
+    }],
+    killed: 2,
+    total: 3,
+  };
+  const b: MutationCheckResult = {
+    kind: "completed",
+    language: "shell",
+    survivors: [{
+      file: "scripts/b.sh",
+      line: 4,
+      description: "deleted statement",
+    }],
+    killed: 1,
+    total: 4,
+  };
+  assertEquals(mergeMutationResults(a, b), {
+    kind: "completed",
+    language: "deno",
+    survivors: [
+      { file: "lib/a.ts", line: 1, description: "deleted statement" },
+      { file: "scripts/b.sh", line: 4, description: "deleted statement" },
+    ],
+    killed: 3,
+    total: 7,
+  });
+});
+
+Deno.test("mergeMutationResults - reasons are joined with '; '", () => {
+  assertEquals(
+    mergeMutationResults(
+      { kind: "error", reason: "one" },
+      { kind: "error", reason: "two" },
+    ),
+    { kind: "error", reason: "one; two" },
+  );
+});
+
+Deno.test("mergeMutationResults - throws when neither side carries a language", () => {
+  const bare = {
+    kind: "completed",
+    survivors: [],
+    killed: 0,
+    total: 0,
+  } as unknown as MutationCheckResult;
+  assertThrows(
+    () => mergeMutationResults(bare, bare),
+    Error,
+    "a merged mutation result needs a language",
+  );
+});
+
+Deno.test("mergeMutationResults - a not_checked result folds in at most ten survivors", () => {
+  const survivors = Array.from({ length: 12 }, (_, i) => ({
+    file: SCRIPT,
+    line: i + 1,
+    description: "deleted statement",
+  }));
+  const merged = mergeMutationResults(
+    { kind: "not_checked", language: "shell", reason: "no test runs a.sh" },
+    {
+      kind: "completed",
+      language: "shell",
+      survivors,
+      killed: 0,
+      total: 12,
+    },
+  );
+  assertEquals(merged.kind, "not_checked");
+  const reason = merged.kind === "not_checked" ? merged.reason : "";
+  assertStringIncludes(reason, "also 12 surviving mutant(s)");
+  assertStringIncludes(reason, `${SCRIPT}:10 deleted statement`);
+  assertEquals(reason.split(`${SCRIPT}:`).length - 1, 10, reason);
+  assertEquals(reason.includes(`${SCRIPT}:11 `), false, reason);
 });

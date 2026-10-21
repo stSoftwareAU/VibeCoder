@@ -768,9 +768,78 @@ Deno.test("hasShellShebang - rejects other interpreters, a missing shebang, or a
 Deno.test("generateShellMutantsDetailed - deletes an export statement to a no-op", () => {
   const { mutants, dropped } = shell("export FOO=1\n", [1]);
   assertEquals(dropped, 0);
-  assertEquals(mutants.length, 1);
+  assertEquals(mutants.length, 2);
   assertEquals(mutants[0]?.description, "deleted statement");
   assertEquals(mutants[0]?.mutatedSource, ":\n");
+  assertEquals(
+    mutants[1]?.description,
+    "guarded statement off with `false &&`",
+  );
+  assertEquals(mutants[1]?.mutatedSource, "false && export FOO=1\n");
+});
+
+Deno.test("generateShellMutantsDetailed - guards a plain statement off with false && and keeps its indent", () => {
+  assertEquals(
+    mutantFor("x=y\n", [1], "guarded statement off with `false &&`"),
+    "false && x=y\n",
+  );
+  assertEquals(
+    mutantFor(
+      '    touch "$f"\n',
+      [1],
+      "guarded statement off with `false &&`",
+    ),
+    '    false && touch "$f"\n',
+  );
+  assertEquals(
+    mutantFor("\t[[ -f x ]]\n", [1], "guarded statement off with `false &&`"),
+    "\tfalse && [[ -f x ]]\n",
+  );
+});
+
+Deno.test("generateShellMutantsDetailed - no guard is added to a list, pipeline, subshell, substitution or header", () => {
+  const lines = [
+    "a=1; b=2",
+    "cat x | grep y",
+    "bar &",
+    "echo hi 2>&1",
+    "x=$(cmd)",
+    "declare -a arr=(1 2)",
+    "(cd dir)",
+    "f()",
+    "foo)",
+    "f() {",
+    "if true; then",
+    "fi",
+    "cmd \\",
+    "cat x |",
+    "foo &&",
+  ];
+  for (const line of lines) {
+    assertFalse(
+      shellDescriptions(`${line}\n`, [1]).includes(
+        "guarded statement off with `false &&`",
+      ),
+      line,
+    );
+  }
+});
+
+Deno.test("generateShellMutantsDetailed - an already guarded line gets no added guard", () => {
+  for (
+    const line of [
+      '[[ -f "$f" ]] || touch "$f"',
+      '[[ -f "$f" ]] && touch "$f"',
+      "a || b",
+    ]
+  ) {
+    assertFalse(
+      shellDescriptions(`${line}\n`, [1]).includes(
+        "guarded statement off with `false &&`",
+      ),
+      line,
+    );
+  }
 });
 
 Deno.test("generateShellMutantsDetailed - flips each test operator to its opposite", () => {
@@ -828,7 +897,10 @@ Deno.test("generateShellMutantsDetailed - flips a return or exit status", () => 
     "exit 0\n",
   );
   // A return status other than 0 or 1 has no flip.
-  assertEquals(shellDescriptions("return 2\n", [1]), ["deleted statement"]);
+  assertEquals(shellDescriptions("return 2\n", [1]), [
+    "deleted statement",
+    "guarded statement off with `false &&`",
+  ]);
 });
 
 Deno.test("generateShellMutantsDetailed - removes a [[ ]] guard", () => {
@@ -881,13 +953,21 @@ Deno.test("generateShellMutantsDetailed - keeps CRLF line endings on a mutated l
     shell("export FOO=1\r\n", [1]).mutants[0]?.mutatedSource,
     ":\r\n",
   );
+  assertEquals(
+    mutantFor("x=y\r\n", [1], "guarded statement off with `false &&`"),
+    "false && x=y\r\n",
+  );
 });
 
 Deno.test("generateShellMutantsDetailed - a 400-character line is processed and a 401-character line is dropped", () => {
   const at400 = "export X=" + "1".repeat(391);
   assertEquals(at400.length, 400);
   const ok = shell(`${at400}\n`, [1]);
-  assertEquals(ok.mutants.length, 1);
+  assertEquals(ok.mutants.length, 2);
+  assertEquals(
+    ok.mutants[1]?.description,
+    "guarded statement off with `false &&`",
+  );
   assertEquals(ok.dropped, 0);
   const over = shell(`${at400}1\n`, [1]);
   assertEquals(over.mutants, []);
@@ -895,16 +975,22 @@ Deno.test("generateShellMutantsDetailed - a 400-character line is processed and 
 });
 
 Deno.test("generateShellMutantsDetailed - stops at the cap and counts what it dropped", () => {
-  // One line with two candidates: a deletion and a flip.
+  // One line with three candidates: a deletion, a guard-off and a flip.
   const src = '  [ "$a" -eq 1 ]\n';
   const capped = shell(src, [1], 1);
   assertEquals(capped.mutants.map((m) => m.description), [
     "deleted statement",
   ]);
-  assertEquals(capped.dropped, 1);
+  assertEquals(capped.dropped, 2);
+  const twoCapped = shell(src, [1], 2);
+  assertEquals(twoCapped.mutants.map((m) => m.description), [
+    "deleted statement",
+    "guarded statement off with `false &&`",
+  ]);
+  assertEquals(twoCapped.dropped, 1);
   const none = shell(src, [1], 0);
   assertEquals(none.mutants, []);
-  assertEquals(none.dropped, 2);
+  assertEquals(none.dropped, 3);
 });
 
 Deno.test("generateShellMutantsDetailed - the default cap is 40 mutants", () => {
@@ -916,7 +1002,8 @@ Deno.test("generateShellMutantsDetailed - the default cap is 40 mutants", () => 
     lines.map((_, i) => i + 1),
   );
   assertEquals(all.mutants.length, 40);
-  assertEquals(all.dropped, 10);
+  // Each export line has two candidates, a deletion and a guard-off: 100 in all.
+  assertEquals(all.dropped, 60);
 });
 
 Deno.test("generateShellMutantsDetailed - a shell test file yields no mutants", () => {
@@ -950,7 +1037,8 @@ Deno.test("generateShellMutantsDetailed - a 50_000-character file completes at t
     lines,
   );
   assertEquals(mutants.length, 40);
-  assertEquals(dropped, 4_505);
+  // Two candidates per line: 9_090 in all, 40 kept.
+  assertEquals(dropped, 9_050);
 });
 
 Deno.test("generateShellMutantsDetailed - growth stays linear on hostile input", () => {

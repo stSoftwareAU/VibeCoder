@@ -1011,9 +1011,32 @@ function removeShellGuard(line: string): ShellCandidate | null {
   if (!rest.startsWith("||") && !rest.startsWith("&&")) return null;
   const body = rest.slice(2).trim();
   if (body === "") return null;
-  // The &&/|| swap covers the reverse direction (`||` guard becoming `&&`).
+  // This only drops a guard. Adding one is guardShellStatement's job.
   const indent = line.slice(0, line.length - line.trimStart().length);
   return { text: indent + body, description: "removed `[[ ]]` guard" };
+}
+
+/**
+ * The adding-a-guard direction: `false && <statement>` for a plain statement
+ * that is not already guarded. The statement never runs, as with `:`, but the
+ * status is 1 where `:` leaves 0, so the mutant is not a copy of the deletion:
+ * a test that checks the status a function or script returns kills this one
+ * only. Lines with `;`, `&`, `|` or parentheses are skipped. They are lists,
+ * pipelines, subshells, substitutions, case patterns or function headers, where
+ * the prefix would guard only part of the line or would not parse. A line that
+ * already has `&&` or `||` is skipped for the same reason.
+ */
+function guardShellStatement(
+  line: string,
+  trimmed: string,
+): ShellCandidate | null {
+  if (!isDeletableShellStatement(trimmed)) return null;
+  if (/[;&|()]/.test(trimmed)) return null;
+  const indent = line.slice(0, line.length - trimmed.length);
+  return {
+    text: `${indent}false && ${trimmed}`,
+    description: "guarded statement off with `false &&`",
+  };
 }
 
 /**
@@ -1049,10 +1072,15 @@ export function generateShellMutantsDetailed(
       isDeletableShellStatement(t)
         ? { text: `${indent}:`, description: "deleted statement" }
         : null,
+      guardShellStatement(line, t),
       flipShellOperator(line),
       swapShellConnective(line),
       removeShellGuard(line),
-      replaceStatus(line, "return", (d) => d === "0" ? "1" : d === "1" ? "0" : null),
+      replaceStatus(
+        line,
+        "return",
+        (d) => d === "0" ? "1" : d === "1" ? "0" : null,
+      ),
       replaceStatus(line, "exit", (d) => (d === "0" ? "1" : "0")),
     ];
     for (const c of candidates) {
