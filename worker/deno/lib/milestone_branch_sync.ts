@@ -1388,6 +1388,7 @@ async function takeoverOwnsHead(
       return true;
     }
   }
+  const fleetAuthors = deps.dedupAuthors?.fleetAuthors;
   const openFix = await findOpenMilestoneFixPr(
     repo,
     milestoneBranch,
@@ -1395,7 +1396,7 @@ async function takeoverOwnsHead(
     {
       gh: ghCommandFn,
       log,
-      ...(deps.dedupAuthors ? { dedupAuthors: deps.dedupAuthors } : {}),
+      ...(fleetAuthors ? { fleetAuthors } : {}),
     },
     "takeover-",
   );
