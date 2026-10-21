@@ -30,12 +30,17 @@ flowchart TD
     B -- yes --> Z["Raise PR"]
     B -- no --> D["Compute diff origin/base...HEAD"]
     D -- "diff unavailable" --> X["Block (fail closed)"]
-    D --> C["Detect language: Deno config above a changed file, else Cargo.toml"]
-    C -- "neither Deno nor Cargo" --> N["Not applicable: log the reason"]
+    D --> C["Detect languages: Deno config above a changed file, Cargo.toml, changed shell script"]
+    C -- "none of these" --> N["Not applicable: log the reason"]
     N --> Z
-    C --> E["Mutate added lines, run covering tests"]
-    E -- "runner error" --> X
-    E --> F{"Unexempted survivor?"}
+    C -- "Deno or Cargo" --> E["Deno or Cargo pass: mutate added lines, run covering tests"]
+    C -- "shell script" --> S["Shell pass: mutate added lines, run covering shell tests"]
+    E --> M["Merge passes on one budget: worst outcome wins"]
+    S --> M
+    M -- "runner error" --> X
+    M -- "changed script no test names" --> K["Not checked: add a test that names the script"]
+    K --> X
+    M --> F{"Unexempted survivor?"}
     F -- yes --> X
     F -- no --> G{"Budget exhausted or mutant cap hit?"}
     G -- yes --> W["Warn: remaining mutants untested"]
@@ -88,10 +93,12 @@ turn ran, the mutation check is re-run once.
 survivors; they are reported in the PR reply and the push still happens.
 
 A budget-exhausted or mutant-cap run is reported under that heading as such,
-as not passed, never as a pass, and does not trigger a recovery turn by itself. A runner error or an uncollectable diff is reported
-there as `mutation check failed to run (…)`. A check that is not applicable (no
-Deno project and no `Cargo.toml`, skipped, runner not wired, credentials
-unresolved, empty diff) is logged with its reason and is not reported.
+as not passed, never as a pass, and does not trigger a recovery turn by itself.
+A runner error or an uncollectable diff is reported there as
+`mutation check failed to run (…)`. A check that is not applicable (no Deno
+project, no `Cargo.toml` and no changed shell script, skipped, runner not wired,
+credentials unresolved, empty diff) is logged with its reason and is not
+reported.
 
 **CI-fix runs are out of scope.** A CI-fix run does not run the mutation check.
 
@@ -117,11 +124,20 @@ project such as VibeCoder's `worker/deno/` counts. Each module's tests run from
 that directory, so the project's own `deno.json` applies, and only tests inside
 it are run.
 
-| Found                                                          | Mutator                                                                                      |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `deno.json`, `deno.jsonc` or `deno.lock` above a changed file  | Built-in Deno mutator (below)                                                                |
-| `Cargo.toml` at the repository root                            | `cargo mutants --in-diff <diff> --output <temp dir> --no-shuffle --jobs N`, with N = min(4, CPUs) |
-| neither                                                        | Not applicable: the gate passes without running and logs the reason                          |
+Shell is detected separately, from the changed files, whatever the repository's
+primary language. A repository with changed shell scripts and a Deno or Cargo
+project runs both passes, and one whose only changes are shell scripts runs the
+shell pass alone. The passes share one budget, measured from one start, and
+their results are merged: the worst outcome wins (error, not checked, budget
+exhausted, completed, then not applicable), survivors are concatenated and the
+counts are summed.
+
+| Found                                                         | Mutator                                                                                           |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `deno.json`, `deno.jsonc` or `deno.lock` above a changed file | Built-in Deno mutator (below)                                                                     |
+| `Cargo.toml` at the repository root                           | `cargo mutants --in-diff <diff> --output <temp dir> --no-shuffle --jobs N`, with N = min(4, CPUs) |
+| Changed `.sh` or `.bash` file, or `sh`/`bash` shebang         | Built-in shell mutator (below), a second pass                                                     |
+| none of these                                                 | Not applicable: the gate passes without running and logs the reason                               |
 
 For Cargo `--output` points at a fresh temporary directory outside the
 repository; the outcomes are read from its `mutants.out/outcomes.json` and the
@@ -149,7 +165,7 @@ groups and delete its scratch copy of the tree. That scratch copy is created
 under `TMPDIR`, which the runner sets to the run's own `--output` directory, so
 removing that directory clears any copy a killed run leaves behind.
 
-Every path the runner writes (mutated Deno files, the Rust diff under
+Every path the runner writes (mutated Deno and shell files, the Rust diff under
 `target/`) is resolved through symlinks and must stay inside the repository;
 a file that escapes is skipped, and an escaping `target/` is an error.
 
@@ -199,6 +215,46 @@ Candidates past the cap, and added lines over 400 characters (never mutated),
 are counted as untested: the run is reported as capped, with the number
 untested, never as a clean pass.
 
+## Built-in shell mutations
+
+The shell mutator works on added lines of changed shell scripts. A script is a
+changed file ending `.sh` or `.bash`, or one whose first line is a shebang that
+names `sh` or `bash`, directly or through `/usr/bin/env` (env flags such as `-S`
+are skipped). Shell test files are tests, not targets: `*_test.sh`,
+`*.test.sh`, `test_*.sh` and `*.bats` are never mutated. Shell is mutated
+whatever the repository's primary language.
+
+| Mutation                     | Effect                                                                                                                                                                                                                  |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Replace a statement with `:` | A plain assignment, `export`, `local`/`readonly`/`declare` or simple command line becomes `:`. Structural lines (`if`, `then`, `fi`, `do`, `done` and function headers), continuation lines and heredocs are left alone |
+| Flip a test operator         | `-eq` and `-ne`, `-lt` and `-ge`, `-gt` and `-le`, `==` and `!=`, and `-z` and `-n` swap                                                                                                                                |
+| Swap `&&` and `\|\|`         | `a && b` becomes `a \|\| b` and the reverse                                                                                                                                                                             |
+| Swap a return status         | `return 0` becomes `return 1` and the reverse                                                                                                                                                                           |
+| Flip an `exit` status        | `exit 0` becomes `exit 1`, and a non-zero `exit` becomes `exit 0`                                                                                                                                                       |
+| Drop a guard                 | A guarded assignment `[[ cond ]] \|\| x=y` becomes `x=y`; the `&&` and `\|\|` swap covers the reverse direction                                                                                                         |
+
+Like the Deno mutator, it is hand-scanned, skips added lines over 400
+characters, and is capped at 40 mutants shared across the changed shell scripts
+of the run.
+
+Covering tests for a changed script are the shell test files whose text
+contains the script's repository-relative path or its basename. Each covering
+test runs as `bash <test>` from the repository root, in the same allowlisted
+environment as the other child processes (see
+[Child environment](#child-environment)). Before any mutant, each covering test
+must pass unmutated; a failing baseline is an error, and a passing one also
+shows that the selected test ran. With a mutant in place, a covering test that
+exits non-zero kills the mutant; when every covering test exits zero, the mutant
+is a survivor.
+
+A changed script that has mutants but that no test names is **not checked**.
+That is a verdict of its own, not a survivor: nothing of it ran, so the result
+reports no survivors. It blocks completion with a reason that names the script
+and asks for a test that names it, and an `exempt (untestable):` line does not
+clear it. When some changed scripts are covered and others are not, the result
+is still not checked, and the reason also appends any survivors found among the
+covered scripts.
+
 ## Budget
 
 `mutation_check_budget_seconds` bounds the whole run: a positive integer,
@@ -219,13 +275,14 @@ budget ran out or the cap was hit still block.
 
 ## Child environment
 
-`deno test -A` and `cargo mutants` run repository code (tests, build scripts)
-after the agent has written tests. Every child process therefore starts from the
-allowlisted environment built by `buildUntrustedCommandEnv` with `clearEnv`,
-never the worker's own, so `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and cloud
-credentials are not inherited by it (Issue #572, the same control as the quality
-gate). The only additions are the declared credentials described below and, for
-`cargo mutants`, `TMPDIR` (the run's `--output` directory, see above).
+`deno test -A`, `cargo mutants` and `bash` shell tests run repository code
+(tests, build scripts) after the agent has written tests. Every child process
+therefore starts from the allowlisted environment built by
+`buildUntrustedCommandEnv` with `clearEnv`, never the worker's own, so
+`GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and cloud credentials are not inherited by
+it (Issue #572, the same control as the quality gate). The only additions are
+the declared credentials described below and, for `cargo mutants`, `TMPDIR` (the
+run's `--output` directory, see above).
 
 The credentials the repository declared in `quality_credentials` (Issues #573
 and #574) are resolved once per run, in the completion phase at PR raise and in
@@ -245,9 +302,10 @@ line naming the location and giving a non-empty reason:
 - `worker/deno/lib/example.ts:42` — exempt (untestable): <reason>
 ```
 
-This is the same `exempt (untestable): <reason>` convention the Branch
-outcomes gate uses; an empty reason does not exempt. Every other survivor
-blocks.
+This is the same `exempt (untestable): <reason>` convention the Branch outcomes
+gate uses; an empty reason does not exempt. Every other survivor blocks. A
+changed shell script that no test names is not a survivor, and an exemption does
+not clear it (see [Built-in shell mutations](#built-in-shell-mutations)).
 
 ## Configuration
 
@@ -270,13 +328,14 @@ Both keys are per-repo options, set operator-side under
 
 ## Outcomes
 
-| Outcome                | Meaning                                                | Blocks the PR?            |
-| ---------------------- | ------------------------------------------------------ | ------------------------- |
-| Not applicable         | No Deno config above a changed file and no root `Cargo.toml`, check disabled, the repository's `quality_credentials` could not be resolved, or cargo-mutants finds no mutants on the changed lines ("No mutants to filter") | No                        |
-| Completed, no survivor | Every mutant was killed, or the survivor is exempted   | No                        |
-| Completed, survivors   | At least one unexempted survivor                       | Yes                       |
-| Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass | Only if a survivor found  |
-| Error                  | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable | Yes, with a remedy |
+| Outcome                    | Meaning                                                                                                                                                                                                                                                       | Blocks the PR?           |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| Not applicable             | No Deno config above a changed file, no root `Cargo.toml` and no changed shell script, check disabled, the repository's `quality_credentials` could not be resolved, or cargo-mutants finds no mutants on the changed lines ("No mutants to filter")          | No                       |
+| Completed, no survivor     | Every mutant was killed, or the survivor is exempted                                                                                                                                                                                                          | No                       |
+| Completed, survivors       | At least one unexempted survivor                                                                                                                                                                                                                              | Yes                      |
+| Not checked                | A changed shell script has mutants but no test names it; the reason names the script and asks for a test that names it. Reports no survivors, and an `exempt (untestable)` line does not clear it. Survivors among covered scripts are appended to the reason | Yes                      |
+| Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass                                                                                                                                                                                   | Only if a survivor found |
+| Error                      | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable                                                                                                                                                                 | Yes, with a remedy       |
 
 In a review-fix run nothing blocks the push. Survivors, budget exhaustion, the
 mutant cap and runner errors are reported in the PR reply instead, under the

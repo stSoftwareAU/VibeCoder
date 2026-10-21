@@ -6,6 +6,12 @@
  * Deno repositories are mutated by this module (see `generateDenoMutants`);
  * Rust repositories are delegated to `cargo mutants --in-diff`.
  *
+ * Shell scripts (`.sh`, `.bash`, or an extensionless file with a shell
+ * shebang) are mutated by `generateShellMutantsDetailed` in a second pass that
+ * shares the primary pass's budget (see {@link mergeMutationResults}). A script
+ * that no test names is `not_checked`, never judged: its mutants are not run,
+ * so none can survive.
+ *
  * Every path the runner writes is confined to the repository: the relative
  * path is normalised, its longest existing prefix is canonicalised through
  * `realPath` (so symlinks are resolved), and only a canonical path inside the
@@ -29,8 +35,13 @@
 
 import {
   DEFAULT_MUTANT_CAP,
+  type DenoMutant,
   generateDenoMutantsDetailed,
+  generateShellMutantsDetailed,
+  hasShellShebang,
   isDenoTestFile,
+  isShellScriptPath,
+  isShellTestFile,
   type Mutant,
   type MutationCheckResult,
   type MutationLanguage,
@@ -67,6 +78,11 @@ export interface MutationRunnerSeams {
   removeDir(path: string): Promise<void>;
   /** Repo-relative `*_test.ts` / `*.test.ts` paths. */
   listTestFiles(repoPath: string): Promise<string[]>;
+  /**
+   * Repo-relative `*_test.sh`, `*.test.sh`, `test_*.sh` and `*.bats` paths.
+   * Absent means the repository has none.
+   */
+  listShellTestFiles?(repoPath: string): Promise<string[]>;
   /** Create an empty temporary directory outside any repository. */
   makeTempDir(): Promise<string>;
 }
@@ -151,26 +167,468 @@ export async function runMutationCheck(
     if (input.diff.trim() === "") {
       return { kind: "not_applicable", reason: "the diff is empty" };
     }
+    const added = parseAddedLines(input.diff);
     const language = await detectMutationLanguage(
       input.repoPath,
       seams,
-      parseAddedLines(input.diff).keys(),
+      added.keys(),
     );
-    if (language === null) {
-      return {
+    // One budget is shared by the primary pass and the shell pass.
+    const budget = startBudget(input.budgetSeconds, seams);
+    const primary: MutationCheckResult = language === null
+      ? {
         kind: "not_applicable",
         reason: "no Deno project (deno.json, deno.jsonc or deno.lock) " +
           "above a changed source file and no Cargo.toml at the repository " +
           "root",
-      };
-    }
-    return language === "deno"
-      ? await runDeno(input, seams)
+      }
+      : language === "deno"
+      ? await runDeno(input, seams, budget)
       : await runRust(input, seams);
+    const scripts = await changedShellScripts(input.repoPath, added, seams);
+    if (scripts.length === 0) return primary;
+    return mergeMutationResults(
+      primary,
+      await runShell(input, seams, budget, scripts),
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { kind: "error", reason: message };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Shared pass machinery
+// ---------------------------------------------------------------------------
+
+/** Time left for the whole run, shared by every pass. */
+interface Budget {
+  budgetSeconds: number;
+  /** Milliseconds left, on the seam's clock. */
+  remaining(): number;
+}
+
+function startBudget(
+  budgetSeconds: number,
+  seams: MutationRunnerSeams,
+): Budget {
+  const start = seams.now();
+  const budgetMs = budgetSeconds * 1000;
+  return {
+    budgetSeconds,
+    remaining: () => budgetMs - (seams.now() - start),
+  };
+}
+
+/** One test process; a mutant is killed when any of a plan's invocations fails. */
+interface TestInvocation {
+  cmd: string;
+  args: string[];
+  cwd: string;
+}
+
+/** What the mutation loop needs to judge one file's mutants. */
+interface MutantPlan {
+  /** Confined to the repository. */
+  abs: string;
+  /** Restored after every mutant. */
+  original: string;
+  invocations: TestInvocation[];
+  /** Names the tests in the baseline error. */
+  label: string;
+}
+
+/**
+ * Baseline, then mutate-and-test, for `runnable` mutants. Shared by the Deno
+ * and shell passes. `seed` carries whatever the caller already judged (the
+ * fabricated survivors), and `dropped` is the count of candidates never tried.
+ */
+async function runMutantLoop(
+  seams: MutationRunnerSeams,
+  budget: Budget,
+  language: MutationLanguage,
+  runnable: readonly DenoMutant[],
+  plans: ReadonlyMap<string, MutantPlan>,
+  seed: {
+    survivors: Mutant[];
+    tested: number;
+    total: number;
+    dropped: number;
+  },
+  credentialEnv: Record<string, string> | undefined,
+): Promise<MutationCheckResult> {
+  const childEnv = credentialEnv === undefined ? {} : { env: credentialEnv };
+  const survivors = [...seed.survivors];
+  let killed = 0;
+  let tested = seed.tested;
+  const exhausted = (limit?: "mutant_cap"): MutationCheckResult => ({
+    kind: "budget_exhausted",
+    language,
+    survivors,
+    killed,
+    tested,
+    total: seed.total,
+    budgetSeconds: budget.budgetSeconds,
+    ...(limit === undefined ? {} : { limit }),
+  });
+
+  // Baseline: each plan's tests must pass unmutated.
+  const baselined = new Set<string>();
+  for (const m of runnable) {
+    const plan = plans.get(m.file);
+    if (plan === undefined) continue;
+    const key = JSON.stringify(plan.invocations);
+    if (baselined.has(key)) continue;
+    baselined.add(key);
+    for (const inv of plan.invocations) {
+      if (budget.remaining() <= 0) return exhausted();
+      const base = await seams.runProcess(inv.cmd, inv.args, {
+        cwd: inv.cwd,
+        timeoutMs: budget.remaining(),
+        ...childEnv,
+      });
+      if (base.timedOut) return exhausted();
+      if (base.code !== 0) {
+        return {
+          kind: "error",
+          reason: `baseline tests fail before mutation (${plan.label}); ` +
+            "cannot judge mutants",
+        };
+      }
+    }
+  }
+
+  for (const m of runnable) {
+    if (budget.remaining() <= 0) return exhausted();
+    const plan = plans.get(m.file);
+    if (plan === undefined) continue;
+    let failure: ProcessResult | null = null;
+    let timedOut = false;
+    try {
+      await seams.writeTextFile(plan.abs, m.mutatedSource);
+      for (const inv of plan.invocations) {
+        const r = await seams.runProcess(inv.cmd, inv.args, {
+          cwd: inv.cwd,
+          timeoutMs: budget.remaining(),
+          ...childEnv,
+        });
+        if (r.timedOut) {
+          timedOut = true;
+          break;
+        }
+        if (r.code !== 0) {
+          failure = r;
+          break;
+        }
+      }
+    } finally {
+      await seams.writeTextFile(plan.abs, plan.original);
+    }
+    if (timedOut) return exhausted();
+    tested++;
+    // A mutant the parser rejects is unviable: no test ran, so it is neither
+    // killed nor a survivor.
+    if (failure !== null && isParseFailure(failure)) continue;
+    if (failure !== null) killed++;
+    else {
+      survivors.push({
+        file: m.file,
+        line: m.line,
+        description: m.description,
+      });
+    }
+  }
+  // A capped run is never a clean pass: candidates past the cap were not tried.
+  if (seed.dropped > 0) return exhausted("mutant_cap");
+  return {
+    kind: "completed",
+    language,
+    survivors,
+    killed,
+    total: seed.total,
+  };
+}
+
+/** How severe a result is when two passes are merged. */
+const RESULT_RANK: Readonly<Record<MutationCheckResult["kind"], number>> = {
+  error: 4,
+  not_checked: 3,
+  budget_exhausted: 2,
+  completed: 1,
+  not_applicable: 0,
+};
+
+/** Survivors a partly checked run keeps for its report. */
+const NOT_CHECKED_SURVIVOR_LIMIT = 10;
+
+function languageOf(r: MutationCheckResult): MutationLanguage | undefined {
+  return "language" in r ? r.language : undefined;
+}
+
+function survivorsOf(r: MutationCheckResult): Mutant[] {
+  return "survivors" in r && r.survivors !== undefined ? r.survivors : [];
+}
+
+function joinReasons(sides: readonly MutationCheckResult[]): string {
+  // A not_applicable side says nothing useful once the other side has run.
+  const informative = sides.filter((r) => r.kind !== "not_applicable");
+  return (informative.length > 0 ? informative : sides)
+    .flatMap((r) => "reason" in r && r.reason !== "" ? [r.reason] : [])
+    .join("; ");
+}
+
+/**
+ * Combine the primary pass with the shell pass. The more severe kind wins
+ * (error, not_checked, budget_exhausted, completed, not_applicable, with the
+ * primary winning a tie). Survivors are concatenated, and killed, tested and
+ * total are summed over the completed and budget_exhausted sides (a completed
+ * side tried every candidate). The language comes from the primary, reasons
+ * are joined with `; `. Pure: neither input is changed.
+ */
+export function mergeMutationResults(
+  primary: MutationCheckResult,
+  secondary: MutationCheckResult,
+): MutationCheckResult {
+  const sides = [primary, secondary];
+  const winner = RESULT_RANK[secondary.kind] > RESULT_RANK[primary.kind]
+    ? secondary
+    : primary;
+  const reason = joinReasons(sides);
+  if (winner.kind === "error") return { kind: "error", reason };
+  if (winner.kind === "not_applicable") {
+    return { kind: "not_applicable", reason };
+  }
+  const language = languageOf(primary) ?? languageOf(secondary);
+  if (language === undefined) {
+    throw new Error("a merged mutation result needs a language");
+  }
+  const survivors = sides.flatMap(survivorsOf);
+  if (winner.kind === "not_checked") {
+    return { kind: "not_checked", language, reason, survivors };
+  }
+  let killed = 0;
+  let total = 0;
+  let tested = 0;
+  for (const r of sides) {
+    if (r.kind === "completed") {
+      killed += r.killed;
+      total += r.total;
+      tested += r.total;
+    } else if (r.kind === "budget_exhausted") {
+      killed += r.killed;
+      total += r.total;
+      tested += r.tested;
+    }
+  }
+  if (winner.kind === "completed") {
+    return { kind: "completed", language, survivors, killed, total };
+  }
+  return {
+    kind: "budget_exhausted",
+    language,
+    survivors,
+    killed,
+    tested,
+    total,
+    budgetSeconds: winner.budgetSeconds,
+    ...(winner.limit === undefined ? {} : { limit: winner.limit }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shell
+// ---------------------------------------------------------------------------
+
+interface ShellScript {
+  file: string;
+  lines: number[];
+  abs: string;
+}
+
+interface ShellPlan extends ShellScript {
+  original: string;
+  mutants: DenoMutant[];
+  dropped: number;
+}
+
+/** A test file that may cover a script: a Deno test, or a shell test. */
+interface TestCandidate {
+  path: string;
+  deno: boolean;
+}
+
+interface CoveredScript extends ShellPlan {
+  tests: TestCandidate[];
+}
+
+/**
+ * Changed shell scripts present in the tree: a `.sh` or `.bash` path, or an
+ * extensionless file whose first line is a shell shebang. Other names are not
+ * sniffed, so a binary is never read.
+ */
+async function changedShellScripts(
+  repoPath: string,
+  added: ReadonlyMap<string, number[]>,
+  seams: MutationRunnerSeams,
+): Promise<ShellScript[]> {
+  const out: ShellScript[] = [];
+  for (const [file, lines] of added) {
+    const rel = normalisePath(file);
+    if (isDenoSource(rel) || rel.endsWith(".rs") || isShellTestFile(rel)) {
+      continue;
+    }
+    const named = isShellScriptPath(rel);
+    if (!named && rel.slice(rel.lastIndexOf("/") + 1).includes(".")) continue;
+    const abs = await confinePath(repoPath, rel, seams);
+    if (abs === null || !(await seams.exists(abs))) continue;
+    if (!named && !hasShellShebang(await seams.readTextFile(abs))) continue;
+    out.push({ file: rel, lines, abs });
+  }
+  return out;
+}
+
+/** Deno test invocation from the test's project directory, or a shell one. */
+async function shellInvocations(
+  repoPath: string,
+  tests: readonly TestCandidate[],
+  seams: MutationRunnerSeams,
+): Promise<TestInvocation[]> {
+  const out: TestInvocation[] = [];
+  for (const t of tests) {
+    if (!t.deno) {
+      out.push({
+        cmd: t.path.endsWith(".bats") ? "bats" : "bash",
+        args: [t.path],
+        cwd: repoPath,
+      });
+      continue;
+    }
+    const dir = (await findDenoConfigDir(repoPath, t.path, seams)) ?? "";
+    const prefix = dir === "" ? "" : `${dir}/`;
+    out.push({
+      cmd: "deno",
+      args: denoTestArgs([t.path.slice(prefix.length)]),
+      cwd: dir === "" ? repoPath : `${repoPath}/${dir}`,
+    });
+  }
+  return out;
+}
+
+/**
+ * The shell pass. A script that no test names is `not_checked`, and its mutants
+ * are never run, so none of them can survive. If other scripts are covered,
+ * their survivors (up to {@link NOT_CHECKED_SURVIVOR_LIMIT}) ride on the result.
+ */
+async function runShell(
+  input: MutationRunInput,
+  seams: MutationRunnerSeams,
+  budget: Budget,
+  scripts: readonly ShellScript[],
+): Promise<MutationCheckResult> {
+  const { repoPath } = input;
+  const cap = input.mutantCap ?? DEFAULT_MUTANT_CAP;
+  const mutable: ShellPlan[] = [];
+  let kept = 0;
+  for (const s of scripts) {
+    const original = await seams.readTextFile(s.abs);
+    const gen = generateShellMutantsDetailed(
+      s.file,
+      original,
+      s.lines,
+      Math.max(0, cap - kept),
+    );
+    if (gen.mutants.length === 0 && gen.dropped === 0) continue;
+    kept += gen.mutants.length;
+    mutable.push({
+      ...s,
+      original,
+      mutants: gen.mutants,
+      dropped: gen.dropped,
+    });
+  }
+  if (mutable.length === 0) {
+    return {
+      kind: "not_applicable",
+      reason: "no mutable statements on the added lines of shell scripts",
+    };
+  }
+
+  // Discovery: a test covers a script when its text names the script's
+  // repo-relative path or basename.
+  const candidates: TestCandidate[] = [
+    ...(await seams.listTestFiles(repoPath)).map((path) => ({
+      path,
+      deno: true,
+    })),
+    ...((await seams.listShellTestFiles?.(repoPath)) ?? []).map((path) => ({
+      path,
+      deno: false,
+    })),
+  ];
+  const texts = new Map<string, string>();
+  for (const c of candidates) {
+    texts.set(c.path, await seams.readTextFile(`${repoPath}/${c.path}`));
+  }
+  const coveredBy = (file: string): TestCandidate[] => {
+    const name = file.slice(file.lastIndexOf("/") + 1);
+    return candidates.filter((c) => {
+      const text = texts.get(c.path) ?? "";
+      return text.includes(file) || text.includes(name);
+    });
+  };
+
+  const covered: CoveredScript[] = [];
+  const uncovered: string[] = [];
+  for (const plan of mutable) {
+    const tests = coveredBy(plan.file);
+    if (tests.length === 0) uncovered.push(plan.file);
+    else covered.push({ ...plan, tests });
+  }
+  const reason = `no test runs ${uncovered.join(", ")}`;
+  if (covered.length === 0) {
+    return { kind: "not_checked", language: "shell", reason };
+  }
+
+  const result = await runShellMutants(covered, input, seams, budget);
+  if (uncovered.length === 0 || result.kind === "error") return result;
+  return {
+    kind: "not_checked",
+    language: "shell",
+    reason,
+    survivors: survivorsOf(result).slice(0, NOT_CHECKED_SURVIVOR_LIMIT),
+  };
+}
+
+async function runShellMutants(
+  covered: readonly CoveredScript[],
+  input: MutationRunInput,
+  seams: MutationRunnerSeams,
+  budget: Budget,
+): Promise<MutationCheckResult> {
+  const plans = new Map<string, MutantPlan>();
+  const runnable: DenoMutant[] = [];
+  let total = 0;
+  let dropped = 0;
+  for (const c of covered) {
+    plans.set(c.file, {
+      abs: c.abs,
+      original: c.original,
+      invocations: await shellInvocations(input.repoPath, c.tests, seams),
+      label: c.tests.map((t) => t.path).join(", "),
+    });
+    runnable.push(...c.mutants);
+    total += c.mutants.length + c.dropped;
+    dropped += c.dropped;
+  }
+  return await runMutantLoop(
+    seams,
+    budget,
+    "shell",
+    runnable,
+    plans,
+    { survivors: [], tested: 0, total, dropped },
+    input.credentialEnv,
+  );
 }
 
 // ---------------------------------------------------------------------------

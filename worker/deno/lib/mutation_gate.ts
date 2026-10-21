@@ -15,7 +15,7 @@
  * Australian English spelling used throughout.
  */
 
-export type MutationLanguage = "rust" | "deno";
+export type MutationLanguage = "rust" | "deno" | "shell";
 
 export interface Mutant {
   file: string;
@@ -52,6 +52,16 @@ export type MutationCheckResult =
      * (or on over-long lines) were never tried.
      */
     limit?: "mutant_cap";
+  }
+  /**
+   * A changed script with no test that runs it: its mutants cannot be judged.
+   * `survivors` carries up to a few mutants from covered scripts of the same run.
+   */
+  | {
+    kind: "not_checked";
+    language: MutationLanguage;
+    reason: string;
+    survivors?: Mutant[];
   }
   | { kind: "error"; reason: string };
 
@@ -849,6 +859,227 @@ export function generateDenoMutants(
 }
 
 // ---------------------------------------------------------------------------
+// Shell script detection and mutant generation
+// ---------------------------------------------------------------------------
+
+const baseName = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
+
+/** True for `.sh` and `.bash` paths. */
+export function isShellScriptPath(file: string): boolean {
+  return file.endsWith(".sh") || file.endsWith(".bash");
+}
+
+/**
+ * True when the first line is a `#!` line whose interpreter (the last path
+ * segment, after `env` and any `-flag` words) is `sh` or `bash`.
+ */
+export function hasShellShebang(source: string): boolean {
+  const nl = source.indexOf("\n");
+  const first = (nl < 0 ? source : source.slice(0, nl)).trim();
+  if (!first.startsWith("#!")) return false;
+  const words = first.slice(2).trim().split(/[ \t]+/);
+  let i = 0;
+  let prog = baseName(words[i] ?? "");
+  if (prog === "env") {
+    i++;
+    while (i < words.length && (words[i] ?? "").startsWith("-")) i++;
+    prog = baseName(words[i] ?? "");
+  }
+  return prog === "sh" || prog === "bash";
+}
+
+/** True for `*_test.sh`, `*.test.sh`, `test_*.sh` and `*.bats` files. */
+export function isShellTestFile(file: string): boolean {
+  const base = baseName(file);
+  if (base.endsWith(".bats")) return true;
+  if (!base.endsWith(".sh")) return false;
+  return base.startsWith("test_") || base.endsWith("_test.sh") ||
+    base.endsWith(".test.sh");
+}
+
+/** Shell words that open or continue a compound statement. */
+const SHELL_STRUCTURAL_WORDS: ReadonlySet<string> = new Set([
+  "if",
+  "then",
+  "else",
+  "elif",
+  "fi",
+  "for",
+  "while",
+  "until",
+  "do",
+  "done",
+  "case",
+  "esac",
+  "in",
+  "select",
+  "function",
+  "{",
+  "}",
+]);
+
+/** Test operators and string tests flipped to their opposite. */
+const SHELL_FLIPS: ReadonlyMap<string, string> = new Map([
+  ["-eq", "-ne"],
+  ["-ne", "-eq"],
+  ["-lt", "-ge"],
+  ["-ge", "-lt"],
+  ["-gt", "-le"],
+  ["-le", "-gt"],
+  ["==", "!="],
+  ["!=", "=="],
+  ["-z", "-n"],
+  ["-n", "-z"],
+]);
+
+interface ShellCandidate {
+  text: string;
+  description: string;
+}
+
+/**
+ * Whether a non-blank, non-comment shell line is a statement that can be
+ * replaced by `:`. Assignments, export/local/readonly/declare and simple
+ * commands are the statements left once structural lines are excluded.
+ */
+function isDeletableShellStatement(trimmed: string): boolean {
+  // A bare `;;`, `(` or `)` leaves an empty first word.
+  const word = trimmed.split(/[\s;&|()]/, 1)[0] ?? "";
+  if (word === "" || SHELL_STRUCTURAL_WORDS.has(word)) return false;
+  // A line that opens a block or continues onto the next line is structural.
+  if (trimmed.endsWith("&&") || trimmed.endsWith("||")) return false;
+  return !"{(\\|".includes(trimmed.slice(-1));
+}
+
+function flipShellOperator(line: string): ShellCandidate | null {
+  for (const m of line.matchAll(/\S+/g)) {
+    const to = SHELL_FLIPS.get(m[0]);
+    if (to === undefined) continue;
+    const at = m.index;
+    return {
+      text: line.slice(0, at) + to + line.slice(at + m[0].length),
+      description: `flipped \`${m[0]}\` to \`${to}\``,
+    };
+  }
+  return null;
+}
+
+/** Swap the first `&&` for `||`, or the first `||` for `&&`. */
+function swapShellConnective(line: string): ShellCandidate | null {
+  const and = line.indexOf("&&");
+  const or = line.indexOf("||");
+  if (and < 0 && or < 0) return null;
+  const fromAnd = or < 0 || (and >= 0 && and < or);
+  const at = fromAnd ? and : or;
+  const from = fromAnd ? "&&" : "||";
+  const to = fromAnd ? "||" : "&&";
+  return {
+    text: line.slice(0, at) + to + line.slice(at + 2),
+    description: `swapped \`${from}\` for \`${to}\``,
+  };
+}
+
+/**
+ * Rewrite the status argument of the first `cmd N` on the line. `pick` maps
+ * the digits to their replacement, or null to leave that occurrence alone.
+ */
+function replaceStatus(
+  line: string,
+  cmd: string,
+  pick: (digits: string) => string | null,
+): ShellCandidate | null {
+  const words = [...line.matchAll(/\S+/g)];
+  for (let i = 0; i + 1 < words.length; i++) {
+    const next = words[i + 1];
+    if (words[i]?.[0] !== cmd || next === undefined) continue;
+    const token = next[0];
+    const digits = token.endsWith(";") ? token.slice(0, -1) : token;
+    if (!/^\d+$/.test(digits)) continue;
+    const to = pick(digits);
+    if (to === null) continue;
+    const at = next.index;
+    return {
+      text: line.slice(0, at) + to + line.slice(at + digits.length),
+      description: `replaced \`${cmd} ${digits}\` with \`${cmd} ${to}\``,
+    };
+  }
+  return null;
+}
+
+/** `[[ cond ]] || x=y` and `[[ cond ]] && x=y` lose their guard. */
+function removeShellGuard(line: string): ShellCandidate | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("[[")) return null;
+  const close = trimmed.indexOf("]]");
+  if (close < 0) return null;
+  const rest = trimmed.slice(close + 2).trimStart();
+  if (!rest.startsWith("||") && !rest.startsWith("&&")) return null;
+  const body = rest.slice(2).trim();
+  if (body === "") return null;
+  // The &&/|| swap covers the reverse direction (`||` guard becoming `&&`).
+  const indent = line.slice(0, line.length - line.trimStart().length);
+  return { text: indent + body, description: "removed `[[ ]]` guard" };
+}
+
+/**
+ * Generate shell mutants for the added lines of one script. The same bounds as
+ * {@link generateDenoMutantsDetailed}: one mutant per kind per line, ordered by
+ * line then kind, stopping at `cap`, with over-long lines and candidates past
+ * the cap counted in `dropped`. Test files and comment lines yield nothing.
+ */
+export function generateShellMutantsDetailed(
+  file: string,
+  source: string,
+  addedLines: readonly number[],
+  cap = DEFAULT_MUTANT_CAP,
+): DenoMutantGeneration {
+  const out: DenoMutant[] = [];
+  let dropped = 0;
+  if (isShellTestFile(file)) return { mutants: out, dropped };
+  const lines = source.split("\n");
+  const sorted = [...new Set(addedLines)].sort((a, b) => a - b);
+  for (const n of sorted) {
+    if (n < 1 || n > lines.length) continue;
+    const raw = lines[n - 1] ?? "";
+    const cr = raw.endsWith("\r") ? "\r" : "";
+    const line = cr ? raw.slice(0, -1) : raw;
+    const t = line.trimStart();
+    if (t === "" || t.startsWith("#")) continue;
+    if (line.length > MAX_MUTATED_LINE_LENGTH) {
+      dropped++;
+      continue;
+    }
+    const indent = line.slice(0, line.length - t.length);
+    const candidates: Array<ShellCandidate | null> = [
+      isDeletableShellStatement(t)
+        ? { text: `${indent}:`, description: "deleted statement" }
+        : null,
+      flipShellOperator(line),
+      swapShellConnective(line),
+      removeShellGuard(line),
+      replaceStatus(line, "return", (d) => d === "0" ? "1" : d === "1" ? "0" : null),
+      replaceStatus(line, "exit", (d) => (d === "0" ? "1" : "0")),
+    ];
+    for (const c of candidates) {
+      if (c === null) continue;
+      if (out.length >= cap) {
+        dropped++;
+        continue;
+      }
+      const mutated = [...lines];
+      mutated[n - 1] = c.text + cr;
+      out.push({
+        file,
+        line: n,
+        description: c.description,
+        mutatedSource: mutated.join("\n"),
+      });
+    }
+  }
+  return { mutants: out, dropped };
+}
+
+// ---------------------------------------------------------------------------
 // Exemptions
 // ---------------------------------------------------------------------------
 
@@ -909,6 +1140,17 @@ export function evaluateMutationGate(
       exempted: [],
       budgetExhausted: false,
       note: "",
+    };
+  }
+  if (result.kind === "not_checked") {
+    return {
+      blocked: true,
+      reason:
+        `mutation check not checked: ${result.reason}; add a test that names each script (its repo-relative path or basename) so its mutants can run`,
+      survivors: [],
+      exempted: [],
+      budgetExhausted: false,
+      note: `not checked: ${result.reason}`,
     };
   }
   const exemptions = parseMutationExemptions(prSummary);
