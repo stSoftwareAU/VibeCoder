@@ -297,8 +297,9 @@ export async function checkPrBaseIntegrity(
       log(
         `WARNING: [MILESTONE_FIX_RETARGETED] ${repo}#${pr.number} has milestone-fix head '${reading.headRefName}' on base '${base}', not a milestone branch — auto-merge disarmed (Issue #3433)`,
       );
+      // Issue #3433. Posted in the target repo, so it cites no VibeCoder issue number (Issue #3674).
       const text =
-        `This milestone-fix PR targets \`${base}\` instead of a milestone branch. Its diff is the milestone's work, so it must land only through the milestone's final PR. Auto-merge has been disarmed. A human should retarget it to \`milestone/<…>\` or close it (Issue #3433).`;
+        `This milestone-fix PR targets \`${base}\` instead of a milestone branch. Its diff is the milestone's work, so it must land only through the milestone's final PR. Auto-merge has been disarmed. A human should retarget it to \`milestone/<…>\` or close it.`;
       await commentOnce(o, pr.number, MILESTONE_FIX_RETARGETED_MARKER, text);
       const parsed = parseMilestoneFixHead(reading.headRefName);
       if (parsed) {
@@ -328,7 +329,8 @@ export async function checkPrBaseIntegrity(
         o,
         pr.number,
         MOVED_ONTO_DEFAULT_MARKER,
-        `This PR was moved onto the default branch \`${base}\` from \`${from}\` after it was opened, so the fleet will not auto-merge it there. Auto-merge has been disarmed; a human should review and merge it (Issue #3433).`,
+        // Issue #3433. Posted in the target repo, so it cites no VibeCoder issue number (Issue #3674).
+        `This PR was moved onto the default branch \`${base}\` from \`${from}\` after it was opened, so the fleet will not auto-merge it there. Auto-merge has been disarmed; a human should review and merge it.`,
       );
       return {
         action: "hold",
