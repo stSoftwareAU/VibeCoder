@@ -109,11 +109,11 @@ Issues cited:
 - No assertions removed or edited.
 - Quality gate: `./quality.sh` passed (exit 0); config integration skipped.
 
-<!-- vibe-branch-outcomes -->
-
 Not done or not checked: config integration in the quality gate was skipped;
 #4106 (milestone-health reporting a failed list as empty) is out of scope; the
-pre-existing `catch` in `countListRows` is unreachable from `fetchAllIssues`
-because `assertListOutput` rejects invalid JSON first.
+pre-existing `catch` in `countListRows` (not changed here) is not exercised by a
+test, because `assertListOutput` rejects invalid JSON before it runs.
+
+<!-- vibe-branch-outcomes -->
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

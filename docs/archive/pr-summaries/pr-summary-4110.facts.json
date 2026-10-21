@@ -113,7 +113,7 @@
         "outcome": "every field valid: row kept, nothing logged",
         "test": "worker/deno/tests/issue_query_test.ts",
         "testName": "issue_query - parseIssueListJson does not log when every row is valid (Issue #4110)",
-        "flipWentRed": "logging unconditionally before the field checks turned this test red"
+        "flipWentRed": "logging unconditionally before the field checks turned this test red, and also turned the log test (logs each skipped row by number and field) red"
       }
     ]
   }
