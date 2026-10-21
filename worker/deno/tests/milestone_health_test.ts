@@ -822,6 +822,24 @@ Deno.test("getMilestoneHealth - GraphQL errors payload is a failed branch compar
   assertEquals(branch?.behindBy, 1);
 });
 
+Deno.test("getMilestoneHealth - GraphQL compare with null compare payload falls back to REST (Issue #3856)", async () => {
+  // A ref with a null compare is an unavailable compare, not an absent branch:
+  // the arm reports a failure, the caller falls back to the REST pair, so the
+  // REST ahead/behind values must be reported.
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,
+    "graphql": `{"data":{"repository":{"ref":{"compare":null}}}}`,
+    "/branches/milestone/oidc": `{"name":"milestone/oidc"}`,
+    "compare/main...milestone/oidc": `{"ahead_by":2,"behind_by":1}`,
+    ".default_branch": "main",
+  }));
+  assertEquals(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+  const branch = result.value.repos[0]!.milestones[0]!.branch;
+  assertEquals(branch?.aheadBy, 2);
+  assertEquals(branch?.behindBy, 1);
+});
+
 Deno.test("getMilestoneHealth - failed milestone list transport still gives an empty repo (Issue #3856)", async () => {
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");

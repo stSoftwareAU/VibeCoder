@@ -192,7 +192,7 @@
         "line": 306,
         "outcome": "branch compare arm: compare unavailable",
         "test": "worker/deno/tests/milestone_health_test.ts",
-        "testName": "getMilestoneHealth - REST compare missing ahead_by fails naming the field (Issue #3856)",
+        "testName": "getMilestoneHealth - GraphQL compare with null compare payload falls back to REST (Issue #3856)",
         "flipWentRed": true
       },
       {
