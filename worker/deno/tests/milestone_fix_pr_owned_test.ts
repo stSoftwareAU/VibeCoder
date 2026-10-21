@@ -10,6 +10,7 @@ import {
   findOpenMilestoneFixPr,
   milestoneFixPrefixFor,
 } from "../lib/milestone_fix_pr.ts";
+import type { WorkerConfig } from "../types.ts";
 
 const REPO = "org/repo";
 const MILESTONE = "milestone/523-idle-task-scans";
@@ -196,31 +197,26 @@ Deno.test("findOpenMilestoneFixPr - the milestone branch is passed as --base (Is
 });
 
 Deno.test("findOpenMilestoneFixPr - omitted fleetAuthors reads the configured identity, not an empty set (Issue #3065)", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-milestone-fix-pr-" });
-  const priorFleet = Deno.env.get("FLEET_PR_AUTHORS");
-  const priorConfig = Deno.env.get("CONFIG_PATH");
-  try {
-    // No config file exists here, so the identity comes from FLEET_PR_AUTHORS.
-    Deno.env.set("FLEET_PR_AUTHORS", FLEET);
-    Deno.env.set("CONFIG_PATH", `${tmpDir}/absent.json`);
-    const { gh } = fakeGh(() =>
-      JSON.stringify([ownedRow(901, `${PREFIX}ci-abc`)])
-    );
-    const omitted = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, { gh });
-    assert(omitted.ok);
-    assertEquals(omitted.value?.number, 901);
+  // The config loader is stubbed to name the fleet; no file or env is read.
+  const config = { fleetPrAuthors: [FLEET] } as unknown as WorkerConfig;
+  const dedupAuthors = {
+    env: () => undefined,
+    loadConfigFn: () => Promise.resolve(config),
+  };
+  const { gh } = fakeGh(() =>
+    JSON.stringify([ownedRow(901, `${PREFIX}ci-abc`)])
+  );
+  const omitted = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, {
+    gh,
+    dedupAuthors,
+  });
+  assert(omitted.ok);
+  assertEquals(omitted.value?.number, 901);
 
-    const explicit = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, {
-      gh,
-      fleetAuthors: ["someone-else"],
-    });
-    assert(explicit.ok);
-    assertEquals(explicit.value, null);
-  } finally {
-    if (priorFleet === undefined) Deno.env.delete("FLEET_PR_AUTHORS");
-    else Deno.env.set("FLEET_PR_AUTHORS", priorFleet);
-    if (priorConfig === undefined) Deno.env.delete("CONFIG_PATH");
-    else Deno.env.set("CONFIG_PATH", priorConfig);
-    await Deno.remove(tmpDir, { recursive: true });
-  }
+  const explicit = await findOpenMilestoneFixPr(REPO, MILESTONE, 42, {
+    gh,
+    fleetAuthors: ["someone-else"],
+  });
+  assert(explicit.ok);
+  assertEquals(explicit.value, null);
 });

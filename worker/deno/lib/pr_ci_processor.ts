@@ -911,7 +911,12 @@ async function _processCiFailureLocked(
       repo,
       input.branchName,
       prNumber,
-      { gh: ghFn },
+      {
+        gh: ghFn,
+        ...(processorDeps.fleetLogins
+          ? { fleetAuthors: processorDeps.fleetLogins }
+          : {}),
+      },
     );
     if (!openFixPr.ok) {
       logger.error(

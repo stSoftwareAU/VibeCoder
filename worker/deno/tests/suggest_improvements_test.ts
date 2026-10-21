@@ -27,6 +27,7 @@ import {
 import {
   addIssue,
   fakeStore,
+  FLEET_LOGIN,
   isWriteCall,
   routingFakeGh,
 } from "./support/routing_fake_gh.ts";
@@ -591,6 +592,7 @@ Deno.test("suggest-improvements - an existing open issue with the same title is 
       dryRun: false,
       ghCommandFn: gh.ghCommandFn,
       now: NOW,
+      dedupAuthors: { fleetAuthors: [FLEET_LOGIN] },
     },
   );
 
@@ -735,6 +737,7 @@ Deno.test("suggest-improvements - the summary counts created, reused and would-b
     const result = await createSuggestImprovementsCommand({
       ghCommandFn: gh.ghCommandFn,
       now: NOW,
+      dedupAuthors: { fleetAuthors: [FLEET_LOGIN] },
     }).execute({ repo: VIBE, "dry-run": c.dryRun }, createMockConfig());
 
     assertEquals(result.success, true, c.name);
@@ -773,6 +776,7 @@ Deno.test("suggest-improvements - the command's injected clock sets the duplicat
   const result = await createSuggestImprovementsCommand({
     ghCommandFn: gh.ghCommandFn,
     now: () => new Date("2020-01-15T00:00:00Z"),
+    dedupAuthors: { fleetAuthors: [FLEET_LOGIN] },
   }).execute({ repo: VIBE }, createMockConfig());
 
   const data = result.data as SuggestImprovementsData;

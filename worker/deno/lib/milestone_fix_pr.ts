@@ -30,6 +30,7 @@
  */
 
 import type { Result } from "../types.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { isSafeRef } from "./conflict_fallback_context.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import {
@@ -98,6 +99,11 @@ export interface MilestoneFixPrDeps {
    * the caller files rather than reuses (Issue #3065).
    */
   fleetAuthors?: readonly string[];
+  /**
+   * Where the configured fleet identity is read from when `fleetAuthors` is
+   * omitted; production passes the caller's own.
+   */
+  dedupAuthors?: AlertDedupAuthorOptions;
 }
 
 /** An open fix PR raised into a gated milestone branch. */
@@ -154,6 +160,13 @@ export async function findOpenMilestoneFixPr(
 ): Promise<Result<MilestoneFixPr | null>> {
   const prefix = milestoneFixPrefixFor(milestoneBranch, prNumber);
   const needle = discriminator ? `${prefix}${discriminator}` : prefix;
+  // An explicit fleetAuthors overrides any injected dedup seam (Issue #3854).
+  const authors: AlertDedupAuthorOptions = {
+    ...(deps.dedupAuthors ?? {}),
+    ...(deps.fleetAuthors === undefined
+      ? {}
+      : { fleetAuthors: deps.fleetAuthors }),
+  };
   let found: Awaited<ReturnType<typeof findOwnedOpenArtefact>>;
   try {
     found = await findOwnedOpenArtefact({
@@ -162,9 +175,7 @@ export async function findOpenMilestoneFixPr(
       marker: needle,
       base: milestoneBranch,
       ghCommandFn: deps.gh,
-      ...(deps.fleetAuthors === undefined
-        ? {}
-        : { authors: { fleetAuthors: deps.fleetAuthors } }),
+      authors,
       ...(deps.log ? { log: deps.log } : {}),
     });
   } catch (error) {
