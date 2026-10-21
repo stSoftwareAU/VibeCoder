@@ -1,4 +1,4 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   resolveEgressAllowlist,
   validateEgressHost,
@@ -233,32 +233,41 @@ Deno.test("validateEgressHost - accepts hostnames, lower-cases, strips :443, kee
   assertEquals(validateEgressHost("*.example.com"), "*.example.com");
 });
 
-Deno.test("validateEgressHost - rejects invalid entries, naming the entry (Issue #4045)", () => {
-  const rejected: unknown[] = [
-    "1.2.3.4",
-    "*",
-    "example.com:22",
-    "",
-    "a b",
-    "a\nb",
-    "\tex.com",
-    "localhost",
-    "*.",
-    "*.com",
-    "[::1]",
-    "-bad.com",
-    "a..b",
+/**
+ * Each refused entry, the rule that refuses it, and a legal twin that must
+ * still be accepted. The twin proves the rule is narrow, not a blanket reject.
+ */
+const REFUSAL_CASES: ReadonlyArray<readonly [unknown, string, string]> = [
+  ["1.2.3.4", "IP literals are not allowed", "example.com"],
+  ["*", "a bare wildcard is not allowed", "*.example.com"],
+  ["*.", "a bare wildcard is not allowed", "*.example.com"],
+  ["example.com:22", "only port 443 is allowed", "example.com:443"],
+  ["example.com:", "must be a hostname or *.hostname", "example.com:443"],
+  ["", "is empty", "example.com"],
+  ["a b", "contains whitespace or a control character", "a.b"],
+  ["a\nb", "contains whitespace or a control character", "a.b"],
+  ["\tex.com", "contains whitespace or a control character", "ex.com"],
+  ["localhost", "must have at least two labels", "a.b"],
+  ["*.com", "must have at least two labels", "*.example.com"],
+  ["[::1]", "must be a hostname or *.hostname", "example.com"],
+  ["-bad.com", "must be a hostname or *.hostname", "bad.com"],
+  ["a..b", "must be a hostname or *.hostname", "a.b"],
+  [
     "a".repeat(64) + ".com",
-    42,
-    "example.com:",
-    "http://example.com",
-  ];
-  for (const entry of rejected) {
-    assertThrows(
-      () => validateEgressHost(entry),
-      Error,
-      JSON.stringify(entry),
-    );
+    "must be a hostname or *.hostname",
+    "a".repeat(63) + ".com",
+  ],
+  ["http://example.com", "must be a hostname or *.hostname", "example.com"],
+  [42, "must be a string", "example.com"],
+];
+
+Deno.test("validateEgressHost - each refusal names the entry and its rule, and the legal twin is accepted (Issue #4045)", () => {
+  for (const [entry, reason, twin] of REFUSAL_CASES) {
+    const error = assertThrows(() => validateEgressHost(entry), Error);
+    assertStringIncludes(error.message, JSON.stringify(entry));
+    assertStringIncludes(error.message, reason);
+    // The twin must not throw: the refusal is for the entry, not the shape.
+    validateEgressHost(twin);
   }
 });
 

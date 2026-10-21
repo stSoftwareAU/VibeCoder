@@ -679,8 +679,14 @@ Deno.test("config - loadConfig throws for config with invalid structure", async 
 // egress_allow_hosts validation (Issue #4045)
 // =============================================================================
 
-/** Load a config whose only extra egress host is `entry`; expects a rejection. */
-async function assertEgressHostRejected(entry: string): Promise<void> {
+/**
+ * Load a config whose only extra egress host is `entry`; expects a rejection
+ * that names the entry and the refusing rule `reason`.
+ */
+async function assertEgressHostRejected(
+  entry: string,
+  reason: string,
+): Promise<void> {
   await withTempConfig({
     allowed_authors: ["testuser"],
     repos: ["org/repo"],
@@ -692,31 +698,38 @@ async function assertEgressHostRejected(entry: string): Promise<void> {
     );
     assertStringIncludes(error.message, JSON.stringify(entry));
     assertStringIncludes(error.message, "is invalid");
+    assertStringIncludes(error.message, reason);
   });
 }
 
 Deno.test("config - egress_allow_hosts rejects an IP literal (Issue #4045)", async () => {
-  await assertEgressHostRejected("1.2.3.4");
+  await assertEgressHostRejected("1.2.3.4", "IP literals are not allowed");
 });
 
 Deno.test("config - egress_allow_hosts rejects a bare wildcard (Issue #4045)", async () => {
-  await assertEgressHostRejected("*");
+  await assertEgressHostRejected("*", "a bare wildcard is not allowed");
 });
 
 Deno.test("config - egress_allow_hosts rejects a non-443 port (Issue #4045)", async () => {
-  await assertEgressHostRejected("example.com:22");
+  await assertEgressHostRejected("example.com:22", "only port 443 is allowed");
 });
 
 Deno.test("config - egress_allow_hosts rejects an empty entry (Issue #4045)", async () => {
-  await assertEgressHostRejected("");
+  await assertEgressHostRejected("", "is empty");
 });
 
 Deno.test("config - egress_allow_hosts rejects an entry with whitespace (Issue #4045)", async () => {
-  await assertEgressHostRejected("a b");
+  await assertEgressHostRejected(
+    "a b",
+    "contains whitespace or a control character",
+  );
 });
 
 Deno.test("config - egress_allow_hosts rejects an entry with a control character (Issue #4045)", async () => {
-  await assertEgressHostRejected("a\nb");
+  await assertEgressHostRejected(
+    "a\nb",
+    "contains whitespace or a control character",
+  );
 });
 
 Deno.test("config - egress_allow_hosts rejects a non-array value (Issue #4045)", async () => {
@@ -749,6 +762,7 @@ Deno.test("config - egress_allow_hosts accepts hostnames, wildcards and :443 (Is
       "llm-gateway.example.com",
       "*.example.org",
       "example.net:443",
+      "example.com:443",
     ],
   }, async (configPath) => {
     const config = await loadConfig(configPath, { env: statedEnv() });
