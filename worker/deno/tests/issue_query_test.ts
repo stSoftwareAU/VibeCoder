@@ -147,6 +147,12 @@ Deno.test("issue_query - parseIssueListJson keeps the good row when another row 
   );
 });
 
+Deno.test("issue_query - parseIssueListJson keeps the good row when another row has a milestone with a non-string title (Issue #4110)", () => {
+  assertOnlyGoodRow4110(
+    parseIssueListJson(listWithBadRow4110({ milestone: { title: 42 } })),
+  );
+});
+
 Deno.test("issue_query - parseIssueListJson logs each skipped row by number and field (Issue #4110)", () => {
   const logged: string[] = [];
   const result = parseIssueListJson(

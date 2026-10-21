@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 659,
+        "outcome": "non-array JSON root: fetchAllIssues throws and caches nothing",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - fetchAllIssues rejects a non-array JSON root without caching (Issue #4110)",
+        "flipWentRed": "removing the `rawCount === null` throw turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 343,
+        "outcome": "malformed author: row skipped, good row kept",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson keeps the good row when another row has a string author (Issue #4110)",
+        "flipWentRed": "disabling the author guard turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 348,
+        "outcome": "malformed assignees: row skipped, good row kept",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson keeps the good row when another row has a null assignee (Issue #4110)",
+        "flipWentRed": "disabling the assignees guard turned four tests red, including this one, the log test and the fetch-level malformed-row tests"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 353,
+        "outcome": "malformed labels: row skipped, good row kept",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson keeps the good row when another row has non-array labels (Issue #4110)",
+        "flipWentRed": "disabling the labels guard turned three tests red: this one, the non-string label name test and the log test"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 358,
+        "outcome": "malformed milestone: row skipped, good row kept",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson keeps the good row when another row has a string milestone (Issue #4110)",
+        "flipWentRed": "disabling the milestone guard turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 337,
+        "outcome": "skipped row is logged with its number and field",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson logs each skipped row by number and field (Issue #4110)",
+        "flipWentRed": "removing the `log` call in `skip` turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 394,
+        "outcome": "absent author or milestone defaults to an empty string",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson defaults absent author, assignees, labels and null milestone (Issue #4110)",
+        "flipWentRed": "returning `null` for an absent value skips the row, turning the defaults test red"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 402,
+        "outcome": "absent assignees or labels default to an empty list",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson defaults absent author, assignees, labels and null milestone (Issue #4110)",
+        "flipWentRed": "returning `null` for an absent list skips the row, turning the defaults test red"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 395,
+        "outcome": "non-object author or milestone is malformed",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson keeps the good row when another row has a string milestone (Issue #4110)",
+        "flipWentRed": "disabling the milestone or author guard, the consumers of this `null`, turned the string-milestone and string-author tests red"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 397,
+        "outcome": "object with a non-string inner field is malformed",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson keeps the good row when another row has a milestone with a non-string title (Issue #4110)",
+        "flipWentRed": "changing the non-string fallback from `null` to `\"\"` turned only this test red"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 403,
+        "outcome": "non-array assignees or labels is malformed",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson keeps the good row when another row has non-array labels (Issue #4110)",
+        "flipWentRed": "disabling the labels guard, the consumer of this `null`, turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 406,
+        "outcome": "non-object list element (null assignee) is malformed",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson keeps the good row when another row has a null assignee (Issue #4110)",
+        "flipWentRed": "disabling the assignees guard, the consumer of this `null`, turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 408,
+        "outcome": "list element with a non-string name is malformed",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson keeps the good row when another row has a non-string label name (Issue #4110)",
+        "flipWentRed": "disabling the labels guard, the consumer of this `null`, turned this test red"
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 361,
+        "outcome": "every field valid: row kept, nothing logged",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "issue_query - parseIssueListJson does not log when every row is valid (Issue #4110)",
+        "flipWentRed": "logging unconditionally before the field checks turned this test red"
+      }
+    ]
+  }
+}
