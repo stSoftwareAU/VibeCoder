@@ -506,8 +506,8 @@ flowchart TD
   `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts are spent; assesses the head
   with `assessGatedHead`. Every `milestone/**` head, gated or not, looks for
   the takeover's own open fix PR (`findOpenMilestoneFixPr` with the
-  `takeover-` discriminator) and, when that one is open, reuses it — no
-  marker, no second PR. An open CI or review-feedback fix PR does not count.
+  `takeover-` discriminator) and, when that one is open, same-repository and
+  fleet-authored, reuses it — no marker, no second PR. An open CI or review-feedback fix PR does not count.
   An unreadable fix-PR listing fails loud rather than reading as "none".
 - Then posts an attempt marker `pass="takeover"` with the head sha, e.g.
   `<!-- vibe-coder:merge-conflict-attempt n="2" pass="takeover" head="abc1234" -->`,

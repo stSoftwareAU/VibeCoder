@@ -40,6 +40,7 @@ import {
 import { makeGhDefaultBranchFn } from "./milestone_branch_sync.ts";
 import { clearMilestoneReviewRequests } from "./milestone_pr_reviewers.ts";
 import { isMergeCommitNotAllowed } from "./milestone_sync_pr.ts";
+import { findOwnedOpenArtefact } from "./owned_open_artefact.ts";
 
 /** `owner/repo` with the character set GitHub actually allows. */
 const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
@@ -92,12 +93,9 @@ export interface MilestoneFixPrDeps {
   /** Sink for the one warning; falls back to {@link log}. */
   warn?: (message: string) => void;
   /**
-   * When set, a listed PR counts only when it lives in this repository and
-   * one of these logins opened it (Issue #2965). A fork PR, or one whose
-   * author is not in the set, is ignored: `gh pr list --base` includes both,
-   * and a name match alone would make the sync skip and the takeover report
-   * `fix-pr-reused` forever. Omitted keeps the name match, for callers that
-   * have not been given a fleet set.
+   * The fleet logins a listed fix PR must be opened by (Issue #2965). Omitted
+   * reads the configured fleet identity; an unresolved set finds nothing, so
+   * the caller files rather than reuses (Issue #3065).
    */
   fleetAuthors?: readonly string[];
 }
@@ -136,9 +134,11 @@ export function isFleetFixPrListing(
 /**
  * Find the open fix PR (if any) already raised for this milestone PR.
  *
- * Fails loud, not null: an unreadable listing must not be mistaken for "no
- * fix PR exists" — that would file a duplicate where one already answers
- * the fix.
+ * Reuses only an owned, open, fleet-authored fix PR: same repository, state
+ * OPEN, head under the shared prefix (Issue #3065), and opened by a fleet
+ * login. Every caller gets this check. Fails loud, not null: an unreadable
+ * listing must not be mistaken for "no fix PR exists" — that would file a
+ * duplicate where one already answers the fix.
  */
 export async function findOpenMilestoneFixPr(
   repo: string,
@@ -154,78 +154,33 @@ export async function findOpenMilestoneFixPr(
 ): Promise<Result<MilestoneFixPr | null>> {
   const prefix = milestoneFixPrefixFor(milestoneBranch, prNumber);
   const needle = discriminator ? `${prefix}${discriminator}` : prefix;
-  const fleetAuthors = deps.fleetAuthors;
-  let listed: string;
+  let found: Awaited<ReturnType<typeof findOwnedOpenArtefact>>;
   try {
-    listed = await deps.gh([
-      "pr",
-      "list",
-      "--repo",
+    found = await findOwnedOpenArtefact({
       repo,
-      "--state",
-      "open",
-      "--base",
-      milestoneBranch,
-      "--json",
-      fleetAuthors
-        ? "number,url,headRefName,author,isCrossRepository"
-        : "number,url,headRefName",
-      "--limit",
-      "100",
-    ]);
+      kind: "pr",
+      marker: needle,
+      base: milestoneBranch,
+      ghCommandFn: deps.gh,
+      ...(deps.fleetAuthors === undefined
+        ? {}
+        : { authors: { fleetAuthors: deps.fleetAuthors } }),
+      ...(deps.log ? { log: deps.log } : {}),
+    });
   } catch (error) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error : new Error(String(error)),
-    };
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(listed || "[]");
-  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
     return {
       ok: false,
       error: new Error(
-        `findOpenMilestoneFixPr: could not parse the PR listing for ` +
-          `${repo}#${prNumber}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+        `findOpenMilestoneFixPr: could not list the open fix PRs for ` +
+          `${repo}#${prNumber}: ${message}`,
       ),
     };
   }
-  if (!Array.isArray(parsed)) {
-    return {
-      ok: false,
-      error: new Error(
-        `findOpenMilestoneFixPr: unexpected PR listing shape for ${repo}#${prNumber}`,
-      ),
-    };
-  }
-  const match = (parsed as Array<{
-    number?: unknown;
-    url?: unknown;
-    headRefName?: unknown;
-    isCrossRepository?: unknown;
-    author?: unknown;
-  }>).find((entry) => {
-    if (
-      typeof entry.headRefName !== "string" ||
-      !entry.headRefName.startsWith(needle)
-    ) {
-      return false;
-    }
-    if (!fleetAuthors) return true;
-    return isFleetFixPrListing(entry, fleetAuthors);
-  });
-  if (
-    !match || typeof match.number !== "number" ||
-    typeof match.url !== "string"
-  ) {
-    return { ok: true, value: null };
-  }
+  if (found === null) return { ok: true, value: null };
   return {
     ok: true,
-    value: { number: match.number, url: match.url, opened: false },
+    value: { number: found.number, url: found.url, opened: false },
   };
 }
 

@@ -8,15 +8,16 @@
  * 1. `classify` — {@link classifyIssueRouting} picks the owner repository,
  *    unless the caller passes an explicit `decision`. An `ambiguous`
  *    decision files nothing and returns the basis.
- * 2. `search` — {@link findRoutingDuplicates} looks for an open, or recently
- *    closed, issue or PR with the same title in the owner repository. The
- *    lowest-numbered match is returned instead of filing.
+ * 2. `search` — {@link findOwnedOpenArtefact} looks for an open issue with the
+ *    same title that this tool owns (its body carries the routing marker) and
+ *    a fleet author. The lowest-numbered match is returned instead of filing. A
+ *    closed, foreign or unowned match is neither reused nor written to.
  * 3. `permission` — {@link requireWriteAccess} on the owner repository.
  * 4. `create` — `gh issue create`, with a `Routing:` line and an
  *    `<!-- issue-routing … -->` marker carrying the four audit fields.
- * 5. `recheck` — concurrent filers: search again. When a lower-numbered
- *    match now exists, the new issue is linked to it and closed as its
- *    duplicate, and the lower-numbered issue is returned.
+ * 5. `recheck` — concurrent filers: search again. When a lower-numbered owned,
+ *    open, fleet-authored match now exists, the new issue is linked to it and
+ *    closed as its duplicate, and the lower-numbered issue is returned.
  *
  * `dryRun` runs the read-only steps (classify, search, permission) and makes
  * no `gh` write call. A retry after a failure part-way through finds the
@@ -43,13 +44,15 @@ import {
   type IssueRoutingContext,
   type RoutingDecision,
 } from "./issue_routing_classifier.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import {
-  findRoutingDuplicates,
   type GhCommandFn,
   type IssueRoutingGithubDeps,
+  normaliseRoutingTitle,
   requireWriteAccess,
 } from "./issue_routing_github.ts";
 import { defaultLogger } from "./logger.ts";
+import { findOwnedOpenArtefact } from "./owned_open_artefact.ts";
 
 /** A draft issue to file. */
 export interface RoutedIssueDraft {
@@ -106,8 +109,13 @@ export interface FileRoutedIssueOptions extends IssueRoutingGithubDeps {
   decision?: RoutingDecision;
   /** Configured custom labels, reserved like the built-in ones (Issue #847). */
   extraReservedLabels?: readonly string[];
+  /** Fleet author set for the owned-artefact checks; omitted means configured identity. */
+  authors?: AlertDedupAuthorOptions;
   logger?: Logger;
 }
+
+/** The hidden marker that makes an issue this tool's (the prefix is enough). */
+const OWNED_ISSUE_MARKER = "<!-- issue-routing";
 
 /** A failed step of a routed filing; the message names the step. */
 export class RoutedIssueFilingError extends Error {
@@ -207,6 +215,20 @@ export async function fileRoutedIssue(
     ghCommandFn: opts.ghCommandFn,
     now: opts.now,
   };
+  const gh: GhCommandFn = opts.ghCommandFn ?? runGhCommand;
+  // Search and recheck share one lookup: owned, open, fleet-authored, same title.
+  const findOwned = (repo: string, title: string) =>
+    findOwnedOpenArtefact({
+      repo,
+      kind: "issue",
+      marker: OWNED_ISSUE_MARKER,
+      search: `"${title.replace(/"/g, "")}" in:title`,
+      accept: (row) =>
+        normaliseRoutingTitle(row.title ?? "") === normaliseRoutingTitle(title),
+      ghCommandFn: gh,
+      authors: opts.authors,
+      log: (message) => logger.warn(message, { repo }),
+    });
 
   const decision = await step(
     "classify",
@@ -243,10 +265,10 @@ export async function fileRoutedIssue(
     "search",
     repository,
     decision,
-    () => findRoutingDuplicates(repository, draft.title, deps),
+    () => findOwned(repository, draft.title),
   );
-  if (existing.length > 0) {
-    return result(opts.dryRun ? "would-reuse" : "reused", existing[0]!);
+  if (existing !== null) {
+    return result(opts.dryRun ? "would-reuse" : "reused", existing.number);
   }
 
   await step(
@@ -257,7 +279,6 @@ export async function fileRoutedIssue(
   );
   if (opts.dryRun) return result("would-create", null);
 
-  const gh: GhCommandFn = opts.ghCommandFn ?? runGhCommand;
   const labels = crossRepo ? [] : filterReservedLabelsWithWarning(
     requested,
     `${repository} routed issue`,
@@ -291,14 +312,14 @@ export async function fileRoutedIssue(
       ),
   );
 
-  // Concurrent filers converge on the lowest-numbered issue.
+  // Concurrent filers converge on the lowest-numbered owned, open match.
   const after = await step(
     "recheck",
     repository,
     decision,
-    () => findRoutingDuplicates(repository, draft.title, deps),
+    () => findOwned(repository, draft.title),
   );
-  const older = after.find((n) => n < number);
+  const older = after !== null && after.number < number ? after.number : undefined;
   if (older === undefined) return result("created", number);
 
   await step("close-duplicate", repository, decision, () =>

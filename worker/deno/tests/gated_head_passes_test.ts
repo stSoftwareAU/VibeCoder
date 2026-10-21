@@ -57,6 +57,9 @@ function makeSilentLogger(): Logger {
   };
 }
 
+/** The fleet login that authored the in-flight fix PR (Issue #3854). */
+const IN_FLIGHT_FLEET_LOGIN = "fleet-bot";
+
 /** What the pass did to GitHub and to the agent. */
 interface Observed {
   ghCalls: string[][];
@@ -95,6 +98,9 @@ function makeDeps(observed: Observed) {
           number: 9001,
           url: "https://github.com/org/repo/pull/9001",
           headRefName: `${milestoneFixPrefixFor(GATED_HEAD, 4702)}ci-1`,
+          state: "OPEN",
+          author: { login: IN_FLIGHT_FLEET_LOGIN },
+          isCrossRepository: false,
         }]));
       }
       return Promise.resolve("");
@@ -167,38 +173,48 @@ Deno.test("CI-fix pass - a gated head with a fix already in flight spends no ret
     const stateDir = `${tmpDir}/.ci_check_state`;
     let renewals = 0;
 
-    const result = await processCiFailure({
-      repo: "org/repo",
-      prNumber: 4702,
-      branchName: GATED_HEAD,
-      checkRunId: "67890",
-      checkName: "CI / test",
-      encodedAnnotations: btoa(JSON.stringify([])),
-    }, {
-      promptsDir: PROMPTS_DIR,
-      logger: makeSilentLogger(),
-      deps: makeDeps(observed),
-      stateDir,
-      workDir: tmpDir,
-      workRoot: tmpDir,
-      // Production runs the pass under the cross-host lock, so the test does
-      // too — the stand-down has to hold on the path the worker takes.
-      workerId: "worker-1",
-      acquireLockFn: (() =>
-        Promise.resolve({
-          ok: true,
-          value: { acquired: true, lockCommentId: 1 },
-        })) as unknown as CiProcessorDeps["acquireLockFn"],
-      releaseLockFn: (() =>
-        Promise.resolve({
-          ok: true,
-          value: undefined,
-        })) as unknown as CiProcessorDeps["releaseLockFn"],
-      startLockRenewalFn: (() => {
-        renewals++;
-        return { stop: () => {} };
-      }) as unknown as CiProcessorDeps["startLockRenewalFn"],
-    });
+    // The lookup reads the configured fleet identity; no config file exists here,
+    // so the identity comes from GITHUB_USER, restored once the pass returns.
+    const priorUser = Deno.env.get("GITHUB_USER");
+    Deno.env.set("GITHUB_USER", IN_FLIGHT_FLEET_LOGIN);
+    let result: Awaited<ReturnType<typeof processCiFailure>>;
+    try {
+      result = await processCiFailure({
+        repo: "org/repo",
+        prNumber: 4702,
+        branchName: GATED_HEAD,
+        checkRunId: "67890",
+        checkName: "CI / test",
+        encodedAnnotations: btoa(JSON.stringify([])),
+      }, {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps: makeDeps(observed),
+        stateDir,
+        workDir: tmpDir,
+        workRoot: tmpDir,
+        // Production runs the pass under the cross-host lock, so the test does
+        // too — the stand-down has to hold on the path the worker takes.
+        workerId: "worker-1",
+        acquireLockFn: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { acquired: true, lockCommentId: 1 },
+          })) as unknown as CiProcessorDeps["acquireLockFn"],
+        releaseLockFn: (() =>
+          Promise.resolve({
+            ok: true,
+            value: undefined,
+          })) as unknown as CiProcessorDeps["releaseLockFn"],
+        startLockRenewalFn: (() => {
+          renewals++;
+          return { stop: () => {} };
+        }) as unknown as CiProcessorDeps["startLockRenewalFn"],
+      });
+    } finally {
+      if (priorUser === undefined) Deno.env.delete("GITHUB_USER");
+      else Deno.env.set("GITHUB_USER", priorUser);
+    }
 
     assertEquals(result.ok, true);
     if (result.ok) {

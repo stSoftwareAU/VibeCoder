@@ -32,6 +32,7 @@ import {
   type IssueRoutingContext,
   type RoutingDecision,
 } from "./issue_routing_classifier.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import { fileRoutedIssue } from "./issue_routing_filing.ts";
 import {
   type GhCommandFn,
@@ -39,6 +40,7 @@ import {
   requireWriteAccess,
 } from "./issue_routing_github.ts";
 import { defaultLogger } from "./logger.ts";
+import { verifyOwnedOpenIssue } from "./owned_open_artefact.ts";
 import {
   isRepoFastFailureIssue,
   isRepoFastFailureTallyIssue,
@@ -117,6 +119,8 @@ export interface ResolveDuplicateOptions extends IssueRoutingGithubDeps {
   correct?: IssueRef;
   context: IssueRoutingContext;
   dryRun?: boolean;
+  /** Fleet author set for the owned-artefact checks; omitted means configured identity. */
+  authors?: AlertDedupAuthorOptions;
   logger?: Logger;
 }
 
@@ -313,17 +317,34 @@ export async function resolveWrongRepoDuplicate(
           logger,
           ghCommandFn: gh,
           now: opts.now,
+          authors: opts.authors,
         },
       ));
     correct = filed.number === null
       ? null
       : { repo: filed.repository, number: filed.number };
-    // A reused match is the lowest-numbered same-titled issue or PR, open or
-    // closed within the duplicate window; closing X in favour of a closed Y
-    // would leave the work tracked nowhere, so Y must be open here too.
+    // A reused match is an owned, open, fleet-authored issue with the same title.
+    // It is verified again here, because X is closed in its favour.
     const reused = correct !== null &&
       (filed.action === "reused" || filed.action === "would-reuse");
     if (reused) {
+      const verdict = await step("verify-correct", () =>
+        verifyOwnedOpenIssue({
+          repo: correct!.repo,
+          number: correct!.number,
+          marker: "<!-- issue-routing",
+          ghCommandFn: gh,
+          authors: opts.authors,
+          log: (message) => logger.warn(message),
+        }));
+      if (!verdict.ok) {
+        return refuse(
+          `${formatIssueRef(correct!)} is not an owned, open issue in ${owner} ` +
+            `(${verdict.reason}), so ${wrongText} is not retired in its favour; ` +
+            `nothing changed`,
+          formatIssueRef(correct!),
+        );
+      }
       const view = await step("verify-correct", () => viewIssue(gh, correct!));
       if (view.state !== "OPEN") {
         return refuse(

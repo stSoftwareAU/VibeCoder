@@ -945,7 +945,8 @@ What each pass does with a `milestone/**` head:
   `raiseMilestoneFixPr()` (`milestone_fix_pr.ts`). A retry is spent on that
   attempt exactly as an ungated head would.
   - **CI fix stands down before the agent runs** when `findOpenMilestoneFixPr()`
-    finds *any* open `milestone-fix/pr-<N>-*` PR for that head, so a repeat CI
+    finds an open `milestone-fix/pr-<N>-*` PR for that head that the fleet
+    opened in this repository, so a repeat CI
     failure on the same PR does not spend a retry racing a fix already in
     flight.
   - **Review feedback has no such pre-check** — each comment gets its own
