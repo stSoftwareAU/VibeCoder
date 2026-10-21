@@ -304,6 +304,8 @@ async function serveClient(
   client: Deno.Conn,
   ctx: ProxyContext,
 ): Promise<void> {
+  // The idle line is written until the upstream is dialled (head read,
+  // resolve, connect); an established tunnel idling out gets no denial line.
   let phase: "head" | "tunnel" = "head";
   let upstream: Deno.Conn | undefined;
   // The host and port once the head has parsed, so an idle line can name them.
@@ -356,8 +358,6 @@ async function serveClient(
     if (!isAllowlisted(host, ctx.allowlist)) {
       return await refuse(client, host, port, "not-allowlisted", logOnce);
     }
-    phase = "tunnel";
-
     const route = findRoute(host, ctx.routes);
     if (route !== undefined) {
       // A route owns the client connection, so the proxy's idle policy ends
@@ -426,6 +426,7 @@ async function serveClient(
     }
     upstream = dialled;
     ctx.registry.upstreams.add(dialled);
+    phase = "tunnel";
 
     if (!await replyEstablished(client, dialled, read.rest)) return;
     await Promise.all([
