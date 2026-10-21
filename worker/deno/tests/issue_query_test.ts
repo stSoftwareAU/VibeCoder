@@ -16,7 +16,9 @@ import {
   fetchAllOpenPRs,
   fetchClosedIssuesByMilestone,
   fetchClosedIssuesByMilestoneNumber,
+  fetchIssuesByLabel,
   fetchMergedPRsByUser,
+  fetchOpenIssuesByMilestone,
   fetchOpenMilestoneClosedCounts,
   fetchOpenPRsForFleet,
   fetchRecentlyClosedPRsForFleet,
@@ -78,6 +80,106 @@ Deno.test("issue_query - parseIssueListJson handles null milestone", () => {
 Deno.test("issue_query - parseIssueListJson returns empty for invalid JSON", () => {
   assertEquals(parseIssueListJson("not json"), []);
   assertEquals(parseIssueListJson(""), []);
+});
+
+// -----------------------------------------------------------------------
+// Malformed rows are skipped, not fatal (Issue #4110)
+// -----------------------------------------------------------------------
+
+const GOOD_ROW_4110 = {
+  number: 1,
+  title: "Good row",
+  url: "https://github.com/org/repo/issues/1",
+  assignees: [{ login: "user1" }],
+  labels: [{ name: "bug" }],
+  createdAt: "2024-01-01T00:00:00Z",
+  author: { login: "alice" },
+  milestone: { title: "v1.0" },
+};
+
+/** Good row #1, plus row #2 built from GOOD_ROW_4110 with `patch` applied. */
+function listWithBadRow4110(patch: Record<string, unknown>): string {
+  return JSON.stringify([
+    GOOD_ROW_4110,
+    { ...GOOD_ROW_4110, number: 2, title: "Bad row", ...patch },
+  ]);
+}
+
+function assertOnlyGoodRow4110(
+  result: ReturnType<typeof parseIssueListJson>,
+): void {
+  assertEquals(result.length, 1);
+  assertEquals(result[0]?.number, 1);
+  assertEquals(result[0]?.title, "Good row");
+  assertEquals(result[0]?.assignees, ["user1"]);
+  assertEquals(result[0]?.labels, ["bug"]);
+  assertEquals(result[0]?.author, "alice");
+  assertEquals(result[0]?.milestone, "v1.0");
+}
+
+Deno.test("issue_query - parseIssueListJson keeps the good row when another row has a null assignee (Issue #4110)", () => {
+  assertOnlyGoodRow4110(
+    parseIssueListJson(listWithBadRow4110({ assignees: [null] })),
+  );
+});
+
+Deno.test("issue_query - parseIssueListJson keeps the good row when another row has non-array labels (Issue #4110)", () => {
+  assertOnlyGoodRow4110(
+    parseIssueListJson(listWithBadRow4110({ labels: "bug" })),
+  );
+});
+
+Deno.test("issue_query - parseIssueListJson keeps the good row when another row has a non-string label name (Issue #4110)", () => {
+  assertOnlyGoodRow4110(
+    parseIssueListJson(listWithBadRow4110({ labels: [{ name: 5 }] })),
+  );
+});
+
+Deno.test("issue_query - parseIssueListJson keeps the good row when another row has a string milestone (Issue #4110)", () => {
+  assertOnlyGoodRow4110(
+    parseIssueListJson(listWithBadRow4110({ milestone: "v1" })),
+  );
+});
+
+Deno.test("issue_query - parseIssueListJson keeps the good row when another row has a string author (Issue #4110)", () => {
+  assertOnlyGoodRow4110(
+    parseIssueListJson(listWithBadRow4110({ author: "alice" })),
+  );
+});
+
+Deno.test("issue_query - parseIssueListJson logs each skipped row by number and field (Issue #4110)", () => {
+  const logged: string[] = [];
+  const result = parseIssueListJson(
+    listWithBadRow4110({ assignees: [null] }),
+    (message) => logged.push(message),
+  );
+  assertEquals(result.length, 1);
+  assertEquals(logged.length, 1);
+  assertStringIncludes(logged[0] ?? "", "#2");
+  assertStringIncludes(logged[0] ?? "", "assignees");
+});
+
+Deno.test("issue_query - parseIssueListJson does not log when every row is valid (Issue #4110)", () => {
+  const logged: string[] = [];
+  const json = JSON.stringify([
+    { number: 1, title: "Bare row", milestone: null },
+    GOOD_ROW_4110,
+  ]);
+  const result = parseIssueListJson(json, (message) => logged.push(message));
+  assertEquals(result.length, 2);
+  assertEquals(logged, []);
+});
+
+Deno.test("issue_query - parseIssueListJson defaults absent author, assignees, labels and null milestone (Issue #4110)", () => {
+  const json = JSON.stringify([
+    { number: 1, title: "Bare row", milestone: null },
+  ]);
+  const result = parseIssueListJson(json);
+  assertEquals(result.length, 1);
+  assertEquals(result[0]?.author, "");
+  assertEquals(result[0]?.assignees, []);
+  assertEquals(result[0]?.labels, []);
+  assertEquals(result[0]?.milestone, "");
 });
 
 // -----------------------------------------------------------------------
@@ -1585,6 +1687,80 @@ Deno.test("issue_query - fetchAllIssues rejects unparseable gh output without ca
       "4257",
     );
     assertEquals(await cache.read("org/repo", "issues_all"), null);
+  } finally {
+    await cleanup();
+  }
+});
+
+// =============================================================================
+// Malformed rows and non-array roots in fetchAllIssues (Issue #4110)
+// =============================================================================
+
+Deno.test("issue_query - fetchAllIssues rejects a non-array JSON root without caching (Issue #4110)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    await assertRejects(
+      () => fetchAllIssues("org/repo", cache, 100, () => Promise.resolve("{}")),
+      Error,
+      "4110",
+    );
+    assertEquals(
+      await cache.read("org/repo", "issues_all"),
+      null,
+      "a non-array root must not poison issues_all",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchAllIssues keeps and caches the good row when another row is malformed (Issue #4110)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const json = JSON.stringify([
+      GOOD_ROW_4110,
+      { ...GOOD_ROW_4110, number: 2, assignees: [null] },
+    ]);
+    const issues = await fetchAllIssues(
+      "org/repo",
+      cache,
+      100,
+      () => Promise.resolve(json),
+    );
+    assertEquals(issues.length, 1);
+    assertEquals(issues[0]?.number, 1);
+    const cached = await cache.read<{ issues: unknown[] }>(
+      "org/repo",
+      "issues_all",
+    );
+    assertEquals(cached?.issues.length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchOpenIssuesByMilestone and fetchIssuesByLabel keep the good row beside a malformed one (Issue #4110)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    // Separate repos so the second fetch cannot be served from the first's cache.
+    const milestoneJson = listWithBadRow4110({ assignees: [null] });
+    const byMilestone = await fetchOpenIssuesByMilestone(
+      "org/repo-milestone",
+      "v1.0",
+      cache,
+      () => Promise.resolve(milestoneJson),
+    );
+    assertEquals(byMilestone.map((issue) => issue.number), [1]);
+
+    const labelJson = listWithBadRow4110({ labels: "bug" });
+    const byLabel = await fetchIssuesByLabel(
+      "org/repo-label",
+      "bug",
+      cache,
+      50,
+      () => Promise.resolve(labelJson),
+    );
+    assertEquals(byLabel.map((issue) => issue.number), [1]);
   } finally {
     await cleanup();
   }
