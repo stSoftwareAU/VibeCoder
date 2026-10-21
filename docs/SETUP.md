@@ -97,11 +97,12 @@ background service is offered, where files land — is covered in
    value — the prompts do not lose the environment, and the environment does
    not lose the prompts. A failure here stops the run.
 
-6. **Update mode** — `setup update-mode` (Issue #626), bash only for now:
-   `setup.ps1` is unchanged and gains it as a follow-up. It asks whether this
-   host is `dynamic` or `frozen`, defaulting to `frozen` on a fresh host
-   (Issue #692) and, on a re-run, to whatever the host already says. A
-   `frozen` answer asks for the pinned ref — defaulting to the latest release
+6. **Update mode** — `setup update-mode` (Issue #626), run by both `setup.sh`
+   and `setup.ps1`. It asks whether this host is `dynamic` or `frozen`. The
+   default is `frozen` only on a fresh host with no pre-existing `.config.json`
+   (Issue #692); otherwise it is whatever the host already runs, and a
+   `.config.json` with no `update_mode` key counts as `dynamic`. A `frozen`
+   answer asks for the pinned ref — defaulting to the latest release
    tag, and validated by fetching origin and resolving it in this very
    checkout, so a ref that does not resolve is rejected by name and asked
    again rather than saved — and then for one exact version per tool, each
@@ -525,45 +526,49 @@ left exactly as it was rather than half-answered.
 
 **A non-interactive run never asks.** With no terminal attached — cron, a
 LaunchAgent, CI — setup skips the conversation entirely: a host that already
-has `update_mode` keeps every value untouched, and a fresh `.config.json` is
-pinned to the latest release — `update_mode: "frozen"`, the release tag, and
-the three versions its manifest records — when that release resolves. When it
-does not, or it carries no manifest, the host is written with
+has `update_mode` keeps every value untouched, and a pre-existing
+`.config.json` with no `update_mode` is left unwritten and runs `dynamic`.
+Only a `.config.json` this run creates is pinned to the latest release —
+`update_mode: "frozen"`, the release tag, and the three versions its manifest
+records — when that release resolves. When it does not, or it carries no
+manifest, the host is written with
 `update_mode: "dynamic"` and one warning line naming what could not be
 resolved: a ref without the versions it ships with is the partial pin frozen
 mode exists to prevent, so nothing is half-pinned behind an operator's back.
 
 **After setup, the pin moves by command, not by re-running setup.** A freshly
 pinned host stays on the release setup chose: later releases never move it, and
-each launch prints one line naming the newer release and the command that
-installs it (`Run ./run.sh upgrade to install it.`). Running `./run.sh upgrade`
+each launch prints one `WARNING:` line naming the newer release and the command
+that installs it (`Run ./run.sh upgrade to install it.`) — on stderr as
+`[run.sh] WARNING: …` and in `run_core.log`. Running `./run.sh upgrade`
 rewrites `pinned_ref` and all three `pinned_tool_versions` to that release, and
 the next launch installs exactly them. Setup is not part of that loop — see
 [Configuration — The upgrade loop](CONFIGURATION.md#the-upgrade-loop).
 
-**`dynamic` is not the default, and it is for a particular reader.** It stays
-available and supported — typed in at the first prompt — but a host that takes
+**On a fresh host `dynamic` is not the default, and it is for a particular reader.** It stays
+available and supported — typed in at the first prompt — but a fresh host that takes
 the defaults ends up frozen on a tag that cannot afterwards be deleted or moved
 ([Release integrity](RELEASE-TAGGING.md#release-integrity)). Choose `dynamic`
 when you are testing Vibe Coder itself, or running a fleet that should move
 together at every launch.
 
-**The setup default is not the load-time default.** Setup offers `frozen` to a
-host being configured; a `.config.json` with **no** `update_mode` key still
-loads as `dynamic`, unchanged — see
-[Configuration — Update Mode](CONFIGURATION.md#-update-mode).
+**The setup default is not the load-time default.** Setup offers `frozen` only
+when no `.config.json` existed before the run. A pre-existing `.config.json`
+with **no** `update_mode` key is offered `dynamic` in setup, and it still
+loads as `dynamic` — see [Configuration — Update Mode](CONFIGURATION.md#-update-mode).
 
 **Blank answers are byte-for-byte safe.** Re-running setup and pressing Enter
 through every prompt re-writes the same values on a frozen host and leaves a
 dynamic host dynamic, so setup stays re-runnable and neither a pin nor a
 deliberate `dynamic` answer is lost to a re-run.
 
-**Windows does not ask yet.** `setup.ps1` is unchanged — the update-mode
-conversation is bash-only for now, and the Windows counterpart is a follow-up.
-A Windows host sets `update_mode`, `pinned_ref` and `pinned_tool_versions` by
-hand in `.config.json`; everything downstream is the shared Deno code, so
-`run.ps1` honours a frozen pin through `worker-checkout-update` exactly as
-`run.sh` does. Hand-editing is a first-class path on every platform — see
+**Windows asks the same question.** `setup.ps1` runs the same
+`setup update-mode` conversation as `setup.sh`, so a Windows host is asked
+whether it is `dynamic` or `frozen` at setup. Hand-editing is still a
+first-class path on every platform: a Windows host can set `update_mode`,
+`pinned_ref` and `pinned_tool_versions` by hand in `.config.json`; everything
+downstream is the shared Deno code, so `run.ps1` honours a frozen pin through
+`worker-checkout-update` exactly as `run.sh` does. See
 [Moving a pin by hand](CONFIGURATION.md#-update-mode).
 
 ## Platform differences in the automated setup
@@ -581,7 +586,7 @@ what another document owns.
 | Container runtime | Apple `container`, installed **and** started | Docker, then Podman | Docker Desktop, then Podman |
 | Credential/config protection | `chmod` 0700 / 0600 | `chmod` 0700 / 0600 | Inheritance-stripped ACL, current identity only |
 | Background-service offer | LaunchAgent prompt | None at setup time | Scheduled-task prompt |
-| Update-mode prompts | `setup update-mode` | `setup update-mode` | Not yet — `setup.ps1` is unchanged |
+| Update-mode prompts | `setup update-mode` | `setup update-mode` | `setup update-mode` |
 | Home directory | `$HOME` | `$HOME` | `%USERPROFILE%` (then `HOME`) |
 
 **Entry point and invocation.** macOS and Linux run `./setup.sh` under bash;

@@ -451,16 +451,17 @@ instead, and a checkout that doubles as a development tree wants its own
 
 ## 🔔 "A new release of Vibe Coder is available"
 
-A frozen host pinned behind the newest release says so once per launch, on
-stderr and in `run_core.log` (Issue #690):
+A frozen host pinned behind the newest release says so once per launch, at
+`WARNING` level: on stderr as `[run.sh] WARNING: …` and in `run_core.log` as
+`WARNING: …` (Issue #690):
 
 ```text
-A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
+[run.sh] WARNING: A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
 ```
 
-Nothing is wrong and nothing has changed: the pin is still what the host runs,
-and the notice is only telling you a newer release exists. Move the host when
-you choose to — see
+The host is behind the newest release, but it is still running its pin, and
+the notice is only telling you a newer release exists. Move the host when you
+choose to — see
 [Configuration — New-Release Notice](CONFIGURATION.md#-new-release-notice).
 
 The check itself can fail, and never blocks a launch:
