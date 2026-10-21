@@ -82,8 +82,7 @@ export function findUnownedReuseSites(source: string): number[] {
  * Files, relative to `worker/deno`, that produce a `reused` outcome without an
  * owned lookup. Shrink-only: a fixed file is removed, a new one is a failure.
  */
-export const OWNED_REUSE_UNVERIFIED_FILES: readonly string[] = [
-];
+export const OWNED_REUSE_UNVERIFIED_FILES: readonly string[] = [];
 
 /**
  * Exempt files whose `reused` string is not an artefact reuse, each with the
