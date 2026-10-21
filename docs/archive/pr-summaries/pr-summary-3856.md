@@ -77,10 +77,10 @@ Checks run on the four changed code and test files: `deno fmt --check`,
 
 GraphQL switch arms (`milestone_health.ts:299`):
 
-- `errors` (`:301`) is covered by `milestone_health_test.ts:807`.
-- `unavailable` (`:306`) is covered by `milestone_health_test.ts:825`.
+- `errors` (`:301`) is covered by `worker/deno/tests/milestone_health_test.ts:807`.
+- `unavailable` (`:306`) is covered by `worker/deno/tests/milestone_health_test.ts:825`.
 - `absent` (`:304`) is covered by the existing test at
-  `milestone_health_test.ts:277`.
+  `worker/deno/tests/milestone_health_test.ts:277`.
 - `compare` (`:316`) is covered by the Issue #470 tests at `:644` and `:655`.
 
 The `errors` and `unavailable` tests assert the REST fallback values (`aheadBy` 2,
@@ -154,9 +154,9 @@ file restored and confirmed unchanged. Every flip made its test fail.
 
 Compound-condition operand flips (`worker/deno/lib/validation.ts`):
 
-- `:1030` `errors !== null` operand removed → `validation_test.ts:756` red.
-- `:1074` `ref === undefined` operand removed → `validation_test.ts:767` red.
-- `:1085` `compare === undefined` operand removed → `validation_test.ts:774` red.
+- `:1030` `errors !== null` operand removed → `worker/deno/tests/validation_test.ts:756` red.
+- `:1074` `ref === undefined` operand removed → `worker/deno/tests/validation_test.ts:767` red.
+- `:1085` `compare === undefined` operand removed → `worker/deno/tests/validation_test.ts:774` red.
 
 Unit run for the changed suites (`deno task test:unit` on
 `worker/deno/tests/validation_test.ts`, `worker/deno/tests/milestone_health_test.ts`

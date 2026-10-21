@@ -210,6 +210,30 @@
         "test": "worker/deno/tests/milestone_health_test.ts",
         "testName": "getMilestoneHealth - non-array milestone list fails naming the endpoint and root (Issue #3856)",
         "flipWentRed": "flip: outcome flipped -> test went red"
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "test": "worker/deno/tests/validation_test.ts",
+        "flipWentRed": "flip: operand removed -> test went red",
+        "line": 1030,
+        "outcome": "errors-null operand treated as no errors",
+        "testName": "validation - validateGraphQLBranchCompareJson accepts a compare with null errors"
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "test": "worker/deno/tests/validation_test.ts",
+        "flipWentRed": "flip: operand removed -> test went red",
+        "line": 1074,
+        "outcome": "omitted ref is treated as absent",
+        "testName": "validation - validateGraphQLBranchCompareJson treats an omitted ref as absent"
+      },
+      {
+        "path": "worker/deno/lib/validation.ts",
+        "test": "worker/deno/tests/validation_test.ts",
+        "flipWentRed": "flip: operand removed -> test went red",
+        "line": 1085,
+        "outcome": "omitted compare is treated as unavailable",
+        "testName": "validation - validateGraphQLBranchCompareJson treats an omitted compare as unavailable"
       }
     ]
   }
