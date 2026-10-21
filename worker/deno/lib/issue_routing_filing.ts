@@ -115,7 +115,7 @@ export interface FileRoutedIssueOptions extends IssueRoutingGithubDeps {
 }
 
 /** The hidden marker that makes an issue this tool's (the prefix is enough). */
-const OWNED_ISSUE_MARKER = "";
+const OWNED_ISSUE_MARKER = "<!-- issue-routing";
 
 /** A failed step of a routed filing; the message names the step. */
 export class RoutedIssueFilingError extends Error {
