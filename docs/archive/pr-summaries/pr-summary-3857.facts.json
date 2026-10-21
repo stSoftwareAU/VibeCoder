@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/secret_redaction.ts",
+        "line": 477,
+        "outcome": "`\\b` alternative: secret preceded by a non-word character is masked",
+        "test": "worker/deno/tests/secret_redaction_test.ts",
+        "testName": "redactSecrets - masks the AWS secret beside its access key id",
+        "flipWentRed": "true"
+      },
+      {
+        "path": "worker/deno/lib/secret_redaction.ts",
+        "line": 477,
+        "outcome": "escape lookbehind alternative: secret after a literal \\n is masked",
+        "test": "worker/deno/tests/secret_redaction_test.ts",
+        "testName": "redactSecrets - a JSON-encoded AWS key pair has its secret masked (Issue #3857)",
+        "flipWentRed": "true"
+      },
+      {
+        "path": "worker/deno/lib/secret_redaction.ts",
+        "line": 477,
+        "outcome": "`r` in the escape allow-list: secret after a literal \\r is masked",
+        "test": "worker/deno/tests/secret_redaction_test.ts",
+        "testName": "redactSecrets - a secret after a literal backslash-r escape is masked (Issue #3857)",
+        "flipWentRed": "true"
+      },
+      {
+        "path": "worker/deno/lib/secret_redaction.ts",
+        "line": 477,
+        "outcome": "escape allow-list rejects other letters: backslash before a non-escape letter is not masked",
+        "test": "worker/deno/tests/secret_redaction_test.ts",
+        "testName": "redactSecrets - a backslash before a non-escape letter does not unmask as an escape (Issue #3857)",
+        "flipWentRed": "true"
+      }
+    ]
+  }
+}
