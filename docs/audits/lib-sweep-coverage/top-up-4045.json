@@ -5,6 +5,6 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4045",
   "definition": "Pure module that resolves the egress host list from built-in, enabled-provider, imgbb, ANTHROPIC_BASE_URL and operator egress_allow_hosts entries, and validates untrusted config host strings; no I/O.",
   "status": "claimed",
-  "sweptAt": "d1c947595e50d0979a5b455b43d8ad8d9bb772b4",
+  "sweptAt": "0e14874355c2ff8f3c715509d384e602ba1a9dad",
   "paths": ["worker/deno/lib/egress_allowlist.ts"]
 }
