@@ -428,6 +428,13 @@ const VERIFY_PROBES: [string, (owner: FakeIssue) => void, string][] = [
     },
     "author is not a fleet account",
   ],
+  [
+    "the owner issue is closed",
+    (owner) => {
+      owner.closedAt = "2026-10-14T00:00:00Z";
+    },
+    "state is CLOSED, not OPEN",
+  ],
 ];
 
 for (const [label, mutate, reason] of VERIFY_PROBES) {

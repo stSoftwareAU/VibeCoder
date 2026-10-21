@@ -348,14 +348,6 @@ export async function resolveWrongRepoDuplicate(
         );
       }
       const view = await step("verify-correct", () => viewIssue(gh, correct!));
-      if (view.state !== "OPEN") {
-        return refuse(
-          `${formatIssueRef(correct!)} has the same title in ${owner} but is ` +
-            `not open, so ${wrongText} is not retired in its favour; nothing ` +
-            `changed. Reopen it, or name the open owning issue with --correct`,
-          formatIssueRef(correct!),
-        );
-      }
       correctComments = view.comments;
     }
     const target = correct === null ? owner : formatIssueRef(correct);
