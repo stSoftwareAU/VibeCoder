@@ -68,7 +68,7 @@ Docs sweep: grep: `cfn-lint`, `checkov`, `aws-cloudformation` across README.md, 
 - **met** — A repository with both passes the bucket. — evidence: `worker/deno/tests/linter_in_ci_check_test.ts::aws-cloudformation — cfn-lint and Checkov invoked in CI is configured` — reviewer: met
 - **met** — The Checkov match is case-insensitive. — evidence: `worker/deno/tests/linter_in_ci_check_test.ts::aws-cloudformation — mixed-case CheckOV with cfn-lint invoked in CI is configured` — reviewer: met
 - **met** — Repositories without CloudFormation templates are unaffected. — evidence: the early return at `worker/deno/lib/linter_in_ci_check.ts:649-655` is untouched by the diff, and the existing tests in `worker/deno/tests/linter_in_ci_check_test.ts` still pass — reviewer: met
-- **met** — Docs describe both requirements, and tests and `./quality.sh` pass. — evidence: `docs/BEST-PRACTICES-SCAN.md:461` and `:837` and `DESIGN-PRINCIPLES.md:1692` describe both tools; `worker/deno/tests/linter_in_ci_check_test.ts` passes (46 passed); `./quality.sh` has not yet been run and must pass before the PR — reviewer: met
+- **partial** — Docs describe both requirements, and tests and `./quality.sh` pass. — evidence: `docs/BEST-PRACTICES-SCAN.md:461` and `:837` and `DESIGN-PRINCIPLES.md:1692` describe both tools; `worker/deno/tests/linter_in_ci_check_test.ts` passes (46 passed); every `./quality.sh` stage passed except deno tests (29499 passed, 5 failed) — reviewer: partial — reason: the 5 failing tests are outside this change and fail identically on base `origin/milestone/pre-push-gate-ci-parity`
 
 ## Standards Review
 
@@ -116,15 +116,29 @@ Docs sweep: grep: `cfn-lint`, `checkov`, `aws-cloudformation` across README.md, 
   | C | lib:680 `if (false)` | only-cfn-lint |
   | D | lib:680 `if (true)` | only-Checkov |
 
-- Command: `deno task test:unit tests/linter_in_ci_check_test.ts` gives 46 passed;
-  `./quality.sh` is to be run before the PR.
-- [ ] `./quality.sh` (not yet run; required before the PR)
+- Command: `deno task test:unit tests/linter_in_ci_check_test.ts` gives 46 passed.
+- [ ] `./quality.sh < /dev/null` exits 1. Every stage passes except deno tests:
+  29499 passed and 5 failed. The same 5 fail on base
+  `origin/milestone/pre-push-gate-ci-parity` (`deno test -A` on the three files
+  in a clean base worktree: 20 passed, 5 failed):
+  - `worker/deno/tests/claude_runner_provider_fallback_4034_test.ts:123` and
+    `:149`, and `worker/deno/tests/external_orchestration_3642_config_test.ts:101`
+    fail because this container image does not install the `codex` provider
+    ("The running container image did not install the \"codex\" coding-agent
+    provider. Installed: claude.").
+  - `worker/deno/tests/completion_phase_repo_formatters_test.ts:480` and `:567`
+    fail with "formatter should commit the Rust fix". The cause was not
+    diagnosed.
 
 <!-- vibe-branch-outcomes -->
 
 ## Not done / risks
 
-- None of substance. Root docs are not fmt-gated, so the wrapped line at
+- `./quality.sh` is red on 5 deno tests that fail the same way on base (see
+  Test Plan). This PR does not fix them.
+- The early return for repositories without CloudFormation templates has no
+  new test. AC6 rests on that return being unchanged and on the existing tests.
+- Root docs are not fmt-gated, so the wrapped line at
   `DESIGN-PRINCIPLES.md:1692` was left as it is.
 - The regex matches workflow comments too. This is pre-existing behaviour and
   is consistent with the existing cfn-lint check.
