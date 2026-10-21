@@ -73,11 +73,15 @@ function issue(store: FakeStore, repo: string, number: number): FakeIssue {
   return found;
 }
 
-async function resolve(args: Record<string, unknown>, gh: FakeGh) {
+async function resolve(
+  args: Record<string, unknown>,
+  gh: FakeGh,
+  logger = makeRecordingLogger().logger,
+) {
   const deps: RouteIssueDeps = {
     ghCommandFn: gh.ghCommandFn,
     now: () => new Date("2026-10-15T00:00:00Z"),
-    logger: makeRecordingLogger().logger,
+    logger,
     authors: { fleetAuthors: [FLEET_LOGIN] },
   };
   const result = await routeIssueCommand.execute(
@@ -350,7 +354,7 @@ function sameTitledStore(closedAt: string | null): FakeStore {
 }
 
 for (const dryRun of [false, true]) {
-  Deno.test(`route-issue --resolve-duplicate - with no --correct, a same-titled owner issue closed within the window is not reused: a fresh issue is filed (dry-run ${dryRun})`, async () => {
+  Deno.test(`route-issue --resolve-duplicate - with no --correct, a same-titled owner issue closed within the window is refused and X stays open (dry-run ${dryRun})`, async () => {
     const store = sameTitledStore("2026-10-10T00:00:00Z");
     const gh = routingFakeGh(store);
     const { result, data } = await resolve({
@@ -358,21 +362,45 @@ for (const dryRun of [false, true]) {
       ...(dryRun ? { "dry-run": true } : {}),
     }, gh);
 
-    assertEquals(result.success, true);
+    assertEquals(result.success, false);
+    assertEquals(data?.outcome, "refused");
+    assertStringIncludes(result.message, `${AUTOTRADER}#50`);
+    assertStringIncludes(result.message, "not open");
+    assertEquals(issue(store, VIBE, 3607).closedAt, null);
     assertEquals(issue(store, AUTOTRADER, 50).comments, []);
-    assertEquals(issue(store, AUTOTRADER, 50).closedAt, "2026-10-10T00:00:00Z");
-    if (dryRun) {
-      assertEquals(data?.outcome, "would-resolve");
-      assertEquals(issue(store, VIBE, 3607).closedAt, null);
-      assertEquals(gh.calls.filter(isWriteCall), []);
-      assertEquals(store.issues.length, 2, "nothing was filed in a dry run");
-    } else {
-      assertEquals(data?.outcome, "resolved");
-      assertEquals(data?.correct_issue, `${AUTOTRADER}#51`);
-      assert(issue(store, VIBE, 3607).closedAt !== null, "#3607 is closed");
-      assertEquals(issue(store, AUTOTRADER, 51).closedAt, null);
-      assertEquals(store.issues.length, 3, "one fresh issue was filed");
-    }
+    assertEquals(gh.calls.filter(isWriteCall), []);
+    assertEquals(store.issues.length, 2, "no fresh Y was filed");
+  });
+}
+
+const NOT_OWNED: [string, (owner: FakeIssue) => void][] = [
+  ["by another author", (owner) => {
+    owner.author = "someone-else";
+  }],
+  ["with no owned marker", (owner) => {
+    owner.body = owner.body.replace(OWNED_MARKER, "");
+  }],
+];
+
+for (const [label, shape] of NOT_OWNED) {
+  Deno.test(`route-issue --resolve-duplicate - with no --correct, an open same-titled owner issue ${label} is refused, not reused, and no fresh Y is filed`, async () => {
+    const store = sameTitledStore(null);
+    shape(issue(store, AUTOTRADER, 50));
+    const gh = routingFakeGh(store);
+    const { result, data } = await resolve({
+      "resolve-duplicate": `${VIBE}#3607`,
+    }, gh);
+
+    assertEquals(result.success, false);
+    assertEquals(data?.outcome, "refused");
+    assertStringIncludes(
+      result.message,
+      `${AUTOTRADER}#50 has the same title in ${AUTOTRADER} but is not open, or is not an issue this tool filed`,
+    );
+    assertEquals(issue(store, VIBE, 3607).closedAt, null);
+    assertEquals(issue(store, AUTOTRADER, 50).comments, []);
+    assertEquals(gh.calls.filter(isWriteCall), []);
+    assertEquals(store.issues.length, 2, "no fresh Y was filed");
   });
 }
 
@@ -441,9 +469,14 @@ for (const [label, mutate, reason] of VERIFY_PROBES) {
   Deno.test(`route-issue --resolve-duplicate - refuses when the owned-issue check fails at verify time (${label}), with the reason in the error`, async () => {
     const store = sameTitledStore(null);
     const gh = routingFakeGh(store, mutateOnVerify(store, mutate));
-    const { result, data } = await resolve({
-      "resolve-duplicate": `${VIBE}#3607`,
-    }, gh);
+    const { logger, records } = makeRecordingLogger();
+    const { result, data } = await resolve(
+      {
+        "resolve-duplicate": `${VIBE}#3607`,
+      },
+      gh,
+      logger,
+    );
 
     assertEquals(result.success, false);
     assertEquals(data?.outcome, "refused");
@@ -453,5 +486,10 @@ for (const [label, mutate, reason] of VERIFY_PROBES) {
     );
     assertEquals(issue(store, VIBE, 3607).closedAt, null);
     assertEquals(gh.calls.filter(isWriteCall), []);
+    // A foreign author is logged by the verify's author check.
+    const loggedForeign = records.some(([m]) =>
+      m.includes("authored outside the fleet")
+    );
+    assertEquals(loggedForeign, reason === "author is not a fleet account");
   });
 }

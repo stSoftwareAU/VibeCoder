@@ -109,26 +109,35 @@
       },
       {
         "path": "worker/deno/lib/issue_routing_filing.ts",
-        "line": 220,
-        "endLine": 231,
-        "outcome": "the search for an existing issue requires the owned marker",
+        "line": 279,
+        "endLine": 295,
+        "outcome": "a same-titled dedup hit (open, or closed in the last 30 days, issue or PR, any author) suppresses the filing; one that is not owned and open is reported as suppressed with no write",
         "test": "worker/deno/tests/issue_routing_filing_test.ts",
-        "testName": "fileRoutedIssue - an open same-titled issue with no owned marker is not reused, and is not closed",
-        "flipWentRed": "2f: marker argument blanked, 1 failing"
+        "testName": "fileRoutedIssue - a same-titled match closed within the window suppresses the filing, is not reused and is not written to (dry-run false)",
+        "flipWentRed": "duplicates.length > 0 replaced by false, 11 failing"
       },
       {
         "path": "worker/deno/lib/issue_routing_filing.ts",
-        "line": 270,
-        "endLine": 272,
+        "line": 229,
+        "endLine": 241,
+        "outcome": "the owned lookup behind a dedup hit requires the routing marker",
+        "test": "worker/deno/tests/issue_routing_filing_test.ts",
+        "testName": "fileRoutedIssue - a same-titled match with no owned marker suppresses the filing, is not reused and is not written to (dry-run false)",
+        "flipWentRed": "2f: marker argument blanked, 2 failing"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_filing.ts",
+        "line": 286,
+        "endLine": 288,
         "outcome": "an owned, open, fleet-authored match is reused, not refiled",
         "test": "worker/deno/tests/issue_routing_filing_test.ts",
         "testName": "fileRoutedIssue - an owned, open, fleet-authored match is reused, not refiled; dry-run reports would-reuse",
-        "flipWentRed": "X4: reuse branch replaced by false, 3 failing"
+        "flipWentRed": "X4: owned !== null replaced by false, 10 failing"
       },
       {
         "path": "worker/deno/lib/issue_routing_filing.ts",
-        "line": 322,
-        "endLine": 345,
+        "line": 339,
+        "endLine": 368,
         "outcome": "the recheck closes the new issue only for an owned, open, lower-numbered match",
         "test": "worker/deno/tests/issue_routing_filing_test.ts",
         "testName": "fileRoutedIssue - the recheck closes the new issue only for an owned, open, lower-numbered match",
@@ -136,12 +145,21 @@
       },
       {
         "path": "worker/deno/lib/issue_routing_resolve.ts",
-        "line": 331,
-        "endLine": 345,
+        "line": 326,
+        "endLine": 336,
+        "outcome": "resolve-duplicate refuses, changing nothing, when the routed filing reports a suppressed same-titled match",
+        "test": "worker/deno/tests/route_issue_resolve_duplicate_test.ts",
+        "testName": "route-issue --resolve-duplicate - with no --correct, a same-titled owner issue closed within the window is refused and X stays open (dry-run false)",
+        "flipWentRed": "suppressed condition replaced by false, 4 failing"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_resolve.ts",
+        "line": 339,
+        "endLine": 363,
         "outcome": "resolve-duplicate refuses when the owned-issue verify fails",
         "test": "worker/deno/tests/route_issue_resolve_duplicate_test.ts",
         "testName": "route-issue --resolve-duplicate - refuses when the owned-issue check fails at verify time (the author is not a fleet account), with the reason in the error",
-        "flipWentRed": "2d: verdict refusal replaced by false, 2 failing"
+        "flipWentRed": "2d: verdict refusal replaced by false, 3 failing"
       },
       {
         "path": "worker/deno/lib/issue_routing_split.ts",
@@ -155,11 +173,20 @@
       {
         "path": "worker/deno/lib/issue_routing_split.ts",
         "line": 275,
-        "endLine": 280,
+        "endLine": 282,
+        "outcome": "a part whose routed filing is suppressed fails and is left unedited",
+        "test": "worker/deno/tests/route_issue_split_test.ts",
+        "testName": "route-issue --part - an unrelated same-titled issue (closed within the window, no marker) is neither reused nor edited",
+        "flipWentRed": "suppressed condition replaced by false, 6 failing"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_split.ts",
+        "line": 283,
+        "endLine": 288,
         "outcome": "the reuse gate re-checks only a reused or would-reuse part",
         "test": "worker/deno/tests/route_issue_split_test.ts",
         "testName": "route-issue --part - requireReusablePart re-checks a reused part (the marker is removed)",
-        "flipWentRed": "X5: reuse gate replaced by false, 4 failing"
+        "flipWentRed": "X5: reuse gate replaced by false, 6 failing"
       },
       {
         "path": "worker/deno/lib/milestone_fix_pr.ts",
@@ -231,6 +258,15 @@
           "kind": "untestable",
           "reason": "deps.dedupAuthors is unset, so the command passes no author option and the default author handling applies. Harness search: worker/deno/tests/suggest_improvements_test.ts calls createSuggestImprovementsCommand nine times and sets dedupAuthors in only some of them, so the unset arm is reached, but no assertion tells it apart from the default path."
         }
+      },
+      {
+        "path": "worker/deno/commands/suggest_improvements.ts",
+        "line": 285,
+        "endLine": 291,
+        "outcome": "the suggest-improvements summary names the improvements a suppressed match kept from being filed",
+        "test": "worker/deno/tests/suggest_improvements_test.ts",
+        "testName": "suggest-improvements - the command's injected clock sets the duplicate-search window (Issue #3745)",
+        "flipWentRed": "suppressed > 0 replaced by false, 1 failing"
       }
     ]
   }

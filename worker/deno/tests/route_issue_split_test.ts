@@ -246,28 +246,42 @@ for (
       closedAt: CLOSED_5_DAYS_AGO,
       body: PART_BODY,
     }],
+    ["open with a marker for another owner", {
+      body: `Old part\n${MARKER(VIBE, "cross-repo")}`,
+    }],
+    ["open with a marker of another kind", {
+      body: `Old part\n${MARKER(AUTOTRADER, "product")}`,
+    }],
+    ["open, carrying this tool's marker, by another author", {
+      author: "someone-else",
+      body: PART_BODY,
+    }],
+    ["a pull request carrying this tool's marker", {
+      isPullRequest: true,
+      body: PART_BODY,
+    }],
   ] as const
 ) {
-  Deno.test(`route-issue --part - a same-titled issue that is not open and owned (${name}) is not reused; a fresh part is filed`, async () => {
+  Deno.test(`route-issue --part - an unrelated same-titled issue (${name}) is neither reused nor edited`, async () => {
     const store = newStore();
     store.issues.push(sameTitled(extra));
     const before = JSON.stringify(store.issues[0]);
     const gh = routingFakeGh(store);
     const { result, data } = await split({ part: PARTS }, gh);
 
-    assertEquals(result.success, true);
-    assertEquals(data?.complete, true);
-    assertEquals(
-      data?.parts.map((p) => [p.repo, p.action]),
-      [[VIBE, "created"], [AUTOTRADER, "created"]],
-    );
+    assertEquals(result.success, false);
+    assertEquals(data?.complete, false);
+    assertEquals(data?.missing, [AUTOTRADER]);
+    const part = data?.parts.find((p) => p.repo === AUTOTRADER);
+    assertEquals(part?.action, "failed");
+    assertStringIncludes(part?.error ?? "", `${AUTOTRADER}#50`);
+    assertStringIncludes(part?.error ?? "", "not reused");
     assertEquals(JSON.stringify(store.issues[0]), before, "#50 is untouched");
-    assertEquals(gh.calls.filter((c) => c[1] === "edit" && c[2] === "50"), []);
-    assert(
-      store.issues.some((i) =>
-        i.repo === AUTOTRADER && i.number === 51 && i.title === AT_TITLE
-      ),
-      "a fresh AUTOTRADER issue is filed beside it",
+    assertEquals(gh.calls.filter((c) => c[1] === "edit"), []);
+    assertEquals(
+      store.issues.filter((i) => i.repo === AUTOTRADER).length,
+      1,
+      "no new issue was filed beside it",
     );
   });
 }
@@ -310,15 +324,15 @@ for (
   });
 }
 
-Deno.test("route-issue --part - a dry run plans a fresh part for a closed same-titled issue instead of reusing it", async () => {
+Deno.test("route-issue --part - a dry run flags an unrelated same-titled issue instead of planning to reuse it", async () => {
   const store = newStore();
   store.issues.push(sameTitled({ closedAt: CLOSED_5_DAYS_AGO }));
   const gh = routingFakeGh(store);
   const { result, data } = await split({ part: PARTS, "dry-run": true }, gh);
-  assertEquals(result.success, true);
+  assertEquals(result.success, false);
   assertEquals(
     data?.parts.map((p) => [p.repo, p.action]),
-    [[VIBE, "would-create"], [AUTOTRADER, "would-create"]],
+    [[VIBE, "would-create"], [AUTOTRADER, "failed"]],
   );
   assertEquals(gh.calls.filter(isWriteCall), []);
 });
@@ -331,18 +345,6 @@ Deno.test("route-issue --part - an open issue with this tool's marker for the pa
   assertEquals(result.success, true);
   assertEquals(data?.parts.map((p) => p.action), ["created", "reused"]);
   assertStringIncludes(store.issues[0]!.body, "route-issue-siblings");
-});
-
-Deno.test("route-issue --part - an open same-titled part with this tool's marker but a foreign author is not reused", async () => {
-  const store = newStore();
-  store.issues.push(sameTitled({ author: "someone-else", body: PART_BODY }));
-  const before = JSON.stringify(store.issues[0]);
-  const gh = routingFakeGh(store);
-  const { result, data } = await split({ part: PARTS }, gh);
-  assertEquals(result.success, true);
-  assertEquals(data?.parts.map((p) => p.action), ["created", "created"]);
-  assertEquals(JSON.stringify(store.issues[0]), before, "#50 is untouched");
-  assertEquals(gh.calls.filter((c) => c[1] === "edit" && c[2] === "50"), []);
 });
 
 type VerifyProbe = [string, (issue: FakeIssue) => void, string | undefined];

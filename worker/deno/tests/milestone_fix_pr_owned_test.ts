@@ -142,6 +142,8 @@ Deno.test("findOpenMilestoneFixPr - a gh failure is an error Result (Issue #3065
   assert(!result.ok);
   assertStringIncludes(result.error.message, "findOpenMilestoneFixPr");
   assertStringIncludes(result.error.message, "boom");
+  // The listing is the PR kind of the owned lookup, named in the error.
+  assertStringIncludes(result.error.message, `Owned pr lookup in ${REPO}`);
 });
 
 Deno.test("findOpenMilestoneFixPr - an unparseable listing is an error Result (Issue #3065)", async () => {

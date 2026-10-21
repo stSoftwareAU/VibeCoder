@@ -222,6 +222,11 @@ Deno.test("owned open artefact - an unresolved fleet set returns null and logs i
     log.some((m) => m.includes("fleet author set unresolved")),
     "an unresolved fleet set was not logged",
   );
+  // The log states the consequence: nothing is reused or written to.
+  assert(
+    log.some((m) => m.includes("so none is reused or written to")),
+    `the consequence was not logged: ${JSON.stringify(log)}`,
+  );
 });
 
 Deno.test("owned open artefact - a gh failure throws with repo, kind and stderr", async () => {
@@ -347,6 +352,27 @@ Deno.test("owned open artefact - verify refuses a foreign-authored issue", async
   ).run();
   assertEquals(verdict.ok, false);
   if (!verdict.ok) assert(verdict.reason.includes("not a fleet account"));
+});
+
+Deno.test("owned open artefact - verify with an unresolved fleet set refuses and logs the consequence", async () => {
+  const log: string[] = [];
+  const { gh } = ghReturning(viewOf());
+  const verdict = await verifyOwnedOpenIssue({
+    repo: REPO,
+    number: 12,
+    marker: ISSUE_MARKER,
+    ghCommandFn: gh,
+    authors: { fleetAuthors: [] },
+    log: (m) => log.push(m),
+  });
+  assertEquals(verdict, { ok: false, reason: "author is not a fleet account" });
+  assert(
+    log.some((m) =>
+      m.includes("fleet author set unresolved") &&
+      m.includes("so it is not reused or written to")
+    ),
+    `the consequence was not logged: ${JSON.stringify(log)}`,
+  );
 });
 
 Deno.test("owned open artefact - verify throws when gh fails", async () => {

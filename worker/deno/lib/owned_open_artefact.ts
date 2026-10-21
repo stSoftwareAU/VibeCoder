@@ -240,7 +240,7 @@ export async function findOwnedOpenArtefact(
     context,
     p.authors ?? {},
     log,
-    "it is not reused and a new artefact is filed",
+    "none is reused or written to",
   );
   if (matches.length === 0) return null;
   const lowest = matches.reduce((a, b) => (b.number < a.number ? b : a));
@@ -318,7 +318,7 @@ export async function verifyOwnedOpenIssue(
     context,
     p.authors ?? {},
     log,
-    "it is not reused and a new issue is filed",
+    "it is not reused or written to",
   );
   if (kept.length === 0) {
     return { ok: false, reason: "author is not a fleet account" };

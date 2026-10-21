@@ -8,10 +8,14 @@
  * 1. `classify` — {@link classifyIssueRouting} picks the owner repository,
  *    unless the caller passes an explicit `decision`. An `ambiguous`
  *    decision files nothing and returns the basis.
- * 2. `search` — {@link findOwnedOpenArtefact} looks for an open issue with the
- *    same title that this tool owns (its body carries the routing marker) and
- *    a fleet author. The lowest-numbered match is returned instead of filing. A
- *    closed, foreign or unowned match is neither reused nor written to.
+ * 2. `search` — {@link findRoutingDuplicates} looks for an open, or recently
+ *    closed, issue or PR with the same title in the owner repository. Any
+ *    match means nothing is filed. A dedup hit may suppress a filing; only an
+ *    owned, open match may be reused or written to (Issue #3854), so
+ *    {@link findOwnedOpenArtefact} then looks for an open, fleet-authored issue
+ *    with the same title whose body carries the routing marker. The
+ *    lowest-numbered such issue is returned as `reused`; otherwise the
+ *    lowest-numbered dedup match is returned as `suppressed`, with no write.
  * 3. `permission` — {@link requireWriteAccess} on the owner repository.
  * 4. `create` — `gh issue create`, with a `Routing:` line and an
  *    `<!-- issue-routing … -->` marker carrying the four audit fields.
@@ -21,7 +25,9 @@
  *
  * `dryRun` runs the read-only steps (classify, search, permission) and makes
  * no `gh` write call. A retry after a failure part-way through finds the
- * issue the earlier run created in step 2, so it never files a second one.
+ * issue the earlier run created in step 2's dedup, so it never files a second
+ * one: it reports that issue as `reused` when it is owned, open and
+ * fleet-authored, and as `suppressed` otherwise.
  *
  * Labels pass through `filterReservedLabelsWithWarning`, so a reserved label
  * is never applied. Filing in a repository other than the target never
@@ -46,6 +52,7 @@ import {
 } from "./issue_routing_classifier.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import {
+  findRoutingDuplicates,
   type GhCommandFn,
   type IssueRoutingGithubDeps,
   normaliseRoutingTitle,
@@ -68,6 +75,8 @@ export type RoutedIssueAction =
   | "reused"
   | "would-create"
   | "would-reuse"
+  /** A same-titled match that is not owned and open: nothing filed, nothing written. */
+  | "suppressed"
   | "ambiguous";
 
 /** The step of {@link fileRoutedIssue} that failed. */
@@ -261,14 +270,28 @@ export async function fileRoutedIssue(
     return result("ambiguous", null);
   }
 
-  const existing = await step(
+  const duplicates = await step(
     "search",
     repository,
     decision,
-    () => findOwned(repository, draft.title),
+    () => findRoutingDuplicates(repository, draft.title, deps),
   );
-  if (existing !== null) {
-    return result(opts.dryRun ? "would-reuse" : "reused", existing.number);
+  if (duplicates.length > 0) {
+    const owned = await step(
+      "search",
+      repository,
+      decision,
+      () => findOwned(repository, draft.title),
+    );
+    if (owned !== null) {
+      return result(opts.dryRun ? "would-reuse" : "reused", owned.number);
+    }
+    logger.warn(
+      "Issue routing filed nothing: a same-titled issue or PR exists but is " +
+        "not an owned, open, fleet-authored issue, so it is not reused",
+      { repo: repository, duplicate: duplicates[0] },
+    );
+    return result("suppressed", duplicates[0]!);
   }
 
   await step(

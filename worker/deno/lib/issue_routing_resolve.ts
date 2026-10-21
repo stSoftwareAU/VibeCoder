@@ -323,6 +323,17 @@ export async function resolveWrongRepoDuplicate(
     correct = filed.number === null
       ? null
       : { repo: filed.repository, number: filed.number };
+    // A suppressed match is a dedup hit that is not owned and open (closed,
+    // a PR, unmarked or foreign): X is never closed in its favour.
+    if (filed.action === "suppressed" && correct !== null) {
+      return refuse(
+        `${formatIssueRef(correct)} has the same title in ${owner} but is ` +
+          `not open, or is not an issue this tool filed under a fleet ` +
+          `account, so ${wrongText} is not retired in its favour; nothing ` +
+          `changed. Reopen it, or name the open owning issue with --correct`,
+        formatIssueRef(correct),
+      );
+    }
     // A reused match is an owned, open, fleet-authored issue with the same title.
     // It is verified again here, because X is closed in its favour.
     const reused = correct !== null &&

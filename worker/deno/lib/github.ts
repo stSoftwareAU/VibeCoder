@@ -601,7 +601,7 @@ export function filterReservedLabelsWithWarning(
   return kept;
 }
 
-/** One improvement the router filed, reused, or would file (Issue #3745). */
+/** One improvement the router filed, reused, suppressed, or would file (Issue #3745). */
 export interface RoutedImprovement {
   title: string;
   action: Exclude<RoutedIssueAction, "ambiguous">;

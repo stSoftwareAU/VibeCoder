@@ -11,8 +11,8 @@
  *   failure completes the set without filing a part twice. "Exists" means an
  *   open, fleet-authored issue in the part's repository with the same title
  *   that carries this tool's `<!-- issue-routing owner=<part repo> … kind=cross-repo -->`
- *   marker. A closed, foreign or unowned same-titled issue is neither reused
- *   nor edited; the part is filed fresh beside it.
+ *   marker. Any other same-titled issue or PR (closed, unmarked, or filed by
+ *   someone else) fails that part and is left unedited.
  * - A part that fails is reported with its error; the remaining parts are
  *   still filed, and siblings are linked only once every part exists.
  * - Labels apply only to the part in the drafting repository; no labels or
@@ -272,6 +272,14 @@ export async function fileSplitIssues(
           authors: opts.authors,
         },
       );
+      if (filed.action === "suppressed") {
+        throw new Error(
+          `${part.repo}#${filed.number} has the same title but is not an ` +
+            `open issue filed by route-issue --part for ${part.repo} (it is ` +
+            `closed, a pull request, or not this tool's fleet-authored issue); ` +
+            `left unchanged, not reused. Close or retitle it, or choose another part title`,
+        );
+      }
       if (
         filed.number !== null &&
         (filed.action === "reused" || filed.action === "would-reuse")

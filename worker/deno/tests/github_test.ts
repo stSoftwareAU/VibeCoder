@@ -28,7 +28,11 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import { RESERVED_LABELS } from "../lib/config_defaults.ts";
 import type { Logger } from "../types.ts";
-import { fakeStore, routingFakeGh } from "./support/routing_fake_gh.ts";
+import {
+  fakeStore,
+  FLEET_LOGIN,
+  routingFakeGh,
+} from "./support/routing_fake_gh.ts";
 
 const VIBE = "stSoftwareAU/VibeCoder";
 const GRQ = "stSoftwareAU/GRQ";
@@ -649,15 +653,17 @@ Deno.test("github - createGitHubIssuesWithPartialFailures warns once per strippe
   await createGitHubIssuesWithPartialFailures(
     improvements,
     VIBE,
-    { ...ROUTING, ghCommandFn: fake.ghCommandFn, logger },
+    {
+      ...ROUTING,
+      ghCommandFn: fake.ghCommandFn,
+      logger,
+      // The fleet is named, so the recheck's owned lookup logs nothing here.
+      dedupAuthors: { fleetAuthors: [FLEET_LOGIN] },
+    },
   );
 
-  // One WARNING per stripped reserved label, naming the label + context. The
-  // owned-lookup warning on the recheck (an unresolved fleet, Issue #3854) is
-  // a separate signal and is not counted here.
-  const warnings = lines.filter((l) =>
-    l.includes("WARNING") && l.includes("Stripped reserved label")
-  );
+  // One WARNING per stripped reserved label, naming the label + context.
+  const warnings = lines.filter((l) => l.includes("WARNING"));
   assertEquals(warnings.length, 2);
   assertEquals(warnings.some((l) => l.includes("work-on")), true);
   assertEquals(warnings.some((l) => l.includes("claude")), true);

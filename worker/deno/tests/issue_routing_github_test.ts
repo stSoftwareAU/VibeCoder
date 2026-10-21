@@ -13,7 +13,9 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import {
+  findRoutingDuplicates,
   type GhCommandFn,
+  type IssueRoutingGithubDeps,
   IssueRoutingPermissionError,
   normaliseRoutingTitle,
   requireWriteAccess,
@@ -22,6 +24,8 @@ import { assertLinearGrowth } from "./support/growth.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const MISSING_REPO = "stSoftwareAU/NoSuchRepoZZ";
+const NOW = () => new Date("2026-10-15T00:00:00Z");
+const DRAFT = "Duplicate search for routing";
 
 /**
  * The fake is built from observed gh output:
@@ -59,11 +63,32 @@ interface FakeGh {
   calls: string[][];
 }
 
+/** A stored issue or PR in {@link REPO}, open unless `extra` closes it. */
+function item(
+  number: number,
+  title: string,
+  extra: Partial<Omit<StoredItem, "repo" | "number" | "title">> = {},
+): StoredItem {
+  return {
+    repo: REPO,
+    number,
+    title,
+    closedAt: null,
+    isPullRequest: false,
+    ...extra,
+  };
+}
+
 function storeOf(
   items: StoredItem[] = [],
   viewerPermission: Record<string, string | null> = { [REPO]: "WRITE" },
 ): Store {
   return { items, viewerPermission };
+}
+
+function valueAfter(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  return i === -1 ? undefined : args[i + 1];
 }
 
 /** Words of a phrase or title, folded the way gh tokenises them. */
@@ -232,6 +257,250 @@ function fakeGh(
 function rawGh(handler: (args: string[]) => string): GhCommandFn {
   return async (args) => handler(args);
 }
+
+function depsFor(
+  gh: GhCommandFn,
+  now: () => Date = NOW,
+): IssueRoutingGithubDeps {
+  return { ghCommandFn: gh, now };
+}
+
+Deno.test("issue_routing_github - an open matching issue is returned and a non-matching one is not", async () => {
+  const gh = fakeGh(storeOf([
+    item(7, DRAFT),
+    item(8, "Something unrelated"),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn)),
+    [7],
+  );
+});
+
+Deno.test("issue_routing_github - an issue closed 10 days ago is returned", async () => {
+  const gh = fakeGh(storeOf([
+    item(9, DRAFT, { closedAt: "2026-10-05T00:00:00Z" }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn)),
+    [9],
+  );
+});
+
+Deno.test("issue_routing_github - an issue closed 40 days ago is ignored", async () => {
+  const gh = fakeGh(storeOf([
+    item(20, DRAFT, { closedAt: "2026-09-05T00:00:00Z" }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn)),
+    [],
+  );
+});
+
+Deno.test("issue_routing_github - the 30-day cutoff is exact to the millisecond", async () => {
+  // NOW is noon, so the cutoff is 2026-09-15T12:00Z. 06:00 on that day is on
+  // the day-granular qualifier but outside the window; 12:00 is exactly on it.
+  const noon = () => new Date("2026-10-15T12:00:00Z");
+  const gh = fakeGh(storeOf([
+    item(21, DRAFT, { closedAt: "2026-09-15T06:00:00Z" }),
+    item(22, DRAFT, { closedAt: "2026-09-15T12:00:00Z" }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn, noon)),
+    [22],
+  );
+});
+
+Deno.test("issue_routing_github - a matching PR is returned, open or merged", async () => {
+  const gh = fakeGh(storeOf([
+    item(30, "Fix the parser", { isPullRequest: true }),
+    item(31, "Fix the parser", {
+      isPullRequest: true,
+      merged: true,
+      closedAt: "2026-10-10T00:00:00Z",
+    }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(
+      REPO,
+      "Fix the parser",
+      depsFor(gh.ghCommandFn),
+    ),
+    [30, 31],
+  );
+});
+
+Deno.test("issue_routing_github - titles match after case and punctuation are folded, longer titles are excluded", async () => {
+  const gh = fakeGh(storeOf([
+    item(1, "Fix: the Parser!"),
+    item(2, "FIX — THE PARSER"),
+    item(3, "Fix the parser and formatter"),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(
+      REPO,
+      "Fix: the Parser!",
+      depsFor(gh.ghCommandFn),
+    ),
+    [1, 2],
+  );
+});
+
+Deno.test("issue_routing_github - results from open and closed searches are sorted ascending", async () => {
+  const gh = fakeGh(storeOf([
+    item(40, "Same title"),
+    item(3, "Same title"),
+    item(12, "Same title", { closedAt: "2026-10-10T00:00:00Z" }),
+    item(5, "Same title", { closedAt: "2026-10-01T00:00:00Z" }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, "Same title", depsFor(gh.ghCommandFn)),
+    [3, 5, 12, 40],
+  );
+});
+
+Deno.test("issue_routing_github - a title with injected quotes and qualifiers still finds its plain match", async () => {
+  const gh = fakeGh(storeOf([
+    item(50, "Foo is closed repo other x"),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(
+      REPO,
+      `foo" is:closed repo:other/x`,
+      depsFor(gh.ghCommandFn),
+    ),
+    [50],
+  );
+});
+
+Deno.test("issue_routing_github - a search in a repository that does not exist rejects", async () => {
+  const gh = fakeGh(storeOf([item(1, DRAFT)]));
+  const err = await assertRejects(
+    () => findRoutingDuplicates(MISSING_REPO, DRAFT, depsFor(gh.ghCommandFn)),
+    Error,
+    "cannot be searched either because the resources do not exist",
+  );
+  assertStringIncludes(err.message, MISSING_REPO);
+});
+
+Deno.test("issue_routing_github - a failed closed search rejects even though the open search matched", async () => {
+  const gh = fakeGh(
+    storeOf([item(1, DRAFT)]),
+    (args) =>
+      valueAfter(args, "--state") === "closed"
+        ? new Error("gh command failed (exit 1): HTTP 502: boom")
+        : undefined,
+  );
+  const err = await assertRejects(
+    () => findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn)),
+    Error,
+    "boom",
+  );
+  assertStringIncludes(err.message, REPO);
+});
+
+Deno.test("issue_routing_github - malformed search output rejects", async () => {
+  const cases: [string, string][] = [
+    ["not an array", JSON.stringify({ number: 1 })],
+    ["item missing number", JSON.stringify([{ title: DRAFT, closedAt: null }])],
+    ["null item", JSON.stringify([null])],
+    ["number item", JSON.stringify([42])],
+  ];
+  for (const [label, body] of cases) {
+    const gh = rawGh(() => body);
+    await assertRejects(
+      () => findRoutingDuplicates(REPO, DRAFT, depsFor(gh)),
+      Error,
+      "unexpected search response",
+      label,
+    );
+  }
+});
+
+Deno.test("issue_routing_github - unparseable search output rejects and names the repository", async () => {
+  const gh = rawGh(() => "not json");
+  const err = await assertRejects(
+    () => findRoutingDuplicates(REPO, DRAFT, depsFor(gh)),
+    Error,
+    "invalid JSON",
+  );
+  assertStringIncludes(err.message, REPO);
+});
+
+Deno.test("issue_routing_github - a closed item with a different title is not returned", async () => {
+  // The closed item contains the draft's words, so the search returns it and
+  // only the title check keeps it out. It was closed 5 days ago, inside the window.
+  const gh = fakeGh(storeOf([
+    item(60, DRAFT),
+    item(61, `${DRAFT} and formatting`, { closedAt: "2026-10-10T00:00:00Z" }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn)),
+    [60],
+  );
+});
+
+Deno.test("issue_routing_github - a closed hit with a null closedAt rejects", async () => {
+  const gh = rawGh((args) =>
+    valueAfter(args, "--state") === "closed"
+      ? JSON.stringify([{ number: 5, title: DRAFT, closedAt: null }])
+      : "[]"
+  );
+  await assertRejects(
+    () => findRoutingDuplicates(REPO, DRAFT, depsFor(gh)),
+    Error,
+    "closedAt",
+  );
+});
+
+Deno.test("issue_routing_github - a search at the result limit rejects, one below it resolves empty", async () => {
+  const full = Array.from({ length: 100 }, (_, i) => ({
+    number: i + 1,
+    title: DRAFT,
+    closedAt: null,
+  }));
+  const atLimit = rawGh((args) =>
+    valueAfter(args, "--state") === "open" ? JSON.stringify(full) : "[]"
+  );
+  await assertRejects(
+    () => findRoutingDuplicates(REPO, DRAFT, depsFor(atLimit)),
+    Error,
+    "would be missed",
+  );
+
+  // Positive control: 99 unrelated hits is a clean empty result.
+  const below = Array.from({ length: 99 }, (_, i) => ({
+    number: i + 1,
+    title: `unrelated ${i}`,
+    closedAt: null,
+  }));
+  const belowLimit = rawGh((args) =>
+    valueAfter(args, "--state") === "open" ? JSON.stringify(below) : "[]"
+  );
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(belowLimit)),
+    [],
+  );
+});
+
+Deno.test("issue_routing_github - an invalid slug or an empty title is refused before any gh call", async () => {
+  for (const repo of ["../x", "noslash"]) {
+    const gh = fakeGh(storeOf([item(1, DRAFT)]));
+    await assertRejects(
+      () => findRoutingDuplicates(repo, DRAFT, depsFor(gh.ghCommandFn)),
+      Error,
+      "invalid repository",
+    );
+    assertEquals(gh.calls.length, 0, `gh was called for ${repo}`);
+  }
+
+  const gh = fakeGh(storeOf([item(1, DRAFT)]));
+  await assertRejects(
+    () => findRoutingDuplicates(REPO, "!!! ", depsFor(gh.ghCommandFn)),
+    Error,
+    "empty after normalisation",
+  );
+  assertEquals(gh.calls.length, 0);
+});
 
 Deno.test("issue_routing_github - WRITE, MAINTAIN and ADMIN pass the write-access check", async () => {
   for (const permission of ["WRITE", "MAINTAIN", "ADMIN"]) {

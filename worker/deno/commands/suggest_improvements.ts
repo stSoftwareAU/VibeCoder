@@ -281,13 +281,20 @@ export function createSuggestImprovementsCommand(
         : `Created ${plural(created, "improvement issue")} and reused ${
           plural(reused, "existing issue")
         }, routed from ${repo}`;
+      // A same-titled match that is not owned and open suppresses the filing.
+      const suppressed = count("suppressed");
+      const suppressedMsg = suppressed > 0
+        ? `; ${
+          plural(suppressed, "improvement")
+        } not filed, because a same-titled issue or PR exists that is not reused`
+        : "";
       const failureMsg = result.failures.length > 0
         ? ` (${result.failures.length} failed)`
         : "";
 
       return {
         success: result.failures.length === 0,
-        message: summary + failureMsg,
+        message: summary + suppressedMsg + failureMsg,
         data: {
           improvements,
           createdIssues: result.createdIssues,

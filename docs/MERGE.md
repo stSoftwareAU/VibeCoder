@@ -916,7 +916,7 @@ What each pass does with a `milestone/**` head:
 | Pass | On a `milestone/**` head | Marker on the comment |
 | --- | --- | --- |
 | Spelling fix | `guardGatedHead` — stands down when a rule gates it | `vibe-gated-head`, owner `conflict takeover` |
-| CI fix | Fixes on `milestone-fix/<leaf>/pr-<N>-ci-<n>`, raises an auto-merge-armed PR into the gated head; stands down before the agent runs (no retry spent) only while any fix PR for this head is already open (Issue #2907) | None — the stand-down is silent; the open fix PR itself carries the explanation |
+| CI fix | Fixes on `milestone-fix/<leaf>/pr-<N>-ci-<n>`, raises an auto-merge-armed PR into the gated head; stands down before the agent runs (no retry spent) only while an open fix PR for this head exists that the fleet opened from this repository (a same-repository head, Issues #2907 and #3854) | None — the stand-down is silent; the open fix PR itself carries the explanation |
 | Review feedback | Fixes on its own `milestone-fix/<leaf>/pr-<N>-feedback-<commentId>` branch and raises an auto-merge-armed PR the same way; no pre-agent stand-down — a different comment's fix in flight does not stop this one (Issue #2907) | None |
 | Merge conflict | **Conflict takeover in the same cycle**, gated or not: opens one `milestone-fix/<leaf>/pr-<N>-takeover-<sha12>` PR into the head, or reuses the open one (Issue #3031) | None — no stand-down; the takeover's attempt and conclusion markers |
 

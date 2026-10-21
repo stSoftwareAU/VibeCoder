@@ -6,11 +6,7 @@
  * Issue #209 — Updated with prompt and workflow improvement suggestions.
  */
 
-import {
-  assertEquals,
-  assertNotEquals,
-  assertStringIncludes,
-} from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { Logger, WorkerConfig } from "../types.ts";
 import type {
   Improvement,
@@ -768,11 +764,12 @@ Deno.test("suggest-improvements - the command routes against the configured repo
   }
 });
 
-Deno.test("suggest-improvements - a closed owned match is not reused, whatever the clock (Issue #3854)", async () => {
-  // Issue #3854: only an owned, open, fleet-authored match may be reused. The
-  // injected clock (2020-01-15) no longer opens a closed-issue reuse window, so
-  // a close on 2020-01-01, inside the old 30-day window, is not reused and a
-  // new issue is filed instead.
+Deno.test("suggest-improvements - the command's injected clock sets the duplicate-search window (Issue #3745)", async () => {
+  // Under the injected clock (2020-01-15) a close on 2020-01-01 sits inside the
+  // 30-day duplicate window, so the existing issue suppresses the filing. On the
+  // wall clock (2026) it is far outside the window, so a new issue would be
+  // filed instead. A closed match is never reused (Issue #3854): the outcome is
+  // suppressed, and nothing is written to it.
   const title = generateImprovements()[0]!.title;
   const store = fakeStore([], { [VIBE]: "WRITE" });
   const existing = addIssue(store, VIBE, title, OWNED_BODY);
@@ -786,10 +783,15 @@ Deno.test("suggest-improvements - a closed owned match is not reused, whatever t
 
   const data = result.data as SuggestImprovementsData;
   const routed = (data.routed ?? []).find((r) => r.title === title);
-  assertEquals(routed?.action, "created");
-  assertNotEquals(routed?.number, existing.number);
+  assertEquals(routed?.action, "suppressed");
+  assertEquals(routed?.number, existing.number);
   assertEquals(
-    gh.store.issues.filter((i) => i.title === title).length,
-    2,
+    gh.store.issues.filter((i) => i.title === title).map((i) => i.number),
+    [existing.number],
+  );
+  assertEquals(existing.comments, []);
+  assertStringIncludes(
+    result.message,
+    "; 1 improvement not filed, because a same-titled issue or PR exists that is not reused",
   );
 });
