@@ -1451,10 +1451,11 @@ each moved check in its own section instead. A test that only pins current
 behaviour — the fault was unreproduced or already fixed, and no production
 change was made — is expected green on base, and the Test Plan says so.
 **A test named for one step must reach that step** below is this rule for a
-change that adds the same handling at more than one step, **A negative test
-must be able to fail** below is this rule for an assertion that something does
-*not* happen, and **An edited expectation must still go red without its
-guard** below is this rule for a test the diff edits rather than adds.
+change that adds the same handling at more than one step, **A test must be
+able to fail on the wrong input** below is this rule for an assertion that
+something does *not* happen or for which of two similar values the code reads,
+and **An edited expectation must still go red without its guard** below is
+this rule for a test the diff edits rather than adds.
 
 **A test named for one step must reach that step.** When a change adds the
 same handling at more than one step of a path — a deadline checked up front
@@ -1495,15 +1496,23 @@ check to a test that still covers it and name that test. Record the
 red-check result per edited expectation in the Test Plan. An edited test
 that stays green without its guard is a blocking self-review finding.
 
-**A negative test must be able to fail.** An assertion that something does
-*not* happen — not leaked, not carried over, not exported, not called, null
-rather than stale — needs a fixture that contains the forbidden thing: a real
-token to leak, an earlier value to carry over, a caller that would otherwise
-run. A new guard has no base-branch red run to lean on, so before raising the
-PR break the guard on purpose (remove the filter, invert the check, or fill
-from the wrong source), run the test, confirm it goes red, then restore the
-guard. A negative test that stays green without its guard is a blocking
-self-review finding.
+**A test must be able to fail on the wrong input.** An assertion that
+something does *not* happen — not leaked, not carried over, not exported, not
+called, null rather than stale — needs a fixture that contains the forbidden
+thing: a real token to leak, an earlier value to carry over, a caller that
+would otherwise run. A new guard has no base-branch red run to lean on, so
+before raising the PR break the guard on purpose (remove the filter, invert
+the check, or fill from the wrong source), run the test, confirm it goes red,
+then restore the guard. A negative test that stays green without its guard is
+a blocking self-review finding. The same holds for a test that pins which of
+two similar values the code uses, or that two figures agree (two bases, two
+parallel records, a displayed and a derived figure): its fixture gives the
+candidates different values, and the break is to read the sibling value.
+Reverting the whole change does not show this, because the test then goes red
+for want of the code under test, not for the value it reads. Record the
+sibling break in the Test Plan as you would a negative test's, for example
+`reads base B instead of A → red`. A fixture where the candidates are equal is
+a blocking self-review finding.
 
 **A refusal test must be refused by the rule it names.** A test that
 expects an input to be refused, rejected or answered with `false` or an

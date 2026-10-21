@@ -1452,9 +1452,15 @@ The file MUST contain:
    fault was unreproduced or already fixed and no production change was made,
    is expected green on base, and the Test Plan says so. A negative test — one asserting something does
    *not* happen — counts only once you have seen it go red with its guard
-   broken on purpose (see **A negative test must be able to fail** in the
-   guidelines); one that stays green without its guard is a blocking
-   self-review finding. Likewise, a refusal test — one expecting an input
+   broken on purpose (see **A test must be able to fail on the wrong input**
+   in the guidelines); one that stays green without its guard is a blocking
+   self-review finding. Likewise, a test that pins which of two similar values
+   the code reads, or that two figures agree (two bases, two parallel records,
+   a displayed and a derived figure), counts only once its fixture gives the
+   candidates different values and you have seen it go red with the code
+   pointed at the sibling value; record that break here, for example
+   `reads base B instead of A → red`, and a fixture where the candidates are
+   equal is a blocking self-review finding. Likewise, a refusal test — one expecting an input
    to be refused, rejected or answered with `false` or an error — counts
    only once it asserts the specific error variant or rule and the same
    input with only the probed value made legal is accepted (see **A
