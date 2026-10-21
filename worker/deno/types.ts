@@ -1389,6 +1389,12 @@ export interface ConfigFile {
    */
   agent_provider_fallback?: string[];
   /**
+   * Extra hosts (hostname or `*.hostname`, port 443 only) added to the
+   * container egress allowlist; validated at config load. Not enforced until
+   * the egress proxy (Issue #4046) lands. See docs/CONTAINMENT.md#egress-allowlist.
+   */
+  egress_allow_hosts?: string[];
+  /**
    * Drain the held Claude token to zero rather than parking the backlog
    * at the week-pace projection (Issue #2474). Default false.
    */

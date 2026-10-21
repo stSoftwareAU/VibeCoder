@@ -44,6 +44,11 @@ import {
   RUN_MODE_ENV,
   RUN_MODES,
 } from "../lib/run_mode.ts";
+import {
+  BUILTIN_EGRESS_RULES,
+  IMGBB_EGRESS_RULES,
+  PROVIDER_EGRESS_RULES,
+} from "../lib/egress_allowlist.ts";
 
 // tests/ → worker/deno/ → worker/ → repo root
 function repoPath(relative: string): URL {
@@ -235,6 +240,54 @@ Deno.test("CONTAINMENT.md's network boundary matches the launch plan", () => {
       `the network-boundary section must cover "${claim}"`,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// docs/CONTAINMENT.md — the egress allowlist (Issue #4045)
+// ---------------------------------------------------------------------------
+
+/** Hosts in the first column of the section's table rows: lines starting `| \`host\``. */
+function documentedEgressHosts(body: string): Set<string> {
+  const hosts = new Set<string>();
+  for (const line of body.split("\n")) {
+    const host = line.match(/^\| `([^`]+)`/)?.[1];
+    if (host !== undefined) hosts.add(host);
+  }
+  return hosts;
+}
+
+Deno.test("CONTAINMENT.md's egress allowlist lists exactly the module's hosts", () => {
+  const moduleHosts = new Set<string>([
+    ...BUILTIN_EGRESS_RULES.map((rule) => rule.host),
+    ...Object.values(PROVIDER_EGRESS_RULES).flat().map((rule) => rule.host),
+    ...IMGBB_EGRESS_RULES.map((rule) => rule.host),
+  ]);
+  const docHosts = documentedEgressHosts(
+    section(read("docs/CONTAINMENT.md"), "Egress allowlist"),
+  );
+  const missingFromDoc = [...moduleHosts].filter((host) => !docHosts.has(host))
+    .sort();
+  const missingFromModule = [...docHosts].filter((host) =>
+    !moduleHosts.has(host)
+  ).sort();
+  assert(
+    missingFromDoc.length === 0 && missingFromModule.length === 0,
+    `egress allowlist drift — hosts missing from docs/CONTAINMENT.md: ` +
+      `[${missingFromDoc.join(", ")}]; hosts missing from ` +
+      `worker/deno/lib/egress_allowlist.ts: [${missingFromModule.join(", ")}]`,
+  );
+});
+
+Deno.test("CONTAINMENT.md says the egress allowlist is not enforced until #4046", () => {
+  const body = section(read("docs/CONTAINMENT.md"), "Egress allowlist");
+  assert(
+    body.includes("nothing enforces it yet"),
+    "the egress-allowlist section must say nothing enforces the list yet",
+  );
+  assert(
+    body.includes("#4046"),
+    "the egress-allowlist section must name #4046 as the issue that enforces the list",
+  );
 });
 
 // ---------------------------------------------------------------------------
