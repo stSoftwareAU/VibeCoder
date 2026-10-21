@@ -142,6 +142,40 @@ Deno.test("egress-proxy - execute starts the proxy, waits, closes it and succeed
   assertEquals(result.success, true);
 });
 
+Deno.test("egress-proxy - logs the bound address the proxy reports, not the requested port", async () => {
+  // parseListen rejects port 0, so the request is for 4000; the fake start
+  // stands in for the OS picking a free port and reports 41234 instead.
+  const logged: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args.map(String).join(" "));
+  };
+  try {
+    await egressProxyCommand.execute(
+      { allow: "crates.io", listen: "127.0.0.1:4000" },
+      CONFIG,
+      {
+        start: (opts) =>
+          Promise.resolve({
+            addr: {
+              transport: "tcp",
+              hostname: opts.hostname ?? "",
+              port: 41234,
+            },
+            close: () => Promise.resolve(),
+          }),
+        waitForStop: () => Promise.resolve(),
+      },
+    );
+  } finally {
+    console.error = originalError;
+  }
+
+  assertEquals(logged, [
+    "[EGRESS_PROXY] listening on 127.0.0.1:41234 hosts=1",
+  ]);
+});
+
 Deno.test("egress-proxy - execute with no allowlist fails with exit 2 and never starts the proxy", async () => {
   let started = 0;
 

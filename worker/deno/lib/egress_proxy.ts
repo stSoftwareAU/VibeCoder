@@ -91,6 +91,7 @@ const READ_CHUNK_BYTES = 4096;
 const PIPE_CHUNK_BYTES = 16_384;
 const ALLOWED_PORT = 443;
 const MAX_LOGGED_HOST_CHARS = 64;
+const MAX_LOGGED_DETAIL_CHARS = 160;
 const CONNECTION_ESTABLISHED = "HTTP/1.1 200 Connection Established\r\n\r\n";
 
 const encoder = new TextEncoder();
@@ -140,26 +141,38 @@ interface Registry {
  * @returns The host, safe to log, at most 64 code points
  */
 export function sanitiseEgressHost(raw: string): string {
+  return sanitiseLogText(raw, MAX_LOGGED_HOST_CHARS);
+}
+
+/** Strip control and format characters, then cap by code point. */
+function sanitiseLogText(raw: string, maxCodePoints: number): string {
   const stripped = raw.replace(CONTROL_OR_FORMAT, "");
-  return Array.from(stripped).slice(0, MAX_LOGGED_HOST_CHARS).join("");
+  return Array.from(stripped).slice(0, maxCodePoints).join("");
 }
 
 /**
- * The single line logged for one refusal.
+ * The single line logged for one refusal. A detail, such as the resolver or
+ * connector error, is appended only to this log line; the 403 body never
+ * carries it.
  *
  * @param host - The requested host; sanitised before use
  * @param port - The requested port, or 0 when unknown
  * @param reason - Why the connection was refused
- * @returns `[EGRESS_DENIED] host=<h> port=<n> reason=<class>`
+ * @param detail - Optional error text, sanitised and capped at 160 characters
+ * @returns `[EGRESS_DENIED] host=<h> port=<n> reason=<class>`, plus
+ *   ` detail=<text>` when a detail is given
  */
 export function formatEgressDenial(
   host: string,
   port: number,
   reason: EgressDenyReason,
+  detail?: string,
 ): string {
-  return `[EGRESS_DENIED] host=${
+  const line = `[EGRESS_DENIED] host=${
     sanitiseEgressHost(host)
   } port=${port} reason=${reason}`;
+  if (detail === undefined) return line;
+  return `${line} detail=${sanitiseLogText(detail, MAX_LOGGED_DETAIL_CHARS)}`;
 }
 
 /**
@@ -293,9 +306,26 @@ async function serveClient(
 ): Promise<void> {
   let phase: "head" | "tunnel" = "head";
   let upstream: Deno.Conn | undefined;
+  // The host and port once the head has parsed, so an idle line can name them.
+  let target: { host: string; port: number } | undefined;
+  // One denial line per connection: the idle timer and a refusal can race.
+  let logged = false;
+  let cutOff = false;
+  const logOnce = (line: string): void => {
+    if (logged) return;
+    logged = true;
+    ctx.logDenied(line);
+  };
   const guard = idleGuard(ctx.idleTimeoutMs, () => {
+    cutOff = true;
     if (phase === "head") {
-      ctx.logDenied(formatEgressDenial("-", 0, "idle-timeout"));
+      logOnce(
+        formatEgressDenial(
+          target?.host ?? "-",
+          target?.port ?? 0,
+          "idle-timeout",
+        ),
+      );
     }
     closeQuietly(client);
     if (upstream !== undefined) closeQuietly(upstream);
@@ -308,22 +338,23 @@ async function serveClient(
     // client was already logged by the idle callback.
     if (read.kind === "closed") return;
     if (read.kind === "too-large") {
-      return await refuse(client, "-", 0, "header-too-large", ctx.logDenied);
+      return await refuse(client, "-", 0, "header-too-large", logOnce);
     }
 
     const verdict = parseRequestHead(read.head);
+    target = { host: verdict.host, port: verdict.port };
     if (!verdict.ok) {
       return await refuse(
         client,
         verdict.host,
         verdict.port,
         verdict.reason,
-        ctx.logDenied,
+        logOnce,
       );
     }
     const { host, port } = verdict;
     if (!isAllowlisted(host, ctx.allowlist)) {
-      return await refuse(client, host, port, "not-allowlisted", ctx.logDenied);
+      return await refuse(client, host, port, "not-allowlisted", logOnce);
     }
     phase = "tunnel";
 
@@ -334,7 +365,7 @@ async function serveClient(
       // route is not handed them.
       guard.stop();
       if (read.rest.length > 0) {
-        return await refuse(client, host, port, "bad-request", ctx.logDenied);
+        return await refuse(client, host, port, "bad-request", logOnce);
       }
       if (!await replyEstablished(client, undefined, read.rest)) return;
       try {
@@ -351,24 +382,43 @@ async function serveClient(
 
     // Resolve, check every address, then dial only the first one checked.
     let addresses: string[];
+    let resolveDetail: string | undefined;
     try {
       addresses = await ctx.resolve(host);
-    } catch {
+    } catch (error) {
       addresses = [];
+      resolveDetail = describe(error);
     }
     const [address] = addresses;
     if (address === undefined) {
-      return await refuse(client, host, port, "resolve-failed", ctx.logDenied);
+      return await refuse(
+        client,
+        host,
+        port,
+        "resolve-failed",
+        logOnce,
+        resolveDetail,
+      );
     }
     if (addresses.some((candidate) => isPrivateAddress(candidate))) {
-      return await refuse(client, host, port, "private-address", ctx.logDenied);
+      return await refuse(client, host, port, "private-address", logOnce);
     }
+    // The idle timer closed the client while the resolver was running, so do
+    // not dial an upstream for a connection nobody is waiting on.
+    if (cutOff) return;
 
     let dialled: Deno.Conn;
     try {
       dialled = await ctx.connect(address, port);
-    } catch {
-      return await refuse(client, host, port, "connect-failed", ctx.logDenied);
+    } catch (error) {
+      return await refuse(
+        client,
+        host,
+        port,
+        "connect-failed",
+        logOnce,
+        describe(error),
+      );
     }
     if (ctx.registry.closing) {
       closeQuietly(dialled);
@@ -593,6 +643,7 @@ function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array<ArrayBuffer> {
  * @param port - The requested port, or 0 when unknown
  * @param reason - Why the connection was refused
  * @param logDenied - Receives the single denial line
+ * @param detail - Optional error text for the log line only, never the body
  */
 async function refuse(
   client: Deno.Conn,
@@ -600,8 +651,9 @@ async function refuse(
   port: number,
   reason: EgressDenyReason,
   logDenied: (line: string) => void,
+  detail?: string,
 ): Promise<void> {
-  logDenied(formatEgressDenial(host, port, reason));
+  logDenied(formatEgressDenial(host, port, reason, detail));
   const body = encoder.encode(
     `[EGRESS_DENIED] host=${sanitiseEgressHost(host)} reason=${reason}\n`,
   );

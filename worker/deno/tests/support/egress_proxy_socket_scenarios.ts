@@ -11,7 +11,7 @@
  * `{"scenario":"<name>","ok":false,"error":"<why>"}`, and exits 0 or 1.
  *
  * Usage: deno run --no-config --no-lock --allow-net=127.0.0.1 \
- *   --allow-read=<worker/deno/lib> <this file> <scenario>
+ *   <this file> <scenario>
  *
  * Imports are local only; nothing is fetched from a remote registry.
  */
@@ -233,6 +233,12 @@ interface HarnessOptions {
   maxConnections?: number;
   idleTimeoutMs?: number;
   maxHeaderBytes?: number;
+  /** Hosts whose resolution throws, as a failing DNS lookup would. */
+  resolveFailsFor?: string[];
+  /** Makes every dial throw, as a refused upstream connection would. */
+  connectFails?: boolean;
+  /** Delays every resolver answer, so an idle timer can fire first. */
+  resolveDelayMs?: number;
 }
 
 interface Harness {
@@ -261,12 +267,21 @@ async function startHarness(opts: HarnessOptions): Promise<Harness> {
     maxConnections: opts.maxConnections,
     idleTimeoutMs: opts.idleTimeoutMs,
     maxHeaderBytes: opts.maxHeaderBytes,
-    resolve: (host) => {
+    resolve: async (host) => {
       resolved.push(host);
-      return Promise.resolve(opts.addresses?.[host] ?? [PUBLIC_ADDRESS]);
+      if (opts.resolveDelayMs !== undefined) {
+        await new Promise((done) => setTimeout(done, opts.resolveDelayMs));
+      }
+      if (opts.resolveFailsFor?.includes(host)) {
+        throw new Error("resolver exploded");
+      }
+      return opts.addresses?.[host] ?? [PUBLIC_ADDRESS];
     },
     connect: (address) => {
       dialled.push(address);
+      if (opts.connectFails) {
+        return Promise.reject(new Error("connector refused"));
+      }
       return Deno.connect({ hostname: "127.0.0.1", port: echoServer.port });
     },
     logDenied: (line) => {
@@ -606,6 +621,136 @@ async function handsOffToRoute(): Promise<void> {
   }
 }
 
+async function refusesResolverError(): Promise<void> {
+  const h = await startHarness({
+    allowlist: ["allowed.example"],
+    resolveFailsFor: ["allowed.example"],
+  });
+  try {
+    const wire = await h.open();
+    await wire.write("CONNECT allowed.example:443 HTTP/1.1\r\n\r\n");
+    const denial = await readDenial(wire);
+    expectEqual(denial.status, "HTTP/1.1 403 Forbidden", "status");
+    // The detail stays on the stderr line; the 403 body never carries it.
+    expectEqual(
+      denial.body,
+      "[EGRESS_DENIED] host=allowed.example reason=resolve-failed\n",
+      "denial body",
+    );
+    expectEqual(h.lines, [
+      "[EGRESS_DENIED] host=allowed.example port=443 reason=resolve-failed detail=resolver exploded",
+    ], "denial lines");
+    expectEqual(h.dialled, [], "dialled addresses");
+  } finally {
+    await h.close();
+  }
+}
+
+async function refusesConnectorError(): Promise<void> {
+  const h = await startHarness({
+    allowlist: ["allowed.example"],
+    connectFails: true,
+  });
+  try {
+    const wire = await h.open();
+    await wire.write("CONNECT allowed.example:443 HTTP/1.1\r\n\r\n");
+    const denial = await readDenial(wire);
+    expectEqual(denial.status, "HTTP/1.1 403 Forbidden", "status");
+    expectEqual(
+      denial.body,
+      "[EGRESS_DENIED] host=allowed.example reason=connect-failed\n",
+      "denial body",
+    );
+    expectEqual(h.lines, [
+      "[EGRESS_DENIED] host=allowed.example port=443 reason=connect-failed detail=connector refused",
+    ], "denial lines");
+    expectEqual(h.dialled, [PUBLIC_ADDRESS], "dialled addresses");
+  } finally {
+    await h.close();
+  }
+}
+
+async function refusesLoneCarriageReturn(): Promise<void> {
+  const h = await startHarness({ allowlist: ["evil.example"] });
+  try {
+    // A lone CR is not a CRLF, so it stays inside the host and must not split
+    // the log line.
+    const wire = await h.open();
+    await wire.write("CONNECT evil\r.example:443 HTTP/1.1\r\n\r\n");
+    const denial = await readDenial(wire);
+    expectEqual(denial.status, "HTTP/1.1 403 Forbidden", "status");
+    expectEqual(
+      denial.body,
+      "[EGRESS_DENIED] host=evil.example reason=bad-request\n",
+      "denial body",
+    );
+    expectEqual(h.lines, [
+      "[EGRESS_DENIED] host=evil.example port=443 reason=bad-request",
+    ], "denial lines");
+    expect(!/[\r\n]/.test(h.lines[0] ?? ""), "log line kept a CR or LF");
+    expectEqual(h.dialled, [], "dialled addresses");
+  } finally {
+    await h.close();
+  }
+}
+
+async function refusesTrailingDotHost(): Promise<void> {
+  const h = await startHarness({ allowlist: ["allowed.example"] });
+  try {
+    // The trailing-dot form is a different name to the allowlist, so it is
+    // refused as not-allowlisted without any DNS lookup or dial.
+    const wire = await h.open();
+    await wire.write("CONNECT allowed.example.:443 HTTP/1.1\r\n\r\n");
+    const denial = await readDenial(wire);
+    expectEqual(denial.status, "HTTP/1.1 403 Forbidden", "status");
+    expectEqual(
+      denial.body,
+      "[EGRESS_DENIED] host=allowed.example. reason=not-allowlisted\n",
+      "denial body",
+    );
+    expectEqual(h.lines, [
+      "[EGRESS_DENIED] host=allowed.example. port=443 reason=not-allowlisted",
+    ], "denial lines");
+    expectEqual(h.resolved, [], "resolved hosts");
+    expectEqual(h.dialled, [], "dialled addresses");
+  } finally {
+    await h.close();
+  }
+}
+
+async function idleRaceWithDelayedResolver(): Promise<void> {
+  // Each resolver answers after the idle timer has already cut the client off.
+  // The first fails, the second succeeds; neither may add a second line or dial.
+  const h = await startHarness({
+    allowlist: ["allowed.example", "other.example"],
+    resolveFailsFor: ["allowed.example"],
+    idleTimeoutMs: 50,
+    resolveDelayMs: 200,
+  });
+  try {
+    const first = await h.open();
+    await first.write("CONNECT allowed.example:443 HTTP/1.1\r\n\r\n");
+    const second = await h.open();
+    await second.write("CONNECT other.example:443 HTTP/1.1\r\n\r\n");
+    expectEqual(await first.readSome(), null, "first idle read");
+    expectEqual(await second.readSome(), null, "second idle read");
+    // Let both delayed resolvers finish before the assertions.
+    await new Promise((done) => setTimeout(done, 400));
+
+    expectEqual(
+      [...h.lines].sort(),
+      [
+        "[EGRESS_DENIED] host=allowed.example port=443 reason=idle-timeout",
+        "[EGRESS_DENIED] host=other.example port=443 reason=idle-timeout",
+      ],
+      "denial lines",
+    );
+    expectEqual(h.dialled, [], "dialled addresses");
+  } finally {
+    await h.close();
+  }
+}
+
 const SCENARIOS: Readonly<Record<string, () => Promise<void>>> = {
   "tunnel-byte-for-byte": tunnelsByteForByte,
   "refuse-non-allowlisted": refusesNonAllowlisted,
@@ -619,6 +764,11 @@ const SCENARIOS: Readonly<Record<string, () => Promise<void>>> = {
   "refuse-non-443-port": refusesNon443Port,
   "refuse-at-connection-cap": refusesAtConnectionCap,
   "hand-off-to-route": handsOffToRoute,
+  "refuse-resolver-error": refusesResolverError,
+  "refuse-connector-error": refusesConnectorError,
+  "refuse-lone-carriage-return": refusesLoneCarriageReturn,
+  "refuse-trailing-dot-host": refusesTrailingDotHost,
+  "idle-race-delayed-resolver": idleRaceWithDelayedResolver,
 };
 
 /** Write the one-line JSON result the parent test asserts on. */

@@ -12,6 +12,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  formatEgressDenial,
   parseEgressAllowlist,
   sanitiseEgressHost,
 } from "../lib/egress_proxy.ts";
@@ -138,6 +139,48 @@ Deno.test("egress proxy refuses at the connection cap", async () => {
 
 Deno.test("egress proxy hands an allowlisted host with a route to the route, not upstream", async () => {
   await runScenario("hand-off-to-route");
+});
+
+Deno.test("egress proxy logs the resolver error as detail and keeps it out of the 403 body", async () => {
+  await runScenario("refuse-resolver-error");
+});
+
+Deno.test("egress proxy logs the connector error as detail and keeps it out of the 403 body", async () => {
+  await runScenario("refuse-connector-error");
+});
+
+Deno.test("egress proxy refuses a lone CR in the hostname with one unsplit log line", async () => {
+  await runScenario("refuse-lone-carriage-return");
+});
+
+Deno.test("egress proxy refuses a trailing-dot host as not-allowlisted with no lookup", async () => {
+  await runScenario("refuse-trailing-dot-host");
+});
+
+Deno.test("egress proxy writes one line when the idle timer races a delayed resolver", async () => {
+  await runScenario("idle-race-delayed-resolver");
+});
+
+Deno.test("formatEgressDenial appends a detail capped at 160 characters", () => {
+  const line = formatEgressDenial(
+    "allowed.example",
+    443,
+    "resolve-failed",
+    "x".repeat(300),
+  );
+  assertEquals(
+    line,
+    `[EGRESS_DENIED] host=allowed.example port=443 reason=resolve-failed detail=${
+      "x".repeat(160)
+    }`,
+  );
+});
+
+Deno.test("formatEgressDenial keeps CR and LF out of the host and the detail", () => {
+  assertEquals(
+    formatEgressDenial("evil\r\n.example", 443, "bad-request", "a\r\nb"),
+    "[EGRESS_DENIED] host=evil.example port=443 reason=bad-request detail=ab",
+  );
 });
 
 Deno.test("parseEgressAllowlist splits a comma-separated string", () => {

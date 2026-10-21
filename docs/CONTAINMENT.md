@@ -425,6 +425,8 @@ deno run --allow-env --allow-net worker/deno/mod.ts egress-proxy \
 - **Bounds.** Concurrent connections default to 256, idle time defaults to 60 s
   (while reading the request head and while tunnelling), and the request head
   defaults to 8 KiB at most.
+- **Footprint.** The proxy reads no files and keeps no cache. It needs only
+  `--allow-env --allow-net`, and it runs under a read-only root filesystem.
 
 ```mermaid
 flowchart TD
@@ -444,8 +446,11 @@ flowchart TD
 **Refusals.** A refused connection gets HTTP `403` whose body opens
 `[EGRESS_DENIED] host=<host> reason=<class>`. The proxy also writes one stderr
 line per refused connection, `[EGRESS_DENIED] host=<host> port=<n>
-reason=<class>`. The host is sanitised first: control characters are stripped
-and it is capped at 64 characters. The tunnel payload is never logged.
+reason=<class>`, followed by ` detail=<text>` when the refusal has an underlying
+resolver or connector error. The detail is logged only and never appears in the
+403 body. The host is sanitised first: control characters are stripped and it
+is capped at 64 characters; the detail is sanitised the same way and capped at
+160 characters. The tunnel payload is never logged.
 
 | Reason class | Refused when |
 | ------------ | ------------ |

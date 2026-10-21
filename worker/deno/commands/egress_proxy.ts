@@ -172,8 +172,10 @@ export const egressProxyCommand: EgressProxyCommand = {
       };
     }
 
+    // Log the address the proxy actually bound, which differs from the request
+    // when the OS picks the port.
     console.error(
-      `[EGRESS_PROXY] listening on ${parsed.hostname}:${parsed.port} hosts=${parsed.allowlist.length}`,
+      `[EGRESS_PROXY] listening on ${proxy.addr.hostname}:${proxy.addr.port} hosts=${parsed.allowlist.length}`,
     );
     await waitForStop();
     await proxy.close();

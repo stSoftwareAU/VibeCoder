@@ -324,6 +324,15 @@ Deno.test("CONTAINMENT.md's egress proxy section does not claim the container is
   }
 });
 
+Deno.test("CONTAINMENT.md's egress proxy section states the proxy reads no files and keeps no cache", () => {
+  const body = section(read("docs/CONTAINMENT.md"), "Egress proxy");
+  const phrase = "reads no files and keeps no cache";
+  assert(
+    body.includes(phrase),
+    `the egress-proxy section must state the proxy ${phrase} (missing from the section)`,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // docs/DEPLOYMENT.md — host requirements
 // ---------------------------------------------------------------------------
