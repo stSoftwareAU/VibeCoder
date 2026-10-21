@@ -753,6 +753,31 @@ Deno.test("validation - validateGraphQLBranchCompareJson treats a null compare a
   assertEquals(result, { ok: true, value: { kind: "unavailable" } });
 });
 
+Deno.test("validation - validateGraphQLBranchCompareJson accepts a compare with null errors", () => {
+  const result = validateGraphQLBranchCompareJson({
+    errors: null,
+    data: { repository: { ref: { compare: { aheadBy: 4, behindBy: 1 } } } },
+  });
+  assertEquals(result, {
+    ok: true,
+    value: { kind: "compare", aheadBy: 4, behindBy: 1 },
+  });
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson treats an omitted ref as absent", () => {
+  const result = validateGraphQLBranchCompareJson({
+    data: { repository: {} },
+  });
+  assertEquals(result, { ok: true, value: { kind: "absent" } });
+});
+
+Deno.test("validation - validateGraphQLBranchCompareJson treats an omitted compare as unavailable", () => {
+  const result = validateGraphQLBranchCompareJson({
+    data: { repository: { ref: {} } },
+  });
+  assertEquals(result, { ok: true, value: { kind: "unavailable" } });
+});
+
 Deno.test("validation - validateGraphQLBranchCompareJson reports non-empty errors ahead of data", () => {
   const result = validateGraphQLBranchCompareJson({
     errors: [{ message: "boom" }, { message: "bang" }],

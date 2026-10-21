@@ -560,8 +560,8 @@ async function getRepoMilestoneHealth(
 /**
  * Get milestone health across all configured repositories.
  *
- * A repo whose gh call fails at transport level is skipped. Malformed gh
- * output fails the whole report (Issue #3856).
+ * A repo whose gh call fails at transport level is skipped. Non-JSON GraphQL
+ * output falls back to REST; valid JSON of an invalid shape fails the report (#3856).
  *
  * @param deps - Injected dependencies
  * @returns Result with the milestone health report
@@ -587,7 +587,7 @@ export async function getMilestoneHealth(
       );
       repoReports.push(repoHealth);
     } catch (e) {
-      // Issue #3856: malformed data is a fault, not a skipped repo (mirrors Issue #2607).
+      // Issue #3856: malformed gh data is a fault, not a skipped repo (see Issue #2607 for the same fail-loud precedent).
       if (e instanceof MalformedGhResponseError) return { ok: false, error: e };
       // Skip repos that fail — continue with remaining repos
       continue;
