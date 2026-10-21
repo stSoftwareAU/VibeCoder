@@ -20,7 +20,10 @@ The template itself is deployed against the Floci emulator in CI by
 (Issue #3369). CI deploys it into Floci and fails unless the stack reaches
 `CREATE_COMPLETE`; resource types Floci only stubs are reported as `::warning::`
 annotations rather than proven. This does not show that the launcher works on
-the host.
+the host. The worker's pre-push gate also runs the script when a push changes
+`infra/cloudformation/` (Issue #3727), but this template creates an instance and
+needs Docker, so inside the worker container it is reported
+`SKIPPED (needs Docker)` and CI remains the check.
 
 ## 📋 Table of Contents
 

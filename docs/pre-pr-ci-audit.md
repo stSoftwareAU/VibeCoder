@@ -107,7 +107,7 @@ worker test job is also class local and is already covered by `quality.sh`.
 | [38123883049](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38123883049) | c384c70e | semgrep | blocking `detect-non-literal-regexp` at `worker/deno/lib/mutation_gate.ts:627` (`SEMGREP_APP_TOKEN` empty) | local | A semgrep stage exists in `quality.sh` / `lib/quality_gate.ts` (Issue #559); whether it ran on c384c70e is not recorded; since Issue #3726 each gate stage's outcome is (see below) | Cause not recoverable; most likely #3730; recording added by #3726 |
 | [38126786967](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38126786967) | 9dfa6301 | type check and tests | compile or test failure | local | Covered by `quality.sh` | No change needed |
 | [38345577457](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38345577457) | 543adc87 | tests | runner disk full | local / runner infrastructure | Covered by `quality.sh` | Infrastructure |
-| [38033819415](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38033819415) | ab6a832f | Floci | `infra/cloudformation/test-floci.sh`: Floci `ValidationException` on a `PutParameter` name | local (baked `floci` binary) | No | Gap, tracked in #3727 |
+| [38033819415](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38033819415) | ab6a832f | Floci | `infra/cloudformation/test-floci.sh`: Floci `ValidationException` on a `PutParameter` name | local (baked `floci` binary) | No | Pre-push gate runs `test-floci.sh` since #3727; skipped in the worker container (no Docker socket) |
 
 The sweptAt failures were a feature-branch commit recorded as the sweep
 ledger's `sweptAt`, which is not an ancestor of the base branch. The check
@@ -358,7 +358,13 @@ checks the gate runs.
     cases stay SKIPPED and are recorded.
   - Floci (run 38033819415): a deterministic `ValidationException` from
     `infra/cloudformation/test-floci.sh`, reproducible with the baked `floci`
-    binary. No pre-PR stage runs it. Tracked in #3727.
+    binary. #3727 adds the script to the pre-push gate's changed-files check
+    for a push that changes `infra/cloudformation/`. Inside the worker container
+    that would not have caught this failure: the template creates an
+    `AWS::EC2::Instance`, and with no Docker socket the script reports it
+    `SKIPPED (needs Docker)` (the image also ships no `aws` CLI). A host with
+    Docker and the `aws` CLI catches it before the push; CI stays the enforcer
+    otherwise.
 - The pre-PR stages had no executable Mermaid parse that caught a flowchart
   label mixing unquoted text with a quoted string (found by a private-repo-A
   review); VibeCoder's own validator passed it. Fixed by #3769, which adds

@@ -4794,8 +4794,8 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell and sweep ledger `sweptAt`
-ancestry) still run and can fail the run. Unlike Step 1b, the completion gate
+fmt/lint, cargo fmt, markdownlint, cspell, sweep ledger `sweptAt` ancestry and
+the Floci CloudFormation deploy test) still run and can fail the run. Unlike Step 1b, the completion gate
 checks every non-merge commit the branch has ahead of the PR base
 (`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
 ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
@@ -4886,7 +4886,19 @@ The hook runs two stages:
      `git symbolic-ref --short refs/remotes/origin/HEAD`), the same check CI's
      "Sweep ledger sweptAt ancestry" step makes, so a branch commit recorded as
      `sweptAt` is caught before the push. A shallow clone is deepened first.
-     When no ledger file changed, this check makes no git calls.
+     When no ledger file changed, this check makes no git calls;
+   - **Floci CloudFormation deploy test** (Issue #3727), only when the push
+     adds or modifies a file whose path starts with `infra/cloudformation/` and
+     the repo tracks `infra/cloudformation/test-floci.sh`: it runs
+     `bash infra/cloudformation/test-floci.sh` from the repo root, after the
+     other changed-file checks. That is the same script
+     `.github/workflows/floci.yml` runs in CI. The script starts the baked
+     `floci` on `127.0.0.1:4566` when nothing answers there. In the worker
+     container there is no Docker socket and no `aws` CLI, so a template that
+     creates an `AWS::EC2::Instance` is printed
+     `SKIPPED (needs Docker): <template>` and left to CI. Today's only template
+     does, so inside the container this check deploys nothing; only a host with
+     Docker and the `aws` CLI exercises it.
 2. **Configured `pre-flight` commands.** The commands are resolved by the
    run's repo from `repo_config`, so every agent run that names its repo gets
    that repo's `pre-flight` commands in the hook; a run that names no repo gets
@@ -4898,8 +4910,10 @@ start, or times out refuses the push; markdownlint configured but
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a changed sweep ledger file whose default branch
 cannot be resolved, whose history cannot be deepened, or whose slice `sweptAt`
-is not on the default branch refuses the push; a missing hook module, spec or
-`deno` binary refuses the push. Refusals print lines starting
+is not on the default branch refuses the push; a Floci deploy test that exits
+non-zero, including when Floci cannot be started or the `aws` CLI is missing for
+a deployable template, refuses the push; a missing hook module, spec or `deno`
+binary refuses the push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
 pre-flight (the hook reuses `runPreFlightGate`).
 
