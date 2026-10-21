@@ -83,7 +83,6 @@ export function findUnownedReuseSites(source: string): number[] {
  * owned lookup. Shrink-only: a fixed file is removed, a new one is a failure.
  */
 export const OWNED_REUSE_UNVERIFIED_FILES: readonly string[] = [
-  "lib/issue_routing_filing.ts",
 ];
 
 /**
