@@ -46,10 +46,13 @@ Related existing rules checked: **A new test must go red without its change** (i
   - Red check: with the five docs restored to `origin/main`, all 6 tests FAILED. With the head docs, all 6 pass.
   - Pins absent on base: `deno task drift-pins-on-base origin/main <doc> <section> <phrase>...` printed `absent on base:` for every pinned phrase in all six doc/section groups.
 - Edited `worker/deno/tests/negative_test_must_fail_3060_test.ts`: `PARAGRAPH_START` now points at the renamed heading, and the doc comment is updated.
-- Removed from worker/deno/tests/negative_test_must_fail_3060_test.ts: `text.includes("A negative test must be able to fail"),`
-  - Required by: "to cover source and agreement tests"
-  - Replaced by: `text.includes("A test must be able to fail on the wrong input")`
+- Removed from `worker/deno/tests/negative_test_must_fail_3060_test.ts`: ``assert( text.includes("A negative test must be able to fail"), `Choosing assertions is missing the back-reference: ${text}`, );``
+  Required by: "to cover source and agreement tests"
+  Replaced by: ``assert( text.includes("A test must be able to fail on the wrong input"), `Choosing assertions is missing the back-reference: ${text}`, );``
 - Edited `worker/deno/tests/edited_expectation_red_3374_docs_test.ts`: `NEXT_START` points at the renamed heading, and its message is reworded.
+- Removed from `worker/deno/tests/edited_expectation_red_3374_docs_test.ts`: ``assert( next > start, `${what}: the edited-expectation rule must precede the negative-test rule`, );``
+  Required by: "to cover source and agreement tests"
+  Replaced by: ``assert( next > start, `${what}: the edited-expectation rule must precede the wrong-input rule`, );``
 - Edited-expectation red checks:
   - 3060 "both surfaces" test: restoring the base `CODING-STANDARDS.md` and guidelines made it go red.
   - 3060 "Choosing assertions" test: restoring the base `CODING-STANDARDS.md` made it go red.
