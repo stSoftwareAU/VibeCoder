@@ -178,6 +178,59 @@
         "test": "worker/deno/tests/milestone_fix_pr_owned_test.ts",
         "testName": "findOpenMilestoneFixPr - omitted fleetAuthors reads the configured identity, not an empty set (Issue #3065)",
         "flipWentRed": "X9a: arm always {} (explicit set ignored), 3 failing; X9b: arm always deps.fleetAuthors ?? [] (omitted reads no identity), 1 failing"
+      },
+      {
+        "path": "worker/deno/lib/pr_ci_processor.ts",
+        "line": 916,
+        "endLine": 918,
+        "outcome": "a gated head's milestone-fix lookup passes the configured fleet logins as fleetAuthors when they are set",
+        "test": "worker/deno/tests/gated_head_passes_test.ts",
+        "testName": "CI-fix pass - a gated head with a fix already in flight spends no retry (Issues #1679, #2907)",
+        "flipWentRed": "B2: wiring reverted to { gh: ghFn }, 1 failing"
+      },
+      {
+        "path": "worker/deno/lib/pr_ci_processor.ts",
+        "line": 916,
+        "endLine": 918,
+        "outcome": "a gated head's milestone-fix lookup with fleetLogins unset omits fleetAuthors, so the configured fleet identity is read",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "fleetLogins is unset, so the lookup omits fleetAuthors and the configured fleet identity is read from the environment. Harness search: worker/deno/tests/pr_ci_processor_test.ts reaches this arm through the makeGatedFixGh gated happy path, but that fixture's pull request list is empty, so the identity read cannot change the outcome there."
+        }
+      },
+      {
+        "path": "worker/deno/lib/github.ts",
+        "line": 708,
+        "outcome": "createGitHubIssuesWithPartialFailures passes dedupAuthors to the alert dedup when it is set",
+        "test": "worker/deno/tests/suggest_improvements_test.ts",
+        "testName": "suggest-improvements - an existing open issue with the same title is reused, not refiled (Issue #3745)",
+        "flipWentRed": "spread replaced by {}, 2 failing"
+      },
+      {
+        "path": "worker/deno/lib/github.ts",
+        "line": 708,
+        "outcome": "createGitHubIssuesWithPartialFailures with dedupAuthors unset passes no author option and uses the default author handling",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "dedupAuthors is unset, so no author option is passed and the default author handling applies. Harness search: worker/deno/tests/github_test.ts and worker/deno/tests/github_retry_test.ts call createGitHubIssuesWithPartialFailures without dedupAuthors and reach this arm, but neither asserts on an author set, so the unset arm has no test that checks for it."
+        }
+      },
+      {
+        "path": "worker/deno/commands/suggest_improvements.ts",
+        "line": 267,
+        "outcome": "the suggest-improvements command passes dedupAuthors to the github helper when it is set",
+        "test": "worker/deno/tests/suggest_improvements_test.ts",
+        "testName": "suggest-improvements - the summary counts created, reused and would-be issues with the right plurals (Issue #3745)",
+        "flipWentRed": "spread replaced by {}, 1 failing"
+      },
+      {
+        "path": "worker/deno/commands/suggest_improvements.ts",
+        "line": 267,
+        "outcome": "the suggest-improvements command with dedupAuthors unset passes no author option to the github helper",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "deps.dedupAuthors is unset, so the command passes no author option and the default author handling applies. Harness search: worker/deno/tests/suggest_improvements_test.ts calls createSuggestImprovementsCommand nine times and sets dedupAuthors in only some of them, so the unset arm is reached, but no assertion tells it apart from the default path."
+        }
       }
     ]
   }

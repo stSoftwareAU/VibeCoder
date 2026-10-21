@@ -62,6 +62,14 @@ This is a code change with its tests in `worker/deno/`. Changed surfaces:
   the shared lookup.
 - `worker/deno/commands/route_issue.ts`: threads the fleet author options
   through.
+- `worker/deno/lib/pr_ci_processor.ts` (lines 910-919): the gated-head
+  milestone-fix lookup passes `fleetAuthors` from the configured fleet logins
+  when they are set.
+- `worker/deno/lib/github.ts` (option at 638, forwarding at 708):
+  `createGitHubIssuesWithPartialFailures` takes `dedupAuthors` and passes it to
+  the alert dedup as `authors`.
+- `worker/deno/commands/suggest_improvements.ts` (option at 209, forwarding at
+  267): the command takes `dedupAuthors` and passes it on to the github helper.
 
 **Docs sweep** — grep: `--resolve-duplicate`, `--part`, `route-issue`; section:
 `docs/ISSUE-ROUTING.md#retiring-a-wrong-repository-duplicate`,
@@ -77,6 +85,11 @@ paths). Related rules checked: the `marker_dedup_author_manifest.ts` cap test,
 which covers authorship but not ownership or state. It is unchanged and still
 applies.
 
+The sentence on this rule was not added to `CODING-STANDARDS.md`. The
+shrink-only scanner `worker/deno/lib/owned_reuse_manifest.ts` and the cap test
+`worker/deno/tests/owned_reuse_cap_test.ts` enforce the rule, so a prose copy
+would only drift.
+
 ## Test Plan
 
 - Added `worker/deno/tests/owned_open_artefact_test.ts` (22 tests),
@@ -84,6 +97,12 @@ applies.
   `issue_routing_filing_test.ts`, `route_issue_resolve_duplicate_test.ts`,
   `route_issue_split_test.ts` and `milestone_fix_pr_owned_test.ts`. All are
   green on the final head.
+- Suggest test expectation: `worker/deno/tests/suggest_improvements_test.ts:771`,
+  "suggest-improvements - a closed owned match is not reused, whatever the clock
+  (Issue #3854)". Its Task 1 red check went red because the fake `gh` threw on
+  a non-`open` state argument, not on the closed-match assertion the test name
+  describes, so that red is not evidence for the check. It was not re-run for
+  this summary.
 - Red checks. Each one changes a single line or file, runs `deno task test:unit`
   on the covering test files, and restores with `git checkout`:
   - 2a1: a fake path added to `OWNED_REUSE_UNVERIFIED_FILES` and an entry
@@ -114,6 +133,15 @@ applies.
   - 2g: `milestone_fix_pr.ts` reverted to the base commit → red. Named: three
     `findOpenMilestoneFixPr` tests (closed or merged, gh failure, empty fleet
     set).
+  - B1: `milestone_fix_pr.ts:167` changed from `? {}` to `? { fleetAuthors: [] }`
+    (the omitted-fleetAuthors arm) → red at
+    `milestone_fix_pr_owned_test.ts:199:6` ("omitted fleetAuthors reads the
+    configured identity, not an empty set"). Run with `deno test -A --no-check`
+    on that file, stdin from `/dev/null`. Restored; `git diff` on the file is
+    empty afterwards.
+  - B2: `pr_ci_processor.ts` wiring reverted from the fleet spread to `{ gh: ghFn }`
+    → red at `gated_head_passes_test.ts:168` (1 failing). Restored; `git diff`
+    on the file is empty afterwards.
 - Flips (one arm of the branch outcomes each; the facts file records the
   testName):
   - X1 (prefix check removed, `owned_open_artefact.ts:157`) → red. Named: "a
@@ -133,12 +161,20 @@ applies.
   - X11 (verify author gate disabled) → red (`FAILED | 65 passed | 3 failed`).
   - X12 (verify `accept` check disabled) → red
     (`FAILED | 66 passed | 2 failed`).
-  - X8 (the `view.state !== "OPEN"` arm in `issue_routing_resolve.ts`, formerly
-    line 351) → removed, not flipped. The arm was unreachable, because
-    `verifyOwnedOpenIssue` checks the state first, so it was deleted. The closed
-    owner is now covered by the "the owner issue is closed" probe in
-    `route_issue_resolve_duplicate_test.ts` (`ok | 20 passed | 0 failed`), which
-    expects `state is CLOSED, not OPEN`. That probe has not been red-checked.
+  - X8 (the open-state check at `issue_routing_resolve.ts:292`,
+    `if (view.state !== "OPEN")`) → red at
+    `route_issue_resolve_duplicate_test.ts:268` (the test declaration), with the
+    failing assertion at `:275`. The earlier `view.state !== "OPEN"` arm at former
+    line 351 was removed, not flipped, because `verifyOwnedOpenIssue` checks the
+    state first, so that arm was unreachable.
+  - Production spread at `github.ts:708` replaced by `{}` → red (2 failing) in
+    `suggest_improvements_test.ts`, "an existing open issue with the same title
+    is reused, not refiled (Issue #3745)".
+  - Production spread at `suggest_improvements.ts:267` replaced by `{}` → red
+    (1 failing) in `suggest_improvements_test.ts`, "the summary counts created,
+    reused and would-be issues with the right plurals (Issue #3745)". The
+    `:582` reuse test calls the github helper directly, so only the `:694`
+    summary-count test reaches this arm.
   - X9a (`milestone_fix_pr.ts:165`, arm forced to `{}`) → red
     (`FAILED | 7 passed | 3 failed`). Named: "a fleet-authored owned open fix PR
     is returned", "a discriminator narrows the match", and "omitted fleetAuthors
@@ -150,6 +186,16 @@ applies.
 
 Not checked: the full `deno task test` suite and `./quality.sh` were not run for
 this change.
+
+## Follow-ups / out of scope
+
+- `now?: () => Date` on the options at `worker/deno/lib/github.ts:636`,
+  `worker/deno/commands/suggest_improvements.ts:207` and
+  `worker/deno/lib/issue_routing_github.ts:23` is vestigial, because the
+  closed-owner window it served was removed. Removing it is a separate change.
+- The test "a same-titled owner issue closed within the window is not reused" in
+  `worker/deno/tests/route_issue_resolve_duplicate_test.ts` still names the
+  removed window. Renaming it is left for a follow-up.
 
 <!-- vibe-branch-outcomes -->
 
