@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4119",
   "definition": "Setup helper added after the preceding recorded module lists: asks one question on the console so it is seen under setup.ps1's Out-Host pipe; injected console I/O.",
   "status": "claimed",
-  "sweptAt": "609ade11640b99066bc12657b95d556886762dde",
+  "sweptAt": "1a42eb1bc9e2833ebcc31b5a3b4f8cb1a9a575ec",
   "paths": [
     "worker/deno/setup/console_ask.ts"
   ]
