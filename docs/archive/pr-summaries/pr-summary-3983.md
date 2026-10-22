@@ -4,7 +4,7 @@
 
 Closes #3983
 
-- `classifyBlockClaims` (`worker/deno/lib/test_plan_recount.ts`) now reads a figure as a partial addition when "added" directly precedes it (`ADDED_BEFORE_RE`) and only "to" sits between it and the next test-file token (`ADDED_TO_GAP_RE`), as "N tests added to" already was. "Added 5 tests to `tests/a_test.ts`." at head 6 is reported unchecked with `PARTIAL_REASON` and no longer as a 5-vs-6 mismatch, so the review-fix drift check no longer spends its recovery turn on it.
+- `classifyBlockClaims` (`worker/deno/lib/test_plan_recount.ts`) now reads a figure as a partial addition when "added" directly precedes it (`ADDED_BEFORE_RE`) and only "to" sits between it and the next test-file token (`ADDED_TO_GAP_RE`), as "N tests added to" already was. "Added 5 tests to `tests/a_test.ts`." at head 6 is reported unchecked with `PARTIAL_REASON` and no longer as a 5-vs-6 mismatch. An unchecked figure still counts as a hit in the review-fix drift check, so the one recovery turn still runs; the figure is listed under "Test Plan figures the recount could not check:" and stays out of "Test Plan mismatches:".
 - `worker/deno/lib/pr_feedback_drift_check.ts` changes a doc comment only, to name this form among the figures reported unchecked.
 - `docs/workflows/pr-feedback.md` lists the new form among the partial figures.
 
@@ -28,7 +28,7 @@ A correct partial-addition figure was compared with the file's whole count, so a
 
 ## Test Plan
 
-- New `worker/deno/tests/test_plan_recount_added_n_to_3983_test.ts` (7 tests at head): "Added N tests to" reads partial under varied markup and wrap at head N+1 and N; regression controls for the existing whole and partial forms; the mixed same-file block stays unchecked; "for ... to be kept" and "5 tests to" without "added" stay whole; growth guards; the `runPrFeedbackDriftCheck` caller never sends the figure to the recovery prompt.
+- New `worker/deno/tests/test_plan_recount_added_n_to_3983_test.ts` (7 tests at head): "Added N tests to" reads partial under varied markup and wrap at head N+1 and N; regression controls for the existing whole and partial forms; the mixed same-file block stays unchecked; "for ... to be kept" and "5 tests to" without "added" stay whole; growth guards; in the `runPrFeedbackDriftCheck` test, the "Added 5 tests to" line at head 6 stays out of the "Test Plan mismatches:" section of the recovery prompt and is listed under "Test Plan figures the recount could not check:".
 - No assertion was removed from an existing test: the diff adds that test file and edits comments in `worker/deno/lib/test_plan_recount.ts`, with no changed assertion in any existing test.
 
 **Branch outcomes:**
