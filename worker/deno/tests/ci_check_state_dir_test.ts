@@ -62,12 +62,18 @@ function makeSilentLogger(): Logger {
 function ghStubFor(
   prNumber: number,
   checks: Array<{ id: number; name: string }>,
+  isDraft = false,
 ): (args: string[]) => Promise<string> {
   return (args: string[]) => {
     const key = args.join(" ");
     if (key.includes("pr list")) {
       return Promise.resolve(JSON.stringify([
-        { number: prNumber, headRefName: "issue-1-fix", baseRefName: "main" },
+        {
+          number: prNumber,
+          headRefName: "issue-1-fix",
+          baseRefName: "main",
+          isDraft,
+        },
       ]));
     }
     if (key.includes("check-runs") && !key.includes("annotations")) {
@@ -291,6 +297,25 @@ Deno.test("recordCiCheckRetry - writes the counter into the state directory", as
       (await Deno.readTextFile(`${stateDir}/org_repo_12345.retries`)).trim(),
       "2",
     );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a draft PR's red checks are not handed to the CI fixer", async () => {
+  // A draft is work in progress (owner, 2026-10-23): its required `gate`
+  // fails on purpose while the other checks are skipped, so a CI-fix run on
+  // it would spend an agent fixing nothing. The run that finishes the issue
+  // marks it ready, and CI runs then.
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const result = await findFailedCiChecks(scanOptions(
+      ghStubFor(548, [{ id: 99156131115, name: "gate" }], true),
+      tmpDir,
+      { maxRetries: 3 },
+    ));
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value, null);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
