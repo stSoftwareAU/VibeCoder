@@ -132,6 +132,7 @@ interface Outcome {
   prCreateArgs: string[][];
   prCloseArgs: string[][];
   prReadyArgs: string[][];
+  prEditArgs: string[][];
   issueCreates: string[][];
   ghLabelEdits: string[][];
   labelsAdded: string[];
@@ -156,6 +157,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const prCreateArgs: string[][] = [];
   const prCloseArgs: string[][] = [];
   const prReadyArgs: string[][] = [];
+  const prEditArgs: string[][] = [];
   const issueCreates: string[][] = [];
   const ghLabelEdits: string[][] = [];
   let recoverCalls = 0;
@@ -207,6 +209,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         }
         if (args[0] === "pr" && args[1] === "create") prCreateArgs.push(args);
         if (args[0] === "pr" && args[1] === "close") prCloseArgs.push(args);
+        if (args[0] === "pr" && args[1] === "edit") prEditArgs.push(args);
         if (args[0] === "pr" && args[1] === "ready") prReadyArgs.push(args);
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(JSON.stringify({
@@ -299,6 +302,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     prCreateArgs,
     prCloseArgs,
     prReadyArgs,
+    prEditArgs,
     issueCreates,
     ghLabelEdits,
     labelsAdded,
@@ -417,7 +421,7 @@ Deno.test(
 );
 
 Deno.test(
-  "#4146 - a PR the agent raised itself is not finalised while a criterion is unmet",
+  "#4146 - a PR the agent raised itself becomes a draft, not finalised or closed, while a criterion is unmet",
   async () => {
     const stuck = summaryWith(TWO, ["met", "missing"]);
     const out = await runCompletion({
@@ -431,7 +435,18 @@ Deno.test(
     assertEquals(out.category, "criteria_unmet");
     assertEquals(out.finaliseCalls, 0, "auto-merge is never armed");
     assertEquals(out.recoverCalls, 0, "the PR body is not finalised");
-    assertEquals(out.prCloseArgs.length, 1, "the partial PR is closed");
+    // Owner (Issue #4146): an incomplete PR is a draft, not closed, so CI
+    // and review are not spent on it and the next run continues the branch.
+    assertEquals(out.prCloseArgs, [], "the PR is never closed");
+    assert(
+      out.prReadyArgs.some((a) => a.includes("--undo")),
+      "converted back to a draft",
+    );
+    const body =
+      out.prEditArgs.at(-1)?.[out.prEditArgs.at(-1)!.indexOf("--body") + 1] ??
+        "";
+    assertStringIncludes(body, `Part of #${ISSUE}`);
+    assertFalse(/\bcloses\s+#4146\b/i.test(body), "no closing keyword");
     assertEquals(out.issueCreates, []);
   },
 );
@@ -450,7 +465,8 @@ Deno.test(
     assertEquals(out.status, "failure");
     assertEquals(out.category, "criteria_unmet");
     assertEquals(out.finaliseCalls, 0);
-    assertEquals(out.prCloseArgs.length, 1);
+    assertEquals(out.prCloseArgs, []);
+    assert(out.prReadyArgs.some((a) => a.includes("--undo")));
     assertEquals(out.issueCreates, []);
   },
 );
@@ -467,6 +483,7 @@ Deno.test(
 
     assertEquals(out.status, "continue");
     assertEquals(out.prReadyArgs.length, 1, "gh pr ready");
+    assertFalse(out.prReadyArgs[0]!.includes("--undo"));
     assertEquals(out.recoverCalls, 1, "the body is rewritten (Closes #N)");
     assertEquals(out.finaliseCalls, 1, "then the normal auto-merge path");
     assertEquals(out.prCreateArgs.length, 0, "no second PR");

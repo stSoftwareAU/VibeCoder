@@ -16,11 +16,7 @@
  * vibe-allow-conflict-markers
  */
 
-import {
-  assert,
-  assertEquals,
-  assertStringIncludes,
-} from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildAttemptComment,
   buildFailedComment,

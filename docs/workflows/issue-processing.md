@@ -2614,9 +2614,14 @@ flowchart TD
 - **A run that still cannot finish fails** as `criteria_unmet` on the ordinary
   `failed-once` → `failed` ladder. No PR is raised, no follow-up is filed, and
   nothing is labelled `needs-human`. The branch stays pushed, so the next run
-  resumes it (Issues #220, #585). A PR the agent raised itself from inside the
-  execute phase is closed with its branch kept, because the auto-merge sweep
-  would otherwise arm it.
+  resumes it (Issues #220, #585).
+- **An incomplete PR is a draft.** The owner: "make sure that incomplete PRs
+  are draft so the CI and code reviews aren't done." A PR the agent raised
+  itself from inside the execute phase is turned back into a draft the moment
+  a criterion is found unmet: `gh pr ready --undo`, auto-merge disarmed, and
+  the body rewritten to `Part of #N` with no closing keyword. It is never
+  closed; the draft never holds its issue, so the next run continues the
+  branch.
 - **Degraded runs follow the same rule.** Whether the run was served by a
   fallback model changes nothing here: the run-stats `Degraded:` line is
   telemetry, not a delivery decision.
@@ -2626,9 +2631,11 @@ flowchart TD
   drafts, Issue #1800) — via
   [`draft_continuation_pr.ts`](../../worker/deno/lib/draft_continuation_pr.ts).
   The fleet's own draft never holds its issue (`getBlockingPRForIssue`), so the
-  next run re-claims it, resumes the branch and finishes. Once every criterion
-  is met, completion rewrites the body (`Closes #N`), runs `gh pr ready`, and
-  the PR takes the normal review and auto-merge path.
+  next run re-claims it, resumes the branch and finishes.
+- **Complete means ready, and merging as soon as possible.** Once every
+  criterion is met, completion rewrites a draft's body (`Closes #N`), runs
+  `gh pr ready` and arms squash auto-merge in the same step, rather than
+  waiting for the sweep.
 
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) keeps
 only the pure scope assessment both this gate and `claim_freshness.ts` read.

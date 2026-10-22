@@ -1,0 +1,13 @@
+{
+  "issue": 4146,
+  "chunk": "top-up-4146",
+  "title": "top-up: unmet-criteria gate and draft continuation PRs",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4146",
+  "definition": "modules added after 12a-12af recorded their coverage: worker/deno/lib/unmet_criteria_gate.ts (no PR until every acceptance criterion is met) and worker/deno/lib/draft_continuation_pr.ts (a timed-out or unfinished run's draft `Part of #N` PR) (#4146)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/draft_continuation_pr.ts",
+    "worker/deno/lib/unmet_criteria_gate.ts"
+  ],
+  "sweptAt": "718b1e900e3508cbcf948d6a14062b78f7d6c5b3"
+}

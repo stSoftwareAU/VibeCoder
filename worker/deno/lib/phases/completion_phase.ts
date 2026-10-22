@@ -258,6 +258,7 @@ import {
   SCREENSHOT_EVIDENCE_MISSING_REASON,
 } from "../screenshot_gate_retry.ts";
 import type { DegradedShortfall } from "../degraded_delivery.ts";
+import { convertToDraftContinuation } from "../draft_continuation_pr.ts";
 import {
   assessUnmetCriteria,
   buildUnmetCriteriaGateComment,
@@ -693,10 +694,12 @@ interface SummaryRuleBlock {
  *   existing PR whose URL cannot be numbered fails the run instead — before
  *   the PR is recovered or finalised (Issue #3139).
  * - **a block with unmet acceptance criteria** (Issue #4146) is never
- *   finalised: it is always recorded, and while another in-run round is due
- *   it fails for `workOnIssueCompletion` to recover from; once the rounds are
- *   spent the run fails as `criteria_unmet` and a PR the agent raised itself
- *   is closed (`failWithUnmetCriteria`).
+ *   finalised: it is always recorded, a PR the agent raised itself is turned
+ *   back into a draft at once (`convertToDraftContinuation`), and while
+ *   another in-run round is due it fails for `workOnIssueCompletion` to
+ *   recover from; once the rounds are spent the run fails as
+ *   `criteria_unmet` (`failWithUnmetCriteria`) and the draft waits for the
+ *   next run.
  *
  * Either way the gate's remediation comment is posted, so the shortfall is on
  * the issue thread rather than only in this host's log — once per distinct
@@ -821,6 +824,22 @@ async function reportSummaryRuleBlock(
   const prUrl = existingPr.value;
   const prNumber = prNumberFromUrl(prUrl);
 
+  // Issue #4146 (owner): "make sure that incomplete PRs are draft so the CI
+  // and code reviews aren't done." The agent raised this PR itself, and the
+  // work is not finished, so it goes back to a draft at once — every round,
+  // since converting an existing draft is a no-op.
+  if (criteriaUnmet && prNumber > 0) {
+    await convertToDraftContinuation({
+      repo,
+      issueNumber,
+      prNumber,
+      body: prBody,
+      gh: (args) => deps.github.runGhCommand(args),
+      log: (message) =>
+        logger.warn(`Draft conversion (Issue #4146): ${message}`),
+    });
+  }
+
   if (isFirstBlock) {
     // The run's FIRST summary-rule block gets the same in-run recovery turn
     // whether or not a PR already exists (Issue #3163): finalising an
@@ -873,13 +892,11 @@ async function reportSummaryRuleBlock(
     // The agent raised this one itself, so close it; its branch stays pushed
     // and the next run resumes it and raises the PR once every criterion is
     // met.
-    return await failWithUnmetCriteria(
-      ctx,
-      state,
-      deps,
-      { category, categories: block.categories, reason: failureReason },
-      prNumber,
-    );
+    return failWithUnmetCriteria(ctx, state, deps, {
+      category,
+      categories: block.categories,
+      reason: failureReason,
+    });
   }
 
   logger.warn(
@@ -941,17 +958,14 @@ async function reportSummaryRuleBlock(
 /**
  * End the run on criteria it could not meet (Issue #4146).
  *
- * "Partially completed" is not a resolution, so no PR survives an
- * unmet-criteria block: a PR the agent raised itself from inside the execute
- * phase is closed (best-effort — its branch is kept), because the auto-merge
- * sweep would otherwise arm it and the merge would close the issue. No
- * follow-up issue is filed and nothing is labelled `needs-human`: the failure
- * goes up the ordinary `failed-once` → `failed` ladder, and the next run
- * resumes the pushed branch (Issues #220, #585) to finish the job.
- *
- * @param prNumber - The agent-raised PR to close, or 0 when there is none.
+ * "Partially completed" is not a resolution, so the run fails on the ordinary
+ * `failed-once` → `failed` ladder. No follow-up issue is filed and nothing is
+ * labelled `needs-human`. A PR the agent raised itself was already turned
+ * back into a draft by `reportSummaryRuleBlock` (`Part of #N`, auto-merge
+ * disarmed), which never holds the issue, so the next run resumes the branch
+ * and finishes the job.
  */
-async function failWithUnmetCriteria(
+function failWithUnmetCriteria(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
@@ -960,40 +974,14 @@ async function failWithUnmetCriteria(
     categories: readonly FailureCategory[];
     reason: string;
   },
-  prNumber: number,
-): Promise<PhaseResult> {
-  const { repo, issueNumber } = ctx;
-  const logger = deps.logger;
-  if (prNumber > 0) {
-    try {
-      await deps.github.runGhCommand([
-        "pr",
-        "close",
-        String(prNumber),
-        "--repo",
-        repo,
-        "--comment",
-        `Closed by the worker: this PR does not meet every acceptance ` +
-        `criterion of #${issueNumber}, and a PR is raised only once every ` +
-        `criterion is met (Issue #4146). The branch \`${state.branchName}\` ` +
-        `is kept; the next run resumes it to finish the job.`,
-      ]);
-      logger.warn(
-        "Closed the agent-raised PR: the run did not meet every acceptance " +
-          "criterion (Issue #4146)",
-        { repo, issueNumber, prNumber },
-      );
-    } catch (err) {
-      logger.error(
-        `Could not close the agent-raised PR #${prNumber} for unmet criteria ` +
-          `— it stays open, unfinalised, and must not merge: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        { repo, issueNumber, prNumber },
-      );
-    }
-  }
-  // The closed PR is not the run's deliverable, so the outcome names none.
+): PhaseResult {
+  deps.logger.warn(
+    "Acceptance criteria still unmet after the in-run rounds — failing the " +
+      "run; the next run resumes the branch (Issue #4146)",
+    { repo: ctx.repo, issueNumber: ctx.issueNumber, branch: state.branchName },
+  );
+  // The draft is work in progress, not the run's deliverable, so the outcome
+  // names no PR.
   delete state.prUrl;
   delete state.prNumber;
   return {

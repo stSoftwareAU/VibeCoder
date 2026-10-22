@@ -7,10 +7,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import {
-  assertEquals,
-  assertStringIncludes,
-} from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildFeedbackCommitMessage,
   decodeCommentBody,
