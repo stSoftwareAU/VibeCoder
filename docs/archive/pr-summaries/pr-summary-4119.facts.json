@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/setup/update_mode_setup.ts",
+        "line": 519,
+        "outcome": "prompt default is DEFAULT_UPDATE_MODE (dynamic) when a pre-existing config has no update_mode",
+        "test": "worker/deno/tests/setup_update_mode_test.ts",
+        "testName": "runUpdateModeSetup - a pre-existing config with no update_mode offers dynamic, and Enter writes dynamic",
+        "flipWentRed": "mutation M1 (always SETUP_DEFAULT_UPDATE_MODE): the test went red"
+      },
+      {
+        "path": "worker/deno/setup/update_mode_setup.ts",
+        "line": 519,
+        "outcome": "prompt default is SETUP_DEFAULT_UPDATE_MODE (frozen) for a fresh host with no prior config",
+        "test": "worker/deno/tests/setup_update_mode_test.ts",
+        "testName": "runUpdateModeSetup - accepting every default pins a fresh host to the latest release",
+        "flipWentRed": "mutation M6 (always DEFAULT_UPDATE_MODE): the test went red"
+      },
+      {
+        "path": "worker/deno/setup/update_mode_setup.ts",
+        "line": 660,
+        "outcome": "pre-existing config with no update_mode is read as dynamic and left unwritten (options.configExisted operand)",
+        "test": "worker/deno/tests/setup_update_mode_test.ts",
+        "testName": "runUpdateModeSetup - a pre-existing config with no update_mode is read as dynamic and left unwritten",
+        "flipWentRed": "mutation M2 (options.configExisted operand dropped): the test went red"
+      },
+      {
+        "path": "worker/deno/setup/update_mode_setup.ts",
+        "line": 660,
+        "outcome": "non-interactive fresh config with neither operand true falls through to the frozen pin",
+        "test": "worker/deno/tests/setup_update_mode_test.ts",
+        "testName": "runUpdateModeSetup - a non-interactive fresh config pins to the latest release without prompting",
+        "flipWentRed": "mutation M7 (if (true || ...)): the test went red"
+      },
+      {
+        "path": "worker/deno/setup/setup_cli.ts",
+        "line": 449,
+        "outcome": "--config-existed=true parses to true",
+        "test": "worker/deno/tests/setup_update_mode_test.ts",
+        "testName": "parseConfigExistedFlag - --config-existed=true and =false parse to booleans",
+        "flipWentRed": "mutation M4 (=true returns false): the test went red"
+      },
+      {
+        "path": "worker/deno/setup/setup_cli.ts",
+        "line": 450,
+        "outcome": "--config-existed=false parses to false",
+        "test": "worker/deno/tests/setup_update_mode_test.ts",
+        "testName": "parseConfigExistedFlag - --config-existed=true and =false parse to booleans",
+        "flipWentRed": "mutation M8 (=false returns true): the test went red"
+      },
+      {
+        "path": "worker/deno/setup/setup_cli.ts",
+        "line": 451,
+        "outcome": "an absent flag or any other value parses to undefined",
+        "test": "worker/deno/tests/setup_update_mode_test.ts",
+        "testName": "parseConfigExistedFlag - an absent flag or any other value is undefined",
+        "flipWentRed": "mutation M9 (undefined returns false): the test went red"
+      },
+      {
+        "path": "worker/deno/setup/setup_cli.ts",
+        "line": 468,
+        "outcome": "update-mode with no --config-existed flag refuses and leaves .config.json untouched",
+        "test": "worker/deno/tests/setup_update_mode_refusal_test.ts",
+        "testName": "update-mode refusal - no --config-existed flag exits non-zero and leaves .config.json untouched (Issue #4119)",
+        "flipWentRed": "mutation M5 (refusal guard disabled): the test went red"
+      }
+    ]
+  }
+}
