@@ -4,15 +4,20 @@
  *
  * It models the commands issue routing runs, with the output shapes the real
  * CLI prints: `search issues` (phrase in title, open/closed state, the
- * day-granular `--closed` qualifier), `repo view --json viewerPermission`,
- * `issue create` (prints the new issue's URL), `issue view --json`,
- * `issue comment`, `issue close` and `issue edit --body`. Anything it does not
- * model throws, so a test cannot pass on an unmodelled call.
+ * day-granular `--closed` qualifier), `issue list --state open --search
+ * --json` (the owned-artefact lookup), `repo view --json viewerPermission`,
+ * `issue create` (prints the new issue's URL), `issue view --json` (with the
+ * author's login), `issue comment`, `issue close` and `issue edit --body`.
+ * Anything it does not model throws, so a test cannot pass on an unmodelled
+ * call.
  *
  * Australian English spelling used throughout.
  */
 
 import type { GhCommandFn } from "../../lib/issue_routing_github.ts";
+
+/** The login every stored issue is authored by unless a test says otherwise. */
+export const FLEET_LOGIN = "fleet-bot";
 
 /** A stored issue or pull request. */
 export interface FakeIssue {
@@ -20,6 +25,8 @@ export interface FakeIssue {
   number: number;
   title: string;
   body: string;
+  /** The author's login, as `gh --json author` reports it. */
+  author: string;
   closedAt: string | null;
   isPullRequest: boolean;
   labels: string[];
@@ -68,6 +75,7 @@ export function fakeStore(
     number: 1,
     title: "",
     body: "",
+    author: FLEET_LOGIN,
     closedAt: null,
     isPullRequest: false,
     labels: [],
@@ -99,6 +107,7 @@ export function addIssue(
     number: highest + 1,
     title,
     body,
+    author: FLEET_LOGIN,
     closedAt: null,
     isPullRequest: false,
     labels: [],
@@ -183,13 +192,18 @@ function requireWrite(store: FakeStore, repo: string): void {
   }
 }
 
+/** The phrase of a `"<phrase>" in:title` query; any other query is refused. */
+function titlePhrase(query: string): string[] {
+  const match = /^"([^"]*)" in:title$/.exec(query);
+  if (!match) fail(`Invalid search query "${query}".`);
+  return words(match[1] ?? "");
+}
+
 function search(store: FakeStore, args: string[]): string {
   const { positional, flags } = flagsOf(args, 2, new Set(["--include-prs"]));
   const query = positional[0] ?? "";
   const repo = requireRepo(store, one(flags, "--repo"));
-  const match = /^"([^"]*)" in:title$/.exec(query);
-  if (!match) fail(`Invalid search query "${query}".`);
-  const phrase = words(match[1] ?? "");
+  const phrase = titlePhrase(query);
   const state = one(flags, "--state");
   const closed = one(flags, "--closed");
   const since = closed === undefined
@@ -215,24 +229,60 @@ function search(store: FakeStore, args: string[]): string {
   );
 }
 
-function issueView(store: FakeStore, args: string[]): string {
-  const { positional, flags } = flagsOf(args, 2, new Set());
-  const repo = requireRepo(store, one(flags, "--repo"));
-  const issue = findIssue(store, repo, positional[0] ?? "");
-  const all: Record<string, unknown> = {
+/** Every JSON field of an issue, as `gh --json` names them. */
+function issueFields(issue: FakeIssue): Record<string, unknown> {
+  return {
     number: issue.number,
     title: issue.title,
     body: issue.body,
     state: issue.closedAt === null ? "OPEN" : "CLOSED",
-    url: `https://github.com/${repo}/issues/${issue.number}`,
+    url: `https://github.com/${issue.repo}/issues/${issue.number}`,
+    author: { login: issue.author },
     comments: issue.comments.map((body) => ({ body })),
   };
+}
+
+/** The fields a `--json` list names, refusing an unmodelled one. */
+function pick(
+  all: Record<string, unknown>,
+  json: string,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const field of (one(flags, "--json") ?? "").split(",")) {
+  for (const field of json.split(",")) {
     if (!Object.hasOwn(all, field)) fail(`Unknown JSON field: "${field}"`);
     out[field] = all[field];
   }
-  return JSON.stringify(out);
+  return out;
+}
+
+function issueView(store: FakeStore, args: string[]): string {
+  const { positional, flags } = flagsOf(args, 2, new Set());
+  const repo = requireRepo(store, one(flags, "--repo"));
+  const issue = findIssue(store, repo, positional[0] ?? "");
+  return JSON.stringify(pick(issueFields(issue), one(flags, "--json") ?? ""));
+}
+
+/** `gh issue list --state open [--search] --json … --limit N`, open issues only. */
+function issueList(store: FakeStore, args: string[]): string {
+  const { positional, flags } = flagsOf(args, 2, new Set());
+  if (positional.length > 0) {
+    fail(`unmodelled issue list argument ${positional[0]}`);
+  }
+  const repo = requireRepo(store, one(flags, "--repo"));
+  if (one(flags, "--state") !== "open") {
+    fail("fake gh models only `issue list --state open`");
+  }
+  const search = one(flags, "--search");
+  const phrase = search === undefined ? null : titlePhrase(search);
+  const limit = Number(one(flags, "--limit") ?? "30");
+  const hits = store.issues.filter((it) =>
+    it.repo === repo &&
+    !it.isPullRequest &&
+    it.closedAt === null &&
+    (phrase === null || containsPhrase(it.title, phrase))
+  ).slice(0, limit);
+  const json = one(flags, "--json") ?? "";
+  return JSON.stringify(hits.map((it) => pick(issueFields(it), json)));
 }
 
 function issueWrite(store: FakeStore, args: string[], hooks: FakeGhHooks) {
@@ -288,6 +338,9 @@ export function routingFakeGh(
     }
     if (args[0] === "issue" && args[1] === "view") {
       return issueView(store, args);
+    }
+    if (args[0] === "issue" && args[1] === "list") {
+      return issueList(store, args);
     }
     if (args[0] === "issue" && WRITE_VERBS.has(args[1] ?? "")) {
       return issueWrite(store, args, hooks);

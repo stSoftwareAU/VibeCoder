@@ -82,19 +82,29 @@ runs these steps in order, and a failure names its step:
 1. **classify** — an `ambiguous` decision files nothing; the command exits
    non-zero and prints the basis.
 2. **search** — an open issue or PR in the owner repository with the same
-   title, or one closed in the last 30 days, is reused (`reused`) instead of
-   filing another.
+   title, or one closed in the last 30 days, means nothing is filed. A dedup
+   hit may suppress a filing; only an owned, open match may be reused or
+   written to (#3854). So when an open issue with that title carries this
+   tool's `<!-- issue-routing` marker and a fleet account authored it, it is
+   reused (`reused`). Any other match — closed, a PR, unmarked, or filed by
+   someone else — is reported as `suppressed`: nothing is filed and nothing is
+   written to it.
 3. **permission** — the caller must have write access to the owner
    repository.
 4. **create** — the issue is created with the audit line and marker.
 5. **recheck** — when another filer created the same issue at the same time,
-   the higher-numbered copy is closed as `not planned`, pointing at the
-   lower-numbered one, which is the one kept.
+   the copy this run created is closed as `not planned`, pointing at the
+   lower-numbered one, which is the one kept. That happens only when the
+   lower-numbered copy is owned, open and fleet-authored; a racing copy that
+   fails those checks does not close this one.
 
 Without `--dry-run` the same command files the issue. With `--dry-run` only
-steps 1–3 run, and the result is `would-create` or `would-reuse`. A retry
-after a failure part-way through finds the issue the first run created, so it
-never files a second one.
+steps 1–3 run, and the result is `would-create`, `would-reuse` or
+`suppressed`. A retry after a failure part-way through finds the issue the
+first run created in the search step, so it never files a second one: that
+issue is reported as `reused` when it is owned, open and fleet-authored, and
+as `suppressed` otherwise (for example when the fleet author set is
+unresolved).
 
 `--label` takes a comma-separated list or a JSON array. Reserved workflow
 labels and configured custom labels are stripped. When the issue is filed in
@@ -115,19 +125,23 @@ reads the wrong issue X, classifies it, and then:
 
 1. checks write access to both repositories;
 2. verifies the correct issue Y is open, or, with no `--correct`, files Y in
-   the owner repository (reusing a same-titled issue already there, which
-   must be open too);
+   the owner repository (reusing a same-titled issue already there only when
+   it is owned, open and fleet-authored, as in the search step above);
 3. comments on Y, then on X, so each links to the other;
 4. only then closes X as `not planned`, giving the routing reason.
 
 It refuses, and changes nothing, when X is already closed, when X carries
 a fast-failure or tally marker (#2592), when the owner is `ambiguous` (the basis
 is printed), when the classifier keeps X in its own repository, when
-`--correct` names a repository other than the owner, or when Y is not open.
-With no `--correct` that last case is a same-titled issue or PR in the owner
-repository that closed in the last 30 days: X stays open rather than closing
-in favour of work that is no longer tracked, so reopen Y or name the open
-owning issue with `--correct`. A failed step exits
+`--correct` names a repository other than the owner, when Y is not open, or
+when the same-titled Y the search step found is not an owned, open,
+fleet-authored issue. With no `--correct` that last case is a same-titled issue
+or PR in the owner repository that is closed (within the last 30 days), is a
+PR, lacks the routing marker or was filed by someone else; the reused Y is
+checked again right after it is found, before either linking comment is
+written and before X is closed. X stays open rather than closing in
+favour of work this tool does not own or that is no longer tracked, so reopen
+Y or name the open owning issue with `--correct`. A failed step exits
 non-zero, names the step and leaves X open. Each linking comment carries a
 marker, so a re-run skips the links that already exist and finishes the job.
 With `--dry-run` it prints the planned steps and makes no write call.
@@ -158,12 +172,13 @@ exists, each body gets a sibling block listing the others.
 - If a part fails, the parts that were filed are reported, the missing ones
   are listed, siblings are not linked, and the command exits non-zero. A
   re-run reuses the parts that exist and completes the set.
-- A part "exists" only when an open issue with the same title carries this
-  tool's `<!-- issue-routing owner=<part repo> … kind=cross-repo -->` marker.
-  Any other same-titled issue or PR in that repository (closed in the last
-  30 days, or filed by someone else) is not reused or edited: that part fails
-  and is listed as missing, and the operator closes or retitles that issue or
-  picks another part title.
+- A part "exists" only when an open, fleet-authored issue with the same title
+  carries this tool's `<!-- issue-routing owner=<part repo> … kind=cross-repo -->`
+  marker. Any other same-titled issue or PR in that repository (closed in the
+  last 30 days, unmarked, marked for another owner or kind, or filed by
+  someone else) is not reused or edited: that part fails and is listed as
+  missing, and the operator closes or retitles that issue or picks another
+  part title.
 - With `--dry-run` it lists every planned part and makes no write call.
 
 The worker's argument parser keeps only the last value of a repeated flag, so

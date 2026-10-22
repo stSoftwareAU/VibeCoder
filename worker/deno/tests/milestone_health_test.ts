@@ -16,6 +16,7 @@ import {
 } from "../lib/milestone_health.ts";
 import { clearDefaultBranchMemoryCache } from "../lib/shell_helpers.ts";
 import { setCachedDefaultBranch } from "../lib/default_branch_cache.ts";
+import type { Result } from "../types.ts";
 
 // Issue #1805: milestone_health now reads default-branch through the
 // shared in-process + persistent cache. Reset the in-process cache
@@ -625,7 +626,7 @@ function driftGhFn(graphqlWorks: boolean): (a: string[]) => Promise<string> {
 
 async function driftFor(
   graphqlWorks: boolean,
-): Promise<{ aheadBy: number; behindBy: number }> {
+): Promise<{ name: string; aheadBy: number; behindBy: number }> {
   return await withFreshCaches(async (cachePath) => {
     const result = await getMilestoneHealth({
       defaultBranchCachePath: cachePath,
@@ -636,7 +637,11 @@ async function driftFor(
     if (!result.ok) throw new Error("unreachable");
     const branch = result.value.repos[0]!.milestones[0]!.branch;
     if (!branch) throw new Error("branch drift missing from report");
-    return { aheadBy: branch.aheadBy, behindBy: branch.behindBy };
+    return {
+      name: branch.name,
+      aheadBy: branch.aheadBy,
+      behindBy: branch.behindBy,
+    };
   });
 }
 
@@ -664,4 +669,213 @@ Deno.test("getMilestoneHealth - milestone branch ahead of default is not reporte
     DRIFT_BEHIND,
     "the default branch carries two commits the milestone branch lacks",
   );
+  assertEquals(
+    drift.name,
+    "milestone/oidc",
+    "the GraphQL compare must report the milestone branch it compared (Issue #3856)",
+  );
+});
+
+// ============================================================================
+// Malformed gh output is a fault, not a skipped repo (Issue #3856)
+// ============================================================================
+
+/** Raw marker placed in malformed responses; it must never reach the error. */
+const RAW_MARKER = "SECRET_RAW_MARKER";
+
+/** Run getMilestoneHealth for one repo against a mock gh function (Issue #3856). */
+function healthWithGh(
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<Result<MilestoneHealthReport>> {
+  return withFreshCaches((cachePath) =>
+    getMilestoneHealth({
+      defaultBranchCachePath: cachePath,
+      repos: ["org/repo"],
+      ghCommandFn,
+    })
+  );
+}
+
+/** Assert a failed result names each expected fragment and never leaks the raw marker. */
+function assertMalformedFailure(
+  result: Result<MilestoneHealthReport>,
+  expectedFragments: string[],
+): void {
+  assertEquals(result.ok, false);
+  if (result.ok) throw new Error("unreachable");
+  const message = result.error.message;
+  for (const fragment of expectedFragments) {
+    assertStringIncludes(message, fragment);
+  }
+  assertEquals(
+    message.includes(RAW_MARKER),
+    false,
+    "the raw gh response must not appear in the error message",
+  );
+}
+
+Deno.test("getMilestoneHealth - non-array milestone list fails naming the endpoint and root (Issue #3856)", async () => {
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `{"message":"${RAW_MARKER}"}`,
+    ".default_branch": "main",
+  }));
+  assertMalformedFailure(result, ["gh api repos/org/repo/milestones", "root"]);
+});
+
+Deno.test("getMilestoneHealth - milestone with null number fails naming the field (Issue #3856)", async () => {
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":null}]`,
+    ".default_branch": "main",
+  }));
+  assertMalformedFailure(result, [
+    "gh api repos/org/repo/milestones",
+    "milestones[0].number",
+  ]);
+});
+
+Deno.test("getMilestoneHealth - milestone list that is not JSON fails (Issue #3856)", async () => {
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `<html>${RAW_MARKER}</html>`,
+    ".default_branch": "main",
+  }));
+  assertMalformedFailure(result, [
+    "gh api repos/org/repo/milestones",
+    "root",
+    "response was not JSON",
+  ]);
+});
+
+Deno.test("getMilestoneHealth - GraphQL data without repository fails naming the field (Issue #3856)", async () => {
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,
+    "graphql": `{"data":{},"extra":"${RAW_MARKER}"}`,
+    ".default_branch": "main",
+  }));
+  assertMalformedFailure(result, [
+    "gh api graphql",
+    "data.repository",
+  ]);
+});
+
+Deno.test("getMilestoneHealth - GraphQL repository without ref fails naming the field (Issue #3856)", async () => {
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,
+    "graphql": `{"data":{"repository":{}},"extra":"${RAW_MARKER}"}`,
+    ".default_branch": "main",
+  }));
+  assertMalformedFailure(result, [
+    "gh api graphql",
+    "data.repository.ref",
+  ]);
+});
+
+Deno.test("getMilestoneHealth - GraphQL aheadBy of the wrong type fails naming the field (Issue #3856)", async () => {
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,
+    "graphql":
+      `{"data":{"repository":{"ref":{"compare":{"aheadBy":"${RAW_MARKER}","behindBy":2}}}}}`,
+    ".default_branch": "main",
+  }));
+  assertMalformedFailure(result, [
+    "gh api graphql",
+    "data.repository.ref.compare.aheadBy",
+  ]);
+});
+
+Deno.test("getMilestoneHealth - REST compare missing ahead_by fails naming the field (Issue #3856)", async () => {
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,
+    "graphql": `{"data":{"repository":{"ref":{"compare":null}}}}`,
+    "/branches/milestone/oidc": `{"name":"milestone/oidc"}`,
+    "compare/main...milestone/oidc": `{"behind_by":1,"SECRET_RAW_MARKER":1}`,
+    ".default_branch": "main",
+  }));
+  assertMalformedFailure(result, [
+    "gh api repos/org/repo/compare/main...milestone/oidc",
+    "ahead_by",
+  ]);
+});
+
+Deno.test("getMilestoneHealth - REST compare with string behind_by fails naming the field (Issue #3856)", async () => {
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,
+    "graphql": `{"data":{"repository":{"ref":{"compare":null}}}}`,
+    "/branches/milestone/oidc": `{"name":"milestone/oidc"}`,
+    "compare/main...milestone/oidc": `{"ahead_by":1,"behind_by":"x"}`,
+    ".default_branch": "main",
+  }));
+  assertMalformedFailure(result, [
+    "gh api repos/org/repo/compare/main...milestone/oidc",
+    "behind_by",
+  ]);
+});
+
+Deno.test("getMilestoneHealth - REST compare that is not JSON fails (Issue #3856)", async () => {
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,
+    "graphql": `{"data":{"repository":{"ref":{"compare":null}}}}`,
+    "/branches/milestone/oidc": `{"name":"milestone/oidc"}`,
+    "compare/main...milestone/oidc": `<html>${RAW_MARKER}</html>`,
+    ".default_branch": "main",
+  }));
+  assertMalformedFailure(result, [
+    "gh api repos/org/repo/compare/main...milestone/oidc",
+    "root",
+    "response was not JSON",
+  ]);
+});
+
+Deno.test("getMilestoneHealth - GraphQL errors payload is a failed branch compare (Issue #3856)", async () => {
+  // A GraphQL `errors` payload is a failed compare, not an absent branch:
+  // the caller discards it and falls back to the REST pair, so the REST
+  // ahead/behind values must be reported.
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,
+    "graphql": `{"errors":[{"message":"Could not resolve to a Repository"}]}`,
+    "/branches/milestone/oidc": `{"name":"milestone/oidc"}`,
+    "compare/main...milestone/oidc": `{"ahead_by":2,"behind_by":1}`,
+    ".default_branch": "main",
+  }));
+  assertEquals(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+  const branch = result.value.repos[0]!.milestones[0]!.branch;
+  assertEquals(branch?.name, "milestone/oidc");
+  assertEquals(branch?.aheadBy, 2);
+  assertEquals(branch?.behindBy, 1);
+});
+
+Deno.test("getMilestoneHealth - GraphQL compare with null compare payload falls back to REST (Issue #3856)", async () => {
+  // A ref with a null compare is an unavailable compare, not an absent branch:
+  // the arm reports a failure, the caller falls back to the REST pair, so the
+  // REST ahead/behind values must be reported.
+  const result = await healthWithGh(buildMockGhFn({
+    "repos/org/repo/milestones": `[{"title":"OIDC","number":1}]`,
+    "graphql": `{"data":{"repository":{"ref":{"compare":null}}}}`,
+    "/branches/milestone/oidc": `{"name":"milestone/oidc"}`,
+    "compare/main...milestone/oidc": `{"ahead_by":2,"behind_by":1}`,
+    ".default_branch": "main",
+  }));
+  assertEquals(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+  const branch = result.value.repos[0]!.milestones[0]!.branch;
+  assertEquals(branch?.name, "milestone/oidc");
+  assertEquals(branch?.aheadBy, 2);
+  assertEquals(branch?.behindBy, 1);
+});
+
+Deno.test("getMilestoneHealth - failed milestone list transport still gives an empty repo (Issue #3856)", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("repos/org/repo/milestones")) {
+      throw new Error("HTTP 500");
+    }
+    if (key.includes(".default_branch")) return "main";
+    return "[]";
+  };
+  const result = await healthWithGh(ghFn);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.repos.length, 1);
+    assertEquals(result.value.repos[0]!.milestones.length, 0);
+  }
 });

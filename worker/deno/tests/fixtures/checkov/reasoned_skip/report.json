@@ -1,0 +1,136 @@
+{
+    "check_type": "cloudformation",
+    "results": {
+        "passed_checks": [
+            {
+                "check_id": "CKV_AWS_66",
+                "bc_check_id": null,
+                "check_name": "Ensure that CloudWatch Log Group specifies retention days",
+                "check_result": {
+                    "result": "PASSED",
+                    "evaluated_keys": [
+                        "Properties/RetentionInDays"
+                    ]
+                },
+                "code_block": [
+                    [
+                        3,
+                        "  Logs:\n"
+                    ],
+                    [
+                        4,
+                        "    # checkov:skip=CKV_AWS_158:Log group holds no sensitive data\n"
+                    ],
+                    [
+                        5,
+                        "    Type: AWS::Logs::LogGroup\n"
+                    ],
+                    [
+                        6,
+                        "    Properties:\n"
+                    ],
+                    [
+                        7,
+                        "      RetentionInDays: 365\n"
+                    ]
+                ],
+                "file_path": "/template.yaml",
+                "file_abs_path": "./template.yaml",
+                "repo_file_path": "/template.yaml",
+                "file_line_range": [
+                    3,
+                    7
+                ],
+                "resource": "AWS::Logs::LogGroup.Logs",
+                "evaluations": {},
+                "check_class": "checkov.cloudformation.checks.resource.aws.CloudWatchLogGroupRetention",
+                "fixed_definition": null,
+                "entity_tags": null,
+                "caller_file_path": null,
+                "caller_file_line_range": null,
+                "resource_address": null,
+                "severity": null,
+                "bc_category": null,
+                "benchmarks": null,
+                "description": null,
+                "short_description": null,
+                "vulnerability_details": null,
+                "connected_node": null,
+                "guideline": null,
+                "details": [],
+                "check_len": null,
+                "definition_context_file_path": null
+            }
+        ],
+        "failed_checks": [],
+        "skipped_checks": [
+            {
+                "check_id": "CKV_AWS_158",
+                "bc_check_id": null,
+                "check_name": "Ensure that CloudWatch Log Group is encrypted by KMS",
+                "check_result": {
+                    "result": "SKIPPED",
+                    "suppress_comment": "Log group holds no sensitive data"
+                },
+                "code_block": [
+                    [
+                        3,
+                        "  Logs:\n"
+                    ],
+                    [
+                        4,
+                        "    # checkov:skip=CKV_AWS_158:Log group holds no sensitive data\n"
+                    ],
+                    [
+                        5,
+                        "    Type: AWS::Logs::LogGroup\n"
+                    ],
+                    [
+                        6,
+                        "    Properties:\n"
+                    ],
+                    [
+                        7,
+                        "      RetentionInDays: 365\n"
+                    ]
+                ],
+                "file_path": "/template.yaml",
+                "file_abs_path": "./template.yaml",
+                "repo_file_path": "/template.yaml",
+                "file_line_range": [
+                    3,
+                    7
+                ],
+                "resource": "AWS::Logs::LogGroup.Logs",
+                "evaluations": {},
+                "check_class": "checkov.cloudformation.checks.resource.aws.CloudWatchLogGroupKMSKey",
+                "fixed_definition": null,
+                "entity_tags": null,
+                "caller_file_path": null,
+                "caller_file_line_range": null,
+                "resource_address": null,
+                "severity": null,
+                "bc_category": null,
+                "benchmarks": null,
+                "description": null,
+                "short_description": null,
+                "vulnerability_details": null,
+                "connected_node": null,
+                "guideline": null,
+                "details": [],
+                "check_len": null,
+                "definition_context_file_path": null
+            }
+        ],
+        "parsing_errors": []
+    },
+    "summary": {
+        "passed": 1,
+        "failed": 0,
+        "skipped": 1,
+        "parsing_errors": 0,
+        "resource_count": 1,
+        "checkov_version": "3.3.29"
+    },
+    "url": "Add an api key '--bc-api-key <api-key>' to see more detailed insights via https://bridgecrew.cloud"
+}

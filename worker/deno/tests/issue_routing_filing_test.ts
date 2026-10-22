@@ -25,8 +25,10 @@ import {
 import { makeRecordingLogger } from "./support/fake_claim_hub.ts";
 import {
   addIssue,
+  type FakeIssue,
   type FakeStore,
   fakeStore,
+  FLEET_LOGIN,
   isWriteCall,
   routingFakeGh,
 } from "./support/routing_fake_gh.ts";
@@ -39,6 +41,13 @@ const CTX: IssueRoutingContext = {
   productRepos: [GRQ, AUTOTRADER],
 };
 const NOW = () => new Date("2026-10-15T00:00:00Z");
+
+/** The body an issue this tool filed for WORKER_DRAFT carries: the owned marker. */
+const OWNED_BODY =
+  `${ISSUE_ROUTING_MARKER_PREFIX}owner=${VIBE} subject=${VIBE} kind=implementation -->`;
+
+/** The owned-artefact lookup, `gh issue list`: after a dedup hit, and the recheck. */
+const isLookup = (args: string[]) => args[0] === "issue" && args[1] === "list";
 
 /** A worker change: routes to VibeCoder whatever the target. */
 const WORKER_DRAFT = {
@@ -72,8 +81,29 @@ function opts(
     ghCommandFn,
     now: NOW,
     logger: makeRecordingLogger().logger,
+    // The fleet is named explicitly, so the tests never read configured identity.
+    authors: { fleetAuthors: [FLEET_LOGIN] },
     ...extra,
   };
+}
+
+/**
+ * File WORKER_DRAFT over one same-titled issue that starts owned, open and
+ * fleet-authored, after `shape` has changed it.
+ */
+async function fileOverExisting(
+  shape?: (issue: FakeIssue) => void,
+  extra: Partial<FileRoutedIssueOptions> = {},
+) {
+  const store = emptyStore();
+  const existing = addIssue(store, VIBE, WORKER_DRAFT.title, OWNED_BODY);
+  shape?.(existing);
+  const gh = routingFakeGh(store);
+  const result = await fileRoutedIssue(
+    WORKER_DRAFT,
+    opts(gh.ghCommandFn, extra),
+  );
+  return { result, gh };
 }
 
 Deno.test("fileRoutedIssue - a worker draft is created in VibeCoder with the audit line, marker and labels", async () => {
@@ -128,9 +158,9 @@ Deno.test("fileRoutedIssue - dry-run makes zero write calls and reports what it 
   assert(gh.calls.some((c) => c[0] === "repo" && c[1] === "view"));
 });
 
-Deno.test("fileRoutedIssue - an existing open match is reused, not refiled; dry-run reports would-reuse", async () => {
+Deno.test("fileRoutedIssue - an owned, open, fleet-authored match is reused, not refiled; dry-run reports would-reuse", async () => {
   const store = emptyStore();
-  addIssue(store, VIBE, "lane worktree heal for a dangling HEAD!");
+  addIssue(store, VIBE, "lane worktree heal for a dangling HEAD!", OWNED_BODY);
   const gh = routingFakeGh(store);
 
   const dry = await fileRoutedIssue(
@@ -145,17 +175,121 @@ Deno.test("fileRoutedIssue - an existing open match is reused, not refiled; dry-
   assertEquals(live.number, 1);
   assertEquals(gh.store.issues.length, 1);
   assertEquals(gh.calls.filter(isWriteCall), []);
+  // The owned lookup is narrowed to the draft's title, not every open issue.
+  const lookup = gh.calls.find(isLookup) ?? [];
+  assertEquals(
+    lookup[lookup.indexOf("--search") + 1],
+    `"${WORKER_DRAFT.title}" in:title`,
+  );
+});
+
+const NOT_OWNED_AND_OPEN: Array<[string, (issue: FakeIssue) => void]> = [
+  ["closed within the window", (issue) => {
+    issue.closedAt = "2026-10-01T00:00:00Z";
+  }],
+  ["by another author", (issue) => {
+    issue.author = "someone-else";
+  }],
+  ["with no owned marker", (issue) => {
+    issue.body = "filed by hand";
+  }],
+  ["a pull request", (issue) => {
+    issue.isPullRequest = true;
+  }],
+];
+
+for (const [name, shape] of NOT_OWNED_AND_OPEN) {
+  for (const dryRun of [false, true]) {
+    Deno.test(`fileRoutedIssue - a same-titled match ${name} suppresses the filing, is not reused and is not written to (dry-run ${dryRun})`, async () => {
+      const control = await fileOverExisting(undefined, { dryRun });
+      assertEquals(control.result.action, dryRun ? "would-reuse" : "reused");
+
+      const { result, gh } = await fileOverExisting(shape, { dryRun });
+      assertEquals(result.action, "suppressed");
+      assertEquals(result.number, 1);
+      assertEquals(gh.store.issues.length, 1, "no second issue was filed");
+      assertEquals(gh.calls.filter(isWriteCall), []);
+    });
+  }
+}
+
+Deno.test("fileRoutedIssue - a suppressed filing logs the match it did not reuse, and the author check logs the foreign row", async () => {
+  const { logger, records } = makeRecordingLogger();
+  const { result } = await fileOverExisting((issue) => {
+    issue.author = "someone-else";
+  }, { logger });
+  assertEquals(result.action, "suppressed");
+  const messages = records.map(([m]) => m);
+  assert(
+    messages.some((m) => m.includes("authored outside the fleet")),
+    `the owned lookup logs the foreign row: ${JSON.stringify(messages)}`,
+  );
+  const suppression = records.find(([m]) =>
+    m.includes("Issue routing filed nothing") && m.includes("not reused")
+  );
+  assert(suppression, `the suppression is logged: ${JSON.stringify(messages)}`);
+  assertEquals(suppression[1], { repo: VIBE, duplicate: 1 });
+});
+
+Deno.test("fileRoutedIssue - the recheck closes the new issue only for an owned, open, lower-numbered match", async () => {
+  const cases: Array<{
+    name: string;
+    shape: (issue: FakeIssue) => void;
+    closes: boolean;
+  }> = [
+    { name: "owned, open (control)", shape: () => undefined, closes: true },
+    {
+      name: "closed",
+      shape: (issue) => {
+        issue.closedAt = "2026-10-01T00:00:00Z";
+      },
+      closes: false,
+    },
+    {
+      name: "foreign author",
+      shape: (issue) => {
+        issue.author = "someone-else";
+      },
+      closes: false,
+    },
+  ];
+  for (const { name, shape, closes } of cases) {
+    const store = emptyStore();
+    let raced = false;
+    const gh = routingFakeGh(store, {
+      // A racing filer's issue is numbered below ours, so it is the older match.
+      beforeCreate: (s) => {
+        if (raced) return;
+        raced = true;
+        shape(addIssue(s, VIBE, WORKER_DRAFT.title, OWNED_BODY));
+      },
+    });
+    const result = await fileRoutedIssue(WORKER_DRAFT, opts(gh.ghCommandFn));
+    const closeCalls = gh.calls.filter((c) => c[1] === "close");
+    if (closes) {
+      assertEquals(result.action, "reused", name);
+      assertEquals(result.number, 1, name);
+      assertEquals(result.closed_duplicate, 2, name);
+      assertEquals(closeCalls.length, 1, name);
+    } else {
+      assertEquals(result.action, "created", name);
+      assertEquals(result.number, 2, name);
+      assertEquals(result.closed_duplicate, undefined, name);
+      assertEquals(closeCalls, [], name);
+      assertEquals(gh.store.issues[1]?.closedAt, null, name);
+    }
+  }
 });
 
 Deno.test("fileRoutedIssue - two concurrent filers converge: the higher number is closed and links to the lower", async () => {
   const store = emptyStore();
   let raced = false;
   const gh = routingFakeGh(store, {
-    // Another filer creates the same issue between our search and our create.
+    // Another owned filer creates the same issue between our search and our create.
     beforeCreate: (s) => {
       if (raced) return;
       raced = true;
-      addIssue(s, VIBE, WORKER_DRAFT.title, "filed by the other host");
+      addIssue(s, VIBE, WORKER_DRAFT.title, OWNED_BODY);
     },
   });
   const result = await fileRoutedIssue(WORKER_DRAFT, opts(gh.ghCommandFn));
@@ -209,7 +343,7 @@ Deno.test("fileRoutedIssue - a failed step carries the routing decision, or null
 });
 
 Deno.test("fileRoutedIssue - a failure at the search, create, recheck and close-duplicate steps carries the routing decision", async () => {
-  let searches = 0;
+  let lookups = 0;
   const cases: Array<{
     step: string;
     race: boolean;
@@ -230,11 +364,11 @@ Deno.test("fileRoutedIssue - a failure at the search, create, recheck and close-
     {
       step: "recheck",
       race: false,
-      // The third search is the post-create recheck (see the retry test).
+      // With no dedup hit, the first owned lookup is the post-create recheck.
       failWhen: (args) => {
-        if (args[0] !== "search") return undefined;
-        searches++;
-        return searches === 3 ? new Error("HTTP 502: Bad Gateway") : undefined;
+        if (!isLookup(args)) return undefined;
+        lookups++;
+        return lookups === 1 ? new Error("HTTP 502: Bad Gateway") : undefined;
       },
     },
     {
@@ -245,14 +379,15 @@ Deno.test("fileRoutedIssue - a failure at the search, create, recheck and close-
     },
   ];
   for (const { step, race, failWhen } of cases) {
-    searches = 0;
+    lookups = 0;
     let raced = !race;
     const gh = routingFakeGh(emptyStore(), {
       failWhen,
       beforeCreate: (s) => {
         if (raced) return;
         raced = true;
-        addIssue(s, VIBE, WORKER_DRAFT.title, "filed by the other host");
+        // An owned raced issue is the older match, so the recheck closes ours.
+        addIssue(s, VIBE, WORKER_DRAFT.title, OWNED_BODY);
       },
     });
     const error = await assertRejects(
@@ -267,13 +402,13 @@ Deno.test("fileRoutedIssue - a failure at the search, create, recheck and close-
 
 Deno.test("fileRoutedIssue - a failure after create is not success, and a retry files no second issue", async () => {
   const store = emptyStore();
-  let searches = 0;
+  let lookups = 0;
   const gh = routingFakeGh(store, {
-    // Fail the post-create recheck on the first run only.
+    // Fail the post-create recheck (the first owned lookup) on the first run only.
     failWhen: (args) => {
-      if (args[0] !== "search") return undefined;
-      searches++;
-      return searches === 3 ? new Error("HTTP 502: Bad Gateway") : undefined;
+      if (!isLookup(args)) return undefined;
+      lookups++;
+      return lookups === 1 ? new Error("HTTP 502: Bad Gateway") : undefined;
     },
   });
 

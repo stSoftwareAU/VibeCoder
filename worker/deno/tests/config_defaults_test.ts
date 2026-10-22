@@ -203,18 +203,6 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_HEALTH stays haiku (effort-fir
   assertEquals(DEFAULT_CLAUDE_MODEL_HEALTH, "haiku");
 });
 
-Deno.test("config_defaults - loadConfig uses shared claude model default", async () => {
-  const testConfig: ConfigFile = {
-    allowed_authors: ["testuser"],
-    repos: ["org/repo1"],
-  };
-
-  await withTempConfig(testConfig, async (configPath) => {
-    const config = await loadConfig(configPath);
-    assertEquals(config.claudeModel, DEFAULT_CLAUDE_MODEL);
-  });
-});
-
 // =============================================================================
 // Operational Defaults (Issue #277)
 // =============================================================================

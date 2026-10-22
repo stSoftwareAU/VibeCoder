@@ -98,7 +98,7 @@ calls it. Its row says so, and it is deliberately absent from
 | `pyyaml` 6.0.3 (wheel in the system interpreter's `purelib`) | *module* `yaml` — no command | NEAT-AI-core's workflow-assertion BATS suites, which parse workflow YAML with `python3 -c "import yaml"` |
 | `codegraph` 1.6.0 (bundle in `/opt/codegraph`, symlinked onto the PATH) | `codegraph` | The CodeGraph repo-context trial (Issue #2145) — the worker's own runs, not a monitored repository's gate |
 | `rtk` 0.49.0 (bare binary in `/usr/local/bin`)      | `rtk`                                     | The RTK trial (Issue #2328) — the worker's own runs, not a monitored repository's gate           |
-| `floci` 2.2.0 (native binary from the digest-pinned `floci/floci` image) | `floci`                | This repo's worker **runtime**, not a gate: the LocalStack drop-in on port 4566 for the worker's own runs (Issue #3367) — not started by the entrypoint. The same tag and digest also run as the service of the `.github/workflows/floci.yml` CI job (Issue #3369), which deploys `infra/cloudformation/` through `infra/cloudformation/test-floci.sh`; `worker/deno/tests/issue_3369_floci_workflow_test.ts` keeps the two tags and digests in agreement |
+| `floci` 2.2.0 (native binary from the digest-pinned `floci/floci` image) | `floci`                | This repo's worker **runtime** and the pre-push gate's Floci CloudFormation check (Issue #3727): the LocalStack drop-in on port 4566 for the worker's own runs (Issue #3367) — not started by the entrypoint; that check runs `infra/cloudformation/test-floci.sh`, which starts it on demand. The same tag and digest also run as the service of the `.github/workflows/floci.yml` CI job (Issue #3369), which deploys `infra/cloudformation/` through `infra/cloudformation/test-floci.sh`; `worker/deno/tests/issue_3369_floci_workflow_test.ts` keeps the two tags and digests in agreement |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
 | `cspell` 10.3.6 (npm tarball, checksum-verified)    | `cspell`                                  | The pre-push gate's spelling stage for a repository that tracks a cspell config and whose CI runs cspell, e.g. GRQ's `docs/cspell.json` (Issue #3689) |
 | `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
@@ -227,8 +227,10 @@ Nine consequences worth knowing:
   response, then stops the process and removes the copied binary — so a
   broken image fails on the pull request rather than the worker's first run.
   Like `codegraph`, it exists for the worker's own runs, not a monitored
-  repository's gate, and `container/entrypoint.sh` does not start it; whatever
-  needs the LocalStack drop-in on port 4566 starts it itself.
+  repository's gate, except that the pre-push gate's Floci check (Issue #3727)
+  runs `test-floci.sh` in a repository that tracks it; `container/entrypoint.sh`
+  does not start it, and whatever needs the LocalStack drop-in on port 4566
+  (the script included) starts it itself.
 
 Node.js is the runtime `markdownlint-cli2`, Graft, Playwright and the Gemini
 CLI provider need; the worker itself is Deno. Graft is the one consumer that

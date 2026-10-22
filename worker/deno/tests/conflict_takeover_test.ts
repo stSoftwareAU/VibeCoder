@@ -76,6 +76,7 @@ interface FakeGhOptions {
     number: number;
     url: string;
     headRefName: string;
+    state?: string;
     isCrossRepository?: boolean;
     author?: { login: string };
   } | null;
@@ -160,7 +161,10 @@ function makeFakeGh(options: FakeGhOptions = {}): FakeGh {
       if (options.openFixPr === undefined || options.openFixPr === null) {
         return Promise.resolve("[]");
       }
-      return Promise.resolve(JSON.stringify([options.openFixPr]));
+      // Real gh rows always carry state; the owned check fails loud without it.
+      return Promise.resolve(
+        JSON.stringify([{ state: "OPEN", ...options.openFixPr }]),
+      );
     }
 
     // pr create.

@@ -1078,7 +1078,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
       Promise.resolve({ ok: true, value: 0 })
     ),
     gateUnpushedCommits: mockFn<GitDeps["gateUnpushedCommits"]>(() =>
-      Promise.resolve({ ok: true, value: undefined })
+      Promise.resolve({ ok: true, value: { kind: "passed", checksRun: [] } })
     ),
     formatBranchChanges: mockFn<GitDeps["formatBranchChanges"]>(() =>
       Promise.resolve({ runs: [], failures: [], committed: false })

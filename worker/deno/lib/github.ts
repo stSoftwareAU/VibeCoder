@@ -41,6 +41,7 @@ import { formatImprovementAsIssueBody } from "../commands/suggest_improvements.t
 import { defaultLogger } from "./logger.ts";
 import type { IssueRoutingContext } from "./issue_routing_classifier.ts";
 import type { RoutedIssueAction } from "./issue_routing_filing.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 
 /**
  * Parse gh CLI issue JSON into a GitHubIssue object.
@@ -600,7 +601,7 @@ export function filterReservedLabelsWithWarning(
   return kept;
 }
 
-/** One improvement the router filed, reused, or would file (Issue #3745). */
+/** One improvement the router filed, reused, suppressed, or would file (Issue #3745). */
 export interface RoutedImprovement {
   title: string;
   action: Exclude<RoutedIssueAction, "ambiguous">;
@@ -633,6 +634,8 @@ export interface CreateIssuesOptions {
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Clock for the duplicate-search window; defaults to the wall clock. */
   now?: () => Date;
+  /** Fleet author set for the owned-artefact checks; omitted means configured identity. */
+  dedupAuthors?: AlertDedupAuthorOptions;
   /** Warns on stripped reserved labels (Issue #2825). */
   logger?: Logger;
 }
@@ -702,6 +705,7 @@ export async function createGitHubIssuesWithPartialFailures(
           dryRun: options.dryRun,
           ghCommandFn: options.ghCommandFn,
           now: options.now,
+          ...(options.dedupAuthors ? { authors: options.dedupAuthors } : {}),
           logger,
         },
       );

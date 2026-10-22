@@ -39,7 +39,6 @@ to all users unless explicitly overridden.
   "pr_reviewers": ["reviewer1", "reviewer2", "reviewer3"],
   "repos": ["your-org/repo1", "your-org/repo2"],
   "authorized_commenters": ["your-github-username", "github-copilot[bot]"],
-  "claude_model": "opus",
   "claude_timeout": 7200,
   "sleep_interval": 60
 }
@@ -480,7 +479,7 @@ explicitly overridden.
 | `agent_provider_fallback` | `[]` | Opt-in ordered alternatives when the preferred provider has a classified outage (subscription exhausted, transient rate limit, or model unavailable). With Claude preferred, the health gate first rotates to another Claude credential in the pool that still has budget, and switches to an alternative only once **every** credential is exhausted on its five-hour window or its weekly limit, switching back when one reopens; the weekly pace projection never moves work to an alternative (Issue #2637). Omitted or `[]` pins `agent_provider` — no substitution. Every id must already be in `agent_providers`; an unconfigured or uninstalled provider fails loudly at startup. Ordinary task failures and authentication/configuration errors never trigger a switch. This list is **not** restricted to fixed-price subscriptions: an alternative that bills per token is honoured as written, and the health gate logs `billing=<mode>` plus a loud line naming the metered credential variable before switching (Issue #1923). Leave it empty to keep the never-metered guarantee end to end. **Not enabled on the production fleet by default** (Issue #1700). See [Provider parity](PROVIDER-PARITY.md). |
 | `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it — absolute, `~`-anchored, newline-bearing and `..`-escaping values are all refused — so no selection can point PATH or an environment variable at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked example](CONTAINER.md#deployer-supplied-build-time-tools) and [Private Extensions](PRIVATE-EXTENSIONS.md). |
 | `container_extension` | _(none)_ | A private image layer this deployment builds on top of the standard one — for services and toolchains a declarative archive install cannot express. An object of `path` (absolute host directory holding the extension, never the home directory or an ancestor of it), optional `containerfile` (default `Containerfile`) and optional `start`, the last two **relative to `path`**. The operator syncs their own private repository into `path`; the Vibe Coder clones nothing. The Containerfile must derive `FROM ${VIBE_BASE_IMAGE}`, the extension is copied to the fixed in-image prefix `/opt/vibe-extension/`, and the image tag is a content hash of the whole directory, so changing any file rebuilds. A declared `start` runs before the worker and aborts the sandbox start with exit 76 if it fails. A malformed block fails loudly at config load, naming the field. See [Container Extension](CONTAINER-EXTENSION.md). |
-| `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
+| `claude_model`               | unset                     | Host-wide Claude model for every phase. Unset, each phase uses its own default (the `issue` manager runs on `sonnet`). Setting it overrides the per-phase defaults, so leave it unset unless every phase should run on one model (Issue #4117). |
 | `best_planning_model` | `""` (derive from routing) | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`. |
 | `phase_model_tiers` | `{}` | Shared phase-to-tier overrides: `best`, `standard` or `fast`, independent of provider. See [Shared model policy](MODEL-AND-CACHING.md#model-selection). |
 | `provider_model_tiers` | `{}` | Each provider's concrete model ids for `best`, `standard` and `fast`. Explicit provider phase overrides take precedence. |
@@ -1584,7 +1583,7 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 | `revision` | `opus` | Rewriting issues from review feedback — planning-shaped, effort `high` |
 | `question` | `opus` | Answering codebase questions — planning-shaped, effort `high` |
 | `clarification` | `opus` | Assessing whether an issue has sufficient detail — planning-shaped, effort `high` |
-| `implementation` | `opus` (base) | Core work — uses the base `claude_model` setting (`issue` phase, effort `high`) |
+| `implementation` | `sonnet` | Core work — the `issue` phase manager (effort `high`); a host-wide `claude_model` overrides it |
 | `ci_fix`         | `sonnet`      | Fixing CI failures from structured error messages (effort `high`, Issue #2812) |
 | `quality_fix`    | `sonnet`      | Fixing quality check failures (lint, test errors) (effort `high`, Issue #2812) |
 | `pr_feedback`    | `sonnet`      | Applying targeted fixes from reviewer comments (effort `high`, Issue #2812) |
@@ -4794,8 +4793,8 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell and sweep ledger `sweptAt`
-ancestry) still run and can fail the run. Unlike Step 1b, the completion gate
+fmt/lint, cargo fmt, markdownlint, cspell, sweep ledger `sweptAt` ancestry and
+the Floci CloudFormation deploy test) still run and can fail the run. Unlike Step 1b, the completion gate
 checks every non-merge commit the branch has ahead of the PR base
 (`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
 ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
@@ -4844,7 +4843,9 @@ The hook runs two stages:
    completion phase widens the range to every non-merge commit ahead of the PR
    base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
-   config would check, see below):
+   config would check, see below). The one exception is the Floci deploy test
+   below: a changed file only triggers it, and it is passed no files, so it
+   deploys every template in `infra/cloudformation/`, changed or not:
    - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
      cts, json, jsonc, md, markdown) and `deno lint --permit-no-files` (the
      ts/js family), per outermost `deno.json` / `deno.jsonc` directory. Only
@@ -4886,7 +4887,22 @@ The hook runs two stages:
      `git symbolic-ref --short refs/remotes/origin/HEAD`), the same check CI's
      "Sweep ledger sweptAt ancestry" step makes, so a branch commit recorded as
      `sweptAt` is caught before the push. A shallow clone is deepened first.
-     When no ledger file changed, this check makes no git calls.
+     When no ledger file changed, this check makes no git calls;
+   - **Floci CloudFormation deploy test** (Issue #3727), only when the push
+     adds or modifies a file whose path starts with `infra/cloudformation/` and
+     the repo tracks `infra/cloudformation/test-floci.sh`: it runs
+     `bash infra/cloudformation/test-floci.sh` from the repo root, after the
+     other changed-file checks. That is the same script
+     `.github/workflows/floci.yml` runs in CI. Outside CI, a template that
+     creates an `AWS::EC2::Instance` when there is no Docker socket is printed
+     `SKIPPED (needs Docker): <template>` and left to CI. When every template
+     is skipped the script exits 0 there, before it checks for the `aws` CLI
+     or starts anything. Otherwise it exits 1 when the `aws` CLI is missing,
+     and only then starts the baked `floci` on `127.0.0.1:4566` if nothing
+     answers there. The worker container has no Docker socket and no `aws`
+     CLI, and today's only template creates an `AWS::EC2::Instance`, so inside
+     the container this check skips it, exits 0 and never starts `floci`; only
+     a host with Docker and the `aws` CLI exercises it.
 2. **Configured `pre-flight` commands.** The commands are resolved by the
    run's repo from `repo_config`, so every agent run that names its repo gets
    that repo's `pre-flight` commands in the hook; a run that names no repo gets
@@ -4898,8 +4914,10 @@ start, or times out refuses the push; markdownlint configured but
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a changed sweep ledger file whose default branch
 cannot be resolved, whose history cannot be deepened, or whose slice `sweptAt`
-is not on the default branch refuses the push; a missing hook module, spec or
-`deno` binary refuses the push. Refusals print lines starting
+is not on the default branch refuses the push; a Floci deploy test that exits
+non-zero, including when Floci cannot be started or the `aws` CLI is missing for
+a deployable template, refuses the push; a missing hook module, spec or `deno`
+binary refuses the push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
 pre-flight (the hook reuses `runPreFlightGate`).
 
