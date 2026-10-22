@@ -249,6 +249,101 @@ Deno.test("execute_phase - a non-external allocation plans the claude provider (
   }
 });
 
+Deno.test("execute_phase - with claude not enabled the run starts on codex without sub-agents (Issue #4109)", async () => {
+  setConfiguredAgentProviderId("codex");
+  setConfiguredEnabledAgentProviderIds(["codex"]);
+  try {
+    const logs: string[] = [];
+    const runOptions: Record<string, unknown>[] = [];
+    const { ctx, state } = executePhaseFixture(logs);
+    const deps = createMockDeps({
+      claude: {
+        env: envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: "codex" }),
+        runClaudeWithRetry: ((options: Record<string, unknown>) => {
+          runOptions.push(options);
+          return Promise.resolve({
+            ok: true,
+            value: { output: "done", exitCode: 0, timedOut: false },
+          });
+        }) as never,
+      },
+      pr: {
+        findExistingPrForIssue: (() =>
+          Promise.resolve({ ok: true, value: null })) as never,
+      },
+      logger: {
+        info: (message: string) => {
+          logs.push(message);
+        },
+        warn: (message: string) => {
+          logs.push(message);
+        },
+      },
+    });
+
+    await workOnIssueExecuteClaude(ctx, state, deps);
+
+    assertEquals(runOptions.length >= 1, true, "the agent must be invoked");
+    assertEquals(
+      runOptions[0]?.agents,
+      undefined,
+      "a stripped run must carry no --agents definitions",
+    );
+    assert(
+      logs.some((line) => line.includes("starting the run without sub-agents")),
+      `expected the strip warning, saw: ${JSON.stringify(logs)}`,
+    );
+  } finally {
+    resetProviderConfig();
+  }
+});
+
+Deno.test("execute_phase - an external-orchestration run is not planned, so nothing is rerouted (Issue #4109)", async () => {
+  configureCodexWithClaude();
+  try {
+    const logs: string[] = [];
+    const { ctx, state } = executePhaseFixture(logs);
+    ctx.config.externalOrchestration = true;
+    const deps = createMockDeps({
+      claude: {
+        env: hostEnv("codex"),
+        runOrchestratedIssueRun: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "done", exitCode: 0, timedOut: false },
+          })) as never,
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "done", exitCode: 0, timedOut: false },
+          })) as never,
+      },
+      pr: {
+        findExistingPrForIssue: (() =>
+          Promise.resolve({ ok: true, value: null })) as never,
+      },
+      logger: {
+        info: (message: string) => {
+          logs.push(message);
+        },
+        warn: (message: string) => {
+          logs.push(message);
+        },
+      },
+    });
+
+    await workOnIssueExecuteClaude(ctx, state, deps);
+
+    assertEquals(
+      logs.some((line) => line.includes("(Issue #4109)")),
+      false,
+      "external orchestration builds no --agents, so the planner stays out",
+    );
+  } finally {
+    resetProviderConfig();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Caller (b): execute_claude_phase.ts runExecuteClaudePhase
 // ---------------------------------------------------------------------------

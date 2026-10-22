@@ -243,3 +243,31 @@ Deno.test("issue run provider - Claude installed but not enabled strips the run;
   assertEquals(plan.executorSplit, false);
   assertEquals(lines.length, 1, "one strip warning");
 });
+
+Deno.test("issue run provider - planning probes the argv without printing the provider's own warning (Issue #4109)", () => {
+  const original = console.warn;
+  const printed: string[] = [];
+  const capture = (...args: unknown[]) => {
+    printed.push(args.join(" "));
+  };
+  console.warn = capture;
+  try {
+    const plan = planIssueRunProvider({
+      provider: resolveAgentProvider("deepseek"),
+      executorSplit: true,
+      reviewerAgents: false,
+      subAgentTier: "haiku",
+      selection: selectionFor("deepseek", ["deepseek", "claude"]),
+      logger: createLogger({ write: () => {} }),
+    });
+    assertEquals(plan.outcome, "rerouted-to-claude");
+    assertEquals(printed, [], "the probe's argv build must stay quiet");
+    assertEquals(
+      console.warn,
+      capture,
+      "the probe must hand console.warn back as it found it",
+    );
+  } finally {
+    console.warn = original;
+  }
+});
