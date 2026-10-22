@@ -57,8 +57,8 @@ function buildRateLimitStubBody(exitCode: number): string {
     `  fi`,
     `  prev="$arg"`,
     `done`,
-    // stream-json result line; the text matches detectRateLimit().
-    `printf '%s\\n' '{"type":"result","result":"API rate limit exceeded - too many requests"}'`,
+    // The CLI's own refusal record (`is_error`) — Issue #4114.
+    `printf '%s\\n' '{"type":"result","is_error":true,"result":"API rate limit exceeded - too many requests"}'`,
     `exit ${exitCode}`,
   ].join("\n");
 }
