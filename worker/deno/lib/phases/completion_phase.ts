@@ -39,6 +39,7 @@ import {
   prSummaryDigest,
 } from "../pr_body_sync.ts";
 import { adoptAgentRaisedPrBody } from "../agent_pr_adoption.ts";
+import { disarmAutoMerge } from "../auto_merge_disarm.ts";
 import { buildSyncFollowUpFiling } from "../pr_body_sync_follow_up.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
@@ -1146,7 +1147,10 @@ async function postDocsSweepHitsComment(
  * still standing on the branch's own lines, or a pre-PR verifier block survives
  * the recovery turn. Auto-merge
  * is then NOT armed and the PR is labelled `standing-violation` for the next
- * run to fix. The flag has no default: every caller states it.
+ * run to fix. Issue #4075: auto-merge is also disarmed (`gh pr merge
+ * --disable-auto`) when an earlier pass had already armed it, because the
+ * label alone leaves it live until the next sweep. The flag has no default:
+ * every caller states it.
  *
  * Exported for unit testing — the primary entry point remains
  * `workOnIssueCompletion`.
@@ -1251,6 +1255,15 @@ export async function recoverAndFinaliseExistingPr(
           { repo, prNumber, error: held.error.message },
         );
       }
+      // Issue #4075: an earlier pass may have armed auto-merge already; the
+      // label alone leaves it live until the next sweep. Disarm now, as
+      // holdUnverifiedReview does. Never throws; logs a warning on failure.
+      await disarmAutoMerge(
+        repo,
+        prNumber,
+        deps.github.runGhCommand,
+        (m) => logger.warn(m),
+      );
       if (finalise.verifierHoldComment) {
         try {
           await deps.github.createClient(logger).postComment(
