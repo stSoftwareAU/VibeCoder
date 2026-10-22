@@ -1,0 +1,273 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/owned_reuse_manifest.ts",
+        "line": 70,
+        "endLine": 79,
+        "outcome": "a module that produces a reused outcome without an owned lookup is reported",
+        "test": "worker/deno/tests/owned_reuse_cap_test.ts",
+        "testName": "owned reuse - no new module reports a reuse without an owned lookup",
+        "flipWentRed": "2b: temporary module with a bare reused literal, 1 failing"
+      },
+      {
+        "path": "worker/deno/lib/owned_open_artefact.ts",
+        "line": 126,
+        "endLine": 130,
+        "outcome": "a listing that reaches its limit fails closed",
+        "test": "worker/deno/tests/owned_open_artefact_test.ts",
+        "testName": "owned open artefact - a listing that reaches the limit throws",
+        "flipWentRed": "X7: limit check replaced by false, 2 failing"
+      },
+      {
+        "path": "worker/deno/lib/owned_open_artefact.ts",
+        "line": 150,
+        "outcome": "an issue without the marker is not owned",
+        "test": "worker/deno/tests/owned_open_artefact_test.ts",
+        "testName": "owned open artefact - an issue missing the marker is not reused",
+        "flipWentRed": "2c2: marker check removed, 1 failing"
+      },
+      {
+        "path": "worker/deno/lib/owned_open_artefact.ts",
+        "line": 157,
+        "outcome": "a PR whose head does not start with the marker prefix is not owned",
+        "test": "worker/deno/tests/milestone_fix_pr_owned_test.ts",
+        "testName": "findOpenMilestoneFixPr - a discriminator narrows the match (Issue #3065)",
+        "flipWentRed": "X1: prefix check removed, 1 failing"
+      },
+      {
+        "path": "worker/deno/lib/owned_open_artefact.ts",
+        "line": 157,
+        "outcome": "a PR from another repository (cross-repository head) is not owned",
+        "test": "worker/deno/tests/owned_open_artefact_test.ts",
+        "testName": "owned open artefact - a prefix match from another repository is not reused",
+        "flipWentRed": "X6: same-repository check replaced by true, 2 failing"
+      },
+      {
+        "path": "worker/deno/lib/owned_open_artefact.ts",
+        "line": 203,
+        "endLine": 207,
+        "outcome": "a failed gh listing throws rather than reading as nothing to reuse",
+        "test": "worker/deno/tests/owned_open_artefact_test.ts",
+        "testName": "owned open artefact - a gh failure throws with repo, kind and stderr",
+        "flipWentRed": "2c4: catch returns null, 1 failing"
+      },
+      {
+        "path": "worker/deno/lib/owned_open_artefact.ts",
+        "line": 217,
+        "outcome": "a closed or non-OPEN listed row is not reused",
+        "test": "worker/deno/tests/owned_open_artefact_test.ts",
+        "testName": "owned open artefact - a closed owned issue is not reused",
+        "flipWentRed": "2c1: state check removed, 1 failing"
+      },
+      {
+        "path": "worker/deno/lib/owned_open_artefact.ts",
+        "line": 238,
+        "endLine": 244,
+        "outcome": "a listed match by a foreign author is not reused, and an unresolved fleet set reuses nothing",
+        "test": "worker/deno/tests/owned_open_artefact_test.ts",
+        "testName": "owned open artefact - a foreign-authored owned issue is not reused",
+        "flipWentRed": "2c3: author gate replaced by the unfiltered list, 3 failing"
+      },
+      {
+        "path": "worker/deno/lib/owned_open_artefact.ts",
+        "line": 306,
+        "endLine": 308,
+        "outcome": "verify refuses a closed issue and names the state",
+        "test": "worker/deno/tests/owned_open_artefact_test.ts",
+        "testName": "owned open artefact - verify refuses a closed issue and names the state",
+        "flipWentRed": "X2: state check replaced by false, 1 failing"
+      },
+      {
+        "path": "worker/deno/lib/owned_open_artefact.ts",
+        "line": 310,
+        "endLine": 312,
+        "outcome": "verify refuses an issue whose body lacks the marker",
+        "test": "worker/deno/tests/owned_open_artefact_test.ts",
+        "testName": "owned open artefact - verify refuses a body without the marker",
+        "flipWentRed": "X10: marker check replaced by false, 3 failing across the verify callers"
+      },
+      {
+        "path": "worker/deno/lib/owned_open_artefact.ts",
+        "line": 313,
+        "endLine": 315,
+        "outcome": "verify refuses an issue that fails the caller's accept predicate",
+        "test": "worker/deno/tests/route_issue_split_test.ts",
+        "testName": "route-issue --part - an owned open same-titled issue that fails the part check (open with a marker for another owner) is refused with the reason",
+        "flipWentRed": "X12: accept check replaced by false, 2 failing"
+      },
+      {
+        "path": "worker/deno/lib/owned_open_artefact.ts",
+        "line": 323,
+        "endLine": 325,
+        "outcome": "verify refuses an issue not authored by a fleet account",
+        "test": "worker/deno/tests/owned_open_artefact_test.ts",
+        "testName": "owned open artefact - verify refuses a foreign-authored issue",
+        "flipWentRed": "X11: author gate replaced by false, 3 failing across the verify callers"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_filing.ts",
+        "line": 279,
+        "endLine": 295,
+        "outcome": "a same-titled dedup hit (open, or closed in the last 30 days, issue or PR, any author) suppresses the filing; one that is not owned and open is reported as suppressed with no write",
+        "test": "worker/deno/tests/issue_routing_filing_test.ts",
+        "testName": "fileRoutedIssue - a same-titled match closed within the window suppresses the filing, is not reused and is not written to (dry-run false)",
+        "flipWentRed": "duplicates.length > 0 replaced by false, 11 failing"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_filing.ts",
+        "line": 229,
+        "endLine": 241,
+        "outcome": "the owned lookup behind a dedup hit requires the routing marker",
+        "test": "worker/deno/tests/issue_routing_filing_test.ts",
+        "testName": "fileRoutedIssue - a same-titled match with no owned marker suppresses the filing, is not reused and is not written to (dry-run false)",
+        "flipWentRed": "2f: marker argument blanked, 2 failing"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_filing.ts",
+        "line": 286,
+        "endLine": 288,
+        "outcome": "an owned, open, fleet-authored match is reused, not refiled",
+        "test": "worker/deno/tests/issue_routing_filing_test.ts",
+        "testName": "fileRoutedIssue - an owned, open, fleet-authored match is reused, not refiled; dry-run reports would-reuse",
+        "flipWentRed": "X4: owned !== null replaced by false, 10 failing"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_filing.ts",
+        "line": 339,
+        "endLine": 368,
+        "outcome": "the recheck closes the new issue only for an owned, open, lower-numbered match",
+        "test": "worker/deno/tests/issue_routing_filing_test.ts",
+        "testName": "fileRoutedIssue - the recheck closes the new issue only for an owned, open, lower-numbered match",
+        "flipWentRed": "X3: lower-number condition replaced by false, 3 failing"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_resolve.ts",
+        "line": 326,
+        "endLine": 336,
+        "outcome": "resolve-duplicate refuses, changing nothing, when the routed filing reports a suppressed same-titled match",
+        "test": "worker/deno/tests/route_issue_resolve_duplicate_test.ts",
+        "testName": "route-issue --resolve-duplicate - with no --correct, a same-titled owner issue closed within the window is refused and X stays open (dry-run false)",
+        "flipWentRed": "suppressed condition replaced by false, 4 failing"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_resolve.ts",
+        "line": 339,
+        "endLine": 363,
+        "outcome": "resolve-duplicate refuses when the owned-issue verify fails",
+        "test": "worker/deno/tests/route_issue_resolve_duplicate_test.ts",
+        "testName": "route-issue --resolve-duplicate - refuses when the owned-issue check fails at verify time (the author is not a fleet account), with the reason in the error",
+        "flipWentRed": "2d: verdict refusal replaced by false, 3 failing"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_split.ts",
+        "line": 187,
+        "endLine": 208,
+        "outcome": "a same-titled part issue that fails the owned check is refused, not reused",
+        "test": "worker/deno/tests/route_issue_split_test.ts",
+        "testName": "route-issue --part - requireReusablePart re-checks a reused part (the author is not a fleet account)",
+        "flipWentRed": "2e: requireReusablePart returns early, 4 failing"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_split.ts",
+        "line": 275,
+        "endLine": 282,
+        "outcome": "a part whose routed filing is suppressed fails and is left unedited",
+        "test": "worker/deno/tests/route_issue_split_test.ts",
+        "testName": "route-issue --part - an unrelated same-titled issue (closed within the window, no marker) is neither reused nor edited",
+        "flipWentRed": "suppressed condition replaced by false, 6 failing"
+      },
+      {
+        "path": "worker/deno/lib/issue_routing_split.ts",
+        "line": 283,
+        "endLine": 288,
+        "outcome": "the reuse gate re-checks only a reused or would-reuse part",
+        "test": "worker/deno/tests/route_issue_split_test.ts",
+        "testName": "route-issue --part - requireReusablePart re-checks a reused part (the marker is removed)",
+        "flipWentRed": "X5: reuse gate replaced by false, 6 failing"
+      },
+      {
+        "path": "worker/deno/lib/milestone_fix_pr.ts",
+        "line": 157,
+        "endLine": 180,
+        "outcome": "findOpenMilestoneFixPr delegates to the owned lookup and reuses only a closed-free match",
+        "test": "worker/deno/tests/milestone_fix_pr_owned_test.ts",
+        "testName": "findOpenMilestoneFixPr - a closed or merged fix PR is not reused (Issue #3065)",
+        "flipWentRed": "2g: whole file reverted to the base commit, 3 failing"
+      },
+      {
+        "path": "worker/deno/lib/milestone_fix_pr.ts",
+        "line": 165,
+        "endLine": 167,
+        "outcome": "findOpenMilestoneFixPr with fleetAuthors omitted reads the configured fleet identity, and an explicit fleetAuthors is used as given",
+        "test": "worker/deno/tests/milestone_fix_pr_owned_test.ts",
+        "testName": "findOpenMilestoneFixPr - omitted fleetAuthors reads the configured identity, not an empty set (Issue #3065)",
+        "flipWentRed": "X9a: arm always {} (explicit set ignored), 3 failing; X9b: arm always deps.fleetAuthors ?? [] (omitted reads no identity), 1 failing"
+      },
+      {
+        "path": "worker/deno/lib/pr_ci_processor.ts",
+        "line": 916,
+        "endLine": 918,
+        "outcome": "a gated head's milestone-fix lookup passes the configured fleet logins as fleetAuthors when they are set",
+        "test": "worker/deno/tests/gated_head_passes_test.ts",
+        "testName": "CI-fix pass - a gated head with a fix already in flight spends no retry (Issues #1679, #2907)",
+        "flipWentRed": "B2: wiring reverted to { gh: ghFn }, 1 failing"
+      },
+      {
+        "path": "worker/deno/lib/pr_ci_processor.ts",
+        "line": 916,
+        "endLine": 918,
+        "outcome": "a gated head's milestone-fix lookup with fleetLogins unset omits fleetAuthors, so the configured fleet identity is read",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "fleetLogins is unset, so the lookup omits fleetAuthors and the configured fleet identity is read from the environment. Harness search: worker/deno/tests/pr_ci_processor_test.ts reaches this arm through the makeGatedFixGh gated happy path, but that fixture's pull request list is empty, so the identity read cannot change the outcome there."
+        }
+      },
+      {
+        "path": "worker/deno/lib/github.ts",
+        "line": 708,
+        "outcome": "createGitHubIssuesWithPartialFailures passes dedupAuthors to the alert dedup when it is set",
+        "test": "worker/deno/tests/suggest_improvements_test.ts",
+        "testName": "suggest-improvements - an existing open issue with the same title is reused, not refiled (Issue #3745)",
+        "flipWentRed": "spread replaced by {}, 2 failing"
+      },
+      {
+        "path": "worker/deno/lib/github.ts",
+        "line": 708,
+        "outcome": "createGitHubIssuesWithPartialFailures with dedupAuthors unset passes no author option and uses the default author handling",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "dedupAuthors is unset, so no author option is passed and the default author handling applies. Harness search: worker/deno/tests/github_test.ts and worker/deno/tests/github_retry_test.ts call createGitHubIssuesWithPartialFailures without dedupAuthors and reach this arm, but neither asserts on an author set, so the unset arm has no test that checks for it."
+        }
+      },
+      {
+        "path": "worker/deno/commands/suggest_improvements.ts",
+        "line": 267,
+        "outcome": "the suggest-improvements command passes dedupAuthors to the github helper when it is set",
+        "test": "worker/deno/tests/suggest_improvements_test.ts",
+        "testName": "suggest-improvements - the summary counts created, reused and would-be issues with the right plurals (Issue #3745)",
+        "flipWentRed": "spread replaced by {}, 1 failing"
+      },
+      {
+        "path": "worker/deno/commands/suggest_improvements.ts",
+        "line": 267,
+        "outcome": "the suggest-improvements command with dedupAuthors unset passes no author option to the github helper",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "deps.dedupAuthors is unset, so the command passes no author option and the default author handling applies. Harness search: worker/deno/tests/suggest_improvements_test.ts calls createSuggestImprovementsCommand nine times and sets dedupAuthors in only some of them, so the unset arm is reached, but no assertion tells it apart from the default path."
+        }
+      },
+      {
+        "path": "worker/deno/commands/suggest_improvements.ts",
+        "line": 285,
+        "endLine": 291,
+        "outcome": "the suggest-improvements summary names the improvements a suppressed match kept from being filed",
+        "test": "worker/deno/tests/suggest_improvements_test.ts",
+        "testName": "suggest-improvements - the command's injected clock sets the duplicate-search window (Issue #3745)",
+        "flipWentRed": "suppressed > 0 replaced by false, 1 failing"
+      }
+    ]
+  }
+}

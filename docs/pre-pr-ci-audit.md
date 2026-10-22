@@ -107,7 +107,7 @@ worker test job is also class local and is already covered by `quality.sh`.
 | [38123883049](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38123883049) | c384c70e | semgrep | blocking `detect-non-literal-regexp` at `worker/deno/lib/mutation_gate.ts:627` (`SEMGREP_APP_TOKEN` empty) | local | A semgrep stage exists in `quality.sh` / `lib/quality_gate.ts` (Issue #559); whether it ran on c384c70e is not recorded; since Issue #3726 each gate stage's outcome is (see below) | Cause not recoverable; most likely #3730; recording added by #3726 |
 | [38126786967](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38126786967) | 9dfa6301 | type check and tests | compile or test failure | local | Covered by `quality.sh` | No change needed |
 | [38345577457](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38345577457) | 543adc87 | tests | runner disk full | local / runner infrastructure | Covered by `quality.sh` | Infrastructure |
-| [38033819415](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38033819415) | ab6a832f | Floci | `infra/cloudformation/test-floci.sh`: Floci `ValidationException` on a `PutParameter` name | local (baked `floci` binary) | No | Gap, tracked in #3727 |
+| [38033819415](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38033819415) | ab6a832f | Floci | `infra/cloudformation/test-floci.sh`: Floci `ValidationException` on a `PutParameter` name | local (baked `floci` binary) | No | Pre-push gate runs `test-floci.sh` since #3727; skipped in the worker container (no Docker socket) |
 
 The sweptAt failures were a feature-branch commit recorded as the sweep
 ledger's `sweptAt`, which is not an ancestor of the base branch. The check
@@ -297,10 +297,11 @@ private-repo-A, one in private-repo-C), and none logged
 `Pre-push gate blocked the push`. One of the private-repo-A runs reached PR
 recovery
 (`IDEMPOTENT: recovering the PR`) at 03:06Z; `completionBody` gets there only
-after `gateBeforePush()` returns no block. The gate logs nothing when it
-passes, so the log cannot show which checks it reached on a live run. The
-replay above is the evidence for its checks, and #3770 tracks a log line for
-a pass.
+after `gateBeforePush()` returns no block. Since #3770 the gate logs one INFO
+line per run — `Pre-push gate passed checks=[...]` naming the checks, or
+`Pre-push gate: nothing ahead of <base>` for a no-op — so the log now shows
+which checks a live run reached. The replay above is the evidence for which
+checks the gate runs.
 
 ## Checks the worker cannot run
 
@@ -357,13 +358,20 @@ a pass.
     cases stay SKIPPED and are recorded.
   - Floci (run 38033819415): a deterministic `ValidationException` from
     `infra/cloudformation/test-floci.sh`, reproducible with the baked `floci`
-    binary. No pre-PR stage runs it. Tracked in #3727.
+    binary. #3727 adds the script to the pre-push gate's changed-files check
+    for a push that changes `infra/cloudformation/`. Inside the worker container
+    that would not have caught this failure: the template creates an
+    `AWS::EC2::Instance`, and with no Docker socket the script reports it
+    `SKIPPED (needs Docker)` (the image also ships no `aws` CLI). A host with
+    Docker and the `aws` CLI catches it before the push; CI stays the enforcer
+    otherwise.
 - The pre-PR stages had no executable Mermaid parse that caught a flowchart
   label mixing unquoted text with a quoted string (found by a private-repo-A
   review); VibeCoder's own validator passed it. Fixed by #3769, which adds
   that check to the validator.
-- The pre-push gate logs nothing on a pass, so its checks on live runs are not
-  observable in the worker log. Tracked in #3770.
+- The pre-push gate used to log nothing on a pass, so its checks on live runs
+  were not observable in the worker log. #3770 now logs one INFO line per gate
+  run naming the checks reached (or `nothing ahead of <base>` for a no-op).
 
 CI still runs every required check independently after PR creation. Nothing in
 Issue #3689 weakens or removes a CI, review or security gate.
@@ -379,8 +387,9 @@ Issue #3689 weakens or removes a CI, review or security gate.
   checkouts (see Unattended worker path).
 - The unattended worker path is verified by unit tests of Step 1b and
   `gateBeforePush()`, by the disposable-checkout replay, and by this host's
-  worker logs (see Unattended worker path). No live run on this host has yet
-  logged a pre-push gate block, and the gate logs nothing on a pass (#3770).
+  worker logs (see Unattended worker path). No live run on this host had yet
+  logged a pre-push gate block at audit time; #3770 added a per-run pass/no-op
+  INFO line so later logs record which checks the gate reached.
 - #3644 consumes two kinds of evidence. The CI tables have one row per failing
   run. VibeCoder rows give the check name, first failing SHA, run link, local,
   network or GitHub-exclusive class, and whether pre-flight ran an equivalent.

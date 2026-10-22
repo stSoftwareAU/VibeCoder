@@ -1273,6 +1273,12 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
 
 - Enabled by default; disable via `enable_model_fallback: false` in
   `.config.json`
+- **"Rate-limited" means the provider refused** (Issue #4114). The verdict is
+  the provider's own failure classifier, which reads the CLI's error records
+  (`is_error` result, stderr): category `rate-limit`, or an overloaded (529)
+  upstream. The agent's transcript is never scanned. An exit-1 run whose last
+  turns mention "retry", "limit" or "429" is an ordinary failure, not a step
+  down the ladder. The warning names the matching refusal (redacted).
 - **The ladder is the active provider's, not always Claude's** (Issue #365).
   The current model is resolved through the running provider's own chain, and
   the cheaper tier through that provider's ladder. Only Claude defines one

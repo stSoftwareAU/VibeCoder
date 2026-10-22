@@ -1211,7 +1211,7 @@ Deno.test("config - loadConfig loads claude_model from config file", async () =>
   });
 });
 
-Deno.test("config - loadConfig defaults claudeModel to opus when not configured", async () => {
+Deno.test("config - loadConfig leaves claudeModel empty when not configured, so phases route (Issue #4117)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
     repos: ["org/repo"],
@@ -1219,7 +1219,7 @@ Deno.test("config - loadConfig defaults claudeModel to opus when not configured"
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
-    assertEquals(config.claudeModel, "opus");
+    assertEquals(config.claudeModel, "");
   });
 });
 

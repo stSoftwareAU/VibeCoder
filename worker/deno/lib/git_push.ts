@@ -559,6 +559,17 @@ export class PrePushGateBlockedError extends Error {
 }
 
 /**
+ * What {@link gateUnpushedCommits} found, so a caller can log it (Issue
+ * #3770): `noop` ran no check because nothing needed gating — no unpushed
+ * commit, or no commit of the branch's own ahead of `baseRef` — and `passed`
+ * ran and names the changed-file checks that passed (the repo's pre-flight
+ * commands, when configured, run too and are not listed).
+ */
+export type PrePushGateOutcome =
+  | { kind: "noop" }
+  | { kind: "passed"; checksRun: string[] };
+
+/**
  * Run the pre-push gate over the commits about to be pushed (Issue #3689).
  *
  * A no-op when nothing is unpushed. Synthesises the stdin git would hand a
@@ -585,7 +596,10 @@ export async function gateUnpushedCommits(
   preFlightAlreadyRan = false,
   baseRef?: string,
 ): Promise<
-  Result<void, PrePushGateBlockedError | PrePushGateInfrastructureError>
+  Result<
+    PrePushGateOutcome,
+    PrePushGateBlockedError | PrePushGateInfrastructureError
+  >
 > {
   let remoteSha = "0".repeat(40);
   if (baseRef === undefined) {
@@ -598,7 +612,7 @@ export async function gateUnpushedCommits(
         }),
       };
     }
-    if (state.value.count === 0) return { ok: true, value: undefined };
+    if (state.value.count === 0) return { ok: true, value: { kind: "noop" } };
     if (state.value.source === "tracking-ref" && state.value.sha) {
       remoteSha = state.value.sha;
     }
@@ -641,7 +655,7 @@ export async function gateUnpushedCommits(
         ),
       };
     }
-    if (aheadCount === 0) return { ok: true, value: undefined };
+    if (aheadCount === 0) return { ok: true, value: { kind: "noop" } };
   }
 
   const head = await runGitCommand(["rev-parse", "HEAD"], options);
@@ -684,7 +698,10 @@ export async function gateUnpushedCommits(
       ),
     };
   }
-  return { ok: true, value: undefined };
+  return {
+    ok: true,
+    value: { kind: "passed", checksRun: gate.value.checksRun },
+  };
 }
 
 /**

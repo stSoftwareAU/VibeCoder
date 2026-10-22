@@ -116,7 +116,7 @@ The quality gate is implemented in Deno TypeScript (`worker/deno/quality.ts` and
 `worker/deno/lib/quality_gate.ts`). The shell wrapper `quality.sh` is a thin
 launcher that locates Deno and delegates. The gate runs: benchmark audit,
 `deno test`, `deno lint`, `deno check`, `deno fmt --check`, plus mermaid,
-markdownlint, and semgrep.
+markdownlint, semgrep, and Checkov.
 Shell-script linting is **not** run by the worker — it is delegated to each
 target repo's own CI.
 
@@ -146,6 +146,25 @@ The agent container bakes `semgrep` at exactly `SEMGREP_IMAGE_TAG`
 (Issue #650), so a fleet run scans instead of skipping — before that the image
 shipped no `semgrep` binary and no container runtime, and the stage `SKIP`ped
 every time. See [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
+
+The **checkov** stage (`worker/deno/lib/checkov_check.ts`, Issue #3972) is
+registered only when `.github/workflows/checkov.yml` exists in the checkout.
+It installs and pulls nothing. It uses a `checkov` on PATH only when
+`checkov --version` equals `CHECKOV_IMAGE_TAG` (an unpinned binary is recorded
+and the stage falls through); otherwise it uses a `docker` or `podman` that
+already holds `CHECKOV_IMAGE` (checked with `image inspect`, never `pull`), with
+the checkout mounted read-only and `CHECKOV_SCAN_ARGS`, which include
+`--skip-download`. A `checkov` on PATH runs with a built environment, not the
+caller's: no `CKV_*`, `BC_*` or `PRISMA_*` variable and an empty private HOME, so
+neither the environment nor `~/.checkov.yaml` can narrow the scan or upload
+results. A `.checkov.yaml` or `.checkov.yml` in the scanned directory is
+`FAILED` before any route is tried, as `checkov_report.ts` fails it in CI.
+The output is judged by `judgeCheckovRun`, the same judge the
+CI `checkov` job uses, and the CI job stays authoritative. With no usable
+pinned route the stage is `SKIPPED` with the missing item named; `--strict`
+promotes that to a failure, and a scan past its 300s deadline is `FAILED`. The
+fleet worker image has no pip and no container runtime, so fleet runs show
+`checkov` as `SKIPPED`, unlike semgrep, which the image bakes.
 
 Progress is **streamed**: every check emits one `✓ / ✗ / - name: STATUS (1.2s)`
 line to stdout the moment it settles (Issue #399), ahead of the detailed output
@@ -3796,8 +3815,9 @@ memory.
   failed`,
   `cannot allocate memory`, `std::bad_alloc`, a word-bounded `out of
   memory`,
-  …). The "heap limit" wording would otherwise match the secondary rate-limit
-  pattern, so OOM must be classified separately.
+  …). OOM is classified separately and first: waiting cannot reclaim memory.
+  (The "heap limit" wording used to match a secondary `limit` rate-limit
+  pattern, removed by Issue #4114.)
 - **Runner short-circuit.**
   [`claude_runner.ts`](../worker/deno/lib/claude_runner.ts) checks OOM
   **before** the timeout and rate-limit branches and returns immediately with

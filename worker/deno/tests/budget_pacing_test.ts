@@ -110,6 +110,18 @@ Deno.test("never returns less than the base sleep", () => {
   assert(result.sleepSeconds >= 120);
 });
 
+Deno.test("an overspend never shortens a base sleep already above the cap", () => {
+  // The default sleep is 300 s (Issue #2446), jittered ±25% — so the base
+  // the run loop passes is often above the 300 s cap. Pacing used to clamp
+  // it down to the cap: an overspending account slept *less*.
+  const result = computePacedSleepSeconds(input({
+    remaining: 1500,
+    spentLastCycle: 1_000_000,
+    baseSleepSeconds: MAX_PACED_SLEEP_SECONDS + 40,
+  }));
+  assertEquals(result.sleepSeconds, MAX_PACED_SLEEP_SECONDS + 40);
+});
+
 Deno.test("a base sleep of zero inside the reserve paces to the cap, not NaN", () => {
   // `0 × Infinity` is NaN, and a NaN sleep would reach `deps.sleep()`; with
   // nothing affordable the stretch goes straight to the cap instead.

@@ -2172,7 +2172,23 @@ async function completionBody(
       false,
       comparableBase.ok ? comparableBase.value : undefined,
     );
-    if (gate.ok) return undefined;
+    if (gate.ok) {
+      // Issue #3770: log every gate outcome so the checks a live run reached
+      // are observable in the worker log — a pass names the checks, a no-op
+      // says nothing was ahead, and neither is ever logged as the other.
+      if (gate.value.kind === "noop") {
+        logger.info(
+          comparableBase.ok
+            ? `Pre-push gate: nothing ahead of ${comparableBase.value}`
+            : "Pre-push gate: nothing unpushed",
+        );
+      } else {
+        logger.info(
+          `Pre-push gate passed checks=[${gate.value.checksRun.join(", ")}]`,
+        );
+      }
+      return undefined;
+    }
     logger.error("Pre-push gate blocked the push", {
       error: gate.error.message,
     });
