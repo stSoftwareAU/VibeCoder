@@ -930,7 +930,7 @@ Deno.test({
     const stubBody = [
       `case "$*" in`,
       `  *opus*)`,
-      `    printf '%s\\n' '{"type":"result","result":"rate limit exceeded"}'`,
+      `    printf '%s\\n' '{"type":"result","is_error":true,"result":"rate limit exceeded"}'`,
       `    exit 1`,
       `    ;;`,
       `  *)`,

@@ -407,36 +407,32 @@ export function detectGithubApiSuccess(output: string): boolean {
 const RATE_LIMIT_RE =
   /(rate limit|credit|quota|exceeded|too many requests|429|overloaded|\b529\b)/i;
 
-/** Secondary patterns suggesting rate limiting. */
-const RATE_LIMIT_SECONDARY_RE = /(try again|retry|limit)/i;
-
 /**
  * Check if the tail of output indicates rate limiting.
  *
  * Only checks the last N lines to avoid false positives from Claude
- * discussing rate limits in its output.
+ * discussing rate limits in its output. Callers pass the CLI's error surface,
+ * not the agent's transcript: there used to be a secondary
+ * `try again|retry|limit` match, and the agent's own words ("add a retry",
+ * "--limit 30") walked ordinary exit-1 runs down the model ladder
+ * (Issue #4114). It is gone; `isPrimary` is kept for existing callers and is
+ * now always equal to `isRateLimited`.
  *
  * @param output - The output text to scan
  * @param tailLines - Number of lines from the end to check (default: 30)
- * @returns Object with isRateLimited flag and whether it's a primary match
+ * @returns Whether it matched, and the last matching line (unredacted)
  */
 export function detectRateLimit(
   output: string,
   tailLines: number = 30,
-): { isRateLimited: boolean; isPrimary: boolean } {
+): { isRateLimited: boolean; isPrimary: boolean; matchedLine?: string } {
   if (!output.trim()) return { isRateLimited: false, isPrimary: false };
 
-  const lines = output.split("\n");
-  const tail = lines.slice(-tailLines).join("\n");
-
-  if (RATE_LIMIT_RE.test(tail)) {
-    return { isRateLimited: true, isPrimary: true };
-  }
-  if (RATE_LIMIT_SECONDARY_RE.test(tail)) {
-    return { isRateLimited: true, isPrimary: false };
-  }
-
-  return { isRateLimited: false, isPrimary: false };
+  const tail = output.split("\n").slice(-tailLines);
+  const matchedLine = tail.findLast((line) => RATE_LIMIT_RE.test(line));
+  return matchedLine === undefined
+    ? { isRateLimited: false, isPrimary: false }
+    : { isRateLimited: true, isPrimary: true, matchedLine };
 }
 
 // ---------------------------------------------------------------------------
