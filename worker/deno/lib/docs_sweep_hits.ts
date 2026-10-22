@@ -556,6 +556,31 @@ function removedLineCandidates(text: string): string[] {
   return candidates;
 }
 
+const WORD_CHAR_RE = /[\p{L}\p{N}_]/u;
+
+/**
+ * Whether `needle` occurs in `haystack` on word boundaries (Issue #4105): an
+ * edge of the needle that is a word character must not touch another word
+ * character, so `30` is not found in `300`. Both are already lower-cased.
+ */
+function containsAtBoundary(haystack: string, needle: string): boolean {
+  const first = needle[0]!;
+  const last = needle[needle.length - 1]!;
+  let from = 0;
+  for (;;) {
+    const at = haystack.indexOf(needle, from);
+    if (at < 0) return false;
+    const before = at === 0 ? "" : haystack[at - 1]!;
+    const after = haystack[at + needle.length] ?? "";
+    const startsClean = !WORD_CHAR_RE.test(first) ||
+      before === "" || !WORD_CHAR_RE.test(before);
+    const endsClean = !WORD_CHAR_RE.test(last) ||
+      after === "" || !WORD_CHAR_RE.test(after);
+    if (startsClean && endsClean) return true;
+    from = at + 1;
+  }
+}
+
 /**
  * The phrases a diff removed from the docs (Issue #4105), read from
  * `git diff --unified=0` output as `parseChangedLines` reads it. Each hunk's
@@ -567,7 +592,8 @@ function removedLineCandidates(text: string): string[] {
  * count.
  *
  * A candidate is dropped when the same hunk's added lines still carry it
- * (case-insensitive, whitespace-collapsed): the PR kept that wording. The rest
+ * (case-insensitive, whitespace-collapsed, on word boundaries so `30` is not
+ * kept by `300`): the PR kept that wording. The rest
  * are returned in diff order, deduplicated case-insensitively with the first
  * spelling kept, uncapped — the caller applies `MAX_REMOVED_PHRASES`.
  */
@@ -588,7 +614,7 @@ export function extractRemovedDocPhrases(diff: string): string[] {
       for (const line of removed) {
         for (const candidate of removedLineCandidates(line)) {
           const key = candidate.toLowerCase();
-          if (addedText.includes(key) || seen.has(key)) continue;
+          if (containsAtBoundary(addedText, key) || seen.has(key)) continue;
           seen.add(key);
           phrases.push(candidate);
         }
