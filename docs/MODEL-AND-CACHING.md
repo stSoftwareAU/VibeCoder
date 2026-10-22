@@ -626,10 +626,10 @@ and reports five numbers.
 - **Control** — every non-pilot host's `issue`-phase runs on Claude in the same
   window. Since Issue #2812 the key is on by default, so a control host must
   set `issue_executor_split: false` explicitly.
-- **Excluded from both sides** — runs on any other provider. The key does
-  not reach the provider under `codex`, `gemini` or `deepseek`: an `issue` run
-  carrying sub-agents is rerouted to Claude or stripped before spawn (Issue
-  #4109), so those runs would dilute both arms without testing anything.
+- **Not split by provider** — the pilot counters do not filter by provider.
+  Every completed `issue`-phase run is counted. A run on `codex`, `gemini` or
+  `deepseek` has its split state settled by the planner before spawn (Issue
+  #4109): rerouted to Claude, or stripped of sub-agents.
 
 **Window** — 30 implementation runs on the pilot hosts, or 4 weeks, whichever
 comes first.
