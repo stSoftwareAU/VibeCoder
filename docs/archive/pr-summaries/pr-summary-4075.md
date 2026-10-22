@@ -34,3 +34,6 @@ Tests (in `worker/deno/tests/completion_phase_merged_pr_closure_test.ts`) pass: 
 - Callers of `recoverAndFinaliseExistingPr` with `holdAutoMerge: true` (`reportSummaryRuleBlock`) go through the changed branch; the `false` callers (`completionBody`) are unaffected.
 
 <!-- vibe-branch-outcomes -->
+
+Quality gate: targeted fmt, lint, type check and the touched test file passed; the full `./quality.sh` (about 15 minutes) exceeds the 10-minute foreground limit here, so it was not run.
+<!-- vibe-quality-gate-skipped reason="full gate exceeds the foreground command cap; CI and the worker re-run it" -->
