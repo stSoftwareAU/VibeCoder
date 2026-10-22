@@ -42,6 +42,12 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   "gpt-5-codex": 400_000,
   "gpt-5-mini": 400_000,
   "gpt-5": 400_000,
+  // Codex / GPT-6 tiers (owner decision 2026-10-22), from the account's
+  // Codex models catalogue `context_window`. Exact ids: `gpt-6.1-sol` must
+  // not fall back to a shorter `gpt-6` prefix.
+  "gpt-6-astra": 272_000,
+  "gpt-6.1-sol": 500_000,
+  "gpt-6-luna": 272_000,
   default: 200_000,
 } as const;
 

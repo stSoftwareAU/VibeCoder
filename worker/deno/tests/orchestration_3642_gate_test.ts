@@ -130,7 +130,7 @@ function depsFor(
   };
 }
 
-Deno.test("orchestration gate - default selection uses the Sonnet manager and Haiku executor, never --agents or fallback (Issue #3642)", async () => {
+Deno.test("orchestration gate - default selection uses the Sonnet manager, Haiku executor and Opus reviewer, never --agents or fallback (Issue #3642)", async () => {
   await withWorkDir(async (dir) => {
     const fake = fakeRunner();
     const outcome = await runOrchestratedIssueRun(
@@ -147,7 +147,9 @@ Deno.test("orchestration gate - default selection uses the Sonnet manager and Ha
     const selections = [
       ...new Set(fake.calls.map((o) => `${o.model}/${o.effort}`)),
     ].sort();
-    assertEquals(selections, ["haiku/high", "sonnet/high"]);
+    // Opus does the code reviews (owner decision 2026-10-22): a separate
+    // reviewer call even with no reviewer role configured.
+    assertEquals(selections, ["haiku/high", "opus/high", "sonnet/high"]);
   });
 });
 
@@ -168,9 +170,13 @@ Deno.test("orchestration gate - every role call denies sub-agent dispatch, and t
     assertEquals(outcome.ok, true);
     const manager = fake.calls.filter((o) => o.model === "sonnet");
     const executor = fake.calls.filter((o) => o.model === "haiku");
-    assertEquals(manager.length, 2);
+    // The review is the Opus reviewer's call, not a second manager call
+    // (owner decision 2026-10-22); it is read-only like the manager.
+    const reviewer = fake.calls.filter((o) => o.model === "opus");
+    assertEquals(manager.length, 1);
     assertEquals(executor.length, 1);
-    for (const options of manager) {
+    assertEquals(reviewer.length, 1);
+    for (const options of [...manager, ...reviewer]) {
       assertEquals(options.disallowedTools, [
         "WebFetch",
         "Edit",
@@ -186,7 +192,7 @@ Deno.test("orchestration gate - every role call denies sub-agent dispatch, and t
   });
 });
 
-Deno.test("orchestration gate - a provider-only override leaves that role's model and effort to the provider (Issue #3642)", async () => {
+Deno.test("orchestration gate - a provider-only override takes that provider's own default for the role (Issue #3642)", async () => {
   await withWorkDir(async (dir) => {
     const fake = fakeRunner();
     const outcome = await runOrchestratedIssueRun(
@@ -196,14 +202,16 @@ Deno.test("orchestration gate - a provider-only override leaves that role's mode
     assertEquals(outcome.ok, true);
     const executor = fake.calls.filter((o) => o.agentProvider === "codex");
     assertEquals(executor.length, 1);
-    // Not the Claude default ("haiku"): DeepSeek's own phase routing decides.
-    assertEquals(executor[0]?.model, undefined);
-    assertEquals(executor[0]?.effort, undefined);
-    // The manager keeps its default provider, so it keeps its defaults too.
-    const manager = fake.calls.filter((o) => o.agentProvider === "claude");
+    // Never the Claude default ("haiku") on another provider: Codex's own
+    // executor model, Luna — Codex's Haiku (owner decision 2026-10-22).
+    assertEquals(executor[0]?.model, "gpt-6-luna");
+    assertEquals(executor[0]?.effort, "high");
+    // The manager and reviewer keep their default provider, so they keep
+    // their defaults too.
+    const claude = fake.calls.filter((o) => o.agentProvider === "claude");
     assertEquals(
-      [...new Set(manager.map((o) => `${o.model}/${o.effort}`))],
-      ["sonnet/high"],
+      [...new Set(claude.map((o) => `${o.model}/${o.effort}`))].sort(),
+      ["opus/high", "sonnet/high"],
     );
 
     // Positive control: a model and effort named beside the provider are kept.
@@ -305,7 +313,8 @@ Deno.test("orchestration gate - per-role overrides replace the defaults (Issue #
     const selections = [
       ...new Set(fake.calls.map((o) => `${o.model}/${o.effort}`)),
     ].sort();
-    assertEquals(selections, ["opus/max", "sonnet/low"]);
+    // The unconfigured reviewer keeps its own Opus/high default.
+    assertEquals(selections, ["opus/high", "opus/max", "sonnet/low"]);
   });
 });
 
