@@ -52,7 +52,7 @@ jobs:
           status=0
           docker run --rm -v "$PWD:/src:ro" -w /src --entrypoint checkov \
             bridgecrew/checkov:3.3.29@sha256:3cc125b5337717b7303dbddd4e79374c120687b5ff6a24f9abdad56b562469f3 \
-            -d . --framework cloudformation -o json --skip-download --skip-path worker/deno/tests/fixtures/checkov \
+            -d . --framework cloudformation -o json --skip-download \
             > "$RUNNER_TEMP/checkov.json" || status=$?
           deno run --frozen --lock=worker/deno/deno.lock --config worker/deno/deno.json --allow-read \
             worker/deno/lib/checkov_report.ts "$RUNNER_TEMP/checkov.json" "$status"

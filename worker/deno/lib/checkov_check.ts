@@ -10,6 +10,8 @@
  * (`quality_gate.ts`), because it mirrors that job.
  *
  * Pipeline:
+ *   0. Fail closed when `.checkov.yaml` / `.checkov.yml` is in the scanned
+ *      directory: Checkov would load it and could drop checks unseen.
  *   1. Detect a route, in order: a `checkov` on PATH whose version is exactly
  *      the CI pin (`CHECKOV_IMAGE_TAG`); else a container runtime (docker, then
  *      podman) that **already holds** `CHECKOV_IMAGE`. An unpinned PATH binary
@@ -21,9 +23,11 @@
  *      with the judge's report rendered under the status line. A FAILED run
  *      whose stdout is not JSON also shows the redacted tail of stderr.
  *
- * The stage adds no suppression, edits no workflow and makes no network call:
- * `--skip-download` is in `CHECKOV_SCAN_ARGS`, and the stage never runs
- * `pull`, so a missing image is a SKIPPED, not a download. Strict mode is not
+ * The stage adds no suppression, edits no workflow and makes no network call
+ * of its own: `--skip-download` is in `CHECKOV_SCAN_ARGS` and the stage never
+ * runs `pull`, so a missing image is a SKIPPED, not a download. The PATH route
+ * runs with a built environment (`runPathCheckov`), so a `BC_API_KEY` in the
+ * caller's environment cannot make Checkov upload results either. Strict mode is not
  * handled here: `formatSummary(results, strict)` in `quality_helpers.ts`
  * already fails a strict run on any SKIPPED stage.
  *
@@ -33,10 +37,13 @@
 import { CHECKOV_IMAGE, CHECKOV_IMAGE_TAG } from "./pinned_actions.ts";
 import {
   CHECKOV_SCAN_ARGS,
+  checkovConfigVerdict,
   type CheckovTemplateReader,
+  findCheckovConfigFiles,
   judgeCheckovRun,
 } from "./checkov_report.ts";
 import { redactedLineTail } from "./redacted_text.ts";
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 import {
   probe as defaultProbe,
   type SemgrepRunResult,
@@ -81,12 +88,16 @@ export type ProbeFn = (
   args: string[],
 ) => Promise<string | null>;
 
-/** Runs a command with the deadline applied, as `spawnWithDeadline` does. */
+/**
+ * Runs a command with the deadline applied, as `spawnWithDeadline` does. When
+ * `env` is given the child runs with exactly that environment.
+ */
 export type SpawnFn = (
   binary: string,
   args: string[],
   cwd: string,
   deadlineMs: number,
+  env?: Record<string, string>,
 ) => Promise<CheckovRunResult>;
 
 /** Result of the checkov quality-gate stage. */
@@ -128,6 +139,34 @@ export function buildCheckovContainerArgs(scriptDir: string): string[] {
 }
 
 /**
+ * Run the PATH `checkov` with a built environment, not the caller's. Checkov
+ * reads `CKV_SKIP_CHECK` / `CKV_CHECK` from the environment and
+ * `~/.checkov.yaml` from HOME, either of which can narrow the scan, and uploads
+ * results to Prisma Cloud when `BC_API_KEY` is set (`--skip-download` stops
+ * only downloads). So the child gets the {@link buildUntrustedCommandEnv}
+ * allowlist, which carries no `CKV_*`, `BC_*` or `PRISMA_*` variable, and a
+ * HOME that is an empty directory created for this run. The container route
+ * needs none of this: `docker run` passes no host variable into the container.
+ */
+async function runPathCheckov(
+  scriptDir: string,
+  spawn: SpawnFn,
+): Promise<CheckovRunResult> {
+  const home = await Deno.makeTempDir({ prefix: "checkov-home-" });
+  try {
+    return await spawn(
+      "checkov",
+      [...CHECKOV_SCAN_ARGS],
+      scriptDir,
+      CHECKOV_DEADLINE_MS,
+      buildUntrustedCommandEnv({ overrides: { HOME: home } }),
+    );
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+}
+
+/**
  * Detect how Checkov can be run locally.
  *
  * Order:
@@ -153,13 +192,7 @@ export async function detectCheckovInvocation(
       return {
         invocation: {
           description: `checkov ${reported} on PATH (the CI pin)`,
-          run: () =>
-            spawn(
-              "checkov",
-              [...CHECKOV_SCAN_ARGS],
-              scriptDir,
-              CHECKOV_DEADLINE_MS,
-            ),
+          run: () => runPathCheckov(scriptDir, spawn),
         },
         missing,
       };
@@ -240,6 +273,8 @@ function isJson(text: string): boolean {
  * Run the checkov quality-gate stage over `scriptDir`.
  *
  * Pipeline:
+ *   0. A `.checkov.yaml` / `.checkov.yml` in `scriptDir` → FAILED, before any
+ *      route is tried (`findCheckovConfigFiles`).
  *   1. Detect a route. None → SKIPPED, naming each unusable route.
  *   2. Run the scan. Over {@link CHECKOV_DEADLINE_MS} → FAILED.
  *   3. Judge with `judgeCheckovRun` → PASSED or FAILED, with the report.
@@ -248,6 +283,19 @@ export async function runCheckovCheck(
   scriptDir: string,
   options: CheckovCheckOptions = {},
 ): Promise<CheckovCheckResult> {
+  // Checkov's implicit config can drop checks without a trace, so a config
+  // file in the root is FAILED whether or not a route exists (as in CI).
+  const configVerdict = checkovConfigVerdict(
+    await findCheckovConfigFiles(scriptDir),
+  );
+  if (configVerdict !== null) {
+    return {
+      status: "FAILED",
+      output:
+        `checkov: FAILED (Checkov config file in the scanned directory)\n${configVerdict.report}`,
+    };
+  }
+
   const detection = await detectCheckovInvocation(
     scriptDir,
     options.probe,

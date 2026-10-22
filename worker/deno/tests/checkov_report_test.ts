@@ -12,6 +12,8 @@
  *   - malformed input (bad exit code, malformed or empty JSON, objects that
  *     are not reports) refused rather than passed;
  *   - multi-framework output judged element by element;
+ *   - a `.checkov.yaml` / `.checkov.yml` in the scanned root failing the run,
+ *     because Checkov loads it on its own and it can drop checks unseen;
  *   - the CLI entry point's exit codes, including bad usage and an unreadable
  *     report, run with the scanned case directory as the working directory so
  *     template reads resolve.
@@ -23,8 +25,11 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  CHECKOV_CONFIG_FILES,
   CHECKOV_SCAN_ARGS,
+  checkovConfigVerdict,
   type CheckovTemplateReader,
+  findCheckovConfigFiles,
   judgeCheckovRun,
   main,
 } from "../lib/checkov_report.ts";
@@ -40,11 +45,21 @@ async function report(name: string): Promise<string> {
   return await Deno.readTextFile(new URL(`${name}/report.json`, FIXTURES));
 }
 
+/**
+ * Fixture templates are stored as `<name>.fixture` so Checkov's CloudFormation
+ * runner (which reads `.yaml`, `.yml`, `.json` and `.template`) never discovers
+ * the deliberately bad ones in a repository scan. This maps the name Checkov
+ * reports to the stored one.
+ */
+const FIXTURE_SUFFIX = ".fixture";
+
 /** A template reader serving files from one fixture case directory. */
 function fixtureTemplates(name: string): CheckovTemplateReader {
   return async (path) => {
     try {
-      return await Deno.readTextFile(new URL(`${name}/${path}`, FIXTURES));
+      return await Deno.readTextFile(
+        new URL(`${name}/${path}${FIXTURE_SUFFIX}`, FIXTURES),
+      );
     } catch {
       return null;
     }
@@ -134,8 +149,6 @@ Deno.test("checkov-report - scan arguments match the CI and local gate command",
     "-o",
     "json",
     "--skip-download",
-    "--skip-path",
-    "worker/deno/tests/fixtures/checkov",
   ]);
 });
 
@@ -290,7 +303,7 @@ Deno.test("checkov-report - FAILED for a skip set only in Metadata", async () =>
 
 Deno.test("checkov-report - FAILED for an inline skip naming a different check ID", async () => {
   const template = await Deno.readTextFile(
-    new URL("reasoned_skip/template.yaml", FIXTURES),
+    new URL(`reasoned_skip/template.yaml${FIXTURE_SUFFIX}`, FIXTURES),
   );
   const swapped = template.replace(
     "# checkov:skip=CKV_AWS_158:",
@@ -744,8 +757,13 @@ Deno.test("checkov-report - multi-framework array of one clean report is PASSED"
   assertEquals(verdict.status, "PASSED");
 });
 
-/** Run the CLI entry point, optionally from a fixture case directory. */
-async function runCli(args: string[], caseDir?: string) {
+/** Absolute path of one fixture case directory. */
+function caseCwd(caseDir: string): string {
+  return new URL(`${caseDir}/`, FIXTURES).pathname;
+}
+
+/** Run the CLI entry point, optionally from the absolute directory `cwd`. */
+async function runCli(args: string[], cwd?: string) {
   const output = await new Deno.Command(Deno.execPath(), {
     args: [
       "run",
@@ -756,9 +774,7 @@ async function runCli(args: string[], caseDir?: string) {
       CLI_PATH,
       ...args,
     ],
-    cwd: caseDir === undefined
-      ? undefined
-      : new URL(`${caseDir}/`, FIXTURES).pathname,
+    cwd,
     stdin: "null",
     stdout: "piped",
     stderr: "piped",
@@ -773,7 +789,7 @@ async function runCli(args: string[], caseDir?: string) {
 Deno.test("checkov-report CLI - exit 0 for a clean report", async () => {
   const result = await runCli(
     [new URL("clean/report.json", FIXTURES).pathname, "0"],
-    "clean",
+    caseCwd("clean"),
   );
   assertEquals(result.code, 0, result.stderr);
   assertStringIncludes(result.stdout, "Status: PASSED");
@@ -782,21 +798,47 @@ Deno.test("checkov-report CLI - exit 0 for a clean report", async () => {
 Deno.test("checkov-report CLI - exit 1 for a failed report", async () => {
   const result = await runCli(
     [new URL("failed/report.json", FIXTURES).pathname, "1"],
-    "failed",
+    caseCwd("failed"),
   );
   assertEquals(result.code, 1, result.stderr);
   assertStringIncludes(result.stdout, "CKV_AWS_158 failed");
 });
 
+/**
+ * A temporary scanned root holding `template.yaml` (the reasonless_skip
+ * fixture's template, which the repository stores as `template.yaml.fixture`)
+ * and any `extraFiles`. Removed afterwards.
+ */
+async function withScannedRoot(
+  extraFiles: string[],
+  run: (root: string) => Promise<void>,
+): Promise<void> {
+  const root = await Deno.makeTempDir({ prefix: "checkov-root-" });
+  try {
+    await Deno.copyFile(
+      new URL(`reasonless_skip/template.yaml${FIXTURE_SUFFIX}`, FIXTURES),
+      `${root}/template.yaml`,
+    );
+    for (const name of extraFiles) {
+      await Deno.writeTextFile(`${root}/${name}`, "");
+    }
+    await run(root);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
 Deno.test("checkov-report CLI - exit 1 for a reasonless skip, template read from the working directory", async () => {
-  const result = await runCli(
-    [new URL("reasonless_skip/report.json", FIXTURES).pathname, "0"],
-    "reasonless_skip",
-  );
-  assertEquals(result.code, 1, result.stderr);
-  assertStringIncludes(result.stdout, "skipped without a reason");
-  assertStringIncludes(result.stdout, "no inline");
-  assert(!result.stdout.includes("could not be read"));
+  await withScannedRoot([], async (root) => {
+    const result = await runCli(
+      [new URL("reasonless_skip/report.json", FIXTURES).pathname, "0"],
+      root,
+    );
+    assertEquals(result.code, 1, result.stderr);
+    assertStringIncludes(result.stdout, "skipped without a reason");
+    assertStringIncludes(result.stdout, "no inline");
+    assert(!result.stdout.includes("could not be read"));
+  });
 });
 
 Deno.test("checkov-report CLI - exit 2 for bad usage", async () => {
@@ -856,3 +898,86 @@ Deno.test("checkov-report - an unreadable report makes main return 1 without thr
   assertEquals(logged.length, 1);
   assertStringIncludes(logged[0] ?? "", `cannot read report ${missing}`);
 });
+
+// ---------------------------------------------------------------------------
+// Checkov's implicit config files
+// ---------------------------------------------------------------------------
+
+Deno.test("checkov-report - findCheckovConfigFiles names each config file present", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "checkov-config-" });
+  try {
+    assertEquals(await findCheckovConfigFiles(dir), []);
+    await Deno.writeTextFile(
+      `${dir}/.checkov.yml`,
+      "skip-check: [CKV_AWS_158]",
+    );
+    assertEquals(await findCheckovConfigFiles(dir), [".checkov.yml"]);
+    await Deno.writeTextFile(`${dir}/.checkov.yaml`, "");
+    assertEquals(await findCheckovConfigFiles(dir), [
+      ".checkov.yaml",
+      ".checkov.yml",
+    ]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("checkov-report - findCheckovConfigFiles counts a symlink or a directory of that name", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "checkov-config-" });
+  try {
+    await Deno.symlink("/nonexistent-target", `${dir}/.checkov.yaml`);
+    await Deno.mkdir(`${dir}/.checkov.yml`);
+    assertEquals(await findCheckovConfigFiles(dir), [
+      ".checkov.yaml",
+      ".checkov.yml",
+    ]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("checkov-report - findCheckovConfigFiles reports a fault other than not-found, never a pass", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "checkov-config-" });
+  try {
+    // A regular file used as the directory: lstat fails with ENOTDIR.
+    const notADirectory = `${dir}/plain-file`;
+    await Deno.writeTextFile(notADirectory, "");
+    const found = await findCheckovConfigFiles(notADirectory);
+    assertEquals(found.length, 2);
+    for (const entry of found) {
+      assertStringIncludes(entry, "could not be checked");
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("checkov-report - checkovConfigVerdict is null for none and FAILED naming each file", () => {
+  assertEquals(checkovConfigVerdict([]), null);
+  const verdict = checkovConfigVerdict([".checkov.yaml", ".checkov.yml"]);
+  assertEquals(verdict?.status, "FAILED");
+  assertStringIncludes(verdict?.report ?? "", "- .checkov.yaml is present");
+  assertStringIncludes(verdict?.report ?? "", "- .checkov.yml is present");
+  assertStringIncludes(verdict?.report ?? "", "Status: FAILED");
+});
+
+for (const name of CHECKOV_CONFIG_FILES) {
+  Deno.test(`checkov-report CLI - a clean report is FAILED when the scanned root holds ${name}`, async () => {
+    const cleanReport = [new URL("clean/report.json", FIXTURES).pathname, "0"];
+
+    // Positive control: the same report from a root without the file passes.
+    await withScannedRoot([], async (root) => {
+      const control = await runCli(cleanReport, root);
+      assertEquals(control.code, 0, control.stderr);
+      assertStringIncludes(control.stdout, "Status: PASSED");
+    });
+
+    await withScannedRoot([name], async (root) => {
+      const result = await runCli(cleanReport, root);
+      assertEquals(result.code, 1, result.stderr);
+      assertStringIncludes(result.stdout, `${name} is present`);
+      assertStringIncludes(result.stdout, "Status: FAILED");
+      assert(!result.stdout.includes("Status: PASSED"));
+    });
+  });
+}

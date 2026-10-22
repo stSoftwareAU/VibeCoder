@@ -29,7 +29,7 @@ Closes #3972
 ### Essential Design Decisions
 
 - Only the exact pinned version is trusted: an unpinned PATH binary falls through to the container route rather than blocking it.
-- It never installs or pulls, and makes no network or metered call (`--skip-download` is in `CHECKOV_SCAN_ARGS`).
+- It never installs or pulls, and makes no network or metered call of its own (`--skip-download` is in `CHECKOV_SCAN_ARGS`). The PATH route runs with a built environment (no `CKV_*`, `BC_*` or `PRISMA_*` variable, an empty private HOME), so a `BC_API_KEY` or `CKV_SKIP_CHECK` in the caller's environment cannot upload results or narrow the scan (PR #4112 review). A `.checkov.yaml` or `.checkov.yml` in the scanned directory is `FAILED`.
 - The verdict is delegated to the shared `judgeCheckovRun`, so local and CI cannot diverge.
 - `--strict` promotes `SKIPPED` to `FAILED` via the existing `formatSummary`.
 

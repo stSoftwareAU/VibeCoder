@@ -154,7 +154,12 @@ It installs and pulls nothing. It uses a `checkov` on PATH only when
 and the stage falls through); otherwise it uses a `docker` or `podman` that
 already holds `CHECKOV_IMAGE` (checked with `image inspect`, never `pull`), with
 the checkout mounted read-only and `CHECKOV_SCAN_ARGS`, which include
-`--skip-download`. The output is judged by `judgeCheckovRun`, the same judge the
+`--skip-download`. A `checkov` on PATH runs with a built environment, not the
+caller's: no `CKV_*`, `BC_*` or `PRISMA_*` variable and an empty private HOME, so
+neither the environment nor `~/.checkov.yaml` can narrow the scan or upload
+results. A `.checkov.yaml` or `.checkov.yml` in the scanned directory is
+`FAILED` before any route is tried, as `checkov_report.ts` fails it in CI.
+The output is judged by `judgeCheckovRun`, the same judge the
 CI `checkov` job uses, and the CI job stays authoritative. With no usable
 pinned route the stage is `SKIPPED` with the missing item named; `--strict`
 promotes that to a failure, and a scan past its 300s deadline is `FAILED`. The

@@ -9,8 +9,9 @@ the `checkov_report.ts` judge from #3970. `quality.yml` calls it as a
 `checkov` job, and `gate.needs` now includes `checkov`, so a red scan turns
 `gate` red. A lock-step test keeps the workflow and the pinned config
 identical. `linux-verification-host.yaml`, `test-floci.sh` and `floci.yml` are
-unchanged. The only production change is the `--skip-path` pair added to
-`CHECKOV_SCAN_ARGS` in `worker/deno/lib/checkov_report.ts` (see Spec).
+unchanged. The scan carries no `--skip-path` (PR #4112 review): the #3970
+fixture templates are stored as `template.yaml.fixture`, which Checkov's
+CloudFormation runner does not read (see Spec).
 
 ## Spec
 
@@ -44,15 +45,15 @@ unchanged. The only production change is the `--skip-path` pair added to
   added. The CI Checkov run is the evidence that it has 0 failed checks.
 - The first CI run failed only on the intentionally bad #3970 fixtures under
   `worker/deno/tests/fixtures/checkov`, because the scan covers the whole tree.
-  They are excluded with `--skip-path worker/deno/tests/fixtures/checkov` (a
-  regex relative to the working directory), added to `CHECKOV_SCAN_ARGS` in
-  `checkov_report.ts`, to the `docker run` line in `checkov.yml`, and to the
-  expected args in `checkov_report_test.ts`; the fixtures README notes the
-  exclusion. The local pre-push gate uses the same constant, so parity is kept.
-- The lock-step test still bans `--skip-path`, but allows exactly the pair
-  carried by `CHECKOV_SCAN_ARGS` (read from the constant, removed as whole
-  tokens), so any other `--skip-path`, including a longer path such as
-  `checkov-extra`, is reported.
+  An earlier iteration excluded them with `--skip-path`; the PR #4112 review
+  removed it, because Checkov matches `--skip-path` by substring (so a path
+  such as `.../checkov-extra/` would also go unscanned) and the issues require
+  `CHECKOV_SCAN_ARGS` to carry no `--skip-path`. The fixture templates are now
+  stored as `template.yaml.fixture`, an extension the CloudFormation runner does
+  not read, and the tests map the name Checkov reports to the stored one.
+  `checkov_workflow_test.ts` asserts none is stored under a discoverable
+  extension.
+- The lock-step test bans `--skip-path` outright, with no exception.
 
 ### Undiscoverable Facts
 
@@ -68,12 +69,13 @@ unchanged. The only production change is the `--skip-path` pair added to
 
 ## Evidence
 
-- `worker/deno/tests/checkov_workflow_test.ts` has 16 tests, all passing. One
-  checks the real files and 15 are negative fixtures.
+- `worker/deno/tests/checkov_workflow_test.ts` has 20 tests, all passing. One
+  checks the real files, 15 are negative fixtures for the workflow, and 4 cover
+  the config-file and fixture-extension guards.
 - `actionlint` exits 0 on the new and edited workflows.
 - The Docker scan on the CI runner, the Floci `CREATE_COMPLETE` run and zizmor
   are CI-only. Their output is the check runs on this PR; the first Checkov run
-  failed only on the #3970 fixtures, which the `--skip-path` pair now excludes,
+  failed only on the #3970 fixtures, which are now stored under an extension Checkov does not discover,
   the re-run passed (`checkov / checkov (CloudFormation)`, run 39399239691, 27s, and `gate` is green). Floci and zizmor did not run as separate checks on this PR; `floci.yml` and `test-floci.sh` are unchanged.
 
 **Docs sweep** — grep: `semgrep`, `semgrep.yml`; section: `CONTRIBUTING.md` "Checkov (CloudFormation) in CI" and the CI workflow list; siblings: `semgrep` and `semgrep.yml` — hits at `README.md:229`, `README.md:409-413`, `CONTRIBUTING.md:96`, `CODING-STANDARDS.md:1364-1371` and `docs/INTERNALS.md:119` describe the local quality gate and are still true; `docs/EXTENDING.md:242-243` and `docs/PROMPTS.md:37` list target-repo templates and are still true; `docs/MERGE.md`, `docs/AGENT-ACCOUNTABILITY.md:881`, `docs/GITHUB-ACTIONS-AUDIT-SCAN.md`, `docs/SECURITY-TREE-SWEEP.md`, `docs/CONTAINER*.md`, `docs/BEST-PRACTICES-SCAN.md:540`, `docs/security/*`, `docs/workflows/*` and `docs/audits/*` are historical or about target repos and are still true; `SECURITY.md` and `DESIGN-PRINCIPLES.md` do not mention Semgrep; updated: `CONTRIBUTING.md`, `docs/REFERENCES.md` and `docs/audits/dependency-inventory.md`
@@ -89,7 +91,7 @@ unchanged. The only production change is the `--skip-path` pair added to
 - **met** — The template has 0 failed checks, and every skip is inline with the Floci reason — evidence: the template is unchanged; the CI run `checkov / checkov (CloudFormation)` (run 39399239691) passed with the #3970 fixtures excluded, so `linux-verification-host.yaml` has 0 failed checks and needs no skip — reviewer: met
 - **met** — `test-floci.sh` still reaches `CREATE_COMPLETE`, and `floci.yml` is unchanged — evidence: `git diff milestone/pre-push-gate-ci-parity -- .github/workflows/floci.yml test-floci.sh` is empty, so the Floci behaviour is unchanged by construction; `floci.yml` is path-filtered and did not run as a separate check on this PR — reviewer: met
 - **met** — The lock-step test passes on the real files and fails on each negative fixture — evidence: `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - a changed image digest is reported`, `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - an added --soft-fail is reported`, `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - a weakening flag split mid-word across a continuation is reported`, `worker/deno/tests/checkov_workflow_test.ts::checkov_workflow - checkov removed from gate.needs is reported` — reviewer: met
-- **met** — `actionlint`, the tests and `./quality.sh` all pass — evidence: `actionlint` exits 0, `worker/deno/tests/checkov_workflow_test.ts` (16 passing) and the gate run recorded in the Test Plan — reviewer: met
+- **met** — `actionlint`, the tests and `./quality.sh` all pass — evidence: `actionlint` exits 0, `worker/deno/tests/checkov_workflow_test.ts` (20 passing) and the gate run recorded in the Test Plan — reviewer: met
 
 ## Standards Review
 
@@ -98,12 +100,12 @@ unchanged. The only production change is the `--skip-path` pair added to
 - **clean** — The independent standards reviewer found no material departure from `CODING-STANDARDS.md` in the diff after the findings below were fixed.
   - Missing negative fixtures for no-SARIF and no-path-filter: added the two checks and tests.
   - A raw-text grep test: deleted.
-  - A private copy of `joinContinuations`: kept on purpose and explained in its doc comment, because the owner's trim-and-space join hides a mid-word split. The only production change is the `--skip-path` pair in `CHECKOV_SCAN_ARGS`.
-    - A negative test was added: a `--skip-path` other than the allowed pair is reported (red when the allowance is too broad).
+  - A private copy of `joinContinuations`: kept on purpose and explained in its doc comment, because the owner's trim-and-space join hides a mid-word split. There is no production change.
+    - A negative test was added: an added `--skip-path` is reported (red when the ban is lifted).
 
 ## Test Plan
 
-- [x] `deno task test tests/checkov_workflow_test.ts`: 16 passed.
+- [x] `deno test -A tests/checkov_workflow_test.ts`: 20 passed.
 - [x] `deno fmt --check`, `deno lint` and `deno check` on the test file are clean.
 - [x] `actionlint` exits 0.
 - [x] `./quality.sh < /dev/null` passes. The config integration check was
@@ -114,7 +116,7 @@ unchanged. The only production change is the `--skip-path` pair added to
       Each was restored.
 - [x] Applied the rule changes to the PR's own diff. This PR adds no prompt
       or standards rule, so there was nothing to apply.
-- [x] Red check: widening the `--skip-path` allowance turned only the new negative test red; restored.
+- [x] Red check: removing `--skip-path` from `WEAKENING_FLAGS` turns the added-`--skip-path` negative test red; restored.
 - [x] CI: the Checkov scan passed on this PR (run 39399239691) and `gate` is green. No separate Floci or zizmor check ran on this PR; the Floci files are unchanged.
 
 <!-- vibe-branch-outcomes -->
