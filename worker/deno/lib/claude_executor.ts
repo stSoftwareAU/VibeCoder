@@ -799,7 +799,15 @@ export function detectModelUnavailable(
  * silently discard continuity if it fired on the wrong failure.
  */
 const INVALID_SESSION_ID_RE =
-  /invalid session id|session id[^\n]{0,40}must be[^\n]{0,20}uuid|--session-id can only be used with|--resume requires a valid session/i;
+  /invalid session id|session id[^\n]{0,40}must be[^\n]{0,20}uuid|--session-id can only be used with|--resume requires a valid session|no conversation found with session id/i;
+
+/**
+ * The CLI aborting because its autocompaction cannot keep the context under
+ * the window (Issue #4147). On a resumed session that is the inherited
+ * transcript's size, not the task's, so a fresh session can still do the
+ * work.
+ */
+const AUTOCOMPACT_THRASH_RE = /autocompact is thrashing/i;
 
 /**
  * Check if the tail of output indicates the CLI rejected the session id.
@@ -821,6 +829,25 @@ export function detectInvalidSessionId(
   const tail = lines.slice(-tailLines).join("\n");
 
   return INVALID_SESSION_ID_RE.test(tail);
+}
+
+/**
+ * Check if the tail of output shows a resumed session cannot carry the run:
+ * the CLI refused or could not find it ({@link detectInvalidSessionId}), or
+ * the inherited transcript thrashed autocompaction (Issue #4147). Either way
+ * no model did the task's work, and a fresh session can.
+ *
+ * @param output - The output text to scan (stdout and stderr)
+ * @param tailLines - Number of lines from the end to check (default: 30)
+ * @returns true if retrying without the session flags is the remedy
+ */
+export function detectResumedSessionUnusable(
+  output: string,
+  tailLines: number = 30,
+): boolean {
+  if (detectInvalidSessionId(output, tailLines)) return true;
+  const tail = output.split("\n").slice(-tailLines).join("\n");
+  return AUTOCOMPACT_THRASH_RE.test(tail);
 }
 
 // ---------------------------------------------------------------------------

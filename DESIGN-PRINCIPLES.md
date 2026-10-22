@@ -13,6 +13,33 @@ canonical operator manual under [`docs/`](docs/) for the full detail.
 
 ## Design Principles
 
+### An assigned issue is completed, never handed back
+
+**The Vibe Coder exists to finish work, not to create work for humans.** The
+owner assigns a batch of issues and checks in a day or so later expecting every
+one of them done (owner, 23 October 2026). Applying `work-on` is the approval
+to complete that issue; nothing more from a person is needed or wanted.
+
+- **Only "done" is success.** A merged PR that meets every acceptance criterion
+  is the only good outcome. Handing an issue back to a human (`needs-human`,
+  "analysis-only" on an implementation issue, a request for a decision) or
+  delivering only the easy parts is a **failure of the Vibe Coder**. It is
+  counted and fixed as a defect, never treated as a resolution.
+- **No partial PRs, no follow-up tickets.** A PR is raised only when every
+  criterion is met. A run that has not finished keeps working; if it runs out
+  of time, it may push a **draft** PR marked `Part of #N` and the worker
+  carries on with the same issue automatically until it is complete. It never
+  files a new issue for the remainder: a new issue needs a human to read and
+  approve it, and the original issue was already approved. "You ask for a
+  hamburger, you don't get two buns and a follow-up ticket for the patty."
+- **A crash is not an answer.** A run that failed, made no model turn, or
+  stopped early is retried on the normal ladder. It is never read as "nothing
+  to do".
+- **`failed` is honest, `needs-human` is the last resort.** When automated
+  recovery is genuinely exhausted, the issue is marked `failed` with the
+  evidence, so the failure is visible and countable. It is never relabelled as
+  a hand-off, an analysis, or a partial success.
+
 ### Fully unattended operation and self-healing
 
 **VibeCoder must run fully automatically on unattended machines and self-heal
@@ -581,6 +608,26 @@ no auto-close (multi-account operation retained). The fleet-wide regression
 suite lives in `worker/deno/tests/fleet_duplicate_prevention_test.ts`; see
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) and
 [`docs/DUPLICATE-PR-ROOT-CAUSE-3138.md`](docs/DUPLICATE-PR-ROOT-CAUSE-3138.md).
+
+### No PR until every acceptance criterion is met
+
+"Partially completed" is never a resolution (Issue #4146). A run whose PR
+summary leaves any criterion `partial`, `missing` or unassessed raises **no
+PR**: the unmet-criteria gate (`worker/deno/lib/unmet_criteria_gate.ts`) sends
+the agent back in the same run to finish the work, round after round while
+each one makes progress, and a run that still cannot finish fails as
+`criteria_unmet` with its branch kept for the next run. No follow-up issue is
+ever filed for the remainder — the issue was approved to be done, and a new
+issue would need a human to read and approve it — and nothing is labelled
+`needs-human`. **Incomplete PRs are drafts**, so CI and code review are not
+spent on them: a PR the agent raised itself with criteria unmet, or a run that
+**times out**, keeps a draft `Part of #N` PR
+(`worker/deno/lib/draft_continuation_pr.ts`) that never holds its issue, so the
+next run resumes the branch and finishes. Only once every criterion is met is
+the draft marked ready with `Closes #N`, and squash auto-merge is armed in the
+same step so it merges as soon as possible. Whether the run was degraded
+changes none of this. See
+[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md#-no-pr-until-every-acceptance-criterion-is-met).
 
 ### Fleet-aware PR maintenance (`fleet_pr_authors`)
 
