@@ -217,16 +217,13 @@ untested, never as a clean pass.
 
 ## Built-in shell mutations
 
-The shell mutator works on added lines of changed shell scripts. A script is a
-changed file ending `.sh` or `.bash`, or one whose first line is a shebang that
-names `sh` or `bash`, directly or through `/usr/bin/env` (env flags such as `-S`
-are skipped). Shell test files are tests, not targets: `*_test.sh`,
+The shell mutator works on added lines of changed shell scripts. A script is a changed file ending `.sh` or `.bash`, or an extensionless file whose first line is a shebang that names `sh` or `bash`, directly or through `/usr/bin/env` (env flags such as `-S` are skipped). Shell test files are tests, not targets: `*_test.sh`,
 `*.test.sh`, `test_*.sh` and `*.bats` are never mutated. Shell is mutated
 whatever the repository's primary language.
 
 | Mutation                     | Effect                                                                                                                                                                                                                  |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Replace a statement with `:` | A plain assignment, `export`, `local`/`readonly`/`declare` or simple command line becomes `:`. Structural lines (`if`, `then`, `fi`, `do`, `done` and function headers), continuation lines and heredocs are left alone |
+| Replace a statement with `:` | A plain assignment, `export`, `local`/`readonly`/`declare` or simple command line becomes `:`. Structural lines (`if`, `then`, `fi`, `do`, `done` and function headers) and lines ending in `\`, `&&`, `||`, `|`, `{` or `(` are left alone. Heredocs are not recognised, so a heredoc opener or body line that looks like a simple command can be replaced |
 | Flip a test operator         | `-eq` and `-ne`, `-lt` and `-ge`, `-gt` and `-le`, `==` and `!=`, and `-z` and `-n` swap                                                                                                                                |
 | Swap `&&` and `\|\|`         | `a && b` becomes `a \|\| b` and the reverse                                                                                                                                                                             |
 | Swap a return status         | `return 0` becomes `return 1` and the reverse                                                                                                                                                                           |
@@ -242,9 +239,7 @@ Like the Deno mutator, it is hand-scanned, skips added lines over 400
 characters, and is capped at 40 mutants shared across the changed shell scripts
 of the run.
 
-Covering tests for a changed script are the shell test files whose text contains
-the script's repository-relative path or its basename. Each covering test runs
-as `bash <test>` from the repository root, in the same allowlisted environment
+Covering tests for a changed script are the Deno test files and the shell test files whose text contains the script's repository-relative path or its basename. A shell test runs as `bash <test>` (`bats <test>` for a `.bats` file) from the repository root, and a Deno test runs as `deno test` from the directory of its nearest Deno config, in the same allowlisted environment
 as the other child processes (see [Child environment](#child-environment)).
 Before any mutant, each covering test must pass unmutated; a failing baseline is
 an error. A passing baseline shows only that the selected test exits 0 on the
