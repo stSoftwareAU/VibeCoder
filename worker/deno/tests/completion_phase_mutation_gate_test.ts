@@ -11,7 +11,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import {
   MAX_MUTATION_BUDGET_SECONDS,
@@ -22,7 +22,10 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import type { MutationCheckResult } from "../lib/mutation_gate.ts";
+import {
+  MUTATION_TEMP_DIR_UNWRITABLE,
+  type MutationCheckResult,
+} from "../lib/mutation_gate.ts";
 import type { MutationRunInput } from "../lib/mutation_runner.ts";
 
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f901122334455";
@@ -94,6 +97,8 @@ interface Scenario {
 interface Outcome {
   status: string;
   reason?: string;
+  category?: string;
+  categories?: readonly string[];
   claudeCalls: number;
   prompts: string[];
   prCreateCalls: number;
@@ -247,6 +252,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     reason: result.status === "failure" || result.status === "early_exit"
       ? result.reason
       : undefined,
+    category: result.status === "failure" || result.status === "early_exit"
+      ? result.category
+      : undefined,
+    categories: result.status === "failure" ? result.categories : undefined,
     claudeCalls: prompts.length,
     prompts,
     prCreateCalls,
@@ -354,6 +363,28 @@ Deno.test("completion - a throwing runner blocks the PR (fail closed)", async ()
   assertEquals(outcome.status, "failure");
   assertEquals(outcome.prCreateCalls, 0);
   assertStringIncludes(outcome.reason ?? "", "boom");
+});
+
+Deno.test("completion - an unwritable mutation temp dir blocks as a worker fault, not a quality failure", async () => {
+  const outcome = await runCompletion({
+    mutation: {
+      kind: "error",
+      reason:
+        `${MUTATION_TEMP_DIR_UNWRITABLE}: Read-only file system (os error 30): tmpdir`,
+    },
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+  assertStringIncludes(outcome.reason ?? "", "worker fault");
+  assert(outcome.category !== "quality_check", String(outcome.category));
+  assertEquals(outcome.categories?.includes("internal_error"), true);
+  assertEquals(
+    outcome.comments.some((c) =>
+      c.includes("## Mutation check: could not run (worker fault)")
+    ),
+    true,
+  );
 });
 
 Deno.test("completion - an uncollectable PR diff blocks the PR and the runner is not called", async () => {

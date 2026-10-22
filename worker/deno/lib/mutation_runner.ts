@@ -37,8 +37,8 @@ import {
   DEFAULT_MUTANT_CAP,
   generateDenoMutantsDetailed,
   isDenoTestFile,
-  MUTATION_TEMP_DIR_UNWRITABLE,
   type Mutant,
+  MUTATION_TEMP_DIR_UNWRITABLE,
   type MutationCheckResult,
   type MutationLanguage,
   parseAddedLines,
@@ -303,7 +303,9 @@ function stripAnsi(text: string): string {
 /** The run's own temp dir, or an `error` result naming the cause when none can be created (Issue #4127). */
 async function makeRunTempDir(
   seams: MutationRunnerSeams,
-): Promise<{ ok: true; dir: string } | { ok: false; result: MutationCheckResult }> {
+): Promise<
+  { ok: true; dir: string } | { ok: false; result: MutationCheckResult }
+> {
   try {
     return { ok: true, dir: await seams.makeTempDir() };
   } catch (err) {
@@ -443,64 +445,64 @@ async function runDeno(
   };
 
   try {
-  // Baseline: the importing tests must pass unmutated.
-  const baselined = new Set<string>();
-  for (const m of runnable) {
-    const tests = testsFor.get(m.file) ?? [];
-    const key = `${configDirFor.get(m.file) ?? ""}\n${tests.join("\n")}`;
-    if (baselined.has(key)) continue;
-    baselined.add(key);
-    if (remaining() <= 0) return exhausted();
-    const base = await seams.runProcess("deno", denoTestArgs(tests), {
-      cwd: cwdFor(m.file),
-      timeoutMs: remaining(),
-      ...childEnv,
-    });
-    if (base.timedOut) return exhausted();
-    if (base.code !== 0) {
-      return {
-        kind: "error",
-        reason: `baseline tests fail before mutation (${
-          tests.join(", ")
-        }); cannot judge mutants`,
-      };
-    }
-  }
-
-  for (const m of runnable) {
-    if (remaining() <= 0) return exhausted();
-    const tests = testsFor.get(m.file) ?? [];
-    const path = absFor.get(m.file);
-    if (path === undefined) continue;
-    const original = originals.get(m.file) ?? "";
-    let result: ProcessResult;
-    try {
-      await seams.writeTextFile(path, m.mutatedSource);
-      result = await seams.runProcess("deno", denoTestArgs(tests), {
+    // Baseline: the importing tests must pass unmutated.
+    const baselined = new Set<string>();
+    for (const m of runnable) {
+      const tests = testsFor.get(m.file) ?? [];
+      const key = `${configDirFor.get(m.file) ?? ""}\n${tests.join("\n")}`;
+      if (baselined.has(key)) continue;
+      baselined.add(key);
+      if (remaining() <= 0) return exhausted();
+      const base = await seams.runProcess("deno", denoTestArgs(tests), {
         cwd: cwdFor(m.file),
         timeoutMs: remaining(),
         ...childEnv,
       });
-    } finally {
-      await seams.writeTextFile(path, original);
+      if (base.timedOut) return exhausted();
+      if (base.code !== 0) {
+        return {
+          kind: "error",
+          reason: `baseline tests fail before mutation (${
+            tests.join(", ")
+          }); cannot judge mutants`,
+        };
+      }
     }
-    if (result.timedOut) return exhausted();
-    tested++;
-    // A mutant the parser rejects is unviable: no test ran, so it is neither
-    // killed nor a survivor.
-    if (result.code !== 0 && isParseFailure(result)) continue;
-    if (result.code !== 0) killed++;
-    else {
-      survivors.push({
-        file: m.file,
-        line: m.line,
-        description: m.description,
-      });
+
+    for (const m of runnable) {
+      if (remaining() <= 0) return exhausted();
+      const tests = testsFor.get(m.file) ?? [];
+      const path = absFor.get(m.file);
+      if (path === undefined) continue;
+      const original = originals.get(m.file) ?? "";
+      let result: ProcessResult;
+      try {
+        await seams.writeTextFile(path, m.mutatedSource);
+        result = await seams.runProcess("deno", denoTestArgs(tests), {
+          cwd: cwdFor(m.file),
+          timeoutMs: remaining(),
+          ...childEnv,
+        });
+      } finally {
+        await seams.writeTextFile(path, original);
+      }
+      if (result.timedOut) return exhausted();
+      tested++;
+      // A mutant the parser rejects is unviable: no test ran, so it is neither
+      // killed nor a survivor.
+      if (result.code !== 0 && isParseFailure(result)) continue;
+      if (result.code !== 0) killed++;
+      else {
+        survivors.push({
+          file: m.file,
+          line: m.line,
+          description: m.description,
+        });
+      }
     }
-  }
-  // A capped run is never a clean pass: candidates past the cap were not tried.
-  if (dropped > 0) return exhausted("mutant_cap");
-  return { kind: "completed", language: "deno", survivors, killed, total };
+    // A capped run is never a clean pass: candidates past the cap were not tried.
+    if (dropped > 0) return exhausted("mutant_cap");
+    return { kind: "completed", language: "deno", survivors, killed, total };
   } finally {
     if (tmpDir !== "") await seams.removeDir(tmpDir);
   }

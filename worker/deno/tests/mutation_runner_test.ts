@@ -1234,3 +1234,120 @@ Deno.test("runMutationCheck rust - real seams: an unwritable temp dir is reporte
     await Deno.remove(testRoot, { recursive: true });
   }
 });
+
+/** The message a promise rejects with, or "" when it resolves. */
+async function rejectionMessage(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  return "";
+}
+
+Deno.test("runMutationCheck deno - no runnable mutant creates no temp dir and removes none", async () => {
+  const files = denoFiles();
+  files[`${REPO}/tests/m_test.ts`] = 'import { g } from "../lib/other.ts";\n';
+  const f = fake(files, () => ok());
+  let made = 0;
+  f.seams.makeTempDir = () => {
+    made++;
+    return Promise.resolve("/tmp/vibe-mutation-never");
+  };
+  const r = await runMutationCheck(input(), f.seams);
+  assert(r.kind === "completed");
+  assert(r.survivors.length > 0);
+  assertEquals(made, 0);
+  assertEquals(f.removed, []);
+  assertEquals(f.calls.length, 0);
+});
+
+Deno.test("makeMutationTempDir - with no TMPDIR it uses Deno's default temp directory, not the work volume", async () => {
+  const testRoot = await Deno.makeTempDir({ prefix: "vibe-mutation-test-" });
+  const work = `${testRoot}/work`;
+  let made = "";
+  try {
+    made = await makeMutationTempDir(envOf({ WORK_DIR: work }));
+    assert(!made.startsWith(`${work}/.mutation-scratch/`), made);
+    assert((await Deno.stat(made)).isDirectory);
+    assertEquals(await pathExists(`${work}/.mutation-scratch`), false);
+  } finally {
+    if (made !== "") await Deno.remove(made, { recursive: true });
+    await Deno.remove(testRoot, { recursive: true });
+  }
+});
+
+Deno.test("makeMutationTempDir - with neither WORK_DIR nor HOME, a refused TMPDIR rejects naming the missing fallback", async () => {
+  const testRoot = await Deno.makeTempDir({ prefix: "vibe-mutation-test-" });
+  try {
+    const message = await rejectionMessage(
+      makeMutationTempDir(envOf({ TMPDIR: `${testRoot}/missing` })),
+    );
+    assert(message !== "", "expected a rejection");
+    assertStringIncludes(message, "system temp directory:");
+    assertStringIncludes(message, "no work-volume fallback");
+    assertStringIncludes(message, "No such file or directory");
+  } finally {
+    await Deno.remove(testRoot, { recursive: true });
+  }
+});
+
+Deno.test("makeMutationTempDir - a pre-existing group/other-writable scratch root is refused and nothing is created in it", async () => {
+  const testRoot = await Deno.makeTempDir({ prefix: "vibe-mutation-test-" });
+  try {
+    const work = `${testRoot}/work`;
+    const root = `${work}/.mutation-scratch`;
+    await Deno.mkdir(root, { recursive: true });
+    await Deno.chmod(root, 0o777);
+    const message = await rejectionMessage(
+      makeMutationTempDir(
+        envOf({ TMPDIR: `${testRoot}/missing`, WORK_DIR: work }),
+      ),
+    );
+    assert(message !== "", "expected a rejection");
+    assertStringIncludes(message, root);
+    assertStringIncludes(message, "group/other");
+    const entries: string[] = [];
+    for await (const entry of Deno.readDir(root)) entries.push(entry.name);
+    assertEquals(entries, []);
+  } finally {
+    await Deno.remove(testRoot, { recursive: true });
+  }
+});
+
+Deno.test("makeMutationTempDir - a private scratch root whose temp dir cannot be made rejects naming the root and the cause", async () => {
+  const testRoot = await Deno.makeTempDir({ prefix: "vibe-mutation-test-" });
+  const work = `${testRoot}/work`;
+  const root = `${work}/.mutation-scratch`;
+  try {
+    await Deno.mkdir(root, { recursive: true });
+    // Private (no group/other bits) yet not writable by its owner.
+    await Deno.chmod(root, 0o500);
+    let writable = true;
+    try {
+      await Deno.writeTextFile(`${root}/probe`, "x");
+      await Deno.remove(`${root}/probe`);
+    } catch {
+      writable = false;
+    }
+    // Running as root, a 0500 directory still accepts writes, so the refusal
+    // cannot be provoked; skip rather than assert a false pass.
+    if (writable) return;
+    const message = await rejectionMessage(
+      makeMutationTempDir(
+        envOf({ TMPDIR: `${testRoot}/missing`, WORK_DIR: work }),
+      ),
+    );
+    assert(message !== "", "expected a rejection");
+    assertStringIncludes(message, "system temp directory:");
+    assertStringIncludes(message, root);
+    assertStringIncludes(message, "Permission denied");
+  } finally {
+    try {
+      await Deno.chmod(root, 0o700);
+    } catch {
+      // The root was never created; nothing to restore.
+    }
+    await Deno.remove(testRoot, { recursive: true });
+  }
+});
