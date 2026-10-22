@@ -1,0 +1,12 @@
+{
+  "issue": 4109,
+  "chunk": "top-up-4109",
+  "title": "top-up: issue run provider and sub-agent settlement",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4109",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/issue_run_provider_agents.ts, the pre-spawn settlement of an issue run's provider and sub-agent switches (#4109)",
+  "status": "claimed",
+  "sweptAt": "9a5d2f27dc983c2c6856d71cb4809ff41af506d1",
+  "paths": [
+    "worker/deno/lib/issue_run_provider_agents.ts"
+  ]
+}

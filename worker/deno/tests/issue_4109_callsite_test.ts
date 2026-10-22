@@ -25,9 +25,9 @@ import {
 } from "../lib/execute_claude_phase.ts";
 import {
   CLAUDE_PROVIDER_ID,
-  IMAGE_AGENT_PROVIDERS_ENV,
   setConfiguredAgentProviderId,
   setConfiguredEnabledAgentProviderIds,
+  setImageAgentProviderIds,
 } from "../lib/agent_provider.ts";
 import { rtkSeam } from "./support/rtk_seam.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
@@ -37,35 +37,30 @@ import type { IssueAllocationSelection } from "../lib/subscription_allocation_ru
 const REROUTE_WARNING =
   "rerouting the run to the claude provider (Issue #4109)";
 
-/** The image stamp as it was before this file touched it. */
-let priorImageStamp: string | undefined;
-
 /**
- * Configure a Codex host with Claude enabled alongside it. The image stamp is
- * widened to carry codex, because the worker refuses a provider the running
- * image did not install; this test host stands in for a codex-capable image.
+ * Configure a Codex host with Claude enabled alongside it.
+ *
+ * The installed set is stated through `setImageAgentProviderIds` rather than
+ * the image stamp (`VIBE_IMAGE_AGENT_PROVIDERS`): the planner reads the stamp
+ * from the process environment with no injection point at the call sites, and
+ * this suite must not mutate that environment (Issue #880). Without a stated
+ * set the ambient stamp of the host decides the installed-set check.
  */
 function configureCodexWithClaude(): void {
-  configureHost("codex", "claude,codex");
+  configureHost("codex");
 }
 
 /** Make `active` the host provider, with Claude enabled alongside it. */
-function configureHost(active: string, stamp: string): void {
-  priorImageStamp = Deno.env.get(IMAGE_AGENT_PROVIDERS_ENV);
-  Deno.env.set(IMAGE_AGENT_PROVIDERS_ENV, stamp);
+function configureHost(active: string): void {
   setConfiguredAgentProviderId(active);
   setConfiguredEnabledAgentProviderIds(["claude", active]);
+  setImageAgentProviderIds(["claude", active]);
 }
 
 function resetProviderConfig(): void {
-  if (priorImageStamp === undefined) {
-    Deno.env.delete(IMAGE_AGENT_PROVIDERS_ENV);
-  } else {
-    Deno.env.set(IMAGE_AGENT_PROVIDERS_ENV, priorImageStamp);
-  }
-  priorImageStamp = undefined;
   setConfiguredAgentProviderId(undefined);
   setConfiguredEnabledAgentProviderIds(undefined);
+  setImageAgentProviderIds(undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +335,10 @@ function claudePhaseDeps(
 Deno.test("execute_claude_phase - the rtk sink receives the rerouted provider (Issue #4109)", async () => {
   configureCodexWithClaude();
   try {
-    const observed: ClaudePhaseObserved = { codegraphProviderIds: [], logs: [] };
+    const observed: ClaudePhaseObserved = {
+      codegraphProviderIds: [],
+      logs: [],
+    };
     const rtk = rtkSeam([]);
 
     await runExecuteClaudePhase(
@@ -361,7 +359,10 @@ Deno.test("execute_claude_phase - the rtk sink receives the rerouted provider (I
 Deno.test("execute_claude_phase - the codegraph sink receives the rerouted provider (Issue #4109)", async () => {
   configureCodexWithClaude();
   try {
-    const observed: ClaudePhaseObserved = { codegraphProviderIds: [], logs: [] };
+    const observed: ClaudePhaseObserved = {
+      codegraphProviderIds: [],
+      logs: [],
+    };
     const rtk = rtkSeam([]);
 
     await runExecuteClaudePhase(
@@ -386,7 +387,7 @@ Deno.test("execute_claude_phase - the codegraph sink receives the rerouted provi
 Deno.test("execute_claude_phase - the graft sink receives the rerouted provider (Issue #4109)", async () => {
   // Gemini has no MCP transport, so a gemini run is never handed graft. The
   // planner reroutes it to Claude, which takes the graft MCP server.
-  configureHost("gemini", "claude,gemini");
+  configureHost("gemini");
   try {
     const observed: ClaudePhaseObserved = {
       codegraphProviderIds: [],
@@ -400,8 +401,14 @@ Deno.test("execute_claude_phase - the graft sink receives the rerouted provider 
     };
 
     await runExecuteClaudePhase(
-      claudePhaseOptions({ agentProvider: "gemini", graftContextEnabled: true }),
-      { ...claudePhaseDeps(observed, rtk), collectGraftContext: () => Promise.resolve(graftContext) },
+      claudePhaseOptions({
+        agentProvider: "gemini",
+        graftContextEnabled: true,
+      }),
+      {
+        ...claudePhaseDeps(observed, rtk),
+        collectGraftContext: () => Promise.resolve(graftContext),
+      },
     );
 
     assert(
