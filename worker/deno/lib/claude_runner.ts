@@ -1263,10 +1263,7 @@ async function runClaudeWithTimeoutBody(
   // Haiku-tier explorer). A provider whose argv cannot carry them drops them —
   // Codex and Gemini silently, DeepSeek with a warning — so the advisor would
   // be told to dispatch sub-agents the CLI never defines. Refuse before spawn
-  // instead. This is a backstop: the issue-run planner
-  // (lib/issue_run_provider_agents.ts) reroutes or strips such a run before it
-  // reaches here, so this guard fires only for a caller that bypasses it.
-  // `invocationRequest.agents` is present only when the run's flags
+  // instead. `invocationRequest.agents` is present only when the run's flags
   // resolved some definition, and the check asks the provider's own argv rather
   // than a provider-id table.
   if (invocationRequest.agents && !args.includes("--agents")) {

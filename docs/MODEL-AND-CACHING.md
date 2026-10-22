@@ -106,10 +106,10 @@ a section without a marker, fails `deno test`.
 | [Design note — effort-first vs tier-first](#design-note--effort-first-vs-tier-first) | ✅ | ⚠️ | ❌ | ❌ | Codex has four effort levels (no `xhigh`/`max`); neither the Gemini CLI nor DeepSeek's endpoint has an effort control, so both vary tier alone |
 | [Per-phase decision log](#per-phase-decision-log) | ✅ | ❌ | ❌ | ❌ | The decisions are Claude tier/price ones; the other tables copy the shape (top/base/cheap), not the rows — DeepSeek copies it without a cheap rung |
 | [Model/effort precedence chain](#%EF%B8%8F-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
-| [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns. A native `issue` run carrying these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude when `claude` is enabled, or has them stripped with a warning before spawn otherwise (Issue #4109); the runner's refusal (Issue #4010) is only a backstop. |
-| [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude when `claude` is enabled, or has them stripped with a warning before spawn otherwise (Issue #4109); the runner's refusal (Issue #4010) is only a backstop. The spawn caps are Claude Code environment variables |
+| [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`. |
+| [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`. The spawn caps are Claude Code environment variables |
 | [Pre-PR verifier (issue phase)](#pre-pr-verifier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The verifier is one extra pass through the Claude runner with the `issue` phase's model; it is not a `--agents` definition, and the `claude` provider is the one that runs it |
-| [Haiku sub-agent tier (issue phase)](#haiku-sub-agent-tier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The tier picks the model of Claude CLI `--agents` definitions (executor, Standards reviewer, explorer): `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude when `claude` is enabled, or has them stripped with a warning before spawn otherwise (Issue #4109); the runner's refusal (Issue #4010) is only a backstop. |
+| [Haiku sub-agent tier (issue phase)](#haiku-sub-agent-tier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The tier picks the model of Claude CLI `--agents` definitions (executor, Standards reviewer, explorer): `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`. |
 | [Codex per-phase routing](#-codex-per-phase-routing) | ❌ | ✅ | ❌ | ❌ | Claude uses the precedence chain; Gemini and DeepSeek use their own sections |
 | [Gemini per-phase routing](#-gemini-per-phase-routing) | ❌ | ❌ | ✅ | ❌ | Claude uses the precedence chain; Codex and DeepSeek use their own sections |
 | [DeepSeek per-phase routing](#-deepseek-per-phase-routing) | ❌ | ❌ | ❌ | ✅ | Claude uses the precedence chain; Codex and Gemini use their own sections |
@@ -529,7 +529,7 @@ override is visible in the cost logs. The resolution logic lives in
 
 ### Advisor and executor split (issue phase)
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the split is built from the Claude CLI's `--agents` definitions, so only the `claude` provider ever assembles them; `codex` and `gemini` never build the arguments, and `deepseek` (the same binary against another endpoint) strips them and warns. A native `issue` run carrying these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude when `claude` is enabled, or has them stripped with a warning before spawn otherwise (Issue #4109); the runner's refusal (Issue #4010) is only a backstop.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the split is built from the Claude CLI's `--agents` definitions, so only the `claude` provider ever assembles them; `codex` and `gemini` never build the arguments, and `deepseek` (the same binary against another endpoint) strips them and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`.
 
 The `issue_executor_split` configuration key
 ([CONFIGURATION.md](CONFIGURATION.md)) changes **who** does the work on an
@@ -626,10 +626,9 @@ and reports five numbers.
 - **Control** — every non-pilot host's `issue`-phase runs on Claude in the same
   window. Since Issue #2812 the key is on by default, so a control host must
   set `issue_executor_split: false` explicitly.
-- **Not split by provider** — the pilot counters do not filter by provider.
-  Every completed `issue`-phase run is counted. A run on `codex`, `gemini` or
-  `deepseek` has its split state settled by the planner before spawn (Issue
-  #4109): rerouted to Claude, or stripped of sub-agents.
+- **Excluded from both sides** — runs on any other provider. The key does
+  nothing under `codex` or `gemini` and is stripped under `deepseek`, so those
+  runs would dilute both arms without testing anything.
 
 **Window** — 30 implementation runs on the pilot hosts, or 4 weeks, whichever
 comes first.
@@ -726,7 +725,7 @@ flowchart TD
 
 ### Reviewer sub-agents (issue phase)
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the reviewers are Claude CLI `--agents` definitions, built the same way as the split's executors; `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude when `claude` is enabled, or has them stripped with a warning before spawn otherwise (Issue #4109); the runner's refusal (Issue #4010) is only a backstop.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the reviewers are Claude CLI `--agents` definitions, built the same way as the split's executors; `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`.
 
 Every `issue` run whose body states acceptance criteria dispatches two
 independent reviewers before writing the PR summary (the *Independent Review
@@ -831,10 +830,10 @@ The repository-owned checklists it also applies are in
 > tier only changes `--agents` definitions, built the same way as the split's
 > executors and the reviewers above; `codex` and `gemini` never build the
 > argument, and `deepseek` strips it and warns. A native `issue` run carrying
-> these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude
-> when `claude` is enabled, or has them stripped with a warning before spawn
-> otherwise (Issue #4109); the runner's refusal (Issue #4010) is only a
-> backstop.
+> these definitions is refused before spawn under `codex`, `gemini` and
+> `deepseek` (Issue #4010); roll back with `issue_executor_split: false`,
+> `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run
+> the `issue` phase on `claude`.
 
 The `issue_sub_agent_tier` configuration key
 ([CONFIGURATION.md](CONFIGURATION.md), Issue #3402; the host-wide key with a

@@ -348,24 +348,23 @@ stateDiagram-v2
 - **The gap today.** The edit guard exists only for Claude. Codex and Gemini
   drop `agents` and `settingsJson` silently, and DeepSeek drops `settingsJson`
   silently, at the descriptor's `buildInvocation` layer. On the native split
-  path that `--agents` drop is no longer reachable for an `issue` run: the
-  issue-run planner reroutes or strips such a run before spawn (Issue #4109),
-  and `runClaudeWithTimeoutBody` (`worker/deno/lib/claude_runner.ts`) refuses
-  loudly as a backstop for any other caller (Issue #4010). The target still
-  closes the descriptor-layer drop with a refusal (section 8).
+  path that `--agents` drop is no longer reachable: `runClaudeWithTimeoutBody`
+  (`worker/deno/lib/claude_runner.ts`) refuses loudly before spawn when a run
+  carries `agents` but the provider's argv lacks `--agents` (Issue #4010). The
+  target still closes the descriptor-layer drop with a refusal (section 8).
 
 ## 7. Compatibility matrix
 
 Compatibility with the split switched on. "Silent" means no warning is logged
 by the descriptor's `buildInvocation`; on the native split path the runner
-reroutes or strips such an `issue` run before spawn (Issue #4109), and the runner refuses loudly as a backstop (Issue #4010).
+refuses loudly before spawn when `--agents` is dropped (Issue #4010).
 
 | Provider | Prompt transport | `--agents` | `--settings` (edit guard) | `supportsCompaction` | Behaviour with split on |
 | --- | --- | --- | --- | --- | --- |
 | `claude` | stdin (`agent_provider.ts:720`) | Emitted (`:617-618`) | Emitted (`:622-623`) | Yes (`stream_compaction.ts:67-70`) | Prompt block renders; executors defined; edit guard active. |
-| `codex` | stdin (`:853`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Prompt block renders; an `issue` run carrying `--agents` is rerouted to Claude or stripped before spawn (Issue #4109; the runner refusal, Issue #4010, is a backstop); no edit guard. |
-| `gemini` | argv (`:973`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Prompt block renders; an `issue` run carrying `--agents` is rerouted to Claude or stripped before spawn (Issue #4109; the runner refusal, Issue #4010, is a backstop); no edit guard. |
-| `deepseek` | stdin (`:1067`) | Stripped, warned (`:1120-1121`) | Stripped, silent (`:1120`, `:1132`) | Yes | Prompt block renders; an `issue` run carrying `--agents` is rerouted to Claude or stripped before spawn (Issue #4109; the runner refusal, Issue #4010, is a backstop); the descriptor warns for `agents` only. No edit guard. |
+| `codex` | stdin (`:853`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; no edit guard. |
+| `gemini` | argv (`:973`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; no edit guard. |
+| `deepseek` | stdin (`:1067`) | Stripped, warned (`:1120-1121`) | Stripped, silent (`:1120`, `:1132`) | Yes | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; the descriptor warns for `agents` only. No edit guard. |
 
 **The prompt block renders on every provider (confirmed).** The advisor/executor
 block is not gated on the provider. `isIssueExecutorSplitEnabled` takes the
@@ -379,8 +378,7 @@ Both phase paths call it with no provider argument
 the `issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID` guard). The
 `agents` request still reaches every provider's `buildInvocation`, where the
 Codex, Gemini and DeepSeek rows above drop it — but on the native split path
-the issue-run planner reroutes or strips such a run before spawn (Issue #4109),
-and the runner refuses loudly as a backstop when `agents` is present and the
+the runner now refuses loudly before spawn when `agents` is present and the
 argv lacks `--agents` (Issue #4010). The advisor is therefore no longer
 silently told to dispatch `executor` sub-agents the CLI never defines.
 
@@ -430,9 +428,8 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   only when external orchestration is off
   (`worker/deno/lib/execute_claude_phase.ts:1338`,
   `worker/deno/lib/phases/execute_phase.ts:796`). The fail-loud invariant is now
-  delivered on this path too: the issue-run planner reroutes or strips such a
-  run before spawn (Issue #4109), and `runClaudeWithTimeoutBody`
-  (`worker/deno/lib/claude_runner.ts`) refuses loudly as a backstop when a run
+  delivered on this path too: `runClaudeWithTimeoutBody`
+  (`worker/deno/lib/claude_runner.ts`) refuses loudly before spawn when a run
   carries `agents` but the provider's argv lacks `--agents` (Issue #4010).
   Codex, Gemini and DeepSeek no longer silently drop `agents` on the native
   split. The `settingsJson` drop at the descriptor layer (section 3) is out of
@@ -442,9 +439,8 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   `true`. `external_orchestration` stays `false` until a host opts in. Nothing
   in the rollout changes them. The defaults keep `--agents` on every native
   `issue` run, so with them a host whose `issue` phase runs on `codex`,
-  `gemini` or `deepseek` has each such run rerouted to Claude when Claude is
-  enabled, or stripped with a warning otherwise (Issue #4109), unless it applies
-  the full rollback below or opts into external orchestration.
+  `gemini` or `deepseek` is refused until it applies the full rollback below or
+  opts into external orchestration (Issue #4010).
 - **Rollback.** Native: setting `issue_executor_split: false` and
   `issue_reviewer_agents: false` alone does not remove `--agents` on the default
   `haiku` tier. `buildIssueRunAgents` (`worker/deno/lib/issue_executor_agents.ts:420-434`)
@@ -453,11 +449,10 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   is `"haiku"`. A full rollback to no `--agents` argument also sets
   `issue_sub_agent_tier: "sonnet"`. The run is then a single session, as it was
   before the split. The full rollback (all three keys) is also what lets a
-  non-Claude provider run the native `issue` phase unchanged; otherwise the
-  issue-run planner reroutes or strips the run (Issue #4109). External
-  orchestration: set `external_orchestration` to `false` on the host or
-  repository and restart the worker; the native path resumes with the
-  existing configuration keys.
+  non-Claude provider run the native `issue` phase. External orchestration: set
+  `external_orchestration` to
+  `false` on the host or repository and restart the worker; the native path
+  resumes with the existing configuration keys.
 
 ## 9. Incremental implementation order
 
@@ -479,9 +474,8 @@ flowchart TD
    `AgentProviderDescriptor` fields.
 4. Refuse unsupported providers loudly when the split is on. This is the first
    behaviour change, and it sits behind the existing flags. Delivered on the
-   native split path by Issue #4010 as a runner backstop
-   (`runClaudeWithTimeoutBody` in `worker/deno/lib/claude_runner.ts`), and
-   before spawn by the issue-run planner (Issue #4109).
+   native split path by Issue #4010 (`runClaudeWithTimeoutBody` in
+   `worker/deno/lib/claude_runner.ts`).
 5. Add a parser for the structured result, Claude first.
 6. Port the edit-guard decision to a provider-neutral check. Keep the Claude
    hook as the enforcement mechanism for that provider.

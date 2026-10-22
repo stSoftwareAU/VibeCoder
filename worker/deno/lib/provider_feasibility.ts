@@ -24,7 +24,6 @@
 import {
   type AgentInvocationRequest,
   agentProviderById,
-  type AgentProviderDescriptor,
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
 } from "./agent_provider.ts";
@@ -196,23 +195,6 @@ export function probeInvocationCapabilities(
 ): ProviderInvocationCapabilities | undefined {
   const descriptor = agentProviderById(providerId);
   if (!descriptor) return undefined;
-  return probeDescriptorInvocationCapabilities(descriptor);
-}
-
-/**
- * Ask a descriptor's `buildInvocation` what its CLI carries (Issue #4109).
- *
- * The descriptor-taking form of {@link probeInvocationCapabilities}, for a
- * caller that holds a provider it did not register.
- *
- * @param descriptor - The provider descriptor to probe.
- * @param options - `quiet` mutes the warnings the argv build prints (Issue #4109).
- * @returns The capabilities the descriptor's argv carries.
- */
-export function probeDescriptorInvocationCapabilities(
-  descriptor: AgentProviderDescriptor,
-  options: { quiet?: boolean } = {},
-): ProviderInvocationCapabilities {
   const request: AgentInvocationRequest = {
     prompt: "feasibility probe",
     model: "feasibility-probe",
@@ -223,28 +205,12 @@ export function probeDescriptorInvocationCapabilities(
     settingsJson: "{}",
     env: () => undefined,
   };
-  const args = options.quiet
-    ? buildInvocationQuietly(descriptor, request)
-    : descriptor.buildInvocation(request);
+  const args = descriptor.buildInvocation(request);
   return {
     carriesSubAgents: args.includes("--agents"),
     carriesSettingsHook: args.includes("--settings"),
     bypassesCliSandbox: args.includes(CODEX_SANDBOX_BYPASS_FLAG),
   };
-}
-
-/** Build the argv with `console.warn` muted, restoring it after (Issue #4109). */
-function buildInvocationQuietly(
-  descriptor: AgentProviderDescriptor,
-  request: AgentInvocationRequest,
-): string[] {
-  const warn = console.warn;
-  console.warn = () => {};
-  try {
-    return descriptor.buildInvocation(request);
-  } finally {
-    console.warn = warn;
-  }
 }
 
 /** A row of the report: a combination with its verdict and reasons. */

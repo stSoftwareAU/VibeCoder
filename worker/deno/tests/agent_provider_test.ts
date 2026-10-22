@@ -17,7 +17,6 @@
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
-  activeAgentProvider,
   AGENT_PROVIDER_CONFIG_KEY,
   AGENT_PROVIDER_ENV,
   agentProviderIds,
@@ -30,7 +29,6 @@ import {
   GEMINI_PROVIDER_ID,
   IMAGE_AGENT_PROVIDERS_ENV,
   imageAgentProviderIds,
-  plannedActiveAgentProvider,
   PROVIDER_FRAGMENT_DIR,
   resolveAgentProvider,
   resolveAgentProviderId,
@@ -424,40 +422,6 @@ Deno.test("agent provider - resolving a provider the image lacks fails at resolu
     }),
     CLAUDE_PROVIDER_ID,
   );
-});
-
-Deno.test("agent provider - pre-spawn planning reads an uninstalled provider without the install assert (Issue #4109)", () => {
-  // Codex is configured but this image installed only Claude. The install
-  // assert still refuses it at resolution, but planning must not throw early.
-  const lacking = { configured: CODEX_PROVIDER_ID, env: stamped("claude") };
-  assertThrows(
-    () => activeAgentProvider(lacking),
-    Error,
-    "did not install",
-  );
-  assertEquals(plannedActiveAgentProvider(lacking).id, CODEX_PROVIDER_ID);
-
-  // Positive control: once the image carries Codex, both resolve it.
-  const carrying = {
-    configured: CODEX_PROVIDER_ID,
-    env: stamped("claude,codex"),
-  };
-  assertEquals(activeAgentProvider(carrying).id, CODEX_PROVIDER_ID);
-  assertEquals(plannedActiveAgentProvider(carrying).id, CODEX_PROVIDER_ID);
-
-  // The per-run override is still honoured by the planning resolver.
-  try {
-    setRunProviderOverride(CODEX_PROVIDER_ID);
-    assertEquals(
-      plannedActiveAgentProvider({
-        configured: CLAUDE_PROVIDER_ID,
-        env: stamped("claude"),
-      }).id,
-      CODEX_PROVIDER_ID,
-    );
-  } finally {
-    setRunProviderOverride(undefined);
-  }
 });
 
 // ---------------------------------------------------------------------------

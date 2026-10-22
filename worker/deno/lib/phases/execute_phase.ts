@@ -81,14 +81,8 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "../fleet_authors.ts";
 import { issueRunRoleTreatments } from "../issue_assignment.ts";
-import {
-  agentProviderById,
-  type AgentProviderDescriptor,
-  plannedActiveAgentProvider,
-  selectAgentProvider,
-} from "../agent_provider.ts";
+import { agentProviderById, selectAgentProvider } from "../agent_provider.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
-import { planIssueRunProvider } from "../issue_run_provider_agents.ts";
 import {
   buildInterruptedWipCommitMessage,
   startWipCheckpoints,
@@ -542,7 +536,6 @@ async function recordRunAssignment(
   agents: ReturnType<typeof buildIssueRunAgents>,
   orchestration?: ExternalOrchestrationSettings,
   cohort?: string,
-  runProvider?: AgentProviderDescriptor,
 ): Promise<void> {
   const { repo, issueNumber, config } = ctx;
   try {
@@ -561,8 +554,7 @@ async function recordRunAssignment(
         ...(value.effort ? { effort: value.effort } : {}),
       }))
       : issueRunRoleTreatments({
-        provider: runProvider ??
-          (cohort ? agentProviderById("claude")! : selectAgentProvider()),
+        provider: cohort ? agentProviderById("claude")! : selectAgentProvider(),
         claudeModel: cohort ? "sonnet" : config.claudeModel || undefined,
         agents,
       });
@@ -801,7 +793,7 @@ async function executeClaudeBody(
       config.externalOrchestrationSettings ?? {},
       config.repoConfig?.[repo]?.externalOrchestrationSettings,
     );
-  const requestedExecutorSplit = !externalOrchestration &&
+  const issueExecutorSplit = !externalOrchestration &&
     isIssueExecutorSplitEnabled(
       "issue",
       config.repoConfig?.[repo],
@@ -817,34 +809,15 @@ async function executeClaudeBody(
     `Issue sub-agent tier resolved to '${issueSubAgentTier}' for ${repo} ` +
       `(Issue #3402)`,
   );
-  // The run's provider and sub-agent switches, decided before spawn (Issue
-  // #4109): a non-Claude provider that cannot carry `--agents` is rerouted or
-  // stripped here, not refused later by the #4010 guard.
-  const issueRunPlan = externalOrchestration
+  // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
+  // #2812); `issue_reviewer_agents: false` opts out.
+  const issueRunAgents = externalOrchestration
     ? undefined
-    : planIssueRunProvider({
-      // Only reached when `allocation` (if any) is non-external.
-      provider: allocation
-        ? agentProviderById("claude")!
-        : plannedActiveAgentProvider(),
-      selection: { env: deps.claude.env },
-      executorSplit: requestedExecutorSplit,
-      // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
-      // #2812); `issue_reviewer_agents: false` opts out.
+    : buildIssueRunAgents({
+      executorSplit: issueExecutorSplit,
       reviewerAgents: config.issueReviewerAgents === true,
       subAgentTier: issueSubAgentTier,
-      logger,
     });
-  const issueExecutorSplit = issueRunPlan
-    ? issueRunPlan.executorSplit
-    : requestedExecutorSplit;
-  const issueRunAgents = issueRunPlan
-    ? buildIssueRunAgents({
-      executorSplit: issueRunPlan.executorSplit,
-      reviewerAgents: issueRunPlan.reviewerAgents,
-      subAgentTier: issueRunPlan.subAgentTier,
-    })
-    : undefined;
   if (issueExecutorSplit) {
     const executorModel = issueSubAgentTier === "haiku"
       ? HAIKU_ISSUE_EXECUTOR_MODEL
@@ -1225,10 +1198,6 @@ async function executeClaudeBody(
               enableModelFallback: false,
             }
             : {}),
-          // A run the planner rerouted to Claude (Issue #4109) names it here.
-          ...(issueRunPlan?.outcome === "rerouted-to-claude"
-            ? { agentProvider: issueRunPlan.provider.id }
-            : {}),
           cwd: state.repoPath,
           // The browser on every run unless `skip_screenshot_check`
           // (Issue #2925). Issue #2159 layers the `codegraph` server beside
@@ -1294,7 +1263,6 @@ async function executeClaudeBody(
     issueRunAgents,
     externalOrchestration ? effectiveOrchestrationSettings : undefined,
     allocation?.cohort,
-    issueRunPlan?.provider,
   );
 
   let claudeResult = await invokeAgent(executeTimeoutSeconds);

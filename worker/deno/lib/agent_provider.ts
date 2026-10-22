@@ -380,11 +380,8 @@ export interface AgentInvocationRequest {
    * **Absent — the default — emits no argument at all**, so an invocation
    * that does not ask for the split is byte-for-byte the argv the worker has
    * always built and every sub-agent inherits the phase's model. Only the
-   * Claude CLI takes the flag; the other providers' argv never carries it.
-   * The issue-run path decides this before spawn: it reroutes the run to
-   * Claude or strips the definitions (see `lib/issue_run_provider_agents.ts`).
-   * The runner's refusal of a native run that still asks for them (Issue
-   * #4010) is only a backstop for callers that bypass that planner.
+   * Claude CLI takes the flag; the other providers' argv never carries it,
+   * and the runner refuses a native run that asked for it (Issue #4010).
    */
   agents?: Readonly<Record<string, AgentDefinition>>;
   /** Session continuity state, when session resume is enabled. */
@@ -1119,11 +1116,10 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
     }
     // Sub-agent definitions (Issue #2342) name Anthropic tier aliases this
     // endpoint cannot resolve, so they are dropped from the argv — but stated,
-    // never in silence. The issue-run path reroutes such a run to Claude or
-    // strips the definitions before spawn (lib/issue_run_provider_agents.ts);
-    // the runner's refusal of a native run whose argv lost its `--agents`
-    // (Issue #4010) is only a backstop, so a split configured under DeepSeek
-    // never runs as one that looks split and is not.
+    // never in silence. The runner then refuses a native run whose argv lost
+    // its `--agents` before spawn (Issue #4010), so a split configured under
+    // DeepSeek fails loud rather than running as one that looks split and is
+    // not.
     // The advisor edit guard goes with them (Issue #2344): without executors
     // to make the edits, a guard here would deny the advisor's own and leave
     // the run unable to edit anything.
@@ -1522,25 +1518,6 @@ export function activeAgentProvider(
   selection: AgentProviderSelection = {},
 ): AgentProviderDescriptor {
   return resolveAgentProvider(resolveAgentProviderId(selection));
-}
-
-/**
- * Resolve the active provider for pre-spawn planning (Issue #4109).
- *
- * Planning only needs to know what the provider can carry, so this skips the
- * installed-set check that {@link activeAgentProvider} runs. An uninstalled
- * provider is still refused later by the runner's install assert (Issue
- * #4105), so this must not throw earlier than the base code did (Issue #4109).
- *
- * @param selection - Configured value and environment lookup.
- * @returns The active descriptor, without the installed-set check.
- * @throws When a set value names an unsupported provider.
- */
-export function plannedActiveAgentProvider(
-  selection: AgentProviderSelection = {},
-): AgentProviderDescriptor {
-  const env = selection.env ?? ((name: string) => Deno.env.get(name));
-  return resolveAgentProvider(resolveSelectedProviderId(selection, env));
 }
 
 /**
