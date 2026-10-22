@@ -1924,7 +1924,8 @@ Subcommands:
 --dry-run is refused by every subcommand that does not support it: it would
 write for real.`;
 
-function usage(): void {
+/** Print the `--help` text on stdout. */
+export function usage(): void {
   console.log(SETUP_CLI_USAGE);
 }
 

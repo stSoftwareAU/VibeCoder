@@ -9,7 +9,11 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { askOnConsole, type ConsoleAskIo } from "../setup/console_ask.ts";
+import {
+  askOnConsole,
+  CONSOLE_ASK_IO,
+  type ConsoleAskIo,
+} from "../setup/console_ask.ts";
 import { createDefaultCopilotReviewDeps } from "../setup/copilot_review_setup.ts";
 import { createDefaultUpdateModeDeps } from "../setup/update_mode_setup.ts";
 
@@ -82,4 +86,34 @@ Deno.test("askOnConsole - copilot-review-mode's real deps ask through it", async
   assertEquals(answer, "leave");
   assertEquals(c.lines, [QUESTION]);
   assertEquals(c.prompts, [">"]);
+});
+
+Deno.test("CONSOLE_ASK_IO - is the real stdout check, prompt() and console.log", () => {
+  const originalIsTerminal = Deno.stdout.isTerminal;
+  const originalPrompt = globalThis.prompt;
+  const originalLog = console.log;
+  const asked: (string | undefined)[] = [];
+  const printed: string[] = [];
+  Deno.stdout.isTerminal = () => true;
+  globalThis.prompt = (message?: string) => {
+    asked.push(message);
+    return "typed";
+  };
+  console.log = (message?: unknown) => {
+    printed.push(String(message));
+  };
+  try {
+    assertEquals(CONSOLE_ASK_IO.stdoutIsTerminal(), true);
+    assertEquals(CONSOLE_ASK_IO.prompt("Q?"), "typed");
+    CONSOLE_ASK_IO.log("a line");
+    Deno.stdout.isTerminal = () => false;
+    assertEquals(CONSOLE_ASK_IO.stdoutIsTerminal(), false);
+  } finally {
+    Deno.stdout.isTerminal = originalIsTerminal;
+    globalThis.prompt = originalPrompt;
+    console.log = originalLog;
+  }
+
+  assertEquals(asked, ["Q?"]);
+  assertEquals(printed, ["a line"]);
 });

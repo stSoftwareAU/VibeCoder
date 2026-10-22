@@ -26,6 +26,7 @@ import {
   parseConfigExistedFlag,
   runUpdateMode,
   SETUP_CLI_USAGE,
+  usage,
 } from "../setup/setup_cli.ts";
 
 /** Versions the injected resolver reports as today's dynamic choice. */
@@ -1265,4 +1266,19 @@ Deno.test("setup_cli usage - names the --config-existed=true|false flag update-m
     SETUP_CLI_USAGE,
     "Needs --config-existed=true|false: whether .config.json",
   );
+});
+
+Deno.test("setup_cli usage - prints the help text on stdout", () => {
+  const original = console.log;
+  const printed: string[] = [];
+  console.log = (message?: unknown) => {
+    printed.push(String(message));
+  };
+  try {
+    usage();
+  } finally {
+    console.log = original;
+  }
+
+  assertEquals(printed, [SETUP_CLI_USAGE]);
 });

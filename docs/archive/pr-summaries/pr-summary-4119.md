@@ -45,9 +45,9 @@ what a silently frozen host costs.
   default for a fresh host.
 - The prompt default is the config's own `update_mode` when it has one, and
   otherwise is chosen by `configExisted`
-  (`worker/deno/setup/update_mode_setup.ts:521-522`). The non-interactive path
+  (`worker/deno/setup/update_mode_setup.ts:528-530`). The non-interactive path
   returns early when `configExisted` is true, so an existing config with no key
-  is left unwritten (`worker/deno/setup/update_mode_setup.ts:663`).
+  is left unwritten (`worker/deno/setup/update_mode_setup.ts:671`).
 - The existence check is taken before any setup step that could create the file.
   `setup.sh` takes it at `setup.sh:1471-1476`, and `setup.ps1` at
   `setup.ps1:1646-1648`, both before the prerequisites step.
@@ -115,7 +115,10 @@ The red claims in the Test Plan come from mutating the fixed code and watching
 the named test fail. M1–M9 were made in scratch copies outside the repository.
 M10–M16 were made in place, one at a time, with the file restored from a backup
 copy after each. M17 and M18 ran the new tests against the earlier head's
-`setup.ps1` call and `run.ps1`. None comes from running the tests
+`setup.ps1` call and `run.ps1`. M19–M22 were made in place, one at a
+time (the object property or call line deleted), and restored from a backup;
+M19–M21 fail the new `CONSOLE_ASK_IO` test (also as a type error under a full
+check), and M22 fails the new `usage` test. None comes from running the tests
 against the pre-fix commit.
 
 ## Acceptance Criteria
@@ -133,8 +136,8 @@ where it makes the question visible under `Out-Host`.
   is read as what the host runs today (`dynamic`). Setup keeps it, interactive
   or not. `frozen` stays the offered default only when no `.config.json` existed
   before this setup run." — evidence:
-  `worker/deno/setup/update_mode_setup.ts:663` (early return on
-  `configExisted`), `:521-522` (prompt default), `setup.sh:1471-1476`, and the
+  `worker/deno/setup/update_mode_setup.ts:671` (early return on
+  `configExisted`), `:528-530` (prompt default), `setup.sh:1471-1476`, and the
   tests `setup_update_mode_test.ts` "a pre-existing config with no update_mode
   is read as dynamic and left unwritten", "a pre-existing config with no
   update_mode offers dynamic, and Enter writes dynamic" and "runUpdateMode -
@@ -238,11 +241,11 @@ M17 and M18 ran the new tests against the earlier head's `setup.ps1` call and
 
 | #   | Mutation                                                    | File:line                                         | Reaching test                                                                                                              | Result |
 | --- | ----------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------ |
-| M1  | prompt default always `SETUP_DEFAULT_UPDATE_MODE`           | `worker/deno/setup/update_mode_setup.ts:522`      | runUpdateModeSetup - a pre-existing config with no update_mode offers dynamic, and Enter writes dynamic                    | FAILED |
-| M2  | drop the `options.configExisted` operand                    | `worker/deno/setup/update_mode_setup.ts:663`      | runUpdateModeSetup - a pre-existing config with no update_mode is read as dynamic and left unwritten                       | FAILED |
-| M3  | drop the `existing.value.update_mode !== undefined` operand | `worker/deno/setup/update_mode_setup.ts:663`      | runUpdateModeSetup - a non-interactive run keeps an update_mode the config already holds, even when configExisted is false | FAILED |
-| M6  | prompt default always `DEFAULT_UPDATE_MODE`                 | `worker/deno/setup/update_mode_setup.ts:522`      | runUpdateModeSetup - accepting every default pins a fresh host to the latest release                                       | FAILED |
-| M7  | early return forced on (`if (true \|\| ...)`)               | `worker/deno/setup/update_mode_setup.ts:663`      | runUpdateModeSetup - a non-interactive fresh config pins to the latest release without prompting                           | FAILED |
+| M1  | prompt default always `SETUP_DEFAULT_UPDATE_MODE`           | `worker/deno/setup/update_mode_setup.ts:530`      | runUpdateModeSetup - a pre-existing config with no update_mode offers dynamic, and Enter writes dynamic                    | FAILED |
+| M2  | drop the `options.configExisted` operand                    | `worker/deno/setup/update_mode_setup.ts:671`      | runUpdateModeSetup - a pre-existing config with no update_mode is read as dynamic and left unwritten                       | FAILED |
+| M3  | drop the `existing.value.update_mode !== undefined` operand | `worker/deno/setup/update_mode_setup.ts:671`      | runUpdateModeSetup - a non-interactive run keeps an update_mode the config already holds, even when configExisted is false | FAILED |
+| M6  | prompt default always `DEFAULT_UPDATE_MODE`                 | `worker/deno/setup/update_mode_setup.ts:530`      | runUpdateModeSetup - accepting every default pins a fresh host to the latest release                                       | FAILED |
+| M7  | early return forced on (`if (true \|\| ...)`)               | `worker/deno/setup/update_mode_setup.ts:671`      | runUpdateModeSetup - a non-interactive fresh config pins to the latest release without prompting                           | FAILED |
 | M4  | `--config-existed=true` returns false                       | `worker/deno/setup/setup_cli.ts:452`              | parseConfigExistedFlag - --config-existed=true and =false parse to booleans                                                | FAILED |
 | M8  | `--config-existed=false` returns true                       | `worker/deno/setup/setup_cli.ts:453`              | parseConfigExistedFlag - --config-existed=true and =false parse to booleans                                                | FAILED |
 | M9  | fall-through returns false instead of undefined             | `worker/deno/setup/setup_cli.ts:454`              | parseConfigExistedFlag - an absent flag or any other value is undefined                                                    | FAILED |
@@ -256,6 +259,10 @@ M17 and M18 ran the new tests against the earlier head's `setup.ps1` call and
 | M16 | `ask:` back to a bare `prompt(question)`                    | `worker/deno/setup/copilot_review_setup.ts:82`    | askOnConsole - copilot-review-mode's real deps ask through it                                                              | FAILED |
 | M17 | update-mode back through `Invoke-VibeSetupCliOrExit`        | `setup.ps1:1687`                                  | setup.ps1 - update-mode output reaches the console and a failure stops setup (Issue #4119)                                 | FAILED |
 | M18 | `run.ps1` without the release-notice step                   | `run.ps1:564-587`                                 | the three `run.ps1` release-notice tests named under criterion 3                                                           | FAILED |
+| M19 | `stdoutIsTerminal` property deleted from `CONSOLE_ASK_IO`   | `worker/deno/setup/console_ask.ts:25`             | CONSOLE_ASK_IO - is the real stdout check, prompt() and console.log                                                        | FAILED |
+| M20 | `prompt` property deleted from `CONSOLE_ASK_IO`             | `worker/deno/setup/console_ask.ts:26`             | CONSOLE_ASK_IO - is the real stdout check, prompt() and console.log                                                        | FAILED |
+| M21 | `log` property deleted from `CONSOLE_ASK_IO`                | `worker/deno/setup/console_ask.ts:27`             | CONSOLE_ASK_IO - is the real stdout check, prompt() and console.log                                                        | FAILED |
+| M22 | `console.log(SETUP_CLI_USAGE)` deleted from `usage()`       | `worker/deno/setup/setup_cli.ts:1929`             | setup_cli usage - prints the help text on stdout                                                                           | FAILED |
 
 M10–M12 are the five mutants the earlier mutation check reported surviving at
 `setup_cli.ts:468`, `:473` (twice — "false → true" and "return value → true"
