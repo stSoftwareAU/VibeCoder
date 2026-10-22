@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 2047,
+        "outcome": "a passing gate (kind 'passed') logs 'Pre-push gate passed checks=[...]' naming the checks",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion - a passing pre-push gate logs the checks it ran (Issue #3770)",
+        "flipWentRed": "reverting the logging block to the base early return removed the pass line and turned the test red (no 'Pre-push gate passed' line in infos)"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 2044,
+        "outcome": "a no-op gate with a resolvable base logs 'Pre-push gate: nothing ahead of <base>'",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion - a no-op pre-push gate logs nothing ahead, never as a pass (Issue #3770)",
+        "flipWentRed": "reverting the logging block to the base early return removed the nothing-ahead line and turned the test red"
+      },
+      {
+        "path": "worker/deno/lib/phases/completion_phase.ts",
+        "line": 2045,
+        "outcome": "a no-op gate with an unresolvable base logs 'Pre-push gate: nothing unpushed'",
+        "test": "worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts",
+        "testName": "completion - a no-op gate on an unresolvable base logs nothing unpushed, never as a pass (Issue #3770)",
+        "flipWentRed": "changing the ternary's false operand to 'Pre-push gate: nothing unpushed CHANGED' turned the test red (expected a nothing-unpushed line)"
+      }
+    ]
+  }
+}

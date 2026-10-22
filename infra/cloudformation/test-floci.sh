@@ -2,8 +2,9 @@
 # Deploy every CloudFormation template in this directory into the Floci AWS
 # emulator and assert each stack reaches CREATE_COMPLETE (Issue #3369).
 #
-# Run by .github/workflows/floci.yml, and runnable locally. Floci is started on
-# demand if nothing already answers on the endpoint. Templates that create an
+# Run by .github/workflows/floci.yml, by the worker's pre-push gate when a push
+# changes this directory (Issue #3727), and runnable locally. Floci is started
+# on demand if nothing already answers on the endpoint. Templates that create an
 # AWS::EC2::Instance need the Docker socket (Floci runs instances as
 # containers): in CI a missing socket is an error, elsewhere those templates
 # are reported as skipped.
