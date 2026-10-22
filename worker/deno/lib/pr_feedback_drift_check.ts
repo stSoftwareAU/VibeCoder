@@ -71,7 +71,10 @@
  * an unverifiable figure in the summary and nothing would report it. Such a
  * figure is now a hit like the others: it is fenced into the one recovery turn,
  * which is asked to re-run the tests and restate the figure in a checkable form
- * or remove it, and it is reported in the residual if it survives.
+ * or remove it, and it is reported in the residual if it survives. A partial
+ * addition such as "Added 5 tests to `tests/a_test.ts`" is one such figure: the
+ * recount never compares it with the file, so it is reported unchecked
+ * (Issue #3983).
  *
  * ```mermaid
  * flowchart TD
