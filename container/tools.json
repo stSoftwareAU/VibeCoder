@@ -50,48 +50,48 @@
       "id": "claude",
       "binary": "claude",
       "fragment": "providers/claude.sh",
-      "version": "2.1.293",
+      "version": "2.1.306",
       "source": "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases",
       "sha256": {
-        "amd64": "8968405e26db478af44eabc4635ab5ca557057b702a54460a59c13e1b253e978",
-        "arm64": "a43629e888f0a7d96c5e8de62abf44852433a7ff2481574688db3e5b6399491f"
+        "amd64": "520bc6c1f40af466bd03a278b5ae1af1a2938bc7de5b9e5cb15526da20d71cfe",
+        "arm64": "77d257d5e8b8730ec61d5a4992a8eb65550aaf9589f464988aa1a9684338d801"
       },
-      "notes": "Coding-agent provider layer (Issue #4067). container/providers/claude.sh reads these pins with jq and verifies the download before installing it; the base Containerfile only selects the fragments via the set-valued AGENT_PROVIDERS build argument (Issue #4105), so a second provider adds a fragment and an entry here. Raised from 2.1.223 to 2.1.261 by Issue #1362: the CLI resolves the `fable` alias from its own bundled table, 2.1.223 resolved it to claude-fable-5, and in-container the image IS the update mechanism (skipSoftwareUpdateFromEnv) so softwareMinVersions cannot pull a running container forward. 2.1.261 carries Fable 5.1 as the default fable model (2.1.257) plus its prompt-cache fixes (2.1.260), and cleared the 24h dependency quarantine; checksums verified against the pinned artefacts and the arm64 binary run to confirm it reports 2.1.261. Raised to 2.1.281 by Issue #2560: 2.1.280 added Claude Opus 5.5 (`claude-opus-5-5`) as the default `opus` model, which every substantive phase now requests by alias; 2.1.281 was the newest release past the 24h quarantine (2.1.282 was 5 hours old), and both checksums match the release manifest.json and the bundle carries the `claude-opus-5-5` id. Raised to 2.1.293 by PR #3432 review (Issue #3400): #3400 set `MODEL_CONTEXT_WINDOWS.haiku` to 1M on the premise that the `haiku` alias is served by Haiku 5.5, but 2.1.281's bundled table still had `haiku:\"claude-haiku-4-5\"` — no `claude-haiku-5-5` string anywhere in that binary — so a container on it kept serving the 200k Haiku 4.5 for a 1M-windowed alias, defeating the large-input escalation guard (Issue #2393). 2.1.292 still resolves `haiku:\"claude-haiku-4-5\"`; 2.1.293 is the first release whose bundled table carries `haiku:\"claude-haiku-5-5\"` (`strings` on the downloaded arm64 and amd64 binaries) and was 30.1h past publish (2.1.294 was 19.6h old, inside the 24h quarantine); both checksums match the release's own manifest.json and the installed arm64 binary reports 2.1.293."
+      "notes": "Coding-agent provider layer (Issue #4067). container/providers/claude.sh reads these pins with jq and verifies the download before installing it; the base Containerfile only selects the fragments via the set-valued AGENT_PROVIDERS build argument (Issue #4105), so a second provider adds a fragment and an entry here. Raised from 2.1.223 to 2.1.261 by Issue #1362: the CLI resolves the `fable` alias from its own bundled table, 2.1.223 resolved it to claude-fable-5, and in-container the image IS the update mechanism (skipSoftwareUpdateFromEnv) so softwareMinVersions cannot pull a running container forward. 2.1.261 carries Fable 5.1 as the default fable model (2.1.257) plus its prompt-cache fixes (2.1.260), and cleared the 24h dependency quarantine; checksums verified against the pinned artefacts and the arm64 binary run to confirm it reports 2.1.261. Raised to 2.1.281 by Issue #2560: 2.1.280 added Claude Opus 5.5 (`claude-opus-5-5`) as the default `opus` model, which every substantive phase now requests by alias; 2.1.281 was the newest release past the 24h quarantine (2.1.282 was 5 hours old), and both checksums match the release manifest.json and the bundle carries the `claude-opus-5-5` id. Raised to 2.1.293 by PR #3432 review (Issue #3400): #3400 set `MODEL_CONTEXT_WINDOWS.haiku` to 1M on the premise that the `haiku` alias is served by Haiku 5.5, but 2.1.281's bundled table still had `haiku:\"claude-haiku-4-5\"` — no `claude-haiku-5-5` string anywhere in that binary — so a container on it kept serving the 200k Haiku 4.5 for a 1M-windowed alias, defeating the large-input escalation guard (Issue #2393). 2.1.292 still resolves `haiku:\"claude-haiku-4-5\"`; 2.1.293 is the first release whose bundled table carries `haiku:\"claude-haiku-5-5\"` (`strings` on the downloaded arm64 and amd64 binaries) and was 30.1h past publish (2.1.294 was 19.6h old, inside the 24h quarantine); both checksums match the release's own manifest.json and the installed arm64 binary reports 2.1.293. Raised to 2.1.306 on 2026-10-22 (owner: the container runs the newest version of each provider): the newest release past the 24h quarantine (2.1.307 and 2.1.308 were under 24h old). Both checksums match the release's manifest.json, and both binaries' bundled tables still resolve haiku/sonnet/opus to claude-haiku-5-5 / claude-sonnet-5-5 / claude-opus-5-5."
     },
     {
       "id": "codex",
       "binary": "codex",
       "fragment": "providers/codex.sh",
-      "version": "0.147.0",
+      "version": "0.163.0",
       "source": "https://github.com/openai/codex/releases",
       "sha256": {
-        "amd64": "0246e2e773834e07f0fb5249ed6ebad12e4591e608f8c7bb97dd6a9690544c36",
-        "arm64": "eb677c80f666b1ab8b4b1d083b66e8d614b1281d960bb6f9fd8ca98f58b38b90"
+        "amd64": "beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4",
+        "arm64": "a7261e65f4a96d8f4ca65a069c6cf2dc2c33defc341e48078acefda9461fffe4"
       },
-      "notes": "The second registered coding-agent provider (Issue #4106) — the first addition made purely through the seam. Checksums are of the static musl release archives codex-<target>-unknown-linux-musl.tar.gz from tag rust-v<version>, which run on the glibc base image. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,codex\"` is what puts both CLIs in one image."
+      "notes": "The second registered coding-agent provider (Issue #4106) — the first addition made purely through the seam. Checksums are of the static musl release archives codex-<target>-unknown-linux-musl.tar.gz from tag rust-v<version>, which run on the glibc base image. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,codex\"` is what puts both CLIs in one image. Raised from 0.147.0 to 0.163.0 on 2026-10-22 (owner: newest version of each provider): the newest non-prerelease rust-v tag, published 2026-10-15. Both checksums match the GitHub release's asset digests, and every flag codex_executor.ts passes (exec, resume, --json, --skip-git-repo-check, --dangerously-bypass-approvals-and-sandbox, --sandbox, -c, --model) is still in `codex exec --help`."
     },
     {
       "id": "gemini",
       "binary": "gemini",
       "fragment": "providers/gemini.sh",
-      "version": "0.55.1",
+      "version": "0.65.0",
       "source": "https://registry.npmjs.org/@google/gemini-cli",
       "sha256": {
-        "noarch": "4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e"
+        "noarch": "97f1f7f1e7e189054d27edfb9c62c6a45cec15b678840dfdde3c0ccd87fab376"
       },
-      "notes": "The third registered coding-agent provider (Issue #4107) — Quorum's judge rather than a planner. The checksum is of the published package @google/gemini-cli-<version>.tgz, which declares no dependencies and ships the whole CLI as a JavaScript bundle: one artefact for every architecture, hence a single noarch checksum. That bundle runs on Node, which is why the Node toolchain layer is built before the provider layer. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,codex,gemini\"` is what puts all three CLIs in one image."
+      "notes": "The third registered coding-agent provider (Issue #4107) — Quorum's judge rather than a planner. The checksum is of the published package @google/gemini-cli-<version>.tgz, which declares no dependencies and ships the whole CLI as a JavaScript bundle: one artefact for every architecture, hence a single noarch checksum. That bundle runs on Node, which is why the Node toolchain layer is built before the provider layer. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,codex,gemini\"` is what puts all three CLIs in one image. Raised from 0.55.1 to 0.65.0 on 2026-10-22 (owner: newest version of each provider): npm's `latest` tag, published 2026-10-20. The tarball's sha512 matches the registry's integrity field, and it still declares no dependencies."
     },
     {
       "id": "deepseek",
       "binary": "deepseek",
       "fragment": "providers/deepseek.sh",
-      "version": "2.1.223",
+      "version": "2.1.306",
       "source": "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases",
       "sha256": {
-        "amd64": "98226474f802e3094d6a86c5ade8883c16206d0fcb5c400b7401c800063e99d7",
-        "arm64": "60e83d8db0e894d0e54413e5e7daa256d180db660f51e139a51b614fc30cf3ac"
+        "amd64": "520bc6c1f40af466bd03a278b5ae1af1a2938bc7de5b9e5cb15526da20d71cfe",
+        "arm64": "77d257d5e8b8730ec61d5a4992a8eb65550aaf9589f464988aa1a9684338d801"
       },
-      "notes": "The fourth registered coding-agent provider (Issue #415, parent #396). DeepSeek serves an Anthropic-compatible API, so it is carried on the *same upstream artefact* as the claude entry — this duplication is deliberate and must not be collapsed into the claude pin. Two things depend on it: the CLI is installed as `deepseek`, because both fragments run in an AGENT_PROVIDERS=\"claude,deepseek\" image and a shared binary name would mean one provider silently overwriting the other; and the version is pinned independently, because DeepSeek's endpoint is a third party tracking Anthropic's API surface and holding `deepseek` on a known-good CLI version while `claude` moves ahead is the point of the second pin. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,deepseek\"` is what puts both CLIs in one image."
+      "notes": "The fourth registered coding-agent provider (Issue #415, parent #396). DeepSeek serves an Anthropic-compatible API, so it is carried on the *same upstream artefact* as the claude entry — this duplication is deliberate and must not be collapsed into the claude pin. Two things depend on it: the CLI is installed as `deepseek`, because both fragments run in an AGENT_PROVIDERS=\"claude,deepseek\" image and a shared binary name would mean one provider silently overwriting the other; and the version is pinned independently, because DeepSeek's endpoint is a third party tracking Anthropic's API surface and holding `deepseek` on a known-good CLI version while `claude` moves ahead is the point of the second pin. Pinned but not in installedProviders: a default image stays Claude-only, and `--build-arg AGENT_PROVIDERS=\"claude,deepseek\"` is what puts both CLIs in one image. Raised from 2.1.223 to 2.1.306 on 2026-10-22, on the owner's instruction that every provider runs its newest version; the pin stays separate from `claude` so it can be held back again if DeepSeek's endpoint lags the newer CLI."
     }
   ],
   "installedProviders": ["claude"],
