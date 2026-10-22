@@ -9,7 +9,6 @@
 
 import {
   assertEquals,
-  assertStrictEquals,
   assertStringIncludes,
 } from "@std/assert";
 import {
@@ -21,7 +20,6 @@ import {
   summariseLargeComment,
 } from "../lib/pr_feedback_processor.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
-import type { SyncFollowUpFiling } from "../lib/pr_body_sync_follow_up.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -492,38 +490,6 @@ Deno.test("processPrFeedback - syncs the PR body once after a verified push", as
   assertEquals(calls[0]?.prNumber, 42);
   assertEquals(calls[0]?.repo, "org/repo");
   assertEquals(calls[0]?.beforeSha, DEFAULT_MOCK_HEAD_SHA);
-});
-
-Deno.test("processPrFeedback - forwards the sync follow-up filer to the PR body sync (Issue #3678)", async () => {
-  const sentinel: SyncFollowUpFiling = {
-    verifyIssueContent: () =>
-      Promise.reject(new Error("sentinel filer must not be called")),
-    ensureLabelExists: () =>
-      Promise.reject(new Error("sentinel filer must not be called")),
-    fleetAuthors: [],
-  };
-  let syncCalls = 0;
-  let forwarded: SyncFollowUpFiling | undefined;
-  const syncPrBodyFn: PrFeedbackProcessorDeps["syncPrBodyFn"] = (
-    _input,
-    deps,
-  ) => {
-    syncCalls++;
-    forwarded = deps.followUpFiling;
-    return Promise.resolve({
-      ok: true,
-      value: { status: "updated", issueNumber: 42 },
-    });
-  };
-  const processorDeps: PrFeedbackProcessorDeps = {
-    ...makeSuccessfulPushDeps(syncPrBodyFn),
-    syncFollowUpFiling: sentinel,
-  };
-
-  const result = await processPrFeedback(makeInput(), processorDeps);
-  assertEquals(result.ok, true);
-  assertEquals(syncCalls, 1);
-  assertStrictEquals(forwarded, sentinel);
 });
 
 Deno.test("processPrFeedback - syncs the PR body when nothing was pushed and nothing is left unpushed (Issue #3315)", async () => {

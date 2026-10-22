@@ -114,6 +114,13 @@ export type FailureCategory =
    * it; the worker did not malfunction.
    */
   | "pre_push_gate"
+  /**
+   * The run did not meet every acceptance criterion, even after its in-run
+   * rounds (Issue #4146). No PR was raised and no follow-up filed: the branch
+   * stays pushed and the next run resumes it. The agent's deliverable fell
+   * short; the worker did not malfunction.
+   */
+  | "criteria_unmet"
   | "unknown";
 
 /** Clarity status — whether the issue was assessed for clarity before failure. */
@@ -146,6 +153,8 @@ export type CategoryDisplay =
   | "security-fix-gate"
   /** PR #3716 review: the completion phase's pre-push gate blocked the branch. */
   | "pre-push-gate"
+  /** Issue #4146: the run did not meet every acceptance criterion. */
+  | "criteria-unmet"
   | "unknown";
 
 /** Parsed diagnostic context for zero-output failures (Issue #533). */
@@ -265,11 +274,22 @@ export const SECURITY_FIX_GATE_MARKER =
 export const PRE_PUSH_GATE_MARKER =
   "the branch did not pass the worker's pre-push gate";
 
+/**
+ * Phrase the completion phase opens an unmet-criteria refusal with (Issue
+ * #4146). Worker-authored prefix put ahead of the gate's reason, which quotes
+ * the issue's criteria and the agent's summary; matched with `startsWith`
+ * ahead of every other rule, so a quoted criterion ("retry on a rate limit")
+ * cannot forge or outrank it.
+ */
+export const CRITERIA_UNMET_GATE_MARKER =
+  "the run did not meet every acceptance criterion";
+
 /** The failure categories a registered worker gate marker carries. */
 export type WorkerGateCategory =
   | "summary_incomplete"
   | "security_fix_gate"
-  | "pre_push_gate";
+  | "pre_push_gate"
+  | "criteria_unmet";
 
 /** A worker-written gate marker and the failure category its refusal carries. */
 export interface WorkerGateMarker {
@@ -297,6 +317,7 @@ export const WORKER_GATE_MARKERS: readonly WorkerGateMarker[] = [
   { marker: SUMMARY_RULE_GATE_MARKER, category: "summary_incomplete" },
   { marker: SECURITY_FIX_GATE_MARKER, category: "security_fix_gate" },
   { marker: PRE_PUSH_GATE_MARKER, category: "pre_push_gate" },
+  { marker: CRITERIA_UNMET_GATE_MARKER, category: "criteria_unmet" },
 ];
 
 /** The gate category `message` opens with, or `null` when it opens with none. */
@@ -677,6 +698,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "summary_incomplete",
   "security_fix_gate",
   "pre_push_gate",
+  "criteria_unmet",
   "unknown",
 ]);
 
@@ -760,6 +782,10 @@ export function isInfrastructureFailure(category: FailureCategory): boolean {
     // checks; a retry of the same content would be blocked identically.
     case "pre_push_gate":
       return false;
+    // Not infrastructure (Issue #4146): the run already spent its in-run
+    // rounds on the unmet criteria; the next run resumes the branch.
+    case "criteria_unmet":
+      return false;
     default:
       return false;
   }
@@ -812,6 +838,8 @@ export function getFailureCategoryDisplay(
       return "security-fix-gate";
     case "pre_push_gate":
       return "pre-push-gate";
+    case "criteria_unmet":
+      return "criteria-unmet";
     case "unknown":
       return "unknown";
     default:
@@ -1150,6 +1178,12 @@ export function getFailureDiagnosis(
 - This is the branch's content failing the repository's own checks, not a worker defect
 - The normal retry and \`failed-once\` rules apply`;
 
+    case "criteria_unmet":
+      return `- The run did not meet every acceptance criterion, even after its in-run rounds (Issue #4146)
+- The gate's comment on the issue names each unmet criterion
+- No PR was raised and no follow-up issue was filed: the branch stays pushed, and the next run resumes it to finish the job
+- The normal retry and \`failed-once\` rules apply`;
+
     case "evidence_missing":
       return `- The PR was blocked because screenshot evidence is required for UI changes
 - This is a process requirement, not related to issue complexity
@@ -1261,6 +1295,10 @@ export function getFailureDiagnosisOneliner(
     // the branch and quoted the failing check (PR #3716 review).
     case "pre_push_gate":
       return "The branch did not pass the worker's pre-push gate (changed-file checks or the repository's pre-flight commands) — see the quoted check output, not a worker defect.";
+    // Deliberately not "Likely cause": the worker's own unmet-criteria gate
+    // refused the run and named each criterion (Issue #4146).
+    case "criteria_unmet":
+      return "The run did not meet every acceptance criterion — no PR was raised; the next run resumes the branch to finish the job.";
     case "internal_error":
       return "Likely cause: internal tooling or CLI error (not related to issue complexity).";
     case "unknown":
