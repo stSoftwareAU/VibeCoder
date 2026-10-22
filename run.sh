@@ -652,7 +652,7 @@ if ((release_notice_status != 0)); then
   log_run_core "release-notice: failed (status ${release_notice_status}) - ${release_notice_detail}"
 elif [[ -n "${release_notice}" ]]; then
   echo "[run.sh] WARNING: ${release_notice}" >&2
-  log_run_core "${release_notice}"
+  log_run_core "WARNING: ${release_notice}"
 fi
 rm -f "${release_notice_err}"
 # The plan resolves and validates the container runtime, computes the
