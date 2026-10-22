@@ -269,7 +269,10 @@ export interface WorkerConfig {
    * projection guard is the opt-in.
    */
   claudeWeekPaceDrain?: boolean;
-  /** Claude model ID to use (empty string means CLI default) (Issue #260) */
+  /**
+   * Host-wide Claude model from `claude_model` (Issue #260). Empty when unset,
+   * so each phase routes to its own model (Issue #4117).
+   */
   claudeModel: string;
   /**
    * Configured best planning model (Issue #2654). The degraded-model detector

@@ -75,8 +75,9 @@ function buildRateLimitStubBody(
     `  fi`,
     `  prev="$arg"`,
     `done`,
-    // stream-json result line; the text matches detectRateLimit().
-    `printf '%s\\n' '{"type":"result","result":"${resultText}"}'`,
+    // The CLI's own refusal record (`is_error`), as a real 429 ends —
+    // agent prose alone is never a rate limit (Issue #4114).
+    `printf '%s\\n' '{"type":"result","is_error":true,"result":"${resultText}"}'`,
     `exit ${exitCode}`,
   ].join("\n");
 }

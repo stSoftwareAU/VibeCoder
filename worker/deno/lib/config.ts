@@ -72,7 +72,6 @@ import {
 } from "./trust_exclusions.ts";
 import {
   DEFAULT_BEST_PLANNING_MODEL,
-  DEFAULT_CLAUDE_MODEL,
   DEFAULT_SHUFFLE_REPOS,
   DEFAULT_TRUSTED_INPUT_BOTS,
   DEFAULT_TRUSTED_REVIEW_BOTS,
@@ -638,8 +637,12 @@ export async function loadConfig(
   setConfiguredProviderFallbackPolicy(providerFallbackPolicy);
   const agentProviderFallback = providerFallbackPolicy.alternatives;
 
-  // Claude model selection (Issue #260)
-  const claudeModel = file.claude_model ?? DEFAULT_CLAUDE_MODEL;
+  // Claude model selection (Issue #260). Empty when the host sets no
+  // `claude_model`: call sites pass `config.claudeModel || undefined` as an
+  // explicit `--model`, which beats phase routing, so defaulting it to Opus
+  // put every issue manager on Opus instead of the Sonnet `issue` default
+  // (Issue #4117).
+  const claudeModel = file.claude_model ?? "";
 
   // Configured best planning model for degraded-model detection (Issue #2654).
   // Empty default → expected model derived from the planning routing chain.

@@ -1988,6 +1988,10 @@ Deno.test(
 
     const config = createDefaultRunCoreConfig();
     config.runDurationSeconds = 3600;
+    // Pinned below the cap. The default (300 s since Issue #2446) equals
+    // MAX_PACED_SLEEP_SECONDS, so a jittered base of exactly 300 s left
+    // pacing nothing to move and no log line: a 1-in-150 flake.
+    config.sleepInterval = 120;
     await runCoreLoop(config, deps);
 
     assert(

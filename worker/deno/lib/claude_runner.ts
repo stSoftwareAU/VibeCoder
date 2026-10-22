@@ -2823,6 +2823,39 @@ async function readMemoryPressureAtKill(
   }
 }
 
+/**
+ * The evidence that a failed run was rate-limited by its provider, or
+ * undefined when it was not (Issue #4114).
+ *
+ * The provider's own classifier (Issue #1695) decides when it gave a verdict:
+ * it reads the CLI's error records and stderr, never the agent's transcript.
+ * An overloaded upstream (529) is classified `network` there but keeps the
+ * short-backoff ladder it has always taken. Only a provider with no output
+ * adapter falls back to the prose match, over the CLI's error surface alone.
+ *
+ * @param failure - The provider's normalised failure, if it classified one.
+ * @param cliErrorSurface - Stderr plus the provider's structured error text.
+ * @param tailLines - Lines from the end of the surface to scan.
+ * @returns The redacted line or message that matched, or undefined.
+ */
+export function rateLimitEvidence(
+  failure: AgentFailure | undefined,
+  cliErrorSurface: string,
+  tailLines: number,
+): string | undefined {
+  if (failure) {
+    const overloaded = failure.category === "network" &&
+      (failure.httpStatus === 529 || /overloaded/i.test(failure.message));
+    return failure.category === "rate-limit" || overloaded
+      ? failure.message
+      : undefined;
+  }
+  const { matchedLine } = detectRateLimit(cliErrorSurface, tailLines);
+  return matchedLine === undefined
+    ? undefined
+    : redactedLineTail(matchedLine.trim(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // Run Claude with retry
 // ---------------------------------------------------------------------------
@@ -3526,18 +3559,18 @@ async function runRetryLadder(
         };
       }
 
-      // Check for rate limiting on non-zero exit
-      const { isRateLimited, isPrimary } = detectRateLimit(
-        bothStreams,
+      // Check for rate limiting on non-zero exit — the provider's refusal
+      // only, never the agent's own transcript (Issue #4114).
+      const rateLimited = rateLimitEvidence(
+        invokedAgentFailure,
+        `${stderr ?? ""}\n${structuredEvidence}`,
         errorScanTailLines,
       );
 
-      if (isRateLimited) {
+      if (rateLimited !== undefined) {
         retryCount++;
         currentOptions.logger?.warn(
-          isPrimary
-            ? `Credits exhausted or rate limited (exit code: ${exitCode}).`
-            : `Possible rate limit detected (exit code: ${exitCode}).`,
+          `Credits exhausted or rate limited (exit code: ${exitCode}): ${rateLimited}`,
         );
         currentOptions.logger?.security?.(
           "RATE_LIMIT",
