@@ -195,7 +195,7 @@ Deno.test("execute_claude_phase - issue_reviewer_agents on hands the runner both
     [SPEC_REVIEWER_AGENT_NAME, STANDARDS_REVIEWER_AGENT_NAME].sort(),
   );
   assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.effort, "medium");
-  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.effort, "low");
+  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.effort, "medium");
   assertEquals(
     runOptions?.issueExecutorSplit,
     undefined,
@@ -245,7 +245,7 @@ Deno.test("execute_claude_phase - no tier option with split and reviewers on is 
   assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.effort, "medium");
 });
 
-Deno.test("execute_claude_phase - issueSubAgentTier haiku with split and reviewers on carries haiku executor, haiku standards reviewer, sonnet spec reviewer, and an explorer (Issue #3402)", async () => {
+Deno.test("execute_claude_phase - issueSubAgentTier haiku with split and reviewers on carries haiku executor, both Opus reviewers, and an explorer (Issue #3402)", async () => {
   const runOptions = await runWith({
     issueExecutorSplit: true,
     issueReviewerAgents: true,
@@ -265,9 +265,11 @@ Deno.test("execute_claude_phase - issueSubAgentTier haiku with split and reviewe
   );
   assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.model, "haiku");
   assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.effort, "high");
-  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.model, "haiku");
+  // The tier picks the executor, never the reviewers (owner decision
+  // 2026-10-22).
+  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.model, "opus");
   assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.effort, "medium");
-  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.model, "sonnet");
+  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.model, "opus");
   assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.effort, "medium");
   assertEquals(agents[EXPLORER_AGENT_NAME]!.tools, ["Read", "Grep", "Glob"]);
 });

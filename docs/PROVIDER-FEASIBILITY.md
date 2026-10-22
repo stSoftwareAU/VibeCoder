@@ -84,7 +84,7 @@ deno run --allow-read --allow-env --allow-run mod.ts provider-feasibility \
 
 - Runs only `<binary> --version` per provider, under a scrubbed environment (`commands/provider_feasibility.ts:117-131`). No model turn, no GitHub API call, no file written (`:1-12`).
 - Reads the provider's `provider.env` under the credential directory as the worker provisions it. The file values overlay the parent environment (`commands/provider_feasibility.ts:226-238`). Output carries variable names and state labels only, passed through `redactSecrets` (`:138`, `:143`, `:382-390`).
-- Default candidates: claude `opus`, `sonnet`, `haiku`; codex `gpt-5-codex`, `gpt-5`, `gpt-5-mini`, `gpt-6-astra`, `gpt-6.1-sol` (`provider_feasibility.ts:93-112`).
+- Default candidates: claude `opus`, `sonnet`, `haiku`; codex `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-luna` — the Codex tiers mapped to Claude's on 2026-10-22 (`provider_feasibility.ts`, `DEFAULT_CANDIDATES`). Until then the codex list was `gpt-5-codex`, `gpt-5`, `gpt-5-mini`, `gpt-6-astra`, `gpt-6.1-sol`; the rows below were evaluated against that list.
 - Rows: one manager row per model, then for each manager provider one executor and one reviewer row per model. That is 40 rows by default (`provider_feasibility.ts:242-266`).
 - Capabilities come from each provider's own `buildInvocation` output (`--agents`, `--settings`, `--dangerously-bypass-approvals-and-sandbox`), not a hard-coded list (`provider_feasibility.ts:193-214`).
 - `--validated-models` adds to the fleet baseline (`commands/provider_feasibility.ts:343-355`). `--codex-home` sets `CODEX_HOME` for the probe (`:357-359`).
