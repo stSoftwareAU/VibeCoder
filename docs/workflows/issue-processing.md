@@ -1961,7 +1961,8 @@ Once the line passes,
 (`checkDocsSweepTerms`) re-runs each term the line quotes after `grep:` and
 each sibling term in its `siblings:` part (backticked or double-quoted) with
 `git grep -i` at `HEAD` over `README.md`,
-every `*/README.md` and `docs/` (excluding `docs/archive/`). Terms are
+every `*/README.md` and `docs/` (excluding `docs/archive/`). The removed-doc
+phrases (Issue #4105, below) are re-run over the same surfaces. Terms are
 literal, except that a `\w*` or `\w+` stem marker matches a run of word
 characters, so `replac\w*` finds both forms. A hit is cleared when it sits
 on a line the branch's `git diff --unified=0 <base>...HEAD` added or
@@ -1996,8 +1997,9 @@ names, never `OWNER_TUNED` or the buy ceiling. The `siblings:` part of the
 the change adds a member to, backticked or double-quoted, or
 `siblings: none — <why no existing set gained a member>`. The worker re-runs
 the quoted sibling terms exactly as it re-runs the `grep:` terms, with the same
-paths, clearing rule and advisory handling; a `none — …` negative re-runs
-nothing. The pr_feedback drift check runs the same gate, so a feedback push's
+paths, clearing rule and advisory handling; a `none — …` negative re-runs no
+sibling terms, though removed-doc phrases still run (Issue #4105). The
+pr_feedback drift check runs the same gate, so a feedback push's
 summary needs `siblings:` too.
 
 **Doc comments in source files are swept too (Issue #3219).** Fleet PRs fixed
@@ -2009,8 +2011,9 @@ prompts now extend the grep to source files: for each name the change removes
 or whose behaviour it changes, and for the shared constants, types and helpers
 the changed code defines or calls, the agent reads every doc comment and
 module doc a hit lands in and fixes any sentence the change makes false.
-`checkDocsSweepTerms` re-runs the same terms over source files outside `docs/`
-(`SOURCE_COMMENT_PATHSPECS`: `*.ts`, `*.rs`, `*.py`, `*.go`, `*.sh` and the
+`checkDocsSweepTerms` re-runs the same grep and sibling terms over source
+files outside `docs/` (`SOURCE_COMMENT_PATHSPECS`: `*.ts`, `*.rs`, `*.py`,
+`*.go`, `*.sh` and the
 other common source extensions) and keeps only hits on a whole comment line
 (`isSourceCommentLine`: `//`, `/*`, a `*` continuation, or `#` and a space).
 A code line, or a comment trailing code, is not read. Those hits are cleared
@@ -2020,6 +2023,26 @@ WARN, never blocking and never triggering a recovery turn. The broad-term
 limit of 10 is
 counted for source comments apart from docs, so a term common in comments
 never sets aside its doc hits.
+
+**Wording the diff removed is re-run too (Issue #4105).** The agent greps the
+terms for the new thing, not the old sentence it rewrote, so a PR could leave
+an old value in a defaults-table row or the README's copy of a rewritten rule
+(two fleet PRs did). `checkDocsSweepTerms` therefore takes a third term source
+from the branch diff: each line it removed from `README.md`, a `*/README.md` or
+`docs/` (not `docs/archive/`) contributes its backticked literals of at least
+2 characters and each run of at least 4 words between punctuation. A phrase
+still present in an added line of the same hunk is dropped, since the PR kept
+that wording. At most 20 phrases (`MAX_REMOVED_PHRASES`) are re-run per run, in
+diff order; any beyond the cap are logged at WARN, not silently dropped. Each
+phrase is a fixed-string, case-insensitive `git grep` at `HEAD` over the doc
+surfaces only, never source comments. Its hits are cleared exactly like term
+hits (a line the diff changed, or `file:line` in the Docs sweep line) and use
+the same per-surface broad-term cap of 10. They are advisory (Issue #3237):
+posted once in the same PR comment under the label "removed wording still
+present" and logged at WARN, never blocking. The re-run happens even when the
+Docs sweep line quotes no grep or sibling terms, so the diff is now always read
+(one extra `git diff`); a line with no terms and no removed doc wording is
+still skipped.
 
 ## 🧪 Removed test assertions must be accounted for
 

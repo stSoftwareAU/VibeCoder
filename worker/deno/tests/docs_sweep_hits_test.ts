@@ -9,6 +9,11 @@
  * parsing and the git-driven check, with git replaced by a stub that answers
  * the way `git grep -z` and `git diff --unified=0` do.
  *
+ * Issue #4105 adds a third term source: the wording the branch's diff removed
+ * from a doc (removed-wording phrases, reported with `kind: "removed-wording"`).
+ * The diff is now always read, so a line with no declared term is still
+ * checked when its diff removes doc wording.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -21,14 +26,18 @@ import {
 import {
   buildDocsSweepHitsComment,
   checkDocsSweepTerms,
+  describeDocsSweepHits,
   DOCS_SWEEP_PATHSPECS,
   type DocsSweepGitRunner,
   extractGrepTerms,
   extractNamedLines,
+  extractRemovedDocPhrases,
   extractSiblingTerms,
   extractSweepTerms,
+  isDocsSweepDocPath,
   isSiblingsNegative,
   isSourceCommentLine,
+  MAX_REMOVED_PHRASES,
   MAX_REPORTED_HITS,
   MAX_TERMS,
   MAX_UNTOUCHED_HITS_PER_TERM,
@@ -518,7 +527,7 @@ Deno.test("checkDocsSweepTerms - a term at the broad-term limit is still listed 
   assertEquals(check.staleHits.length, MAX_UNTOUCHED_HITS_PER_TERM);
 });
 
-Deno.test("checkDocsSweepTerms - no hit at all never reads the diff", async () => {
+Deno.test("checkDocsSweepTerms - no hit at all reports nothing", async () => {
   const calls: StubCall[] = [];
   const check = await checkDocsSweepTerms({
     rawBody: "grep: `Foo`; section: `docs/a.md`",
@@ -526,10 +535,9 @@ Deno.test("checkDocsSweepTerms - no hit at all never reads the diff", async () =
     runGit: stubGit({ calls }),
   });
   assertEquals(check.status === "checked" && check.staleHits, []);
-  assertEquals(calls.some((c) => c.args.includes("diff")), false);
 });
 
-Deno.test("checkDocsSweepTerms - no grep terms is skipped, and git is never run", async () => {
+Deno.test("checkDocsSweepTerms - no grep terms is skipped when the diff removes no doc wording", async () => {
   const calls: StubCall[] = [];
   const check = await checkDocsSweepTerms({
     rawBody: "section: `docs/a.md`; no hits",
@@ -537,7 +545,8 @@ Deno.test("checkDocsSweepTerms - no grep terms is skipped, and git is never run"
     runGit: stubGit({ calls }),
   });
   assertEquals(check.status, "skipped");
-  assertEquals(calls.length, 0);
+  assertEquals(calls.some((c) => c.args.includes("grep")), false);
+  assertEquals(calls.some((c) => c.args.includes("diff")), true);
 });
 
 Deno.test("checkDocsSweepTerms - a git grep error is not_checked, never a clean pass", async () => {
@@ -1052,4 +1061,427 @@ Deno.test("checkDocsSweepTerms - real git: finds the missed line and the inflect
   } finally {
     await Deno.remove(repo, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Removed doc wording from the diff (Issue #4105)
+// ---------------------------------------------------------------------------
+
+Deno.test("isDocsSweepDocPath - reads README and docs outside the archive (Issue #4105)", () => {
+  for (
+    const path of [
+      "README.md",
+      "web/README.md",
+      "docs/a.md",
+      "docs/replay/x.json",
+    ]
+  ) {
+    assert(isDocsSweepDocPath(path), path);
+  }
+  for (
+    const path of [
+      "docs/archive/a.md",
+      "docs/archive/README.md",
+      "worker/x.ts",
+      "docs-old/a.md",
+      "lib/README.txt",
+    ]
+  ) {
+    assertEquals(isDocsSweepDocPath(path), false, path);
+  }
+});
+
+Deno.test("extractRemovedDocPhrases - a removed five-word clause in a doc is returned (Issue #4105)", () => {
+  assertEquals(
+    extractRemovedDocPhrases(
+      "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -3 +3 @@\n" +
+        "-Old retry window stays open.\n+Retries now use a shorter window.\n",
+    ),
+    ["Old retry window stays open"],
+  );
+});
+
+Deno.test("extractRemovedDocPhrases - a backticked old value in a table row is returned (Issue #4105)", () => {
+  assertEquals(
+    extractRemovedDocPhrases(
+      "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -9 +9 @@\n" +
+        "-| timeout | `45` |\n+| timeout | `60` |\n",
+    ),
+    ["45"],
+  );
+});
+
+Deno.test("extractRemovedDocPhrases - a phrase the same hunk's added lines still carry is not returned (Issue #4105)", () => {
+  const removed = "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -3 +3 @@\n" +
+    "-Old retry window stays open.\n";
+  assertEquals(
+    extractRemovedDocPhrases(
+      removed + "+Old retry window stays open for a day.\n",
+    ),
+    [],
+  );
+  assertEquals(
+    extractRemovedDocPhrases(removed + "+Retries now use a shorter window.\n"),
+    ["Old retry window stays open"],
+  );
+});
+
+Deno.test("extractRemovedDocPhrases - removals from non-doc, archived and deleted files are not read (Issue #4105)", () => {
+  const diff = [
+    "--- a/worker/deno/lib/x.ts",
+    "+++ b/worker/deno/lib/x.ts",
+    "@@ -1 +1 @@",
+    "-// Old retry window stays open",
+    "+// new",
+    "--- a/docs/archive/old.md",
+    "+++ b/docs/archive/old.md",
+    "@@ -1 +0,0 @@",
+    "-Old retry window stays open",
+    "--- a/docs/gone.md",
+    "+++ /dev/null",
+    "@@ -1,2 +0,0 @@",
+    "-Old retry window stays open",
+    "-another removed line stays here",
+    "",
+  ].join("\n");
+  assertEquals(extractRemovedDocPhrases(diff), []);
+});
+
+Deno.test("extractRemovedDocPhrases - a run under four words and a one-character literal are not returned (Issue #4105)", () => {
+  assertEquals(
+    extractRemovedDocPhrases(
+      "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -1,2 +0,0 @@\n" +
+        "-Only three words\n-Use `x` here\n",
+    ),
+    [],
+  );
+});
+
+Deno.test("extractRemovedDocPhrases - a removed line starting with -- is body, not a file header (Issue #4105)", () => {
+  // The removed line is "-- the old…" and the added line is "++ b/…": both
+  // start like a header, and the hunk counts say they are body.
+  const diff = [
+    "--- a/docs/a.md",
+    "+++ b/docs/a.md",
+    "@@ -1,2 +1,1 @@",
+    "--- the old retry window stays open",
+    "+++ b/worker/x.ts",
+    "-plain words here and more",
+    "",
+  ].join("\n");
+  assertEquals(extractRemovedDocPhrases(diff), [
+    "the old retry window stays open",
+    "plain words here and more",
+  ]);
+});
+
+Deno.test("extractRemovedDocPhrases - punctuation breaks a run of words (Issue #4105)", () => {
+  assertEquals(
+    extractRemovedDocPhrases(
+      "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -1 +0,0 @@\n" +
+        "-Retries keep: the old window open\n",
+    ),
+    ["the old window open"],
+  );
+});
+
+Deno.test("extractRemovedDocPhrases - deduplicates case-insensitively, keeping the first spelling (Issue #4105)", () => {
+  assertEquals(
+    extractRemovedDocPhrases(
+      "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -1,2 +0,0 @@\n" +
+        "-The old retry window stays open\n-the OLD retry window stays open\n",
+    ),
+    ["The old retry window stays open"],
+  );
+});
+
+Deno.test("extractRemovedDocPhrases - hostile removed lines return promptly (Issue #4105)", () => {
+  const n = 200_000;
+  const bodies = [
+    "-" + "-".repeat(n),
+    "-" + "a-".repeat(n / 2),
+    "-" + " ".repeat(n) + "!".repeat(n),
+    "-" + "a ".repeat(n / 2),
+    "-" + "`".repeat(n),
+  ];
+  for (const body of bodies) {
+    assertEquals(
+      extractRemovedDocPhrases(
+        `--- a/docs/a.md\n+++ b/docs/a.md\n@@ -1 +0,0 @@\n${body}\n`,
+      ),
+      [],
+    );
+  }
+});
+
+/** The wording a diff removes from `docs/a.md` and does not keep. */
+const REMOVED_PHRASE = "Retries keep the old retry window open";
+const REMOVED_PHRASE_DIFF = [
+  "--- a/docs/a.md",
+  "+++ b/docs/a.md",
+  "@@ -3 +3 @@",
+  `-${REMOVED_PHRASE}.`,
+  "+Retries use a shorter window.",
+  "",
+].join("\n");
+
+Deno.test("checkDocsSweepTerms - a removed phrase still in untouched docs is reported as removed wording (Issue #4105)", async () => {
+  const check = await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`",
+    base: "main",
+    runGit: stubGit({
+      grep: {
+        [termToGitGrepPattern(REMOVED_PHRASE, false)]:
+          "HEAD:README.md\u00007\u0000Retries keep the old retry window open\n" +
+          "HEAD:docs/other.md\u000012\u0000the Retries keep the old retry window open here\n",
+      },
+      diff: REMOVED_PHRASE_DIFF,
+    }),
+  });
+  assertEquals(check.status, "checked");
+  if (check.status !== "checked") return;
+  assertEquals(
+    check.staleHits.map((h) => [`${h.path}:${h.line}`, h.kind, h.term]),
+    [
+      ["README.md:7", "removed-wording", REMOVED_PHRASE],
+      ["docs/other.md:12", "removed-wording", REMOVED_PHRASE],
+    ],
+  );
+});
+
+Deno.test("checkDocsSweepTerms - a removed phrase is re-run even when the line quotes no term (Issue #4105)", async () => {
+  const check = await checkDocsSweepTerms({
+    rawBody: "section: `docs/a.md`; no hits",
+    base: "main",
+    runGit: stubGit({
+      grep: {
+        [termToGitGrepPattern(REMOVED_PHRASE, false)]:
+          "HEAD:README.md\u00007\u0000Retries keep the old retry window open\n",
+      },
+      diff: REMOVED_PHRASE_DIFF,
+    }),
+  });
+  assertEquals(check.status, "checked");
+  if (check.status !== "checked") return;
+  assertEquals(check.terms, []);
+  assertEquals(check.removedPhrases, [REMOVED_PHRASE]);
+  assertEquals(
+    check.staleHits.map((h) => [`${h.path}:${h.line}`, h.kind]),
+    [["README.md:7", "removed-wording"]],
+  );
+});
+
+Deno.test("checkDocsSweepTerms - a backticked removed literal surviving in a table row is reported (Issue #4105)", async () => {
+  const check = await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`",
+    base: "main",
+    runGit: stubGit({
+      grep: { "45": "HEAD:docs/config.md\u000033\u0000| timeout | `45` |\n" },
+      diff:
+        "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -9 +9 @@\n-| timeout | `45` |\n+| timeout | `60` |\n",
+    }),
+  });
+  assertEquals(
+    check.status === "checked" &&
+      check.staleHits.map((h) => [`${h.path}:${h.line}`, h.kind, h.term]),
+    [["docs/config.md:33", "removed-wording", "45"]],
+  );
+});
+
+Deno.test("checkDocsSweepTerms - a removed-wording hit on a line the diff changed is cleared (Issue #4105)", async () => {
+  const check = await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`",
+    base: "main",
+    runGit: stubGit({
+      grep: {
+        [termToGitGrepPattern(REMOVED_PHRASE, false)]:
+          "HEAD:docs/b.md\u000020\u0000Retries keep the old retry window open in the other manual.\n",
+      },
+      diff: [
+        "--- a/docs/a.md",
+        "+++ b/docs/a.md",
+        "@@ -3 +3 @@",
+        `-${REMOVED_PHRASE}.`,
+        "+Retries use a shorter window.",
+        "--- a/docs/b.md",
+        "+++ b/docs/b.md",
+        "@@ -20 +20 @@",
+        "-Old b wording.",
+        "+Retries keep the old retry window open in the other manual.",
+        "",
+      ].join("\n"),
+    }),
+  });
+  assertEquals(check.status, "checked");
+  if (check.status !== "checked") return;
+  assertEquals(check.removedPhrases, [REMOVED_PHRASE]);
+  assertEquals(check.staleHits, []);
+});
+
+Deno.test("checkDocsSweepTerms - a removed-wording hit named as file:line in the Docs sweep line is cleared (Issue #4105)", async () => {
+  const check = await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`; docs/other.md:7 still true",
+    base: "main",
+    runGit: stubGit({
+      grep: {
+        [termToGitGrepPattern(REMOVED_PHRASE, false)]:
+          "HEAD:docs/other.md\u00007\u0000Retries keep the old retry window open\n",
+      },
+      diff: REMOVED_PHRASE_DIFF,
+    }),
+  });
+  assertEquals(check.status === "checked" && check.staleHits, []);
+});
+
+Deno.test("checkDocsSweepTerms - removed phrases beyond the cap are counted and not searched (Issue #4105)", async () => {
+  const calls: StubCall[] = [];
+  const removedLines = Array.from(
+    { length: MAX_REMOVED_PHRASES + 5 },
+    (_, i) => `-Clause ${i} stays in the manual`,
+  );
+  const check = await checkDocsSweepTerms({
+    rawBody: "section: `docs/a.md`; no hits",
+    base: "main",
+    runGit: stubGit({
+      calls,
+      diff: [
+        "--- a/docs/a.md",
+        "+++ b/docs/a.md",
+        `@@ -1,${removedLines.length} +0,0 @@`,
+        ...removedLines,
+        "",
+      ].join("\n"),
+    }),
+  });
+  assertEquals(check.status, "checked");
+  if (check.status !== "checked") return;
+  assertEquals(check.removedPhrases.length, MAX_REMOVED_PHRASES);
+  assertEquals(check.removedPhrasesOverCap, 5);
+  assertEquals(check.removedPhrases[0], "Clause 0 stays in the manual");
+  assertEquals(
+    calls.filter((c) => c.args.includes("grep")).length,
+    MAX_REMOVED_PHRASES,
+  );
+});
+
+Deno.test("checkDocsSweepTerms - a removed phrase is a fixed string over the docs only (Issue #4105)", async () => {
+  const calls: StubCall[] = [];
+  await checkDocsSweepTerms({
+    rawBody: "section: `docs/a.md`; no hits",
+    base: "main",
+    runGit: stubGit({
+      calls,
+      diff: "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -4 +4 @@\n" +
+        "-Use `replac\\w* the old window` to tune.\n+Use the new window.\n",
+    }),
+  });
+  const greps = calls.filter((c) => c.args.includes("grep"));
+  assertEquals(greps.length, 1);
+  const grep = greps[0]!;
+  assertEquals(
+    grep.args[grep.args.indexOf("-e") + 1],
+    "replac\\\\w\\* the old window",
+  );
+  assert(grep.args.includes("-i"), "case-insensitive");
+  assertEquals(grep.args.slice(grep.args.indexOf("--") + 1), [
+    ...DOCS_SWEEP_PATHSPECS,
+  ]);
+  assertEquals(grep.args.includes(":(exclude)docs"), false);
+});
+
+Deno.test("checkDocsSweepTerms - a phrase the hunk's added lines keep is not grepped at all (Issue #4105)", async () => {
+  const calls: StubCall[] = [];
+  const check = await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`",
+    base: "main",
+    runGit: stubGit({
+      calls,
+      diff: "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -3 +3 @@\n" +
+        "-Retries keep the old retry window open.\n" +
+        "+Retries keep the old retry window open for a day.\n",
+    }),
+  });
+  assertEquals(
+    calls.filter((c) => c.args.includes("grep")).map((c) =>
+      c.args[c.args.indexOf("-e") + 1]
+    ),
+    ["Foo", "Foo"],
+  );
+  assertEquals(check.status === "checked" && check.removedPhrases, []);
+});
+
+Deno.test("checkDocsSweepTerms - a line hit by a declared term and a removed phrase is reported once (Issue #4105)", async () => {
+  const line =
+    "HEAD:docs/other.md\u000012\u0000Foo and Retries keep the old retry window open\n";
+  const check = await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`",
+    base: "main",
+    runGit: stubGit({
+      grep: {
+        Foo: line,
+        [termToGitGrepPattern(REMOVED_PHRASE, false)]: line,
+      },
+      diff: REMOVED_PHRASE_DIFF,
+    }),
+  });
+  assertEquals(
+    check.status === "checked" &&
+      check.staleHits.map((h) => [`${h.path}:${h.line}`, h.term, h.kind]),
+    [["docs/other.md:12", "Foo", undefined]],
+  );
+});
+
+Deno.test("buildDocsSweepHitsComment - labels removed-wording hits and explains them once, before the advisory paragraph (Issue #4105)", () => {
+  const comment = buildDocsSweepHitsComment([
+    {
+      path: "README.md",
+      line: 7,
+      text: "Retries keep the old retry window open",
+      term: REMOVED_PHRASE,
+      kind: "removed-wording",
+    },
+    { path: "docs/a.md", line: 3, text: "Foo here", term: "Foo" },
+  ]);
+  assertStringIncludes(
+    comment,
+    "(removed wording still present: `Retries keep the old retry window open`)",
+  );
+  assertStringIncludes(comment, "(term: `Foo`)");
+  const paragraph = "a sentence this PR's diff removed from a doc";
+  assertEquals(comment.split(paragraph).length - 1, 1);
+  assert(
+    comment.indexOf(paragraph) < comment.indexOf("These hits are advisory"),
+  );
+});
+
+Deno.test("buildDocsSweepHitsComment - without removed-wording hits the removed paragraph is absent (Issue #4105)", () => {
+  const comment = buildDocsSweepHitsComment([
+    { path: "docs/a.md", line: 3, text: "Foo", term: "Foo" },
+  ]);
+  assertEquals(comment.includes("removed"), false);
+});
+
+Deno.test("describeDocsSweepHits - counts removed-wording hits apart (Issue #4105)", () => {
+  assertStringIncludes(
+    describeDocsSweepHits([
+      {
+        path: "README.md",
+        line: 7,
+        text: "x",
+        term: "x",
+        kind: "removed-wording",
+      },
+    ]),
+    "; 1 of them repeat wording the diff removed from the docs",
+  );
+  assertEquals(
+    describeDocsSweepHits([{
+      path: "docs/a.md",
+      line: 3,
+      text: "x",
+      term: "x",
+    }])
+      .includes("removed"),
+    false,
+  );
 });

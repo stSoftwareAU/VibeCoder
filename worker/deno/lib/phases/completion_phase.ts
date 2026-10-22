@@ -107,6 +107,7 @@ import {
   buildDocsSweepHitsComment,
   checkDocsSweepTerms,
   describeDocsSweepHits,
+  MAX_REMOVED_PHRASES,
 } from "../docs_sweep_hits.ts";
 import {
   buildResultPlaceholderGateComment,
@@ -3047,7 +3048,8 @@ async function completionBody(
 
   // Issue #3172: once the line itself passes, re-run the grep and sibling
   // terms it quotes (Issue #3371) over the head's docs, and over the comment
-  // lines of its source files (Issue #3219). A hit outside every line the diff changed,
+  // lines of its source files (Issue #3219), and the wording the branch's diff
+  // removed from the docs (Issue #4105). A hit outside every line the diff changed,
   // and not named in the line as `file:line`, is a sentence the sweep found
   // and left — Issue #3237 made this advisory only: it is named in a PR
   // comment, not blocked, and costs no recovery turn. A grep or diff that
@@ -3086,6 +3088,13 @@ async function completionBody(
         "Docs sweep terms too broad to check line by line outside the " +
           "files the diff touched — not checked there (Issue #3172)",
         { terms: termCheck.broadTerms },
+      );
+    }
+    if (termCheck.status === "checked" && termCheck.removedPhrasesOverCap > 0) {
+      logger.warn(
+        `Removed-wording phrases beyond the cap of ${MAX_REMOVED_PHRASES} were ` +
+          "not re-run at the head (Issue #4105)",
+        { dropped: termCheck.removedPhrasesOverCap },
       );
     }
     if (termCheck.status === "checked" && termCheck.staleHits.length > 0) {

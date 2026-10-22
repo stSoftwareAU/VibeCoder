@@ -38,6 +38,17 @@
  * comment trailing code, is not read: the issue is stale prose, and a
  * term's own definition is not a sentence to clear.
  *
+ * The wording the branch's diff removed from a doc is re-run too (Issue
+ * #4105), without the summary quoting it. Each line the diff removed from a
+ * doc file (`README.md`, `*\/README.md`, or `docs/` outside `docs/archive/`)
+ * yields candidate phrases: each backticked literal, and each run of at least
+ * four words with punctuation as a break. A phrase the same hunk's added lines
+ * still carry was kept by the PR, so it is not re-run. Each remaining phrase
+ * is searched over the docs surfaces only, as a fixed string (no stem
+ * markers), case-insensitively, and its hits reach the same hit rules as a
+ * grep term's — cleared by a changed line or a `file:line` named in the Docs
+ * sweep line — and are reported as removed wording. Advisory like the rest.
+ *
  * Terms are literal: every regex metacharacter is escaped before the pattern
  * reaches `git grep -E`, except a `\w*` / `\w+` stem marker, which becomes a
  * word-character run so `replac\w*` finds "replaced" and "replaces". No
@@ -124,6 +135,19 @@ export const MAX_TERMS = 20;
 /** A term longer than this is not a grep term anyone typed; it is skipped. */
 const MAX_TERM_CHARS = 200;
 
+/**
+ * Up to how many removed-wording phrases are re-run from one diff (Issue
+ * #4105). The rest are counted in `removedPhrasesOverCap`, never dropped
+ * silently.
+ */
+export const MAX_REMOVED_PHRASES = 20;
+
+/** A removed-wording word run needs at least this many words (Issue #4105). */
+export const MIN_PHRASE_WORDS = 4;
+
+/** A removed-wording backticked literal needs at least this many characters. */
+export const MIN_LITERAL_CHARS = 2;
+
 /** Up to how many stale hits are named in the comment and the log line. */
 export const MAX_REPORTED_HITS = 20;
 
@@ -141,17 +165,27 @@ export interface DocsSweepHit {
   line: number;
   /** The line's text. */
   text: string;
-  /** The Docs sweep term that hit it. */
+  /** The Docs sweep term (or removed-wording phrase) that hit it. */
   term: string;
+  /** Set only on a hit of a removed-wording phrase (Issue #4105). */
+  kind?: "removed-wording";
 }
 
-/** Outcome of re-running the Docs sweep line's terms. */
+/**
+ * Outcome of re-running the Docs sweep line's grep and sibling terms and the
+ * wording the branch's diff removed from the docs (Issue #4105).
+ */
 export type DocsSweepTermCheck =
   | { status: "skipped"; reason: string }
   | { status: "not_checked"; reason: string; terms: string[] }
   | {
     status: "checked";
+    /** The declared grep and sibling terms only. */
     terms: string[];
+    /** The removed-wording phrases searched, at most `MAX_REMOVED_PHRASES`. */
+    removedPhrases: string[];
+    /** Removed-wording phrases beyond the cap, which were not searched. */
+    removedPhrasesOverCap: number;
     staleHits: DocsSweepHit[];
     /** Terms too broad to list line by line (see `MAX_UNTOUCHED_HITS_PER_TERM`). */
     broadTerms: string[];
@@ -359,14 +393,15 @@ const ERE_SPECIAL = new Set([
 /**
  * A `git grep -E` pattern for a Docs sweep term: every character literal,
  * except a `\w*` or `\w+` stem marker, which matches a run of word
- * characters.
+ * characters. With `stems` false (removed-wording phrases, Issue #4105) the
+ * marker is escaped like any other text, so the phrase is a fixed string.
  */
-export function termToGitGrepPattern(term: string): string {
+export function termToGitGrepPattern(term: string, stems = true): string {
   let out = "";
   let i = 0;
   while (i < term.length) {
     if (
-      term[i] === "\\" && term[i + 1] === "w" &&
+      stems && term[i] === "\\" && term[i + 1] === "w" &&
       (term[i + 2] === "*" || term[i + 2] === "+")
     ) {
       out += `[[:alnum:]_]${term[i + 2]}`;
@@ -450,14 +485,168 @@ export function parseChangedLines(
   return changed;
 }
 
+/** Whitespace runs, collapsed to one space (Issue #4105). */
+const WHITESPACE_RE = /\s+/g;
+
+/** A backticked span on one line (Issue #4105). */
+const BACKTICK_SPAN_RE = /`([^`\n]+)`/g;
+
+/** Punctuation that breaks a run of words (Issue #4105). */
+const PHRASE_BREAK_RE = /[^\p{L}\p{N}\s'’_-]+/u;
+
+/** A token with a letter or digit is a word; a lone `-` is not (Issue #4105). */
+const WORD_TOKEN_RE = /[\p{L}\p{N}]/u;
+
+/** A hunk header's old and new counts, each omitted count being 1. */
+const HUNK_COUNTS_RE = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
+
+/** Whitespace-collapsed text (Issue #4105). */
+function collapseSpaces(text: string): string {
+  return text.replace(WHITESPACE_RE, " ").trim();
+}
+
+/**
+ * Whether a repo-relative path is a doc surface the sweep reads: `README.md`,
+ * any `*\/README.md`, or `docs/` outside `docs/archive/` — the same set as
+ * `DOCS_SWEEP_PATHSPECS` (Issue #4105).
+ */
+export function isDocsSweepDocPath(path: string): boolean {
+  if (path.startsWith("docs/archive/")) return false;
+  if (path === "README.md" || path.endsWith("/README.md")) return true;
+  return path.startsWith("docs/");
+}
+
+/** Append a word run when it is long enough and not too long (Issue #4105). */
+function pushWordRun(out: string[], run: readonly string[]): void {
+  if (run.length < MIN_PHRASE_WORDS) return;
+  const phrase = run.join(" ");
+  if (phrase.length <= MAX_TERM_CHARS) out.push(phrase);
+}
+
+/**
+ * The candidate phrases of one removed doc line (Issue #4105): each backticked
+ * literal of at least `MIN_LITERAL_CHARS`, then each run of at least
+ * `MIN_PHRASE_WORDS` words. Backticked spans are not read as words, and
+ * punctuation or a lone `-` breaks a run.
+ */
+function removedLineCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  for (const match of text.matchAll(BACKTICK_SPAN_RE)) {
+    const literal = collapseSpaces(match[1]!);
+    if (
+      literal.length >= MIN_LITERAL_CHARS && literal.length <= MAX_TERM_CHARS
+    ) {
+      candidates.push(literal);
+    }
+  }
+  const plain = text.replace(BACKTICK_SPAN_RE, " ");
+  for (const segment of plain.split(PHRASE_BREAK_RE)) {
+    let run: string[] = [];
+    for (const token of segment.split(/\s+/)) {
+      if (token === "") continue;
+      if (WORD_TOKEN_RE.test(token)) {
+        run.push(token);
+        continue;
+      }
+      pushWordRun(candidates, run);
+      run = [];
+    }
+    pushWordRun(candidates, run);
+  }
+  return candidates;
+}
+
+/**
+ * The phrases a diff removed from the docs (Issue #4105), read from
+ * `git diff --unified=0` output as `parseChangedLines` reads it. Each hunk's
+ * remaining old and new counts (from its header, an omitted count being 1)
+ * decide what is body: while either is above zero every line is body, so a
+ * removed line whose text starts `-- ` is never a `---` file header. Outside a
+ * hunk, `---` then `+++` sets the file; a `+++ /dev/null` target is a deleted
+ * file, whose removals are skipped. Only doc surfaces (`isDocsSweepDocPath`)
+ * count.
+ *
+ * A candidate is dropped when the same hunk's added lines still carry it
+ * (case-insensitive, whitespace-collapsed): the PR kept that wording. The rest
+ * are returned in diff order, deduplicated case-insensitively with the first
+ * spelling kept, uncapped — the caller applies `MAX_REMOVED_PHRASES`.
+ */
+export function extractRemovedDocPhrases(diff: string): string[] {
+  const phrases: string[] = [];
+  const seen = new Set<string>();
+  let current: string | null | undefined = undefined;
+  let previous = "";
+  let oldLeft = 0;
+  let newLeft = 0;
+  let removed: string[] = [];
+  let added: string[] = [];
+  const endHunk = (): void => {
+    if (removed.length > 0) {
+      // Lines are joined by a newline, which no candidate contains, so a
+      // phrase cannot match across two added lines.
+      const addedText = added.map(collapseSpaces).join("\n").toLowerCase();
+      for (const line of removed) {
+        for (const candidate of removedLineCandidates(line)) {
+          const key = candidate.toLowerCase();
+          if (addedText.includes(key) || seen.has(key)) continue;
+          seen.add(key);
+          phrases.push(candidate);
+        }
+      }
+    }
+    removed = [];
+    added = [];
+  };
+  for (const line of diff.split("\n")) {
+    const afterOld = previous.startsWith("--- ");
+    previous = line;
+    if (oldLeft > 0 || newLeft > 0) {
+      if (line.startsWith("-")) {
+        oldLeft--;
+        if (typeof current === "string" && isDocsSweepDocPath(current)) {
+          removed.push(line.slice(1));
+        }
+      } else if (line.startsWith("+")) {
+        newLeft--;
+        added.push(line.slice(1));
+      } else if (!line.startsWith("\\")) {
+        // A context line (none under --unified=0) counts on both sides; a
+        // "\ No newline" marker counts on neither.
+        oldLeft--;
+        newLeft--;
+      }
+      if (oldLeft <= 0 && newLeft <= 0) {
+        oldLeft = 0;
+        newLeft = 0;
+        endHunk();
+      }
+      continue;
+    }
+    if (afterOld && line.startsWith("+++ ")) {
+      const target = line.slice(4).trim();
+      current = target === "/dev/null"
+        ? null
+        : target.replace(/^"|"$/g, "").replace(/^b\//, "");
+      continue;
+    }
+    const hunk = line.match(HUNK_COUNTS_RE);
+    if (hunk) {
+      oldLeft = hunk[1] === undefined ? 1 : Number(hunk[1]);
+      newLeft = hunk[2] === undefined ? 1 : Number(hunk[2]);
+    }
+  }
+  endHunk();
+  return phrases;
+}
+
 /**
  * A term with more stale hits than this in doc files the diff did not touch
- * (or, counted apart, in source comment lines — Issue #3219) is a locator
- * word (a section name, a common verb), not a removed claim:
- * its hits in untouched files are not listed one by one, and the term is
- * reported as `broadTerms` for the caller to log as not checked line by
- * line. Its hits in files the diff touched are always listed — that is
- * where both incidents behind Issue #3172 sat.
+ * (or, counted apart, in source comment lines — Issue #3219, or in the
+ * removed-wording surface — Issue #4105) is a locator word (a section name, a
+ * common verb), not a removed claim: its hits in untouched files are not
+ * listed one by one, and the term is reported as `broadTerms` for the caller
+ * to log as not checked line by line. Its hits in files the diff touched are
+ * always listed — that is where both incidents behind Issue #3172 sat.
  */
 export const MAX_UNTOUCHED_HITS_PER_TERM = 10;
 
@@ -511,9 +700,15 @@ async function readGit(
 
 /**
  * Re-run a Docs sweep line's grep and sibling terms (Issue #3371) over the
- * head's docs and the comment lines of its source files, and return the hits
- * the branch neither changed nor named as left alone. A sibling term's hit is
- * cleared or reported exactly as a grep term's is.
+ * head's docs and the comment lines of its source files (Issue #3219), and the
+ * wording the branch's diff removed from the docs (Issue #4105), and return
+ * the hits the branch neither changed nor named as left alone. A sibling
+ * term's hit is cleared or reported exactly as a grep term's is; a removed-
+ * wording hit is tagged `kind: "removed-wording"`.
+ *
+ * The diff is always read, because its removed doc wording is a term source
+ * of its own. A line that quotes no term but whose diff removes doc wording
+ * is still checked (Issue #4105); only a line with neither is skipped.
  *
  * @param opts.rawBody - The Docs sweep entry (`DocsSweepLine.rawBody`).
  * @param opts.base - The ref the branch's diff is taken against.
@@ -525,16 +720,11 @@ export async function checkDocsSweepTerms(opts: {
   runGit: DocsSweepGitRunner;
 }): Promise<DocsSweepTermCheck> {
   const terms = extractSweepTerms(opts.rawBody);
-  if (terms.length === 0) {
-    return {
-      status: "skipped",
-      reason: "the Docs sweep line quotes no grep or sibling term",
-    };
-  }
 
   const grepHead = async (
     term: string,
     pathspecs: readonly string[],
+    stems = true,
   ): Promise<DocsSweepHit[]> =>
     parseGitGrepOutput(
       await readGit(opts.runGit, [
@@ -545,7 +735,7 @@ export async function checkDocsSweepTerms(opts: {
         "-i",
         "-E",
         "-e",
-        termToGitGrepPattern(term),
+        termToGitGrepPattern(term, stems),
         "HEAD",
         "--",
         ...pathspecs,
@@ -554,20 +744,6 @@ export async function checkDocsSweepTerms(opts: {
     );
 
   try {
-    const docHits: DocsSweepHit[] = [];
-    const sourceHits: DocsSweepHit[] = [];
-    for (const term of terms) {
-      docHits.push(...await grepHead(term, DOCS_SWEEP_PATHSPECS));
-      sourceHits.push(
-        ...(await grepHead(term, SOURCE_COMMENT_PATHSPECS)).filter((hit) =>
-          isSourceCommentLine(hit.text)
-        ),
-      );
-    }
-    if (docHits.length === 0 && sourceHits.length === 0) {
-      return { status: "checked", terms, staleHits: [], broadTerms: [] };
-    }
-
     const diff = await readGit(opts.runGit, [
       "-c",
       "core.quotePath=false",
@@ -580,7 +756,37 @@ export async function checkDocsSweepTerms(opts: {
       ...DIFF_PATHSPECS,
     ], [0]);
     const changed = parseChangedLines(diff);
+    const removed = extractRemovedDocPhrases(diff);
+    if (terms.length === 0 && removed.length === 0) {
+      return {
+        status: "skipped",
+        reason: "the Docs sweep line quotes no grep or sibling term and " +
+          "the diff removes no doc wording to re-run",
+      };
+    }
+    const removedPhrases = removed.slice(0, MAX_REMOVED_PHRASES);
+    const removedPhrasesOverCap = removed.length - removedPhrases.length;
     const named = extractNamedLines(opts.rawBody);
+
+    const docHits: DocsSweepHit[] = [];
+    const sourceHits: DocsSweepHit[] = [];
+    for (const term of terms) {
+      docHits.push(...await grepHead(term, DOCS_SWEEP_PATHSPECS));
+      sourceHits.push(
+        ...(await grepHead(term, SOURCE_COMMENT_PATHSPECS)).filter((hit) =>
+          isSourceCommentLine(hit.text)
+        ),
+      );
+    }
+    // Removed wording is a fixed string over the docs surfaces only (Issue
+    // #4105): no stem markers, and no source comments.
+    const wordingHits: DocsSweepHit[] = [];
+    for (const phrase of removedPhrases) {
+      const hits = await grepHead(phrase, DOCS_SWEEP_PATHSPECS, false);
+      wordingHits.push(
+        ...hits.map((hit) => ({ ...hit, kind: "removed-wording" as const })),
+      );
+    }
 
     const seen = new Set<string>();
     const stale = (hits: readonly DocsSweepHit[]): DocsSweepHit[] =>
@@ -592,14 +798,28 @@ export async function checkDocsSweepTerms(opts: {
           !inRanges(named.get(hit.path), hit.line);
       });
     // The broad-term cap is counted per surface, so a term common in source
-    // comments never sets aside its hits in the docs (Issue #3219).
+    // comments never sets aside its hits in the docs (Issue #3219), and a
+    // removed phrase's hits are counted apart from both (Issue #4105).
     const docs = splitBroadTerms(stale(docHits), changed);
     const source = splitBroadTerms(stale(sourceHits), changed);
+    const wording = splitBroadTerms(stale(wordingHits), changed);
     return {
       status: "checked",
       terms,
-      staleHits: [...docs.staleHits, ...source.staleHits],
-      broadTerms: [...new Set([...docs.broadTerms, ...source.broadTerms])],
+      removedPhrases,
+      removedPhrasesOverCap,
+      staleHits: [
+        ...docs.staleHits,
+        ...source.staleHits,
+        ...wording.staleHits,
+      ],
+      broadTerms: [
+        ...new Set([
+          ...docs.broadTerms,
+          ...source.broadTerms,
+          ...wording.broadTerms,
+        ]),
+      ],
     };
   } catch (err) {
     return {
@@ -624,9 +844,14 @@ function renderHitText(text: string): string {
 export function describeDocsSweepHits(hits: readonly DocsSweepHit[]): string {
   const named = hits.slice(0, 5).map((h) => `${h.path}:${h.line}`).join(", ");
   const extra = hits.length - 5;
+  const removed = hits.filter((h) => h.kind === "removed-wording").length;
   return `the Docs sweep's own grep and sibling terms still hit ${hits.length} doc ` +
     `or source-comment line(s) outside the diff and not named as still true: ${named}${
       extra > 0 ? ` and ${extra} more` : ""
+    }${
+      removed > 0
+        ? `; ${removed} of them repeat wording the diff removed from the docs`
+        : ""
     }`;
 }
 
@@ -638,12 +863,17 @@ export function describeDocsSweepHits(hits: readonly DocsSweepHit[]): string {
 export function buildDocsSweepHitsComment(
   hits: readonly DocsSweepHit[],
 ): string {
-  const listed = hits.slice(0, MAX_REPORTED_HITS).map((hit) =>
-    `- \`${hit.path}:${hit.line}\` — \`${renderHitText(hit.text)}\` ` +
-    `(term: \`${renderHitText(hit.term)}\`)`
-  );
+  const listed = hits.slice(0, MAX_REPORTED_HITS).map((hit) => {
+    const label = hit.kind === "removed-wording"
+      ? `(removed wording still present: \`${renderHitText(hit.term)}\`)`
+      : `(term: \`${renderHitText(hit.term)}\`)`;
+    return `- \`${hit.path}:${hit.line}\` — \`${
+      renderHitText(hit.text)
+    }\` ${label}`;
+  });
   const extra = hits.length - MAX_REPORTED_HITS;
   if (extra > 0) listed.push(`- … and ${extra} more`);
+  const hasRemoved = hits.some((hit) => hit.kind === "removed-wording");
   return [
     "ℹ️ **Docs sweep terms still hit the head (advisory).** Re-running the " +
     "grep and sibling terms this PR's **Docs sweep** line quotes over " +
@@ -654,6 +884,14 @@ export function buildDocsSweepHitsComment(
     "",
     ...listed,
     "",
+    ...(hasRemoved
+      ? [
+        "Hits labelled removed wording repeat a sentence this PR's diff " +
+        "removed from a doc. The same wording still appears on lines the " +
+        "diff did not change, so check whether it is still true there.",
+        "",
+      ]
+      : []),
     "These hits are advisory: they do not block this PR. Reviewer: check " +
     "each sentence is still true.",
     "",
