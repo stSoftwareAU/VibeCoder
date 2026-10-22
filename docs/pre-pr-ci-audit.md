@@ -327,29 +327,54 @@ VibeCoder rows are classified from its public issue comments.
 What the 20 VibeCoder issues show, read from each issue's "released this claim"
 and "Automated Processing Failed" comments:
 
-- 18 were blocked on the sweptAt ancestry check: #3609, #3617, #3642, #3645,
-  #3647, #3653, #3657, #3659, #3726, #3742, #3750, #3760, #3766, #3804, #3970,
-  #4045, #4046 and #4119. This is the failure that broke five VibeCoder CI runs
-  in the table above. Here the unattended worker stopped it before
-  `gh pr create`, and the comment quotes the offending slice and the
-  `git log --diff-filter=A -1 …` command that repoints it.
-- 2 were blocked on a pre-flight `deno fmt --check` failure: #3779 and #3860.
+- 18 were blocked on the sweptAt ancestry check:
+  [#3609](https://github.com/stSoftwareAU/VibeCoder/issues/3609),
+  [#3617](https://github.com/stSoftwareAU/VibeCoder/issues/3617),
+  [#3642](https://github.com/stSoftwareAU/VibeCoder/issues/3642),
+  [#3645](https://github.com/stSoftwareAU/VibeCoder/issues/3645),
+  [#3647](https://github.com/stSoftwareAU/VibeCoder/issues/3647),
+  [#3653](https://github.com/stSoftwareAU/VibeCoder/issues/3653),
+  [#3657](https://github.com/stSoftwareAU/VibeCoder/issues/3657),
+  [#3659](https://github.com/stSoftwareAU/VibeCoder/issues/3659),
+  [#3726](https://github.com/stSoftwareAU/VibeCoder/issues/3726),
+  [#3742](https://github.com/stSoftwareAU/VibeCoder/issues/3742),
+  [#3750](https://github.com/stSoftwareAU/VibeCoder/issues/3750),
+  [#3760](https://github.com/stSoftwareAU/VibeCoder/issues/3760),
+  [#3766](https://github.com/stSoftwareAU/VibeCoder/issues/3766),
+  [#3804](https://github.com/stSoftwareAU/VibeCoder/issues/3804),
+  [#3970](https://github.com/stSoftwareAU/VibeCoder/issues/3970),
+  [#4045](https://github.com/stSoftwareAU/VibeCoder/issues/4045),
+  [#4046](https://github.com/stSoftwareAU/VibeCoder/issues/4046) and
+  [#4119](https://github.com/stSoftwareAU/VibeCoder/issues/4119). This is the
+  failure that broke five VibeCoder CI runs in the table above. Here the
+  unattended worker stopped it before `gh pr create`, and the comment quotes the
+  offending slice and the `git log --diff-filter=A -1 …` command that repoints
+  it.
+- 2 were blocked on a pre-flight `deno fmt --check` failure:
+  [#3779](https://github.com/stSoftwareAU/VibeCoder/issues/3779) and
+  [#3860](https://github.com/stSoftwareAU/VibeCoder/issues/3860).
 - The check that blocked is recorded in the issue comment only. The archive
   metadata holds the category, not the check, so the table cannot be split by
   check for the other repos.
 
 Findings:
 
-- The executable checks do run on the unattended worker path, on all four
-  hosts, and stop real failures before the PR exists. This confirms the replay
+- The executable checks do run on the unattended worker path: each of the four
+  hosts recorded at least one gate block (22, 25, 17 and 3 blocks), and the
+  blocks stop real failures before the PR exists. This confirms the replay
   above on live runs.
 - A block ends the run: only 1 of the 20 VibeCoder issues has a later success.
-  The gate "fails closed and never enters push recovery", so the agent gets no
-  turn to fix what the gate found. This gap is tracked in #4128 (open); no new
-  issue is filed.
-- The sweptAt block recurred on 2026-10-20 to 2026-10-22 (#3970, #4045, #4046,
-  #4119) after #3976 (the producer-side fix) closed on 2026-10-18. Whether
-  those hosts ran code with that fix was not checked.
+  The gate "fails closed and never enters push recovery" (a comment above
+  `gateBeforePush()` in `lib/phases/completion_phase.ts`), so the agent gets
+  no turn to fix what the gate found. This gap is tracked in #4128 (open);
+  no new issue is filed.
+- The sweptAt block recurred on 2026-10-20 to 2026-10-22
+  ([#3970](https://github.com/stSoftwareAU/VibeCoder/issues/3970),
+  [#4045](https://github.com/stSoftwareAU/VibeCoder/issues/4045),
+  [#4046](https://github.com/stSoftwareAU/VibeCoder/issues/4046),
+  [#4119](https://github.com/stSoftwareAU/VibeCoder/issues/4119)) after #3976
+  (the producer-side fix) closed on 2026-10-18. Whether those hosts ran code
+  with that fix was not checked.
 - Four blocked runs (fleet-wide) already had a PR open, as described under
   [Known remaining limits](#known-remaining-limits).
 - Not observed: the checks that passing runs reached. The `Pre-push gate
@@ -444,17 +469,18 @@ Issue #3689 weakens or removes a CI, review or security gate.
 - Rows were derived from the failed GitHub Actions runs in the tables (first
   failing job per run, log read via `gh`). Only VibeCoder's runs are linked.
 - Blocking review findings are audited in their own table (Issue #3717); the
-  verifier's live record comes from one host's logs only.
+  verifier's miss record comes from one host's logs only; its block count is
+  fleet-wide for VibeCoder (see Completion-phase pre-push gate: fleet record).
 - Fixtures in this repository's tests reproduce each fixed gap. Issue #3717
   also replayed the completion-phase gate on seven real heads in disposable
   checkouts (see Unattended worker path).
 - The unattended worker path is verified by unit tests of Step 1b and
   `gateBeforePush()`, by the disposable-checkout replay, by this host's worker
   logs, and by the fleet-wide run archive (see Unattended worker path). The
-  archive records 67 live gate blocks on four hosts, 22 of them on VibeCoder;
-  it records the category, not the check, and not the checks passing runs
-  reached (#3770 logs those in the worker log, which this host did not hold
-  for the window).
+  archive records 67 live gate blocks across four hosts, 22 of them on
+  VibeCoder; it records the category, not the check, and not the checks passing
+  runs reached (#3770 logs those in the worker log, which this host did not
+  hold for the window).
 - #3644 consumes two kinds of evidence. The CI tables have one row per failing
   run. VibeCoder rows give the check name, first failing SHA, run link, local,
   network or GitHub-exclusive class, and whether pre-flight ran an equivalent.
