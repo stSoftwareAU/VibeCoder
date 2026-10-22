@@ -115,6 +115,8 @@ export interface CheckovCheckOptions {
   probe?: ProbeFn;
   /** Inject a spawner. Defaults to the deadline-bound spawn. */
   spawn?: SpawnFn;
+  /** Environment the PATH route filters. Defaults to the process environment. */
+  environment?: Record<string, string>;
 }
 
 /**
@@ -151,6 +153,7 @@ export function buildCheckovContainerArgs(scriptDir: string): string[] {
 async function runPathCheckov(
   scriptDir: string,
   spawn: SpawnFn,
+  environment?: Record<string, string>,
 ): Promise<CheckovRunResult> {
   const home = await Deno.makeTempDir({ prefix: "checkov-home-" });
   try {
@@ -159,7 +162,10 @@ async function runPathCheckov(
       [...CHECKOV_SCAN_ARGS],
       scriptDir,
       CHECKOV_DEADLINE_MS,
-      buildUntrustedCommandEnv({ overrides: { HOME: home } }),
+      buildUntrustedCommandEnv({
+        overrides: { HOME: home },
+        source: environment,
+      }),
     );
   } finally {
     await Deno.remove(home, { recursive: true });
@@ -180,6 +186,7 @@ export async function detectCheckovInvocation(
   scriptDir: string,
   probe: ProbeFn = defaultProbe,
   spawn: SpawnFn = defaultSpawn,
+  environment?: Record<string, string>,
 ): Promise<CheckovDetection> {
   const missing: string[] = [];
 
@@ -192,7 +199,7 @@ export async function detectCheckovInvocation(
       return {
         invocation: {
           description: `checkov ${reported} on PATH (the CI pin)`,
-          run: () => runPathCheckov(scriptDir, spawn),
+          run: () => runPathCheckov(scriptDir, spawn, environment),
         },
         missing,
       };
@@ -300,6 +307,7 @@ export async function runCheckovCheck(
     scriptDir,
     options.probe,
     options.spawn,
+    options.environment,
   );
   if (detection.invocation === null) {
     return skipped(detection.missing);

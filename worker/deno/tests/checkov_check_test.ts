@@ -177,12 +177,9 @@ Deno.test("runCheckovCheck - the PATH route runs with no CKV_, BC_ or PRISMA_ va
     BC_SKIP_MAPPING: "TRUE",
     PRISMA_API_URL: "https://example.invalid",
   };
-  const saved = new Map<string, string | undefined>();
-  for (const [name, value] of Object.entries(hostile)) {
-    saved.set(name, Deno.env.get(name));
-    Deno.env.set(name, value);
-  }
-  const callerHome = Deno.env.get("HOME");
+  const callerHome = "/home/caller";
+  // The caller's environment is injected, so no process state is mutated.
+  const environment = { ...hostile, PATH: "/usr/bin", HOME: callerHome };
   let homeDuring: string | undefined;
   const homeEntries: string[] = [];
   const spawnCalls: SpawnCall[] = [];
@@ -198,18 +195,12 @@ Deno.test("runCheckovCheck - the PATH route runs with no CKV_, BC_ or PRISMA_ va
       spawnCalls,
     )(binary, args, cwd, deadlineMs, env);
   };
-  try {
-    const result = await runCheckovCheck("/repo", {
-      probe: fakeProbe({ [PIN_KEY]: CHECKOV_IMAGE_TAG }),
-      spawn,
-    });
-    assertEquals(result.status, "PASSED");
-  } finally {
-    for (const [name, value] of saved) {
-      if (value === undefined) Deno.env.delete(name);
-      else Deno.env.set(name, value);
-    }
-  }
+  const result = await runCheckovCheck("/repo", {
+    probe: fakeProbe({ [PIN_KEY]: CHECKOV_IMAGE_TAG }),
+    spawn,
+    environment,
+  });
+  assertEquals(result.status, "PASSED");
 
   const env = firstCall(spawnCalls).env;
   assert(env !== undefined, "the PATH route must pass a built environment");
@@ -217,7 +208,7 @@ Deno.test("runCheckovCheck - the PATH route runs with no CKV_, BC_ or PRISMA_ va
     /^(CKV_|BC_|PRISMA_)/.test(name)
   );
   assertEquals(leaked, []);
-  assert(env.PATH !== undefined, "the child must still find tools on PATH");
+  assertEquals(env.PATH, "/usr/bin", "the child must still find tools on PATH");
   assert(homeDuring !== undefined, "HOME must be set for the child");
   assert(homeDuring !== callerHome, "HOME must not be the caller's own");
   assertEquals(homeEntries, [], "the private HOME must start empty");
@@ -258,23 +249,20 @@ Deno.test("runCheckovCheck - the private HOME is removed even when the scan left
 });
 
 Deno.test("spawnWithDeadline - a given env is the child's whole environment, and none inherits", async () => {
-  const name = "CKV_SPAWN_TEST_ONLY";
-  const before = Deno.env.get(name);
-  Deno.env.set(name, "inherited");
-  try {
-    const inherited = await spawnWithDeadline("env", [], ".", 10_000);
-    assertStringIncludes(inherited.stdout, `${name}=inherited`);
+  // PATH is set in every environment the suite runs in, so it stands in for
+  // "a variable the caller has" without mutating process state.
+  assert(
+    Deno.env.get("PATH") !== undefined,
+    "the test needs a PATH to inherit",
+  );
+  const inherited = await spawnWithDeadline("env", [], ".", 10_000);
+  assertStringIncludes(inherited.stdout, "PATH=");
 
-    const built = await spawnWithDeadline("env", [], ".", 10_000, {
-      PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
-      KEPT: "yes",
-    });
-    assertStringIncludes(built.stdout, "KEPT=yes");
-    assert(!built.stdout.includes(name), "the caller's variable leaked");
-  } finally {
-    if (before === undefined) Deno.env.delete(name);
-    else Deno.env.set(name, before);
-  }
+  const built = await spawnWithDeadline("env", [], ".", 10_000, {
+    KEPT: "yes",
+  });
+  assertStringIncludes(built.stdout, "KEPT=yes");
+  assert(!built.stdout.includes("PATH="), "the caller's variable leaked");
 });
 
 Deno.test("runCheckovCheck - the container route passes no environment of its own", async () => {
