@@ -371,9 +371,9 @@ reroutes or strips such an `issue` run before spawn (Issue #4109), and the runne
 block is not gated on the provider. `isIssueExecutorSplitEnabled` takes the
 phase, repo and host config only (`worker/deno/lib/issue_executor_split.ts:42-59`).
 Both phase paths call it with no provider argument
-(`worker/deno/lib/execute_claude_phase.ts:1282-1286`,
-`worker/deno/lib/phases/execute_phase.ts:665-669`) and pass the result to
-`buildPrompt` (`execute_claude_phase.ts:1342`, `phases/execute_phase.ts:729-730`).
+(`worker/deno/lib/execute_claude_phase.ts:1258-1262`,
+`worker/deno/lib/phases/execute_phase.ts:805-809`) and pass the result to
+`buildPrompt` (`execute_claude_phase.ts:1418`, `phases/execute_phase.ts:893`).
 `prompt_builder.ts:832-834` splices the block whenever it is true. The
 `--settings` hook is gated to Claude (`worker/deno/lib/claude_runner.ts`,
 the `issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID` guard). The
@@ -386,8 +386,8 @@ silently told to dispatch `executor` sub-agents the CLI never defines.
 
 **Two paths now.** The table above is the native split path, which runs only
 when external orchestration is off
-(`worker/deno/lib/execute_claude_phase.ts:1338`,
-`worker/deno/lib/phases/execute_phase.ts:796`). The opt-in external
+(`worker/deno/lib/execute_claude_phase.ts:1255-1258`,
+`worker/deno/lib/phases/execute_phase.ts:796-804`). The opt-in external
 orchestration path never sets `--agents`
 (`worker/deno/lib/orchestration/issue_run_gate.ts:112`) and refuses a provider
 that cannot carry a role before any paid work: `assertRoleSupported`
@@ -413,8 +413,8 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   - `external_orchestration` (default `false`): opts a host or repository into
     the independent provider-neutral path. When it is on, the native split and
     `--agents` are not resolved
-    (`worker/deno/lib/execute_claude_phase.ts:1338`,
-    `worker/deno/lib/phases/execute_phase.ts:796`). See
+    (`worker/deno/lib/execute_claude_phase.ts:1255-1258`,
+    `worker/deno/lib/phases/execute_phase.ts:796-804`). See
     [Role configuration](ROLE-CONFIGURATION.md).
 
   See [Configuration Reference](CONFIGURATION.md), rows for these keys.
@@ -428,8 +428,8 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   (`worker/deno/lib/orchestration/issue_run_gate.ts:112`).
 - **Native split, current state.** The native `issue_executor_split` path runs
   only when external orchestration is off
-  (`worker/deno/lib/execute_claude_phase.ts:1338`,
-  `worker/deno/lib/phases/execute_phase.ts:796`). The fail-loud invariant is now
+  (`worker/deno/lib/execute_claude_phase.ts:1255-1258`,
+  `worker/deno/lib/phases/execute_phase.ts:796-804`). The fail-loud invariant is now
   delivered on this path too: the issue-run planner reroutes or strips such a
   run before spawn (Issue #4109), and `runClaudeWithTimeoutBody`
   (`worker/deno/lib/claude_runner.ts`) refuses loudly as a backstop when a run
