@@ -1525,6 +1525,25 @@ export function activeAgentProvider(
 }
 
 /**
+ * Resolve the active provider for pre-spawn planning (Issue #4109).
+ *
+ * Planning only needs to know what the provider can carry, so this skips the
+ * installed-set check that {@link activeAgentProvider} runs. An uninstalled
+ * provider is still refused later by the runner's install assert (Issue
+ * #4105), so this must not throw earlier than the base code did (Issue #4109).
+ *
+ * @param selection - Configured value and environment lookup.
+ * @returns The active descriptor, without the installed-set check.
+ * @throws When a set value names an unsupported provider.
+ */
+export function plannedActiveAgentProvider(
+  selection: AgentProviderSelection = {},
+): AgentProviderDescriptor {
+  const env = selection.env ?? ((name: string) => Deno.env.get(name));
+  return resolveAgentProvider(resolveSelectedProviderId(selection, env));
+}
+
+/**
  * How one invocation names its provider (Issue #4109).
  *
  * Either a registered id (`"codex"`) or a descriptor the caller already holds.

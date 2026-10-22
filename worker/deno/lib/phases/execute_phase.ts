@@ -84,6 +84,7 @@ import { issueRunRoleTreatments } from "../issue_assignment.ts";
 import {
   agentProviderById,
   type AgentProviderDescriptor,
+  plannedActiveAgentProvider,
   selectAgentProvider,
 } from "../agent_provider.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
@@ -821,7 +822,7 @@ async function executeClaudeBody(
   // stripped here, not refused later by the #4010 guard.
   const plannedProvider = allocation && !allocation.external
     ? agentProviderById("claude")!
-    : selectAgentProvider();
+    : plannedActiveAgentProvider();
   const issueRunPlan = externalOrchestration
     ? undefined
     : planIssueRunProvider({
