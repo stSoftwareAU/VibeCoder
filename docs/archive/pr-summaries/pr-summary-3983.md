@@ -35,7 +35,6 @@ A correct partial-addition figure was compared with the file's whole count, so a
 - `worker/deno/lib/test_plan_recount.ts:689` — partial ("added" before the figure and "to" in the gap) — `worker/deno/tests/test_plan_recount_added_n_to_3983_test.ts::'Added N tests to `file`' is partial whatever the markup or wrap, at head N+1 and N (Issue #3983)` — flipped the new arm to `false`, test went red
 - `worker/deno/lib/test_plan_recount.ts:692` — whole-file (gap reads "for", not "to") — `worker/deno/tests/test_plan_recount_added_n_to_3983_test.ts::'Added N tests for `file` to be kept' stays whole: the gap must read 'to' (Issue #3983)` — flipped the gap check to always true, test went red
 - `worker/deno/lib/test_plan_recount.ts:692` — whole-file ("to" follows but "added" is not directly before the figure) — `worker/deno/tests/test_plan_recount_added_n_to_3983_test.ts::a figure not directly after 'added' stays whole even when 'to' follows (Issue #3983)` — flipped the "added before" check to always true, test went red
-- `worker/deno/lib/test_plan_recount.ts:690` — unchanged forms (existing "N tests added to", whole-file counts) still fall through as before — `worker/deno/tests/test_plan_recount_added_n_to_3983_test.ts::regression controls: the existing whole-file and partial forms keep their reading (Issue #3983)` — flipped the new arm to `false`, the "Added N tests to" test went red; this control stays green, as the existing forms do not use the new arm
 - `worker/deno/lib/pr_feedback_drift_check.ts:71` — none added (comment-only change)
 
 ```mermaid
