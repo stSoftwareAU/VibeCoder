@@ -90,10 +90,6 @@ export const ISSUE_CREATE_ROUTING_ALLOWLIST: ReadonlyMap<string, string> =
       "#2577 seeds the standard idle-task wrapper issues into a freshly monitored repo; repo-scoped template filing; not yet routed",
     ],
     [
-      "worker/deno/lib/degraded_delivery.ts",
-      "#2562 degraded-run delivery issue, filed in the repo the run was delivering to; not yet routed",
-    ],
-    [
       "worker/deno/lib/idle_inversion_streak.ts",
       "#321/#459 idle-inversion escalation, filed in the worker's own repo by design (IDLE_INVERSION_TARGET_REPO); fleet-health diagnostic; not yet routed",
     ],
