@@ -34,10 +34,6 @@
 
 import { parseClosureEntries } from "./acceptance_criteria_gate.ts";
 import { LABEL_DEFAULTS } from "./config_defaults.ts";
-import {
-  FOLLOW_UP_CHAIN_STOP_MARKER,
-  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
-} from "./degraded_delivery.ts";
 
 /** Longest criterion text quoted back in a comment or PR note. */
 const MAX_QUOTED_LENGTH = 300;
@@ -191,53 +187,6 @@ export async function holdIssueOpenForMissingCriteria(args: {
       ...(args.baseRefName ? { baseRefName: args.baseRefName } : {}),
       missing: args.missing,
     }),
-  ]);
-  return "held";
-}
-
-/**
- * Whether a merged PR body carries the chain-stop section (PR #3676 review):
- * the PR worked a partial-delivery follow-up and left gaps no further
- * follow-up holds, so the merge does not complete the issue.
- *
- * Only a section that opens the body counts: the heading with the marker on
- * the next line, the leading-block rule `extractLeadingSection` applies. A
- * summary that quotes the marker in a code span, or mentions it after the
- * summary heading, does not hold the issue.
- *
- * @param prBody - The merged PR's body.
- */
-export function hasFollowUpChainStop(prBody: string): boolean {
-  const opening =
-    `${FOLLOW_UP_CHAIN_STOP_SECTION_HEADING}\n${FOLLOW_UP_CHAIN_STOP_MARKER}`;
-  return prBody.replace(/\r\n/g, "\n").trimStart().startsWith(opening);
-}
-
-/**
- * Leave a follow-up open after a chain-stop PR merged: make sure it carries
- * `needs-human`. The completion phase labelled it and commented when the PR
- * was raised, so no second comment is posted here.
- *
- * @returns `"held"` when the label was added, or `"already-held"` when the
- *   issue already carried it.
- * @throws when `gh` fails.
- */
-export async function holdFollowUpOpenForHuman(args: {
-  repo: string;
-  issueNumber: number;
-  issueLabels: readonly string[];
-  ghCommandFn: (args: string[]) => Promise<string>;
-}): Promise<"held" | "already-held"> {
-  const label = LABEL_DEFAULTS.needsHumanLabel;
-  if (args.issueLabels.includes(label)) return "already-held";
-  await args.ghCommandFn([
-    "issue",
-    "edit",
-    String(args.issueNumber),
-    "--repo",
-    args.repo,
-    "--add-label",
-    label,
   ]);
   return "held";
 }

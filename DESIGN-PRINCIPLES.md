@@ -609,6 +609,26 @@ suite lives in `worker/deno/tests/fleet_duplicate_prevention_test.ts`; see
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) and
 [`docs/DUPLICATE-PR-ROOT-CAUSE-3138.md`](docs/DUPLICATE-PR-ROOT-CAUSE-3138.md).
 
+### No PR until every acceptance criterion is met
+
+"Partially completed" is never a resolution (Issue #4146). A run whose PR
+summary leaves any criterion `partial`, `missing` or unassessed raises **no
+PR**: the unmet-criteria gate (`worker/deno/lib/unmet_criteria_gate.ts`) sends
+the agent back in the same run to finish the work, round after round while
+each one makes progress, and a run that still cannot finish fails as
+`criteria_unmet` with its branch kept for the next run. No follow-up issue is
+ever filed for the remainder — the issue was approved to be done, and a new
+issue would need a human to read and approve it — and nothing is labelled
+`needs-human`. **Incomplete PRs are drafts**, so CI and code review are not
+spent on them: a PR the agent raised itself with criteria unmet, or a run that
+**times out**, keeps a draft `Part of #N` PR
+(`worker/deno/lib/draft_continuation_pr.ts`) that never holds its issue, so the
+next run resumes the branch and finishes. Only once every criterion is met is
+the draft marked ready with `Closes #N`, and squash auto-merge is armed in the
+same step so it merges as soon as possible. Whether the run was degraded
+changes none of this. See
+[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md#-no-pr-until-every-acceptance-criterion-is-met).
+
 ### Fleet-aware PR maintenance (`fleet_pr_authors`)
 
 The fleet runs across machines, each authenticated as a different GitHub
