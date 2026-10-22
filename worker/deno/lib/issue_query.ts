@@ -238,23 +238,6 @@ export interface BlockingPRInfo {
 }
 
 /**
- * Raw issue JSON from gh issue list.
- */
-interface GhIssueListItem {
-  number: number;
-  title: string;
-  url: string;
-  assignees: Array<{ login: string }>;
-  labels: Array<{ name: string }>;
-  createdAt: string;
-  updatedAt?: string;
-  author: { login: string };
-  milestone?: { title: string } | null;
-  /** Raw GitHub native sub-issue counts, validated by {@link parseSubIssuesSummary}. */
-  subIssuesSummary?: unknown;
-}
-
-/**
  * Validate a raw `subIssuesSummary` field from `gh issue list` (Issue #3314).
  *
  * Only `total` and `completed` are kept (`percentCompleted` is derivable and
@@ -294,12 +277,6 @@ export function hasOpenSubIssues(
 }
 
 /**
- * Parse raw gh issue list JSON into FilterableIssue array.
- *
- * @param jsonStr - Raw JSON string from gh CLI
- * @returns Parsed issues
- */
-/**
  * Refuse to treat a failed gh list call as an empty list (Issue #4257).
  *
  * `runGh`-style wrappers return `""` on failure (rate limit, network,
@@ -327,51 +304,116 @@ function assertListOutput(output: string, context: string): void {
   }
 }
 
-export function parseIssueListJson(jsonStr: string): FilterableIssue[] {
+/**
+ * Parse raw gh issue list JSON into FilterableIssue array.
+ *
+ * A row with a malformed field is skipped and reported through `log`, so
+ * one bad row cannot blank the whole list (Issue #4110). Invalid JSON and a
+ * non-array root give `[]`; `fetchAllIssues` treats a non-array root as a
+ * failed call before anything is cached.
+ *
+ * @param jsonStr - Raw JSON string from gh CLI
+ * @param log - Sink for skipped-row messages (default: stderr)
+ * @returns Parsed issues
+ */
+export function parseIssueListJson(
+  jsonStr: string,
+  log: (message: string) => void = console.error,
+): FilterableIssue[] {
+  let raw: unknown;
   try {
-    const raw: unknown = JSON.parse(jsonStr);
-    if (!Array.isArray(raw)) return [];
-    // Inline runtime shape guard — gh CLI output at trust boundary (Issue #1532).
-    const items: GhIssueListItem[] = [];
-    for (const item of raw) {
-      if (!isRecord(item)) continue;
-      if (typeof item.number !== "number") continue;
-      if (typeof item.title !== "string") continue;
-      items.push(item as unknown as GhIssueListItem);
-    }
-    return items.map((item) => {
-      const issue: FilterableIssue = {
-        number: item.number,
-        title: item.title,
-        url: item.url ?? "",
-        author: item.author?.login ?? "",
-        assignees: (item.assignees ?? []).map((a) => a.login),
-        labels: (item.labels ?? []).map((l) => l.name),
-        createdAt: item.createdAt ?? "",
-        updatedAt: item.updatedAt ?? "",
-        milestone: item.milestone?.title ?? "",
-      };
-      // Body is optional in `FilterableIssue`; include it only when present
-      // so older cached payloads remain compatible (Issue #1805).
-      const bodyValue = (item as unknown as { body?: unknown }).body;
-      if (typeof bodyValue === "string") {
-        issue.body = bodyValue;
-      }
-      // Issue #3314: GitHub native sub-issue counts, kept only when valid.
-      const subIssuesSummary = parseSubIssuesSummary(item.subIssuesSummary);
-      if (subIssuesSummary !== undefined) {
-        issue.subIssuesSummary = subIssuesSummary;
-      }
-      return issue;
-    });
+    raw = JSON.parse(jsonStr);
   } catch {
     return [];
   }
+  if (!Array.isArray(raw)) return [];
+  // Inline runtime shape guard — gh CLI output at trust boundary (Issue #1532).
+  const issues: FilterableIssue[] = [];
+  for (const item of raw) {
+    if (!isRecord(item)) continue;
+    if (typeof item.number !== "number") continue;
+    if (typeof item.title !== "string") continue;
+    const skip = (field: string): void => {
+      log(
+        `parseIssueListJson: skipping issue #${item.number} — malformed ${field} (Issue #4110)`,
+      );
+    };
+    const author = singleStringField(item.author, "login");
+    if (author === null) {
+      skip("author");
+      continue;
+    }
+    const assignees = stringListField(item.assignees, "login");
+    if (assignees === null) {
+      skip("assignees");
+      continue;
+    }
+    const labels = stringListField(item.labels, "name");
+    if (labels === null) {
+      skip("labels");
+      continue;
+    }
+    const milestone = singleStringField(item.milestone, "title");
+    if (milestone === null) {
+      skip("milestone");
+      continue;
+    }
+    const issue: FilterableIssue = {
+      number: item.number,
+      title: item.title,
+      url: stringOrEmpty(item.url),
+      author,
+      assignees,
+      labels,
+      createdAt: stringOrEmpty(item.createdAt),
+      updatedAt: stringOrEmpty(item.updatedAt),
+      milestone,
+    };
+    // Body is optional in `FilterableIssue`; include it only when present
+    // so older cached payloads remain compatible (Issue #1805).
+    if (typeof item.body === "string") {
+      issue.body = item.body;
+    }
+    // Issue #3314: GitHub native sub-issue counts, kept only when valid.
+    const subIssuesSummary = parseSubIssuesSummary(item.subIssuesSummary);
+    if (subIssuesSummary !== undefined) {
+      issue.subIssuesSummary = subIssuesSummary;
+    }
+    issues.push(issue);
+  }
+  return issues;
 }
 
 /** Type guard for plain objects used by inline validators (Issue #1532). */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** `""` when absent, the string under `key` when valid, else `null` (Issue #4110). */
+function singleStringField(value: unknown, key: string): string | null {
+  if (value === undefined || value === null) return "";
+  if (!isRecord(value)) return null;
+  const inner = value[key];
+  return typeof inner === "string" ? inner : null;
+}
+
+/** `[]` when absent, the strings under `key` when every element is valid, else `null` (Issue #4110). */
+function stringListField(value: unknown, key: string): string[] | null {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) return null;
+  const out: string[] = [];
+  for (const element of value) {
+    if (!isRecord(element)) return null;
+    const inner = element[key];
+    if (typeof inner !== "string") return null;
+    out.push(inner);
+  }
+  return out;
+}
+
+/** `value` when it is a string, else `""` (Issue #4110). */
+function stringOrEmpty(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 /**
@@ -612,15 +654,17 @@ export async function fetchAllIssues(
   // Never cache a failure (Issue #4257): a runGh-style "" or garbage
   // payload must surface as an error, not as "repo has no open issues".
   assertListOutput(output, `fetchAllIssues(${repo})`);
+  // Issue #4110: a non-array root (e.g. `{}`) is a failed call, not `[]`.
+  const rawCount = countListRows(output);
+  if (rawCount === null) {
+    throw new Error(
+      `fetchAllIssues(${repo}): gh output was not a JSON array — treating as a failed call, not an empty list (Issue #4110)`,
+    );
+  }
 
   const issues = parseIssueListJson(output);
   if (cache) {
-    const rawCount = countListRows(output);
-    const entry: AllIssuesCacheEntry = {
-      limit,
-      issues,
-      ...(rawCount === null ? {} : { rawCount }),
-    };
+    const entry: AllIssuesCacheEntry = { limit, issues, rawCount };
     await cache.write(repo, cacheKey, entry);
   }
   return issues;

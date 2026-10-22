@@ -194,7 +194,7 @@ export type ConflictTakeoverOutcome =
    * posted its attempt, so this one stands down and posts nothing.
    */
   | { kind: "no-longer-due" }
-  /** A fix PR for this milestone PR is already open; nothing was attempted. */
+  /** An owned, open, fleet-authored fix PR for this attempt is already open; nothing was attempted. */
   | { kind: "fix-pr-reused"; fixPr: MilestoneFixPr }
   /**
    * The gated route resolved, its fix branch was confirmed up to date with the

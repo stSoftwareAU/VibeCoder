@@ -901,7 +901,7 @@ flowchart TD
     G -- unreadable --> W
     G --> H{"required_status_checks<br/>or pull_request rule?"}
     H -- no --> W
-    H -- yes --> I{"Any open milestone-fix<br/>PR for this PR already?"}
+    H -- yes --> I{"Open same-repository milestone-fix<br/>PR for this PR, opened by a fleet author?"}
     I -- yes --> J["Stand down silently: no agent run,<br/>no attempt, no retry, no comment"]
     I -- no --> K["Fix on milestone-fix/pr-N-ci-n,<br/>PR into the gated head,<br/>auto-merge armed"]
     M -- review feedback --> G2[GET /rules/branches/head]
@@ -916,7 +916,7 @@ What each pass does with a `milestone/**` head:
 | Pass | On a `milestone/**` head | Marker on the comment |
 | --- | --- | --- |
 | Spelling fix | `guardGatedHead` — stands down when a rule gates it | `vibe-gated-head`, owner `conflict takeover` |
-| CI fix | Fixes on `milestone-fix/<leaf>/pr-<N>-ci-<n>`, raises an auto-merge-armed PR into the gated head; stands down before the agent runs (no retry spent) only while any fix PR for this head is already open (Issue #2907) | None — the stand-down is silent; the open fix PR itself carries the explanation |
+| CI fix | Fixes on `milestone-fix/<leaf>/pr-<N>-ci-<n>`, raises an auto-merge-armed PR into the gated head; stands down before the agent runs (no retry spent) while an open fix PR for this head exists that the fleet opened from this repository (a same-repository head), or when the check for one fails, for example on bad JSON or a full results page (Issues #2907 and #3854) | None — the stand-down is silent; the open fix PR itself carries the explanation |
 | Review feedback | Fixes on its own `milestone-fix/<leaf>/pr-<N>-feedback-<commentId>` branch and raises an auto-merge-armed PR the same way; no pre-agent stand-down — a different comment's fix in flight does not stop this one (Issue #2907) | None |
 | Merge conflict | **Conflict takeover in the same cycle**, gated or not: opens one `milestone-fix/<leaf>/pr-<N>-takeover-<sha12>` PR into the head, or reuses the open one (Issue #3031) | None — no stand-down; the takeover's attempt and conclusion markers |
 
@@ -945,7 +945,8 @@ What each pass does with a `milestone/**` head:
   `raiseMilestoneFixPr()` (`milestone_fix_pr.ts`). A retry is spent on that
   attempt exactly as an ungated head would.
   - **CI fix stands down before the agent runs** when `findOpenMilestoneFixPr()`
-    finds *any* open `milestone-fix/pr-<N>-*` PR for that head, so a repeat CI
+    finds an open `milestone-fix/pr-<N>-*` PR for that head that the fleet
+    opened in this repository, so a repeat CI
     failure on the same PR does not spend a retry racing a fix already in
     flight.
   - **Review feedback has no such pre-check** — each comment gets its own
@@ -1113,7 +1114,7 @@ default tip never refills the attempt count.
 | Ruleset write **fails for one repo**                | Logged as a non-fatal warning                              | Setup continues; the next setup run retries idempotently                       |
 | Required check is **unsatisfiable** on the repo     | Check is dropped from the required set                     | The merge is never blocked by a check that can never pass                      |
 | PR head is a **ruleset-gated** `milestone/**` branch (spelling pass) | Pass stands down before the agent runs; one comment names the rule | Changes land through a PR into the milestone branch, or an operator adds a bypass actor |
-| PR head is a **ruleset-gated** `milestone/**` branch (CI fix / review feedback) | Fix runs on a `milestone-fix/**` branch and is raised as an auto-merge-armed PR into the gated head (Issue #2907); the CI-fix pass alone stands down without spending a retry while any fix PR for the head is already open | The fix PR's own CI runs and it auto-merges into the gated head once green |
+| PR head is a **ruleset-gated** `milestone/**` branch (CI fix / review feedback) | Fix runs on a `milestone-fix/**` branch and is raised as an auto-merge-armed PR into the gated head (Issue #2907); the CI-fix pass alone stands down without spending a retry while an open fix PR for the head exists that the fleet opened from this repository (a same-repository head), or when the check for one fails | The fix PR's own CI runs and it auto-merges into the gated head once green |
 
 ## Related implementation
 
