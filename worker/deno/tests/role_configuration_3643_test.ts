@@ -328,7 +328,14 @@ Deno.test("main loop enacts repository role settings, records the treatment and 
   assertEquals(native, 0);
   assertEquals(treatment, [
     { role: "manager", provider: "claude", model: "sonnet", effort: "high" },
-    { role: "executor", provider: "codex", model: "worker-model" },
+    // Moved to Codex, the executor takes Codex's executor default effort;
+    // its explicit model still wins (owner decision 2026-10-22).
+    {
+      role: "executor",
+      provider: "codex",
+      model: "worker-model",
+      effort: "high",
+    },
     { role: "reviewer", provider: "claude", model: "opus", effort: "high" },
   ]);
   config.repoConfig["org/repo"]!.externalOrchestration = false;

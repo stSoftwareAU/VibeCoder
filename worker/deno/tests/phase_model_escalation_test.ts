@@ -251,7 +251,7 @@ Deno.test("phase_model_escalation - Codex summarise never receives sonnet or hai
   assertEquals(large.escalated, false);
   assertEquals(large.model.includes("sonnet"), false);
   assertEquals(large.model.includes("haiku"), false);
-  assertEquals(large.model, "gpt-5-mini");
+  assertEquals(large.model, "gpt-6-luna");
 });
 
 // ---------------------------------------------------------------------------
