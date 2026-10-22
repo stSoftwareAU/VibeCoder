@@ -32,6 +32,7 @@ import {
 import { rtkSeam } from "./support/rtk_seam.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 import type { GraftContextResult } from "../lib/graft_context.ts";
+import type { IssueAllocationSelection } from "../lib/subscription_allocation_runtime.ts";
 
 const REROUTE_WARNING =
   "rerouting the run to the claude provider (Issue #4109)";
@@ -183,6 +184,62 @@ Deno.test("execute_phase - the rerouted provider is recorded on the run assignme
       JSON.stringify(requests[0]),
       `"${CLAUDE_PROVIDER_ID}"`,
       "the assignment must name the rerouted provider",
+    );
+  } finally {
+    resetProviderConfig();
+  }
+});
+
+Deno.test("execute_phase - a non-external allocation plans the claude provider (Issue #4109)", async () => {
+  configureCodexWithClaude();
+  try {
+    const logs: string[] = [];
+    const runOptions: Record<string, unknown>[] = [];
+    const { ctx, state } = executePhaseFixture(logs);
+    const allocation: IssueAllocationSelection = {
+      cohort: "control",
+      external: false,
+      settings: {} as IssueAllocationSelection["settings"],
+    };
+    const deps = createMockDeps({
+      infrastructure: {
+        resolveIssueAllocation: (() => Promise.resolve(allocation)) as never,
+      },
+      claude: {
+        runClaudeWithRetry: ((options: Record<string, unknown>) => {
+          runOptions.push(options);
+          return Promise.resolve({
+            ok: true,
+            value: { output: "done", exitCode: 0, timedOut: false },
+          });
+        }) as never,
+      },
+      pr: {
+        findExistingPrForIssue: (() =>
+          Promise.resolve({ ok: true, value: null })) as never,
+      },
+      logger: {
+        info: (message: string) => {
+          logs.push(message);
+        },
+        warn: (message: string) => {
+          logs.push(message);
+        },
+      },
+    });
+
+    await workOnIssueExecuteClaude(ctx, state, deps);
+
+    assertEquals(runOptions.length >= 1, true, "the agent must be invoked");
+    assertEquals(
+      runOptions[0]?.agentProvider,
+      CLAUDE_PROVIDER_ID,
+      "the runner must receive the claude provider for a non-external allocation",
+    );
+    assertEquals(
+      logs.some((line) => line.includes(REROUTE_WARNING)),
+      false,
+      "a non-external allocation plans claude, which carries sub-agents, so no reroute is logged",
     );
   } finally {
     resetProviderConfig();

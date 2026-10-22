@@ -627,8 +627,9 @@ and reports five numbers.
   window. Since Issue #2812 the key is on by default, so a control host must
   set `issue_executor_split: false` explicitly.
 - **Excluded from both sides** — runs on any other provider. The key does
-  nothing under `codex` or `gemini` and is stripped under `deepseek`, so those
-  runs would dilute both arms without testing anything.
+  not reach the provider under `codex`, `gemini` or `deepseek`: an `issue` run
+  carrying sub-agents is rerouted to Claude or stripped before spawn (Issue
+  #4109), so those runs would dilute both arms without testing anything.
 
 **Window** — 30 implementation runs on the pilot hosts, or 4 weeks, whichever
 comes first.

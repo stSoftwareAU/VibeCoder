@@ -453,7 +453,8 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   is `"haiku"`. A full rollback to no `--agents` argument also sets
   `issue_sub_agent_tier: "sonnet"`. The run is then a single session, as it was
   before the split. The full rollback (all three keys) is also what lets a
-  non-Claude provider run the native `issue` phase. External orchestration: set
+  non-Claude provider run the native `issue` phase unchanged; otherwise the
+  issue-run planner reroutes or strips the run (Issue #4109). External orchestration: set
   `external_orchestration` to
   `false` on the host or repository and restart the worker; the native path
   resumes with the existing configuration keys.
