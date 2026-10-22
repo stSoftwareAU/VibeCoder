@@ -7,11 +7,20 @@ import {
   findUncheckedRunResults,
   type TestDeclarationCounts,
 } from "../lib/test_plan_recount.ts";
+import { runPrFeedbackDriftCheck } from "../lib/pr_feedback_drift_check.ts";
 import {
-  type DriftCheckDeps,
-  type DriftFinding,
-  runPrFeedbackDriftCheck,
-} from "../lib/pr_feedback_drift_check.ts";
+  type AgentCall,
+  commitAll,
+  git,
+  initRepo,
+  makeRunAgent,
+  makeRunGh,
+  makeRunGit,
+  noopLogger,
+  notMutationChecked,
+  verdictBlock,
+  writeFile,
+} from "./support/drift_check_fixture.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 
 function counts(
@@ -196,101 +205,10 @@ Deno.test("hostile runs of the 'Added N tests to' figure grow linearly (Issue #3
 });
 
 // ---------------------------------------------------------------------------
-// Through the drift-check caller (Issue #3983). The fakes mirror
-// `pr_feedback_drift_check_3740_test.ts`: a real temp git repo, a fake
-// `runGh` answering the base ref, and a fake `runAgent` that records prompts.
-// The helpers are file-local there, so they are copied here.
+// Through the drift-check caller (Issue #3983). A real temp git repo, a fake
+// `runGh` answering the base ref, and a fake `runAgent` that records prompts;
+// the scaffolding is shared in `support/drift_check_fixture.ts`.
 // ---------------------------------------------------------------------------
-
-interface GitRunResult {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-async function git(dir: string, args: string[]): Promise<GitRunResult> {
-  const cmd = new Deno.Command("git", {
-    args,
-    cwd: dir,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-    env: {
-      GIT_AUTHOR_NAME: "test",
-      GIT_AUTHOR_EMAIL: "test@example.com",
-      GIT_COMMITTER_NAME: "test",
-      GIT_COMMITTER_EMAIL: "test@example.com",
-    },
-  });
-  const out = await cmd.output();
-  return {
-    code: out.code,
-    stdout: new TextDecoder().decode(out.stdout),
-    stderr: new TextDecoder().decode(out.stderr),
-  };
-}
-
-async function writeFile(dir: string, path: string, content: string) {
-  const full = `${dir}/${path}`;
-  await Deno.mkdir(full.slice(0, full.lastIndexOf("/")), { recursive: true });
-  await Deno.writeTextFile(full, content);
-}
-
-async function commitAll(dir: string, message: string) {
-  assertEquals((await git(dir, ["add", "."])).code, 0);
-  assertEquals((await git(dir, ["commit", "-m", message])).code, 0);
-}
-
-async function initRepo(): Promise<string> {
-  const dir = await Deno.makeTempDir({ prefix: "drift_check_3983_" });
-  assertEquals((await git(dir, ["init", "-b", "main"])).code, 0);
-  await git(dir, ["config", "user.name", "test"]);
-  await git(dir, ["config", "user.email", "test@example.com"]);
-  await git(dir, ["config", "commit.gpgsign", "false"]);
-  return dir;
-}
-
-type AgentResponse =
-  | { ok: true; output: string }
-  | { ok: false; error: Error };
-type AgentCall = { prompt: string; readOnly: boolean };
-
-function makeRunAgent(
-  responses: readonly AgentResponse[],
-  calls: AgentCall[],
-): DriftCheckDeps["runAgent"] {
-  let i = 0;
-  return async (req) => {
-    calls.push(req);
-    const resp = responses[i++];
-    if (!resp) {
-      throw new Error(`runAgent called more times (${i}) than expected`);
-    }
-    return resp;
-  };
-}
-
-function noopLogger(): DriftCheckDeps["logger"] {
-  return { info: () => {}, warn: () => {}, error: () => {} };
-}
-
-const DRIFT_OPEN = "<!-- vibe-drift-verdict -->";
-const DRIFT_CLOSE = "<!-- /vibe-drift-verdict -->";
-
-function verdictBlock(findings: DriftFinding[]): string {
-  return [
-    DRIFT_OPEN,
-    "```json",
-    JSON.stringify({ findings }, null, 2),
-    "```",
-    DRIFT_CLOSE,
-  ].join("\n");
-}
-
-const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
-  kind: "not_applicable",
-  reason: "not under test",
-});
 
 const TEST_DECLARATION = (n: number) => `Deno.test("case ${n}", () => {});\n`;
 const BASE_A_TEST_TS = [1, 2, 3, 4, 5].map(TEST_DECLARATION).join("");
@@ -306,7 +224,7 @@ const CALLER_SUMMARY = "## Summary\n\nCloses #7.\n\n## Test Plan\n\n" +
  * so the head count is 6 and the single-figure bullet is a partial addition.
  */
 async function setupAddedRepo(): Promise<{ dir: string; beforeSha: string }> {
-  const dir = await initRepo();
+  const dir = await initRepo("drift_check_3983_");
   await writeFile(dir, "tests/a_test.ts", BASE_A_TEST_TS);
   await commitAll(dir, "base");
   assertEquals(
@@ -337,8 +255,8 @@ Deno.test("runPrFeedbackDriftCheck - a single-figure 'Added 5 tests to' line at 
     await runPrFeedbackDriftCheck(
       { repo: "org/repo", prNumber: 7, repoPath: dir, beforeSha },
       {
-        runGit: async (args: string[]) => await git(dir, args),
-        runGh: async () => "main\n",
+        runGit: makeRunGit(dir),
+        runGh: makeRunGh(),
         runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
