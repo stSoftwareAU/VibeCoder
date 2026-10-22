@@ -354,6 +354,12 @@ export interface PrDeps {
 
 /** Claude operations — runner, executor, auth, health. */
 export interface ClaudeDeps {
+  /**
+   * Environment lookup the pre-spawn provider planner reads (Issue #4109):
+   * the image stamp and provider settings. Optional so existing doubles need
+   * no change; absent, the process environment is read.
+   */
+  env?: (name: string) => string | undefined;
   runOrchestratedIssueRun: typeof runOrchestratedIssueRun;
   runClaudeWithRetry: typeof runClaudeWithRetry;
   /**
@@ -760,6 +766,7 @@ export function createDefaultDeps(
     },
 
     claude: {
+      env: (name) => Deno.env.get(name),
       runOrchestratedIssueRun,
       runClaudeWithRetry,
       runSummaryClaimQuestion: runClaudeWithRetry,

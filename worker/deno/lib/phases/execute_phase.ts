@@ -827,6 +827,7 @@ async function executeClaudeBody(
       provider: allocation
         ? agentProviderById("claude")!
         : plannedActiveAgentProvider(),
+      selection: { env: deps.claude.env },
       executorSplit: requestedExecutorSplit,
       // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
       // #2812); `issue_reviewer_agents: false` opts out.

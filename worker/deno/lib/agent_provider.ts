@@ -1444,28 +1444,6 @@ function parseEnvProviderId(raw: string | undefined): string | null {
 }
 
 /**
- * The installed set a caller has stated for this process (Issue #4109).
- *
- * Set by {@link setImageAgentProviderIds} so a test can name the image's set
- * without writing {@link IMAGE_AGENT_PROVIDERS_ENV} into the process
- * environment. Undefined — the default — reads the stamp exactly as before.
- */
-let imageProviderIdsOverride: readonly string[] | undefined;
-
-/**
- * State the installed provider set for this process, overriding the image
- * stamp (Issue #4109). A test seam: production never calls it.
- *
- * @param ids - The provider ids the image is taken to carry, or undefined to
- *   read the stamp again.
- */
-export function setImageAgentProviderIds(
-  ids: readonly string[] | undefined,
-): void {
-  imageProviderIdsOverride = ids === undefined ? undefined : [...ids];
-}
-
-/**
  * The providers the running container image installed (Issue #4105).
  *
  * Reads the set the image stamped into {@link IMAGE_AGENT_PROVIDERS_ENV}, so
@@ -1482,9 +1460,6 @@ export function setImageAgentProviderIds(
 export function imageAgentProviderIds(
   selection: AgentProviderSelection = {},
 ): string[] | undefined {
-  if (imageProviderIdsOverride !== undefined) {
-    return [...imageProviderIdsOverride];
-  }
   const env = selection.env ?? ((name: string) => Deno.env.get(name));
   // Blank reads as absent, on the shared stamp rule (Issue #1262): an empty
   // stamp names no provider set, so it cannot stand in for one.

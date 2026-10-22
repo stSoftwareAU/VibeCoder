@@ -27,8 +27,8 @@ import {
   CLAUDE_PROVIDER_ID,
   setConfiguredAgentProviderId,
   setConfiguredEnabledAgentProviderIds,
-  setImageAgentProviderIds,
 } from "../lib/agent_provider.ts";
+import { envFrom } from "./support/env_lookup.ts";
 import { rtkSeam } from "./support/rtk_seam.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 import type { GraftContextResult } from "../lib/graft_context.ts";
@@ -40,27 +40,32 @@ const REROUTE_WARNING =
 /**
  * Configure a Codex host with Claude enabled alongside it.
  *
- * The installed set is stated through `setImageAgentProviderIds` rather than
- * the image stamp (`VIBE_IMAGE_AGENT_PROVIDERS`): the planner reads the stamp
- * from the process environment with no injection point at the call sites, and
- * this suite must not mutate that environment (Issue #880). Without a stated
- * set the ambient stamp of the host decides the installed-set check.
+ * The installed set is stated through the injected env lookup (`deps.claude.env`
+ * / `ExecuteClaudePhaseDeps.env`) so the suite never writes the process
+ * environment (Issue #880), and the host's ambient stamp cannot decide the
+ * result.
  */
 function configureCodexWithClaude(): void {
   configureHost("codex");
 }
 
+/**
+ * The env lookup stating the installed set `claude,<active>`. The one key,
+ * `VIBE_IMAGE_AGENT_PROVIDERS`, is both the container stamp and the
+ * installed-set stamp, so it makes `imageAgentProviderIds` return the set.
+ */
+const hostEnv = (active: string) =>
+  envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: `claude,${active}` });
+
 /** Make `active` the host provider, with Claude enabled alongside it. */
 function configureHost(active: string): void {
   setConfiguredAgentProviderId(active);
   setConfiguredEnabledAgentProviderIds(["claude", active]);
-  setImageAgentProviderIds(["claude", active]);
 }
 
 function resetProviderConfig(): void {
   setConfiguredAgentProviderId(undefined);
   setConfiguredEnabledAgentProviderIds(undefined);
-  setImageAgentProviderIds(undefined);
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +108,7 @@ Deno.test("execute_phase - a run asked for sub-agents on codex is rerouted to cl
     const { ctx, state } = executePhaseFixture(logs);
     const deps = createMockDeps({
       claude: {
+        env: hostEnv("codex"),
         runClaudeWithRetry: ((options: Record<string, unknown>) => {
           runOptions.push(options);
           return Promise.resolve({
@@ -150,6 +156,7 @@ Deno.test("execute_phase - the rerouted provider is recorded on the run assignme
     const { ctx, state } = executePhaseFixture(logs);
     const deps = createMockDeps({
       claude: {
+        env: hostEnv("codex"),
         runClaudeWithRetry: (() =>
           Promise.resolve({
             ok: true,
@@ -201,6 +208,7 @@ Deno.test("execute_phase - a non-external allocation plans the claude provider (
         resolveIssueAllocation: (() => Promise.resolve(allocation)) as never,
       },
       claude: {
+        env: hostEnv("codex"),
         runClaudeWithRetry: ((options: Record<string, unknown>) => {
           runOptions.push(options);
           return Promise.resolve({
@@ -278,8 +286,10 @@ interface ClaudePhaseObserved {
 function claudePhaseDeps(
   observed: ClaudePhaseObserved,
   rtk: ReturnType<typeof rtkSeam>,
+  active: string,
 ): ExecuteClaudePhaseDeps {
   return {
+    env: hostEnv(active),
     runClaudeWithRetry: (options: RunClaudeOptions) => {
       observed.runOptions = options;
       return Promise.resolve({
@@ -343,7 +353,7 @@ Deno.test("execute_claude_phase - the rtk sink receives the rerouted provider (I
 
     await runExecuteClaudePhase(
       claudePhaseOptions(),
-      claudePhaseDeps(observed, rtk),
+      claudePhaseDeps(observed, rtk, "codex"),
     );
 
     assertEquals(
@@ -367,7 +377,7 @@ Deno.test("execute_claude_phase - the codegraph sink receives the rerouted provi
 
     await runExecuteClaudePhase(
       claudePhaseOptions({ codegraphContextEnabled: true } as never),
-      claudePhaseDeps(observed, rtk),
+      claudePhaseDeps(observed, rtk, "codex"),
     );
 
     assert(
@@ -406,7 +416,7 @@ Deno.test("execute_claude_phase - the graft sink receives the rerouted provider 
         graftContextEnabled: true,
       }),
       {
-        ...claudePhaseDeps(observed, rtk),
+        ...claudePhaseDeps(observed, rtk, "gemini"),
         collectGraftContext: () => Promise.resolve(graftContext),
       },
     );
@@ -435,7 +445,7 @@ Deno.test("execute_claude_phase - the runner receives the rerouted provider (Iss
 
     await runExecuteClaudePhase(
       claudePhaseOptions(),
-      claudePhaseDeps(observed, rtk),
+      claudePhaseDeps(observed, rtk, "codex"),
     );
 
     assertEquals(

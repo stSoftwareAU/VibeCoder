@@ -471,6 +471,12 @@ export interface ExecuteClaudePhaseDeps {
    * spawns `rtk`.
    */
   prepareRtkRun?: typeof prepareRtkRun;
+  /**
+   * Environment lookup the pre-spawn provider planner reads (Issue #4109):
+   * the image stamp and provider settings. Optional so existing doubles need
+   * no change; absent, the process environment is read.
+   */
+  env?: (name: string) => string | undefined;
   /** Build the issue prompt with SHA-based cache integration (Issue #1273). */
   buildCachedIssuePrompt: (
     options: CachedIssuePromptOptions,
@@ -922,6 +928,7 @@ function readCiProviders(
 export function createDefaultDeps(): ExecuteClaudePhaseDeps {
   return {
     escalateContextBudget: defaultEscalateContextBudget,
+    env: (name) => Deno.env.get(name),
     runClaudeWithRetry,
     runExternalOrchestratedIssueRun: (input) =>
       runOrchestratedIssueRun(input, { runClaudeWithRetry }),
@@ -1268,6 +1275,7 @@ async function executeClaudePhaseBody(
       provider: typeof invocationAgentProvider === "string"
         ? resolveAgentProvider(invocationAgentProvider)
         : invocationAgentProvider ?? plannedActiveAgentProvider(),
+      selection: { env: deps.env },
       executorSplit: requestedExecutorSplit,
       reviewerAgents: options.issueReviewerAgents === true,
       subAgentTier: issueSubAgentTier,
