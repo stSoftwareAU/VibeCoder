@@ -1261,26 +1261,37 @@ export const PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
 // ---------------------------------------------------------------------------
 
 /**
- * Top Codex model tier — the coding-tuned flagship (Issue #363).
+ * Top Codex model tier — Codex's Opus (Issue #363; owner decision
+ * 2026-10-22).
  *
- * Reserved for the planning-shaped phases, where the Vibe Coder interprets the
- * user's words into an implementable state and a better interpretation
- * compounds across every downstream sub-issue and PR.
+ * `gpt-6-astra`, "frontier intelligence for the most demanding work" in the
+ * account's Codex models catalogue. Reserved for the planning-shaped phases
+ * and the reviewer role, where a better judgement compounds across every
+ * downstream sub-issue and PR. The `gpt-5*` ids this replaced were refused by
+ * the ChatGPT login (Issue #4019).
  */
-export const DEFAULT_CODEX_MODEL_TOP_TIER = "gpt-5-codex" as const;
+export const DEFAULT_CODEX_MODEL_TOP_TIER = "gpt-6-astra" as const;
 
 /**
- * Base Codex model tier (Issue #363) — the general-purpose flagship every
- * non-extreme phase runs on, differentiated by effort rather than by tier.
+ * Base Codex model tier — Codex's Sonnet (Issue #363; owner decision
+ * 2026-10-22).
+ *
+ * `gpt-6.1-sol`, the catalogue's "latest workhorse model". The `issue`
+ * manager and every non-extreme phase run on it, differentiated by effort
+ * rather than by tier.
  */
-export const DEFAULT_CODEX_MODEL = "gpt-5" as const;
+export const DEFAULT_CODEX_MODEL = "gpt-6.1-sol" as const;
 
 /**
- * Cheap Codex model tier (Issue #363) — the small model the three trivial
- * phases (`spelling_fix`, `summarise`, `health`) run on, mirroring Claude's
- * Haiku tier. The flagship premium buys nothing on a typo fix.
+ * Cheap Codex model tier — Codex's Haiku (Issue #363; owner decision
+ * 2026-10-22).
+ *
+ * `gpt-6-luna`, the catalogue's "fast and affordable model for easier
+ * tasks". The executor role and the three trivial phases (`spelling_fix`,
+ * `summarise`, `health`) run on it. The flagship premium buys nothing on a
+ * typo fix.
  */
-export const DEFAULT_CODEX_MODEL_CHEAP_TIER = "gpt-5-mini" as const;
+export const DEFAULT_CODEX_MODEL_CHEAP_TIER = "gpt-6-luna" as const;
 
 /**
  * Reasoning-effort levels the Codex CLI accepts for

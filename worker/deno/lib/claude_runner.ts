@@ -40,10 +40,10 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import {
   captureTimeoutDiagnostics,
   type ClaudeExecutionResult,
-  detectInvalidSessionId,
   detectModelUnavailable,
   detectOutOfMemory,
   detectRateLimit,
+  detectResumedSessionUnusable,
   detectUsageLimit,
   extractStreamJsonText,
   getTokenEstimate,
@@ -169,6 +169,10 @@ import {
   recordAutomaticProviderOutage,
 } from "./provider_auto_state.ts";
 import { noteProviderRunOutcome } from "./provider_outage_alert.ts";
+import {
+  configuredProviderFallbackPolicy,
+  providerAfterModelRefusal,
+} from "./provider_fallback_policy.ts";
 
 // Re-export for convenience
 export {
@@ -2819,6 +2823,39 @@ async function readMemoryPressureAtKill(
   }
 }
 
+/**
+ * The evidence that a failed run was rate-limited by its provider, or
+ * undefined when it was not (Issue #4114).
+ *
+ * The provider's own classifier (Issue #1695) decides when it gave a verdict:
+ * it reads the CLI's error records and stderr, never the agent's transcript.
+ * An overloaded upstream (529) is classified `network` there but keeps the
+ * short-backoff ladder it has always taken. Only a provider with no output
+ * adapter falls back to the prose match, over the CLI's error surface alone.
+ *
+ * @param failure - The provider's normalised failure, if it classified one.
+ * @param cliErrorSurface - Stderr plus the provider's structured error text.
+ * @param tailLines - Lines from the end of the surface to scan.
+ * @returns The redacted line or message that matched, or undefined.
+ */
+export function rateLimitEvidence(
+  failure: AgentFailure | undefined,
+  cliErrorSurface: string,
+  tailLines: number,
+): string | undefined {
+  if (failure) {
+    const overloaded = failure.category === "network" &&
+      (failure.httpStatus === 529 || /overloaded/i.test(failure.message));
+    return failure.category === "rate-limit" || overloaded
+      ? failure.message
+      : undefined;
+  }
+  const { matchedLine } = detectRateLimit(cliErrorSurface, tailLines);
+  return matchedLine === undefined
+    ? undefined
+    : redactedLineTail(matchedLine.trim(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // Run Claude with retry
 // ---------------------------------------------------------------------------
@@ -3001,6 +3038,9 @@ async function runRetryLadder(
   // Track the current effective options (may be mutated on fallback)
   let currentOptions = { ...options };
   let fallbackModel: string | undefined;
+  // Providers this invocation moved away from after a model refusal
+  // (Issue #4034), so the configured fallback walk never revisits one.
+  const providersRefusedModel: string[] = [];
 
   /**
    * The run-end result: this ladder was stopped by the worker, not by the
@@ -3320,9 +3360,13 @@ async function runRetryLadder(
       // a second refusal has no session flags left to blame and falls through
       // to the ordinary failure path. Loud, because the run continues without
       // CLI session continuity and the caller must see that in the log.
+      // Issue #4147 widens "refused" to "unusable": a resume of a transcript
+      // that is gone (`No conversation found with session ID`) or one whose
+      // size thrashes autocompaction fails at the same point, before the
+      // task's work, and the same fresh retry is the remedy.
       if (
         currentOptions.sessionResumeState &&
-        detectInvalidSessionId(bothStreams, errorScanTailLines)
+        detectResumedSessionUnusable(bothStreams, errorScanTailLines)
       ) {
         const rejectedId = currentOptions.sessionResumeState.sessionId;
         currentOptions.logger?.warn(
@@ -3377,10 +3421,46 @@ async function runRetryLadder(
           continue;
         }
 
-        // No cheaper model available — give up rather than re-run an
-        // unavailable model. Name the provider when it has no ladder at all
-        // (Issue #365), so "no downgrade attempted" is visible rather than
-        // inferred.
+        // No cheaper model on this provider. A refusal is terminal for the
+        // provider — a ChatGPT login that does not offer a model never will
+        // (Issue #4019) — so the configured `agent_provider_fallback` is the
+        // remaining remedy (Issue #4034). Only the health gate consulted it
+        // before, and a phase whose model the provider refused gave up every
+        // cycle while a healthy alternative stood idle. The fallback resolves
+        // its own model: the refused id names the old provider's catalogue,
+        // and a session id belongs to the CLI that recorded it.
+        const refusingProvider = selectAgentProvider(
+          currentOptions.agentProvider,
+          currentOptions.env ? { env: currentOptions.env } : {},
+        ).id;
+        const nextProvider = providerAfterModelRefusal(
+          configuredProviderFallbackPolicy(),
+          refusingProvider,
+          providersRefusedModel,
+        );
+        if (nextProvider) {
+          providersRefusedModel.push(refusingProvider);
+          currentOptions.logger?.warn(
+            `[provider-fallback] ${refusingProvider} refused model ` +
+              `"${currentModel}" and has no cheaper model — retrying on ` +
+              `${nextProvider} from agent_provider_fallback (Issue #4034).`,
+          );
+          currentOptions = {
+            ...currentOptions,
+            agentProvider: nextProvider,
+            model: undefined,
+            sessionResumeState: undefined,
+          };
+          retryCount = 0;
+          totalWaitTime = 0;
+          waitInterval = initialWaitInterval;
+          continue;
+        }
+
+        // No cheaper model and no fallback provider — give up rather than
+        // re-run an unavailable model. Name the provider when it has no
+        // ladder at all (Issue #365), so "no downgrade attempted" is visible
+        // rather than inferred.
         warnNoModelLadder(fallbackResult, currentModel, currentOptions.logger);
         currentOptions.logger?.error(
           `Model "${currentModel}" unavailable and no cheaper fallback available (${fallbackResult.reason}). Giving up.`,
@@ -3483,18 +3563,18 @@ async function runRetryLadder(
         };
       }
 
-      // Check for rate limiting on non-zero exit
-      const { isRateLimited, isPrimary } = detectRateLimit(
-        bothStreams,
+      // Check for rate limiting on non-zero exit — the provider's refusal
+      // only, never the agent's own transcript (Issue #4114).
+      const rateLimited = rateLimitEvidence(
+        invokedAgentFailure,
+        `${stderr ?? ""}\n${structuredEvidence}`,
         errorScanTailLines,
       );
 
-      if (isRateLimited) {
+      if (rateLimited !== undefined) {
         retryCount++;
         currentOptions.logger?.warn(
-          isPrimary
-            ? `Credits exhausted or rate limited (exit code: ${exitCode}).`
-            : `Possible rate limit detected (exit code: ${exitCode}).`,
+          `Credits exhausted or rate limited (exit code: ${exitCode}): ${rateLimited}`,
         );
         currentOptions.logger?.security?.(
           "RATE_LIMIT",

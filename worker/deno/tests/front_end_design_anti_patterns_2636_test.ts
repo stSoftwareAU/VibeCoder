@@ -15,8 +15,12 @@ import { section, withoutSection } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const HEADING = "Visual design anti-patterns";
-/** "Keep it short" — a list longer than this is restating the sources. */
-const MAX_CHECKS = 8;
+/**
+ * "Keep it short" — a list longer than this is restating the sources. Raised
+ * to 9 for the breakpoint-leak check (Issue #3656) and to 10 for the
+ * buried-control check (Issue #3681).
+ */
+const MAX_CHECKS = 10;
 
 /** The `html` bucket guide, read the way a best-practices scan reads it. */
 async function htmlGuide(): Promise<string> {

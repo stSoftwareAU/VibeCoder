@@ -39,7 +39,6 @@ to all users unless explicitly overridden.
   "pr_reviewers": ["reviewer1", "reviewer2", "reviewer3"],
   "repos": ["your-org/repo1", "your-org/repo2"],
   "authorized_commenters": ["your-github-username", "github-copilot[bot]"],
-  "claude_model": "opus",
   "claude_timeout": 7200,
   "sleep_interval": 60
 }
@@ -480,7 +479,7 @@ explicitly overridden.
 | `agent_provider_fallback` | `[]` | Opt-in ordered alternatives when the preferred provider has a classified outage (subscription exhausted, transient rate limit, or model unavailable). With Claude preferred, the health gate first rotates to another Claude credential in the pool that still has budget, and switches to an alternative only once **every** credential is exhausted on its five-hour window or its weekly limit, switching back when one reopens; the weekly pace projection never moves work to an alternative (Issue #2637). Omitted or `[]` pins `agent_provider` — no substitution. Every id must already be in `agent_providers`; an unconfigured or uninstalled provider fails loudly at startup. Ordinary task failures and authentication/configuration errors never trigger a switch. This list is **not** restricted to fixed-price subscriptions: an alternative that bills per token is honoured as written, and the health gate logs `billing=<mode>` plus a loud line naming the metered credential variable before switching (Issue #1923). Leave it empty to keep the never-metered guarantee end to end. **Not enabled on the production fleet by default** (Issue #1700). See [Provider parity](PROVIDER-PARITY.md). |
 | `container_tools` | `[]` | Extra build-time tools this deployment's image bakes in. Each entry is a declarative archive install: `id`, `version`, per-architecture `url` and **mandatory** `sha256` (`amd64` / `arm64` / `noarch`), `stripComponents`, `bin` and `env`. The install prefix is fixed at `/opt/vibe-tools/<id>` and every `bin`/`env` value is relative to it — absolute, `~`-anchored, newline-bearing and `..`-escaping values are all refused — so no selection can point PATH or an environment variable at an arbitrary host path. A malformed spec, or a `url` without a matching `sha256`, fails loudly at config load. The default empty selection installs nothing — the fleet image is unchanged. Changing it needs an image rebuild; see [the worked example](CONTAINER.md#deployer-supplied-build-time-tools) and [Private Extensions](PRIVATE-EXTENSIONS.md). |
 | `container_extension` | _(none)_ | A private image layer this deployment builds on top of the standard one — for services and toolchains a declarative archive install cannot express. An object of `path` (absolute host directory holding the extension, never the home directory or an ancestor of it), optional `containerfile` (default `Containerfile`) and optional `start`, the last two **relative to `path`**. The operator syncs their own private repository into `path`; the Vibe Coder clones nothing. The Containerfile must derive `FROM ${VIBE_BASE_IMAGE}`, the extension is copied to the fixed in-image prefix `/opt/vibe-extension/`, and the image tag is a content hash of the whole directory, so changing any file rebuilds. A declared `start` runs before the worker and aborts the sandbox start with exit 76 if it fails. A malformed block fails loudly at config load, naming the field. See [Container Extension](CONTAINER-EXTENSION.md). |
-| `claude_model`               | `opus`                    | Claude model ID (Identifier) to use                                                                                                                                                                                                                                                              |
+| `claude_model`               | unset                     | Host-wide Claude model for every phase. Unset, each phase uses its own default (the `issue` manager runs on `sonnet`). Setting it overrides the per-phase defaults, so leave it unset unless every phase should run on one model (Issue #4117). |
 | `best_planning_model` | `""` (derive from routing) | Configured best planning model for degraded-model detection. Empty derives the expected model from the `planning` routing chain; set it to pin a specific model the run is expected to be served by. A degraded run labels the parent + every sub-issue `degraded-model`. |
 | `phase_model_tiers` | `{}` | Shared phase-to-tier overrides: `best`, `standard` or `fast`, independent of provider. See [Shared model policy](MODEL-AND-CACHING.md#model-selection). |
 | `provider_model_tiers` | `{}` | Each provider's concrete model ids for `best`, `standard` and `fast`. Explicit provider phase overrides take precedence. |
@@ -491,8 +490,8 @@ explicitly overridden.
 | `gemini_phase_model_overrides` | `{}` | Per-phase **Gemini** model overrides, applied when `agent_provider` is `gemini`. Same shape as `phase_model_overrides`, with Gemini model ids. There is no Gemini effort key — the CLI has no reasoning-effort option, and an effort requested for a Gemini phase is warned about instead. See [Gemini per-phase routing](MODEL-AND-CACHING.md#-gemini-per-phase-routing). |
 | `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-v4-pro` for the planning-shaped phases, `deepseek-flash` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing). |
 | `issue_executor_split` | `true` | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of an executor (`Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) — Haiku at `high` effort by default, or Sonnet at `medium` effort when `issue_sub_agent_tier` resolves `"sonnet"` (Issues #3402, #3473) — while the advisor — the main session — keeps the phase's own model and effort. Off, no executor definitions are built; `--agents` is still passed when `issue_reviewer_agents` is on or `issue_sub_agent_tier` resolves `"haiku"` (which adds the read-only explorer), and only with the split and the reviewers off and a tier other than `"haiku"` is no `--agents` argument passed and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag; under `codex`, `gemini` or `deepseek` (which runs the same Claude binary against its own endpoint but strips `--agents`) an `issue` run that carries any `--agents` definition is refused before the agent starts, with an error naming the provider and the rollback (Issue #4010): set `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`. On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The advisor's own run-record files are the one exception: it may still write the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` and the PR-feedback reply file `.pr_response_message`. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and every model the run served — the advisor's and each sub-agent's (executors and reviewers) — is costed from the CLI's per-model `modelUsage` breakdown at its own rate, one cost sub-bullet per model, in both the comment and the callback telemetry (Issue #3603); a run that served several models but recorded no readable breakdown says `sub-agents: not costed` instead of presenting the advisor-only figure as the run's cost. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `true` since Issue #2812; set it `false` for a single-session run. Whether the default stays is decided by the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) — the first 30 `issue` runs after the change against the last 30 before it, reverted if the success rate or first-attempt gate pass rate falls, or violations per PR or USD per run rise. |
-| `issue_sub_agent_tier` | `"haiku"` | Model tier for the `issue`-phase executor and Standards-reviewer sub-agents, and for whether the run carries the read-only explorer sub-agent (Issue #3402). `"haiku"` is the default since the owner's decision on Issue #3473, under a Sonnet `issue` manager. `"sonnet"` leaves the `--agents` JSON byte-identical to before the key existed. `"haiku"` moves the executor (when `issue_executor_split` resolves on) to Haiku at `high` effort and the Standards reviewer (when `issue_reviewer_agents` is on) to Haiku at `medium` effort, and adds a read-only `explorer` sub-agent (`Read`, `Grep`, `Glob` only, no `Agent` tool) to every run on the tier, whatever the split and reviewer switches resolved to. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the `"haiku"` default stands. A `repo_config.<repo>.issue_sub_agent_tier` entry overrides it for that repository. See [Haiku sub-agent tier](MODEL-AND-CACHING.md#haiku-sub-agent-tier-issue-phase). The resolved tier is also counted in the fleet summary's per-tier `issue_tier_runs` / `issue_tier_usd` figures ([fleet telemetry](INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855)) and recorded on the PR an issue run opens as a hidden `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`) marker, which attributes that PR's outcomes — `pr_tier_rejections`, `ci_fix_tier_*`, `pr_feedback_tier_usd`, `merged_tier_prs` and `cost_per_merged_pr` (Issue #3404) — to the tier (Issue #3403). |
-| `issue_reviewer_agents` | `true` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Sonnet at `high` since Issue #3473). On, the invocation carries a `spec-reviewer` (`sonnet`, `medium` effort) and a `standards-reviewer` (`haiku`, `medium` effort by default — Sonnet at `low` effort when `issue_sub_agent_tier` resolves `"sonnet"`, Issues #3402, #3473; the Spec reviewer stays `sonnet`/`medium` at every tier), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `codex`, `gemini` or `deepseek` a run carrying the definitions is refused before the agent starts (Issue #4010) — see `issue_executor_split`. Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria). |
+| `issue_sub_agent_tier` | `"haiku"` | Model tier for the `issue`-phase executor sub-agent, and for whether the run carries the read-only explorer sub-agent (Issue #3402). It never moves the reviewers: both run on Opus at every tier (owner decision 2026-10-22). `"haiku"` is the default since the owner's decision on Issue #3473, under a Sonnet `issue` manager. `"sonnet"` puts the executor on Sonnet at `medium` effort. `"haiku"` moves the executor (when `issue_executor_split` resolves on) to Haiku at `high` effort and adds a read-only `explorer` sub-agent (`Read`, `Grep`, `Glob` only, no `Agent` tool) to every run on the tier, whatever the split and reviewer switches resolved to. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the `"haiku"` default stands. A `repo_config.<repo>.issue_sub_agent_tier` entry overrides it for that repository. See [Haiku sub-agent tier](MODEL-AND-CACHING.md#haiku-sub-agent-tier-issue-phase). The resolved tier is also counted in the fleet summary's per-tier `issue_tier_runs` / `issue_tier_usd` figures ([fleet telemetry](INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855)) and recorded on the PR an issue run opens as a hidden `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`) marker, which attributes that PR's outcomes — `pr_tier_rejections`, `ci_fix_tier_*`, `pr_feedback_tier_usd`, `merged_tier_prs` and `cost_per_merged_pr` (Issue #3404) — to the tier (Issue #3403). |
+| `issue_reviewer_agents` | `true` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Sonnet at `high` since Issue #3473). On, the invocation carries a `spec-reviewer` and a `standards-reviewer`, both `opus` at `medium` effort at every `issue_sub_agent_tier` (owner decision 2026-10-22: Opus does the code reviews; they were Sonnet, and the Standards reviewer Haiku on the Haiku tier, under Issues #3402 and #3473), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `codex`, `gemini` or `deepseek` a run carrying the definitions is refused before the agent starts (Issue #4010) — see `issue_executor_split`. Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria). |
 | `external_orchestration` | `false` | Opt into independent manager/executor/reviewer CLI calls for issue runs. A repository boolean overrides this host value; setting it to `false` restores native dispatch. See [Role configuration](ROLE-CONFIGURATION.md). |
 | `subscription_allocation` | absent | Optional dry-run-first allocation policy: explicit `auto_routing`, trial arms, fixed-subscription provider budgets, host capacities/weights, complete lifecycle ledger paths and measured capacity evidence. Applies to main-loop issue runs; no subscription changes or metered access. See [Subscription allocation](SUBSCRIPTION-ALLOCATION.md) for schema, defaults, sequential uncertainty, rollout and reset. |
 | `external_orchestration_settings` | `{}` | Validated role selections (`manager`, `executor`, `reviewer`: `provider`, `model`, `effort`, `cli_adapter`) and call limits (`max_retries`, `max_concurrency`, `max_invocations`, `max_cost_usd`). Repository settings override individual host fields. Read only for opted-in issue runs; all named providers must be enabled in `agent_providers`. See [Role configuration](ROLE-CONFIGURATION.md). |
@@ -1584,7 +1583,7 @@ override any phase's model via `phase_model_overrides` in `.config.json`:
 | `revision` | `opus` | Rewriting issues from review feedback — planning-shaped, effort `high` |
 | `question` | `opus` | Answering codebase questions — planning-shaped, effort `high` |
 | `clarification` | `opus` | Assessing whether an issue has sufficient detail — planning-shaped, effort `high` |
-| `implementation` | `opus` (base) | Core work — uses the base `claude_model` setting (`issue` phase, effort `high`) |
+| `implementation` | `sonnet` | Core work — the `issue` phase manager (effort `high`); a host-wide `claude_model` overrides it |
 | `ci_fix`         | `sonnet`      | Fixing CI failures from structured error messages (effort `high`, Issue #2812) |
 | `quality_fix`    | `sonnet`      | Fixing quality check failures (lint, test errors) (effort `high`, Issue #2812) |
 | `pr_feedback`    | `sonnet`      | Applying targeted fixes from reviewer comments (effort `high`, Issue #2812) |
@@ -4447,7 +4446,7 @@ when nothing else is queued) avoids burning premium tokens.
 | `phase_model_overrides` | object | Per-repo per-phase model map (e.g. `{ "issue": "fable" }`). Same shape as the global `phase_model_overrides`.       |
 | `phase_effort_overrides`| object | Per-repo per-phase effort map (e.g. `{ "issue": "xhigh" }`). Same shape as the global `phase_effort_overrides`.     |
 | `codex_model`           | string | Per-repo base **Codex** model tier overriding the Codex phase defaults for every phase in this repo — the Codex counterpart of `claude_model`. |
-| `codex_phase_model_overrides` | object | Per-repo per-phase **Codex** model map (e.g. `{ "issue": "gpt-5-mini" }`). Same shape as the global `codex_phase_model_overrides`. |
+| `codex_phase_model_overrides` | object | Per-repo per-phase **Codex** model map (e.g. `{ "issue": "gpt-6-luna" }`). Same shape as the global `codex_phase_model_overrides`. |
 | `codex_phase_effort_overrides`| object | Per-repo per-phase **Codex** effort map (e.g. `{ "issue": "medium" }`). Same shape as the global `codex_phase_effort_overrides`. |
 | `gemini_model`          | string | Per-repo base **Gemini** model tier overriding the Gemini phase defaults for every phase in this repo — the Gemini counterpart of `claude_model`. |
 | `gemini_phase_model_overrides` | object | Per-repo per-phase **Gemini** model map (e.g. `{ "issue": "gemini-2.5-flash-lite" }`). Same shape as the global `gemini_phase_model_overrides`. |
@@ -4643,7 +4642,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `deepseek_model`        | string  | Per-repo base DeepSeek model tier overriding the DeepSeek phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `deepseek_phase_model_overrides` | object | Per-repo per-phase DeepSeek model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `issue_executor_split` | boolean | Per-repo issue-executor split, overriding the host-wide `issue_executor_split` for this repository. Set `false` here to opt one repository out of a host that enables it (the default since Issue #2812), or `true` to opt one repository in on a host that does not. Omitted, the host-wide value stands. Only the `issue` phase is affected. The per-host counters behind the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) do not separate repositories, so a per-repo opt-out blurs them. |
-| `issue_sub_agent_tier` | string | Per-repo model tier for the `issue`-phase executor and Standards-reviewer sub-agents and the read-only explorer (Issue #3402), overriding the host-wide `issue_sub_agent_tier` for this repository. `"sonnet"` or `"haiku"` — see the host-wide key above for what each tier does. It is also the tier that repository's issue runs count under in the fleet summary's per-tier figures and record in the PR body's hidden `vibe-sub-agent-tier` marker (Issue #3403). Omitted, the host-wide value stands. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the host-wide value stands. |
+| `issue_sub_agent_tier` | string | Per-repo model tier for the `issue`-phase executor sub-agent and the read-only explorer (Issue #3402; the reviewers are Opus at every tier), overriding the host-wide `issue_sub_agent_tier` for this repository. `"sonnet"` or `"haiku"` — see the host-wide key above for what each tier does. It is also the tier that repository's issue runs count under in the fleet summary's per-tier figures and record in the PR body's hidden `vibe-sub-agent-tier` marker (Issue #3403). Omitted, the host-wide value stands. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the host-wide value stands. |
 
 **Use cases:**
 
@@ -4794,8 +4793,8 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell and sweep ledger `sweptAt`
-ancestry) still run and can fail the run. Unlike Step 1b, the completion gate
+fmt/lint, cargo fmt, markdownlint, cspell, sweep ledger `sweptAt` ancestry and
+the Floci CloudFormation deploy test) still run and can fail the run. Unlike Step 1b, the completion gate
 checks every non-merge commit the branch has ahead of the PR base
 (`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
 ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
@@ -4844,7 +4843,9 @@ The hook runs two stages:
    completion phase widens the range to every non-merge commit ahead of the PR
    base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
-   config would check, see below):
+   config would check, see below). The one exception is the Floci deploy test
+   below: a changed file only triggers it, and it is passed no files, so it
+   deploys every template in `infra/cloudformation/`, changed or not:
    - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
      cts, json, jsonc, md, markdown) and `deno lint --permit-no-files` (the
      ts/js family), per outermost `deno.json` / `deno.jsonc` directory. Only
@@ -4886,7 +4887,22 @@ The hook runs two stages:
      `git symbolic-ref --short refs/remotes/origin/HEAD`), the same check CI's
      "Sweep ledger sweptAt ancestry" step makes, so a branch commit recorded as
      `sweptAt` is caught before the push. A shallow clone is deepened first.
-     When no ledger file changed, this check makes no git calls.
+     When no ledger file changed, this check makes no git calls;
+   - **Floci CloudFormation deploy test** (Issue #3727), only when the push
+     adds or modifies a file whose path starts with `infra/cloudformation/` and
+     the repo tracks `infra/cloudformation/test-floci.sh`: it runs
+     `bash infra/cloudformation/test-floci.sh` from the repo root, after the
+     other changed-file checks. That is the same script
+     `.github/workflows/floci.yml` runs in CI. Outside CI, a template that
+     creates an `AWS::EC2::Instance` when there is no Docker socket is printed
+     `SKIPPED (needs Docker): <template>` and left to CI. When every template
+     is skipped the script exits 0 there, before it checks for the `aws` CLI
+     or starts anything. Otherwise it exits 1 when the `aws` CLI is missing,
+     and only then starts the baked `floci` on `127.0.0.1:4566` if nothing
+     answers there. The worker container has no Docker socket and no `aws`
+     CLI, and today's only template creates an `AWS::EC2::Instance`, so inside
+     the container this check skips it, exits 0 and never starts `floci`; only
+     a host with Docker and the `aws` CLI exercises it.
 2. **Configured `pre-flight` commands.** The commands are resolved by the
    run's repo from `repo_config`, so every agent run that names its repo gets
    that repo's `pre-flight` commands in the hook; a run that names no repo gets
@@ -4898,8 +4914,10 @@ start, or times out refuses the push; markdownlint configured but
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a changed sweep ledger file whose default branch
 cannot be resolved, whose history cannot be deepened, or whose slice `sweptAt`
-is not on the default branch refuses the push; a missing hook module, spec or
-`deno` binary refuses the push. Refusals print lines starting
+is not on the default branch refuses the push; a Floci deploy test that exits
+non-zero, including when Floci cannot be started or the `aws` CLI is missing for
+a deployable template, refuses the push; a missing hook module, spec or `deno`
+binary refuses the push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
 pre-flight (the hook reuses `runPreFlightGate`).
 
@@ -5074,6 +5092,13 @@ are three failed fixes whether or not the build was briefly green in between —
 and it replaces the old locus-wide sweep, which handed a flapping check a fresh
 budget on every green cycle and so never reached the cap at all.
 
+An agent run the provider refused to serve is not an attempt at all
+(Issue #4038). That covers a refused model, spent quota, a rejected credential
+or an outage, which `isProviderUnavailableFailure` classifies. Such a run
+leaves the working tree empty because the agent never read the failure, not
+because no change was needed. So it posts nothing, writes no marker and
+applies no label, and the next scan retries.
+
 ```mermaid
 flowchart TD
     A["Failing CI check"] --> B["Normalise log excerpt<br/>(strip timestamps, build numbers, paths)"]
@@ -5084,7 +5109,9 @@ flowchart TD
     D -->|no| N{"no-change marker<br/>on this head?"}
     N -->|yes| Q["Post nothing,<br/>run no agent"]
     N -->|no| F["Run the auto-fix"]
-    F --> G{"infrastructure<br/>category?"}
+    F --> P{"provider refused<br/>to serve?"}
+    P -->|yes| H2["Attempt NOT charged, nothing posted<br/>(retried next scan, #4038)"]
+    P -->|no| G{"infrastructure<br/>category?"}
     G -->|yes| H["Attempt NOT charged<br/>(no marker written)"]
     G -->|no| I["Comment carries attempt N's marker<br/>(appended in place on a repeat)"]
     style E fill:#7f1d1d,stroke:#450a0a,color:#fff

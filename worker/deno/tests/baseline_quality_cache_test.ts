@@ -520,6 +520,103 @@ Deno.test("baseline_quality_cache - with no work directory even a warm legacy $H
   }
 });
 
+/**
+ * Run `body` with `console.error` (the logger's sink) captured, returning
+ * every line written to it.
+ */
+async function captureLog(body: () => Promise<void>): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => lines.push(args.join(" "));
+  try {
+    await body();
+  } finally {
+    console.error = original;
+  }
+  return lines;
+}
+
+/** A valid, current cache file body holding one passing entry. */
+function plantedPassingEntry(): string {
+  return JSON.stringify({
+    "owner/repo@sha": {
+      version: BASELINE_QUALITY_CACHE_VERSION,
+      passed: true,
+      output: "",
+      storedAt: Date.now(),
+    },
+  });
+}
+
+Deno.test("baseline_quality_cache - an untrusted legacy $HOME location is refused without a WARNING (Issue #4318)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-bqcache-legacy-" });
+  const home = `${root}/home`;
+  try {
+    // The container case: `~/.vibe-coder` exists but the worker cannot make
+    // it private (root-owned 0755 there; group/other writable here, which
+    // the worker refuses to heal either). The real cache on the work volume
+    // has simply not been written yet.
+    await Deno.mkdir(`${home}/.vibe-coder`, { recursive: true });
+    await Deno.chmod(`${home}/.vibe-coder`, 0o777);
+    await Deno.writeTextFile(
+      `${home}/.vibe-coder/baseline-quality-cache.json`,
+      plantedPassingEntry(),
+    );
+
+    let entry: unknown = "unset";
+    const lines = await captureLog(async () => {
+      entry = await readBaselineQualityCache("owner/repo@sha", undefined, {
+        workDir: `${root}/work`,
+        home,
+      });
+    });
+
+    // Issue #1261: a planted `passed: true` must never be honoured.
+    assertEquals(entry, null);
+    // But the real cache is not disabled — only the optional legacy read
+    // is skipped — so nothing at WARNING may claim otherwise.
+    assertEquals(
+      lines.filter((l) => l.includes("WARNING")),
+      [],
+      "refusing the legacy fallback is the normal container path",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("baseline_quality_cache - an untrusted primary cache directory still warns and is refused (Issue #1261)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-bqcache-primary-" });
+  try {
+    const cacheDir = `${root}/work/.vibe-cache`;
+    await Deno.mkdir(cacheDir, { recursive: true });
+    await Deno.chmod(cacheDir, 0o777);
+    await Deno.writeTextFile(
+      `${cacheDir}/baseline-quality-cache.json`,
+      plantedPassingEntry(),
+    );
+
+    let entry: unknown = "unset";
+    const lines = await captureLog(async () => {
+      entry = await readBaselineQualityCache("owner/repo@sha", undefined, {
+        workDir: `${root}/work`,
+        home: `${root}/home`,
+      });
+    });
+
+    assertEquals(entry, null);
+    assertEquals(
+      lines.some((l) =>
+        l.includes("WARNING") && l.includes("not worker-private")
+      ),
+      true,
+      "an untrusted primary cache really does disable the cache",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => undefined);
+  }
+});
+
 Deno.test("baseline_quality_cache - default path lives on the work volume, not root-owned ~/.vibe-coder (Issue #4318)", () => {
   // The work root is a parameter (Issue #966), and the home beside it is
   // the one the pre-#4318 location would have used — so a resolution that

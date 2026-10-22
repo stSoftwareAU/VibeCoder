@@ -241,6 +241,47 @@ Deno.test("check: a PR moved onto the default branch is disarmed, commented once
   assert(posted[0]![6]!.includes(MOVED_ONTO_DEFAULT_MARKER));
 });
 
+// These comments are posted into the target repo, which autolinks a bare `#N`
+// to that repo's own issue or PR, so they must not cite VibeCoder issue numbers.
+Deno.test("check: the retargeted milestone-fix comments cite no bare #N beyond the target repo's own PR (Issue #3674)", async () => {
+  const { gh, calls } = fakeGh(reading({ headRefName: FIX_HEAD }));
+  await checkPrBaseIntegrity({
+    repo: "o/r",
+    pr: { number: 9, headRefName: FIX_HEAD, baseRefName: "main" },
+    armed: true,
+    gh,
+    log: () => {},
+    authorOptions: AUTHORS,
+  });
+  const posted = comments(calls);
+  assertEquals(posted.length, 2);
+  assertEquals(posted[0]![6]!.match(/#\d+/g), null);
+  // #9 is the fix PR itself, a target-repo number, so it is allowed.
+  assertEquals(posted[1]![6]!.match(/#\d+/g), ["#9"]);
+});
+
+// Posted in the target repo, which autolinks a bare `#N` to its own issue or PR.
+Deno.test("check: the moved-onto-default comment cites no bare #N (Issue #3674)", async () => {
+  const { gh, calls } = fakeGh(reading({
+    lastBaseChange: {
+      at: "2026-01-01T00:00:00Z",
+      from: "milestone/x",
+      to: "main",
+    },
+  }));
+  await checkPrBaseIntegrity({
+    repo: "o/r",
+    pr: { number: 9, headRefName: "issue-5-x", baseRefName: "main" },
+    armed: true,
+    gh,
+    log: () => {},
+    authorOptions: AUTHORS,
+  });
+  const posted = comments(calls);
+  assertEquals(posted.length, 1);
+  assertEquals(posted[0]![6]!.match(/#\d+/g), null);
+});
+
 Deno.test("check: a base change since arming disarms and proceeds as disarmed", async () => {
   const { gh, calls } = fakeGh(reading({
     baseRefName: "milestone/b",

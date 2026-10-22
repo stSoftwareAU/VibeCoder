@@ -13,6 +13,7 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { isProviderUnavailableFailure } from "./agent_output.ts";
 import type { CiProviderConfig, Logger, RepoConfig, Result } from "../types.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
@@ -910,7 +911,12 @@ async function _processCiFailureLocked(
       repo,
       input.branchName,
       prNumber,
-      { gh: ghFn },
+      {
+        gh: ghFn,
+        ...(processorDeps.fleetLogins
+          ? { fleetAuthors: processorDeps.fleetLogins }
+          : {}),
+      },
     );
     if (!openFixPr.ok) {
       logger.error(
@@ -1934,6 +1940,34 @@ async function _processCiWithHeartbeat(
     return {
       ok: false,
       error: new Error(failureMessage),
+    };
+  }
+
+  // Issue #4038: the provider refused to serve (model refused, quota spent,
+  // credential rejected, outage), so the agent never looked at the failure.
+  // An empty working tree here is not "no change required": record no
+  // attempt marker, post nothing and escalate nothing — the next scan
+  // retries. GRQ-AutoTrader#3811 went to needs-human on attempt 1 of 3 after
+  // Codex refused `gpt-5` in five seconds.
+  const agentFailure = claudeResult.value.agentFailure;
+  if (
+    claudeResult.value.exitCode !== 0 &&
+    isProviderUnavailableFailure(agentFailure)
+  ) {
+    logger.warn(
+      "CI-fix run skipped: provider unavailable — no attempt recorded",
+      { repo, prNumber, checkName, category: agentFailure!.category },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        annotationCount: annotations.length,
+        retryCount: newRetryCount,
+        summary: `PR #${prNumber} (${checkName}) — provider unavailable ` +
+          `(${agentFailure!.category}); no attempt recorded, retried next scan`,
+      },
     };
   }
 

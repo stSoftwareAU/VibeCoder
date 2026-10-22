@@ -73,6 +73,7 @@ interface FakePr {
   url: string;
   headRefName: string;
   baseRefName: string;
+  state: string;
   author: { login: string };
   isCrossRepository: boolean;
 }
@@ -120,6 +121,7 @@ class FakeGh {
         url,
         headRefName: args[args.indexOf("--head") + 1]!,
         baseRefName: args[args.indexOf("--base") + 1]!,
+        state: "OPEN",
         author: { login: FLEET },
         isCrossRepository: false,
       });

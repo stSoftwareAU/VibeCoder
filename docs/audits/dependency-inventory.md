@@ -9,12 +9,12 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | Action | Version | Commit SHA | Used in | Verdict |
 | --- | --- | --- | --- | --- |
 | actions/cache | v6.1.0 | 55cc8345863c7cc4c66a329aec7e433d2d1c52a9 | .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
-| actions/checkout | v7.0.1 | 3d3c42e5aac5ba805825da76410c181273ba90b1 | .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/dependency-review.yml, .github/workflows/floci.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/quality.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/semgrep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
+| actions/checkout | v7.0.1 | 3d3c42e5aac5ba805825da76410c181273ba90b1 | .github/workflows/checkov.yml, .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/dependency-review.yml, .github/workflows/floci.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/quality.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/semgrep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
 | actions/dependency-review-action | v5.0.0 | a1d282b36b6f3519aa1f3fc636f609c47dddb294 | .github/workflows/dependency-review.yml | pinned to commit SHA |
 | actions/setup-node | v7.1.0 | 949feb2413d6458794dcd2491c4babbbce0c15c1 | .github/workflows/markdown-lint.yml | pinned to commit SHA |
 | actions/upload-artifact | v7.0.2 | cf430e030ddbb5b0abf93d22962f4752f3646cd9 | .github/workflows/dependency-audit.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | aquasecurity/trivy-action | v0.36.0 | ed142fd0673e97e23eac54620cfb913e5ce36c25 | .github/workflows/dependency-audit.yml | pinned to commit SHA |
-| denoland/setup-deno | v2.0.5 | 22d081ff2d3a40755e97629de92e3bcbfa7cf2ed | .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
+| denoland/setup-deno | v2.0.5 | 22d081ff2d3a40755e97629de92e3bcbfa7cf2ed | .github/workflows/checkov.yml, .github/workflows/container-build.yml, .github/workflows/dependency-audit.yml, .github/workflows/gitleaks.yml, .github/workflows/markdown-lint.yml, .github/workflows/release-tag.yml, .github/workflows/security-tabletop.yml, .github/workflows/security-tree-sweep.yml, .github/workflows/validate-scripts.yml | pinned to commit SHA |
 | github/codeql-action/analyze | v4.39.0 | 6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | github/codeql-action/init | v4.39.0 | 6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | gitleaks/gitleaks-action | v3.0.0 | e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e | .github/workflows/gitleaks.yml | pinned to commit SHA |
@@ -31,10 +31,10 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 
 | Tool | Kind | Version | SHA-256 | Verdict |
 | --- | --- | --- | --- | --- |
-| claude | provider | 2.1.293 | amd64: 8968405e26db478af44eabc4635ab5ca557057b702a54460a59c13e1b253e978<br>arm64: a43629e888f0a7d96c5e8de62abf44852433a7ff2481574688db3e5b6399491f | exact version + SHA-256 verified |
-| codex | provider | 0.147.0 | amd64: 0246e2e773834e07f0fb5249ed6ebad12e4591e608f8c7bb97dd6a9690544c36<br>arm64: eb677c80f666b1ab8b4b1d083b66e8d614b1281d960bb6f9fd8ca98f58b38b90 | exact version + SHA-256 verified |
-| deepseek | provider | 2.1.223 | amd64: 98226474f802e3094d6a86c5ade8883c16206d0fcb5c400b7401c800063e99d7<br>arm64: 60e83d8db0e894d0e54413e5e7daa256d180db660f51e139a51b614fc30cf3ac | exact version + SHA-256 verified |
-| gemini | provider | 0.55.1 | noarch: 4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e | exact version + SHA-256 verified |
+| claude | provider | 2.1.306 | amd64: 520bc6c1f40af466bd03a278b5ae1af1a2938bc7de5b9e5cb15526da20d71cfe<br>arm64: 77d257d5e8b8730ec61d5a4992a8eb65550aaf9589f464988aa1a9684338d801 | exact version + SHA-256 verified |
+| codex | provider | 0.163.0 | amd64: beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4<br>arm64: a7261e65f4a96d8f4ca65a069c6cf2dc2c33defc341e48078acefda9461fffe4 | exact version + SHA-256 verified |
+| deepseek | provider | 2.1.306 | amd64: 520bc6c1f40af466bd03a278b5ae1af1a2938bc7de5b9e5cb15526da20d71cfe<br>arm64: 77d257d5e8b8730ec61d5a4992a8eb65550aaf9589f464988aa1a9684338d801 | exact version + SHA-256 verified |
+| gemini | provider | 0.65.0 | noarch: 97f1f7f1e7e189054d27edfb9c62c6a45cec15b678840dfdde3c0ccd87fab376 | exact version + SHA-256 verified |
 | gh | tool | 2.97.0 | amd64: a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112<br>arm64: 73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5 | exact version + SHA-256 verified |
 | jq | tool | 1.8.2 | amd64: b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f<br>arm64: 8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309 | exact version + SHA-256 verified |
 | pip | tool | 26.2.1 | noarch: 71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e | exact version + SHA-256 verified |

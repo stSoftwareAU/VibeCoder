@@ -57,6 +57,9 @@ function makeSilentLogger(): Logger {
   };
 }
 
+/** The fleet login that authored the in-flight fix PR (Issue #3854). */
+const IN_FLIGHT_FLEET_LOGIN = "fleet-bot";
+
 /** What the pass did to GitHub and to the agent. */
 interface Observed {
   ghCalls: string[][];
@@ -95,6 +98,9 @@ function makeDeps(observed: Observed) {
           number: 9001,
           url: "https://github.com/org/repo/pull/9001",
           headRefName: `${milestoneFixPrefixFor(GATED_HEAD, 4702)}ci-1`,
+          state: "OPEN",
+          author: { login: IN_FLIGHT_FLEET_LOGIN },
+          isCrossRepository: false,
         }]));
       }
       return Promise.resolve("");
@@ -167,6 +173,7 @@ Deno.test("CI-fix pass - a gated head with a fix already in flight spends no ret
     const stateDir = `${tmpDir}/.ci_check_state`;
     let renewals = 0;
 
+    // The fleet logins are injected, so the lookup never reads the process env.
     const result = await processCiFailure({
       repo: "org/repo",
       prNumber: 4702,
@@ -176,6 +183,7 @@ Deno.test("CI-fix pass - a gated head with a fix already in flight spends no ret
       encodedAnnotations: btoa(JSON.stringify([])),
     }, {
       promptsDir: PROMPTS_DIR,
+      fleetLogins: [IN_FLIGHT_FLEET_LOGIN],
       logger: makeSilentLogger(),
       deps: makeDeps(observed),
       stateDir,

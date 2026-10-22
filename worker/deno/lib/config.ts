@@ -28,7 +28,11 @@ import {
   setConfiguredAgentProviderId,
   setConfiguredEnabledAgentProviderIds,
 } from "./agent_provider.ts";
-import { resolveProviderFallbackPolicy } from "./provider_fallback_policy.ts";
+import { isAutomaticProviderRoutingActive } from "./provider_auto_state.ts";
+import {
+  resolveProviderFallbackPolicy,
+  setConfiguredProviderFallbackPolicy,
+} from "./provider_fallback_policy.ts";
 import { DEFAULT_LONG_JOB_LABELS } from "./claim_runway_evidence.ts";
 import { resolveRunMode } from "./run_mode.ts";
 import { resolveEffectiveFleetPrAuthors } from "./fleet_authors.ts";
@@ -68,7 +72,6 @@ import {
 } from "./trust_exclusions.ts";
 import {
   DEFAULT_BEST_PLANNING_MODEL,
-  DEFAULT_CLAUDE_MODEL,
   DEFAULT_SHUFFLE_REPOS,
   DEFAULT_TRUSTED_INPUT_BOTS,
   DEFAULT_TRUSTED_REVIEW_BOTS,
@@ -571,9 +574,10 @@ export async function loadConfig(
 
   // Coding-agent provider selection (Issue #4067). Resolved here so an
   // unsupported id fails loudly at startup, naming the supported providers,
-  // rather than surfacing as a missing binary mid-run. The selection is also
-  // recorded on the seam, because the low-level modules that spawn the agent
-  // hold no configuration handle.
+  // rather than surfacing as a missing binary mid-run. Outside automatic
+  // routing the selection is also recorded on the seam, because the low-level
+  // modules that spawn the agent hold no configuration handle. While routing
+  // is active, the router owns that seam between its refreshes (Issue #4024).
   // The resolver consults the per-run provider override (Issue #2062)
   // before the file's value: the health gate's fallback switch therefore
   // survives every in-process config reload, which would otherwise reset
@@ -588,7 +592,18 @@ export async function loadConfig(
     configured: file.agent_provider,
     env,
   });
-  setConfiguredAgentProviderId(agentProvider);
+  // (Issue #4024) Automatic routing owns the active provider between its
+  // refreshes: a best-effort config reload — the allowlist and
+  // trusted-author readers call this full loader for one small field — must
+  // not reset the seam to the file's preferred id, or every maintenance
+  // phase after the reload runs the provider the router just deselected
+  // (GRQ-23: PR feedback ran Codex while the router had switched to Claude).
+  // The run override is already immune (Issue #2062), so only the
+  // auto-router's selection needs this guard; a pinned-mode host — routing
+  // inactive — keeps the historical reload behaviour.
+  if (!isAutomaticProviderRoutingActive()) {
+    setConfiguredAgentProviderId(agentProvider);
+  }
 
   // The providers enabled for this run (Issue #4108). Each one is provisioned,
   // preflighted and mounted separately; a provider outside the set has no
@@ -612,14 +627,22 @@ export async function loadConfig(
 
   // Opt-in ordered fallback (Issue #1700). Validated here so an unconfigured
   // alternative fails at startup, not mid-run. The empty default is pinned.
-  const agentProviderFallback = resolveProviderFallbackPolicy({
+  // Recorded on the seam for the agent runner, which moves a phase whose
+  // model the provider refused onto these alternatives (Issue #4034).
+  const providerFallbackPolicy = resolveProviderFallbackPolicy({
     preferred: agentProvider,
     enabled: enabledAgentProviderIds,
     fallback: file.agent_provider_fallback,
-  }).alternatives;
+  });
+  setConfiguredProviderFallbackPolicy(providerFallbackPolicy);
+  const agentProviderFallback = providerFallbackPolicy.alternatives;
 
-  // Claude model selection (Issue #260)
-  const claudeModel = file.claude_model ?? DEFAULT_CLAUDE_MODEL;
+  // Claude model selection (Issue #260). Empty when the host sets no
+  // `claude_model`: call sites pass `config.claudeModel || undefined` as an
+  // explicit `--model`, which beats phase routing, so defaulting it to Opus
+  // put every issue manager on Opus instead of the Sonnet `issue` default
+  // (Issue #4117).
+  const claudeModel = file.claude_model ?? "";
 
   // Configured best planning model for degraded-model detection (Issue #2654).
   // Empty default → expected model derived from the planning routing chain.

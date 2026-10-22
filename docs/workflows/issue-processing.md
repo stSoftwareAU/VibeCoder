@@ -723,6 +723,7 @@ gitGraph
 - **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
 - **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. A dependency this fleet filed during the same run (fleet author, `createdAt` at or after the run start) is not deferred either; the run hands off straight to the analysis-only hand-off rather than waiting on a dependency the run itself just created — bypassing the usage-limit and interrupted-run retries, the described-code-change retry, and the short-output failure on the no-changes path, each of which would otherwise return a `failure` with no `needs-human` and leave the next run to defer onto a follow-up nothing picks up (Issue #3146). See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
 - **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now, when Claude produces useful analysis but no code changes — **or** the issue body declares itself analysis-only up front via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker posts the analysis once, hands the issue off to a human via `needs-human` (so discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a failure — the issue is not marked `failed`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. Two overrides still win over this retry: an explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker, and a `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run — that case hands off to `needs-human` on this same run instead of retrying (Issue #3146). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
+- **A crashed run is never analysis-only (Issue #4147):** the hand-off above is only for an agent that ran and finished cleanly. A run whose agent exited non-zero and changed nothing — the CLI could not load the resumed session (`No conversation found with session ID`), its autocompaction thrashed, or it died before any model turn — is an `execution_error` failure on the normal `failed-once` → `failed` ladder, so `work-on` stays and the issue is retried. On 2026-10-22 46 implementation issues were handed to a human as "analysis-only" by runs in which no model ran. The runner also retries a resumed session it cannot use once without `--resume` (the #204 path), so the dead id is replaced by the fresh conversation's rather than failing every issue in the stream. See [`execute_claude_phase.ts`](../../worker/deno/lib/execute_claude_phase.ts) and `detectResumedSessionUnusable` in [`claude_executor.ts`](../../worker/deno/lib/claude_executor.ts).
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
 - **Push rejected:** Pull/rebase and retry push; if conflict, create fresh branch and retry (see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
@@ -1311,7 +1312,7 @@ as its own numbered REQUIRED ITEM. That turn may change code for a verifier item
 afterwards. Findings still present on the re-run are reported like other
 summary-gate blocks: a `failure` with no PR, or `summary_incomplete` over an
 existing PR, with the comment on the issue thread. In the existing-PR case,
-auto-merge is withheld, `standing-violation` is applied and the surviving
+auto-merge is withheld (and disarmed if already armed), `standing-violation` is applied and the surviving
 verifier findings are also posted on the PR (Issue #3796). A finding is
 settled by a fix or an evidence-backed dispute naming the finding in the
 final message; marking a criterion partial, listing a known gap or noting a
@@ -1408,16 +1409,25 @@ either confirms the premise against the base branch or pins current behaviour
 with a test. Where the issue cites a logged error line, the reproducing test
 starts from that exact input, and the PR summary quotes it.
 
-**A negative test must be able to fail (Issue #3060).** The base-branch red
-run covers bug fixes, but a new guard has no unfixed base to go red against.
-Fleet PRs were sent back for negative tests whose fixture never held the
-forbidden value — a "GH_TOKEN is unset" test whose mint step already returned
-an empty token, a "null rather than carried over" test whose only earlier line
-had no prices either — so each passed with or without its guard. The
-guidelines and the issue prompt's Test Plan step now require a fixture that
-contains the forbidden thing and a run with the guard broken on purpose that
-goes red; a negative test that stays green without its guard is a blocking
-self-review finding.
+**A test must be able to fail on the wrong input (Issues #3060, #3851).** The
+base-branch red run covers bug fixes, but a new guard has no unfixed base to
+go red against. Fleet PRs were sent back for negative tests whose fixture
+never held the forbidden value — a "GH_TOKEN is unset" test whose mint step
+already returned an empty token, a "null rather than carried over" test whose
+only earlier line had no prices either — so each passed with or without its
+guard. The guidelines and the issue prompt's Test Plan step now require a
+fixture that contains the forbidden thing and a run with the guard broken on
+purpose that goes red; a negative test that stays green without its guard is a
+blocking self-review finding. Fleet PRs also added tests pinning which of two
+similar values the code reads — a percentage stated against one of two bases,
+a displayed and a derived figure meant to read the same record — on fixtures
+where the two candidates were equal, so each passed whichever value the code
+read; one stayed green while the code really read the wrong record
+(Issue #3851). The same rule now requires such a fixture to give the
+candidates different values, and the break is to point the code at the sibling
+value, recorded in the Test Plan as, for example,
+`reads base B instead of A → red`; a fixture where the candidates are equal is
+a blocking self-review finding.
 
 **A refusal test must be refused by the rule it names (Issue #3162).** A
 test that only checks *that* an input was refused passes on a refusal from
@@ -1685,6 +1695,21 @@ version or reading and converting the old shape, a test that seeds an
 old-shape entry, updating every doc that names the key, and saying in the PR
 summary which of the two was chosen.
 
+**A cached API response is persisted data, and a standard outranks the spec line
+that breaches it (Issue #3564).** After #3328 landed, a planner-written
+sub-issue in a private fleet repository told the coder that a newly served
+response field's "missing or malformed value throws", and the sub-PR implemented
+and tested exactly that; every installed client's service-worker cache still
+held the previous release's body without the field, so the affected views stayed
+unavailable until a manual reload. `CODING-STANDARDS.md` and the guidelines now
+say a client that reads API responses through a cache that outlives a deployment
+holds persisted data, and that unless the cache key is bumped a newly served
+field's absence is read as unknown (null), never as an error. The planning
+prompt makes a sub-issue that adds, renames or removes a field a client parses
+say which half of the rule applies, and the issue prompt's Project Guidelines
+say a coding standard outranks an implementation detail in the issue: the run
+follows the standard and records the deviation in the PR summary.
+
 **A new test must go red without its change (Issue #3093).** Fleet PRs
 added the regression test a fix or a review asked for, and the test passed
 whether or not the change was there: VibeCoder#3091, #3085 and #3079, and
@@ -1728,6 +1753,20 @@ of another in the same list (`assertPins` throws on one), and for
 whole-file absence checks to stay on `flatWholeFile`. The issue and
 pr_feedback prompts and `CONTRIBUTING.md` point to it from their per-phrase
 check.
+
+**A drift pin for a code-held value is red-checked at its source
+(Issue #3655).** Fleet drift tests typed in a value the code already held, so
+the test, the doc and the literal agreed with each other and stayed green when
+the code moved on: VibeCoder#3478 typed in the Floci tag that
+`container/tools.json` holds, and VibeCoder#3654 typed in the clone flags that
+`buildShallowCloneArgs` returns. Condition 3 of `CODING-STANDARDS.md` §
+Documentation-drift tests already forbade this, but the guidelines asked only
+for the doc-removed red check, which a typed-in value passes. The guidelines'
+new-test rule now states condition 3 and adds the source-mutation red check:
+change each code-held value where it is produced, see the drift test fail,
+restore it, and record one Test Plan line per value. The issue prompt's Test
+Plan step, the pr_feedback rule and step 4 of the shared review brief
+(`prompts/pr_review_brief/prompt.md`) ask for the same.
 
 **Check where you insert (Issue #3194).** Fleet PRs added a new item or
 paragraph at a point that cut existing text off from what it describes.
@@ -2424,7 +2463,7 @@ confirmed finding. A failed invocation, malformed reply or unchanged sentence
 therefore cannot silently clear the block. A later block folded with another
 gate does not get this extra turn. A surviving manual or source-comment finding
 holds an existing PR whether the block is claim-check-only or mixed:
-auto-merge is withheld,
+auto-merge is withheld (and disarmed if already armed),
 `standing-violation` is applied, and the findings are posted with the existing
 worker repair marker so PR feedback can act on them. With no PR, the run fails.
 
@@ -3069,9 +3108,10 @@ documentation-shortfall rule, "do not change the code", and "this turn cannot
 change code" is not a settling reason. The quality gate re-runs over the
 changed tree before completion re-runs. If a later block in the same run
 finalises an existing PR as `summary_incomplete` while such a violation is
-still standing, the worker does not arm auto-merge on that PR and labels it
-`standing-violation` instead, logging a warning; the rest of finalisation is
-unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
+still standing, the worker does not arm auto-merge on that PR, labels it
+`standing-violation`, and disarms (`gh pr merge --disable-auto`) any auto-merge
+an earlier pass had already armed (Issue #4075), logging a warning; the rest of
+finalisation is unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
 skips a PR carrying `standing-violation` and disarms one that is already armed
 (`gh pr merge --disable-auto`), so the sweep never arms a held PR
 (Issue #3517). The CI-fix pass honours the label too: after it pushes a fix

@@ -407,36 +407,32 @@ export function detectGithubApiSuccess(output: string): boolean {
 const RATE_LIMIT_RE =
   /(rate limit|credit|quota|exceeded|too many requests|429|overloaded|\b529\b)/i;
 
-/** Secondary patterns suggesting rate limiting. */
-const RATE_LIMIT_SECONDARY_RE = /(try again|retry|limit)/i;
-
 /**
  * Check if the tail of output indicates rate limiting.
  *
  * Only checks the last N lines to avoid false positives from Claude
- * discussing rate limits in its output.
+ * discussing rate limits in its output. Callers pass the CLI's error surface,
+ * not the agent's transcript: there used to be a secondary
+ * `try again|retry|limit` match, and the agent's own words ("add a retry",
+ * "--limit 30") walked ordinary exit-1 runs down the model ladder
+ * (Issue #4114). It is gone; `isPrimary` is kept for existing callers and is
+ * now always equal to `isRateLimited`.
  *
  * @param output - The output text to scan
  * @param tailLines - Number of lines from the end to check (default: 30)
- * @returns Object with isRateLimited flag and whether it's a primary match
+ * @returns Whether it matched, and the last matching line (unredacted)
  */
 export function detectRateLimit(
   output: string,
   tailLines: number = 30,
-): { isRateLimited: boolean; isPrimary: boolean } {
+): { isRateLimited: boolean; isPrimary: boolean; matchedLine?: string } {
   if (!output.trim()) return { isRateLimited: false, isPrimary: false };
 
-  const lines = output.split("\n");
-  const tail = lines.slice(-tailLines).join("\n");
-
-  if (RATE_LIMIT_RE.test(tail)) {
-    return { isRateLimited: true, isPrimary: true };
-  }
-  if (RATE_LIMIT_SECONDARY_RE.test(tail)) {
-    return { isRateLimited: true, isPrimary: false };
-  }
-
-  return { isRateLimited: false, isPrimary: false };
+  const tail = output.split("\n").slice(-tailLines);
+  const matchedLine = tail.findLast((line) => RATE_LIMIT_RE.test(line));
+  return matchedLine === undefined
+    ? { isRateLimited: false, isPrimary: false }
+    : { isRateLimited: true, isPrimary: true, matchedLine };
 }
 
 // ---------------------------------------------------------------------------
@@ -803,7 +799,15 @@ export function detectModelUnavailable(
  * silently discard continuity if it fired on the wrong failure.
  */
 const INVALID_SESSION_ID_RE =
-  /invalid session id|session id[^\n]{0,40}must be[^\n]{0,20}uuid|--session-id can only be used with|--resume requires a valid session/i;
+  /invalid session id|session id[^\n]{0,40}must be[^\n]{0,20}uuid|--session-id can only be used with|--resume requires a valid session|no conversation found with session id/i;
+
+/**
+ * The CLI aborting because its autocompaction cannot keep the context under
+ * the window (Issue #4147). On a resumed session that is the inherited
+ * transcript's size, not the task's, so a fresh session can still do the
+ * work.
+ */
+const AUTOCOMPACT_THRASH_RE = /autocompact is thrashing/i;
 
 /**
  * Check if the tail of output indicates the CLI rejected the session id.
@@ -825,6 +829,25 @@ export function detectInvalidSessionId(
   const tail = lines.slice(-tailLines).join("\n");
 
   return INVALID_SESSION_ID_RE.test(tail);
+}
+
+/**
+ * Check if the tail of output shows a resumed session cannot carry the run:
+ * the CLI refused or could not find it ({@link detectInvalidSessionId}), or
+ * the inherited transcript thrashed autocompaction (Issue #4147). Either way
+ * no model did the task's work, and a fresh session can.
+ *
+ * @param output - The output text to scan (stdout and stderr)
+ * @param tailLines - Number of lines from the end to check (default: 30)
+ * @returns true if retrying without the session flags is the remedy
+ */
+export function detectResumedSessionUnusable(
+  output: string,
+  tailLines: number = 30,
+): boolean {
+  if (detectInvalidSessionId(output, tailLines)) return true;
+  const tail = output.split("\n").slice(-tailLines).join("\n");
+  return AUTOCOMPACT_THRASH_RE.test(tail);
 }
 
 // ---------------------------------------------------------------------------

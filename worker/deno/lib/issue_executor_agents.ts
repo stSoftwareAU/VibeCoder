@@ -10,8 +10,9 @@
  * executors pinned to the run's sub-agent tier (Sonnet or Haiku).
  *
  * A run whose `issue_reviewer_agents` key is on also carries the two
- * independent reviewers (Issue #2575), pinned to a cheaper tier and effort,
- * read-only, and unable to spawn further sub-agents — see
+ * independent reviewers (Issue #2575), pinned to Opus at every tier (owner
+ * decision 2026-10-22: Opus does the code reviews), read-only, and unable to
+ * spawn further sub-agents — see
  * {@link buildIssueRunAgents}. The executor is only on a run whose split key
  * resolved on. A Haiku-tier run additionally carries a read-only explorer
  * (Issue #3402), whatever the split and reviewer switches resolved to.
@@ -60,21 +61,6 @@ export const HAIKU_ISSUE_EXECUTOR_MODEL = "haiku";
  * for the smaller tier's weaker reasoning on the same task.
  */
 export const HAIKU_ISSUE_EXECUTOR_EFFORT = "high";
-
-/**
- * The Haiku-tier Standards reviewer's model (Issue #3402).
- *
- * `haiku`, against the Sonnet tier's own alias.
- */
-export const HAIKU_STANDARDS_REVIEWER_MODEL = "haiku";
-
-/**
- * The Haiku-tier Standards reviewer's effort (Issue #3402).
- *
- * `medium`, against the Sonnet tier's `low`: the higher effort compensates
- * for the smaller tier's weaker reasoning on the same task.
- */
-export const HAIKU_STANDARDS_REVIEWER_EFFORT = "medium";
 
 /**
  * Guidance appended to every Haiku-tier sub-agent's prompt (Issue #3402).
@@ -180,25 +166,26 @@ export const STANDARDS_REVIEWER_AGENT_NAME = "standards-reviewer";
 /**
  * The Spec reviewer's tier and effort.
  *
- * Sonnet at `medium`, against the advisor's Opus at `high`: without a
- * definition both reviewers inherited the advisor, so two extra contexts on
- * every criteria-bearing run were billed at the most expensive tier. The
- * Spec reviewer keeps `medium` because judging whether each criterion is
- * met is still judgement; its independence comes from its fresh context,
- * not from its tier.
+ * Opus at `medium`, at every executor tier: the owner's decision of
+ * 2026-10-22 is that Opus does the code reviews, Sonnet manages and Haiku
+ * executes. The review is what keeps merged quality high, and a send-back
+ * round costs more than the review. The reviewer's independence still comes
+ * from its fresh context; `medium` rather than the advisor's `high` because
+ * it judges a finished diff rather than planning one.
  */
-export const SPEC_REVIEWER_MODEL = "sonnet";
+export const SPEC_REVIEWER_MODEL = "opus";
 export const SPEC_REVIEWER_EFFORT = "medium";
 
 /**
  * The Standards reviewer's tier and effort.
  *
- * Sonnet at `low`: it checks a diff against one written document, the
- * "simpler task … such as subagents" Anthropic's effort table names `low`
- * for.
+ * Opus at `medium`, at every executor tier, for the same owner decision as
+ * {@link SPEC_REVIEWER_MODEL}. It used to follow the run's sub-agent tier
+ * down to Haiku (Issue #3402); a review is no longer the place the tier
+ * saves money.
  */
-export const STANDARDS_REVIEWER_MODEL = "sonnet";
-export const STANDARDS_REVIEWER_EFFORT = "low";
+export const STANDARDS_REVIEWER_MODEL = "opus";
+export const STANDARDS_REVIEWER_EFFORT = "medium";
 
 /**
  * Read-only tools: a reviewer reads the diff file, the standards and the code
@@ -276,26 +263,17 @@ const STANDARDS_REVIEWER_PROMPT = [
 ].join("\n");
 
 /**
- * The Standards reviewer's prompt on the Haiku tier — the Sonnet prompt plus
- * guidance.
- */
-const HAIKU_STANDARDS_REVIEWER_PROMPT = STANDARDS_REVIEWER_PROMPT + "\n\n" +
-  HAIKU_SUB_AGENT_GUIDANCE;
-
-/**
  * Build the two reviewer definitions (Issue #2575).
  *
- * The Spec reviewer stays on Sonnet at every tier: judging whether each
- * criterion is met is still judgement, which the smaller tier is not asked
- * to carry (Issue #3402). The Standards reviewer, which checks a diff
- * against one written document, moves to the run's resolved tier.
+ * Both reviewers run on Opus whatever the run's sub-agent tier resolved to
+ * (owner decision 2026-10-22): the tier picks the executor's model, never the
+ * reviewers'.
  *
- * @param tier - The run's resolved sub-agent tier.
  * @returns The Spec and Standards reviewer definitions, keyed by name.
  */
-export function buildIssueReviewerAgents(
-  tier: IssueSubAgentTier,
-): Readonly<Record<string, AgentDefinition>> {
+export function buildIssueReviewerAgents(): Readonly<
+  Record<string, AgentDefinition>
+> {
   return {
     [SPEC_REVIEWER_AGENT_NAME]: {
       description:
@@ -311,15 +289,9 @@ export function buildIssueReviewerAgents(
       description:
         "Independent Standards reviewer: checks a finished diff against " +
         "CODING-STANDARDS.md and reports material departures.",
-      prompt: tier === "haiku"
-        ? HAIKU_STANDARDS_REVIEWER_PROMPT
-        : STANDARDS_REVIEWER_PROMPT,
-      model: tier === "haiku"
-        ? HAIKU_STANDARDS_REVIEWER_MODEL
-        : STANDARDS_REVIEWER_MODEL,
-      effort: tier === "haiku"
-        ? HAIKU_STANDARDS_REVIEWER_EFFORT
-        : STANDARDS_REVIEWER_EFFORT,
+      prompt: STANDARDS_REVIEWER_PROMPT,
+      model: STANDARDS_REVIEWER_MODEL,
+      effort: STANDARDS_REVIEWER_EFFORT,
       tools: ISSUE_REVIEWER_TOOLS,
       disallowedTools: ISSUE_REVIEWER_DISALLOWED_TOOLS,
     },
@@ -397,8 +369,9 @@ export interface IssueRunAgentSwitches {
   reviewerAgents: boolean;
   /**
    * The tier `resolveIssueSubAgentTier` resolved for this run (Issue #3402).
-   * Decides the executor's and Standards reviewer's model and effort, and
-   * whether the run carries the read-only explorer.
+   * Decides the executor's model and effort (never the reviewers', which
+   * are Opus at every tier) and whether the run carries the read-only
+   * explorer.
    */
   subAgentTier: IssueSubAgentTier;
 }
@@ -425,9 +398,7 @@ export function buildIssueRunAgents(
     return undefined;
   }
   return {
-    ...(switches.reviewerAgents
-      ? buildIssueReviewerAgents(switches.subAgentTier)
-      : {}),
+    ...(switches.reviewerAgents ? buildIssueReviewerAgents() : {}),
     ...(switches.executorSplit
       ? buildIssueExecutorAgents(switches.subAgentTier)
       : {}),

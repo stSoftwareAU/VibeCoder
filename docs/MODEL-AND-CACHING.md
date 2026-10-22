@@ -741,8 +741,27 @@ Issue #2575) defines them instead, in
 
 | Agent | Model | Effort | Tools | Inputs |
 | --- | --- | --- | --- | --- |
-| `spec-reviewer` | `sonnet` (every tier) | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and the issue body |
-| `standards-reviewer` | `sonnet` by default, `haiku` when `issue_sub_agent_tier` resolves `"haiku"` (Issue #3402) | `low` by default, `medium` on the Haiku tier | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and `CODING-STANDARDS.md` |
+| `spec-reviewer` | `opus` (every tier) | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and the issue body |
+| `standards-reviewer` | `opus` (every tier) | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and `CODING-STANDARDS.md` |
+
+**Role models (owner decision 2026-10-22).** Opus does the code reviews,
+Sonnet manages and Haiku executes. On Codex each role takes the similar
+OpenAI tier: the [Codex routing tiers](#-codex-per-phase-routing) for the
+phases, and the external orchestrator's per-provider role defaults
+(`ROLE_DEFAULTS` in
+[`worker/deno/lib/orchestration/role_config.ts`](../worker/deno/lib/orchestration/role_config.ts))
+for an orchestrated run. An orchestrated role moved to Codex takes Codex's
+default for that role rather than no model.
+
+| Role | Claude | Codex |
+| --- | --- | --- |
+| reviewer (in-run reviewers, orchestrator reviewer, PR reviewer bot) | `opus` | `gpt-6-astra` |
+| manager (`issue` phase advisor) | `sonnet` | `gpt-6.1-sol` |
+| executor (and explorer) | `haiku` | `gpt-6-luna` |
+
+The in-run reviewers are Claude `--agents` definitions, so a native Codex run
+cannot carry them yet (Issue #4109); the Codex column is what that work and
+the orchestrator use.
 
 The reviewers keep what makes them worth running: a fresh context that never
 sees the author's reasoning. The Standards reviewer is also scoped as the
@@ -753,9 +772,12 @@ standards say only review enforces, which is always a `violation` and is
 named on the `clean` line when checked (Issue #3230) — and anything else is
 listed as `optional` and not chased.
 
-**Expected effect.** Two review contexts move from Opus 5.5 at `high` ($4/$20
-per MTok) to Sonnet 5.5 ($2/$10) at `medium` and `low`. No fleet figure is
-claimed; the before/after check produces it.
+**Expected effect.** Two review contexts run on Opus 5.5 ($4/$20 per MTok)
+at `medium`, below the advisor's `high`. They were on Sonnet 5.5 ($2/$10) —
+and the Standards reviewer on Haiku on the Haiku tier — until the owner
+decided on 2026-10-22 that Opus does the code reviews: the review is what
+keeps merged quality high, and a send-back round costs more than the review.
+No fleet figure is claimed; the before/after check produces it.
 
 **Default.** The key is **on by default** since Issue #2812; set it `false` to
 let the reviewers inherit the advisor's model again. It is judged by the
@@ -772,7 +794,7 @@ Every `claude` child, on every phase, runs with Claude Code's deterministic
 sub-agent caps set in its spawn environment by
 [`worker/deno/lib/claude_env.ts`](../worker/deno/lib/claude_env.ts)
 (`CLAUDE_SUBAGENT_CAP_ENV`). The caps are honoured from Claude Code 2.1.217;
-the image pins 2.1.293 in [`container/tools.json`](../container/tools.json).
+the image pins 2.1.306 in [`container/tools.json`](../container/tools.json).
 
 | Variable | Value | CLI default | Effect |
 | --- | --- | --- | --- |
@@ -850,8 +872,8 @@ resolved tier is logged once per run (`Issue sub-agent tier resolved to
 | Agent | Sonnet tier (default) | Haiku tier | Tools | Rides the run when |
 | --- | --- | --- | --- | --- |
 | `executor` | `sonnet` · `medium` | `haiku` · `high` | `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; `Agent` denied | `issue_executor_split` resolves on |
-| `standards-reviewer` | `sonnet` · `low` | `haiku` · `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | `issue_reviewer_agents` is on |
-| `spec-reviewer` | `sonnet` · `medium` | `sonnet` · `medium` (unchanged) | `Read`, `Grep`, `Glob`; `Agent` denied | `issue_reviewer_agents` is on |
+| `standards-reviewer` | `opus` · `medium` | `opus` · `medium` (unchanged — reviewers are Opus at every tier since 2026-10-22) | `Read`, `Grep`, `Glob`; `Agent` denied | `issue_reviewer_agents` is on |
+| `spec-reviewer` | `opus` · `medium` | `opus` · `medium` (unchanged) | `Read`, `Grep`, `Glob`; `Agent` denied | `issue_reviewer_agents` is on |
 | `explorer` | — (never built) | `haiku` · `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | every Haiku-tier run, whatever the split and reviewer switches resolved to |
 
 The `explorer` is new: a read-only lookup sub-agent (where code lives, who
@@ -860,8 +882,8 @@ the advisor can hand off a lookup instead of spending its own context reading
 code. It carries no `Bash` and no `Agent` tool, so it can look things up but
 change nothing and cannot spawn further sub-agents.
 
-Every Haiku-tier sub-agent's prompt — the executor's, the Standards
-reviewer's and the explorer's — ends with the same short guidance
+Every Haiku-tier sub-agent's prompt — the executor's and the explorer's —
+ends with the same short guidance
 (`HAIKU_SUB_AGENT_GUIDANCE` in
 [`worker/deno/lib/issue_executor_agents.ts`](../worker/deno/lib/issue_executor_agents.ts)):
 work to an explicit scope and stop condition, and return findings — naming
@@ -940,7 +962,9 @@ only the `issue`-phase sub-agents in the table above: the `executor` moves to
 `haiku` at `high` effort, the `standards-reviewer` to `haiku` at `medium`, and a
 read-only `explorer` (`haiku` at `medium`) joins the run; the `spec-reviewer`
 stays on `sonnet` at `medium`, and the advisor keeps the phase's own model and
-effort. The tier being measured is Haiku 5.5 (`claude-haiku-5-5`). Opt a whole
+effort. (Since the owner's decision of 2026-10-22 both reviewers run on `opus`
+at `medium` at every tier, so the tier now moves only the executor and the
+explorer.) The tier being measured is Haiku 5.5 (`claude-haiku-5-5`). Opt a whole
 host in with the host-wide `issue_sub_agent_tier` key, or single repositories
 with `repo_config.<repo>.issue_sub_agent_tier`. The repository's value wins over
 the host-wide one in both directions, so a haiku host can also keep one
@@ -1046,14 +1070,20 @@ phases top out at `high`):
 
 | Phase | Codex model | Codex effort |
 |-------|-------------|--------------|
-| `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gpt-5-codex` (top tier) | `high` |
-| `issue` (implementation) | `gpt-5` (base tier) | `high` |
-| `ci_fix`, `pr_feedback`, `quality_fix` | `gpt-5` (base tier) | `medium` |
-| `spelling_fix`, `summarise`, `health` | `gpt-5-mini` (cheap tier) | `low` |
+| `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gpt-6-astra` (top tier) | `high` |
+| `issue` (implementation) | `gpt-6.1-sol` (base tier) | `high` |
+| `ci_fix`, `pr_feedback`, `quality_fix` | `gpt-6.1-sol` (base tier) | `medium` |
+| `spelling_fix`, `summarise`, `health` | `gpt-6-luna` (cheap tier) | `low` |
 
-The model ids are an implementation choice over the current Codex-capable
-line-up, not a fixed contract: a deployment on a different line-up re-pins a tier
-through configuration rather than a code change.
+The three tiers are the Codex counterparts of Claude's (owner decision
+2026-10-22): `gpt-6-astra` ("frontier intelligence for the most demanding
+work" in the account's Codex models catalogue) for Opus, `gpt-6.1-sol` (the
+"latest workhorse model") for Sonnet, and `gpt-6-luna` ("fast and affordable
+model for easier tasks") for Haiku. They replaced `gpt-5-codex` / `gpt-5` /
+`gpt-5-mini`, which the ChatGPT login refused (Issue #4019). The model ids are
+an implementation choice over the current Codex-capable line-up, not a fixed
+contract: a deployment on a different line-up re-pins a tier through
+configuration rather than a code change.
 
 **Precedence** is Claude's chain with Codex-named keys — the six steps
 themselves are stated once, in
@@ -1272,6 +1302,12 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
 
 - Enabled by default; disable via `enable_model_fallback: false` in
   `.config.json`
+- **"Rate-limited" means the provider refused** (Issue #4114). The verdict is
+  the provider's own failure classifier, which reads the CLI's error records
+  (`is_error` result, stderr): category `rate-limit`, or an overloaded (529)
+  upstream. The agent's transcript is never scanned. An exit-1 run whose last
+  turns mention "retry", "limit" or "429" is an ordinary failure, not a step
+  down the ladder. The warning names the matching refusal (redacted).
 - **The ladder is the active provider's, not always Claude's** (Issue #365).
   The current model is resolved through the running provider's own chain, and
   the cheaper tier through that provider's ladder. Only Claude defines one
@@ -1292,6 +1328,16 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
   base tier. The substitution is **per-run and config keeps pointing at Fable**,
   so once Fable returns the next run requests it again with no manual change
   (self-heal) — there is no persistent "Fable is down" circuit-breaker.
+- **A refused model with no cheaper rung moves provider** (Issue #4034).
+  When the provider refuses the model and has no ladder, or is already on its
+  cheapest rung, the same invocation is retried on the next provider in
+  `agent_provider_fallback`. A ChatGPT login that does not offer a model is
+  the usual case: Codex returns HTTP 400 "not supported when using Codex with
+  a ChatGPT account" (Issue #4019). The fallback resolves its own model for
+  the phase and starts a fresh session. It is capped at one switch per
+  invocation and logged as `[provider-fallback] <from> refused model … retrying
+  on <to>`. With the list empty (pinned, the default) the run still gives up
+  with `no cheaper fallback available`, as before.
 - Fallback transitions are recorded in credit logs as `fallbackFrom`: `runClaudeWithRetry` threads the pre-fallback model into the
   re-invocation via the `fallbackFrom` option, so the post-fallback
   `logInvocation()` records the original→cheaper transition and the

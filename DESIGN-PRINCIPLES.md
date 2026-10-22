@@ -13,6 +13,33 @@ canonical operator manual under [`docs/`](docs/) for the full detail.
 
 ## Design Principles
 
+### An assigned issue is completed, never handed back
+
+**The Vibe Coder exists to finish work, not to create work for humans.** The
+owner assigns a batch of issues and checks in a day or so later expecting every
+one of them done (owner, 23 October 2026). Applying `work-on` is the approval
+to complete that issue; nothing more from a person is needed or wanted.
+
+- **Only "done" is success.** A merged PR that meets every acceptance criterion
+  is the only good outcome. Handing an issue back to a human (`needs-human`,
+  "analysis-only" on an implementation issue, a request for a decision) or
+  delivering only the easy parts is a **failure of the Vibe Coder**. It is
+  counted and fixed as a defect, never treated as a resolution.
+- **No partial PRs, no follow-up tickets.** A PR is raised only when every
+  criterion is met. A run that has not finished keeps working; if it runs out
+  of time, it may push a **draft** PR marked `Part of #N` and the worker
+  carries on with the same issue automatically until it is complete. It never
+  files a new issue for the remainder: a new issue needs a human to read and
+  approve it, and the original issue was already approved. "You ask for a
+  hamburger, you don't get two buns and a follow-up ticket for the patty."
+- **A crash is not an answer.** A run that failed, made no model turn, or
+  stopped early is retried on the normal ladder. It is never read as "nothing
+  to do".
+- **`failed` is honest, `needs-human` is the last resort.** When automated
+  recovery is genuinely exhausted, the issue is marked `failed` with the
+  evidence, so the failure is visible and countable. It is never relabelled as
+  a hand-off, an analysis, or a partial success.
+
 ### Fully unattended operation and self-healing
 
 **VibeCoder must run fully automatically on unattended machines and self-heal
@@ -1689,7 +1716,7 @@ guides:
 **CI-gate configuration check (linter + compile).** For language-targeted runs
 (bucket != `general`), the template inspects `.github/workflows/*.yml` for the
 standard linter invocation (Clippy, ESLint, Checkstyle, htmlhint, actionlint,
-cfn-lint, tflint) AND — for the four buckets where it is meaningful (`rust`,
+cfn-lint + Checkov, tflint) AND — for the four buckets where it is meaningful (`rust`,
 `typescript`, `react`, `java`) — the standard compile/syntax gate
 (`cargo
 check`/`cargo build`, `deno check`/`tsc --noEmit`,

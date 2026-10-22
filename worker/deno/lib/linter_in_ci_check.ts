@@ -36,7 +36,8 @@
  *   - `html`               — `htmlhint` or `html-validate` invoked in CI
  *                            (no compile gate).
  *   - `github-actions`     — `actionlint` invoked in CI (no compile gate).
- *   - `aws-cloudformation` — `cfn-lint` invoked in CI (no compile gate).
+ *   - `aws-cloudformation` — `cfn-lint` and Checkov both invoked in CI
+ *                            (no compile gate).
  *   - `terraform`          — `tflint` invoked OR (`terraform validate`
  *     AND `terraform fmt -check`) both invoked in CI (no compile gate).
  */
@@ -653,24 +654,39 @@ function checkCfnLint(ctx: CheckContext): LinterCheckResult {
       workflowsLoaded: false,
     };
   }
-  if (anyWorkflowMatches(ctx.workflows, /cfn-lint/i)) {
+  const hasCfnLint = anyWorkflowMatches(ctx.workflows, /cfn-lint/i);
+  const hasCheckov = anyWorkflowMatches(ctx.workflows, /checkov/i);
+  if (hasCfnLint && hasCheckov) {
     return {
       configured: true,
       linter,
       details:
-        "`cfn-lint` is invoked by a GitHub Actions workflow. No action " +
-        "required.",
+        "`cfn-lint` and `Checkov` are both invoked by a GitHub Actions " +
+        "workflow. No action required.",
     };
+  }
+  const missing: string[] = [];
+  if (!hasCfnLint) missing.push("`cfn-lint`");
+  if (!hasCheckov) missing.push("`Checkov`");
+  let details = "No GitHub Actions workflow invokes " + missing.join(" or ") +
+    ".";
+  if (!hasCfnLint) {
+    details += " `cfn-lint` is the standard linter for AWS CloudFormation " +
+      "templates — it catches schema errors, invalid intrinsic functions, " +
+      "and resource-property mistakes before deployment. Add a CI step such " +
+      "as `cfn-lint templates/**/*.yaml` so template regressions fail the " +
+      "build.";
+  }
+  if (!hasCheckov) {
+    details += " `Checkov` is a policy-as-code scanner that catches insecure " +
+      "or misconfigured CloudFormation resources. Add a CI step such as " +
+      "`checkov -d . --framework cloudformation` so policy violations fail " +
+      "the build.";
   }
   return {
     configured: false,
     linter,
-    details:
-      "No GitHub Actions workflow invokes `cfn-lint`. `cfn-lint` is the " +
-      "standard linter for AWS CloudFormation templates — it catches " +
-      "schema errors, invalid intrinsic functions, and resource-property " +
-      "mistakes before deployment. Add a CI step such as `cfn-lint " +
-      "templates/**/*.yaml` so template regressions fail the build.",
+    details,
   };
 }
 

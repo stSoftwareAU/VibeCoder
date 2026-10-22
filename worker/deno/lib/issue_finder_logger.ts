@@ -546,6 +546,32 @@ export function claimRefusalReason(reason: string): string | null {
 }
 
 /**
+ * Claim refusals that mean another worker holds the issue or it is already
+ * done — the expected path, logged at INFO (Issue #4063). Everything else
+ * (`not_assignable`, `forbidden`, `verification_failed`, free text, ...) is
+ * degraded and stays at WARNING.
+ */
+const ROUTINE_CLAIM_REFUSALS: ReadonlySet<string> = new Set([
+  "already_assigned",
+  "already_closed",
+  "race_lost",
+  "heartbeat_active",
+  "recent_claim",
+  "fleet_pr_exists",
+]);
+
+/**
+ * Whether a failed run's reason is a routine claim refusal (Issue #4063).
+ *
+ * @param reason - A failed run's `reason`.
+ * @returns True only for the expected refusals in {@link ROUTINE_CLAIM_REFUSALS}.
+ */
+export function isRoutineClaimRefusal(reason: string): boolean {
+  const key = claimRefusalReason(reason);
+  return key !== null && ROUTINE_CLAIM_REFUSALS.has(key);
+}
+
+/**
  * Check whether issue finder diagnostics are enabled.
  *
  * Reads from the ISSUE_FINDER_DEBUG environment variable.

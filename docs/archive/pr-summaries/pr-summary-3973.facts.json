@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 657,
+        "outcome": "cfn-lint absent → finding names cfn-lint",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — only Checkov invoked in CI is not configured",
+        "flipWentRed": "M1: hasCfnLint forced to true; the only-Checkov and neither tests went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 657,
+        "outcome": "cfn-lint present → finding names Checkov",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — only cfn-lint invoked in CI is not configured",
+        "flipWentRed": "hasCfnLint forced to false; the only-cfn-lint, both-invoked, mixed-case and #2177 tests went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 658,
+        "outcome": "Checkov absent → finding names Checkov",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — only cfn-lint invoked in CI is not configured",
+        "flipWentRed": "M2: hasCheckov forced to true; the only-cfn-lint and neither tests went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 658,
+        "outcome": "Checkov present → finding names cfn-lint",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — only Checkov invoked in CI is not configured",
+        "flipWentRed": "hasCheckov forced to false; the only-Checkov, both-invoked, mixed-case and #2177 tests went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 659,
+        "outcome": "both present, operand hasCheckov",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — only cfn-lint invoked in CI is not configured",
+        "flipWentRed": "M3: if (hasCfnLint) without the hasCheckov operand; the only-cfn-lint test went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 659,
+        "outcome": "both present, operand hasCfnLint",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — only Checkov invoked in CI is not configured",
+        "flipWentRed": "M4: if (hasCheckov) without the hasCfnLint operand; the only-Checkov test went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 659,
+        "outcome": "both present → configured",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — cfn-lint and Checkov invoked in CI is configured",
+        "flipWentRed": "M8: checkov step removed from the 463 fixture; the test went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 669,
+        "outcome": "cfn-lint missing pushed to list",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — neither cfn-lint nor Checkov invoked in CI is not configured",
+        "flipWentRed": "M6: line deleted; the only-Checkov and neither tests went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 670,
+        "outcome": "Checkov missing pushed to list",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — neither cfn-lint nor Checkov invoked in CI is not configured",
+        "flipWentRed": "M7: line deleted; the only-cfn-lint and neither tests went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 673,
+        "outcome": "cfn-lint advice added",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — only Checkov invoked in CI is not configured",
+        "flipWentRed": "A: if (false) at this line; the only-Checkov test went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 673,
+        "outcome": "cfn-lint advice omitted",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — only cfn-lint invoked in CI is not configured",
+        "flipWentRed": "B: if (true) at this line; the only-cfn-lint test went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 680,
+        "outcome": "Checkov advice added",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — only cfn-lint invoked in CI is not configured",
+        "flipWentRed": "C: if (false) at this line; the only-cfn-lint test went red"
+      },
+      {
+        "path": "worker/deno/lib/linter_in_ci_check.ts",
+        "line": 680,
+        "outcome": "Checkov advice omitted",
+        "test": "worker/deno/tests/linter_in_ci_check_test.ts",
+        "testName": "aws-cloudformation — only Checkov invoked in CI is not configured",
+        "flipWentRed": "D: if (true) at this line; the only-Checkov test went red"
+      }
+    ]
+  }
+}

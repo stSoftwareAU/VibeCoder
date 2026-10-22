@@ -121,6 +121,23 @@ Deno.test("redactSecrets - provider keys in the tail of a huge input are still m
   assert(!out.includes(google), "a Google key in the tail must be masked");
 });
 
+Deno.test("redactSecrets - a hostile run of escaped AWS key pairs is linear (aws-secret-access-key escape lookbehind, Issue #3857)", () => {
+  // Every id is a candidate anchor. The escape letter `n` is itself a
+  // secret-class character, so `n` plus the run must stay one short of 40:
+  // `n` + 38 `a`s is 39 characters, so no secret matches.
+  const unit = "AKIAIOSFODNN7EXAMPLE\\n" + "a".repeat(38) + "!";
+  const hostile = unit.repeat(Math.floor(HOSTILE_CHARS / unit.length));
+  const expected = hostile.replaceAll(
+    "AKIAIOSFODNN7EXAMPLE",
+    REDACTION_PLACEHOLDER,
+  );
+  assertEquals(
+    redactSecrets(hostile),
+    expected,
+    "each id must be masked and the 38-character runs must survive",
+  );
+});
+
 Deno.test("redactSecrets - URL credentials are still masked after the anchoring fix (Issue #3942)", () => {
   const cases = [
     "https://nigel:ghp_secretvalue@github.com/org/repo.git",

@@ -137,6 +137,13 @@ failure makes that provider unavailable to subsequent work; quota failures are
 rechecked at the stated reset, or after a five-minute cooldown when no reset was
 reported. If no safe candidate remains, the host waits.
 
+While automatic routing is active, auxiliary configuration reloads preserve
+the router's active provider between refreshes. The loaded `agentProvider`
+still reports the file's preference to callers; it does not overwrite the
+process-wide selection used to invoke work. With automatic routing inactive,
+reloads retain the historical pinned-provider behaviour. A per-run health-gate
+override continues to take precedence in either mode.
+
 Provision Codex's persistent subscription home using
 [Codex subscription authentication](CODEX-SUBSCRIPTION-AUTH.md). The router
 reads the same explicit `CODEX_HOME` that the child receives and ignores parent
@@ -167,7 +174,11 @@ Claude preferred provider it fires only once **every** Claude credential in
 the pool is exhausted on its five-hour window or its weekly limit — one spent
 subscription rotates to the next — and the run switches back as soon as one
 has budget again (Issue #2637). The weekly pace projection never switches
-provider: it drops the backlog tiers only. It is
+provider: it drops the backlog tiers only. A `model-unavailable` refusal is
+also handled inside the run: when the provider has no cheaper model, the
+invocation that was refused is retried on the next alternative, so a phase whose
+model the provider will not serve does not give up while the health gate
+passes on a different model (Issue #4034). It is
 not restricted to fixed-price subscriptions — see [Subscription-only billing
 policy](#subscription-only-billing-policy) for what it logs when the
 alternative is metered. Neither automatic mechanism is turned on for the

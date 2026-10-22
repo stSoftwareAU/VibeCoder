@@ -7,7 +7,7 @@
  * per scan, a failed probe warns once and defers nothing (fail-open), and
  * the default filer seam defers below the floor and passes above it.
  *
- * The park WARNING line's emission needs a scan that actually parks a
+ * Emitting the park line (INFO since Issue #4063) needs a scan that actually parks a
  * repository, and the finder's `gh` runner has no factory-wide seam (the
  * seams are deliberately scoped, Issue #1050) — that path is covered by
  * `find_oldest_issue_quota_gate_test.ts` (the parked-repo flow) and
@@ -91,6 +91,36 @@ Deno.test(
           [],
           "a healthy reading parks nothing and logs nothing",
         );
+      } finally {
+        cleanup();
+      }
+    });
+  },
+);
+
+Deno.test(
+  "production deps - a reading below the idle floor logs the gate at INFO, never WARNING (Issue #4063)",
+  async () => {
+    await withWorkDir(async (workDir) => {
+      const lines: string[] = [];
+      const { deps, cleanup } = await createProductionRunCoreDeps({
+        repoDir: workDir,
+        workDir,
+        githubUser: "worker-bot",
+        logger: createLogger({ write: (line: string) => lines.push(line) }),
+        config: gateConfig(workDir),
+        graphqlQuotaProbe: () =>
+          Promise.resolve({ ok: true, value: reading(400) }),
+      });
+      try {
+        const result = await deps.findNextIssue();
+        assertEquals(result.ok, true);
+        const gateLines = lines.filter((l) =>
+          l.includes("polling-quota-gate:")
+        );
+        assertEquals(gateLines.length, 1, JSON.stringify(lines));
+        // Quota exhaustion is normal: the gate parks quietly at INFO.
+        assert(gateLines[0]!.includes("] INFO: "), gateLines[0]);
       } finally {
         cleanup();
       }
