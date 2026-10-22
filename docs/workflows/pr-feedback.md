@@ -545,9 +545,10 @@ Six checks run, each only when it applies:
    command continued onto the next line with a trailing `\` or `/`.
    An issue number (`#3143`) is not a count. Each count is decided on its own
    (Issue #3740): a partial figure — a per-round addition such as "3 tests
-   added to `a_test.ts`", "2 to `b_test.ts`", "+N tests", or "Added to
-   `x_test.ts` (N tests" without "now has" — is not compared with that file's
-   whole count, while a whole-file count in the same unit ("the new
+   added to `a_test.ts`", "Added N tests to `a_test.ts`", "2 to `b_test.ts`",
+   "+N tests", or "Added to `x_test.ts` (N tests" without "now has" — is not
+   compared with that file's whole count (Issue #3983 added the "Added N
+   tests to" form), while a whole-file count in the same unit ("the new
    `b_test.ts` (N tests", "`b_test.ts` (N tests" with no "added" or "+" before
    it, "now has N", "the file now has N") is. Partial markers are read only
    before their figure, regardless of the gap shape: "Extended `a_test.ts`
