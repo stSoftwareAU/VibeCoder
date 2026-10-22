@@ -418,9 +418,9 @@ export interface AgentInvocationRequest {
    * run with neither the split guard nor RTK's hook (the split is on by
    * default for `issue` runs; `issue_executor_split: false` turns it off) —
    * emits no argument, and the argv is the one every host spawned before.
-   * Claude-only: DeepSeek shares
-   * the CLI but its endpoint implements no hooks, so that descriptor strips
-   * the field, and no other provider takes the flag.
+   * Codex translates the command hooks into per-spawn TOML overrides.
+   * DeepSeek shares the Claude CLI but its endpoint implements no hooks,
+   * so that descriptor strips the field; Gemini does not consume it.
    */
   settingsJson?: string;
   /**
@@ -457,6 +457,8 @@ export interface AgentProviderDescriptor {
   install: AgentProviderInstall;
   /** How the prompt reaches the CLI (Issue #4385). */
   promptTransport: PromptTransport;
+  /** Whether worker-authored PreToolUse command hooks can be installed per spawn. */
+  supportsPreToolUseHooks?: boolean;
   /**
    * The model this provider routes `phase` to (Issue #362).
    *
@@ -689,6 +691,7 @@ function buildClaudeCliArgs(
  * the descriptor is a description of Claude rather than a second copy of it.
  */
 const CLAUDE_PROVIDER: AgentProviderDescriptor = {
+  supportsPreToolUseHooks: true,
   id: CLAUDE_PROVIDER_ID,
   displayName: "Claude Code",
   binary: "claude",
@@ -795,6 +798,7 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
  * `codex_env.ts`, `codex_auth.ts`), so no Codex CLI knowledge lives here.
  */
 const CODEX_PROVIDER: AgentProviderDescriptor = {
+  supportsPreToolUseHooks: true,
   id: CODEX_PROVIDER_ID,
   displayName: "Codex CLI",
   binary: "codex",
@@ -897,6 +901,7 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     return buildCodexArgs({
       prompt: request.prompt,
       orchestrationRole: request.orchestrationRole,
+      settingsJson: request.settingsJson,
       systemPrompt: request.systemPrompt,
       disallowedTools: request.disallowedTools,
       model: routing.model,
