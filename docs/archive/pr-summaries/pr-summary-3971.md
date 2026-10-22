@@ -100,7 +100,7 @@ CloudFormation runner does not read (see Spec).
 - **clean** — The independent standards reviewer found no material departure from `CODING-STANDARDS.md` in the diff after the findings below were fixed.
   - Missing negative fixtures for no-SARIF and no-path-filter: added the two checks and tests.
   - A raw-text grep test: deleted.
-  - A private copy of `joinContinuations`: kept on purpose and explained in its doc comment, because the owner's trim-and-space join hides a mid-word split. There is no production change.
+  - A private copy of `joinContinuations`: kept on purpose and explained in its doc comment, because the owner's trim-and-space join hides a mid-word split. The branch adds no change to `joinContinuations` itself.
     - A negative test was added: an added `--skip-path` is reported (red when the ban is lifted).
 
 ## Test Plan

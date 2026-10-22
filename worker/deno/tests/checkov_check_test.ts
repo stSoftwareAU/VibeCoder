@@ -231,6 +231,32 @@ Deno.test("runCheckovCheck - the PATH route runs with no CKV_, BC_ or PRISMA_ va
   assert(!homeStillThere, "the private HOME must be removed after the scan");
 });
 
+Deno.test("runCheckovCheck - the private HOME is removed even when the scan left files in it", async () => {
+  let home: string | undefined;
+  // Checkov writes caches under HOME; the cleanup must remove a non-empty tree.
+  const spawn: SpawnFn = async (_binary, _args, _cwd, _deadlineMs, env) => {
+    home = env?.HOME;
+    assert(home !== undefined, "HOME must be set for the child");
+    await Deno.mkdir(`${home}/.checkov/cache`, { recursive: true });
+    await Deno.writeTextFile(`${home}/.checkov/cache/entry`, "cached");
+    return { exitCode: 0, stdout: await report("clean"), stderr: "" };
+  };
+  const result = await runCheckovCheck("/repo", {
+    probe: fakeProbe({ [PIN_KEY]: CHECKOV_IMAGE_TAG }),
+    spawn,
+  });
+  assertEquals(result.status, "PASSED");
+  assert(home !== undefined, "the spawner must have run");
+  let homeStillThere = true;
+  try {
+    await Deno.stat(home);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    homeStillThere = false;
+  }
+  assert(!homeStillThere, "a non-empty private HOME must still be removed");
+});
+
 Deno.test("spawnWithDeadline - a given env is the child's whole environment, and none inherits", async () => {
   const name = "CKV_SPAWN_TEST_ONLY";
   const before = Deno.env.get(name);

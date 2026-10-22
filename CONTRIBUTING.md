@@ -192,7 +192,8 @@ authoritative. It tries two routes, in order:
   none of your environment.
 - **Have a pinned route or it skips, loudly.** With neither route usable the
   stage reports `SKIPPED` and names what is missing; `--strict` turns that into
-  a failure. A scan over its deadline is `FAILED`. The fleet worker image has no
+  a failure. A `.checkov.yaml` or `.checkov.yml` in the scanned directory is
+  `FAILED` before any route is tried, so it never reads as `SKIPPED`. A scan over its deadline is `FAILED`. The fleet worker image has no
   pip and no container runtime, so fleet runs show `checkov` as `SKIPPED`; that
   is expected, unlike semgrep.
 
