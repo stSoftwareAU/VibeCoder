@@ -73,6 +73,7 @@ import type { AgentProviderSelector } from "./agent_provider.ts";
 import { resolveOrchestrationSettings } from "./orchestration/role_config.ts";
 import { runOrchestratedIssueRun } from "./orchestration/issue_run_gate.ts";
 import {
+  resolveAgentProvider,
   resolveInvocationAgentProvider,
   selectAgentProvider,
 } from "./agent_provider.ts";
@@ -1264,7 +1265,9 @@ async function executeClaudePhaseBody(
   const issueRunPlan = externalOrchestration
     ? undefined
     : planIssueRunProvider({
-      provider: selectAgentProvider(invocationAgentProvider),
+      provider: typeof invocationAgentProvider === "string"
+        ? resolveAgentProvider(invocationAgentProvider)
+        : invocationAgentProvider ?? selectAgentProvider(),
       executorSplit: requestedExecutorSplit,
       reviewerAgents: options.issueReviewerAgents === true,
       subAgentTier: issueSubAgentTier,

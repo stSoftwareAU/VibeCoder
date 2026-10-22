@@ -243,9 +243,10 @@ export function warnDeepSeekEffortUnsupported(
  * Report sub-agent definitions DeepSeek's endpoint cannot carry (Issue #2342).
  *
  * The sub-agent definitions name Anthropic tier aliases the endpoint cannot
- * resolve, so the descriptor strips them from the argv. The run does not then
- * carry on in single-model routing: the runner refuses a native run whose argv
- * lost its `--agents` before spawn (Issue #4010). Stated every time rather than
+ * resolve, so the descriptor strips them from the argv. An issue run that wants
+ * them is rerouted to Claude or started without them before spawn (Issue #4109),
+ * with the runner's refusal of a native run that lost `--agents` as a backstop
+ * (Issue #4010). Stated every time rather than
  * once per phase — each invocation that asked for the split must say why it
  * cannot have it.
  *
@@ -256,8 +257,9 @@ export function warnDeepSeekAgentsUnsupported(phase?: string): void {
   console.warn(
     `[deepseek] Sub-agent definitions (--agents) were requested for ${where} ` +
       `but DeepSeek's Anthropic-compatible endpoint cannot resolve the ` +
-      `Anthropic model tiers they name, so they are stripped from the argv ` +
-      `and a native run carrying them is refused before spawn (Issue #4010). ` +
+      `Anthropic model tiers they name, so they are stripped from the argv. ` +
+      `An issue run that wants them is rerouted to Claude or started without ` +
+      `them before spawn (Issue #4109), with the #4010 refusal as a backstop. ` +
       `Run this phase under the claude provider for tiered sub-agents, or ` +
       `turn the definitions off (issue_executor_split: false, ` +
       `issue_reviewer_agents: false, issue_sub_agent_tier: "sonnet").`,

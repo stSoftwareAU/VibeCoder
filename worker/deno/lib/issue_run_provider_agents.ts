@@ -1,16 +1,7 @@
 /**
- * Plan the provider and sub-agent switches for one issue run (Issue #4109).
+ * Issue #4109: settle an issue run's provider and sub-agent switches before spawn.
  *
- * `buildIssueRunAgents` emits `--agents` definitions for the issue run, but
- * only the Claude CLI accepts that flag. A run that asks a non-Claude provider
- * for sub-agents would spawn a CLI that drops the flag and then stall until
- * the Issue #4010 guard refuses it. This planner decides before spawn: keep
- * the run as configured when its provider carries the agents, reroute to
- * Claude when Claude is enabled and installed, otherwise strip the sub-agent
- * switches so the run starts without them. The #4010 guard stays as a
- * backstop.
- *
- * Australian English spelling throughout (behaviour, organisation, licence).
+ * Only the Claude CLI accepts `--agents`; the Issue #4010 guard stays as a backstop.
  */
 
 import {
@@ -65,12 +56,7 @@ export interface IssueRunProviderPlan {
   outcome: IssueRunProviderOutcome;
 }
 
-/**
- * Whether Claude is both enabled for this deployment and installed in the image.
- *
- * @param selection - Enabled-set and install inputs.
- * @returns True when a run can be rerouted to Claude.
- */
+/** Whether Claude is both enabled for this deployment and installed in the image. */
 function claudeUsable(selection: EnabledAgentProviderSelection): boolean {
   const enabled = resolveEnabledAgentProviderIds(selection).includes(
     CLAUDE_PROVIDER_ID,
@@ -80,12 +66,7 @@ function claudeUsable(selection: EnabledAgentProviderSelection): boolean {
     (installed === undefined || installed.includes(CLAUDE_PROVIDER_ID));
 }
 
-/**
- * Decide the provider and sub-agent switches for one issue run before spawn.
- *
- * @param input - The run's provider, switches and tier, with the selection.
- * @returns The provider and switches the run spawns with.
- */
+/** Decide the provider and sub-agent switches for one issue run before spawn. */
 export function planIssueRunProvider(
   input: IssueRunProviderPlanInput,
 ): IssueRunProviderPlan {
@@ -103,7 +84,10 @@ export function planIssueRunProvider(
     subAgentTier,
   }) !== undefined;
   if (!agentsWanted) return unchanged;
-  if (probeDescriptorInvocationCapabilities(provider).carriesSubAgents) {
+  if (
+    probeDescriptorInvocationCapabilities(provider, { quiet: true })
+      .carriesSubAgents
+  ) {
     return unchanged;
   }
 
