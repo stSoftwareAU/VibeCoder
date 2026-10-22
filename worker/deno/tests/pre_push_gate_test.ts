@@ -868,3 +868,128 @@ Deno.test("runPrePushGate: a failing cspell blocks the push", async () => {
     await Deno.remove(root, { recursive: true });
   }
 });
+
+// ---- Floci CloudFormation deploy test (Issue #3727) ----------------------------
+
+const FLOCI_CHECK = "floci cloudformation";
+const FLOCI_COMMAND = "bash infra/cloudformation/test-floci.sh";
+
+Deno.test("planChangedFileChecks: a changed template plans the Floci deploy test once", () => {
+  const result = planChangedFileChecks(
+    [
+      "infra/cloudformation/linux-verification-host.yaml",
+      "infra/cloudformation/other.yaml",
+    ],
+    [
+      "infra/cloudformation/test-floci.sh",
+      "infra/cloudformation/linux-verification-host.yaml",
+    ],
+    { repoRoot: "/repo", markdownlintBinary: null },
+  );
+  assert(result.ok);
+  assertEquals(
+    result.value.filter((c) => c.label === FLOCI_CHECK),
+    [{ label: FLOCI_CHECK, cwd: "/repo", command: FLOCI_COMMAND }],
+  );
+});
+
+Deno.test("planChangedFileChecks: a change to test-floci.sh itself plans the Floci deploy test", () => {
+  const result = planChangedFileChecks(
+    ["infra/cloudformation/test-floci.sh"],
+    ["infra/cloudformation/test-floci.sh"],
+    { repoRoot: "/repo", markdownlintBinary: null },
+  );
+  assert(result.ok);
+  assertEquals(
+    result.value.filter((c) => c.label === FLOCI_CHECK),
+    [{ label: FLOCI_CHECK, cwd: "/repo", command: FLOCI_COMMAND }],
+  );
+});
+
+Deno.test("planChangedFileChecks: no Floci deploy test outside infra/cloudformation/", () => {
+  const result = planChangedFileChecks(
+    [
+      "infra/host/install-deno.sh",
+      "infra/cloudformation-old/x.yaml",
+      "docs/a.md",
+    ],
+    ["infra/cloudformation/test-floci.sh", "docs/a.md"],
+    { repoRoot: "/repo", markdownlintBinary: null },
+  );
+  assert(result.ok);
+  assertEquals(result.value.filter((c) => c.label === FLOCI_CHECK), []);
+});
+
+Deno.test("planChangedFileChecks: no Floci deploy test when the repo does not track the script", () => {
+  const result = planChangedFileChecks(
+    ["infra/cloudformation/linux-verification-host.yaml"],
+    ["infra/cloudformation/linux-verification-host.yaml"],
+    { repoRoot: "/repo", markdownlintBinary: null },
+  );
+  assert(result.ok);
+  assertEquals(result.value.filter((c) => c.label === FLOCI_CHECK), []);
+});
+
+/**
+ * Like {@link makeRepoWithDocCommit}, but the one local commit adds the Floci
+ * script and a CloudFormation template under `infra/cloudformation/`.
+ */
+async function makeRepoWithFlociCommit(): Promise<
+  { root: string; clone: string; stdin: string }
+> {
+  const root = await Deno.makeTempDir({ prefix: "vibe-pp-floci-" });
+  const remote = `${root}/remote.git`;
+  const clone = `${root}/clone`;
+  await git(root, "init", "-q", "--bare", "-b", "main", remote);
+  await git(root, "clone", "-q", remote, clone);
+  await Deno.writeTextFile(`${clone}/deno.json`, "{}\n");
+  await git(clone, "add", ".");
+  await git(clone, "commit", "-qm", "init");
+  await git(clone, "push", "-q", "origin", "HEAD:main");
+  await Deno.mkdir(`${clone}/infra/cloudformation`, { recursive: true });
+  await Deno.writeTextFile(
+    `${clone}/infra/cloudformation/test-floci.sh`,
+    "#!/usr/bin/env bash\n",
+  );
+  await Deno.writeTextFile(
+    `${clone}/infra/cloudformation/t.yaml`,
+    "AWSTemplateFormatVersion: '2010-09-09'\n",
+  );
+  await git(clone, "add", ".");
+  await git(clone, "commit", "-qm", "floci");
+  const sha = await git(clone, "rev-parse", "HEAD");
+  return {
+    root,
+    clone,
+    stdin: `refs/heads/main ${sha} refs/heads/main ${"0".repeat(40)}\n`,
+  };
+}
+
+Deno.test("runPrePushGate: a failing Floci deploy test blocks the push", async () => {
+  const { root, clone, stdin } = await makeRepoWithFlociCommit();
+  try {
+    const seen: string[] = [];
+    const run = (fail: boolean) =>
+      runPrePushGate({
+        cwd: clone,
+        stdin,
+        preFlightCommands: [],
+        runner: recordingRunner(
+          (c) => fail && c.includes("test-floci.sh"),
+          seen,
+        ),
+      });
+
+    const blocked = await run(true);
+    assert(!blocked.ok);
+    assertInstanceOf(blocked.error, PreFlightGateError);
+    assertEquals(blocked.error.reason, "non-zero-exit");
+    assertEquals(blocked.error.command, FLOCI_COMMAND);
+
+    const accepted = await run(false);
+    assert(accepted.ok);
+    assert(accepted.value.checksRun.includes(FLOCI_COMMAND));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

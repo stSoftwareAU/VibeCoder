@@ -284,7 +284,7 @@ Deno.test({
     const { fakeClock } = await import("./support/fake_clock.ts");
     const { runClaudeWithRetry } = await import("../lib/claude_runner.ts");
     await withAgentStub(
-      `printf '%s\\n' '{"type":"result","result":"API rate limit exceeded - too many requests","usage":{"input_tokens":100,"output_tokens":20}}'\nexit 1`,
+      `printf '%s\\n' '{"type":"result","is_error":true,"result":"API rate limit exceeded - too many requests","usage":{"input_tokens":100,"output_tokens":20}}'\nexit 1`,
       async (stub) => {
         const ledgerPath = `${stub.dir}/ledger.jsonl`;
         await withLifecycleRecording({

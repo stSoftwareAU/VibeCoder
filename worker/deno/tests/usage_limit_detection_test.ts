@@ -84,9 +84,8 @@ Deno.test("usage limit - parses an epoch suffix, an am/pm clock, and a 24h clock
 Deno.test("usage limit - the CLI's 'session limit' line is a usage limit, not the rate-limit ladder (Issue #1665)", () => {
   const line = "You've hit your session limit · resets 1:50pm (UTC)";
   assertEquals(detectUsageLimit(line), true);
-  // The short-backoff ladder must not be the branch taken: `/limit/` still
-  // matches as a SECONDARY hint, but never as a primary rate limit.
-  assertEquals(detectRateLimit(line).isPrimary, false);
+  // The short-backoff ladder must not be the branch taken.
+  assertEquals(detectRateLimit(line).isRateLimited, false);
 });
 
 Deno.test("usage limit - a bare clock with an explicit zone resolves in that zone (Issue #1665)", () => {
