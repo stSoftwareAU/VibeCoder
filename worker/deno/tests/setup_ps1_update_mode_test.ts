@@ -36,7 +36,9 @@ if (PWSH === null) {
 
 /**
  * A stub `deno`. It logs `subcommand<TAB>argv` for each setup CLI call and
- * creates the config file on the `config` step when it is absent.
+ * creates the config file on the `config` step when it is absent. On the
+ * `update-mode` step it prints `$STUB_UPDATE_MODE_SAY` and exits with
+ * `$STUB_UPDATE_MODE_EXIT`, when set.
  */
 const STUB_DENO = `#!/bin/sh
 sub=""
@@ -48,6 +50,10 @@ done
 printf '%s\\t%s\\n' "$sub" "$*" >> "$VIBE_TEST_LOG"
 if [ "$sub" = config ] && [ ! -f "$CONFIG_FILE" ]; then
   printf '{}\\n' > "$CONFIG_FILE"
+fi
+if [ "$sub" = update-mode ]; then
+  if [ -n "$STUB_UPDATE_MODE_SAY" ]; then printf '%s\\n' "$STUB_UPDATE_MODE_SAY"; fi
+  exit "\${STUB_UPDATE_MODE_EXIT:-0}"
 fi
 exit 0
 `;
@@ -69,8 +75,12 @@ interface MainRun {
  * Run the real `Invoke-VibeSetupMain` against a temporary config.
  *
  * @param preexisting whether `.config.json` exists before the run starts.
+ * @param stubEnv extra `STUB_*` variables for the stub `deno`.
  */
-async function runSetupMain(preexisting: boolean): Promise<MainRun> {
+async function runSetupMain(
+  preexisting: boolean,
+  stubEnv: Record<string, string> = {},
+): Promise<MainRun> {
   const dir = await Deno.makeTempDir({ prefix: "setup-ps1-update-mode-" });
   try {
     const bin = `${dir}/bin`;
@@ -105,6 +115,7 @@ async function runSetupMain(preexisting: boolean): Promise<MainRun> {
         CONFIG_FILE: configPath,
         VIBE_TEST_LOG: logPath,
         VIBE_SKIP_SCHTASKS: "true",
+        ...stubEnv,
       },
       clearEnv: true,
       stdin: "null",
@@ -194,5 +205,36 @@ pwshTest(
   async () => {
     const run = await runSetupMain(false);
     assertUpdateModeFlag(run, "false");
+  },
+);
+
+pwshTest(
+  "setup.ps1 - update-mode output reaches the console and a failure stops setup (Issue #4119)",
+  async () => {
+    const question = "Update mode - dynamic or frozen? [dynamic]";
+    const run = await runSetupMain(true, {
+      STUB_UPDATE_MODE_SAY: question,
+      STUB_UPDATE_MODE_EXIT: "3",
+    });
+
+    // The question is not captured into a condition: the operator sees it.
+    assert(
+      run.output.includes(question),
+      `the update-mode question must reach the console; output:\n${run.output}`,
+    );
+    // A failed update-mode is fatal, as in setup.sh.
+    assert(
+      run.code !== 0,
+      `setup.ps1 must stop when update-mode fails; output:\n${run.output}`,
+    );
+    assert(
+      run.output.includes("setup step 'update-mode' failed - stopping"),
+      `setup.ps1 must say which step stopped it; output:\n${run.output}`,
+    );
+    assertEquals(
+      run.calls.some((c) => c.subcommand === "copilot-review-mode"),
+      false,
+      `no step after update-mode may run; calls: ${JSON.stringify(run.calls)}`,
+    );
   },
 );

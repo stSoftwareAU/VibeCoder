@@ -561,6 +561,31 @@ if ($checkoutUpdate.ExitCode -ne 0) {
     Write-RunCoreLog "worker-checkout-update: failed (status $($checkoutUpdate.ExitCode)) - launching on the existing checkout"
 }
 
+# Tell a pinned host when a newer release exists, as run.sh does (Issues #690,
+# #4119). A frozen host behind the newest release is degraded but continuing,
+# so the one-line notice is a WARNING, once per launch, on stderr and in the
+# run-core log. The Deno command holds all the logic and bounds every `gh`
+# call itself; stdout is the notice or empty. A failed check warns and the
+# launch proceeds.
+$releaseNotice = Invoke-HostCommand -FilePath $DenoCmd -Capture -ArgumentList @(
+    "run",
+    "--frozen", "--lock=$BaseDir/worker/deno/deno.lock",
+    "--allow-env", "--allow-read", "--allow-run",
+    "$BaseDir/worker/deno/mod.ts", "release-notice",
+    "--base-dir", $BaseDir
+)
+$releaseNoticeText = $releaseNotice.StdOut.Trim()
+if ($releaseNotice.ExitCode -ne 0) {
+    $releaseNoticeDetail = ($releaseNotice.StdErr -replace '\s+', ' ').Trim()
+    if (-not $releaseNoticeDetail) { $releaseNoticeDetail = "no explanation given" }
+    [Console]::Error.WriteLine(
+        "[run.ps1] warning: could not check for a newer release (status $($releaseNotice.ExitCode)) - $releaseNoticeDetail")
+    Write-RunCoreLog "release-notice: failed (status $($releaseNotice.ExitCode)) - $releaseNoticeDetail"
+} elseif ($releaseNoticeText) {
+    [Console]::Error.WriteLine("[run.ps1] WARNING: $releaseNoticeText")
+    Write-RunCoreLog "WARNING: $releaseNoticeText"
+}
+
 $ContainerName = "vibe-coder-$PID"
 $PlanFile = Join-Path ([System.IO.Path]::GetTempPath()) `
     ("vibe-launch-plan-" + [System.Guid]::NewGuid().ToString("N"))

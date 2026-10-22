@@ -1058,6 +1058,8 @@ deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 `update_mode` names how a host tracks Vibe Coder releases. `dynamic` follows
 the latest, and is what an **absent** `update_mode` resolves to at config load.
 `frozen` holds the host at a pinned checkout with pinned tool versions. Setup
+offers whatever `update_mode` the config already holds, so a host that already
+says `frozen` is offered `frozen` on a re-run. With no `update_mode` key, setup
 offers `frozen` only when no `.config.json` existed before the setup run — a
 fresh host (Issue #692). A `.config.json` that already exists with no
 `update_mode` is read as `dynamic`, the mode the host already runs, and setup
@@ -1143,8 +1145,8 @@ because an absent `update_mode` resolves to `dynamic`:
 - **Dynamic ignores the pins, it does not reject them.** Flipping back to
   `dynamic` needs one edit — the stale pins stay in the file and nothing reads
   them.
-- **Setup asks for all of it, and offers `frozen` only on a fresh host.**
-  `./setup.sh` runs `setup update-mode`, which asks for the mode — defaulting to
+- **Setup asks for all of it, and defaults only a new config to `frozen`.**
+  `./setup.sh` and `setup.ps1` run `setup update-mode`, which asks for the mode — defaulting to
   `frozen` when no `.config.json` existed before the run, and otherwise to the
   mode the host already has, so an existing config with no `update_mode` keeps
   `dynamic` — and then,
@@ -1157,13 +1159,16 @@ because an absent `update_mode` resolves to `dynamic`:
   resolvable manifest the defaults fall back to what `dynamic` mode would
   install today and setup says so in one line. Blank accepts the default
   everywhere, so a re-run that presses Enter throughout leaves `.config.json`
-  unchanged — on a `dynamic` host as well as a frozen one. A run with no
+  unchanged on a host whose config already says `dynamic` or `frozen`. On a
+  config that exists with no `update_mode`, Enter writes
+  `"update_mode": "dynamic"` — the mode the host already ran. A run with no
   terminal never asks: an existing `.config.json` is left alone — a host with no
   `update_mode` stays `dynamic` and gets no pins — and a fresh config is pinned
   to the latest release when it resolves with a manifest, or left `dynamic` with
-  one warning line when it does not. `setup.ps1` does not ask yet —
-  a Windows host sets these keys by hand, and the Windows counterpart is a
-  follow-up. The prompts in the order they are asked are
+  one warning line when it does not. `setup.ps1` asks the same questions: it
+  notes whether `.config.json` existed before the run and passes that to
+  `setup update-mode` as `--config-existed`, exactly as `setup.sh` does. The
+  prompts in the order they are asked are
   [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
 - **Shell surface.** `load-config` exports `VIBE_UPDATE_MODE`, so the launchers
   see the resolved mode without re-parsing `.config.json`.
@@ -1337,8 +1342,9 @@ releases recorded their tool versions, an unreachable GitHub or a value that
 fails the config validator is a loud refusal with `.config.json` left exactly
 as it was, never a fresh `pinned_ref` beside stale tool versions.
 
-Windows hosts move their pins by hand for now; `run.ps1 upgrade` is a
-follow-up, exactly as `setup.ps1`'s update-mode prompts are.
+Windows hosts move their pins by hand for now: `run.ps1 upgrade` is still a
+follow-up. `setup.ps1` already runs the same `setup update-mode` prompts as
+`setup.sh`, passing `--config-existed`.
 
 #### Moving a pin by hand
 
@@ -1517,8 +1523,8 @@ flowchart TD
 
 Beside the checkout update, each launch asks whether this host is pinned behind
 the newest release (Issue #690). When it is, the launcher logs one line at
-WARNING — `[run.sh] WARNING: …` on stderr and `WARNING: …` in `run_core.log` —
-and the host is degraded but continuing on its pin. The notice wording is:
+WARNING — `[run.sh] WARNING: …` (`[run.ps1] WARNING: …` on Windows) on stderr
+and `WARNING: …` in `run_core.log` — and the host is degraded but continuing on its pin. The notice wording is:
 
 ```text
 A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
@@ -1554,9 +1560,16 @@ deno run --allow-env --allow-read --allow-run \
   same constant the upgrade command registers under
   ([`worker/deno/lib/upgrade_command.ts`](../worker/deno/lib/upgrade_command.ts)),
   so the wording cannot drift from the command that exists.
-- **Windows is a follow-up.** `run.ps1` does not print the notice yet; the
-  logic living in the Deno command is what keeps that a port rather than a
-  rewrite.
+- **Windows prints it too.** `run.ps1` runs the same `release-notice` command
+  after its checkout update (Issue #4119): the notice is one
+  `[run.ps1] WARNING: …` line on stderr and one `WARNING: …` line in
+  `run_core.log`, and a failed check is a
+  `[run.ps1] warning: could not check for a newer release …` line with a
+  `release-notice: failed …` line in `run_core.log`, and the launch continues.
+  `run.ps1` has no outer 120 s bound; it relies on the command's own bound on
+  each `gh` call. The notice names `./run.sh upgrade` on every platform, and
+  `run.ps1 upgrade` does not exist yet: a Windows host moves its pin by hand —
+  see [Moving a pin by hand](#moving-a-pin-by-hand).
 
 ```mermaid
 flowchart TD

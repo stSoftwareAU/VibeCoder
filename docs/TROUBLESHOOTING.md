@@ -452,8 +452,9 @@ instead, and a checkout that doubles as a development tree wants its own
 ## 🔔 "A new release of Vibe Coder is available"
 
 A frozen host pinned behind the newest release says so once per launch, at
-`WARNING` level: on stderr as `[run.sh] WARNING: …` and in `run_core.log` as
-`WARNING: …` (Issue #690):
+`WARNING` level: on stderr as `[run.sh] WARNING: …` (`[run.ps1] WARNING: …`
+on Windows, where `run.ps1 upgrade` does not exist yet and the pin moves by
+hand) and in `run_core.log` as `WARNING: …` (Issue #690):
 
 ```text
 [run.sh] WARNING: A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.

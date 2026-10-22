@@ -540,7 +540,9 @@ mode exists to prevent, so nothing is half-pinned behind an operator's back.
 pinned host stays on the release setup chose: later releases never move it, and
 each launch prints one `WARNING:` line naming the newer release and the command
 that installs it (`Run ./run.sh upgrade to install it.`) — on stderr as
-`[run.sh] WARNING: …` and in `run_core.log`. Running `./run.sh upgrade`
+`[run.sh] WARNING: …` (`[run.ps1] WARNING: …` on Windows) and in
+`run_core.log`. `run.ps1 upgrade` does not exist yet, so a Windows host moves
+its pin by hand. Running `./run.sh upgrade`
 rewrites `pinned_ref` and all three `pinned_tool_versions` to that release, and
 the next launch installs exactly them. Setup is not part of that loop — see
 [Configuration — The upgrade loop](CONFIGURATION.md#the-upgrade-loop).
@@ -552,15 +554,18 @@ the defaults ends up frozen on a tag that cannot afterwards be deleted or moved
 when you are testing Vibe Coder itself, or running a fleet that should move
 together at every launch.
 
-**The setup default is not the load-time default.** Setup offers `frozen` only
+**The setup default is not the load-time default.** Setup offers the
+`update_mode` the config already holds, so a host that already says `frozen` is
+offered `frozen` again. With no `update_mode` key, setup offers `frozen` only
 when no `.config.json` existed before the run. A pre-existing `.config.json`
 with **no** `update_mode` key is offered `dynamic` in setup, and it still
 loads as `dynamic` — see [Configuration — Update Mode](CONFIGURATION.md#-update-mode).
 
-**Blank answers are byte-for-byte safe.** Re-running setup and pressing Enter
+**Blank answers keep what the host runs.** Re-running setup and pressing Enter
 through every prompt re-writes the same values on a frozen host and leaves a
 dynamic host dynamic, so setup stays re-runnable and neither a pin nor a
-deliberate `dynamic` answer is lost to a re-run.
+deliberate `dynamic` answer is lost to a re-run. A config with no `update_mode`
+key gains `"update_mode": "dynamic"` — the mode it already ran.
 
 **Windows asks the same question.** `setup.ps1` runs the same
 `setup update-mode` conversation as `setup.sh`, so a Windows host is asked

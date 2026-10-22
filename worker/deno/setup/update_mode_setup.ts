@@ -2,11 +2,11 @@
  * The update-mode conversation setup runs (Issue #626, part of #583;
  * default flipped to `frozen` by Issue #692, part of #674).
  *
- * `setup.sh` owns terminal I/O and nothing else: it delegates the whole
- * conversation here, exactly as `run.sh` delegates the checkout update to
- * `worker-checkout-update`. Keeping the logic in Deno is what makes the ref
- * validation, the version defaults and the merge testable — and what makes the
- * Windows counterpart a follow-up rather than a rewrite.
+ * `setup.sh` and `setup.ps1` own terminal I/O and nothing else: both delegate
+ * the whole conversation here, exactly as `run.sh` delegates the checkout
+ * update to `worker-checkout-update`. Keeping the logic in Deno is what makes
+ * the ref validation, the version defaults and the merge testable, and what
+ * let `setup.ps1` ask the same questions without a rewrite (Issue #4119).
  *
  * The conversation:
  *   1. `dynamic` or `frozen`. The default is `frozen` only when no
@@ -82,6 +82,11 @@ import {
   type UpdateModeSettings,
   writeUpdateModeConfig,
 } from "./config_writer.ts";
+import {
+  askOnConsole,
+  CONSOLE_ASK_IO,
+  type ConsoleAskIo,
+} from "./console_ask.ts";
 
 /** How a tool is named in a prompt. */
 const TOOL_PROMPT_LABELS: Readonly<Record<PinnedTool, string>> = {
@@ -179,11 +184,17 @@ function defaultLogDir(): string {
 
 /**
  * The real side effects: the terminal, git in the checkout, and the release
- * gate that answers "what would dynamic install today?".
+ * gate that answers "what would dynamic install today?". Questions go through
+ * `askOnConsole`, so they reach the operator under `setup.ps1`'s `Out-Host`
+ * pipe as well as on a terminal (Issue #4119).
+ *
+ * @param consoleIo - The console questions are asked on; tests supply one
  */
-export function createDefaultUpdateModeDeps(): UpdateModeSetupDeps {
+export function createDefaultUpdateModeDeps(
+  consoleIo: ConsoleAskIo = CONSOLE_ASK_IO,
+): UpdateModeSetupDeps {
   return {
-    ask: (question) => Promise.resolve(prompt(question)),
+    ask: (question) => askOnConsole(question, consoleIo),
     say: (message) => console.log(message),
     style: terminalStyler(),
     interactive: () => Deno.stdin.isTerminal(),

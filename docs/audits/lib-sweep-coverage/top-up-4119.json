@@ -1,0 +1,12 @@
+{
+  "issue": 4119,
+  "chunk": "top-up-4119",
+  "title": "top-up: setup console question helper",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4119",
+  "definition": "Setup helper added after the preceding recorded module lists: asks one question on the console so it is seen under setup.ps1's Out-Host pipe; injected console I/O.",
+  "status": "claimed",
+  "sweptAt": "609ade11640b99066bc12657b95d556886762dde",
+  "paths": [
+    "worker/deno/setup/console_ask.ts"
+  ]
+}

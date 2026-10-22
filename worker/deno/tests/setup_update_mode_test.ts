@@ -22,7 +22,11 @@ import {
 import { createConsoleStyler, terminalStyler } from "../lib/console_style.ts";
 import type { DynamicVersionCandidate } from "../lib/software_updates.ts";
 import { RELEASE_MANIFEST_ASSET } from "../lib/release_manifest.ts";
-import { parseConfigExistedFlag } from "../setup/setup_cli.ts";
+import {
+  parseConfigExistedFlag,
+  runUpdateMode,
+  SETUP_CLI_USAGE,
+} from "../setup/setup_cli.ts";
 
 /** Versions the injected resolver reports as today's dynamic choice. */
 const DYNAMIC_VERSIONS: DynamicVersionCandidate[] = [
@@ -1201,5 +1205,64 @@ Deno.test("parseConfigExistedFlag - --config-existed=true and =false parse to bo
   assertEquals(
     parseConfigExistedFlag(["update-mode", "--config-existed=false"]),
     false,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The update-mode subcommand itself (Issue #4119)
+// ---------------------------------------------------------------------------
+
+Deno.test("runUpdateMode - no --config-existed answer is refused and .config.json is left untouched", async () => {
+  const { dir, path } = await tempConfig({ repos: ["org/repo"] });
+  try {
+    const before = await Deno.readTextFile(path);
+    const h = harness([], { interactive: () => false });
+
+    const ok = await runUpdateMode(dir, path, undefined, h.deps);
+
+    assertEquals(ok, false, "update-mode must refuse to guess a default");
+    assertEquals(await Deno.readTextFile(path), before);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateMode - --config-existed=true leaves a config with no update_mode unwritten", async () => {
+  const { dir, path } = await tempConfig({ repos: ["org/repo"] });
+  try {
+    const before = await Deno.readTextFile(path);
+    const h = harness([], { interactive: () => false });
+
+    const ok = await runUpdateMode(dir, path, true, h.deps);
+
+    assertEquals(ok, true, "an answered flag must let update-mode run");
+    // The flag reached the conversation: a pre-existing config is read as
+    // dynamic and gains no update_mode or pins.
+    assertEquals(await Deno.readTextFile(path), before);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateMode - --config-existed=false pins a fresh config to the latest release", async () => {
+  const { dir, path } = await tempConfig({ repos: ["org/repo"] });
+  try {
+    const h = harness([], { interactive: () => false });
+
+    const ok = await runUpdateMode(dir, path, false, h.deps);
+
+    assertEquals(ok, true);
+    const config = await readConfig(path);
+    assertEquals(config.update_mode, "frozen");
+    assertEquals(config.pinned_ref, LATEST_RELEASE);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("setup_cli usage - names the --config-existed=true|false flag update-mode needs", () => {
+  assertStringIncludes(
+    SETUP_CLI_USAGE,
+    "Needs --config-existed=true|false: whether .config.json",
   );
 });

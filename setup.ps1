@@ -1681,8 +1681,13 @@ function Invoke-VibeSetupMain {
     Write-VibeInteractiveConfig -Answers $answers
 
     # Ask for the update mode and, when frozen, the pinned ref and the exact
-    # tool versions (Issue #626). Fatal, as in setup.sh.
-    Invoke-VibeSetupCliOrExit -Arguments @("update-mode", "--config-existed=$configExisted")
+    # tool versions (Issue #626). Passthrough, so the question and its default
+    # reach the console instead of being captured into a condition (Issue
+    # #4119). Fatal, as in setup.sh.
+    if ((Invoke-VibeSetupCliPassthrough -Arguments @("update-mode", "--config-existed=$configExisted")) -ne 0) {
+        Write-VibeError "setup step 'update-mode' failed - stopping"
+        exit 1
+    }
 
     # Ask whether repo-settings-harden turns Copilot code review on, off, or
     # leaves it (Issue #2701): each automatic review is billed to the PR

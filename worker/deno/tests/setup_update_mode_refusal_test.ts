@@ -5,7 +5,10 @@
  * (`--config-existed=true|false`). A missing flag must be refused, not
  * defaulted, and a refusal must leave the config alone. These tests run the
  * real entry point as a subprocess, the way `setup.sh` does, and assert on the
- * exit status, the message and the config file.
+ * exit status, the message and the config file. They pin only the argv
+ * wiring: both cases stay offline (a refusal, and a pre-existing config the
+ * non-interactive run leaves alone). The outcomes for each flag value are
+ * tested in-process in `setup_update_mode_test.ts` (`runUpdateMode - …`).
  *
  * Australian English spelling throughout (behaviour, authorised).
  */
@@ -126,20 +129,6 @@ Deno.test("update-mode refusal - --config-existed=true is accepted (no refusal t
     run.code,
     0,
     `update-mode --config-existed=true failed:\n${run.stdout}\n${run.stderr}`,
-  );
-  assertEquals(
-    run.stderr.includes(REFUSAL),
-    false,
-    "the refusal must not print when the flag is given",
-  );
-});
-
-Deno.test("update-mode refusal - --config-existed=false is accepted (no refusal text) (Issue #4119)", async () => {
-  const { run } = await runUpdateMode(["--config-existed=false"], null);
-  assertEquals(
-    run.code,
-    0,
-    `update-mode --config-existed=false failed:\n${run.stdout}\n${run.stderr}`,
   );
   assertEquals(
     run.stderr.includes(REFUSAL),

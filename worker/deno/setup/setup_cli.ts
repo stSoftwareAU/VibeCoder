@@ -120,7 +120,10 @@ import { resolveSetupAgentProviderIds } from "./agent_providers.ts";
 import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
 import { loadExistingConfig, resolveCodeownersOwners } from "./config_setup.ts";
 import { syncCodeowners } from "./codeowners_sync.ts";
-import { runUpdateModeSetup } from "./update_mode_setup.ts";
+import {
+  runUpdateModeSetup,
+  type UpdateModeSetupDeps,
+} from "./update_mode_setup.ts";
 import { runCopilotReviewSetup } from "./copilot_review_setup.ts";
 import { resolveRunMode, type RunMode } from "../lib/run_mode.ts";
 import { runGhOrThrow } from "../lib/gh_spawn.ts";
@@ -460,10 +463,11 @@ export function parseConfigExistedFlag(
  * states whether the config existed before this run (`--config-existed`), since
  * only a config this run creates defaults to `frozen` (Issue #4119).
  */
-async function runUpdateMode(
+export async function runUpdateMode(
   scriptDir: string,
   configPath: string,
   configExisted: boolean | undefined,
+  deps?: Partial<UpdateModeSetupDeps>,
 ): Promise<boolean> {
   if (configExisted === undefined) {
     printError(
@@ -476,6 +480,7 @@ async function runUpdateMode(
     repoDir: scriptDir,
     configPath,
     configExisted,
+    deps,
   });
   if (!result.ok) {
     printError(result.error.message);
@@ -1876,9 +1881,9 @@ export function dryRunRefusal(subcommand: string): string | undefined {
     `${DRY_RUN_SUBCOMMANDS.join(", ")}.`;
 }
 
-function usage(): void {
-  console.log(
-    `Usage: setup_cli.ts <subcommand> [--script-dir DIR] [--config-path PATH] [--dry-run] [--auto-install]
+/** The `--help` text: every subcommand and the flags each one takes. */
+export const SETUP_CLI_USAGE =
+  `Usage: setup_cli.ts <subcommand> [--script-dir DIR] [--config-path PATH] [--dry-run] [--auto-install]
 
 Subcommands:
   prerequisites   Check all prerequisites (--auto-install consents in advance
@@ -1917,8 +1922,10 @@ Subcommands:
   all             Run full setup (default)
 
 --dry-run is refused by every subcommand that does not support it: it would
-write for real.`,
-  );
+write for real.`;
+
+function usage(): void {
+  console.log(SETUP_CLI_USAGE);
 }
 
 if (import.meta.main) {
