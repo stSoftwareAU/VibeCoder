@@ -318,7 +318,7 @@ Deno.test({
       // limit, so the ladder backs off and a relaunch is countable.
       const stubBody = [
         `printf 'spawn\\n' >> "$(dirname "$0")/${SPAWN_LOG}"`,
-        `printf '%s\\n' '{"type":"result","result":"API rate limit exceeded - too many requests"}'`,
+        `printf '%s\\n' '{"type":"result","is_error":true,"result":"API rate limit exceeded - too many requests"}'`,
         `exit 1`,
       ].join("\n");
 

@@ -3815,8 +3815,9 @@ memory.
   failed`,
   `cannot allocate memory`, `std::bad_alloc`, a word-bounded `out of
   memory`,
-  …). The "heap limit" wording would otherwise match the secondary rate-limit
-  pattern, so OOM must be classified separately.
+  …). OOM is classified separately and first: waiting cannot reclaim memory.
+  (The "heap limit" wording used to match a secondary `limit` rate-limit
+  pattern, removed by Issue #4114.)
 - **Runner short-circuit.**
   [`claude_runner.ts`](../worker/deno/lib/claude_runner.ts) checks OOM
   **before** the timeout and rate-limit branches and returns immediately with
