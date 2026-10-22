@@ -20,6 +20,12 @@
  * Every child process runs with an allowlisted environment, never the
  * worker's own (see {@link defaultMutationRunnerSeams}).
  *
+ * Every `deno test` and `cargo mutants` child also gets `TMPDIR` set to the
+ * run's own temporary directory, created per run and removed afterwards. When
+ * that directory cannot be created the run reports an `error` whose reason
+ * opens with {@link MUTATION_TEMP_DIR_UNWRITABLE}: a fault of this host, not a
+ * verdict on the code (Issue #4127).
+ *
  * Known limit: a Deno module counts as covered only by tests that import it
  * directly, so a module exercised solely through another module's tests is
  * reported as having no importing test.
@@ -32,10 +38,12 @@ import {
   generateDenoMutantsDetailed,
   isDenoTestFile,
   type Mutant,
+  MUTATION_TEMP_DIR_UNWRITABLE,
   type MutationCheckResult,
   type MutationLanguage,
   parseAddedLines,
 } from "./mutation_gate.ts";
+import { hardenStateDir } from "./private_cache_dir.ts";
 import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 
 export interface ProcessResult {
@@ -67,7 +75,7 @@ export interface MutationRunnerSeams {
   removeDir(path: string): Promise<void>;
   /** Repo-relative `*_test.ts` / `*.test.ts` paths. */
   listTestFiles(repoPath: string): Promise<string[]>;
-  /** Create an empty temporary directory outside any repository. */
+  /** Create an empty, writable temporary directory outside any repository; rejects when none can be created. */
   makeTempDir(): Promise<string>;
 }
 
@@ -292,6 +300,26 @@ function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+/** The run's own temp dir, or an `error` result naming the cause when none can be created (Issue #4127). */
+async function makeRunTempDir(
+  seams: MutationRunnerSeams,
+): Promise<
+  { ok: true; dir: string } | { ok: false; result: MutationCheckResult }
+> {
+  try {
+    return { ok: true, dir: await seams.makeTempDir() };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      result: {
+        kind: "error",
+        reason: `${MUTATION_TEMP_DIR_UNWRITABLE}: ${message}`,
+      },
+    };
+  }
+}
+
 async function runDeno(
   input: MutationRunInput,
   seams: MutationRunnerSeams,
@@ -403,68 +431,81 @@ async function runDeno(
     } else runnable.push(m);
   }
 
-  const childEnv = input.credentialEnv === undefined
-    ? {}
-    : { env: input.credentialEnv };
-
-  // Baseline: the importing tests must pass unmutated.
-  const baselined = new Set<string>();
-  for (const m of runnable) {
-    const tests = testsFor.get(m.file) ?? [];
-    const key = `${configDirFor.get(m.file) ?? ""}\n${tests.join("\n")}`;
-    if (baselined.has(key)) continue;
-    baselined.add(key);
-    if (remaining() <= 0) return exhausted();
-    const base = await seams.runProcess("deno", denoTestArgs(tests), {
-      cwd: cwdFor(m.file),
-      timeoutMs: remaining(),
-      ...childEnv,
-    });
-    if (base.timedOut) return exhausted();
-    if (base.code !== 0) {
-      return {
-        kind: "error",
-        reason: `baseline tests fail before mutation (${
-          tests.join(", ")
-        }); cannot judge mutants`,
-      };
-    }
+  // Issue #4127: the run's temporary directory is created only when a child
+  // will run, and every child gets it as TMPDIR. TMPDIR comes last, so a
+  // declared TMPDIR cannot win.
+  let tmpDir = "";
+  if (runnable.length > 0) {
+    const made = await makeRunTempDir(seams);
+    if (!made.ok) return made.result;
+    tmpDir = made.dir;
   }
+  const childEnv = {
+    env: { ...input.credentialEnv, TMPDIR: tmpDir },
+  };
 
-  for (const m of runnable) {
-    if (remaining() <= 0) return exhausted();
-    const tests = testsFor.get(m.file) ?? [];
-    const path = absFor.get(m.file);
-    if (path === undefined) continue;
-    const original = originals.get(m.file) ?? "";
-    let result: ProcessResult;
-    try {
-      await seams.writeTextFile(path, m.mutatedSource);
-      result = await seams.runProcess("deno", denoTestArgs(tests), {
+  try {
+    // Baseline: the importing tests must pass unmutated.
+    const baselined = new Set<string>();
+    for (const m of runnable) {
+      const tests = testsFor.get(m.file) ?? [];
+      const key = `${configDirFor.get(m.file) ?? ""}\n${tests.join("\n")}`;
+      if (baselined.has(key)) continue;
+      baselined.add(key);
+      if (remaining() <= 0) return exhausted();
+      const base = await seams.runProcess("deno", denoTestArgs(tests), {
         cwd: cwdFor(m.file),
         timeoutMs: remaining(),
         ...childEnv,
       });
-    } finally {
-      await seams.writeTextFile(path, original);
+      if (base.timedOut) return exhausted();
+      if (base.code !== 0) {
+        return {
+          kind: "error",
+          reason: `baseline tests fail before mutation (${
+            tests.join(", ")
+          }); cannot judge mutants`,
+        };
+      }
     }
-    if (result.timedOut) return exhausted();
-    tested++;
-    // A mutant the parser rejects is unviable: no test ran, so it is neither
-    // killed nor a survivor.
-    if (result.code !== 0 && isParseFailure(result)) continue;
-    if (result.code !== 0) killed++;
-    else {
-      survivors.push({
-        file: m.file,
-        line: m.line,
-        description: m.description,
-      });
+
+    for (const m of runnable) {
+      if (remaining() <= 0) return exhausted();
+      const tests = testsFor.get(m.file) ?? [];
+      const path = absFor.get(m.file);
+      if (path === undefined) continue;
+      const original = originals.get(m.file) ?? "";
+      let result: ProcessResult;
+      try {
+        await seams.writeTextFile(path, m.mutatedSource);
+        result = await seams.runProcess("deno", denoTestArgs(tests), {
+          cwd: cwdFor(m.file),
+          timeoutMs: remaining(),
+          ...childEnv,
+        });
+      } finally {
+        await seams.writeTextFile(path, original);
+      }
+      if (result.timedOut) return exhausted();
+      tested++;
+      // A mutant the parser rejects is unviable: no test ran, so it is neither
+      // killed nor a survivor.
+      if (result.code !== 0 && isParseFailure(result)) continue;
+      if (result.code !== 0) killed++;
+      else {
+        survivors.push({
+          file: m.file,
+          line: m.line,
+          description: m.description,
+        });
+      }
     }
+    // A capped run is never a clean pass: candidates past the cap were not tried.
+    if (dropped > 0) return exhausted("mutant_cap");
+    return { kind: "completed", language: "deno", survivors, killed, total };
+  } finally {
+    if (tmpDir !== "") await seams.removeDir(tmpDir);
   }
-  // A capped run is never a clean pass: candidates past the cap were not tried.
-  if (dropped > 0) return exhausted("mutant_cap");
-  return { kind: "completed", language: "deno", survivors, killed, total };
 }
 
 // ---------------------------------------------------------------------------
@@ -651,7 +692,9 @@ async function runRust(
   // `--output`. Pointing that at a fresh directory outside the repository
   // keeps it out of the working tree (a recovery commit runs `git add -A`)
   // and means a stale copy can never be read as this run's.
-  const outDir = await seams.makeTempDir();
+  const made = await makeRunTempDir(seams);
+  if (!made.ok) return made.result;
+  const outDir = made.dir;
   try {
     return await runCargoMutants(input, seams, diffPath, packages, outDir);
   } finally {
@@ -798,6 +841,81 @@ async function walkTests(
   }
 }
 
+/** Leaf directory on the work volume used when the system temp directory refuses a write (Issue #4127). */
+export const MUTATION_SCRATCH_DIR_NAME = ".mutation-scratch";
+
+/** Work-directory name derived from `HOME`, mirroring `config.ts` and `ci_check_state_dir.ts`. */
+const HOME_WORK_DIR_NAME = "auto-issue-work";
+
+/** Trim whitespace and trailing slashes; `/` normalises to `""`. */
+function normaliseScratchBase(value: string | undefined): string {
+  return (value ?? "").trim().replace(/\/+$/, "");
+}
+
+/** `<WORK_DIR or $HOME/auto-issue-work>/.mutation-scratch`, the first absolute candidate, or null. */
+export function resolveMutationScratchRoot(
+  lookup: (name: string) => string | undefined,
+): string | null {
+  const home = normaliseScratchBase(lookup("HOME"));
+  const candidates = [
+    normaliseScratchBase(lookup("WORK_DIR")),
+    home ? `${home}/${HOME_WORK_DIR_NAME}` : "",
+  ];
+  const base = candidates.find((c) => c.startsWith("/"));
+  return base === undefined ? null : `${base}/${MUTATION_SCRATCH_DIR_NAME}`;
+}
+
+function causeText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Create the run's temporary directory (Issue #4127): in the system temp
+ * directory (`TMPDIR`, else Deno's default) first, and when that refuses —
+ * a read-only mount in the agent container — in a private `0700`
+ * `.mutation-scratch` root on the work volume. Rejects with both causes when
+ * neither can be created.
+ */
+export async function makeMutationTempDir(
+  lookup: (name: string) => string | undefined,
+  /** The real `Deno.makeTempDir` in production; a test can force a refusal. */
+  makeTemp: (options: Deno.MakeTempOptions) => Promise<string> = (options) =>
+    Deno.makeTempDir(options),
+): Promise<string> {
+  const tmp = lookup("TMPDIR")?.trim();
+  try {
+    return await makeTemp({
+      prefix: "vibe-mutation-",
+      ...(tmp ? { dir: tmp } : {}),
+    });
+  } catch (systemErr) {
+    const systemCause = causeText(systemErr);
+    const root = resolveMutationScratchRoot(lookup);
+    if (root === null) {
+      throw new Error(
+        `system temp directory: ${systemCause}; no work-volume fallback (neither WORK_DIR nor HOME names an absolute directory)`,
+      );
+    }
+    const trust = await hardenStateDir(root, { create: true });
+    if (!trust.trusted) {
+      throw new Error(
+        `system temp directory: ${systemCause}; ${root}: ${
+          trust.reason ?? "not a private directory"
+        }`,
+      );
+    }
+    try {
+      return await makeTemp({ dir: root, prefix: "vibe-mutation-" });
+    } catch (fallbackErr) {
+      throw new Error(
+        `system temp directory: ${systemCause}; ${root}: ${
+          causeText(fallbackErr)
+        }`,
+      );
+    }
+  }
+}
+
 /**
  * Real seams: `Deno.Command` with kill-on-timeout, real clock and filesystem.
  *
@@ -810,11 +928,17 @@ async function walkTests(
  * `overrides`, as the quality gate does (Issues #573, #574).
  */
 export function defaultMutationRunnerSeams(
-  /** Environment the allowlist is applied to; tests only. Default: the worker's. */
+  /**
+   * Environment the allowlist is applied to, and where the temporary directory
+   * is resolved from (TMPDIR, WORK_DIR, HOME); tests only. Default: the
+   * worker's.
+   */
   envSource?: Record<string, string>,
   /** Milliseconds between SIGTERM at the budget and SIGKILL; tests only. */
   killGraceMs: number = DEFAULT_KILL_GRACE_MS,
 ): MutationRunnerSeams {
+  const lookup = (name: string) =>
+    envSource === undefined ? Deno.env.get(name) : envSource[name];
   return {
     async runProcess(cmd, args, opts) {
       let child: Deno.ChildProcess;
@@ -898,7 +1022,7 @@ export function defaultMutationRunnerSeams(
         if (!(err instanceof Deno.errors.NotFound)) throw err;
       }
     },
-    makeTempDir: () => Deno.makeTempDir({ prefix: "vibe-mutation-" }),
+    makeTempDir: () => makeMutationTempDir(lookup),
     async listTestFiles(repoPath) {
       const out: string[] = [];
       await walkTests(repoPath, "", out);
