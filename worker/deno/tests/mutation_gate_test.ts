@@ -15,6 +15,7 @@ import {
   evaluateMutationGate,
   generateDenoMutants,
   generateDenoMutantsDetailed,
+  MUTATION_TEMP_DIR_UNWRITABLE,
   type MutationCheckResult,
   parseAddedLines,
   parseMutationExemptions,
@@ -441,6 +442,27 @@ Deno.test("evaluateMutationGate - error fails closed with a remedy", () => {
   assert(v.blocked);
   assertStringIncludes(v.reason, "boom");
   assertStringIncludes(v.reason, "skip_mutation_check");
+  assertEquals(v.workerFault, undefined);
+});
+
+Deno.test("evaluateMutationGate - an unwritable temp dir is a worker fault, not a verdict on the code", () => {
+  const v = evaluateMutationGate(
+    {
+      kind: "error",
+      reason:
+        `${MUTATION_TEMP_DIR_UNWRITABLE}: Read-only file system (os error 30): tmpdir`,
+    },
+    "",
+  );
+  assert(v.blocked, "fails closed");
+  assertEquals(v.workerFault, true);
+  assertStringIncludes(v.reason, "not writable");
+  assertStringIncludes(v.reason, "worker fault");
+  assertStringIncludes(v.reason, "os error 30");
+  assertFalse(v.reason.includes("skip_mutation_check"));
+  const comment = buildMutationGateComment(v);
+  assertStringIncludes(comment, "could not run (worker fault)");
+  assertFalse(comment.includes("changed lines are not pinned"));
 });
 
 Deno.test("evaluateMutationGate - not applicable passes and explains", () => {

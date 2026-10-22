@@ -55,6 +55,14 @@ export type MutationCheckResult =
   }
   | { kind: "error"; reason: string };
 
+/**
+ * Worker-written opening of a runner `error` reason when the run's own
+ * temporary directory could not be created (Issue #4127): a fault of this
+ * host, not a verdict on the code under check.
+ */
+export const MUTATION_TEMP_DIR_UNWRITABLE =
+  "the mutation check's temporary directory is not writable";
+
 export interface MutationGateVerdict {
   blocked: boolean;
   reason: string;
@@ -62,6 +70,11 @@ export interface MutationGateVerdict {
   exempted: Mutant[];
   budgetExhausted: boolean;
   note: string;
+  /**
+   * The check could not run because of a host fault (its temporary directory),
+   * so the comment reports a worker fault rather than judging the code.
+   */
+  workerFault?: true;
 }
 
 export const DEFAULT_MUTATION_BUDGET_SECONDS = 300;
@@ -901,6 +914,20 @@ export function evaluateMutationGate(
     };
   }
   if (result.kind === "error") {
+    if (result.reason.startsWith(MUTATION_TEMP_DIR_UNWRITABLE)) {
+      // Still blocks (fail closed), but names the host fault rather than
+      // suggesting a skip (Issue #4127).
+      return {
+        blocked: true,
+        reason:
+          `mutation check could not run: ${result.reason} — a worker fault on this host, not a verdict on the code`,
+        survivors: [],
+        exempted: [],
+        budgetExhausted: false,
+        note: "",
+        workerFault: true,
+      };
+    }
     return {
       blocked: true,
       reason:
@@ -956,7 +983,12 @@ function mdSafe(s: string): string {
 
 /** Markdown feedback for the agent when the gate blocks. */
 export function buildMutationGateComment(verdict: MutationGateVerdict): string {
-  const out: string[] = ["## Mutation check: changed lines are not pinned", ""];
+  const out: string[] = [
+    verdict.workerFault
+      ? "## Mutation check: could not run (worker fault)"
+      : "## Mutation check: changed lines are not pinned",
+    "",
+  ];
   out.push(verdict.reason ? mdSafe(verdict.reason) + "." : "");
   out.push("");
   if (verdict.survivors.length > 0) {

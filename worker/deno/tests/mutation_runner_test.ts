@@ -13,13 +13,16 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { assertLinearGrowth } from "./support/growth.ts";
+import { MUTATION_TEMP_DIR_UNWRITABLE } from "../lib/mutation_gate.ts";
 import {
   confinePath,
   defaultMutationRunnerSeams,
   detectMutationLanguage,
   importsModule,
+  makeMutationTempDir,
   type MutationRunnerSeams,
   type ProcessResult,
+  resolveMutationScratchRoot,
   runMutationCheck,
 } from "../lib/mutation_runner.ts";
 import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
@@ -46,6 +49,8 @@ interface Fake {
     env?: Record<string, string>;
   }>;
   clock: { t: number };
+  /** Directories `removeDir` was asked to remove, in order. */
+  removed: string[];
 }
 
 function fake(
@@ -60,6 +65,7 @@ function fake(
   const fs = new Map(Object.entries(files));
   const calls: Fake["calls"] = [];
   const clock = { t: 0 };
+  const removed: string[] = [];
   let tempDirs = 0;
   const seams: MutationRunnerSeams = {
     runProcess: async (cmd, args, opts) => {
@@ -88,6 +94,7 @@ function fake(
     exists: (p) => Promise.resolve(fs.has(p)),
     realPath: (p) => Promise.resolve(p),
     removeDir: (p) => {
+      removed.push(p);
       for (const k of [...fs.keys()]) {
         if (k.startsWith(`${p}/`)) fs.delete(k);
       }
@@ -101,7 +108,7 @@ function fake(
         ),
       ),
   };
-  return { seams, files: fs, calls, clock };
+  return { seams, files: fs, calls, clock, removed };
 }
 
 const ok = (code = 0): ProcessResult => ({
@@ -291,9 +298,46 @@ Deno.test("runMutationCheck deno - the declared credentials reach every deno chi
   );
   assert(r.kind === "completed");
   assert(f.calls.length > 1);
+  const made = f.calls[0]?.env?.TMPDIR ?? "";
+  assert(made.startsWith("/tmp/vibe-mutation-"), made);
   for (const c of f.calls) {
-    assertEquals(c.env, { AWS_ACCESS_KEY_ID: "declared" });
+    assertEquals(c.env, { AWS_ACCESS_KEY_ID: "declared", TMPDIR: made });
   }
+});
+
+Deno.test("runMutationCheck deno - every deno child gets TMPDIR set to the run's own temp dir, removed afterwards", async () => {
+  const f = fake(denoFiles(), scripted(1));
+  const r = await runMutationCheck(input(), f.seams);
+  assert(r.kind === "completed");
+  assert(f.calls.length > 1);
+  const made = f.calls[0]?.env?.TMPDIR ?? "";
+  assert(made.startsWith("/tmp/vibe-mutation-"), made);
+  for (const c of f.calls) assertEquals(c.env?.TMPDIR, made);
+  assertEquals(f.removed, [made]);
+});
+
+Deno.test("runMutationCheck deno - a caller-declared TMPDIR cannot win over the run's temp dir", async () => {
+  const f = fake(denoFiles(), scripted(1));
+  const r = await runMutationCheck(
+    { ...input(), credentialEnv: { TMPDIR: "/elsewhere" } },
+    f.seams,
+  );
+  assert(r.kind === "completed");
+  assert(f.calls.length > 1);
+  const made = f.calls[0]?.env?.TMPDIR ?? "";
+  assert(made.startsWith("/tmp/vibe-mutation-"), made);
+  for (const c of f.calls) assertEquals(c.env, { TMPDIR: made });
+});
+
+Deno.test("runMutationCheck deno - an uncreatable temp dir is a worker-fault error and no child runs", async () => {
+  const f = fake(denoFiles(), scripted(1));
+  f.seams.makeTempDir = () =>
+    Promise.reject(new Error("Read-only file system (os error 30): tmpdir"));
+  const r = await runMutationCheck(input(), f.seams);
+  assert(r.kind === "error", JSON.stringify(r));
+  assert(r.reason.startsWith(MUTATION_TEMP_DIR_UNWRITABLE), r.reason);
+  assertStringIncludes(r.reason, "os error 30");
+  assertEquals(f.calls.length, 0);
 });
 
 Deno.test("runMutationCheck deno - failing baseline is an error and nothing is mutated", async () => {
@@ -522,6 +566,17 @@ function rustFake(outcomes: string | null, proc: ProcessResult) {
 }
 
 const rsInput = { repoPath: REPO, diff: RS_DIFF, budgetSeconds: 60, jobs: 2 };
+
+Deno.test("runMutationCheck rust - an uncreatable temp dir is a worker-fault error and no cargo runs", async () => {
+  const f = rustFake(outcomesJson([]), ok(0));
+  f.seams.makeTempDir = () =>
+    Promise.reject(new Error("Read-only file system (os error 30): tmpdir"));
+  const r = await runMutationCheck(rsInput, f.seams);
+  assert(r.kind === "error", JSON.stringify(r));
+  assert(r.reason.startsWith(MUTATION_TEMP_DIR_UNWRITABLE), r.reason);
+  assertStringIncludes(r.reason, "os error 30");
+  assertEquals(f.calls.length, 0);
+});
 
 Deno.test("runMutationCheck rust - a missed mutant is a survivor", async () => {
   const f = rustFake(
@@ -1047,4 +1102,135 @@ Deno.test("defaultMutationRunnerSeams runProcess - a child that ignores SIGTERM 
   );
   assertEquals(r.timedOut, true);
   assertEquals(r.code, 137);
+});
+
+// ---------------------------------------------------------------------------
+// Temporary directory (Issue #4127): TMPDIR first, a private work-volume root
+// when the system temp directory refuses
+// ---------------------------------------------------------------------------
+
+function envOf(
+  env: Record<string, string>,
+): (name: string) => string | undefined {
+  return (name) => env[name];
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+Deno.test("resolveMutationScratchRoot - WORK_DIR wins, HOME is the fallback, relative and empty values are skipped", () => {
+  assertEquals(
+    resolveMutationScratchRoot(envOf({ WORK_DIR: "/work/", HOME: "/home/u" })),
+    "/work/.mutation-scratch",
+  );
+  assertEquals(
+    resolveMutationScratchRoot(envOf({ WORK_DIR: "  ", HOME: "/home/u/" })),
+    "/home/u/auto-issue-work/.mutation-scratch",
+  );
+  assertEquals(
+    resolveMutationScratchRoot(
+      envOf({ WORK_DIR: "relative/dir", HOME: "rel" }),
+    ),
+    null,
+  );
+  assertEquals(resolveMutationScratchRoot(envOf({})), null);
+});
+
+Deno.test("makeMutationTempDir - uses TMPDIR when it is writable", async () => {
+  const testRoot = await Deno.makeTempDir({ prefix: "vibe-mutation-test-" });
+  try {
+    await Deno.mkdir(`${testRoot}/tmp`);
+    const made = await makeMutationTempDir(
+      envOf({ TMPDIR: `${testRoot}/tmp`, WORK_DIR: `${testRoot}/work` }),
+    );
+    assert(made.startsWith(`${testRoot}/tmp/`), made);
+    assertEquals(await pathExists(`${testRoot}/work/.mutation-scratch`), false);
+    await Deno.remove(made, { recursive: true });
+  } finally {
+    await Deno.remove(testRoot, { recursive: true });
+  }
+});
+
+Deno.test("makeMutationTempDir - falls back to a private work-volume root when TMPDIR refuses", async () => {
+  const testRoot = await Deno.makeTempDir({ prefix: "vibe-mutation-test-" });
+  try {
+    const work = `${testRoot}/work`;
+    const root = `${work}/.mutation-scratch`;
+    const made = await makeMutationTempDir(
+      envOf({ TMPDIR: `${testRoot}/missing`, WORK_DIR: work }),
+    );
+    assert(made.startsWith(`${root}/`), made);
+    assert((await Deno.stat(made)).isDirectory);
+    await Deno.writeTextFile(`${made}/probe.txt`, "writable");
+    assertEquals(((await Deno.stat(root)).mode ?? 0) & 0o077, 0);
+    await Deno.remove(made, { recursive: true });
+  } finally {
+    await Deno.remove(testRoot, { recursive: true });
+  }
+});
+
+Deno.test("makeMutationTempDir - rejects naming both causes when neither is writable", async () => {
+  const testRoot = await Deno.makeTempDir({ prefix: "vibe-mutation-test-" });
+  try {
+    await Deno.writeTextFile(
+      `${testRoot}/file`,
+      "a regular file, not a directory",
+    );
+    const work = `${testRoot}/file/work`;
+    let message = "";
+    try {
+      await makeMutationTempDir(
+        envOf({ TMPDIR: `${testRoot}/missing`, WORK_DIR: work }),
+      );
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+    }
+    assertStringIncludes(message, "system temp directory:");
+    assertStringIncludes(message, `${work}/.mutation-scratch`);
+  } finally {
+    await Deno.remove(testRoot, { recursive: true });
+  }
+});
+
+Deno.test("runMutationCheck rust - real seams: an unwritable temp dir is reported as not writable before cargo runs", async () => {
+  const testRoot = await Deno.makeTempDir({ prefix: "vibe-mutation-test-" });
+  try {
+    const repo = `${testRoot}/repo`;
+    await Deno.mkdir(`${repo}/src`, { recursive: true });
+    await Deno.writeTextFile(`${repo}/Cargo.toml`, '[package]\nname = "x"\n');
+    await Deno.writeTextFile(
+      `${repo}/src/lib.rs`,
+      "pub fn f() -> bool {\n    // added\n    true\n}\n",
+    );
+    await Deno.writeTextFile(`${testRoot}/file`, "not a directory");
+    const diff = [
+      "diff --git a/src/lib.rs b/src/lib.rs",
+      "--- a/src/lib.rs",
+      "+++ b/src/lib.rs",
+      "@@ -1,3 +1,4 @@",
+      " pub fn f() -> bool {",
+      "+    // added",
+      "     true",
+      " }",
+      "",
+    ].join("\n");
+    const seams = defaultMutationRunnerSeams({
+      TMPDIR: `${testRoot}/missing`,
+      WORK_DIR: `${testRoot}/file/work`,
+    });
+    const r = await runMutationCheck(
+      { repoPath: repo, diff, budgetSeconds: 60 },
+      seams,
+    );
+    assert(r.kind === "error", JSON.stringify(r));
+    assert(r.reason.startsWith(MUTATION_TEMP_DIR_UNWRITABLE), r.reason);
+  } finally {
+    await Deno.remove(testRoot, { recursive: true });
+  }
 });
