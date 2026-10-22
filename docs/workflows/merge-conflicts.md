@@ -506,8 +506,8 @@ flowchart TD
   `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts are spent; assesses the head
   with `assessGatedHead`. Every `milestone/**` head, gated or not, looks for
   the takeover's own open fix PR (`findOpenMilestoneFixPr` with the
-  `takeover-` discriminator) and, when that one is open, reuses it — no
-  marker, no second PR. An open CI or review-feedback fix PR does not count.
+  `takeover-` discriminator) and, when that one is open, same-repository and
+  fleet-authored, reuses it — no marker, no second PR. An open CI or review-feedback fix PR does not count.
   An unreadable fix-PR listing fails loud rather than reading as "none".
 - Then posts an attempt marker `pass="takeover"` with the head sha, e.g.
   `<!-- vibe-coder:merge-conflict-attempt n="2" pass="takeover" head="abc1234" -->`,
@@ -549,7 +549,8 @@ flowchart TD
   `failed`. Both conclusions name the head the attempt
   ran against, so the next attempt is due at once on a moved head. Either way
   no new attempt runs in that call; the next takeover starts one. A fix PR
-  that is still open stands down as `fix-pr-reused`, posting nothing. An
+  that is still open, owned by the fleet and same-repository, stands down as
+  `fix-pr-reused`, posting nothing. An
   empty, unparsable or unreadable listing, or an unreadable behind count,
   throws and posts nothing. When that attempt has no such PR, it was
   disrupted, not delivered, and a fresh attempt runs. Until a later takeover

@@ -52,6 +52,7 @@ import { scanWorkflowsForHygiene } from "./workflow_hygiene_check.ts";
 import { runMermaidCheck } from "./mermaid_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
 import { runSemgrepCheck } from "./semgrep_check.ts";
+import { runCheckovCheck } from "./checkov_check.ts";
 import { checkReleaseTagRuleset } from "./release_tag_ruleset_check.ts";
 import {
   RELEASE_TAG_RULESET_PATH,
@@ -1193,6 +1194,19 @@ async function runSemgrepQualityCheck(
 }
 
 /**
+ * Local Checkov scan (Issue #3972) — the same CI-pinned CloudFormation scan
+ * the blocking `checkov.yml` PR check runs, so a template finding is met before
+ * the push rather than after it. SKIPPED loudly, with the reason, when no
+ * pinned checkov is reachable; strict mode promotes that to FAILED.
+ */
+async function runCheckovQualityCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const result = await runCheckovCheck(config.scriptDir);
+  return { name: "checkov", status: result.status, output: result.output };
+}
+
+/**
  * Whether a committed ruleset payload is present in this checkout.
  *
  * Only a genuine absence answers `false` — the worker's gate runs over
@@ -1770,6 +1784,14 @@ export async function runQualityGate(
   // SAST finding is met before the push rather than after it. Skipped loudly
   // when semgrep is unavailable.
   mainChecks.push(() => runSemgrepQualityCheck(config));
+
+  // Local Checkov scan (Issue #3972) — only where the blocking `checkov.yml`
+  // workflow exists, so the stage mirrors a check the repo actually runs.
+  if (
+    await payloadExists(`${config.scriptDir}/.github/workflows/checkov.yml`)
+  ) {
+    mainChecks.push(() => runCheckovQualityCheck(config));
+  }
 
   // Release-tag ruleset reconciliation (Issue #1049) — only in a checkout that
   // carries the committed payload, so the worker's gate over a monitored repo

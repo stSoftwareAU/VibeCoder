@@ -129,9 +129,10 @@ the refresh sweep ignore it.
 
 ## What is deliberately not on this page
 
-- **Tools we run** — ShellCheck, Semgrep, CodeQL, gitleaks, trufflehog, Deno,
-  and the rest. They are dependencies with versions and a supply-chain gate of
-  their own, not ideas we absorbed. The dependency inventory tracks those.
+- **Tools we run** — ShellCheck, Semgrep, Checkov, CodeQL, gitleaks,
+  trufflehog, Deno, and the rest. They are dependencies with versions and a
+  supply-chain gate of their own, not ideas we absorbed. The dependency
+  inventory tracks those.
 - **Our own reports.** The gap analyses under [`security/`](security/README.md)
   and the [spec-kit comparison](SPEC-KIT-COMPARISON.md) are ours; the sources
   they assess are credited above.

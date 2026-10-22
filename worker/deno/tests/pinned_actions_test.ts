@@ -8,6 +8,9 @@
 
 import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
+  CHECKOV_IMAGE,
+  CHECKOV_IMAGE_DIGEST,
+  CHECKOV_IMAGE_TAG,
   PINNED_ACTIONS,
   pinnedAction,
   SEMGREP_IMAGE,
@@ -63,6 +66,26 @@ Deno.test("pinned_actions - semgrep image is digest-pinned", () => {
     `semgrep/semgrep:${SEMGREP_IMAGE_TAG}@${SEMGREP_IMAGE_DIGEST}`,
   );
   assert(/^\d+\.\d+\.\d+$/.test(SEMGREP_IMAGE_TAG), "release tag shape");
+});
+
+Deno.test("pinned_actions - checkov image is digest-pinned", () => {
+  assertEquals(
+    /^sha256:[0-9a-f]{64}$/.test(CHECKOV_IMAGE_DIGEST),
+    true,
+    `"${CHECKOV_IMAGE_DIGEST}" is not a sha256 image digest`,
+  );
+  // Tag + digest: immutable AND trackable by an updater.
+  assertEquals(
+    CHECKOV_IMAGE,
+    `bridgecrew/checkov:${CHECKOV_IMAGE_TAG}@${CHECKOV_IMAGE_DIGEST}`,
+  );
+  assert(/^\d+\.\d+\.\d+$/.test(CHECKOV_IMAGE_TAG), "release tag shape");
+  assert(
+    /^bridgecrew\/checkov:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/.test(
+      CHECKOV_IMAGE,
+    ),
+    `"${CHECKOV_IMAGE}" is not a tag+digest checkov image reference`,
+  );
 });
 
 Deno.test("pinned_actions - resolution is absent or one of the two modes", () => {

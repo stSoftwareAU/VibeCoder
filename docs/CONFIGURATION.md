@@ -4804,8 +4804,8 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell and sweep ledger `sweptAt`
-ancestry) still run and can fail the run. Unlike Step 1b, the completion gate
+fmt/lint, cargo fmt, markdownlint, cspell, sweep ledger `sweptAt` ancestry and
+the Floci CloudFormation deploy test) still run and can fail the run. Unlike Step 1b, the completion gate
 checks every non-merge commit the branch has ahead of the PR base
 (`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
 ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
@@ -4854,7 +4854,9 @@ The hook runs two stages:
    completion phase widens the range to every non-merge commit ahead of the PR
    base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
-   config would check, see below):
+   config would check, see below). The one exception is the Floci deploy test
+   below: a changed file only triggers it, and it is passed no files, so it
+   deploys every template in `infra/cloudformation/`, changed or not:
    - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
      cts, json, jsonc, md, markdown) and `deno lint --permit-no-files` (the
      ts/js family), per outermost `deno.json` / `deno.jsonc` directory. Only
@@ -4896,7 +4898,22 @@ The hook runs two stages:
      `git symbolic-ref --short refs/remotes/origin/HEAD`), the same check CI's
      "Sweep ledger sweptAt ancestry" step makes, so a branch commit recorded as
      `sweptAt` is caught before the push. A shallow clone is deepened first.
-     When no ledger file changed, this check makes no git calls.
+     When no ledger file changed, this check makes no git calls;
+   - **Floci CloudFormation deploy test** (Issue #3727), only when the push
+     adds or modifies a file whose path starts with `infra/cloudformation/` and
+     the repo tracks `infra/cloudformation/test-floci.sh`: it runs
+     `bash infra/cloudformation/test-floci.sh` from the repo root, after the
+     other changed-file checks. That is the same script
+     `.github/workflows/floci.yml` runs in CI. Outside CI, a template that
+     creates an `AWS::EC2::Instance` when there is no Docker socket is printed
+     `SKIPPED (needs Docker): <template>` and left to CI. When every template
+     is skipped the script exits 0 there, before it checks for the `aws` CLI
+     or starts anything. Otherwise it exits 1 when the `aws` CLI is missing,
+     and only then starts the baked `floci` on `127.0.0.1:4566` if nothing
+     answers there. The worker container has no Docker socket and no `aws`
+     CLI, and today's only template creates an `AWS::EC2::Instance`, so inside
+     the container this check skips it, exits 0 and never starts `floci`; only
+     a host with Docker and the `aws` CLI exercises it.
 2. **Configured `pre-flight` commands.** The commands are resolved by the
    run's repo from `repo_config`, so every agent run that names its repo gets
    that repo's `pre-flight` commands in the hook; a run that names no repo gets
@@ -4908,8 +4925,10 @@ start, or times out refuses the push; markdownlint configured but
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a changed sweep ledger file whose default branch
 cannot be resolved, whose history cannot be deepened, or whose slice `sweptAt`
-is not on the default branch refuses the push; a missing hook module, spec or
-`deno` binary refuses the push. Refusals print lines starting
+is not on the default branch refuses the push; a Floci deploy test that exits
+non-zero, including when Floci cannot be started or the `aws` CLI is missing for
+a deployable template, refuses the push; a missing hook module, spec or `deno`
+binary refuses the push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
 pre-flight (the hook reuses `runPreFlightGate`).
 

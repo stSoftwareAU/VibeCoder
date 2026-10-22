@@ -166,6 +166,26 @@ export const SEMGREP_IMAGE =
   `semgrep/semgrep:${SEMGREP_IMAGE_TAG}@${SEMGREP_IMAGE_DIGEST}`;
 
 /**
+ * Checkov container image digest: the multi-arch OCI index (manifest-list)
+ * digest of `bridgecrew/checkov:3.3.29`, resolved from the Docker Hub registry
+ * on 2026-10-20. The tag was pushed 2026-10-13, so it is past the 24h
+ * supply-chain quarantine (Issue #1613).
+ */
+export const CHECKOV_IMAGE_DIGEST =
+  "sha256:3cc125b5337717b7303dbddd4e79374c120687b5ff6a24f9abdad56b562469f3";
+
+/** Release tag the Checkov digest was resolved from. */
+export const CHECKOV_IMAGE_TAG = "3.3.29";
+
+/**
+ * Fully-qualified, tag+digest-pinned Checkov container image reference. This
+ * is the image the CI Checkov job and the local quality-gate stage run; the
+ * scan args and pass/fail judge live in `checkov_report.ts`.
+ */
+export const CHECKOV_IMAGE =
+  `bridgecrew/checkov:${CHECKOV_IMAGE_TAG}@${CHECKOV_IMAGE_DIGEST}`;
+
+/**
  * Render a `uses:` value pinned to an immutable commit SHA, with the
  * human-readable version as a trailing YAML comment.
  *

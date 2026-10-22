@@ -63,6 +63,11 @@ jobs:
     permissions:
       contents: read
 
+  checkov:
+    uses: ./.github/workflows/checkov.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
+    permissions:
+      contents: read
+
   gate:
     needs:
       - validate-scripts
@@ -70,6 +75,7 @@ jobs:
       - gitleaks
       - markdown-lint
       - semgrep
+      - checkov
     # Always runs, so a cancelled or skipped dependency is judged, not skipped
     # past: the script treats anything but `success` as a closed gate.
     if: always()

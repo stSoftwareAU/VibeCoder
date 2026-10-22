@@ -17,8 +17,10 @@ import { createDefaultRegistry } from "../mod.ts";
 import type { WorkerConfig } from "../types.ts";
 import { makeRecordingLogger } from "./support/fake_claim_hub.ts";
 import {
+  addIssue,
   type FakeGh,
   fakeStore,
+  FLEET_LOGIN,
   isWriteCall,
   routingFakeGh,
 } from "./support/routing_fake_gh.ts";
@@ -52,7 +54,11 @@ function newGh(): FakeGh {
   );
 }
 
-async function run(args: Record<string, unknown>, gh: FakeGh = newGh()) {
+async function run(
+  args: Record<string, unknown>,
+  gh: FakeGh = newGh(),
+  extra: Partial<RouteIssueDeps> = {},
+) {
   const deps: RouteIssueDeps = {
     ghCommandFn: gh.ghCommandFn,
     readTextFile: async (path) => {
@@ -63,6 +69,7 @@ async function run(args: Record<string, unknown>, gh: FakeGh = newGh()) {
     },
     now: () => new Date("2026-10-15T00:00:00Z"),
     logger: makeRecordingLogger().logger,
+    ...extra,
   };
   const result = await routeIssueCommand.execute(
     { ...args, __testDeps: deps },
@@ -108,6 +115,41 @@ Deno.test("route-issue - a live run files in the owner repository and prints a s
   assertStringIncludes(issue!.body, "Labels not migrated: enhancement");
   assertEquals((result.data as RouteIssueCreateData).mode, "create");
 });
+
+const WORKER_TITLE = "Lane worktree heal for a dangling HEAD";
+const OWNED_BODY =
+  `<!-- issue-routing owner=${VIBE} subject=${VIBE} kind=implementation -->`;
+
+for (const closedAt of [null, "2020-01-01T00:00:00Z"]) {
+  Deno.test(
+    `route-issue - under the injected clock a same-titled owned issue ${
+      closedAt === null
+        ? "that is open is reused"
+        : "closed inside the window suppresses the filing"
+    }, with no write (Issue #3854)`,
+    async () => {
+      const gh = newGh();
+      const existing = addIssue(gh.store, VIBE, WORKER_TITLE, OWNED_BODY);
+      existing.closedAt = closedAt;
+      // 2020-01-15 puts a 2020-01-01 close inside the 30-day duplicate window; on
+      // the wall clock it is far outside it, and a new issue would be filed.
+      const { result } = await run(
+        { repo: VIBE, title: WORKER_TITLE, "body-file": "worker.md" },
+        gh,
+        {
+          now: () => new Date("2020-01-15T00:00:00Z"),
+          authors: { fleetAuthors: [FLEET_LOGIN] },
+        },
+      );
+      assertEquals(result.success, true);
+      const action = closedAt === null ? "reused" : "suppressed";
+      assertStringIncludes(result.message, `route-issue ${action}: ${VIBE}#1`);
+      assertEquals((result.data as RouteIssueCreateData).action, action);
+      assertEquals(gh.store.issues.length, 1, "no second issue was filed");
+      assertEquals(gh.calls.filter(isWriteCall), []);
+    },
+  );
+}
 
 Deno.test("route-issue - an ambiguous owner files nothing and exits non-zero with the basis", async () => {
   const { result, gh } = await run({
