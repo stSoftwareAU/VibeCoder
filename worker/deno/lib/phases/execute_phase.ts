@@ -820,13 +820,13 @@ async function executeClaudeBody(
   // The run's provider and sub-agent switches, decided before spawn (Issue
   // #4109): a non-Claude provider that cannot carry `--agents` is rerouted or
   // stripped here, not refused later by the #4010 guard.
-  const plannedProvider = allocation && !allocation.external
-    ? agentProviderById("claude")!
-    : plannedActiveAgentProvider();
   const issueRunPlan = externalOrchestration
     ? undefined
     : planIssueRunProvider({
-      provider: plannedProvider,
+      // Only reached when `allocation` (if any) is non-external.
+      provider: allocation
+        ? agentProviderById("claude")!
+        : plannedActiveAgentProvider(),
       executorSplit: requestedExecutorSplit,
       // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
       // #2812); `issue_reviewer_agents: false` opts out.
