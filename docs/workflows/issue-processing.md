@@ -1311,7 +1311,7 @@ as its own numbered REQUIRED ITEM. That turn may change code for a verifier item
 afterwards. Findings still present on the re-run are reported like other
 summary-gate blocks: a `failure` with no PR, or `summary_incomplete` over an
 existing PR, with the comment on the issue thread. In the existing-PR case,
-auto-merge is withheld, `standing-violation` is applied and the surviving
+auto-merge is withheld (and disarmed if already armed), `standing-violation` is applied and the surviving
 verifier findings are also posted on the PR (Issue #3796). A finding is
 settled by a fix or an evidence-backed dispute naming the finding in the
 final message; marking a criterion partial, listing a known gap or noting a
@@ -2485,7 +2485,7 @@ confirmed finding. A failed invocation, malformed reply or unchanged sentence
 therefore cannot silently clear the block. A later block folded with another
 gate does not get this extra turn. A surviving manual or source-comment finding
 holds an existing PR whether the block is claim-check-only or mixed:
-auto-merge is withheld,
+auto-merge is withheld (and disarmed if already armed),
 `standing-violation` is applied, and the findings are posted with the existing
 worker repair marker so PR feedback can act on them. With no PR, the run fails.
 
@@ -3130,9 +3130,10 @@ documentation-shortfall rule, "do not change the code", and "this turn cannot
 change code" is not a settling reason. The quality gate re-runs over the
 changed tree before completion re-runs. If a later block in the same run
 finalises an existing PR as `summary_incomplete` while such a violation is
-still standing, the worker does not arm auto-merge on that PR and labels it
-`standing-violation` instead, logging a warning; the rest of finalisation is
-unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
+still standing, the worker does not arm auto-merge on that PR, labels it
+`standing-violation`, and disarms (`gh pr merge --disable-auto`) any auto-merge
+an earlier pass had already armed (Issue #4075), logging a warning; the rest of
+finalisation is unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
 skips a PR carrying `standing-violation` and disarms one that is already armed
 (`gh pr merge --disable-auto`), so the sweep never arms a held PR
 (Issue #3517). The CI-fix pass honours the label too: after it pushes a fix
