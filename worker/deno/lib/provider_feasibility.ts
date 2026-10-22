@@ -24,6 +24,7 @@
 import {
   type AgentInvocationRequest,
   agentProviderById,
+  type AgentProviderDescriptor,
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
 } from "./agent_provider.ts";
@@ -195,6 +196,21 @@ export function probeInvocationCapabilities(
 ): ProviderInvocationCapabilities | undefined {
   const descriptor = agentProviderById(providerId);
   if (!descriptor) return undefined;
+  return probeDescriptorInvocationCapabilities(descriptor);
+}
+
+/**
+ * Ask a descriptor's `buildInvocation` what its CLI carries (Issue #4109).
+ *
+ * The descriptor-taking form of {@link probeInvocationCapabilities}, for a
+ * caller that holds a provider it did not register.
+ *
+ * @param descriptor - The provider descriptor to probe.
+ * @returns The capabilities the descriptor's argv carries.
+ */
+export function probeDescriptorInvocationCapabilities(
+  descriptor: AgentProviderDescriptor,
+): ProviderInvocationCapabilities {
   const request: AgentInvocationRequest = {
     prompt: "feasibility probe",
     model: "feasibility-probe",

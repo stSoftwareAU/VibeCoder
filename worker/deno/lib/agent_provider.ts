@@ -380,8 +380,11 @@ export interface AgentInvocationRequest {
    * **Absent — the default — emits no argument at all**, so an invocation
    * that does not ask for the split is byte-for-byte the argv the worker has
    * always built and every sub-agent inherits the phase's model. Only the
-   * Claude CLI takes the flag; the other providers' argv never carries it,
-   * and the runner refuses a native run that asked for it (Issue #4010).
+   * Claude CLI takes the flag; the other providers' argv never carries it.
+   * The issue-run path decides this before spawn: it reroutes the run to
+   * Claude or strips the definitions (see `lib/issue_run_provider_agents.ts`).
+   * The runner's refusal of a native run that still asks for them (Issue
+   * #4010) is only a backstop for callers that bypass that planner.
    */
   agents?: Readonly<Record<string, AgentDefinition>>;
   /** Session continuity state, when session resume is enabled. */
@@ -1116,10 +1119,11 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
     }
     // Sub-agent definitions (Issue #2342) name Anthropic tier aliases this
     // endpoint cannot resolve, so they are dropped from the argv — but stated,
-    // never in silence. The runner then refuses a native run whose argv lost
-    // its `--agents` before spawn (Issue #4010), so a split configured under
-    // DeepSeek fails loud rather than running as one that looks split and is
-    // not.
+    // never in silence. The issue-run path reroutes such a run to Claude or
+    // strips the definitions before spawn (lib/issue_run_provider_agents.ts);
+    // the runner's refusal of a native run whose argv lost its `--agents`
+    // (Issue #4010) is only a backstop, so a split configured under DeepSeek
+    // never runs as one that looks split and is not.
     // The advisor edit guard goes with them (Issue #2344): without executors
     // to make the edits, a guard here would deny the advisor's own and leave
     // the run unable to edit anything.
