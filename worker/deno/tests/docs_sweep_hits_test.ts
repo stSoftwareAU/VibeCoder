@@ -1126,6 +1126,54 @@ Deno.test("extractRemovedDocPhrases - a phrase the same hunk's added lines still
   );
 });
 
+Deno.test("extractRemovedDocPhrases - an old value the new value merely contains is still returned (Issue #4105)", () => {
+  assertEquals(
+    extractRemovedDocPhrases(
+      "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -9 +9 @@\n" +
+        "-| timeout | `30` |\n+| timeout | `300` |\n",
+    ),
+    ["30"],
+  );
+  assertEquals(
+    extractRemovedDocPhrases(
+      "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -9 +9 @@\n" +
+        "-| timeout | `30` |\n+| timeout | `30` seconds |\n",
+    ),
+    [],
+  );
+});
+
+Deno.test("extractRemovedDocPhrases - a lone dash splits a run and both runs are returned (Issue #4105)", () => {
+  assertEquals(
+    extractRemovedDocPhrases(
+      "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -1 +0,0 @@\n" +
+        "-first old retry window - second old retry window\n",
+    ),
+    ["first old retry window", "second old retry window"],
+  );
+});
+
+Deno.test("extractRemovedDocPhrases - a no-newline marker does not end the hunk before its added line (Issue #4105)", () => {
+  assertEquals(
+    extractRemovedDocPhrases(
+      "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -1 +1 @@\n" +
+        "-Old retry window stays open\n\\ No newline at end of file\n" +
+        "+Old retry window stays open for a day\n\\ No newline at end of file\n",
+    ),
+    [],
+  );
+});
+
+Deno.test("extractRemovedDocPhrases - a diff cut off inside its last hunk still returns that hunk's phrases (Issue #4105)", () => {
+  assertEquals(
+    extractRemovedDocPhrases(
+      "--- a/docs/a.md\n+++ b/docs/a.md\n@@ -3 +3,2 @@\n" +
+        "-Old retry window stays open\n+one added line",
+    ),
+    ["Old retry window stays open"],
+  );
+});
+
 Deno.test("extractRemovedDocPhrases - removals from non-doc, archived and deleted files are not read (Issue #4105)", () => {
   const diff = [
     "--- a/worker/deno/lib/x.ts",
