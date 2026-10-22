@@ -30,6 +30,14 @@
       {
         "path": "worker/deno/setup/update_mode_setup.ts",
         "line": 660,
+        "outcome": "non-interactive run keeps an update_mode the config already holds even when configExisted is false (existing.value.update_mode operand)",
+        "test": "worker/deno/tests/setup_update_mode_test.ts",
+        "testName": "runUpdateModeSetup - a non-interactive run keeps an update_mode the config already holds, even when configExisted is false",
+        "flipWentRed": "mutation M3 (existing.value.update_mode operand dropped): the test went red"
+      },
+      {
+        "path": "worker/deno/setup/update_mode_setup.ts",
+        "line": 660,
         "outcome": "non-interactive fresh config with neither operand true falls through to the frozen pin",
         "test": "worker/deno/tests/setup_update_mode_test.ts",
         "testName": "runUpdateModeSetup - a non-interactive fresh config pins to the latest release without prompting",

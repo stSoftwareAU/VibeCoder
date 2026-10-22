@@ -1137,6 +1137,54 @@ Deno.test("runUpdateModeSetup - a pre-existing config with no update_mode offers
   }
 });
 
+// Guards the `existing.value.update_mode !== undefined` operand of the
+// non-interactive early return in worker/deno/setup/update_mode_setup.ts.
+Deno.test("runUpdateModeSetup - a non-interactive run keeps an update_mode the config already holds, even when configExisted is false", async () => {
+  const { dir, path } = await tempConfig({
+    update_mode: "dynamic",
+    pinned_ref: "v1.2.3",
+  });
+  try {
+    let released = 0;
+    const h = harness([], {
+      interactive: () => false,
+      ask: () => {
+        throw new Error("a non-interactive run must not prompt");
+      },
+      latestRelease: () => {
+        released++;
+        return Promise.resolve({
+          ok: true,
+          value: { tag: LATEST_RELEASE, version: [1, 5, 0] },
+        });
+      },
+    });
+    const result = await runUpdateModeSetup({
+      configExisted: false,
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    assertEquals(result.value.settings.update_mode, "dynamic");
+    assertEquals(result.value.settings.pinned_ref, "v1.2.3");
+    assertEquals(result.value.changed, false);
+    assertEquals(result.value.prompted, false);
+    assertEquals(
+      released,
+      0,
+      "a host that already holds update_mode is not re-pinned",
+    );
+    assertEquals(await readConfig(path), {
+      update_mode: "dynamic",
+      pinned_ref: "v1.2.3",
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("parseConfigExistedFlag - an absent flag or any other value is undefined", () => {
   assertEquals(parseConfigExistedFlag(["update-mode"]), undefined);
   assertEquals(
