@@ -107,9 +107,11 @@ export function computePacedSleepSeconds(
   const stretched = affordablePerCycle > 0
     ? base * (spentLastCycle / affordablePerCycle)
     : MAX_PACED_SLEEP_SECONDS;
-  const sleepSeconds = Math.min(
-    MAX_PACED_SLEEP_SECONDS,
-    Math.max(base, stretched),
+  // Cap the stretch, not the sleep: a jittered base above the cap stands, so
+  // pacing can lengthen a sleep but never shorten one.
+  const sleepSeconds = Math.max(
+    base,
+    Math.min(MAX_PACED_SLEEP_SECONDS, stretched),
   );
   const reason = affordablePerCycle <= 0
     ? "remaining budget is at or below the reserve"
