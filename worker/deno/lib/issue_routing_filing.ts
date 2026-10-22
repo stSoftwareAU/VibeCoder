@@ -9,18 +9,25 @@
  *    unless the caller passes an explicit `decision`. An `ambiguous`
  *    decision files nothing and returns the basis.
  * 2. `search` — {@link findRoutingDuplicates} looks for an open, or recently
- *    closed, issue or PR with the same title in the owner repository. The
- *    lowest-numbered match is returned instead of filing.
+ *    closed, issue or PR with the same title in the owner repository. Any
+ *    match means nothing is filed. A dedup hit may suppress a filing; only an
+ *    owned, open match may be reused or written to (Issue #3854), so
+ *    {@link findOwnedOpenArtefact} then looks for an open, fleet-authored issue
+ *    with the same title whose body carries the routing marker. The
+ *    lowest-numbered such issue is returned as `reused`; otherwise the
+ *    lowest-numbered dedup match is returned as `suppressed`, with no write.
  * 3. `permission` — {@link requireWriteAccess} on the owner repository.
  * 4. `create` — `gh issue create`, with a `Routing:` line and an
  *    `<!-- issue-routing … -->` marker carrying the four audit fields.
- * 5. `recheck` — concurrent filers: search again. When a lower-numbered
- *    match now exists, the new issue is linked to it and closed as its
- *    duplicate, and the lower-numbered issue is returned.
+ * 5. `recheck` — concurrent filers: search again. When a lower-numbered owned,
+ *    open, fleet-authored match now exists, the new issue is linked to it and
+ *    closed as its duplicate, and the lower-numbered issue is returned.
  *
  * `dryRun` runs the read-only steps (classify, search, permission) and makes
  * no `gh` write call. A retry after a failure part-way through finds the
- * issue the earlier run created in step 2, so it never files a second one.
+ * issue the earlier run created in step 2's dedup, so it never files a second
+ * one: it reports that issue as `reused` when it is owned, open and
+ * fleet-authored, and as `suppressed` otherwise.
  *
  * Labels pass through `filterReservedLabelsWithWarning`, so a reserved label
  * is never applied. Filing in a repository other than the target never
@@ -43,13 +50,16 @@ import {
   type IssueRoutingContext,
   type RoutingDecision,
 } from "./issue_routing_classifier.ts";
+import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import {
   findRoutingDuplicates,
   type GhCommandFn,
   type IssueRoutingGithubDeps,
+  normaliseRoutingTitle,
   requireWriteAccess,
 } from "./issue_routing_github.ts";
 import { defaultLogger } from "./logger.ts";
+import { findOwnedOpenArtefact } from "./owned_open_artefact.ts";
 
 /** A draft issue to file. */
 export interface RoutedIssueDraft {
@@ -65,6 +75,8 @@ export type RoutedIssueAction =
   | "reused"
   | "would-create"
   | "would-reuse"
+  /** A same-titled match that is not owned and open: nothing filed, nothing written. */
+  | "suppressed"
   | "ambiguous";
 
 /** The step of {@link fileRoutedIssue} that failed. */
@@ -106,8 +118,13 @@ export interface FileRoutedIssueOptions extends IssueRoutingGithubDeps {
   decision?: RoutingDecision;
   /** Configured custom labels, reserved like the built-in ones (Issue #847). */
   extraReservedLabels?: readonly string[];
+  /** Fleet author set for the owned-artefact checks; omitted means configured identity. */
+  authors?: AlertDedupAuthorOptions;
   logger?: Logger;
 }
+
+/** The hidden marker that makes an issue this tool's (the prefix is enough). */
+const OWNED_ISSUE_MARKER = "<!-- issue-routing";
 
 /** A failed step of a routed filing; the message names the step. */
 export class RoutedIssueFilingError extends Error {
@@ -207,6 +224,20 @@ export async function fileRoutedIssue(
     ghCommandFn: opts.ghCommandFn,
     now: opts.now,
   };
+  const gh: GhCommandFn = opts.ghCommandFn ?? runGhCommand;
+  // Search and recheck share one lookup: owned, open, fleet-authored, same title.
+  const findOwned = (repo: string, title: string) =>
+    findOwnedOpenArtefact({
+      repo,
+      kind: "issue",
+      marker: OWNED_ISSUE_MARKER,
+      search: `"${title.replace(/"/g, "")}" in:title`,
+      accept: (row) =>
+        normaliseRoutingTitle(row.title ?? "") === normaliseRoutingTitle(title),
+      ghCommandFn: gh,
+      authors: opts.authors,
+      log: (message) => logger.warn(message, { repo }),
+    });
 
   const decision = await step(
     "classify",
@@ -239,14 +270,28 @@ export async function fileRoutedIssue(
     return result("ambiguous", null);
   }
 
-  const existing = await step(
+  const duplicates = await step(
     "search",
     repository,
     decision,
     () => findRoutingDuplicates(repository, draft.title, deps),
   );
-  if (existing.length > 0) {
-    return result(opts.dryRun ? "would-reuse" : "reused", existing[0]!);
+  if (duplicates.length > 0) {
+    const owned = await step(
+      "search",
+      repository,
+      decision,
+      () => findOwned(repository, draft.title),
+    );
+    if (owned !== null) {
+      return result(opts.dryRun ? "would-reuse" : "reused", owned.number);
+    }
+    logger.warn(
+      "Issue routing filed nothing: a same-titled issue or PR exists but is " +
+        "not an owned, open, fleet-authored issue, so it is not reused",
+      { repo: repository, duplicate: duplicates[0] },
+    );
+    return result("suppressed", duplicates[0]!);
   }
 
   await step(
@@ -257,7 +302,6 @@ export async function fileRoutedIssue(
   );
   if (opts.dryRun) return result("would-create", null);
 
-  const gh: GhCommandFn = opts.ghCommandFn ?? runGhCommand;
   const labels = crossRepo ? [] : filterReservedLabelsWithWarning(
     requested,
     `${repository} routed issue`,
@@ -291,14 +335,16 @@ export async function fileRoutedIssue(
       ),
   );
 
-  // Concurrent filers converge on the lowest-numbered issue.
+  // Concurrent filers converge on the lowest-numbered owned, open match.
   const after = await step(
     "recheck",
     repository,
     decision,
-    () => findRoutingDuplicates(repository, draft.title, deps),
+    () => findOwned(repository, draft.title),
   );
-  const older = after.find((n) => n < number);
+  const older = after !== null && after.number < number
+    ? after.number
+    : undefined;
   if (older === undefined) return result("created", number);
 
   await step("close-duplicate", repository, decision, () =>
