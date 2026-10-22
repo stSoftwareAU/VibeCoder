@@ -61,6 +61,6 @@ Issue numbers this diff cites that are new to the doc:
 ## Test Plan
 
 - No test added or changed: the diff touches only `docs/pre-pr-ci-audit.md`. `markdownlint-cli2 docs/pre-pr-ci-audit.md` reports 0 issues.
-- `./quality.sh`: every stage passed except `deno tests`, which failed on 3 tests that need the `codex` provider (`claude_runner_provider_fallback_4034_test.ts` twice and `external_orchestration_3642_config_test.ts`). This container image installs only `claude`, so they fail on the base branch too; the diff touches no code. CI runs the gate.
+- `./quality.sh`: every stage passed except `deno tests`, which failed on 3 tests that need the `codex` provider (`claude_runner_provider_fallback_4034_test.ts` twice and `external_orchestration_3642_config_test.ts`). This container image installs only `claude`, so the failure is environmental, and the diff touches no code. CI runs the gate.
 
 <!-- vibe-branch-outcomes -->
