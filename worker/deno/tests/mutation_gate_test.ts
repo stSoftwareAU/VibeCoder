@@ -484,6 +484,11 @@ Deno.test("buildMutationGateComment - names each survivor and the remedy", () =>
   assertStringIncludes(comment, "`lib/a.ts:12` — negated if condition");
   assertStringIncludes(comment, "No test went red");
   assertStringIncludes(comment, "exempt (untestable): <reason>");
+  assertStringIncludes(
+    comment,
+    "## Mutation check: changed lines are not pinned",
+  );
+  assertFalse(comment.includes("could not run (worker fault)"));
 });
 
 Deno.test("buildMutationGateComment - sanitises backticks and newlines", () => {
