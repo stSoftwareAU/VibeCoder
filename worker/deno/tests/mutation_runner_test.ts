@@ -1554,3 +1554,55 @@ Deno.test("mergeMutationResults - a not_checked result folds in at most ten surv
   assertEquals(reason.split(`${SCRIPT}:`).length - 1, 10, reason);
   assertEquals(reason.includes(`${SCRIPT}:11 `), false, reason);
 });
+
+Deno.test("defaultMutationRunnerSeams listShellTestFiles - finds shell tests, skips other files and skipped dirs, sorted", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "mut-shell-tests-" });
+  try {
+    await Deno.mkdir(`${repo}/scripts/tests`, { recursive: true });
+    await Deno.mkdir(`${repo}/node_modules/x`, { recursive: true });
+    for (
+      const f of [
+        "scripts/tests/b_test.sh",
+        "scripts/a.bats",
+        "scripts/run.sh",
+        "scripts/lib_test.ts",
+        "node_modules/x/c_test.sh",
+      ]
+    ) {
+      await Deno.writeTextFile(`${repo}/${f}`, "");
+    }
+    const list = defaultMutationRunnerSeams().listShellTestFiles;
+    assert(list !== undefined, "the real seams list shell tests");
+    assertEquals(await list(repo), [
+      "scripts/a.bats",
+      "scripts/tests/b_test.sh",
+    ]);
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("runMutationCheck shell - an extensionless file is a script only when its shebang names sh or bash", async () => {
+  const sh = "#!/usr/bin/env bash\nexport X=1\n";
+  const py = "#!/usr/bin/env python3\nprint(1)\n";
+  const f = shellFake(
+    { [`${REPO}/bin/tool`]: sh, [`${REPO}/bin/other`]: py },
+    () => ok(0),
+  );
+  const asShell = asKind(
+    await runMutationCheck(
+      shellInput(shellDiff("bin/tool", sh.trimEnd())),
+      f.seams,
+    ),
+    "not_checked",
+  );
+  assertStringIncludes(asShell.reason, "bin/tool");
+  asKind(
+    await runMutationCheck(
+      shellInput(shellDiff("bin/other", py.trimEnd())),
+      f.seams,
+    ),
+    "not_applicable",
+  );
+  assertEquals(f.calls.length, 0);
+});

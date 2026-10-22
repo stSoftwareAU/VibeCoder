@@ -620,10 +620,6 @@ async function runShell(
       ", ",
     )
   }`;
-  if (covered.length === 0) {
-    return { kind: "not_checked", language: "shell", reason };
-  }
-
   const result = await runShellMutants(covered, input, seams, budget);
   if (uncovered.length === 0 || result.kind === "error") return result;
   return {

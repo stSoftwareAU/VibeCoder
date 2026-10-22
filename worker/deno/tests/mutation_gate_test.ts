@@ -937,6 +937,37 @@ Deno.test("generateShellMutantsDetailed - structural lines are never deleted", (
   }
 });
 
+Deno.test("generateShellMutantsDetailed - each structural word as a command is never deleted or guarded", () => {
+  for (
+    const word of [
+      "if",
+      "then",
+      "else",
+      "elif",
+      "fi",
+      "for",
+      "while",
+      "until",
+      "do",
+      "done",
+      "case",
+      "esac",
+      "in",
+      "select",
+      "function",
+      "{",
+      "}",
+    ]
+  ) {
+    const descriptions = shellDescriptions(`${word} foo\n`, [1]);
+    assertFalse(descriptions.includes("deleted statement"), word);
+    assertFalse(
+      descriptions.includes("guarded statement off with `false &&`"),
+      word,
+    );
+  }
+});
+
 Deno.test("generateShellMutantsDetailed - bare structural keywords yield no mutants", () => {
   for (const line of ["fi", "else", "done", "esac", "then", "}", "{", ")"]) {
     assertEquals(shell(`${line}\n`, [1]).mutants, [], line);
