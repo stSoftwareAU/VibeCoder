@@ -878,10 +878,13 @@ function causeText(err: unknown): string {
  */
 export async function makeMutationTempDir(
   lookup: (name: string) => string | undefined,
+  /** The real `Deno.makeTempDir` in production; a test can force a refusal. */
+  makeTemp: (options: Deno.MakeTempOptions) => Promise<string> = (options) =>
+    Deno.makeTempDir(options),
 ): Promise<string> {
   const tmp = lookup("TMPDIR")?.trim();
   try {
-    return await Deno.makeTempDir({
+    return await makeTemp({
       prefix: "vibe-mutation-",
       ...(tmp ? { dir: tmp } : {}),
     });
@@ -902,7 +905,7 @@ export async function makeMutationTempDir(
       );
     }
     try {
-      return await Deno.makeTempDir({ dir: root, prefix: "vibe-mutation-" });
+      return await makeTemp({ dir: root, prefix: "vibe-mutation-" });
     } catch (fallbackErr) {
       throw new Error(
         `system temp directory: ${systemCause}; ${root}: ${

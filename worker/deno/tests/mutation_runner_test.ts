@@ -1315,39 +1315,33 @@ Deno.test("makeMutationTempDir - a pre-existing group/other-writable scratch roo
   }
 });
 
-Deno.test("makeMutationTempDir - a private scratch root whose temp dir cannot be made rejects naming the root and the cause", async () => {
+Deno.test("makeMutationTempDir - a fallback root whose temp dir is refused rejects naming the root and the cause", async () => {
   const testRoot = await Deno.makeTempDir({ prefix: "vibe-mutation-test-" });
-  const work = `${testRoot}/work`;
-  const root = `${work}/.mutation-scratch`;
   try {
-    await Deno.mkdir(root, { recursive: true });
-    // Private (no group/other bits) yet not writable by its owner.
-    await Deno.chmod(root, 0o500);
-    let writable = true;
-    try {
-      await Deno.writeTextFile(`${root}/probe`, "x");
-      await Deno.remove(`${root}/probe`);
-    } catch {
-      writable = false;
-    }
-    // Running as root, a 0500 directory still accepts writes, so the refusal
-    // cannot be provoked; skip rather than assert a false pass.
-    if (writable) return;
+    const work = `${testRoot}/work`;
+    const root = `${work}/.mutation-scratch`;
+    const fallbackDirs: string[] = [];
     const message = await rejectionMessage(
       makeMutationTempDir(
         envOf({ TMPDIR: `${testRoot}/missing`, WORK_DIR: work }),
+        (options) => {
+          if (options.dir === root) {
+            fallbackDirs.push(root);
+            return Promise.reject(
+              new Error("Permission denied (os error 13): tmpdir"),
+            );
+          }
+          return Deno.makeTempDir(options);
+        },
       ),
     );
     assert(message !== "", "expected a rejection");
     assertStringIncludes(message, "system temp directory:");
     assertStringIncludes(message, root);
     assertStringIncludes(message, "Permission denied");
+    // Positive control: the fallback really was reached with the root.
+    assertEquals(fallbackDirs, [root]);
   } finally {
-    try {
-      await Deno.chmod(root, 0o700);
-    } catch {
-      // The root was never created; nothing to restore.
-    }
     await Deno.remove(testRoot, { recursive: true });
   }
 });

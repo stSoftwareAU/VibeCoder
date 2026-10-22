@@ -27,6 +27,7 @@ import {
   type MutationCheckResult,
 } from "../lib/mutation_gate.ts";
 import type { MutationRunInput } from "../lib/mutation_runner.ts";
+import { SUMMARY_RULE_GATE_MARKER } from "../lib/failure_diagnosis.ts";
 
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f901122334455";
 const REPO = "stSoftwareAU/VibeCoder";
@@ -377,6 +378,7 @@ Deno.test("completion - an unwritable mutation temp dir blocks as a worker fault
   assertEquals(outcome.status, "failure");
   assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
   assertStringIncludes(outcome.reason ?? "", "worker fault");
+  assert((outcome.reason ?? "").startsWith(SUMMARY_RULE_GATE_MARKER));
   assert(outcome.category !== "quality_check", String(outcome.category));
   assertEquals(outcome.categories?.includes("internal_error"), true);
   assertEquals(
