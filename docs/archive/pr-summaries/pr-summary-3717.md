@@ -13,7 +13,7 @@ Version bump: no `VERSION` change; the change is documentation only.
 
 ### Intent and Rationale
 
-- The earlier evidence for the unattended path was a replay and one host's logs. That host holds no worker log from the window, so a live fleet record was needed.
+- The earlier evidence for the unattended path was a replay and one host's logs. That host's logs end at 2026-10-15 03:11Z (about five hours into the window) and hold no gate pass line, so a live fleet record was needed.
 - The run archive keeps the worker-assigned failure category per run, so a block by the completion-phase gate (`pre_push_gate`) can be counted across hosts without reading private logs.
 
 ### Essential Design Decisions
@@ -26,7 +26,7 @@ Version bump: no `VERSION` change; the change is documentation only.
 
 - Window: 2026-10-14 22:20Z (merge of #3716) to the latest archive record, 2026-10-22 20:04Z. 605 runs, 67 `pre_push_gate` blocks, on four hosts and 8 of 11 repos.
 - The archive stores the category, not the check. VibeCoder's 20 blocked issues were classified from their issue comments: 18 sweptAt, 2 `deno fmt`.
-- Pass lines (`Pre-push gate passed checks=[...]`, #3770) are in worker logs this host does not hold for the window; the doc says so.
+- Pass lines (`Pre-push gate passed checks=[...]`, #3770) are in worker logs; this host's logs end at 2026-10-15 03:11Z and hold no pass line, and it holds no worker log for the later days. The doc says so.
 
 ## Evidence
 

@@ -305,8 +305,9 @@ checks the gate runs.
 
 ### Completion-phase pre-push gate: fleet record
 
-The host logs above hold no gate line from the live window, so this record
-comes from the fleet's private run archive. It stores one metadata record per
+The host logs above end at 2026-10-15 03:11Z and hold no gate pass line, so
+the days after that are not covered by them. This record comes from the
+fleet's private run archive. It stores one metadata record per
 finished issue run, with the failure category the worker assigned. A block by
 the completion-phase gate carries the worker-written category `pre_push_gate`
 (`PRE_PUSH_GATE_MARKER`, `lib/failure_diagnosis.ts`). The window runs from the
@@ -378,9 +379,9 @@ Findings:
 - Four blocked runs (fleet-wide) already had a PR open, as described under
   [Known remaining limits](#known-remaining-limits).
 - Not observed: the checks that passing runs reached. The `Pre-push gate
-  passed checks=[...]` line (#3770) is in the worker log, and this host holds
-  no worker log from the window (its only worker log is the current run's), so
-  the pass lines are not in this record. The replay above remains the evidence
+  passed checks=[...]` line (#3770) is in the worker log. This host's logs
+  end at 2026-10-15 03:11Z and hold no pass line, and it holds no worker log
+  for the days after that, so the pass lines are not in this record. The replay above remains the evidence
   for which checks the gate runs.
 
 The pre-PR verifier has a public fleet-wide trace on VibeCoder. When it blocks,
@@ -479,8 +480,8 @@ Issue #3689 weakens or removes a CI, review or security gate.
   logs, and by the fleet-wide run archive (see Unattended worker path). The
   archive records 67 live gate blocks across four hosts, 22 of them on
   VibeCoder; it records the category, not the check, and not the checks passing
-  runs reached (#3770 logs those in the worker log, which this host did not
-  hold for the window).
+  runs reached (#3770 logs those in the worker log; this host's logs end at
+  2026-10-15 03:11Z and hold no pass line).
 - #3644 consumes two kinds of evidence. The CI tables have one row per failing
   run. VibeCoder rows give the check name, first failing SHA, run link, local,
   network or GitHub-exclusive class, and whether pre-flight ran an equivalent.
