@@ -772,7 +772,7 @@ Every `claude` child, on every phase, runs with Claude Code's deterministic
 sub-agent caps set in its spawn environment by
 [`worker/deno/lib/claude_env.ts`](../worker/deno/lib/claude_env.ts)
 (`CLAUDE_SUBAGENT_CAP_ENV`). The caps are honoured from Claude Code 2.1.217;
-the image pins 2.1.293 in [`container/tools.json`](../container/tools.json).
+the image pins 2.1.306 in [`container/tools.json`](../container/tools.json).
 
 | Variable | Value | CLI default | Effect |
 | --- | --- | --- | --- |
