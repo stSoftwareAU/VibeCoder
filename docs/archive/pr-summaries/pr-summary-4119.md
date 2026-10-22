@@ -79,9 +79,9 @@ from running the tests against the pre-fix commit.
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 The issue states four criteria under its `## Acceptance criteria` heading. Each
-is quoted verbatim below with its assessment. The `reviewer:` verdicts are
-recorded as pending because no independent Spec reviewer has been run against
-this diff. The assessments are self-checks by the author.
+is quoted verbatim below with its assessment. The `reviewer:` verdicts come from
+an independent Spec reviewer run against the diff and the issue body, which
+found every criterion met.
 
 - **met** — 1. "On a `.config.json` that already exists, a missing `update_mode`
   is read as what the host runs today (`dynamic`). Setup keeps it, interactive
@@ -131,8 +131,6 @@ about 30 existing test call sites now pass `configExisted`.
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 Violations: none found.
-
-clean:
 
 - clean: named tests exist — clean
 - clean: the STUB_DENO stub is narrow — clean
@@ -188,9 +186,15 @@ gained a member; left alone: `docs/DEPLOYMENT.md:196`,
 `docs/RELEASE-TAGGING.md:157` — still true, both link the unchanged SETUP.md
 anchor
 
-Quality gate: ./quality.sh — result pending
+Quality gate: ./quality.sh — PASSED (with skipped checks: config integration,
+skipped because no .config.json is present in the checkout).
 
 Not checked: the setup.ps1 tests need pwsh and are skipped where it is absent;
 run.ps1 has no release-notice code, so the WARNING change covers run.sh only.
+The two new script-driving suites,
+`worker/deno/tests/setup_sh_config_existed_test.ts` and
+`worker/deno/tests/setup_ps1_update_mode_test.ts`, are registered in
+`INTEGRATION_TEST_FILES` (`worker/deno/lib/integration_test_manifest.ts`), so
+they run in integration CI rather than in the quality gate.
 
 <!-- vibe-branch-outcomes -->
