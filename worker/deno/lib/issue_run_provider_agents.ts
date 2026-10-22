@@ -58,12 +58,14 @@ export interface IssueRunProviderPlan {
 
 /** Whether Claude is both enabled for this deployment and installed in the image. */
 function claudeUsable(selection: EnabledAgentProviderSelection): boolean {
-  const enabled = resolveEnabledAgentProviderIds(selection).includes(
-    CLAUDE_PROVIDER_ID,
-  );
+  // The image stamp is checked first: an enabled set naming a provider the
+  // image did not install throws, which would crash the run instead of
+  // stripping it (Issue #4109).
   const installed = imageAgentProviderIds(selection);
-  return enabled &&
-    (installed === undefined || installed.includes(CLAUDE_PROVIDER_ID));
+  if (installed !== undefined && !installed.includes(CLAUDE_PROVIDER_ID)) {
+    return false;
+  }
+  return resolveEnabledAgentProviderIds(selection).includes(CLAUDE_PROVIDER_ID);
 }
 
 /** Decide the provider and sub-agent switches for one issue run before spawn. */

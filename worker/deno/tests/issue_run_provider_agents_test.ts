@@ -9,6 +9,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   type EnabledAgentProviderSelection,
+  IMAGE_AGENT_PROVIDERS_ENV,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 import { buildIssueRunAgents } from "../lib/issue_executor_agents.ts";
@@ -17,15 +18,19 @@ import { createLogger } from "../lib/logger.ts";
 
 const NON_CLAUDE_PROVIDERS = ["codex", "gemini", "deepseek"];
 
-/** An enabled set naming `active` and the listed providers, with no image. */
+/**
+ * An enabled set naming `active` and the listed providers. `stamp` is the
+ * image stamp (the provider set the image installed); omit it for no image.
+ */
 function selectionFor(
   active: string,
   enabled: string[],
+  stamp?: string,
 ): EnabledAgentProviderSelection {
   return {
     configured: active,
     configuredProviders: enabled,
-    env: () => undefined,
+    env: (name) => name === IMAGE_AGENT_PROVIDERS_ENV ? stamp : undefined,
   };
 }
 
@@ -184,4 +189,57 @@ Deno.test("issue run provider - Claude enabled with no image stamp reroutes the 
   assertEquals(plan.outcome, "rerouted-to-claude");
   assertEquals(plan.provider.id, "claude");
   assertEquals(lines.length, 1, "one reroute warning");
+});
+
+Deno.test("issue run provider - Claude enabled but the image stamp lacks Claude strips the run (Issue #4109)", () => {
+  const lines: string[] = [];
+  const plan = planIssueRunProvider({
+    provider: resolveAgentProvider("codex"),
+    executorSplit: true,
+    reviewerAgents: false,
+    subAgentTier: "haiku",
+    selection: selectionFor("codex", ["codex", "claude"], "codex"),
+    logger: createLogger({ write: (line) => lines.push(line) }),
+  });
+
+  assertEquals(plan.outcome, "agents-stripped");
+  assertEquals(plan.provider.id, "codex");
+  assertEquals(plan.executorSplit, false);
+  assertEquals(plan.reviewerAgents, false);
+  assertEquals(plan.subAgentTier, "sonnet");
+  assertEquals(lines.length, 1, "one strip warning");
+});
+
+Deno.test("issue run provider - the same run reroutes to Claude when the image stamp lists Claude (Issue #4109)", () => {
+  const lines: string[] = [];
+  const plan = planIssueRunProvider({
+    provider: resolveAgentProvider("codex"),
+    executorSplit: true,
+    reviewerAgents: false,
+    subAgentTier: "haiku",
+    selection: selectionFor("codex", ["codex", "claude"], "codex,claude"),
+    logger: createLogger({ write: (line) => lines.push(line) }),
+  });
+
+  assertEquals(plan.outcome, "rerouted-to-claude");
+  assertEquals(plan.provider.id, "claude");
+  assertEquals(plan.executorSplit, true);
+  assertEquals(lines.length, 1, "one reroute warning");
+});
+
+Deno.test("issue run provider - Claude installed but not enabled strips the run; enabled operand decides (Issue #4109)", () => {
+  const lines: string[] = [];
+  const plan = planIssueRunProvider({
+    provider: resolveAgentProvider("codex"),
+    executorSplit: true,
+    reviewerAgents: false,
+    subAgentTier: "haiku",
+    selection: selectionFor("codex", ["codex"], "codex,claude"),
+    logger: createLogger({ write: (line) => lines.push(line) }),
+  });
+
+  assertEquals(plan.outcome, "agents-stripped");
+  assertEquals(plan.provider.id, "codex");
+  assertEquals(plan.executorSplit, false);
+  assertEquals(lines.length, 1, "one strip warning");
 });
