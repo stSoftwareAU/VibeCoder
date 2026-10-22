@@ -111,7 +111,6 @@ import { loadTrustedFollowUpAuthors } from "./escape_hatch_trusted_authors.ts";
 import { fetchTrustedBotReviewComments } from "./pr_review_context.ts";
 import { noteAgentRunWorkItem } from "./handler_watchdog.ts";
 import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
-import type { SyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
 import { getRunId } from "./run_id.ts";
 import {
   buildReviewerNoChangeEscalation,
@@ -325,14 +324,6 @@ export interface PrFeedbackProcessorDeps {
    * {@link syncPrBodyFromSummary}.
    */
   syncPrBodyFn?: typeof syncPrBodyFromSummary;
-  /**
-   * Files the follow-up a PR-body sync needs when this run's rewritten summary
-   * newly marks a criterion `partial` or `missing` on a body with no leading
-   * section (Issue #3678). Production wiring passes
-   * `buildSyncFollowUpFiling(config, githubUser)`; when absent, such a sync
-   * fails loudly instead of filing.
-   */
-  syncFollowUpFiling?: SyncFollowUpFiling;
   /**
    * Configured worker name, used in the refreshed PR body's footer
    * (Issue #3089). Omitted → empty string.
@@ -1863,7 +1854,6 @@ async function _processFeedbackWithHeartbeat(
         runGhCommand: (args: string[]) => deps.github.runGhCommand(args),
         runGitCommand: deps.git.runGitCommand,
         logger,
-        followUpFiling: processorDeps.syncFollowUpFiling,
       },
       syncFn,
     );

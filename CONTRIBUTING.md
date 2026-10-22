@@ -260,6 +260,12 @@ themselves:
   issue), an `## Evidence` section (screenshot, benchmark numbers, or
   test results as appropriate), and a `## Test Plan` enumerating the
   tests added or modified.
+- **An incomplete PR is a draft** (owner, 2026-10-23). A draft is work in
+  progress: the Quality and dependency checks skip it, the required `gate`
+  fails on purpose (so auto-merge can never act on a stale pass), the PR
+  reviewer and the auto-merge sweep skip it, and the worker's CI fixer
+  ignores it. Marking it ready (`gh pr ready`) runs CI once, and auto-merge
+  is armed at the same time so it merges as soon as CI and review pass.
 - Use **Australian English** spelling throughout — `colour`,
   `behaviour`, `organisation`, `favour`, `centre`. CI does not block
   on this but reviewers will ask for changes.

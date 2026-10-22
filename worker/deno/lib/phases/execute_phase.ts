@@ -83,6 +83,7 @@ import {
 import { issueRunRoleTreatments } from "../issue_assignment.ts";
 import { agentProviderById, selectAgentProvider } from "../agent_provider.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
+import { ensureDraftContinuationPr } from "../draft_continuation_pr.ts";
 import {
   buildInterruptedWipCommitMessage,
   startWipCheckpoints,
@@ -1477,6 +1478,34 @@ async function executeClaudeBody(
     }
     if (disposition.kind === "superseded") {
       return supersededResult("execute", disposition, wip, deps);
+    }
+
+    // Issue #4146: the job is not finished, so the work is shown as a DRAFT
+    // `Part of #N` — never a closing PR, never a follow-up issue. The draft
+    // does not hold the issue, so the next run resumes this branch and
+    // finishes it. Only when the branch carries work: an empty draft says
+    // nothing.
+    if (wip.preserved || wipCommits > 0) {
+      const draft = await ensureDraftContinuationPr({
+        repo: ctx.repo,
+        issueNumber: ctx.issueNumber,
+        issueTitle: ctx.issueTitle,
+        branchName: state.branchName,
+        baseBranch: state.baseBranch,
+        gh: (args) => deps.github.runGhCommand(args),
+      });
+      if (draft.kind === "failed") {
+        logger.warn(
+          `Could not open the draft continuation PR — the work is still on ` +
+            `'${state.branchName}' and the next run resumes it (Issue #4146): ` +
+            draft.error,
+        );
+      } else {
+        logger.info(
+          "Draft continuation PR for the timed-out run (Issue #4146)",
+          { prNumber: draft.prNumber, created: draft.kind === "created" },
+        );
+      }
     }
 
     // Issue #1550: When Claude times out with an empty output, classify the

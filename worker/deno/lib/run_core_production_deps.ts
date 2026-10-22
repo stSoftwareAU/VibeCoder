@@ -195,7 +195,6 @@ import {
   refreshSubscriptionAllocation,
   startSubscriptionAllocationRefresh,
 } from "./subscription_allocation_runtime.ts";
-import { buildSyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
 import { reconcilePrBodyDigests as runPrBodyDigestReconcile } from "./pr_body_reconcile.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
@@ -2430,8 +2429,6 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feeds the refreshed PR body's footer.
             workerName: config.workerName,
-            // Issue #3678: files the follow-up for a newly reported gap.
-            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
           },
         );
 
@@ -2679,8 +2676,6 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
-            // Issue #3678: files the follow-up for a newly reported gap.
-            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
           },
         );
@@ -3115,8 +3110,6 @@ export async function createProductionRunCoreDeps(
             trustedAuthors,
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
-            // Issue #3678: files the follow-up for a newly reported gap.
-            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
             // Issue #3031: a milestone head is resolved through the takeover
             // in this same cycle.
@@ -3480,7 +3473,6 @@ export async function createProductionRunCoreDeps(
             runGhCommand,
             runGitCommand,
             logger,
-            followUpFiling: buildSyncFollowUpFiling(config, githubUser),
             cache: issueCache,
             inSync: prBodyDigestInSync,
           },
