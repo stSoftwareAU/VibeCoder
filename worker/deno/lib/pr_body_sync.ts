@@ -3,18 +3,11 @@
  *
  * The PR body is assembled once, at PR creation, from
  * `docs/archive/pr-summaries/pr-summary-<N>.md` (and a handful of other
- * sections — evidence, milestone, the leading degraded-run or
- * partial-delivery section, bump note, footer). That leading section is
- * re-derived at sync time from the current issue and summary rather than
- * copied forward (Issue #3350, #3506), except that a partial-delivery section
- * whose follow-up number cannot be read is kept as it is. Re-deriving a
- * section the live body already carries only reads the issue and never writes
- * to the follow-up (PR #3676 review). When the live body has no leading
- * section and the rebuilt summary newly marks a criterion `partial` or
- * `missing`, the sync files or reuses the follow-up (or, on a partial-delivery
- * follow-up, hands the issue to a human) through `pr_body_sync_follow_up.ts`,
- * from issue content that passed the pickup content-integrity check, and fails
- * loudly if it cannot (Issue #3678). Before Issue #3089, a review-fix run that
+ * sections — evidence, milestone, bump note, footer). A sync never files an
+ * issue: a criterion still `partial` or `missing` blocks the PR at completion
+ * instead (Issue #4146), so the degraded-run and partial-delivery sections and
+ * the follow-up filing they carried (Issues #3350, #3506, #3678) are gone.
+ * Before Issue #3089, a review-fix run that
  * rewrote that summary file and pushed new commits never touched the PR body
  * again, so a reviewer reading the description kept seeing the original summary
  * while the diff underneath it changed.
