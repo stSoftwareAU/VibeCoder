@@ -388,13 +388,16 @@ const TIMED_OUT: SemgrepRunResult = {
 /**
  * Spawn a command with the scan deadline applied. Shared with
  * `checkov_check.ts` (Issue #3972), which passes its own `deadlineMs`; the
- * default is the semgrep deadline, so semgrep's behaviour is unchanged.
+ * default is the semgrep deadline, so semgrep's behaviour is unchanged. When
+ * `env` is given the child gets exactly that environment (`clearEnv`) instead
+ * of the caller's; semgrep passes none and still inherits.
  */
 export async function spawnWithDeadline(
   binary: string,
   args: string[],
   cwd: string,
   deadlineMs = SEMGREP_DEADLINE_MS,
+  env?: Record<string, string>,
 ): Promise<SemgrepRunResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deadlineMs);
@@ -402,6 +405,7 @@ export async function spawnWithDeadline(
     const command = new Deno.Command(binary, {
       args,
       cwd,
+      ...(env === undefined ? {} : { env, clearEnv: true }),
       stdout: "piped",
       stderr: "piped",
       signal: controller.signal,

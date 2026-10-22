@@ -11,13 +11,21 @@
  *   - `CHECKOV_IMAGE` (the digest-pinned image, worker/deno/lib/pinned_actions.ts);
  *   - `CHECKOV_SCAN_ARGS` (the scan contract, worker/deno/lib/checkov_report.ts).
  *
+ * It also guards the two ways the scan could be narrowed without a flag in the
+ * workflow: a `.checkov.yaml` / `.checkov.yml` at the repository root (Checkov
+ * loads it on its own), and a deliberately bad fixture template stored under an
+ * extension Checkov would discover (the scan carries no `--skip-path`).
+ *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
 import { assert, assertEquals } from "@std/assert";
 import { parse as parseYaml } from "@std/yaml/parse";
 import { CHECKOV_IMAGE } from "../lib/pinned_actions.ts";
-import { CHECKOV_SCAN_ARGS } from "../lib/checkov_report.ts";
+import {
+  CHECKOV_SCAN_ARGS,
+  findCheckovConfigFiles,
+} from "../lib/checkov_report.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url);
 const CHECKOV_WORKFLOW = new URL(".github/workflows/checkov.yml", REPO_ROOT);
@@ -43,21 +51,6 @@ const WEAKENING_FLAGS = [
   "--skip-path",
   "--skip-framework",
 ];
-
-/**
- * The one `--skip-path` use allowed: the pair CHECKOV_SCAN_ARGS already carries,
- * which keeps the intentionally bad #3970 fixtures out of the repo scan. It is
- * read from CHECKOV_SCAN_ARGS rather than hard-coded, so the exception cannot
- * drift from the scan contract.
- */
-const ALLOWED_SKIP_PATH = (() => {
-  const index = CHECKOV_SCAN_ARGS.indexOf("--skip-path");
-  assert(
-    index !== -1 && index + 1 < CHECKOV_SCAN_ARGS.length,
-    "CHECKOV_SCAN_ARGS must carry a --skip-path value",
-  );
-  return `--skip-path ${CHECKOV_SCAN_ARGS[index + 1]}`;
-})();
 
 type YamlMap = Record<string, unknown>;
 
@@ -199,13 +192,9 @@ function lockStepProblems(
   }
 
   // 4. No weakening flag anywhere in a run step, whether or not it is split
-  // across continuation lines. Exception: ALLOWED_SKIP_PATH, removed as whole
-  // tokens only, so a longer path such as `checkov-extra` is still reported.
-  const allowedSkip = new RegExp(
-    `(?:^|\\s)${escapeRegExp(ALLOWED_SKIP_PATH)}(?=\\s|$)`,
-    "g",
-  );
-  const allRuns = runs.join("\n").replace(allowedSkip, " ");
+  // across continuation lines. `--skip-path` is among them with no exception:
+  // Checkov matches it by substring, so it would hide more than it names.
+  const allRuns = runs.join("\n");
   for (const flag of WEAKENING_FLAGS) {
     const wholeWord = new RegExp(`(?:^|\\s)${escapeRegExp(flag)}(?:=|\\s|$)`);
     if (wholeWord.test(allRuns)) {
@@ -408,13 +397,13 @@ Deno.test("checkov_workflow - a path filter under workflow_call is reported", as
   assertEquals(problems.length, 1);
 });
 
-Deno.test("checkov_workflow - a --skip-path other than the allowed pair is reported", async () => {
+Deno.test("checkov_workflow - an added --skip-path is reported", async () => {
   const { checkov, quality } = await readWorkflows();
   const fixture = checkov.replace(
-    "--skip-path worker/deno/tests/fixtures/checkov",
-    "--skip-path worker/deno/tests/fixtures/checkov-extra",
+    "--skip-download",
+    "--skip-download --skip-path worker/deno/tests/fixtures/checkov",
   );
-  assert(fixture !== checkov, "fixture did not change the skip path");
+  assert(fixture !== checkov, "fixture did not add the skip path");
   assertProblem(
     lockStepProblems(fixture, quality),
     "--skip-path weakens the scan",
@@ -443,4 +432,67 @@ Deno.test("checkov_workflow - a missing checkov caller in quality.yml is reporte
   const problems = lockStepProblems(checkov, fixture);
   assertProblem(problems, `no job calls ${CHECKOV_USES}`);
   assertEquals(problems.length, 1);
+});
+
+/** Extensions Checkov's CloudFormation runner reads, besides `.json`. */
+const CFN_TEMPLATE_EXTENSIONS = [".yaml", ".yml", ".template"];
+
+/** Files under `dir` (recursively) that the CloudFormation runner would read as templates. */
+async function discoverableTemplates(dir: string): Promise<string[]> {
+  const found: string[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    const path = `${dir}/${entry.name}`;
+    if (entry.isDirectory) {
+      found.push(...await discoverableTemplates(path));
+    } else if (
+      CFN_TEMPLATE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))
+    ) {
+      found.push(path);
+    }
+  }
+  return found;
+}
+
+Deno.test("checkov_workflow - the repository root holds no Checkov config file", async () => {
+  assertEquals(await findCheckovConfigFiles(REPO_ROOT.pathname), []);
+});
+
+Deno.test("checkov_workflow - a Checkov config file at the root is found", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "checkov-root-" });
+  try {
+    await Deno.writeTextFile(
+      `${dir}/.checkov.yml`,
+      "skip-check: [CKV_AWS_158]",
+    );
+    assertEquals(await findCheckovConfigFiles(dir), [".checkov.yml"]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("checkov_workflow - the fixture templates are stored where Checkov does not discover them", async () => {
+  const fixtures = new URL("worker/deno/tests/fixtures/checkov", REPO_ROOT)
+    .pathname;
+  const stored: string[] = [];
+  for await (const entry of Deno.readDir(fixtures)) {
+    if (entry.isDirectory) stored.push(entry.name);
+  }
+  assert(stored.length > 0, "expected fixture case directories");
+  assertEquals(await discoverableTemplates(fixtures), []);
+});
+
+Deno.test("checkov_workflow - a fixture template under a discoverable extension is found", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "checkov-fixtures-" });
+  try {
+    await Deno.mkdir(`${dir}/case`);
+    await Deno.writeTextFile(`${dir}/case/report.json`, "{}");
+    await Deno.writeTextFile(`${dir}/case/template.yaml.fixture`, "");
+    assertEquals(await discoverableTemplates(dir), []);
+    await Deno.writeTextFile(`${dir}/case/template.yaml`, "");
+    assertEquals(await discoverableTemplates(dir), [
+      `${dir}/case/template.yaml`,
+    ]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

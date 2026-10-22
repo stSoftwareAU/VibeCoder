@@ -167,9 +167,10 @@ flowchart LR
 
 `checkov.yml` scans CloudFormation templates with the digest-pinned
 `CHECKOV_IMAGE` (`worker/deno/lib/pinned_actions.ts`) and `CHECKOV_SCAN_ARGS`,
-with no SARIF upload and no path filter. `worker/deno/lib/checkov_report.ts`
-decides the verdict: a failed check, a parse error, or a skip without an inline
-`# checkov:skip=<ID>:<reason>` fails. It is a mandatory part of the CI `gate`,
+with no SARIF upload, no path filter and no `--skip-path`.
+`worker/deno/lib/checkov_report.ts` decides the verdict: a failed check, a parse
+error, a skip without an inline `# checkov:skip=<ID>:<reason>`, or a
+`.checkov.yaml` / `.checkov.yml` in the scanned root fails. It is a mandatory part of the CI `gate`,
 so a red scan blocks merge. `worker/deno/tests/checkov_workflow_test.ts` keeps
 the workflow in lock-step with the pin and the scan arguments.
 
@@ -180,14 +181,19 @@ authoritative. It tries two routes, in order:
 
 - **A pinned PATH binary.** A `checkov` on PATH is used only when
   `checkov --version` equals `CHECKOV_IMAGE_TAG`. An unpinned binary is never
-  run; it is recorded and the gate falls through to the image route.
+  run; it is recorded and the gate falls through to the image route. It runs
+  with a built environment (no `CKV_*`, `BC_*` or `PRISMA_*` variable, an empty
+  private HOME), so neither your environment nor `~/.checkov.yaml` can narrow
+  the scan.
 - **A pinned image.** `docker` or `podman` is used only if it already holds
   `CHECKOV_IMAGE`, checked with `image inspect`; it is never pulled. The
   checkout is mounted read-only, and `CHECKOV_SCAN_ARGS` (which include
-  `--skip-download`) mean no network call.
+  `--skip-download`) stop Checkov downloading anything. The container receives
+  none of your environment.
 - **Have a pinned route or it skips, loudly.** With neither route usable the
   stage reports `SKIPPED` and names what is missing; `--strict` turns that into
-  a failure. A scan over its deadline is `FAILED`. The fleet worker image has no
+  a failure. A `.checkov.yaml` or `.checkov.yml` in the scanned directory is
+  `FAILED` before any route is tried, so it never reads as `SKIPPED`. A scan over its deadline is `FAILED`. The fleet worker image has no
   pip and no container runtime, so fleet runs show `checkov` as `SKIPPED`; that
   is expected, unlike semgrep.
 

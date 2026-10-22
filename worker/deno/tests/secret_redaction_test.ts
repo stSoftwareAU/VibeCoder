@@ -206,6 +206,57 @@ Deno.test("redactSecrets - a git SHA beside an AWS key is left alone", () => {
   assertEquals(out.includes("AKIAIOSFODNN7EXAMPLE"), false);
 });
 
+Deno.test("redactSecrets - a JSON-encoded AWS key pair has its secret masked (Issue #3857)", () => {
+  // Issue #3857: JSON encoding puts a literal backslash-n before the secret, so there is no word boundary.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const out = redactSecrets(JSON.stringify({ creds: `${id}\n${secret}` }));
+  assertEquals(out.includes(secret), false);
+  assertEquals(out.includes(id), false);
+});
+
+Deno.test("redactSecrets - a secret after a literal backslash-t escape is masked (Issue #3857)", () => {
+  // Issue #3857: a literal backslash-t escape abuts the secret, so `\b` never fires.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const out = redactSecrets(`${id}\\t${secret}`);
+  assertEquals(out.includes(secret), false);
+  assertEquals(out.includes(id), false);
+});
+
+Deno.test("redactSecrets - a secret after a literal backslash-r escape is masked (Issue #3857)", () => {
+  // Issue #3857: a literal backslash-r escape abuts the secret, so `\b` never fires.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const out = redactSecrets(`${id}\\r${secret}`);
+  assertEquals(out.includes(secret), false);
+  assertEquals(out.includes(id), false);
+});
+
+Deno.test("redactSecrets - a git SHA after a literal backslash-n escape is left alone (Issue #3857)", () => {
+  // Issue #3857: the escape lookbehind must not unmask a commit SHA beside a key.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const sha = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
+  const out = redactSecrets(`${id}\\n${sha}`);
+  assertStringIncludes(out, sha);
+});
+
+Deno.test("redactSecrets - a word glued to the secret with no backslash is not masked (Issue #3857)", () => {
+  // Issue #3857: the lookbehind needs a backslash escape, not any letter before the secret.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const out = redactSecrets(`${id} token${secret}`);
+  assertStringIncludes(out, `token${secret}`);
+});
+
+Deno.test("redactSecrets - a backslash before a non-escape letter does not unmask as an escape (Issue #3857)", () => {
+  // Issue #3857: only \n, \r and \t are accepted, so a backslash-x before the secret is not a match.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  const out = redactSecrets(`${id} \\x${secret}`);
+  assertStringIncludes(out, `\\x${secret}`);
+});
+
 Deno.test("redactSecrets - a 40-character blob with no AWS key nearby is ordinary text", () => {
   const blob = "d1JhbmRvbUJhc2U2NGRhdGFoZXJlMTIzNDU2Nzg5MA";
   assertStringIncludes(redactSecrets(`payload: ${blob}`), blob);

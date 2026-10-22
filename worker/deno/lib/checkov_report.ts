@@ -17,13 +17,17 @@
  * So the judge applies the repo's rules to the JSON. Every failed check,
  * every parse error and every skip without a reason is a problem, and a
  * skip is only accepted when the template carries an inline
- * `# checkov:skip=<ID>:<reason>` comment within the check's line range.
+ * `# checkov:skip=<ID>:<reason>` comment within the check's line range. The
+ * judge cannot see a check that a `.checkov.yaml` / `.checkov.yml` in the
+ * scanned root dropped before it ran, so `main` and the local stage fail a scan
+ * whose root holds either file (`findCheckovConfigFiles`).
  *
  * Usage, from the scanned repository root:
  *
  *   deno run --allow-read worker/deno/lib/checkov_report.ts <report.json> <checkov-exit-code>
  *
- * Exit status: 0 PASSED, 1 FAILED (or the report cannot be read), 2 bad usage.
+ * Exit status: 0 PASSED, 1 FAILED (or the report cannot be read, or the
+ * working directory holds a Checkov config file), 2 bad usage.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
@@ -31,9 +35,13 @@
 import { installConsoleRedaction } from "./console_redaction.ts";
 
 /**
- * The Checkov scan both the CI workflow and the local gate run. The fixture
- * templates under worker/deno/tests/fixtures/checkov are deliberately bad, so
- * the scan excludes that directory with `--skip-path`.
+ * The Checkov scan both the CI workflow and the local gate run. It covers the
+ * whole repository and carries no `--skip-path`: Checkov matches that flag by
+ * substring, so it would also hide any path that merely contains the excluded
+ * text. The deliberately bad fixture templates under
+ * worker/deno/tests/fixtures/checkov are kept out of discovery by their
+ * extension instead (`.yaml.fixture`, which the CloudFormation runner does not
+ * read).
  */
 export const CHECKOV_SCAN_ARGS: readonly string[] = [
   "-d",
@@ -43,9 +51,58 @@ export const CHECKOV_SCAN_ARGS: readonly string[] = [
   "-o",
   "json",
   "--skip-download",
-  "--skip-path",
-  "worker/deno/tests/fixtures/checkov",
 ] as const;
+
+/**
+ * Config files Checkov loads on its own from the `-d` directory and the working
+ * directory (both the repository root here). One can set `skip-check`,
+ * `check`, `skip-path` and the like, and a check dropped that way is in
+ * neither `failed_checks` nor `skipped_checks`, so the judge could not see it.
+ * The repo's only suppression is an inline, reasoned skip, so a scan whose
+ * root holds either file is FAILED.
+ */
+export const CHECKOV_CONFIG_FILES: readonly string[] = [
+  ".checkov.yaml",
+  ".checkov.yml",
+] as const;
+
+/**
+ * The {@link CHECKOV_CONFIG_FILES} present in `dir`, each as it is to be shown
+ * in a problem line. Any entry of that name counts (a file, a directory or a
+ * symlink, dangling or not). A fault other than "not found" is reported as a
+ * hit, because a file that cannot be ruled out is not a pass.
+ */
+export async function findCheckovConfigFiles(dir: string): Promise<string[]> {
+  const found: string[] = [];
+  for (const name of CHECKOV_CONFIG_FILES) {
+    try {
+      await Deno.lstat(`${dir}/${name}`);
+      found.push(name);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) continue;
+      found.push(`${name} (could not be checked: ${messageOf(error)})`);
+    }
+  }
+  return found;
+}
+
+/**
+ * A FAILED verdict naming each config file found, or null when there is none.
+ * Run it before the scan result is judged, so the scan's own PASSED cannot
+ * stand.
+ */
+export function checkovConfigVerdict(
+  found: readonly string[],
+): CheckovVerdict | null {
+  if (found.length === 0) return null;
+  const problems = found.map((name) =>
+    `${name} is present in the scanned directory; Checkov loads it on its own and it can drop checks from the scan without a trace (use an inline "# checkov:skip=<ID>:<reason>" comment instead)`
+  );
+  return {
+    status: "FAILED",
+    report: [...problems.map((p) => `- ${p}`), "Status: FAILED"].join("\n"),
+  };
+}
 
 /**
  * Returns the template text for a repo-relative path, or null when it cannot
@@ -463,6 +520,14 @@ export async function main(args: string[]): Promise<number> {
   ) {
     console.error(USAGE);
     return 2;
+  }
+
+  // Checkov's implicit config can drop checks the report never shows, so it
+  // fails the run before the report is read.
+  const configVerdict = checkovConfigVerdict(await findCheckovConfigFiles("."));
+  if (configVerdict !== null) {
+    console.log(configVerdict.report);
+    return 1;
   }
 
   let stdout: string;

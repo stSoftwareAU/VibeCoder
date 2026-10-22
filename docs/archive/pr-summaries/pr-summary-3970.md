@@ -62,7 +62,7 @@ each `report.json`. What each case showed:
 The exit-2, malformed-JSON and empty-stdout cases are synthesised in the
 tests, because Checkov does not produce them for a valid template.
 
-`worker/deno/tests/checkov_report_test.ts` has 46 tests, and all pass.
+`worker/deno/tests/checkov_report_test.ts` has 50 tests at head, and all pass.
 `deno check` is clean. The full `./quality.sh` gate result is in the Test
 Plan below.
 
@@ -85,7 +85,7 @@ Plan below.
 - **met** — The judge returns PASSED for a clean scan, a scan that finds no templates, and a scan whose only skips are inline skips with a reason — evidence: `worker/deno/tests/checkov_report_test.ts::checkov-report - PASSED for a clean scan (exit 0)`, `worker/deno/tests/checkov_report_test.ts::checkov-report - PASSED for no CloudFormation templates (exit 0)`, `worker/deno/tests/checkov_report_test.ts::checkov-report - PASSED for a skip with a reason in the template (exit 0)` — reviewer: met
 - **met** — The entry point exits 1 on FAILED and 0 on PASSED — evidence: `worker/deno/tests/checkov_report_test.ts::checkov-report CLI - exit 0 for a clean report`, `worker/deno/tests/checkov_report_test.ts::checkov-report CLI - exit 1 for a failed report` — reviewer: met
 - **met** — `container/tools.json` is unchanged — evidence: `git diff milestone/pre-push-gate-ci-parity -- container/tools.json` is empty — reviewer: met
-- **met** — The tests and `./quality.sh` pass — evidence: `worker/deno/tests/checkov_report_test.ts` (46 passing) and the gate run recorded in the Test Plan — reviewer: met
+- **met** — The tests and `./quality.sh` pass — evidence: `worker/deno/tests/checkov_report_test.ts` (50 tests at head, all passing) and the gate run recorded in the Test Plan — reviewer: met
 
 ## Standards Review
 
@@ -95,7 +95,7 @@ Plan below.
 
 ## Test Plan
 
-- [x] `deno test` on `worker/deno/tests/checkov_report_test.ts`: 46 passed.
+- [x] `deno test` on `worker/deno/tests/checkov_report_test.ts` (50 tests at head): all passed.
 - [x] `worker/deno/tests/pinned_actions_test.ts` passes, including the new digest-pin test.
 - [x] `deno check` is clean. Gate run 5 caught a TS2345 error at
       `checkov_report_test.ts:855`, which `--no-check` had hidden. Commit

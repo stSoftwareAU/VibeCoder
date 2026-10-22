@@ -9,6 +9,11 @@
  *     inspect`), never `pull`, and mounts the repository read-only with
  *     `--entrypoint checkov`, as `checkov.yml` does;
  *   - loud SKIPPED, naming each unusable route, when no route is available;
+ *   - the PATH route runs with a built environment (no `CKV_*`, `BC_*` or
+ *     `PRISMA_*` variable, an empty private HOME) and the container route passes
+ *     none;
+ *   - a `.checkov.yaml` / `.checkov.yml` in the scanned directory is FAILED
+ *     before any route is tried, even when no route exists;
  *   - a deadline hit is FAILED, never SKIPPED or PASSED;
  *   - the verdict comes from the shared judge (`judgeCheckovRun`), and a
  *     FAILED non-JSON run shows the tail of stderr, redacted before the cut;
@@ -32,6 +37,7 @@ import {
 } from "../lib/checkov_check.ts";
 import { CHECKOV_SCAN_ARGS } from "../lib/checkov_report.ts";
 import { CHECKOV_IMAGE, CHECKOV_IMAGE_TAG } from "../lib/pinned_actions.ts";
+import { spawnWithDeadline } from "../lib/semgrep_check.ts";
 import { runQualityGate } from "../lib/quality_gate.ts";
 import {
   type CheckResult,
@@ -68,8 +74,8 @@ function fakeSpawn(
   result: CheckovRunResult,
   calls: SpawnCall[],
 ): SpawnFn {
-  return (binary, args, cwd, deadlineMs) => {
-    calls.push({ binary, args, cwd, deadlineMs });
+  return (binary, args, cwd, deadlineMs, env) => {
+    calls.push({ binary, args, cwd, deadlineMs, env });
     return Promise.resolve(result);
   };
 }
@@ -80,6 +86,7 @@ interface SpawnCall {
   args: string[];
   cwd: string;
   deadlineMs: number;
+  env?: Record<string, string>;
 }
 
 /** The first recorded spawn; fails the test if none was made. */
@@ -160,6 +167,143 @@ Deno.test("runCheckovCheck - a PATH checkov on the pin is used with the CI scan 
   assertEquals(firstCall(spawnCalls).cwd, "/repo");
   assertEquals(firstCall(spawnCalls).deadlineMs, CHECKOV_DEADLINE_MS);
 });
+
+Deno.test("runCheckovCheck - the PATH route runs with no CKV_, BC_ or PRISMA_ variable and an empty private HOME", async () => {
+  const hostile: Record<string, string> = {
+    CKV_SKIP_CHECK: "CKV_AWS_158",
+    CKV_CHECK: "CKV_AWS_1",
+    CKV_LOG_LEVEL: "DEBUG",
+    BC_API_KEY: "not-a-real-key",
+    BC_SKIP_MAPPING: "TRUE",
+    PRISMA_API_URL: "https://example.invalid",
+  };
+  const callerHome = "/home/caller";
+  // The caller's environment is injected, so no process state is mutated.
+  const environment = { ...hostile, PATH: "/usr/bin", HOME: callerHome };
+  let homeDuring: string | undefined;
+  const homeEntries: string[] = [];
+  const spawnCalls: SpawnCall[] = [];
+  const spawn: SpawnFn = async (binary, args, cwd, deadlineMs, env) => {
+    homeDuring = env?.HOME;
+    if (homeDuring !== undefined) {
+      for await (const entry of Deno.readDir(homeDuring)) {
+        homeEntries.push(entry.name);
+      }
+    }
+    return await fakeSpawn(
+      { exitCode: 0, stdout: await report("clean"), stderr: "" },
+      spawnCalls,
+    )(binary, args, cwd, deadlineMs, env);
+  };
+  const result = await runCheckovCheck("/repo", {
+    probe: fakeProbe({ [PIN_KEY]: CHECKOV_IMAGE_TAG }),
+    spawn,
+    environment,
+  });
+  assertEquals(result.status, "PASSED");
+
+  const env = firstCall(spawnCalls).env;
+  assert(env !== undefined, "the PATH route must pass a built environment");
+  const leaked = Object.keys(env).filter((name) =>
+    /^(CKV_|BC_|PRISMA_)/.test(name)
+  );
+  assertEquals(leaked, []);
+  assertEquals(env.PATH, "/usr/bin", "the child must still find tools on PATH");
+  assert(homeDuring !== undefined, "HOME must be set for the child");
+  assert(homeDuring !== callerHome, "HOME must not be the caller's own");
+  assertEquals(homeEntries, [], "the private HOME must start empty");
+  let homeStillThere = true;
+  try {
+    await Deno.stat(homeDuring);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    homeStillThere = false;
+  }
+  assert(!homeStillThere, "the private HOME must be removed after the scan");
+});
+
+Deno.test("runCheckovCheck - the private HOME is removed even when the scan left files in it", async () => {
+  let home: string | undefined;
+  // Checkov writes caches under HOME; the cleanup must remove a non-empty tree.
+  const spawn: SpawnFn = async (_binary, _args, _cwd, _deadlineMs, env) => {
+    home = env?.HOME;
+    assert(home !== undefined, "HOME must be set for the child");
+    await Deno.mkdir(`${home}/.checkov/cache`, { recursive: true });
+    await Deno.writeTextFile(`${home}/.checkov/cache/entry`, "cached");
+    return { exitCode: 0, stdout: await report("clean"), stderr: "" };
+  };
+  const result = await runCheckovCheck("/repo", {
+    probe: fakeProbe({ [PIN_KEY]: CHECKOV_IMAGE_TAG }),
+    spawn,
+  });
+  assertEquals(result.status, "PASSED");
+  assert(home !== undefined, "the spawner must have run");
+  let homeStillThere = true;
+  try {
+    await Deno.stat(home);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    homeStillThere = false;
+  }
+  assert(!homeStillThere, "a non-empty private HOME must still be removed");
+});
+
+Deno.test("spawnWithDeadline - a given env is the child's whole environment, and none inherits", async () => {
+  // PATH is set in every environment the suite runs in, so it stands in for
+  // "a variable the caller has" without mutating process state.
+  assert(
+    Deno.env.get("PATH") !== undefined,
+    "the test needs a PATH to inherit",
+  );
+  const inherited = await spawnWithDeadline("env", [], ".", 10_000);
+  assertStringIncludes(inherited.stdout, "PATH=");
+
+  const built = await spawnWithDeadline("env", [], ".", 10_000, {
+    KEPT: "yes",
+  });
+  assertStringIncludes(built.stdout, "KEPT=yes");
+  assert(!built.stdout.includes("PATH="), "the caller's variable leaked");
+});
+
+Deno.test("runCheckovCheck - the container route passes no environment of its own", async () => {
+  const spawnCalls: SpawnCall[] = [];
+  await runCheckovCheck("/repo", {
+    probe: fakeProbe({ [IMAGE_INSPECT_KEY]: "[]" }),
+    spawn: fakeSpawn(
+      { exitCode: 0, stdout: await report("clean"), stderr: "" },
+      spawnCalls,
+    ),
+  });
+  assertEquals(firstCall(spawnCalls).binary, "docker");
+  assertEquals(firstCall(spawnCalls).env, undefined);
+});
+
+for (const name of [".checkov.yaml", ".checkov.yml"]) {
+  Deno.test(`runCheckovCheck - ${name} in the scanned directory is FAILED before any route is tried`, async () => {
+    const dir = await Deno.makeTempDir({ prefix: "checkov-root-" });
+    try {
+      // Positive control: with no config file and no route, the stage SKIPs.
+      const control = await runCheckovCheck(dir, {
+        probe: fakeProbe({}),
+        spawn: unexpectedSpawn,
+      });
+      assertEquals(control.status, "SKIPPED");
+
+      await Deno.writeTextFile(`${dir}/${name}`, "skip-check: [CKV_AWS_158]");
+      const probeCalls: string[][] = [];
+      const result = await runCheckovCheck(dir, {
+        probe: fakeProbe({ [PIN_KEY]: CHECKOV_IMAGE_TAG }, probeCalls),
+        spawn: unexpectedSpawn,
+      });
+      assertEquals(result.status, "FAILED");
+      assertStringIncludes(result.output, `${name} is present`);
+      assertStringIncludes(result.output, "Status: FAILED");
+      assertEquals(probeCalls, [], "no route may be probed or run");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}
 
 Deno.test("runCheckovCheck - a PATH version mismatch is not run and falls through to SKIPPED", async () => {
   const result = await runCheckovCheck("/repo", {

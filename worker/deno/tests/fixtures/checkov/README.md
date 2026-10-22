@@ -9,13 +9,18 @@ Captured real output from Checkov, used by `tests/checkov_report_test.ts`.
 - Captured: 2026-10-20
 
 Each case directory holds `report.json` (Checkov's stdout, verbatim and
-untrimmed) and, where a skip needs to be looked up, the `template.yaml` Checkov
-scanned. `no_templates` has no template, as the case is a scan that finds
-nothing to check.
+untrimmed) and, where a skip needs to be looked up, the template Checkov
+scanned, stored as `template.yaml.fixture`. `no_templates` has no template, as
+the case is a scan that finds nothing to check.
 
-This directory is excluded from the repository scan via `--skip-path` in
-`CHECKOV_SCAN_ARGS` (`worker/deno/lib/checkov_report.ts`), so the deliberately
-bad templates here do not fail CI or the local gate.
+The templates are deliberately bad, and the repository scan
+(`CHECKOV_SCAN_ARGS` in `worker/deno/lib/checkov_report.ts`) covers the whole
+tree with no `--skip-path`. The `.fixture` extension keeps them out of
+Checkov's discovery (its CloudFormation runner reads `.yaml`, `.yml`, `.json`
+and `.template`), so they do not fail CI or the local gate; the tests map the
+name Checkov reports (`template.yaml`) to the stored one.
+`tests/checkov_workflow_test.ts` fails if a template here is stored under a
+discoverable extension.
 
 | Case            | Observed exit code | What it shows                                               |
 | --------------- | ------------------ | ----------------------------------------------------------- |
