@@ -127,7 +127,7 @@ guessing — the analysis-only hand-off then routes it to a human.
      matcher over text — any text a matcher reads: Markdown and PR summaries,
      diffs, closure entries, source code it counts, and config or CI workflow
      files (YAML, JSON, TOML) — follow **Writing a gate over text** in
-     VibeCoder's `CODING-STANDARDS.md`
+     Vibe Coder's `CODING-STANDARDS.md`
      (https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#writing-a-gate-over-text;
      the target repo's own file, if it has one, may lack the section), and do
      not rely on this summary alone: an evasion test per realistic variant of
