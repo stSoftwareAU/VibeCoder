@@ -295,6 +295,12 @@ Deno.test("#2638 - compaction never touches another provider's session", async (
 
 Deno.test("#2638 - compaction still runs on the provider's own session", async () => {
   await withWorkDir(async (transcriptRoot) => {
+    // The transcript must exist for the /compact turn to be attempted at all.
+    await Deno.mkdir(`${transcriptRoot}/projects/p`, { recursive: true });
+    await Deno.writeTextFile(
+      `${transcriptRoot}/projects/p/${CLAUDE_SESSION}.jsonl`,
+      `${JSON.stringify({ type: "user", message: "hi" })}\n`,
+    );
     const calls: CompactionRunRequest[] = [];
     await compactStreamSession({
       outcome: "resumed",

@@ -13,18 +13,23 @@
  *
  * 1. `/compact` sent as the prompt of a `--resume <sessionId>` print run.
  *    Whether that actually compacts the durable transcript is not something
- *    the worker can assume, so it is **measured**: the transcript file's size
- *    is recorded before and after, and only a genuinely smaller file counts as
- *    a compaction.
+ *    the worker can assume, so it is **measured**: the transcript is located
+ *    before the run, and the bytes appended to it during the run are read for
+ *    a `compact_boundary` system record. Claude's transcript is append-only,
+ *    so its size says nothing; a boundary record appended after the pre-run
+ *    offset is the proof.
  * 2. `--autocompact 100000` — the smallest window the CLI accepts, so
  *    compaction happens as early as the CLI will do it — passed to every phase
  *    run of the issue when the first lever did not demonstrably work.
  *
- * The fallback fires on anything short of proof: an unchanged or larger
- * transcript, a non-zero `/compact` run, a transcript that cannot be measured,
- * or a spawn that failed outright. Absence of a failure is never read as
- * success. None of it can fail the issue — compaction is an optimisation, and
- * the worst outcome is the conversation the run would have carried anyway.
+ * The fallback fires on anything short of proof: no boundary record appended,
+ * a non-zero `/compact` run, appended bytes that cannot be read, a transcript
+ * rewritten or truncated under the run, or a spawn that failed outright. When
+ * the transcript cannot be located at all, the `/compact` turn is skipped
+ * rather than paid for, since its outcome could never be verified. Absence of
+ * a failure is never read as success. None of it can fail the issue —
+ * compaction is an optimisation, and the worst outcome is the conversation the
+ * run would have carried anyway.
  *
  * Codex and Gemini expose no compaction control to the worker at all, so their
  * runs carry the stream's full transcript and say so.
@@ -63,6 +68,13 @@ export const COMPACT_PROMPT = "/compact";
  */
 export const COMPACT_TIMEOUT_SECONDS = 180;
 
+/**
+ * Most appended transcript bytes one `/compact` run scans for its boundary
+ * record. A boundary beyond the cap is missed, which falls back to autocompact:
+ * a conservative miss, never a false proof.
+ */
+export const MAX_APPENDED_SCAN_BYTES = 16 * 1024 * 1024;
+
 /** The providers whose CLI exposes a compaction lever (they share one binary). */
 const COMPACTABLE_PROVIDER_IDS: readonly string[] = [
   CLAUDE_PROVIDER_ID,
@@ -71,7 +83,7 @@ const COMPACTABLE_PROVIDER_IDS: readonly string[] = [
 
 /** Which of the four paths a run took. */
 export type StreamCompactionAction =
-  /** `/compact` ran and the transcript is measurably smaller. */
+  /** `/compact` ran and a `compact_boundary` record was appended to the transcript. */
   | "compacted"
   /** Uncompacted — every phase run of this issue carries `--autocompact`. */
   | "autocompact"
@@ -93,7 +105,10 @@ export interface StreamCompactionResult {
   autocompactTokens?: number;
   /** The single compaction line — see the four `compaction…` phrasings. */
   message: string;
-  /** Context for that line: sizes, exit codes, and why a fallback fired. */
+  /**
+   * Context for that line: transcript offsets and boundary counts, exit codes,
+   * and why a fallback fired.
+   */
   fields: Record<string, unknown>;
 }
 
@@ -173,22 +188,37 @@ function autocompactResult(
   };
 }
 
+/** One transcript file of the session, and the offset it had before the run. */
+interface TranscriptSnapshot {
+  path: string;
+  /** Bytes in the file when the snapshot was taken: where the run's append begins. */
+  size: number;
+}
+
+/** What the bytes appended to the transcript during a run held. */
+interface AppendedScan {
+  /** `compact_boundary` system records appended after the pre-run offsets. */
+  boundaries: number;
+  /** Bytes read from beyond the pre-run offsets. */
+  appendedBytes: number;
+}
+
 /**
- * Total bytes of the session's transcript, or `undefined` when there is
- * nothing to measure.
+ * Every copy of the session's transcript and its current size, or `undefined`
+ * when none is found.
  *
  * The CLI files transcripts one directory per project under `projects/`, and
  * the worker does not own that naming, so the tree is walked for the session's
  * own `<sessionId>.jsonl` rather than a path being predicted. `undefined` is
- * deliberately distinct from `0`: "cannot be measured" must never be read as a
- * shrink.
+ * deliberately distinct from an empty list: "cannot be located" must never be
+ * read as a transcript that compacted.
  */
-async function transcriptBytes(
+async function snapshotTranscript(
   transcriptRoot: string,
   sessionId: string,
-): Promise<number | undefined> {
+): Promise<TranscriptSnapshot[] | undefined> {
   const wanted = `${sessionId}.jsonl`;
-  let total: number | undefined;
+  let found: TranscriptSnapshot[] | undefined;
   const walk = async (dir: string): Promise<void> => {
     // `Deno.readDir` hands back the iterable synchronously and raises
     // `NotFound` on the first `next()`, so the iteration — not the call —
@@ -204,18 +234,95 @@ async function transcriptBytes(
         if (entry.name !== wanted) continue;
         try {
           const stat = await Deno.stat(path);
-          total = (total ?? 0) + stat.size;
+          found = [...(found ?? []), { path, size: stat.size }];
         } catch {
-          // Vanished between readDir and stat — it measures nothing.
+          // Vanished between readDir and stat — it cannot be snapshotted.
         }
       }
     } catch {
-      // Missing or unreadable: nothing to measure here. The caller reads an
-      // unmeasured transcript as "not proved compacted", never as a shrink.
+      // Missing or unreadable: nothing to snapshot here. The caller treats an
+      // unlocated transcript as a skipped turn, never as a verified compaction.
     }
   };
   await walk(`${transcriptRoot}/projects`);
-  return total;
+  return found;
+}
+
+/**
+ * Reads only the bytes each snapshotted transcript gained since its snapshot,
+ * and counts the `compact_boundary` system records among them.
+ *
+ * Partial or malformed lines (the CLI may still be mid-write) are skipped, not
+ * fatal. A file now smaller than its recorded offset was rewritten or
+ * truncated, so nothing in it can be attributed to the run: that, or any file
+ * that cannot be opened or read, makes the result `unreadable`. This never
+ * throws.
+ */
+async function scanAppendedTranscript(
+  snapshots: readonly TranscriptSnapshot[],
+): Promise<AppendedScan | { unreadable: string }> {
+  let boundaries = 0;
+  let appendedBytes = 0;
+  for (const snapshot of snapshots) {
+    let file: Deno.FsFile | undefined;
+    try {
+      file = await Deno.open(snapshot.path, { read: true });
+      const info = await file.stat();
+      if (info.size < snapshot.size) {
+        return {
+          unreadable: `${snapshot.path} is smaller than its recorded offset ` +
+            `(rewritten or truncated during the run)`,
+        };
+      }
+      const length = Math.min(
+        info.size - snapshot.size,
+        MAX_APPENDED_SCAN_BYTES,
+      );
+      const buffer = new Uint8Array(length);
+      await file.seek(snapshot.size, Deno.SeekMode.Start);
+      let filled = 0;
+      while (filled < length) {
+        const read = await file.read(buffer.subarray(filled));
+        if (read === null) break;
+        filled += read;
+      }
+      if (filled < length) {
+        return {
+          unreadable: `${snapshot.path} shrank while it was being read`,
+        };
+      }
+      appendedBytes += filled;
+      const text = new TextDecoder().decode(buffer);
+      for (const line of text.split("\n")) {
+        if (line.trim() === "") continue;
+        let record: unknown;
+        try {
+          record = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        const parsed = record as Record<string, unknown> | null;
+        if (
+          parsed !== null && typeof parsed === "object" &&
+          parsed["type"] === "system" &&
+          parsed["subtype"] === "compact_boundary"
+        ) {
+          boundaries++;
+        }
+      }
+    } catch (error) {
+      return {
+        unreadable: `${snapshot.path} could not be read: ${describe(error)}`,
+      };
+    } finally {
+      try {
+        file?.close();
+      } catch {
+        // Already closed or never opened: nothing left to release.
+      }
+    }
+  }
+  return { boundaries, appendedBytes };
 }
 
 /**
@@ -318,7 +425,20 @@ export async function compactStreamSession(
     });
   }
 
-  const before = await transcriptBytes(transcriptRoot, sessionId);
+  const before = await snapshotTranscript(transcriptRoot, sessionId);
+  if (before === undefined) {
+    // Skipped unpaid: a /compact turn whose result cannot be checked is not
+    // worth the spend, so the run falls back without starting it.
+    return autocompactResult({
+      providerId,
+      reason: "the stream's transcript could not be located, so the outcome " +
+        "of a /compact turn could not be verified; the turn is skipped",
+    });
+  }
+  const transcriptOffsetBefore = before.reduce(
+    (sum, snapshot) => sum + snapshot.size,
+    0,
+  );
 
   const runner = options.runner ?? defaultCompactionRunner;
   let run: CompactionRunOutcome;
@@ -352,20 +472,24 @@ export async function compactStreamSession(
     });
   }
 
-  const after = await transcriptBytes(transcriptRoot, sessionId);
-  if (before === undefined || after === undefined) {
+  // Size is never the verdict: the transcript is append-only, so a successful
+  // /compact only shows as a boundary record appended after the offsets.
+  const scan = await scanAppendedTranscript(before);
+  if ("unreadable" in scan) {
     return autocompactResult({
       ...exitFields,
+      transcriptOffsetBefore,
+      transcriptScanError: scan.unreadable,
       reason:
-        "the transcript could not be measured, so nothing proved it shrank",
+        "the transcript could not be read after /compact, so nothing proved it compacted",
     });
   }
-  if (after >= before) {
+  if (scan.boundaries === 0) {
     return autocompactResult({
       ...exitFields,
-      transcriptBytesBefore: before,
-      transcriptBytesAfter: after,
-      reason: "the transcript did not shrink",
+      transcriptOffsetBefore,
+      transcriptBytesAppended: scan.appendedBytes,
+      reason: "no compact_boundary record was appended to the transcript",
     });
   }
 
@@ -374,8 +498,9 @@ export async function compactStreamSession(
     message: "compaction: /compact",
     fields: {
       ...exitFields,
-      transcriptBytesBefore: before,
-      transcriptBytesAfter: after,
+      transcriptOffsetBefore,
+      transcriptBytesAppended: scan.appendedBytes,
+      compactBoundaries: scan.boundaries,
     },
   };
 }
