@@ -21,7 +21,7 @@ flowchart TD
 ### Intent and Rationale
 
 - A block fails closed and the agent got no turn to fix a one-line formatting, cspell or `sweptAt` finding, so run 2 failed the same way. One bounded turn fixes the common mechanical cases.
-- The turn mirrors `screenshot_gate_retry.ts` / `summary_rule_gate_retry.ts`: flag set before the agent is invoked, configurable timeout, session resumed.
+- The turn mirrors `screenshot_gate_retry.ts`: the attempted flag is set before the agent is invoked, the timeout is configurable, and the session is resumed. `summary_rule_gate_retry.ts` is a sibling that shares only the one-agent-turn-after-a-gate-block idea; it sets no attempted flag before the agent call, resumes no session, and uses the general `config.claudeTimeout`.
 
 ### Essential Design Decisions
 
