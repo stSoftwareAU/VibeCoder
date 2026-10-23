@@ -214,6 +214,20 @@ Deno.test("parseRevisionResponse - handles JSON in markdown code block", () => {
   }
 });
 
+Deno.test("parseRevisionResponse - fenced JSON with surrounding prose parses the fenced block", () => {
+  // The brace in the trailing prose makes a whole-output {...} match invalid,
+  // so this only passes when the fence is unwrapped first (Issue #4115).
+  const output =
+    'Here is my revision:\n```json\n{"update_title": true, "new_title": "New", "update_body": false, "new_body": "", "summary": "Changed"}\n```\nUse {placeholder} next time.';
+  const result = parseRevisionResponse(output);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.update_title, true);
+    assertEquals(result.value.new_title, "New");
+    assertEquals(result.value.summary, "Changed");
+  }
+});
+
 Deno.test("parseRevisionResponse - handles JSON embedded in text", () => {
   const output =
     'Here is my analysis:\n\n{"update_title": false, "new_title": "", "update_body": true, "new_body": "Updated body", "summary": "Improved body"}\n\nDone.';
