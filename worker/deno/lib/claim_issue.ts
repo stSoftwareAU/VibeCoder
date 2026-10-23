@@ -40,7 +40,6 @@ import {
   fetchOpenPRsForFleet,
   getBlockingPRForIssue,
 } from "./issue_query.ts";
-import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
 import { sharedProcessedIssues } from "./processed_issue_registry.ts";
 import { postCooldownComment } from "./shared_cooldown.ts";
 import { checkStreamAffinity } from "./stream_holder.ts";
@@ -313,9 +312,6 @@ export interface ClaimChurnOptions {
   issueNumber: number;
   githubUser: string;
   threshold?: number;
-  failedLabel?: string;
-  /** Allowed authors to @mention in escalation comments (Issue #999). */
-  allowedAuthors?: string[];
   /** Injected gh command function (for testing). Defaults to runGhCommand. */
   ghCommandFn?: (args: string[]) => Promise<string>;
 }
@@ -1612,11 +1608,13 @@ export async function claimIssue(
 }
 
 /**
- * Detect claim/release churn and escalate if threshold met.
+ * Detect claim/release churn and cool down if the threshold is met.
  *
  * Counts the number of times an issue has been unassigned by the specified
  * user (indicating a claim-then-release cycle). If the count meets or
- * exceeds the threshold, the issue is escalated to planning mode.
+ * exceeds the threshold, the issue is released with a churn record and a
+ * cooldown signal. It is never parked (Issue #4158): no `failed` label and
+ * no request for a human to add `planning`.
  *
  * Issue #861: Detect issues that are too complex for direct implementation.
  * Issue #869: Only count unassignment events for the worker user.
@@ -1629,8 +1627,6 @@ export async function checkClaimChurn(
     issueNumber,
     githubUser,
     threshold = 3,
-    failedLabel = "failed",
-    allowedAuthors = [],
     ghCommandFn = runGhCommand,
   } = options;
 
@@ -1694,14 +1690,12 @@ export async function checkClaimChurn(
     return { ok: true, value: { churnCount, escalated: false } };
   }
 
-  // Churn threshold met — mark as failed and notify allowed authors (Issue #861, #999)
-  const mentionLine = allowedAuthors.length > 0
-    ? `\n\ncc ${
-      allowedAuthors.map((a) => `@${a}`).join(" ")
-    } — please add the \`planning\` label to escalate this issue to planning mode.`
-    : "";
+  // Churn threshold met — record it and cool down (Issue #861). Issue
+  // #4158: never `failed` and never a request for a human to add
+  // `planning` — the issue is the Vibe Coder's to finish, so it stays
+  // claimable once the cooldown ends.
   const churnComment =
-    `## Claim Churn Detected\n\nThis issue has been claimed and released ${churnCount} times (threshold: ${threshold}). Marking as failed — a human should review whether this issue needs to be broken down into smaller tasks.${mentionLine}`;
+    `## Claim Churn Detected\n\nThis issue has been claimed and released ${churnCount} times in the last hour (threshold: ${threshold}). The worker is releasing it and cooling down before the next attempt; it stays queued and is never parked (Issue #4158).`;
 
   try {
     await ghCommandFn([
@@ -1715,24 +1709,6 @@ export async function checkClaimChurn(
     ]);
   } catch {
     // Best-effort
-  }
-
-  // Ensure the failed label exists before adding it (Issue #1215)
-  // Issue #368: colour + description resolved from the canonical label
-  // table inside ensureLabelExists — no per-call-site literal.
-  await ensureLabelExists(repo, failedLabel, undefined, undefined, {
-    ghCommandFn,
-  });
-
-  // Issue #976: Use REST API with CLI fallback for label operations
-  // Issue #978: Label-add is non-fatal — the comment is the primary signal
-  const labelResult = await addLabelToIssue(repo, issueNumber, failedLabel, {
-    ghCommandFn,
-  });
-  if (!labelResult.ok) {
-    console.warn(
-      `[claim_issue] Warning: Failed to add '${failedLabel}' label to issue #${issueNumber} in ${repo} — continuing workflow (Issue #978)`,
-    );
   }
 
   // Unassign the worker

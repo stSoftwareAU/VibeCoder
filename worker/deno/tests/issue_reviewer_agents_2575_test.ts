@@ -19,8 +19,6 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildIssueRunAgents,
   EXPLORER_AGENT_NAME,
-  HAIKU_STANDARDS_REVIEWER_EFFORT,
-  HAIKU_STANDARDS_REVIEWER_MODEL,
   HAIKU_SUB_AGENT_GUIDANCE,
   ISSUE_EXECUTOR_AGENT_NAME,
   ISSUE_REVIEWER_DISALLOWED_TOOLS,
@@ -115,23 +113,24 @@ Deno.test("issue reviewers - the reviewer key is on by default (Issue #2812)", (
   assertEquals(buildDefaultWorkerConfig().issueReviewerAgents, true);
 });
 
-Deno.test("issue reviewers - each reviewer names an explicit model and effort below the advisor's", () => {
+Deno.test("issue reviewers - each reviewer names Opus explicitly, at an effort below the advisor's", () => {
+  // Owner decision 2026-10-22: Opus does the code reviews.
   const agents = reviewersOnly();
   const spec = agents[SPEC_REVIEWER_AGENT_NAME]!;
   const standards = agents[STANDARDS_REVIEWER_AGENT_NAME]!;
 
-  assertEquals(spec.model, "sonnet");
+  assertEquals(spec.model, "opus");
   assertEquals(spec.model, SPEC_REVIEWER_MODEL);
   assertEquals(spec.effort, "medium");
   assertEquals(spec.effort, SPEC_REVIEWER_EFFORT);
 
-  assertEquals(standards.model, "sonnet");
+  assertEquals(standards.model, "opus");
   assertEquals(standards.model, STANDARDS_REVIEWER_MODEL);
-  assertEquals(standards.effort, "low");
+  assertEquals(standards.effort, "medium");
   assertEquals(standards.effort, STANDARDS_REVIEWER_EFFORT);
 
   for (const def of [spec, standards]) {
-    assert(def.model !== "inherit" && def.model !== "opus");
+    assert(def.model !== "inherit");
     assert(def.effort !== "high" && def.effort !== "xhigh");
   }
 });
@@ -269,7 +268,10 @@ const SONNET_FIXTURE: Record<string, string> = JSON.parse(
   ),
 );
 
-Deno.test("issue reviewers - the sonnet tier is byte-identical to the pre-#3402 output", () => {
+// The executor entry is byte-identical to the pre-#3402 output; the reviewer
+// entries were re-recorded when both reviewers moved to Opus (owner decision
+// 2026-10-22).
+Deno.test("issue reviewers - the sonnet tier matches its recorded --agents output", () => {
   assertEquals(
     JSON.stringify(
       buildIssueRunAgents({
@@ -323,20 +325,17 @@ Deno.test("issue reviewers - the haiku tier with both switches on carries the ex
   assertEquals(executor.model, "haiku");
   assertEquals(executor.effort, "high");
 
-  const standards = agents[STANDARDS_REVIEWER_AGENT_NAME]!;
-  assertEquals(standards.model, "haiku");
-  assertEquals(standards.model, HAIKU_STANDARDS_REVIEWER_MODEL);
-  assertEquals(standards.effort, "medium");
-  assertEquals(standards.effort, HAIKU_STANDARDS_REVIEWER_EFFORT);
-  assertStringIncludes(standards.prompt, HAIKU_SUB_AGENT_GUIDANCE);
-
-  const spec = agents[SPEC_REVIEWER_AGENT_NAME]!;
-  assertEquals(spec.model, "sonnet");
-  assertEquals(spec.effort, "medium");
-  assert(
-    !spec.prompt.includes("Haiku guidance"),
-    "the Spec reviewer stays on Sonnet and must not carry Haiku guidance",
-  );
+  // The tier picks the executor, never the reviewers: both stay on Opus and
+  // carry no Haiku guidance (owner decision 2026-10-22).
+  for (const name of REVIEWERS) {
+    const reviewer = agents[name]!;
+    assertEquals(reviewer.model, "opus", name);
+    assertEquals(reviewer.effort, "medium", name);
+    assert(
+      !reviewer.prompt.includes(HAIKU_SUB_AGENT_GUIDANCE),
+      `${name} runs on Opus and must not carry Haiku guidance`,
+    );
+  }
 
   assert(
     agents[EXPLORER_AGENT_NAME],

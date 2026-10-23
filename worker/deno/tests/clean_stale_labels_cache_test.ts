@@ -108,7 +108,8 @@ Deno.test("cleanStaleLabels — warm call within TTL skips the API", async () =>
   const { cache, dir } = makeCache();
   try {
     // Pre-populate the cache with a non-stale timeline (label applied
-    // after the only reopen) so cleanStaleLabels does not mutate.
+    // after the only reopen) so cleanStaleLabels does not mutate. Uses
+    // `failed-once`: a leftover `failed` is always stale (Issue #4158).
     await cache.write("owner/repo", 7, [
       {
         event: "reopened",
@@ -117,14 +118,14 @@ Deno.test("cleanStaleLabels — warm call within TTL skips the API", async () =>
       },
       {
         event: "labeled",
-        label: { name: FAILED },
+        label: { name: FAILED_ONCE },
         actor: { login: "bot" },
         created_at: "2024-05-01T10:00:00Z",
       },
     ], true);
 
     const gh = recordingGh(REOPENED_TIMELINE);
-    const issues = [makeIssue(7)];
+    const issues = [makeIssue(7, [FAILED_ONCE])];
 
     const result = await cleanStaleLabels(
       issues,
@@ -136,7 +137,7 @@ Deno.test("cleanStaleLabels — warm call within TTL skips the API", async () =>
     );
 
     // No mutation — label was not stale.
-    assertEquals(result[0]?.labels, [FAILED]);
+    assertEquals(result[0]?.labels, [FAILED_ONCE]);
     // Cache hit — no `gh api .../timeline` issued.
     assertEquals(gh.timelineCalls(), 0);
     assertEquals(gh.editCalls(), 0);

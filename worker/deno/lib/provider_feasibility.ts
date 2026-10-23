@@ -38,7 +38,6 @@ import {
 import {
   EXPLORER_MODEL,
   HAIKU_ISSUE_EXECUTOR_MODEL,
-  HAIKU_STANDARDS_REVIEWER_MODEL,
   ISSUE_EXECUTOR_MODEL,
   SPEC_REVIEWER_MODEL,
   STANDARDS_REVIEWER_MODEL,
@@ -62,16 +61,17 @@ export interface FeasibilityModel {
 }
 
 /**
- * The Codex CLI id for the consumer "Astra" label.
+ * The Codex CLI id for the consumer "Astra" label — the top Codex tier
+ * (owner decision 2026-10-22), so one constant names it.
  *
  * Vendor's Codex models page (https://developers.openai.com/codex/models,
  * retrieved 2026-10-17) spells the consumer Astra / Sol labels as these CLI
  * ids.
  */
-export const CODEX_ASTRA_MODEL = "gpt-6-astra";
+export const CODEX_ASTRA_MODEL = DEFAULT_CODEX_MODEL_TOP_TIER;
 
-/** The Codex CLI id for the consumer "Sol" label (see {@link CODEX_ASTRA_MODEL}). */
-export const CODEX_SOL_MODEL = "gpt-6.1-sol";
+/** The Codex CLI id for the consumer "Sol" label — the base Codex tier. */
+export const CODEX_SOL_MODEL = DEFAULT_CODEX_MODEL;
 
 /**
  * The key a validated model is recorded under.
@@ -88,7 +88,7 @@ export function modelKey(provider: string, model: string): string {
  * The default candidate models, per provider, in a stable order.
  *
  * Claude's are the production tiers the fleet already routes to; Codex's are
- * the tiers the Codex line-up offers plus the two consumer labels.
+ * the three tiers it maps them to (Astra, 6.1 Sol, Luna).
  */
 const DEFAULT_CANDIDATES: ReadonlyMap<string, readonly string[]> = new Map([
   [
@@ -105,8 +105,6 @@ const DEFAULT_CANDIDATES: ReadonlyMap<string, readonly string[]> = new Map([
       DEFAULT_CODEX_MODEL_TOP_TIER,
       DEFAULT_CODEX_MODEL,
       DEFAULT_CODEX_MODEL_CHEAP_TIER,
-      CODEX_ASTRA_MODEL,
-      CODEX_SOL_MODEL,
     ],
   ],
 ]);
@@ -138,7 +136,6 @@ export function fleetBaselineModels(): ReadonlySet<string> {
     ...Object.values(PHASE_MODEL_DEFAULTS),
     ISSUE_EXECUTOR_MODEL,
     HAIKU_ISSUE_EXECUTOR_MODEL,
-    HAIKU_STANDARDS_REVIEWER_MODEL,
     SPEC_REVIEWER_MODEL,
     STANDARDS_REVIEWER_MODEL,
     EXPLORER_MODEL,
@@ -202,7 +199,8 @@ export function probeInvocationCapabilities(
     agents: {
       feasibility_probe: { description: "probe", prompt: "probe" },
     },
-    settingsJson: "{}",
+    // Probe with a valid empty hook set; Codex rejects malformed settings.
+    settingsJson: JSON.stringify({ hooks: { PreToolUse: [] } }),
     env: () => undefined,
   };
   const args = descriptor.buildInvocation(request);

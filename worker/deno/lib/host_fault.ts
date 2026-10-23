@@ -172,9 +172,8 @@ export function describeHostFault(kind: HostFaultKind): string {
 
 /**
  * Build the `**Host fault:** ...` note line appended to a failure comment's
- * `**Category:**` line, shared by `markIssueAsFailedOnce` and
- * `markIssueAsFailed` in `lib/label_failure.ts` so the wording cannot drift
- * between the two call sites (Issue #2890).
+ * `**Category:**` line, written by `markIssueAsFailedOnce` in
+ * `lib/label_failure.ts` (Issue #2890).
  *
  * Returned without any leading newlines — callers that need the blank-line
  * separator prepend it themselves (e.g. `` `\n\n${buildHostFaultNote(kind)}` ``).

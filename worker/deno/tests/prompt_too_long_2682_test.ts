@@ -278,14 +278,13 @@ Deno.test("#2682 handleIssueFailure - a fresh-session refusal marks failed-once 
 
     assert(result.ok);
     assertEquals(result.value.markedAsFailedOnce, true);
-    assertEquals(result.value.markedAsFailed, false);
     assertEquals(result.value.failureCategory, "prompt_too_long");
     assertEquals(result.value.isInfrastructure, false);
     assertStringIncludes(gh.commentBody(), "prompt-too-long");
   });
 });
 
-Deno.test("#2682 handleIssueFailure - a repeat refusal after failed-once marks failed", async () => {
+Deno.test("#2682 handleIssueFailure - a repeat refusal after failed-once is recorded again, never parked (Issue #4158)", async () => {
   await withWorkDir(async (cacheDir) => {
     const gh = ghRecorder("bug,failed-once");
     const result = await handleIssueFailure({
@@ -296,7 +295,7 @@ Deno.test("#2682 handleIssueFailure - a repeat refusal after failed-once marks f
     }, { ghCommandFn: gh.ghCommandFn, cacheDir });
 
     assert(result.ok);
-    assertEquals(result.value.markedAsFailed, true);
+    assertEquals(result.value.markedAsFailedOnce, true);
     assertEquals(result.value.failureCategory, "prompt_too_long");
   });
 });

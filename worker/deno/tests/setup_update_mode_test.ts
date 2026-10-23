@@ -22,6 +22,12 @@ import {
 import { createConsoleStyler, terminalStyler } from "../lib/console_style.ts";
 import type { DynamicVersionCandidate } from "../lib/software_updates.ts";
 import { RELEASE_MANIFEST_ASSET } from "../lib/release_manifest.ts";
+import {
+  parseConfigExistedFlag,
+  runUpdateMode,
+  SETUP_CLI_USAGE,
+  usage,
+} from "../setup/setup_cli.ts";
 
 /** Versions the injected resolver reports as today's dynamic choice. */
 const DYNAMIC_VERSIONS: DynamicVersionCandidate[] = [
@@ -160,6 +166,7 @@ Deno.test("runUpdateModeSetup - accepting every default pins a fresh host to the
   try {
     const h = harness(["", "", "", "", ""]);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -187,6 +194,7 @@ Deno.test("runUpdateModeSetup - typing dynamic still writes dynamic and no pins"
   try {
     const h = harness(["dynamic"]);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -217,6 +225,7 @@ Deno.test("runUpdateModeSetup - dynamic leaves stale pin fields where they are",
   try {
     const h = harness(["dynamic"]);
     const result = await runUpdateModeSetup({
+      configExisted: true,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -240,6 +249,7 @@ Deno.test("runUpdateModeSetup - frozen with a valid tag writes the ref and all t
   try {
     const h = harness(["frozen", "v1.4.0", "", "", ""]);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -264,6 +274,7 @@ Deno.test("runUpdateModeSetup - frozen accepts a commit SHA", async () => {
   try {
     const h = harness(["frozen", sha, "2.0.9", "2.61.0", "2.5.1"]);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -287,6 +298,7 @@ Deno.test("runUpdateModeSetup - an unresolvable ref is rejected by name and aske
   try {
     const h = harness(["frozen", "v9.9.9-nope", "v1.4.0", "", "", ""]);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -310,6 +322,7 @@ Deno.test("runUpdateModeSetup - a ref that never resolves writes nothing at all"
   try {
     const h = harness(["frozen", "v9.9.9-nope"]);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -328,6 +341,7 @@ Deno.test("runUpdateModeSetup - a ref with shell metacharacters is refused befor
   try {
     const h = harness(["frozen", "v1.4.0; rm -rf /", "v1.4.0", "", "", ""]);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -365,6 +379,7 @@ Deno.test("runUpdateModeSetup - an unresolvable tool version default is reported
         ]),
     });
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -395,6 +410,7 @@ Deno.test("runUpdateModeSetup - a release with no manifest falls back to the dyn
   try {
     const h = harness(["", "", "", "", ""], NO_MANIFEST);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -429,6 +445,7 @@ Deno.test("runUpdateModeSetup - an unresolvable release falls back to the dynami
   try {
     const h = harness(["", "v1.4.0", "", "", ""], NO_RELEASE);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -465,6 +482,7 @@ Deno.test("runUpdateModeSetup - a failed fetch is reported and a local ref still
         }),
     });
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -496,6 +514,7 @@ Deno.test("runUpdateModeSetup - re-running on a frozen host and pressing Enter c
   try {
     const h = harness(["", "", "", "", ""]);
     const result = await runUpdateModeSetup({
+      configExisted: true,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -526,6 +545,7 @@ Deno.test("runUpdateModeSetup - re-running on a dynamic host and pressing Enter 
   try {
     const h = harness([""]);
     const result = await runUpdateModeSetup({
+      configExisted: true,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -558,6 +578,7 @@ Deno.test("runUpdateModeSetup - a non-interactive run neither prompts nor change
       },
     });
     const result = await runUpdateModeSetup({
+      configExisted: true,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -583,6 +604,7 @@ Deno.test("runUpdateModeSetup - a non-interactive fresh config pins to the lates
       },
     });
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -617,6 +639,7 @@ Deno.test("runUpdateModeSetup - a non-interactive fresh config with no release s
       },
     });
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -641,6 +664,7 @@ Deno.test("runUpdateModeSetup - a non-interactive fresh config with no manifest 
   try {
     const h = harness([], { ...NO_MANIFEST, interactive: () => false });
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -666,6 +690,7 @@ Deno.test("runUpdateModeSetup - a missing config file is created pinned to the l
   try {
     const h = harness([], { interactive: () => false });
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -692,6 +717,7 @@ Deno.test("runUpdateModeSetup - malformed JSON fails loud rather than being over
   try {
     const h = harness(["dynamic"]);
     const result = await runUpdateModeSetup({
+      configExisted: true,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -797,6 +823,7 @@ Deno.test("runUpdateModeSetup - explanatory lines carry the info glyph", async (
   try {
     const h = harness(["", "", "", "", ""]);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -834,6 +861,7 @@ Deno.test("runUpdateModeSetup - a rejected answer carries the warning glyph", as
       "",
     ]);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -863,6 +891,7 @@ Deno.test("runUpdateModeSetup - a failed fetch and a missing manifest carry the 
         Promise.resolve({ ok: false, error: new Error("offline") }),
     });
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -888,6 +917,7 @@ Deno.test("runUpdateModeSetup - a confirmed answer carries the success glyph", a
   try {
     const h = harness(["frozen", "v1.4.0", "", "", ""]);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -919,6 +949,7 @@ Deno.test("runUpdateModeSetup - every question shows its default in brackets", a
   try {
     const h = harness(["", "", "", "", ""]);
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -957,6 +988,7 @@ Deno.test("runUpdateModeSetup - a question with no default never renders a stray
         ),
     });
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -986,6 +1018,7 @@ Deno.test("runUpdateModeSetup - a coloured styler reaches every line of the conv
       style: createConsoleStyler({ tty: true }),
     });
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -1024,6 +1057,7 @@ Deno.test("runUpdateModeSetup - NO_COLOR keeps every line of the conversation by
       ),
     });
     const result = await runUpdateModeSetup({
+      configExisted: false,
       repoDir: dir,
       configPath: path,
       deps: h.deps,
@@ -1046,4 +1080,205 @@ Deno.test("runUpdateModeSetup - NO_COLOR keeps every line of the conversation by
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// A config that predates the update_mode key (Issue #4119)
+
+Deno.test("runUpdateModeSetup - a pre-existing config with no update_mode is read as dynamic and left unwritten", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    let released = 0;
+    const h = harness([], {
+      interactive: () => false,
+      ask: () => {
+        throw new Error("a non-interactive run must not prompt");
+      },
+      latestRelease: () => {
+        released++;
+        return Promise.resolve({
+          ok: true,
+          value: { tag: LATEST_RELEASE, version: [1, 5, 0] },
+        });
+      },
+    });
+    const result = await runUpdateModeSetup({
+      configExisted: true,
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    assertEquals(result.value.settings.update_mode, "dynamic");
+    assertEquals(result.value.settings.pinned_ref, undefined);
+    assertEquals(result.value.settings.pinned_tool_versions, undefined);
+    assertEquals(result.value.changed, false);
+    assertEquals(result.value.prompted, false);
+    assertEquals(released, 0, "an existing host must not be pinned");
+    assertEquals(await readConfig(path), {});
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateModeSetup - a pre-existing config with no update_mode offers dynamic, and Enter writes dynamic", async () => {
+  const { dir, path } = await tempConfig({});
+  try {
+    const h = harness([""]);
+    const result = await runUpdateModeSetup({
+      configExisted: true,
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok, "the conversation should succeed");
+    assertStringIncludes(h.asked[0] ?? "", "[dynamic]");
+    assertEquals(result.value.settings.update_mode, "dynamic");
+    assertEquals((await readConfig(path)).update_mode, "dynamic");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// Guards the `existing.value.update_mode !== undefined` operand of the
+// non-interactive early return in worker/deno/setup/update_mode_setup.ts.
+Deno.test("runUpdateModeSetup - a non-interactive run keeps an update_mode the config already holds, even when configExisted is false", async () => {
+  const { dir, path } = await tempConfig({
+    update_mode: "dynamic",
+    pinned_ref: "v1.2.3",
+  });
+  try {
+    let released = 0;
+    const h = harness([], {
+      interactive: () => false,
+      ask: () => {
+        throw new Error("a non-interactive run must not prompt");
+      },
+      latestRelease: () => {
+        released++;
+        return Promise.resolve({
+          ok: true,
+          value: { tag: LATEST_RELEASE, version: [1, 5, 0] },
+        });
+      },
+    });
+    const result = await runUpdateModeSetup({
+      configExisted: false,
+      repoDir: dir,
+      configPath: path,
+      deps: h.deps,
+    });
+
+    assert(result.ok);
+    assertEquals(result.value.settings.update_mode, "dynamic");
+    assertEquals(result.value.settings.pinned_ref, "v1.2.3");
+    assertEquals(result.value.changed, false);
+    assertEquals(result.value.prompted, false);
+    assertEquals(
+      released,
+      0,
+      "a host that already holds update_mode is not re-pinned",
+    );
+    assertEquals(await readConfig(path), {
+      update_mode: "dynamic",
+      pinned_ref: "v1.2.3",
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("parseConfigExistedFlag - an absent flag or any other value is undefined", () => {
+  assertEquals(parseConfigExistedFlag(["update-mode"]), undefined);
+  assertEquals(
+    parseConfigExistedFlag(["update-mode", "--config-existed=maybe"]),
+    undefined,
+  );
+});
+
+Deno.test("parseConfigExistedFlag - --config-existed=true and =false parse to booleans", () => {
+  assertEquals(
+    parseConfigExistedFlag(["update-mode", "--config-existed=true"]),
+    true,
+  );
+  assertEquals(
+    parseConfigExistedFlag(["update-mode", "--config-existed=false"]),
+    false,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The update-mode subcommand itself (Issue #4119)
+// ---------------------------------------------------------------------------
+
+Deno.test("runUpdateMode - no --config-existed answer is refused and .config.json is left untouched", async () => {
+  const { dir, path } = await tempConfig({ repos: ["org/repo"] });
+  try {
+    const before = await Deno.readTextFile(path);
+    const h = harness([], { interactive: () => false });
+
+    const ok = await runUpdateMode(dir, path, undefined, h.deps);
+
+    assertEquals(ok, false, "update-mode must refuse to guess a default");
+    assertEquals(await Deno.readTextFile(path), before);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateMode - --config-existed=true leaves a config with no update_mode unwritten", async () => {
+  const { dir, path } = await tempConfig({ repos: ["org/repo"] });
+  try {
+    const before = await Deno.readTextFile(path);
+    const h = harness([], { interactive: () => false });
+
+    const ok = await runUpdateMode(dir, path, true, h.deps);
+
+    assertEquals(ok, true, "an answered flag must let update-mode run");
+    // The flag reached the conversation: a pre-existing config is read as
+    // dynamic and gains no update_mode or pins.
+    assertEquals(await Deno.readTextFile(path), before);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runUpdateMode - --config-existed=false pins a fresh config to the latest release", async () => {
+  const { dir, path } = await tempConfig({ repos: ["org/repo"] });
+  try {
+    const h = harness([], { interactive: () => false });
+
+    const ok = await runUpdateMode(dir, path, false, h.deps);
+
+    assertEquals(ok, true);
+    const config = await readConfig(path);
+    assertEquals(config.update_mode, "frozen");
+    assertEquals(config.pinned_ref, LATEST_RELEASE);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("setup_cli usage - names the --config-existed=true|false flag update-mode needs", () => {
+  assertStringIncludes(
+    SETUP_CLI_USAGE,
+    "Needs --config-existed=true|false: whether .config.json",
+  );
+});
+
+Deno.test("setup_cli usage - prints the help text on stdout", () => {
+  const original = console.log;
+  const printed: string[] = [];
+  console.log = (message?: unknown) => {
+    printed.push(String(message));
+  };
+  try {
+    usage();
+  } finally {
+    console.log = original;
+  }
+
+  assertEquals(printed, [SETUP_CLI_USAGE]);
 });

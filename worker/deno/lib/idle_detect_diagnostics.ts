@@ -156,7 +156,6 @@ const PACE_EXEMPT_LABELS: readonly string[] = [
  * `issue_filter.ts::filterAndSort`.
  */
 export const BLOCKING_LABELS: readonly string[] = [
-  LABEL_DEFAULTS.failedLabel,
   LABEL_DEFAULTS.needsRevisionLabel,
   LABEL_DEFAULTS.refineIssueLabel,
   LABEL_DEFAULTS.planningLabel,

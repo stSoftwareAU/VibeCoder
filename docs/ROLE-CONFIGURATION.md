@@ -38,12 +38,22 @@ example does not establish entitlement. A model rejection fails the invocation
 rather than selecting another provider or activating API billing.
 
 Repository role fields override host fields. Changing a role's provider clears
-inherited model, effort and adapter settings from the previous provider. With no
-role selections, external dispatch uses a Sonnet/high manager, a Haiku/high
-executor, and manager review. An explicit `reviewer` selection uses a separate
-read-only call, defaulting to Claude Opus/high for omitted fields. This reviewer
-checks the issue implementation; post-PR review and required CI retain their
-existing gates.
+inherited model, effort and adapter settings from the previous provider, and the
+role takes the new provider's own default for it. With no role selections,
+external dispatch uses a Sonnet/high manager, a Haiku/high executor, and a
+separate read-only Opus/high reviewer call. Opus does the code reviews (owner
+decision 2026-10-22), so the reviewer is never the manager reviewing its own
+work. This reviewer checks the issue implementation; post-PR review and required
+CI retain their existing gates.
+
+| Role | Claude default | Codex default (role moved to `codex`) |
+| --- | --- | --- |
+| manager | `sonnet` / `high` | `gpt-6.1-sol` / `high` |
+| executor | `haiku` / `high` | `gpt-6-luna` / `high` |
+| reviewer | `opus` / `high` | `gpt-6-astra` / `high` |
+
+A model or effort named beside the provider still wins. A provider with no row
+(Gemini, DeepSeek) leaves the role's model to that provider's phase routing.
 
 Supported effort values are `low`, `medium` and `high`. `cli_adapter`, when
 specified, must name the selected provider's registered adapter; arbitrary

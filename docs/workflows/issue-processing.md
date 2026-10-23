@@ -723,6 +723,7 @@ gitGraph
 - **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
 - **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. A dependency this fleet filed during the same run (fleet author, `createdAt` at or after the run start) is not deferred either; the run hands off straight to the analysis-only hand-off rather than waiting on a dependency the run itself just created — bypassing the usage-limit and interrupted-run retries, the described-code-change retry, and the short-output failure on the no-changes path, each of which would otherwise return a `failure` with no `needs-human` and leave the next run to defer onto a follow-up nothing picks up (Issue #3146). See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
 - **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now, when Claude produces useful analysis but no code changes — **or** the issue body declares itself analysis-only up front via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker posts the analysis once, hands the issue off to a human via `needs-human` (so discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a failure — the issue is not marked `failed`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. Two overrides still win over this retry: an explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker, and a `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run — that case hands off to `needs-human` on this same run instead of retrying (Issue #3146). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
+- **A crashed run is never analysis-only (Issue #4147):** the hand-off above is only for an agent that ran and finished cleanly. A run whose agent exited non-zero and changed nothing — the CLI could not load the resumed session (`No conversation found with session ID`), its autocompaction thrashed, or it died before any model turn — is an `execution_error` failure on the normal `failed-once` → `failed` ladder, so `work-on` stays and the issue is retried. On 2026-10-22 46 implementation issues were handed to a human as "analysis-only" by runs in which no model ran. The runner also retries a resumed session it cannot use once without `--resume` (the #204 path), so the dead id is replaced by the fresh conversation's rather than failing every issue in the stream. See [`execute_claude_phase.ts`](../../worker/deno/lib/execute_claude_phase.ts) and `detectResumedSessionUnusable` in [`claude_executor.ts`](../../worker/deno/lib/claude_executor.ts).
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
 - **Push rejected:** Pull/rebase and retry push; if conflict, create fresh branch and retry (see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
@@ -1311,7 +1312,7 @@ as its own numbered REQUIRED ITEM. That turn may change code for a verifier item
 afterwards. Findings still present on the re-run are reported like other
 summary-gate blocks: a `failure` with no PR, or `summary_incomplete` over an
 existing PR, with the comment on the issue thread. In the existing-PR case,
-auto-merge is withheld, `standing-violation` is applied and the surviving
+auto-merge is withheld (and disarmed if already armed), `standing-violation` is applied and the surviving
 verifier findings are also posted on the PR (Issue #3796). A finding is
 settled by a fix or an evidence-backed dispute naming the finding in the
 final message; marking a criterion partial, listing a known gap or noting a
@@ -1597,8 +1598,8 @@ messages checked in the PR summary's Test Plan.
 **A new path to an existing outcome keeps that outcome's guards (Issue #3087).**
 Fleet PRs added a second route to an outcome the code already reached, and the
 new route skipped a guard the old one applied: VibeCoder#3085 ran
-`reportSummaryRuleBlock` before the degraded-delivery guard in
-`completion_phase.ts`; VibeCoder#2909 added an `if (!prepared.ok)` early return
+`reportSummaryRuleBlock` before a guard in `completion_phase.ts` (since
+replaced by the unmet-criteria gate, Issue #4146); VibeCoder#2909 added an `if (!prepared.ok)` early return
 after `claimPrComment` that neither replied nor released the claim;
 VibeCoder#3065's milestone sync skipped `isConflictAttemptDue`; and
 GRQ-AutoTrader#2279's `publishBusy` skipped the freshness tracker's ticket
@@ -2462,7 +2463,7 @@ confirmed finding. A failed invocation, malformed reply or unchanged sentence
 therefore cannot silently clear the block. A later block folded with another
 gate does not get this extra turn. A surviving manual or source-comment finding
 holds an existing PR whether the block is claim-check-only or mixed:
-auto-merge is withheld,
+auto-merge is withheld (and disarmed if already armed),
 `standing-violation` is applied, and the findings are posted with the existing
 worker repair marker so PR feedback can act on them. With no PR, the run fails.
 
@@ -2577,281 +2578,68 @@ flowchart TD
     style X fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
-## ⚠️ A degraded run never closes an issue as complete
+## ⛔ No PR until every acceptance criterion is met
 
-A run served by a fallback model — a rate-limit fallback down the tier ladder,
-or a pre-flight reroute — is **degraded**, and the run-stats comment already
-says so (`Degraded: ⚠️ yes`). Until Issue #2562 nothing on the PR path read that
-verdict: on #2543 a Haiku-fallback run shipped one of seven accepted changes,
-wrote no PR summary, and its PR closed the issue. The rest had to be
-rediscovered by hand and refiled as #2560.
+The owner's ruling (Issue #4146): "If the criteria is not met then don't raise
+a PR, just complete the job." "Partially completed" is never a resolution.
+Until #4146 a run whose summary closed a criterion out `partial` or `missing`
+still raised a PR that closed the issue on merge, and filed a `Finish #N`
+follow-up for the rest (Issues #2562, #3506). That machinery is gone.
 
-[`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
-gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
-Its place depends on whether the branch already has an open PR. On a branch
-with **no** PR yet, each of the nine summary-rule gates — closure,
-independent review, reproduction status, docs sweep, removed test
-assertions, the placeholder-token gate, the branch-outcomes gate, the
-summary claim check and the pre-PR verifier (#3395) — still pre-empts the guard: a follow-up filed there
-would promise "that run's PR still completes #N on merge" for a PR any of
-those gates can still prevent from ever being raised, so whichever gate
-blocks first fails the run and the guard never runs. The one stopper that
-runs after the guard is the claim-freshness re-check (Issue #344); the
-follow-up the guard filed before it is retracted when it stops the PR (see
-"A stale claim retracts a follow-up this run filed" below). On an existing-PR
-branch the guard instead runs from inside `reportSummaryRuleBlock` itself
-(Issue #3092), after whichever gate's own comment is posted but before that
-gate's recovery finalises the PR. Before Issue #3092, only the docs-sweep
-gate took the guard on an existing-PR branch, because that gate ran after
-the guard; the closure, independent-review and reproduction-status gates ran
-ahead of the guard and skipped it. Once all nine gates pass, `completionBody`
-runs the same guard once more — via the
-shared `applyDegradedDeliveryGuard` helper — whether the PR is then raised
-or recovered:
+[`unmet_criteria_gate.ts`](../../worker/deno/lib/unmet_criteria_gate.ts) is a
+completion gate, last in the chain of PR-summary gates:
 
 ```mermaid
 flowchart TD
-    R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(the run-stats verdict)"}
-    D -- no --> H{"Any closure entry<br/>partial or missing?<br/>(Issue #3506)"}
-    H -- no --> P["PR as today"]
-    H -- yes --> C{"Issue is itself a<br/>partial-delivery follow-up?"}
-    C -- no --> F
-    C -- "yes (chain stop)" --> CS["No nested follow-up; label<br/>needs-human; PR body opens<br/>'handed to a human', says 'Part of'"]
-    D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
-    S -- yes --> P
-    S -- no --> G{"Any shortfall<br/>partial or missing?"}
-    G -- yes --> F["File (or reuse and update)<br/>one idle-task follow-up<br/>naming each shortfall"]
-    F -- "filed (degraded)" --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
-    F -- "filed (healthy)" --> W["PR body opens with a<br/>'Partial delivery — follow-up filed'<br/>section linking the follow-up"]
-    F -- "gh failed" --> Q{"Branch already<br/>has an open PR?"}
-    Q -- no --> X["Run fails, no PR raised"]
-    Q -- yes --> Y["Run fails, PR left unfinalised<br/>(auto-merge not armed);<br/>outcome pr + blocked"]
-    G -- "no — all unassessed" --> N["No follow-up; PR body opens with a<br/>'Degraded run — no follow-up filed'<br/>section saying why"]
+    S["PR summary closure block"] --> U{"Any criterion partial,<br/>missing or unassessed?"}
+    U -- no --> P["PR raised; it closes the issue"]
+    U -- yes --> R["No PR. The agent is sent back in this run<br/>with each unmet criterion named"]
+    R --> G{"Fewer unmet than last round,<br/>and rounds left?"}
+    G -- yes --> S
+    G -- no --> F["Run failure: criteria_unmet.<br/>Branch kept; the next run resumes it.<br/>No PR, no follow-up, no needs-human"]
 ```
 
-- **The scope** is the issue's `## Acceptance Criteria`, or — when that
-  heading is absent or lists nothing — its `## Definition of done` list (Issue
-  #3761), or — for an issue refined by grill-me — its
-  `### Accepted scope so far` list, or its `## Done when` list (Issue #3486).
-  An issue stating none of these is named whole as the one unverified item.
-- **Delivered** means the PR summary's closure block marks the item `met`. A
-  `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
-  is a shortfall. Entries are matched to scope items by their words, not by
-  position (Issue #3128): an entry matching no criterion, or two equally
-  well, does not assess that criterion, so the criterion stays `unassessed`.
-  A `partial` or `missing` entry left that way is still a shortfall, named
-  by its own subject, or by its `reason:` when the subject has no words, so
-  the follow-up is filed. A criterion split across
-  several entries takes the worst of their statuses (`missing` beats
-  `partial` beats `met`).
-- **Only a `partial` or `missing` shortfall files a follow-up** (Issue #2695).
-  An `unassessed` item carries no evidence of a gap, and a follow-up built only
-  from those just restated the whole issue as a `Finish #N` ticket no later run
-  could act on. When every shortfall is `unassessed`, no follow-up is filed or reused; the
-  PR still opens with a `Degraded run — no follow-up filed` section naming the
-  served model and reason and saying why — "the issue states no acceptance
-  criteria", or "no acceptance criterion was assessed `partial` or `missing`"
-  (with the unassessed items listed). It references no follow-up, and the PR
-  closes the issue as a healthy PR would. Where a `partial` or `missing` item
-  exists, unassessed items are still listed in the follow-up alongside it.
-  An issue that states no scope is no exception: each `partial` or `missing`
-  entry its summary reports is a shortfall named by its own subject, so the
-  follow-up is filed and the PR names it (PR #3676 review).
-- **The follow-up** carries the `idle-task` label — the one work-trigger label
-  the worker may apply itself — so the fleet picks the residue up without a
-  human, and a `finding-id` marker keyed on the parent, so a second degraded run
-  on the same issue reuses the open follow-up rather than filing another — and
-  rewrites its body to the later run's shortfalls and delivered items (the
-  marker is kept), so the follow-up never goes stale (Issue #3145). A failed
-  update fails the run just like a failed filing: the caller must not raise a
-  PR that would close the parent with the residue recorded nowhere. It lists
-  what was delivered too, so the next run checks rather than redoes it. Each
-  criterion line is copied
-  from the untrusted issue body, or, for an unmatched or subjectless
-  `partial`/`missing` gap, from the agent-written closure entry (its subject,
-  or its `reason:` when the subject has no words). Delivered lines are the
-  issue's own scope items or, when the issue states no scope, the subjects of
-  the summary's `met` closure entries. All of these are neutralised by
-  `neutraliseAgentMarkers`
-  before they are copied (Issue #2778): only the worker's own marker is live,
-  and a `finding-id` hidden in a criterion or a closure entry cannot suppress
-  an unrelated finding.
-- **A milestone child's follow-up joins its milestone** (PR #3676 review). When
-  the parent belongs to a milestone, a newly filed follow-up is created with
-  `--milestone <title>`, so the fleet works it on the milestone branch where
-  the delivered half lives rather than on the default branch. A reused
-  follow-up keeps the milestone it was filed with.
-- **A stale claim retracts a follow-up this run filed** (PR #3676 review). The
-  guard files the follow-up before the claim-freshness re-check
-  (the Claim-freshness re-check section of [INTERNALS.md](../INTERNALS.md)).
-  If that re-check then finds the claim stale (the parent closed, or a merged PR
-  already carries the branch), `abortStaleClaim` closes the follow-up as "not
-  planned" with a comment saying why, best-effort: a failed close is warned
-  about and the abort stands. Only a follow-up the run newly filed is closed; a
-  reused one predates the run and is left open. This applies to degraded and
-  healthy runs alike.
-- **The PR is still raised** with its closing keyword: the delivered work is
-  kept, and a PR that does not close its issue loops (Issue #520). The residue
-  survives the merge in the follow-up instead. The one exception is a summary
-  that marks a criterion `missing`: that PR is raised as `Part of #N` and its
-  merge hands the issue to a human (Issue #3177, see
-  [A `missing` criterion does not close the issue](#a-missing-criterion-does-not-close-the-issue)).
-- **A re-sync re-derives the section** (Issue #3350). A later re-sync of the
-  PR body (`syncPrBodyFromSummary`) used to copy a leading `Degraded run`
-  section forward verbatim, so a banner that had turned false could not be
-  removed by a fix run. Now, when the live body opens with a
-  `## ⚠️ Degraded run —` section, the re-sync reads the issue's current body
-  (`gh issue view`) and re-derives the section from it and the rebuilt
-  summary with `rederiveDegradedSection`, using the same scope matching PR
-  creation uses. It keeps only what cannot be re-judged after the run: the
-  original run's degradation reason and the follow-up number the section
-  named. With no shortfall left the section is dropped. If the section named
-  a follow-up, a section built from the same shortfalls stays as it is; any
-  other shortfall set is rebuilt by `buildDegradedStaleFollowUpSection`, which
-  keeps the follow-up number but says the worker filed that follow-up when the
-  PR was raised, that a re-sync does not rewrite it, and that it may not list
-  every item below (Issue #3677). The re-sync never edits the follow-up, for
-  the reason the healthy-run re-sync below gives (PR #3676 review). If a
-  `partial` or
-  `missing` shortfall remains but no follow-up was filed at PR creation, it
-  becomes a `Degraded run — partial delivery` section saying the worker filed
-  no follow-up for these items and to check them against the diff; the
-  re-sync files no follow-up itself (the fix-run case below applies only to a
-  body with no degraded or partial-delivery section). If only `unassessed` shortfalls remain,
-  it becomes the `Degraded run — no follow-up filed` section with its reason
-  re-derived, so "the issue states no acceptance criteria" disappears once
-  the issue states criteria. If the issue cannot be read, the re-sync fails
-  (logged by the caller) rather than copying the old section. It still runs
-  only when the summary changed, so an issue edit alone does not trigger it.
-- **A healthy run is untouched unless its summary reports a `partial` or
-  `missing` entry** (Issue #3506; see the next subsection). An issue that
-  states no criteria is no exception: each such entry is kept and named by its
-  own subject. A degraded run that showed every scope item `met` is left alone
-  only when it reported no unmatched `partial` or `missing` entry. An
-  unmatched entry like that is still a shortfall, and the follow-up is filed.
-- **The "gh failed" branch still fails loud.** When the guard runs from
-  `completionBody` after every summary gate has passed, the outcome is
-  `pr` plus the block when the branch lookup succeeds and the URL yields a
-  number, and that PR is neither finalised nor auto-merged (Issue #3092,
-  #3119). If that lookup fails, or that URL cannot be numbered, the run
-  records `no_pr` rather than naming `#0`. The same guard inside
-  `reportSummaryRuleBlock` names the PR that gate already found only when
-  its URL yields a number; an unnumberable URL records `no_pr` there too
-  (Issue #3136). Issue #3121 is the regression coverage for the
-  `completionBody` cases. See "An exception still has to report the PR it
-  blocked" below.
+- **What counts as unmet.** Every `partial` or `missing` closure entry, matched
+  to the issue's criteria by its words (Issue #3128). A scope item the closure
+  block says nothing about counts too when the block assesses fewer entries
+  than the issue states: silence is not `met`. A pending merge check
+  (`CI not yet verified`, `awaiting code review`) is not unfinished work and
+  does not count.
+- **The run keeps working.** The block reaches the in-run recovery turn
+  (`summary_rule_gate_retry.ts`, Issue #2189) with each unmet criterion as an
+  UNMET CRITERION item the turn must finish in code and tests. Re-labelling a
+  criterion `met` without the work is the over-claim the Spec reviewer exists
+  to catch. Further rounds follow while each one meets more criteria than the
+  last, up to `MAX_UNMET_CRITERIA_ROUNDS`; a round that moves nothing ends the
+  run.
+- **A run that still cannot finish fails** as `criteria_unmet` on the ordinary
+  `failed-once` → `failed` ladder. No PR is raised, no follow-up is filed, and
+  nothing is labelled `needs-human`. The branch stays pushed, so the next run
+  resumes it (Issues #220, #585).
+- **An incomplete PR is a draft.** The owner: "make sure that incomplete PRs
+  are draft so the CI and code reviews aren't done." A PR the agent raised
+  itself from inside the execute phase is turned back into a draft the moment
+  a criterion is found unmet: `gh pr ready --undo`, auto-merge disarmed, and
+  the body rewritten to `Part of #N` with no closing keyword. It is never
+  closed; the draft never holds its issue, so the next run continues the
+  branch.
+- **Degraded runs follow the same rule.** Whether the run was served by a
+  fallback model changes nothing here: the run-stats `Degraded:` line is
+  telemetry, not a delivery decision.
+- **A timed-out run keeps a draft.** A run that times out (or is released on
+  schedule) with its work preserved on the branch opens a DRAFT PR saying
+  `Part of #N` — never a closing keyword, never auto-merge (the sweep skips
+  drafts, Issue #1800) — via
+  [`draft_continuation_pr.ts`](../../worker/deno/lib/draft_continuation_pr.ts).
+  The fleet's own draft never holds its issue (`getBlockingPRForIssue`), so the
+  next run re-claims it, resumes the branch and finishes.
+- **Complete means ready, and merging as soon as possible.** Once every
+  criterion is met, completion rewrites a draft's body (`Closes #N`), runs
+  `gh pr ready` and arms squash auto-merge in the same step, rather than
+  waiting for the sweep.
 
-### Pending merge verification remains on the originating PR
-
-The shared shortfall assessment excludes narrowly recognised pending required
-CI/quality checks and routine clean code review from follow-up creation. The
-summary retains the original pending entry; it is never counted as delivered.
-This applies to healthy and degraded runs, issues without stated criteria, and
-runs on an existing partial-delivery follow-up. It prevents pending checks alone
-from filing a follow-up or invoking the nested-follow-up human hand-off.
-
-Generation guidance puts pending checks under `## Merge verification`. Legacy
-closure entries with reasons such as `CI not yet verified` or `awaiting code
-review` use the same assessment. A mixed criterion whose product work is
-complete can explicitly state its remainder as
-`reason: CI not yet verified — remaining: merge-verification-only` (also accepts
-`awaiting code review` or `quality gate not yet run`); it retains its closure
-status and is not counted as delivered. Unknown wording stays actionable; failed
-checks, unavailable tools, missing tests and mixed criteria with unfinished
-implementation are not excluded by the legacy wording check. PR-body refresh uses this assessment too: pending-only gap
-banners are removed, while an unassessed scope item in a degraded run can retain
-a no-follow-up banner. Refresh does not close or edit an existing follow-up.
-Required CI, clean review, acceptance checks and merge gates remain enforced.
-
-### A healthy run's own gaps get a follow-up too (Issue #3506)
-
-A run on its primary model used to be left alone whatever its summary said, so
-a PR whose closure block honestly marked a criterion `partial` still closed the
-issue with the residue recorded only in a PR line nobody tracked. The same
-`applyDegradedDeliveryGuard`, at the same two call sites, now handles a healthy
-run:
-
-- **Trigger.** A `partial` or `missing` implementation gap in the PR's closure
-  block, excluding pending-only merge verification as described above. Entries are matched to criteria by words exactly as on the degraded
-  path (`assessReportedGaps` calls `assessScopeShortfalls`); an unmatched
-  `partial` or `missing` entry is named by its own subject. `unassessed` items
-  file nothing and add nothing to the PR body. An issue that states no criteria
-  has nothing to match against, so each `partial` or `missing` entry is kept
-  and named by its own subject; a `met` entry alone files nothing.
-- **One shared follow-up.** The worker files (or reuses and rewrites) one
-  `idle-task` follow-up keyed on the parent with the same `finding-id` marker
-  as the degraded follow-up (`degraded-follow-up-<N>`), so a healthy and a
-  degraded run on one parent share a single follow-up. It lists only the
-  `partial`/`missing` items plus the delivered (`met`) ones.
-- **The PR body** opens with a `## ⚠️ Partial delivery — follow-up filed`
-  section naming each gap and the follow-up number. The PR keeps its closing
-  keyword (as on the degraded path), except that a `missing` entry still turns
-  `Closes` into `Part of` (Issue #3177).
-- **Fails loud.** If the follow-up cannot be filed or updated, the run fails
-  exactly as the degraded path does: no PR is raised, or an existing PR is
-  left unfinalised.
-- **Re-sync.** A later `syncPrBodyFromSummary` re-derives a leading
-  `Partial delivery — follow-up filed` section from the issue's current body
-  and the rebuilt summary (`rederiveReportedGapSection`). It is dropped when
-  no gap remains, with no call to the follow-up. When a gap remains but the
-  follow-up number cannot be read from its opening line, the live section is
-  kept unchanged. When a gap remains and the number can be read, a section
-  built from the same gaps stays as it is; any other gap set is rebuilt by
-  `buildReportedGapStaleFollowUpSection`, which keeps the number but says the
-  worker filed that follow-up when the PR was raised, that a re-sync does not
-  rewrite it, and that it may not list every item below. Re-deriving a section
-  the body already carries only reads the issue (`gh issue view`) and edits the
-  PR body: it never files, edits or lists the follow-up, because it would copy
-  freshly fetched, unverified issue text into an `idle-task` issue the fleet
-  works as trusted (PR #3676 review; THREAT-MODEL AP-7).
-- **A fix run's new gap (Issue #3678).** A review-fix, CI-fix or merge-conflict
-  run can newly mark a criterion `partial` or `missing` in a summary whose PR
-  body carries no degraded or partial-delivery section yet. When such a sync
-  runs (the summary differs from the recorded digest, the PR is worker-authored,
-  and the checkout is the PR head), and the rebuilt closure block marks any
-  criterion `partial` or `missing`, `syncPrBodyFromSummary` (via
-  `addReportedGapSectionOnSync` in `worker/deno/lib/pr_body_sync_follow_up.ts`):
-  1. reads the parent issue (`gh issue view --json title,body,labels,author,milestone`);
-  2. re-verifies that title and body with `verifyPickupContentIntegrity`
-     (`pickup_content_integrity.ts`, THREAT-MODEL AP-7) before writing any of
-     that text anywhere, because the sync fetched it fresh;
-  3. if the issue is itself a partial-delivery follow-up (its body carries a
-     `degraded-follow-up-<N>` `finding-id` marker), hands it to a human exactly
-     as the completion phase does (`handFollowUpToHuman`: `needs-human` label
-     and comment), and prepends a `Partial delivery — handed to a human` section
-     whose closing keyword for the issue becomes `Part of`;
-  4. otherwise files or reuses (and rewrites) the one `idle-task` follow-up
-     keyed on the parent through `fileDegradedFollowUp`, joining the parent's
-     milestone when newly filed, and prepends a `Partial delivery — follow-up
-     filed` section (`buildReportedGapPrSection`) naming it;
-  5. fails loudly if the issue cannot be read, its content fails verification,
-     the human hand-off or the filing fails, or no filer is wired. The sync then
-     returns an error and the PR body is left as it was. The processor (or the
-     Priority 1.64 reconcile pass, which runs the same sync after a push the
-     worker did not make — Issue #3760) logs the failed sync at warning and the
-     run does not fail, as for any failed sync. A later sync whose summary has
-     changed again retries.
-
-  Once the section exists, later syncs re-derive it as above and never write to
-  the follow-up. The filer reaches the three processors through a
-  `syncFollowUpFiling` processor dependency, which production builds with
-  `buildSyncFollowUpFiling(config, githubUser)`.
-- **No nested follow-up.** When the issue being worked is itself a
-  partial-delivery follow-up (its body carries a `degraded-follow-up-<N>`
-  `finding-id` marker), a healthy run with a gap files no `Finish #F: Finish
-  #N: …` follow-up, because an item no run can deliver would otherwise chain
-  fleet runs without end (PR #3676 review). Instead it labels the issue
-  `needs-human`, comments naming the gaps (`handFollowUpToHuman`), and the PR
-  body opens with a `## ⚠️ Partial delivery — handed to a human` section
-  carrying a `vibe-follow-up-chain-stop` marker, and its closing keyword for
-  the issue becomes `Part of`. Both merged-PR closers read
-  that marker and leave the issue open, labelled `needs-human`, even when its
-  gaps are only `partial`. If the label or comment cannot be applied, the run
-  fails as above and raises no PR. A re-sync rebuilds this section from the
-  current gaps and drops it when none remains, so the merge then closes the
-  issue as usual. Authorship of the marker is not checked: a planted marker
-  only sends a run's gaps to a human instead of to a fleet follow-up. A
-  degraded run on a follow-up still files one, as before.
+[`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) keeps
+only the pure scope assessment both this gate and `claim_freshness.ts` read.
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
@@ -2932,22 +2720,6 @@ The outcome kind is what downstream health reporting counts, so "delivered, one
 finding outstanding" is now countable apart from "delivered nothing"
 (Issue #1947). `deriveRunOutcome` attaches the block to **any**
 PR-then-later-step failure, not only this gate's.
-
-The degraded-run guard (see "A degraded run never closes an issue as
-complete" above) follows the same rule when it cannot file the follow-up
-that records a degraded run's undelivered scope, or a healthy run's own
-`partial`/`missing` gaps (Issue #3092, #3119, #3506). The
-run still fails, and the PR is neither finalised nor auto-merged. When the
-guard runs from `completionBody` after every summary gate has passed, the
-outcome is `pr` with `prNumber` plus the block when the branch lookup
-succeeds and the URL yields a number. If that lookup fails or that URL
-cannot be numbered, the run records `no_pr` rather than naming `#0`. When
-the same guard runs inside `reportSummaryRuleBlock`, the outcome names the
-PR that gate already found only when its URL yields a number; an
-unnumberable URL records `no_pr` there too (Issue #3136). Issue #3121 adds
-the regression coverage for the `completionBody` call counts, the block's
-phase, the no-PR case and the unnumberable URL; Issue #3136 covers the
-`reportSummaryRuleBlock` unnumberable case.
 
 **Implementation.** `lookupBlockedGatePr` and the gate block in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
@@ -3107,9 +2879,10 @@ documentation-shortfall rule, "do not change the code", and "this turn cannot
 change code" is not a settling reason. The quality gate re-runs over the
 changed tree before completion re-runs. If a later block in the same run
 finalises an existing PR as `summary_incomplete` while such a violation is
-still standing, the worker does not arm auto-merge on that PR and labels it
-`standing-violation` instead, logging a warning; the rest of finalisation is
-unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
+still standing, the worker does not arm auto-merge on that PR, labels it
+`standing-violation`, and disarms (`gh pr merge --disable-auto`) any auto-merge
+an earlier pass had already armed (Issue #4075), logging a warning; the rest of
+finalisation is unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
 skips a PR carrying `standing-violation` and disarms one that is already armed
 (`gh pr merge --disable-auto`), so the sweep never arms a held PR
 (Issue #3517). The CI-fix pass honours the label too: after it pushes a fix

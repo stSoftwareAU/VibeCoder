@@ -1016,6 +1016,55 @@ Deno.test("run.sh - prints the new-release notice once, on stderr and in the run
   }
 });
 
+Deno.test("run.sh - the new-release notice is a WARNING line on stderr (Issue #4119)", async () => {
+  const notice = formatReleaseNotice("1.0.4", "1.0.5");
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RELEASE_NOTICE_STDOUT: notice,
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // A degraded host (pinned behind the newest release) is logged at WARNING,
+    // so the line leads with the run.sh WARNING prefix. The wording is the
+    // notice itself, unchanged.
+    const lines = outcome.stderr.split("\n");
+    assert(
+      lines.some((line) =>
+        line.startsWith("[run.sh] WARNING: A new release of Vibe Coder")
+      ),
+      `the notice must be a WARNING line on stderr: ${outcome.stderr}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - the new-release notice is one WARNING line in run_core.log per launch (Issue #4119)", async () => {
+  const notice = formatReleaseNotice("1.0.4", "1.0.5");
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RELEASE_NOTICE_STDOUT: notice,
+  });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    // Once per launch: exactly one run-core line carries the WARNING notice.
+    const warningLines = (await runCoreLog(harness)).split("\n").filter((
+      line,
+    ) => line.includes("WARNING: A new release of Vibe Coder"));
+    assertEquals(
+      warningLines.length,
+      1,
+      `run_core.log must hold exactly one WARNING notice line: ${warningLines}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
 Deno.test("run.sh - says nothing when the release check has nothing to say (Issue #690)", async () => {
   const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
   try {
