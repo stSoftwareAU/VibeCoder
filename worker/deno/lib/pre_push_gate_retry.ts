@@ -44,9 +44,9 @@ const PRE_PUSH_GATE_OUTPUT_BLOCK = "the pre-push gate output";
 /**
  * Outcome of the pre-push gate's one extra agent turn.
  *
- * `ran: true` means the turn finished cleanly and whatever it left was
- * committed (the commit may still have failed, which is logged and never
- * thrown). `ran: false` names the cause in `detail`; the caller then reports
+ * `ran: true` means the turn finished cleanly and a commit of whatever it left
+ * was attempted (a reconcile or commit failure is logged, never thrown, and
+ * does not change this). `ran: false` names the cause in `detail`; the caller then reports
  * the gate's latest output as the block.
  */
 export type PrePushRecoveryTurn =
@@ -118,10 +118,11 @@ ${buildBoundaryIntegrityInstruction(id, [PRE_PUSH_GATE_OUTPUT_BLOCK])}`;
  * extra turn per run, across every gate call in the completion phase.
  *
  * The turn resumes the same session with the gate's output. On a clean finish
- * whatever it left is committed on the issue branch. The commit never pushes:
- * a `beforePush` refusal leaves the push to the completion phase, which re-runs
- * the formatters and the same whole-branch gate and pushes only if it passes.
- * The caller re-runs the gate and decides.
+ * the worker tries to commit whatever it left on the issue branch; a failed
+ * reconcile or commit is logged and the turn still counts as run. The commit
+ * never pushes: a `beforePush` refusal leaves the push to the completion
+ * phase, which re-runs the formatters and the same whole-branch gate and
+ * pushes only if it passes. The caller re-runs the gate and decides.
  *
  * @param gateOutput - The pre-push gate's failure message for this block
  */

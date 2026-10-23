@@ -419,6 +419,87 @@ Deno.test("pre-push gate retry - commit fails with a non-sentinel error: the tur
   );
 });
 
+Deno.test("pre-push gate retry - the agent is invoked as the issue phase with the run's identity, kill grace, model and logger (Issue #4128)", async () => {
+  const h = makeHarness({
+    config: { claudeKillAfter: 17, claudeModel: "model-under-test" },
+  });
+
+  await runPrePushGateRecoveryTurn(h.ctx, h.state, h.deps, GATE_OUTPUT);
+
+  assertEquals(h.agentCalls.length, 1);
+  const call = h.agentCalls[0]!;
+  assertEquals(call.phase, "issue");
+  assertEquals(call.repo, REPO);
+  assertEquals(call.issueNumber, ISSUE);
+  assertEquals(call.killAfterSeconds, 17);
+  assertEquals(call.model, "model-under-test");
+  assert(call.logger === h.deps.logger, "the run's logger must be passed on");
+});
+
+Deno.test("pre-push gate retry - an unset model is passed as undefined, not an empty string (Issue #4128)", async () => {
+  const h = makeHarness({ config: { claudeModel: "" } });
+
+  await runPrePushGateRecoveryTurn(h.ctx, h.state, h.deps, GATE_OUTPUT);
+
+  assertEquals(h.agentCalls[0]!.model, undefined);
+});
+
+Deno.test("pre-push gate retry - a thrown non-Error value is named by its string form (Issue #4128)", async () => {
+  const h = makeHarness({
+    script: () => {
+      throw "plain string thrown";
+    },
+  });
+
+  const result = await runPrePushGateRecoveryTurn(
+    h.ctx,
+    h.state,
+    h.deps,
+    GATE_OUTPUT,
+  );
+
+  assertEquals(detailOf(result), "plain string thrown");
+});
+
+Deno.test("pre-push gate retry - a clean turn's run stats are recorded on the state; a failed turn records none (Issue #4128)", async () => {
+  const stats = { totalCostUsd: 0.5 } as never;
+  const clean = makeHarness({
+    script: () =>
+      Promise.resolve({
+        ok: true,
+        value: {
+          exitCode: 0,
+          output: "fixed",
+          timedOut: false,
+          runStats: stats,
+        },
+      }),
+  });
+  await runPrePushGateRecoveryTurn(
+    clean.ctx,
+    clean.state,
+    clean.deps,
+    GATE_OUTPUT,
+  );
+  assertEquals(clean.state.claudeRunStats?.length, 1);
+  assertEquals(clean.state.claudeRunStats?.[0]?.runStats, stats);
+
+  const failed = makeHarness({
+    script: () =>
+      Promise.resolve({
+        ok: true,
+        value: { exitCode: 1, output: "x", timedOut: false },
+      }),
+  });
+  await runPrePushGateRecoveryTurn(
+    failed.ctx,
+    failed.state,
+    failed.deps,
+    GATE_OUTPUT,
+  );
+  assertEquals(failed.state.claudeRunStats, undefined);
+});
+
 Deno.test("pre-push gate retry - configured timeout is used (Issue #4128)", async () => {
   const h = makeHarness({
     config: { prePushRetryTimeoutSeconds: 123 },

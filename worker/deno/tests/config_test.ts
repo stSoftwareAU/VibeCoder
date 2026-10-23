@@ -2313,3 +2313,13 @@ Deno.test("config - a non-boolean rtk_output.enabled fails the load (Issue #2380
     assertStringIncludes(error.message, "rtk_output.enabled");
   });
 });
+
+Deno.test("config - the pre-push retry timeout key is a known config key, not flagged as unknown (Issue #4128)", async () => {
+  const { detectUnknownConfigKeys } = await import(
+    "../lib/config_unknown_keys.ts"
+  );
+  assertEquals(
+    detectUnknownConfigKeys({ pre_push_retry_timeout_seconds: 600 }),
+    [],
+  );
+});

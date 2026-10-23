@@ -133,6 +133,10 @@ interface Outcome {
   agentPrompts: string[];
   /** The `baseRef` each gate call received (5th argument). */
   gateBaseRefs: Array<string | undefined>;
+  /** The `preFlightAlreadyRan` flag each gate call received (4th argument). */
+  gatePreFlightFlags: boolean[];
+  /** The `baseRef` each formatter call received (Issue #4128). */
+  formatBaseRefs: Array<string | undefined>;
   warnings: string[];
   /** INFO lines the completion phase logged (Issue #3770). */
   infos: string[];
@@ -164,6 +168,8 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let recoveryCommits = 0;
   const agentPrompts: string[] = [];
   const gateBaseRefs: Array<string | undefined> = [];
+  const gatePreFlightFlags: boolean[] = [];
+  const formatBaseRefs: Array<string | undefined> = [];
   const warnings: string[] = [];
   const infos: string[] = [];
   const config: WorkerConfig = buildDefaultWorkerConfig();
@@ -321,8 +327,13 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         if (cmdArgs[0] === "rev-list") return ok("1\n");
         return ok("");
       },
-      gateUnpushedCommits: (_branch, _opts, _spec, _ran, baseRef) => {
+      formatBranchChanges: (_repo, baseRef) => {
+        formatBaseRefs.push(baseRef);
+        return Promise.resolve({ runs: [], failures: [], committed: false });
+      },
+      gateUnpushedCommits: (_branch, _opts, _spec, ran, baseRef) => {
         gateBaseRefs.push(baseRef);
+        gatePreFlightFlags.push(ran === true);
         const answer = scenario.gateAnswers[gateCalls++] ?? "pass";
         if (answer === "pass") {
           return Promise.resolve({
@@ -501,6 +512,8 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       recoveries,
       gateCalls,
       gateBaseRefs,
+      gatePreFlightFlags,
+      formatBaseRefs,
       agentCalls,
       recoveryCommits,
       agentPrompts,
@@ -712,6 +725,38 @@ Deno.test({
     // WIP checkpoints push the agent's commits ungated, so "unpushed" alone
     // would miss them: both calls must name the base the PR will compare to.
     assertEquals(o.gateBaseRefs, ["origin/main", "origin/main"]);
+  },
+});
+
+Deno.test({
+  name:
+    "completion - the formatters and the gate take the PR base and never claim the pre-flight already ran, before and after the agent turn (Issue #4128)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: [BLOCK, "pass"],
+    });
+    assertEquals(o.gateCalls, 2);
+    assertEquals(o.formatBaseRefs, ["origin/main", "origin/main"]);
+    assertEquals(o.gatePreFlightFlags, [false, false]);
+  },
+});
+
+Deno.test({
+  name:
+    "completion - with an unresolvable PR base the formatters get no base either (Issue #4128)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      baseUnresolvable: true,
+      pushRefused: false,
+      gateAnswers: ["pass"],
+    });
+    assert(o.formatBaseRefs.length >= 1, "the formatters still run");
+    assert(o.formatBaseRefs.every((ref) => ref === undefined));
   },
 });
 
