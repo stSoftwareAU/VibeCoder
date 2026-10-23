@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/mutation_gate.ts",
+        "line": 883,
+        "outcome": "a shebang naming sh or bash is a script; another interpreter is not",
+        "test": "worker/deno/tests/mutation_gate_test.ts",
+        "testName": "hasShellShebang - rejects other interpreters, a missing shebang, or a shebang not on line one",
+        "flipWentRed": "flipped to return true for any interpreter; the rejects-other-interpreters test went red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_gate.ts",
+        "line": 889,
+        "outcome": "a .bats file is a shell test file and yields no mutants",
+        "test": "worker/deno/tests/mutation_gate_test.ts",
+        "testName": "isShellTestFile - recognises shell and bats test files by name",
+        "flipWentRed": "flipped to never true; the recognises-test-files test went red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_gate.ts",
+        "line": 954,
+        "outcome": "a structural shell word is never deleted or guarded",
+        "test": "worker/deno/tests/mutation_gate_test.ts",
+        "testName": "generateShellMutantsDetailed - each structural word as a command is never deleted or guarded",
+        "flipWentRed": "deleted each of elif, while, {, in from the set; the structural-word test went red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_gate.ts",
+        "line": 1080,
+        "outcome": "a blank or comment line yields no mutants",
+        "test": "worker/deno/tests/mutation_gate_test.ts",
+        "testName": "generateShellMutantsDetailed - comment and blank lines yield nothing",
+        "flipWentRed": "flipped to mutate comment lines; the comment-and-blank test went red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_gate.ts",
+        "line": 1185,
+        "outcome": "a not_checked result blocks the gate and never reports survivors",
+        "test": "worker/deno/tests/mutation_gate_test.ts",
+        "testName": "evaluateMutationGate - not_checked blocks and never reports survivors",
+        "flipWentRed": "flipped to blocked: false; the not_checked-blocks test went red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_runner.ts",
+        "line": 428,
+        "outcome": "a merged not_checked result keeps its kind whichever side it is on",
+        "test": "worker/deno/tests/mutation_runner_test.ts",
+        "testName": "mergeMutationResults - the more severe kind wins whichever side it is on",
+        "flipWentRed": "branch disabled; the more-severe-kind test went red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_runner.ts",
+        "line": 535,
+        "outcome": "an extensionless file without an sh or bash shebang is not a script",
+        "test": "worker/deno/tests/mutation_runner_test.ts",
+        "testName": "runMutationCheck shell - an extensionless file is a script only when its shebang names sh or bash",
+        "flipWentRed": "branch disabled; the extensionless-file test went red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_runner.ts",
+        "line": 645,
+        "outcome": "a covered script's survivors are named when another script is not_checked",
+        "test": "worker/deno/tests/mutation_runner_test.ts",
+        "testName": "runMutationCheck shell - a covered script's survivors are named when another script is not_checked",
+        "flipWentRed": "flipped to always return the run result; the covered-survivors test went red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_runner.ts",
+        "line": 1371,
+        "outcome": "the real seam lists only shell test files, skips skipped dirs, sorted",
+        "test": "worker/deno/tests/mutation_runner_test.ts",
+        "testName": "defaultMutationRunnerSeams listShellTestFiles - finds shell tests, skips other files and skipped dirs, sorted",
+        "flipWentRed": "flipped to match nothing; the listShellTestFiles seam test went red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_runner.ts",
+        "line": 327,
+        "outcome": "a mutant that bash -n rejects is unviable, neither killed nor a survivor",
+        "test": "worker/deno/tests/mutation_runner_test.ts",
+        "testName": "runMutationCheck shell - a mutant bash -n rejects is unviable, not killed, and parseable siblings are still killed",
+        "flipWentRed": "branch removed so bash -n never marks unviable; the bash -n test went red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_gate.ts",
+        "line": 956,
+        "outcome": "a case-pattern line is never deleted (operand SHELL_CASE_PATTERN of the case-pattern guard)",
+        "test": "worker/deno/tests/mutation_gate_test.ts",
+        "testName": "generateShellMutantsDetailed - case patterns and terminators are never deleted",
+        "flipWentRed": "SHELL_CASE_PATTERN operand removed; this test and the command-beside-case test went red"
+      },
+      {
+        "path": "worker/deno/lib/mutation_gate.ts",
+        "line": 956,
+        "outcome": "a case-terminator line is never deleted (operand SHELL_CASE_TERMINATOR of the case-pattern guard)",
+        "test": "worker/deno/tests/mutation_gate_test.ts",
+        "testName": "generateShellMutantsDetailed - case patterns and terminators are never deleted",
+        "flipWentRed": "SHELL_CASE_TERMINATOR operand removed; this test went red"
+      }
+    ]
+  }
+}

@@ -18,6 +18,34 @@ the line is changed, and one redundant early return in the shell pass
 
 Closes #3860.
 
+## Spec
+
+The issue asks that the diff-scoped mutation gate also cover changed shell
+scripts. Each requirement and how this change meets it:
+
+- **Shell is a mutation language.** `shell` is added to `MutationLanguage`, and
+  a built-in shell mutator (`generateShellMutantsDetailed`) sits beside the Deno
+  one.
+- **Detection regardless of repo language.** A changed file is a shell script
+  when its name ends in `.sh` or `.bash`, or when it is extensionless and its
+  first line is an `sh` or `bash` shebang (`hasShellShebang`). The repo's own
+  language does not matter.
+- **A Deno repo with `.sh` changes runs both passes.** The Deno/Cargo pass and
+  the shell pass both run; their results are merged.
+- **Line-based mutator operators.** Shell mutants are made per added line (guard
+  insertion, operator flips, return and exit flips, and statement deletion to
+  `:`), not from a parsed syntax tree.
+- **Covering-test discovery.** A script is covered when a shell, bats or Deno
+  test names its repo-relative path or its basename. A script with no covering
+  test is `not_checked`, which blocks the gate.
+- **Shared budget and result.** The shell pass draws on the same budget clock as
+  the Deno pass, and the merged result takes the worst kind.
+- **`bash -n` rejects are unviable.** A mutant that `bash -n` rejects is unviable:
+  it is neither killed nor a survivor.
+- **Case syntax is never replaced by `:`.** Case patterns and their `;;`
+  terminators are never mutated by `:` replacement.
+- **Out of scope.** #3901 and #3875 are untouched by this change.
+
 ## Test Plan
 
 No assertion was removed from an existing test. The only removed test line is
@@ -33,15 +61,13 @@ entries), `defaultMutationRunnerSeams listShellTestFiles - …` (reaches the rea
 `listShellTestFiles` seam) and `an extensionless file is a script only when its
 shebang names sh or bash`.
 
+**Red-checks** (temporary breaks in `worker/deno/lib/`, each restored with
+`git checkout --`, run with `deno task test:unit tests/mutation_gate_test.ts tests/mutation_runner_test.ts < /dev/null` from `worker/deno`):
+- `lib/mutation_runner.ts:327` `else if (syntax.code !== 0) unviable = true;` removed: `runMutationCheck shell - a mutant bash -n rejects is unviable, not killed, and parseable siblings are still killed` went red.
+- `lib/mutation_gate.ts:956` whole case-pattern guard disabled: `generateShellMutantsDetailed - case patterns and terminators are never deleted` and `generateShellMutantsDetailed - a command beside case clauses still mutates, as do $(...) statements` went red.
+- `lib/mutation_gate.ts:956` `SHELL_CASE_PATTERN` operand alone removed: the same two tests went red.
+- `lib/mutation_gate.ts:956` `SHELL_CASE_TERMINATOR` operand alone removed: `generateShellMutantsDetailed - case patterns and terminators are never deleted` went red.
+
 **Docs sweep** — grep: `generateDenoMutants`, `MutationLanguage`, `not_checked`, "mutation check", "Not applicable"; section: `docs/mutation-check.md#built-in-shell-mutations`; siblings: `isDenoSource`, `generateDenoMutantsDetailed` (the shell mutator mirrors it; the Deno mutation tables name their own lists); updated: `docs/mutation-check.md`
 
-**Branch outcomes:**
-- `worker/deno/lib/mutation_gate.ts:883` — success/fail-closed (shebang names `sh`/`bash` vs another interpreter) — `worker/deno/tests/mutation_gate_test.ts::hasShellShebang` tests — flipped to `return true`, test went red
-- `worker/deno/lib/mutation_gate.ts:889` — success (`.bats` is a test file) — `worker/deno/tests/mutation_gate_test.ts::isShellTestFile` tests — flipped to never true, tests went red
-- `worker/deno/lib/mutation_gate.ts:943` — absent (structural word is not deletable) — `worker/deno/tests/mutation_gate_test.ts::generateShellMutantsDetailed - each structural word as a command is never deleted or guarded` — deleted each of `elif`, `while`, `{`, `in` from the set, test went red
-- `worker/deno/lib/mutation_gate.ts:1065` — absent (comment line yields nothing) — `worker/deno/tests/mutation_gate_test.ts::generateShellMutantsDetailed - comment and blank lines yield nothing` — flipped to mutate comments, test went red
-- `worker/deno/lib/mutation_gate.ts:1168` — error/fail-closed (`not_checked` blocks, no survivors) — `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - not_checked blocks and never reports survivors` — flipped to `blocked: false`, tests went red
-- `worker/deno/lib/mutation_runner.ts:420` — error (merged `not_checked` keeps its kind) — `worker/deno/tests/mutation_runner_test.ts::mergeMutationResults - the more severe kind wins whichever side it is on` — branch disabled, tests went red
-- `worker/deno/lib/mutation_runner.ts:502` — absent (extensionless file without an `sh`/`bash` shebang is not a script) — `worker/deno/tests/mutation_runner_test.ts::runMutationCheck shell - an extensionless file is a script only when its shebang names sh or bash` — branch disabled, test went red
-- `worker/deno/lib/mutation_runner.ts:624` — error/success (a covered script's survivors are named when another script is `not_checked`; a runner error passes through) — `worker/deno/tests/mutation_runner_test.ts::runMutationCheck shell - a covered script's survivors are named when another script is not_checked` — flipped to always return the run result, test went red
-- `worker/deno/lib/mutation_runner.ts:1348` — success (real seam lists shell tests only, skips `node_modules`, sorted) — `worker/deno/tests/mutation_runner_test.ts::defaultMutationRunnerSeams listShellTestFiles - finds shell tests, skips other files and skipped dirs, sorted` — flipped to match nothing, test went red
+<!-- vibe-branch-outcomes -->
