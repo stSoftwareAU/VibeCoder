@@ -974,6 +974,65 @@ Deno.test("generateShellMutantsDetailed - bare structural keywords yield no muta
   }
 });
 
+Deno.test("generateShellMutantsDetailed - case patterns and terminators are never deleted", () => {
+  for (
+    const line of [
+      "a|b)",
+      "*)",
+      "foo)",
+      '"x y")',
+      "*) cmd ;;",
+      "pattern) cmd ;;",
+      "  cmd ;;",
+      "cmd ;&",
+      ";;",
+      "esac",
+      "in",
+    ]
+  ) {
+    assertFalse(
+      shellDescriptions(`${line}\n`, [1]).includes("deleted statement"),
+      line,
+    );
+  }
+});
+
+Deno.test("generateShellMutantsDetailed - a command beside case clauses still mutates, as do $(...) statements", () => {
+  const src = [
+    "case $x in",
+    "  a|b)",
+    "    export FOO=1",
+    "    ;;",
+    "  *)",
+    '    echo ")"',
+    "    foo=$(bar)",
+    "    x=$(cmd)",
+    "    ;;",
+    "esac",
+  ].join("\n") + "\n";
+  assertEquals(shellDescriptions(src, [2, 4, 5, 9, 10]), []);
+  const deleted = (line: number) =>
+    shell(src, [line]).mutants.find((m) =>
+      m.description === "deleted statement"
+    )?.mutatedSource ?? null;
+  assertEquals(
+    deleted(3),
+    src.replace("    export FOO=1", "    :"),
+  );
+  assertEquals(
+    deleted(6),
+    src.replace('    echo ")"', "    :"),
+  );
+  assertEquals(
+    deleted(7),
+    src.replace("    foo=$(bar)", "    :"),
+  );
+  assertEquals(
+    deleted(8),
+    src.replace("    x=$(cmd)", "    :"),
+  );
+});
+
 Deno.test("generateShellMutantsDetailed - comment and blank lines yield nothing", () => {
   const src = "# export FOO=1\n  # if [ $a -eq 1 ]; then\n\n   \n#!/bin/sh\n";
   assertEquals(shell(src, [1, 2, 3, 4, 5]).mutants, []);

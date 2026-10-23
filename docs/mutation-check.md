@@ -223,7 +223,7 @@ whatever the repository's primary language.
 
 | Mutation                     | Effect                                                                                                                                                                                                                  |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Replace a statement with `:` | A plain assignment, `export`, `local`/`readonly`/`declare` or simple command line becomes `:`. Structural lines (`if`, `then`, `fi`, `do`, `done` and function headers) and lines ending in `\`, `&&`, `||`, `|`, `{` or `(` are left alone. Heredocs are not recognised, so a heredoc opener or body line that looks like a simple command can be replaced |
+| Replace a statement with `:` | A plain assignment, `export`, `local`/`readonly`/`declare` or simple command line becomes `:`. Structural lines (`if`, `then`, `fi`, `do`, `done` and function headers), case clause patterns (`a|b)`, `*)`, `*) cmd ;;`) and `;;`, `;;&` or `;&` terminators, and lines ending in `\`, `&&`, `||`, `|`, `{` or `(` are left alone. Heredocs are not recognised, so a heredoc opener or body line that looks like a simple command can be replaced |
 | Flip a test operator         | `-eq` and `-ne`, `-lt` and `-ge`, `-gt` and `-le`, `==` and `!=`, and `-z` and `-n` swap                                                                                                                                |
 | Swap `&&` and `\|\|`         | `a && b` becomes `a \|\| b` and the reverse                                                                                                                                                                             |
 | Swap a return status         | `return 0` becomes `return 1` and the reverse                                                                                                                                                                           |
@@ -245,7 +245,11 @@ Before any mutant, each covering test must pass unmutated; a failing baseline is
 an error. A passing baseline shows only that the selected test exits 0 on the
 unmutated script. Discovery matches a test by the script's repository-relative
 path or basename in its text, so a test that names a script without running it
-can let mutants survive. With a mutant in place, a covering test that exits
+can let mutants survive. Before its tests run, a shell mutant of a script whose
+path ends `.sh` or `.bash`, or whose original source has a bash or sh shebang,
+is checked with `bash -n <script>`. A non-zero exit makes the mutant unviable: no
+test ran, so it is counted as tested but neither killed nor a survivor, as a
+Deno parse failure is. With a mutant in place, a covering test that exits
 non-zero kills the mutant; when every covering test exits zero, the mutant is a
 survivor. A survivor is then reported for human review or recorded as an
 `exempt (untestable):` entry.

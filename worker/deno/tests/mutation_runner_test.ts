@@ -1105,12 +1105,15 @@ const shellFiles = (extra: Record<string, string> = {}) => ({
 
 const shellInput = (diff: string) => ({ ...input(), diff });
 
-/** Fails only while the script is mutated, so every mutant is killed. */
+/**
+ * Fails only while the script is mutated, so every mutant is killed. The
+ * `bash -n` parse check passes: these fixture mutants all parse.
+ */
 const killedWhenMutated = (
   _c: string,
-  _a: string[],
+  args: string[],
   fs: Map<string, string>,
-) => ok(fs.get(SCRIPT_PATH) === SH ? 0 : 1);
+) => args[0] === "-n" ? ok(0) : ok(fs.get(SCRIPT_PATH) === SH ? 0 : 1);
 
 /** Asserts the result kind and narrows to it. */
 function asKind<K extends MutationCheckResult["kind"]>(
@@ -1161,6 +1164,54 @@ Deno.test("runMutationCheck shell - the shell pass draws on the same budget cloc
       }`,
     );
   }
+});
+
+/** A case clause: pattern lines, bodies and `;;` terminators. */
+const SH_CASE =
+  "case $1 in\n  a|b)\n    export FOO=bar\n    ;;\n  *)\n    export BAZ=qux\n    ;;\nesac\n";
+
+Deno.test("runMutationCheck shell - a mutant bash -n rejects is unviable, not killed, and parseable siblings are still killed", async () => {
+  // The case-pattern deletion is no longer generated (see mutation_gate_test),
+  // so the mutant that bash -n rejects here is the line 3 deletion, standing in
+  // for a case-branch mutant. Its stderr is the bash syntax error shape.
+  const f = shellFake(
+    shellFiles({ [SCRIPT_PATH]: SH_CASE }),
+    (_c, args, fs) => {
+      const text = fs.get(SCRIPT_PATH) ?? "";
+      if (args[0] === "-n") {
+        return text.split("\n")[2] === "    :"
+          ? {
+            code: 2,
+            stdout: "",
+            stderr:
+              `${SCRIPT_PATH}: line 3: syntax error near unexpected token \`;;'\n`,
+            timedOut: false,
+          }
+          : ok(0);
+      }
+      return ok(text === SH_CASE ? 0 : 1);
+    },
+  );
+  const r = await runMutationCheck(
+    shellInput(shellDiff(SCRIPT, SH_CASE)),
+    f.seams,
+  );
+  const c = asKind(r, "completed");
+  assertEquals(c.survivors, []);
+  // Four mutants: a deletion and a guard on each export line. The rejected
+  // deletion is unviable, so three are killed.
+  assertEquals(c.total, 4);
+  assertEquals(c.killed, 3);
+  const bashN = f.calls.filter((call) =>
+    call.cmd === "bash" && call.args[0] === "-n"
+  );
+  const testRuns = f.calls.filter((call) =>
+    call.cmd === "bash" && call.args[0] !== "-n"
+  );
+  assertEquals(bashN.length, 4);
+  // One baseline run, then one test run per parseable mutant; the rejected
+  // mutant runs no tests.
+  assertEquals(testRuns.length, 4);
 });
 
 Deno.test("runMutationCheck shell - a surviving export deletion mutant blocks the gate until a matching exempt entry is added", async () => {

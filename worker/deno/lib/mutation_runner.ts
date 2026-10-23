@@ -242,6 +242,13 @@ interface MutantPlan {
  * Baseline, then mutate-and-test, for `runnable` mutants. Shared by the Deno
  * and shell passes. `seed` carries whatever the caller already judged (the
  * fabricated survivors), and `dropped` is the count of candidates never tried.
+ *
+ * A mutant is unviable, and counted as tested but neither killed nor a
+ * survivor, when it does not parse: a Deno mutant whose `deno test` run fails
+ * with a parse error (see `isParseFailure`), or a shell mutant that
+ * `bash -n` rejects with a non-zero exit. Shell scripts get the `bash -n`
+ * check, before any test runs, when the path ends `.sh`/`.bash` or the
+ * original source has a bash/sh shebang.
  */
 async function runMutantLoop(
   seams: MutationRunnerSeams,
@@ -304,9 +311,23 @@ async function runMutantLoop(
     if (plan === undefined) continue;
     let failure: ProcessResult | null = null;
     let timedOut = false;
+    let unviable = false;
     try {
       await seams.writeTextFile(plan.abs, m.mutatedSource);
+      if (
+        language === "shell" &&
+        (isShellScriptPath(m.file) || hasShellShebang(plan.original))
+      ) {
+        const syntax = await seams.runProcess("bash", ["-n", plan.abs], {
+          cwd: dirOf(plan.abs),
+          timeoutMs: budget.remaining(),
+          ...childEnv,
+        });
+        if (syntax.timedOut) timedOut = true;
+        else if (syntax.code !== 0) unviable = true;
+      }
       for (const inv of plan.invocations) {
+        if (timedOut || unviable) break;
         const r = await seams.runProcess(inv.cmd, inv.args, {
           cwd: inv.cwd,
           timeoutMs: budget.remaining(),
@@ -328,7 +349,7 @@ async function runMutantLoop(
     tested++;
     // A mutant the parser rejects is unviable: no test ran, so it is neither
     // killed nor a survivor.
-    if (failure !== null && isParseFailure(failure)) continue;
+    if (unviable || (failure !== null && isParseFailure(failure))) continue;
     if (failure !== null) killed++;
     else {
       survivors.push({
@@ -763,12 +784,14 @@ function denoTestArgs(tests: readonly string[]): string[] {
 }
 
 /**
- * Did this `deno test` run fail because a module could not be parsed, rather
- * than because a test went red? A parse error aborts the module graph load, so
- * deno prints `error: SyntaxError: ...` on stderr before any test runs. A
- * `SyntaxError` thrown inside a test is printed on stdout, leaving stderr at
- * `error: Test failed`. The `error` prefix is colour-coded even on a pipe, so
- * the escape sequences are stripped before matching.
+ * Did this Deno `deno test` run fail because a module could not be parsed,
+ * rather than because a test went red? A parse error aborts the module graph
+ * load, so deno prints `error: SyntaxError: ...` on stderr before any test
+ * runs. A `SyntaxError` thrown inside a test is printed on stdout, leaving
+ * stderr at `error: Test failed`. The `error` prefix is colour-coded even on a
+ * pipe, so the escape sequences are stripped before matching. Shell parse
+ * failures are not detected here; the shell pass uses a `bash -n` exit status
+ * in `runMutantLoop` instead.
  */
 export function isParseFailure(run: ProcessResult): boolean {
   return /^error: SyntaxError:/m.test(stripAnsi(run.stderr));

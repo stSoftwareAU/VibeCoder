@@ -933,6 +933,17 @@ interface ShellCandidate {
 }
 
 /**
+ * A case clause pattern line, such as `a|b)`, `*)`, `"x y")` or `*) cmd ;;`.
+ * The `)` closes the pattern, so replacing the line by `:` leaves the case
+ * syntax broken.
+ */
+const SHELL_CASE_PATTERN =
+  /^\(?(?:"[^"]*"|'[^']*'|\\.|[^\s()"'\\])+(?:\|(?:"[^"]*"|'[^']*'|\\.|[^\s()"'\\])+)*\)/;
+
+/** A case clause terminator (`;;`, `;;&`, `;&`) ending a line. */
+const SHELL_CASE_TERMINATOR = /;;&?$|;&$/;
+
+/**
  * Whether a non-blank, non-comment shell line is a statement that can be
  * replaced by `:`. Assignments, export/local/readonly/declare and simple
  * commands are the statements left once structural lines are excluded.
@@ -941,6 +952,10 @@ function isDeletableShellStatement(trimmed: string): boolean {
   // A bare `;;`, `(` or `)` leaves an empty first word.
   const word = trimmed.split(/[\s;&|()]/, 1)[0] ?? "";
   if (word === "" || SHELL_STRUCTURAL_WORDS.has(word)) return false;
+  // Case patterns and their `;;` terminators are case syntax, not statements.
+  if (SHELL_CASE_PATTERN.test(trimmed) || SHELL_CASE_TERMINATOR.test(trimmed)) {
+    return false;
+  }
   // A line that opens a block or continues onto the next line is structural.
   if (trimmed.endsWith("&&") || trimmed.endsWith("||")) return false;
   return !"{(\\|".includes(trimmed.slice(-1));
