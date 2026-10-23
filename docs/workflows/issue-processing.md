@@ -721,8 +721,8 @@ gitGraph
 - **Unrecoverable blocker (`needs-human` escalation):** If the worker determines the task cannot be completed autonomously — e.g. it needs credentials only a human can grant, or depends on a product decision — it adds the `needs-human` label, posts a comment explaining what a human must do next, and stops. The issue is **excluded from discovery** on every subsequent scan until a human removes the label. The worker never self-applies `top-priority` or any other reserved workflow label for this purpose. See [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human) below.
 - **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
 - **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
-- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. A dependency this fleet filed during the same run (fleet author, `createdAt` at or after the run start) is not deferred either; the run hands off straight to the analysis-only hand-off rather than waiting on a dependency the run itself just created — bypassing the usage-limit and interrupted-run retries, the described-code-change retry, and the short-output failure on the no-changes path, each of which would otherwise return a `failure` with no `needs-human` and leave the next run to defer onto a follow-up nothing picks up (Issue #3146). See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
-- **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now, when Claude produces useful analysis but no code changes — **or** the issue body declares itself analysis-only up front via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker posts the analysis once, hands the issue off to a human via `needs-human` (so discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a failure — the issue is not marked `failed`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. Two overrides still win over this retry: an explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker, and a `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run — that case hands off to `needs-human` on this same run instead of retrying (Issue #3146). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
+- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat returns a not-finished failure on the retry ladder rather than deferring again (Issue #4227). A dependency this fleet filed during the same run (fleet author, `createdAt` at or after the run start) is not deferred either; the run retries as not finished rather than waiting on a dependency the run itself just created — bypassing the usage-limit and interrupted-run retries, the described-code-change retry, and the short-output failure on the no-changes path, each of which would otherwise return a `failure` with no `needs-human` and leave the next run to defer onto a follow-up nothing picks up (Issue #3146). See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
+- **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now only an issue whose body declares itself analysis-only via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker is handed off: the worker posts the analysis once, applies `needs-human`, unassigns, and stops. **Any other approved issue is never handed back (Issue #4227):** a run that ends with no PR posts one `## Not finished — retrying` comment carrying its output and returns a `no_changes` failure, so the issue is retried on the `failed-once` ladder with its escalating cooldown, keeping `work-on` and `top-priority`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. An explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins over this retry. A `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run instead takes the not-finished retry above (Issues #3146, #4227). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
 - **A crashed run is never analysis-only (Issue #4147):** the hand-off above is only for an agent that ran and finished cleanly. A run whose agent exited non-zero and changed nothing — the CLI could not load the resumed session (`No conversation found with session ID`), its autocompaction thrashed, or it died before any model turn — is a retried failure, so `work-on` stays and the issue is retried. The `work-on` pipeline makes this call in [`phases/execute_phase.ts`](../../worker/deno/lib/phases/execute_phase.ts) (Issue #4116; it returns `interrupted`), and a failed run hands no session on to its stream, so the stream's next issue does not resume the conversation that just broke. On 2026-10-22 46 implementation issues were handed to a human as "analysis-only" by runs in which no model ran. The runner also retries a resumed session it cannot use once without `--resume` (the #204 path), so the dead id is replaced by the fresh conversation's rather than failing every issue in the stream. See [`execute_claude_phase.ts`](../../worker/deno/lib/execute_claude_phase.ts) and `detectResumedSessionUnusable` in [`claude_executor.ts`](../../worker/deno/lib/claude_executor.ts).
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
@@ -808,33 +808,30 @@ the same matrix plus an "unable to make code changes" note about five times).
 `bump_deps` / the quality gate / completion. On that committed path a
 `## Blocked:` heading defers only when its `Depends on` or `Blocked by` line
 names a dependency the worker reads as open. A closed dependency, a missing
-`state`, or a lookup that fails does not defer; the run hands off to a human
-and raises no PR. A dependency filed during this run does not defer
+`state`, or a lookup that fails does not defer; the run is retried as not
+finished and raises no PR (Issue #4227). A dependency filed during this run does not defer
 either, on either path: the worker reads that from the issue, when its
 author is this host's login or another fleet author and its `createdAt`
 is at or after the whole run started. A later execute attempt does not
-move that start. A committed run hands off to a human and raises no PR; a
-no-changes run hands off the same way, straight to the analysis-only
-hand-off below — bypassing the usage-limit and interrupted-run retries, the
-described-code-change retry, and the short-output failure, each of which
-would otherwise return a `failure` with no `needs-human` and leave the next
-run to defer onto a follow-up nothing picks up (Issue #3146). Wording such as "out of scope" does not turn an older open
+move that start. A committed run is retried and raises no PR; a no-changes
+run is retried the same way, straight away — bypassing the usage-limit and
+interrupted-run checks, the described-code-change retry, and the short-output
+failure, so the next run never defers onto a follow-up nothing picks up
+(Issue #3146). Neither is handed to a human (Issue #4227). Wording such as "out of scope" does not turn an older open
 dependency into that case. A bullet, or a heading with no declaration
 line, still
 continues and raises its PR. A
 `vibe-defer-until` time deferral and a `vibe-needs-planning` marker are still
 read after a commit, so the worker defers or hands to planning instead of
-raising a PR with `Closes #N`. An invalid or over-horizon deferral, or a
-planning marker with no reason, hands off to a human. A signal the guard
-refuses (a repeat deferral, a planning request without the `work-on` anchor)
-still falls through to the human hand-off below. Before any of those
-hand-offs the phase pushes the branch through `commitAndPushPending`. The
-hand-off is applied only after that push leaves nothing unpushed, so the
+raising a PR with `Closes #N`. An invalid or over-horizon deferral, a
+planning marker with no reason, and a signal the guard refuses (a repeat
+deferral, a planning request without the `work-on` anchor) are retried as not
+finished (Issue #4227). Before any of those outcomes the phase pushes the
+branch through `commitAndPushPending`. The outcome is applied only after that
+push leaves nothing unpushed, so the
 next claim can resume from `issue-<N>-…` whether or not session resume's
 checkpoint already pushed. A failed push applies no hand-off and posts no
-comment naming the branch. The phase raises no PR. The free-text escape hatch (a follow-up issue + "out of scope"
-message) remains the one hand-off that is honoured only when the run leaves
-no commit and no uncommitted change. See
+comment naming the branch. The phase raises no PR. See
 [`lib/phases/declared_handoff.ts`](../../worker/deno/lib/phases/declared_handoff.ts).
 
 The worker now detects an analysis-only / no-PR issue from **two signals** and
@@ -845,12 +842,18 @@ apply, routed through the [escalation chokepoint](../../worker/deno/lib/needs_hu
   issue analysis-only by adding the HTML-comment marker `<!-- analysis-only -->`
   to the issue body. The worker hands off **before** cloning the repo or running
   Claude — no wasted run.
-- **(b) Post-run signal.** Claude finishes with **no code changes** but useful
-  text (the existing "unable to make code changes" partial-answer path). The
+- **(b) Post-run signal, on a marked issue only.** Claude finishes with **no
+  code changes** but useful text on an issue that carries the marker. The
   worker posts the partial answer (the analysis is the deliverable) and then
-  hands off.
+  hands off. On an approved issue without the marker the same outcome is
+  **not finished** and is retried, never handed back (Issue #4227,
+  [`unfinished_issue_retry.ts`](../../worker/deno/lib/unfinished_issue_retry.ts)).
+  The same applies to every guard that used to fall through to a human: a
+  repeat deferral or planning request, a self-filed or closed dependency, an
+  exhausted time deferral, and an unhonoured declared hand-off on committed
+  work.
 
-Both paths apply `needs-human` plus a paired explanation comment,
+Both marker paths apply `needs-human` plus a paired explanation comment,
 which drops the issue from discovery and triggers
 [`stripDiscoveryLabelsOnEscalation`](../../worker/deno/lib/escalation_cleanup.ts)
 to remove `work-on` server-side, so the issue never loops. A clean hand-off is
@@ -865,8 +868,9 @@ flowchart TD
   Changes -->|Yes| PR["Quality gate → PR"]
   Changes -->|"No, blocked on another issue"| Defer["Defer: record Depends on owner/repo#N,<br/>keep the discovery label, release the claim"]
   Changes -->|"No, verified already resolved<br/>(commit / PR cited)"| Close["Close with the evidence<br/>in the comment"]
-  Changes -->|"No, useful text"| Partial["Post partial answer"] --> HandOff
-  Changes -->|"No, no output"| Guard["Fallback loop guard:<br/>failed-once → failed / needs-human"]
+  Changes -->|"No, useful text, marked analysis-only"| Partial["Post partial answer"] --> HandOff
+  Changes -->|"No, anything else"| Retry["Not finished: comment + no_changes failure,<br/>retried on the failed-once ladder (#4227)"]
+  Changes -->|"No, no output"| Guard["Fallback loop guard:<br/>failed-once + escalating cooldown"]
   HandOff --> Stop["Apply needs-human + comment,<br/>release claim, stop"]
   style Pick fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
   style HandOff fill:#e0a050,stroke:#8b4500,color:#1a1a1a
@@ -884,8 +888,8 @@ The agent declares it with
 `<!-- vibe-already-resolved commit="…" pr="…" verified="…" -->`
 (`prompts/issue/prompt.md`); a broadened keyword list remains as a
 fallback for output that carries no marker. A claim with no commit or PR behind
-it is *not* enough to close a live issue — that falls through to the analysis-only
-hand-off below. See
+it is *not* enough to close a live issue — an unmarked approved issue is
+retried as not finished; a marked analysis-only issue keeps its hand-off. See
 [already_resolved_outcome.ts](../../worker/deno/lib/already_resolved_outcome.ts).
 
 **A blocked run is checked first.** "Blocked on another issue" is a deferral, not
@@ -941,10 +945,8 @@ multi-day wait on a `top-priority` issue must not park the repo's
 **Deferral has a budget.** After three time-deferrals on the same issue
 (`MAX_TIME_DEFERRALS`), the next `vibe-defer-until` marker is not honoured: the
 worker posts a `## Deferral limit reached` comment listing the prior deferral
-history and instead applies the existing analysis-only `needs-human` hand-off
-described above (Issue #2834). An analysis-only run that emits no defer marker
-at all is unaffected by any of this — it still gets the ordinary #2834
-hand-off.
+history, and the approved issue is retried as not finished (Issue #4227),
+never handed to a human.
 
 **Only a time is supported.** There is no "wait N runs" variant; the marker's
 sole parameter is `until`.
@@ -957,7 +959,7 @@ flowchart TD
   Marker -- no --> Resolved["Already-resolved /<br/>analysis-only checks<br/>(unchanged)"]
   Marker -- yes --> Budget{"Prior time-deferrals<br/>on this issue < 3?"}
   Budget -- yes --> Park["Park: post '## Deferred until …',<br/>write Deferred until … into the<br/>worker-record block, keep label,<br/>no needs-human, release claim"]
-  Budget -- no --> Limit["## Deferral limit reached<br/>+ analysis-only needs-human hand-off (#2834)"]
+  Budget -- no --> Limit["## Deferral limit reached<br/>+ not-finished retry (#4227)"]
   Park --> Skip["Discovery skips with<br/>skip reason time-deferred<br/>until the time passes"]
   Skip --> Reissue["Time passes →<br/>issue re-enters discovery,<br/>run repeats"]
   Reissue --> Run
