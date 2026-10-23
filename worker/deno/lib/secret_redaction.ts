@@ -471,10 +471,24 @@ const RULES: readonly RedactionRule[] = [
   // `\n`, `\r` or `\t`, so the escape letter abuts it and `\b` never fires.
   // Only those three escapes are accepted, so a word glued to 40 characters
   // is still not a match.
+  //
+  // Issue #4103: `\b` also fails beside `/` and `+`, which are secret
+  // characters but not word characters, so a secret starting or ending in one
+  // was left verbatim. Lookarounds over the secret alphabet replace `\b`. The
+  // context class omits `=`, as `\b` fired beside it, so `id=secret` and
+  // `secret=…` are unchanged. Every lookaround is constant width (the Issue
+  // #3942 linearity rule), and the escape alternative stays because the escape
+  // letter is itself an alphabet character.
+  //
+  // `_` is in both context classes because `\b` treated it as a word
+  // character, so a secret glued to `_` stays unmasked as it did for letters
+  // and digits. The hex guard needs no inner lookahead: the trailing guard
+  // already rejects a SHA with a class character after it, so
+  // `(?![0-9a-f]{40})` alone is equivalent.
   {
     name: "aws-secret-access-key",
     pattern:
-      /((?:AKIA|ASIA)[0-9A-Z]{16}[\s\S]{0,120}?)(?:\b|(?<=\\[nrt]))(?![0-9a-f]{40}\b)([A-Za-z0-9/+=]{40})\b/g,
+      /((?:AKIA|ASIA)[0-9A-Z]{16}[\s\S]{0,120}?)(?:(?<![A-Za-z0-9/+_])|(?<=\\[nrt]))(?![0-9a-f]{40})([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+_])/g,
     replace: (_m, lead: string) => `${lead}${REDACTION_PLACEHOLDER}`,
   },
   // AWS access key id.

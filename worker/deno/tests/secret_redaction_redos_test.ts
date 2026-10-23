@@ -138,6 +138,23 @@ Deno.test("redactSecrets - a hostile run of escaped AWS key pairs is linear (aws
   );
 });
 
+Deno.test("redactSecrets - a hostile run of comma-separated slash pads is linear (aws-secret-access-key leading guard, Issue #4103)", () => {
+  // Every id is a candidate anchor, and each slash run is 39 characters closed
+  // by `!`, one short of the 40-character secret. The leading guard must
+  // reject each interior start without rescanning the run.
+  const unit = "AKIAIOSFODNN7EXAMPLE," + "/".repeat(39) + "!";
+  const hostile = unit.repeat(Math.floor(HOSTILE_CHARS / unit.length));
+  const expected = hostile.replaceAll(
+    "AKIAIOSFODNN7EXAMPLE",
+    REDACTION_PLACEHOLDER,
+  );
+  assertEquals(
+    redactSecrets(hostile),
+    expected,
+    "each id must be masked and the 39-character slash runs must survive",
+  );
+});
+
 Deno.test("redactSecrets - URL credentials are still masked after the anchoring fix (Issue #3942)", () => {
   const cases = [
     "https://nigel:ghp_secretvalue@github.com/org/repo.git",
