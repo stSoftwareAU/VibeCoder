@@ -414,6 +414,12 @@ export interface PhaseState {
    */
   screenshotRetryAttempted?: boolean;
   /**
+   * The pre-push gate's one extra agent turn (Issue #4128) has already been
+   * tried this run. Caps it at once per run across every gate call in the
+   * completion phase — the first push and the retry push after push recovery.
+   */
+  prePushRetryAttempted?: boolean;
+  /**
    * The trusted discovery label the merged-PR pre-check found added *after*
    * the linked PR merged (Issue #1862), when there was one.
    *

@@ -348,6 +348,12 @@ export interface WorkerConfig {
    */
   screenshotRetryTimeoutSeconds?: number;
   /**
+   * Timeout in seconds for the pre-push gate's one extra in-run agent turn
+   * (Issue #4128). Optional; `loadConfig` always populates it from
+   * `OPERATIONAL_DEFAULTS`.
+   */
+  prePushRetryTimeoutSeconds?: number;
+  /**
    * Stop a run making dozens of tool calls a minute with no working-tree
    * change (`.config.json` `call_storm_enabled`, Issue #2230; default: true).
    *
@@ -1416,6 +1422,8 @@ export interface ConfigFile {
   progress_extension_check_seconds?: number;
   /** Timeout for the screenshot gate's one extra agent turn (Issue #2960) */
   screenshot_retry_timeout_seconds?: number;
+  /** Timeout for the pre-push gate's one extra agent turn (Issue #4128) */
+  pre_push_retry_timeout_seconds?: number;
   /** Stop a run that polls instead of working (Issue #2230) */
   call_storm_enabled?: boolean;
   /** Tool calls in the window at which a run is a call storm (Issue #2230) */

@@ -1839,6 +1839,7 @@ unless explicitly overridden.
 | Poll cadence, park tier | `poll_cadence_park_cycles` | `10` | Cycles between polls of a repo with `nice >= quota_poll_park_nice` by the per-repo Priority 1.x passes (Issue #3667). Whole number, at least `1`; `1` polls the tier every cycle. |
 | Quota-poll idle floor | `quota_poll_idle_floor` | `500` | GraphQL points remaining below which idle-task collection is deferred fleet-wide for the cycle — the scan's idle collector and the idle-task filer's repo walk both stand down (Issue #3628). Whole number of points, at least `0` and no greater than `quota_poll_park_floor`; `0` disables the idle tier. |
 | Screenshot retry timeout | `screenshot_retry_timeout_seconds` | `600` | Seconds allowed for the one extra agent turn the completion phase gives a run whose UI change lacks screenshot evidence, before it fails with `needs-screenshot` (Issue #2960). Must be positive. |
+| Pre-push retry timeout | `pre_push_retry_timeout_seconds` | `600` | Seconds allowed for the one extra agent turn given to a run whose push the pre-push gate blocked (Issue #4128). Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
@@ -4832,7 +4833,15 @@ remote lookup that fails (a network error, a timeout) is not reported as the
 branch failing its checks: it fails the run as a push failure, which is retried
 in-run (PR #3716 review). In Step 1b the pre-flight commands
 re-run only when Step 1 committed nothing; in the completion phase they run
-before every push.
+before every push. A verdict block (not an infrastructure failure) on the first
+block of a run resumes the agent session for exactly one extra turn
+(`worker/deno/lib/pre_push_gate_retry.ts`, timeout
+`pre_push_retry_timeout_seconds`) with the gate output in the prompt; the worker
+then re-runs the formatters and the same gate, and pushes only if it passes. A
+second block in the same run, including one after push recovery, gets no further
+turn and fails with category `pre-push-gate` quoting the latest gate output. An
+invocation error or timeout of that extra turn fails the run with the original
+gate output. The gate is never bypassed.
 
 Before each of those completion-phase gate runs, and before every quality-gate
 attempt (`./quality.sh`), the issue run first runs the repository's own
