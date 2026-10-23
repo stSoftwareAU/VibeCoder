@@ -324,3 +324,222 @@ Deno.test("simple-on-purpose-ledger runTask - scanner failure surfaces and files
   assertEquals(verbCalls(calls, "create").length, 0);
   assertEquals(verbCalls(calls, "edit").length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// gh argument shapes, label, wrapper body and wrapper veto (Issue #4027)
+// ---------------------------------------------------------------------------
+
+function valueAfter(args: string[], flag: string): string | undefined {
+  const at = args.indexOf(flag);
+  return at < 0 ? undefined : args[at + 1];
+}
+
+Deno.test("simple-on-purpose-ledger runTask - creates the report in the target repo with the title and label", async () => {
+  const { gh, calls } = makeGhStub({ createNumber: 50 });
+  const t = createSimpleOnPurposeLedgerTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
+    ghCommandFn: gh,
+    ensureLabelFn: okLabel,
+    scanFn: () => Promise.resolve(scanOk(ledgerOf([MARKER_CLEAR]))),
+  });
+
+  await t.runTask(RUN_OPTS);
+
+  const create = verbCalls(calls, "create")[0]!;
+  assertEquals(create.slice(0, 5), [
+    "issue",
+    "create",
+    "--repo",
+    "acme/widget",
+    "--title",
+  ]);
+  assertEquals(
+    valueAfter(create, "--title"),
+    "SIMPLE-ON-PURPOSE ledger: 1 marker",
+  );
+  assertEquals(valueAfter(create, "--label"), "simple-on-purpose-ledger");
+});
+
+Deno.test("simple-on-purpose-ledger runTask - reads the open report from the target repo as title,body JSON", async () => {
+  const ledger = ledgerOf([MARKER_CLEAR]);
+  const content = renderSimpleOnPurposeLedgerContent(ledger);
+  const { gh, calls } = makeGhStub({
+    dedup: [{ number: 7, body: content }],
+    view: { title: renderSimpleOnPurposeLedgerTitle(ledger), body: content },
+  });
+  const t = createSimpleOnPurposeLedgerTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
+    ghCommandFn: gh,
+    ensureLabelFn: okLabel,
+    scanFn: () => Promise.resolve(scanOk(ledger)),
+  });
+
+  await t.runTask(RUN_OPTS);
+
+  assertEquals(verbCalls(calls, "view"), [
+    ["issue", "view", "7", "--repo", "acme/widget", "--json", "title,body"],
+  ]);
+});
+
+Deno.test("simple-on-purpose-ledger runTask - an unreadable open report fails loud and is not refreshed", async () => {
+  for (const raw of ["not json", "null", '{"title":"t"}']) {
+    const calls: string[][] = [];
+    const gh = (args: string[]): Promise<string> => {
+      calls.push([...args]);
+      if (args[1] === "view") return Promise.resolve(raw);
+      if (args.includes("number,body,author")) {
+        return Promise.resolve(JSON.stringify([{
+          number: 7,
+          body: `<!-- finding-id: ${SIMPLE_ON_PURPOSE_LEDGER_FINDING_ID} -->`,
+          author: { login: FLEET_AUTHOR },
+        }]));
+      }
+      return Promise.resolve("[]");
+    };
+    const t = createSimpleOnPurposeLedgerTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
+      ghCommandFn: gh,
+      ensureLabelFn: okLabel,
+      scanFn: () => Promise.resolve(scanOk(ledgerOf([MARKER_CLEAR]))),
+    });
+
+    const result = await t.runTask(RUN_OPTS);
+
+    assertEquals(result.ok, false, raw);
+    assertStringIncludes(result.summary, "could not read open report #7");
+    assertEquals(verbCalls(calls, "edit").length, 0, raw);
+  }
+});
+
+Deno.test("simple-on-purpose-ledger runTask - ensures the label exists in the target repo before filing", async () => {
+  const { gh } = makeGhStub({});
+  const ensured: string[] = [];
+  const t = createSimpleOnPurposeLedgerTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
+    ghCommandFn: gh,
+    ensureLabelFn: (repo) => {
+      ensured.push(repo);
+      return okLabel();
+    },
+    scanFn: () => Promise.resolve(scanOk(ledgerOf([]))),
+  });
+
+  await t.runTask(RUN_OPTS);
+
+  assertEquals(ensured, ["acme/widget"]);
+});
+
+Deno.test("simple-on-purpose-ledger buildIssueBody - substitutes the footer with this template and run id", async () => {
+  const t = createSimpleOnPurposeLedgerTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
+    loadPromptFn: () =>
+      Promise.resolve({ ok: true, value: "body\n{{ATTRIBUTION_FOOTER}}" }),
+  });
+  const body = await t.buildIssueBody({
+    repo: "acme/widget",
+    workDir: "/tmp",
+  } as never);
+  assertStringIncludes(body, `\`${NAME}\``);
+  assertStringIncludes(body, "Run id:");
+  assert(!body.includes("{{ATTRIBUTION_FOOTER}}"));
+});
+
+Deno.test("simple-on-purpose-ledger buildIssueBody - a prompt that fails to load throws naming the template", async () => {
+  const t = createSimpleOnPurposeLedgerTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
+    loadPromptFn: () =>
+      Promise.resolve({ ok: false, error: new Error("missing file") }),
+  });
+  let message = "";
+  try {
+    await t.buildIssueBody({ repo: "acme/widget", workDir: "/tmp" } as never);
+  } catch (err) {
+    message = (err as Error).message;
+  }
+  assertStringIncludes(message, "simple-on-purpose-ledger");
+  assertStringIncludes(message, "missing file");
+});
+
+Deno.test("simple-on-purpose-ledger shouldFile - vetoed by a fleet-authored wrapper in the same repo, allowed otherwise", async () => {
+  const lists: string[][] = [];
+  const wrapperRow = {
+    number: 3,
+    title: SIMPLE_ON_PURPOSE_LEDGER_ISSUE_TITLE,
+    body: "",
+    author: { login: FLEET_AUTHOR },
+  };
+  const ghWith = (rows: unknown[]) => (args: string[]): Promise<string> => {
+    lists.push([...args]);
+    return Promise.resolve(JSON.stringify(rows));
+  };
+  const opts = { repo: "acme/widget", workDir: "/tmp/ledger" } as never;
+
+  const vetoed = createSimpleOnPurposeLedgerTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
+    ghCommandFn: ghWith([wrapperRow]),
+  });
+  assertEquals(await vetoed.shouldFile?.(opts), false);
+  assertEquals(valueAfter(lists[0]!, "--repo"), "acme/widget");
+
+  const clear = createSimpleOnPurposeLedgerTemplate({
+    dedupAuthors: DEDUP_AUTHORS,
+    ghCommandFn: ghWith([]),
+  });
+  assertEquals(await clear.shouldFile?.(opts), true);
+});
+
+Deno.test("simple-on-purpose-ledger shouldFile - a malformed lookup is logged under the wrapper context", async () => {
+  const logged: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args.join(" "));
+  };
+  try {
+    const t = createSimpleOnPurposeLedgerTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
+      ghCommandFn: () => Promise.resolve("not json"),
+    });
+    await t.shouldFile?.({ repo: "acme/widget", workDir: "/tmp" } as never);
+  } finally {
+    console.error = original;
+  }
+  assert(
+    logged.some((line) => line.includes("simple-on-purpose-ledger wrapper")),
+    logged.join("\n"),
+  );
+});
+
+Deno.test("simple-on-purpose-ledger runTask - report-only: only issue commands reach gh, never a pull request or commit", async () => {
+  const stale = {
+    title: "SIMPLE-ON-PURPOSE ledger: 1 marker",
+    body:
+      `<!-- finding-id: ${SIMPLE_ON_PURPOSE_LEDGER_FINDING_ID} -->\n\nold listing`,
+  };
+  for (
+    const scenario of [{}, {
+      dedup: [{ number: 7, body: stale.body }],
+      view: stale,
+    }]
+  ) {
+    const { gh, calls } = makeGhStub(scenario);
+    const t = createSimpleOnPurposeLedgerTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
+      ghCommandFn: gh,
+      ensureLabelFn: okLabel,
+      scanFn: () =>
+        Promise.resolve(scanOk(ledgerOf([MARKER_CLEAR, MARKER_FLAGGED]))),
+    });
+
+    const result = await t.runTask(RUN_OPTS);
+
+    assertEquals(result.ok, true);
+    assert(calls.length > 0);
+    for (const call of calls) {
+      assertEquals(
+        call[0],
+        "issue",
+        `unexpected gh command: ${call.join(" ")}`,
+      );
+    }
+  }
+});
