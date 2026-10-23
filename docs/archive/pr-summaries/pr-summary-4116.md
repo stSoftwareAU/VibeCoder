@@ -31,60 +31,17 @@ The test fixture changed from "write N bytes of `x`" to a real append-only JSONL
 - Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(result.fields.transcriptBytesAfter, 64);`
   Required by: "Compaction success is judged by something that changes when"
   Replaced by: `assertEquals(result.fields.compactBoundaries, 1);`
-The assertions below are kept, unchanged, in the re-laid-out tests of the same file (the `compacted`, `autocompact`, `unavailable`, `skipped` and one-line-per-run tests, and the non-zero-exit and thrown-runner tests):
-
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(result.action, "compacted");`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(result.message, "compaction: /compact");`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(result.autocompactTokens, undefined);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(stub.calls.length, 1);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(stub.calls[0]?.prompt, COMPACT_PROMPT);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(stub.calls[0]?.sessionId, SESSION_ID);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(result.action, "autocompact");`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(result.autocompactTokens, AUTOCOMPACT_WINDOW_TOKENS);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(result.message, "compaction: autocompact 100000");`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
 - Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(result.fields.compactExitCode, 2);`
   Moved to: `worker/deno/tests/stream_compaction_test.ts`
 - Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertStringIncludes(String(result.fields.compactError), "spawn refused");`
   Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(result.action, "unavailable");`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertStringIncludes(result.message, "compaction unavailable");`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertStringIncludes(result.message, providerId);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(stub.calls.length, 0);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(result.action, "skipped");`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(result.message, "compaction skipped: new stream session");`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals( record.lines.length, 1, `${testCase.label}: expected one line, got ${record.lines.join(" | ")}`, );`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertStringIncludes(record.lines[0] ?? "", testCase.expected);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(tokens, testCase.tokens, testCase.label);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(tokens, AUTOCOMPACT_WINDOW_TOKENS);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(record.lines.length, 1);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertStringIncludes( String(record.fields[0]?.reason), "could not be spawned", );`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(fallback.levels, ["warn"]);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(compacted.levels, ["info"]);`
-  Moved to: `worker/deno/tests/stream_compaction_test.ts`
-- Changed in `worker/deno/tests/stream_session_provider_binding_2638_test.ts`: the "compaction still runs on the provider's own session" test now writes a transcript first (an unlocated transcript skips the turn); no assertion was removed.
-- The old `assertEquals(stub.calls.length, 1)` after a missing `projects/` directory is now `0` (Required by: "skip the `/compact` turn and go straight to `--autocompact`"), covered by `compactStreamSession - a transcript directory that does not exist yet is not a fault`.
+- Removed from `worker/deno/tests/stream_compaction_test.ts`: `assertEquals(stub.calls.length, 1);`
+  Required by: "skip the `/compact` turn and go straight to `--autocompact`"
+  Replaced by: `assertEquals(stub.calls.length, 0);`
+
+These five are the only assertions removed; the `compacted`, `autocompact`, `unavailable`, `skipped` and one-line-per-run assertions are unchanged in place. The `compactExitCode` and `spawn refused` assertions are re-added unchanged in the non-zero-exit and thrown-runner tests of the same file. The old `stub.calls.length` check followed a missing `projects/` directory, which now skips the `/compact` turn; it is covered by `compactStreamSession - a transcript directory that does not exist yet is not a fault`.
+
+Changed in `worker/deno/tests/stream_session_provider_binding_2638_test.ts`: the "compaction still runs on the provider's own session" test now writes a transcript first (an unlocated transcript skips the turn); no assertion was removed.
 
 **Branch outcomes:**
 - `worker/deno/lib/stream_compaction.ts:437` — absent (transcript not located; `/compact` turn skipped) — `worker/deno/tests/stream_compaction_test.ts::compactStreamSession - no transcript located: /compact is not run and the fallback is taken (Issue #4116)` — flipped to `before === null`, test went red
