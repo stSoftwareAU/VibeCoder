@@ -60,14 +60,20 @@ export interface AcceptanceClosureResult {
   problems: string[];
 }
 
-// A heading reading "Acceptance Criteria", optionally preceded by up to five
-// words (e.g. "Scope and acceptance criteria", Issue #4107). The prefix words
-// (`[...]+\s+`) are non-whitespace runs separated by whitespace, so the pattern
-// is bounded and has no overlapping quantifiers.
+// A heading reading exactly "Acceptance Criteria". Used for the PR summary's
+// closure block (`parseClosureEntries`), where a wider heading earlier in the
+// summary must not shadow the real block (Issue #4107).
 // Every heading tail here is `\s*(?::\s*)?$`, not `\s*:?\s*$`: two whitespace
 // runs with only an optional `:` between them backtrack quadratically on a
 // heading padded with spaces and then any other character (Issue #3164).
 const ACCEPTANCE_HEADING_RE =
+  /^\s{0,3}#{1,6}\s+acceptance\s+criteria\s*(?::\s*)?$/i;
+
+// The same heading in an issue body, optionally preceded by up to five words
+// (e.g. "Scope and acceptance criteria", Issue #4107). The prefix words
+// (`[...]+\s+`) are non-whitespace runs separated by whitespace, so the pattern
+// is bounded and has no overlapping quantifiers.
+const ISSUE_ACCEPTANCE_HEADING_RE =
   /^\s{0,3}#{1,6}\s+(?:[a-z0-9&,/'.-]+\s+){0,5}acceptance\s+criteria\s*(?::\s*)?$/i;
 
 // A grill-me "Accepted scope so far" heading (Issue #2562). Grill-me states the
@@ -102,8 +108,7 @@ const CHECKBOX_RE = /^\[[ xX~]?\]\s*/;
 
 /**
  * Extract a section body from a markdown document — by default the
- * `## Acceptance Criteria` section. A heading ending in "acceptance criteria"
- * (e.g. `## Scope and acceptance criteria`) also counts (Issue #4107).
+ * `## Acceptance Criteria` section, matched strictly (no prefix words).
  *
  * @param heading - The heading that opens the section.
  * @returns the raw lines of the section, or `null` when no such heading exists.
@@ -163,8 +168,9 @@ function collectListItems(sectionLines: string[]): string[] {
  *
  * Reads the list items under the `## Acceptance Criteria` heading, with any
  * task-list checkbox stripped. A heading ending in "acceptance criteria"
- * (e.g. `## Scope and acceptance criteria`) also counts (Issue #4107). When that heading carries no list items, it
- * falls back to the list under a `## Definition of done` heading (Issue #3761).
+ * (e.g. `## Scope and acceptance criteria`) also counts (Issue #4107). When
+ * that heading carries no list items, it falls back to the list under a
+ * `## Definition of done` heading (Issue #3761).
  * An issue with neither — or with headings that carry no list items — has no
  * criteria, and the gate does not apply.
  *
@@ -172,7 +178,7 @@ function collectListItems(sectionLines: string[]): string[] {
  * @returns The criterion texts, in body order (empty when there are none).
  */
 export function extractAcceptanceCriteria(issueBody: string): string[] {
-  const criteria = listItemsUnder(issueBody, ACCEPTANCE_HEADING_RE);
+  const criteria = listItemsUnder(issueBody, ISSUE_ACCEPTANCE_HEADING_RE);
   if (criteria.length > 0) return criteria;
   return listItemsUnder(issueBody, DEFINITION_OF_DONE_HEADING_RE);
 }
