@@ -7,8 +7,7 @@ only", but models often wrap the JSON in a markdown code fence, and
 `applyFlaggedSentenceReplacements` fed the raw reply to `JSON.parse`, so a valid
 fenced payload was rejected. A new shared helper,
 `worker/deno/lib/fenced_json.ts::unwrapJsonFence`, strips one json or plain code
-fence. Claim correction uses its strict default (only a reply that is entirely
-one fence is unwrapped, so surrounding prose is still rejected).
+fence. Claim correction uses its strict default (a reply is unwrapped only when, once trimmed, it starts and ends with a fence, so prose before the opening fence or after the closing fence is still rejected).
 `revision_processor.ts` drops its inline fence regex and calls the same helper
 with `allowSurroundingProse`, which keeps its existing behaviour of taking the
 first fenced block from anywhere in the output. The prompt text is untouched.
