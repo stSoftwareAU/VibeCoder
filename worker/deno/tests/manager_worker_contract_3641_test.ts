@@ -100,8 +100,8 @@ Deno.test("#3641 contract — haiku-tier payload pins the agent names, models an
       ) => [name, { model: def.model, effort: def.effort }]),
     ),
     {
-      "spec-reviewer": { model: "sonnet", effort: "medium" },
-      "standards-reviewer": { model: "haiku", effort: "medium" },
+      "spec-reviewer": { model: "opus", effort: "medium" },
+      "standards-reviewer": { model: "opus", effort: "medium" },
       executor: { model: "haiku", effort: "high" },
       explorer: { model: "haiku", effort: "medium" },
     },

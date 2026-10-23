@@ -270,7 +270,10 @@ export async function runOrchestratedIssueRun(
     acceptanceCriteria: [],
     manager: manager.value,
     executor: executor.value,
-    ...(settings.reviewer ? { reviewer: reviewer.value } : {}),
+    // Always a separate reviewer call, never manager review: Opus does the
+    // code reviews (owner decision 2026-10-22), whether or not a reviewer
+    // role was configured.
+    reviewer: reviewer.value,
     bounds,
     checkpointDir: `${stateRoot}/orchestration/${
       encodeURIComponent(input.repo)

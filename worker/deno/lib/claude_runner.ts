@@ -40,10 +40,10 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import {
   captureTimeoutDiagnostics,
   type ClaudeExecutionResult,
-  detectInvalidSessionId,
   detectModelUnavailable,
   detectOutOfMemory,
   detectRateLimit,
+  detectResumedSessionUnusable,
   detectUsageLimit,
   extractStreamJsonText,
   getTokenEstimate,
@@ -3366,9 +3366,13 @@ async function runRetryLadder(
       // a second refusal has no session flags left to blame and falls through
       // to the ordinary failure path. Loud, because the run continues without
       // CLI session continuity and the caller must see that in the log.
+      // Issue #4147 widens "refused" to "unusable": a resume of a transcript
+      // that is gone (`No conversation found with session ID`) or one whose
+      // size thrashes autocompaction fails at the same point, before the
+      // task's work, and the same fresh retry is the remedy.
       if (
         currentOptions.sessionResumeState &&
-        detectInvalidSessionId(bothStreams, errorScanTailLines)
+        detectResumedSessionUnusable(bothStreams, errorScanTailLines)
       ) {
         const rejectedId = currentOptions.sessionResumeState.sessionId;
         currentOptions.logger?.warn(

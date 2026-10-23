@@ -451,14 +451,14 @@ Deno.test("a --validated-models entry for an unregistered provider fails and nam
 Deno.test("a --models entry already in the defaults is not duplicated", async () => {
   await withDirs(async (dirs) => {
     const result = await runProviderFeasibility(
-      { providers: "claude,codex", models: "codex:gpt-5" },
+      { providers: "claude,codex", models: "codex:gpt-6.1-sol" },
       fakeDeps(dirs, {}, newRecorder()),
     );
     const rows = rowsOf(result);
     const codexManagers = rows.filter((row) =>
       row.role === "manager" && row.provider === "codex"
     );
-    assertEquals(codexManagers.length, 5);
+    assertEquals(codexManagers.length, 3);
   });
 });
 

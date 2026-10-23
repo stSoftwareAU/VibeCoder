@@ -174,7 +174,6 @@ function passDeps(
     runGhCommand: h.gh,
     runGitCommand: REFUSE_GIT,
     logger: h.logger,
-    followUpFiling: undefined,
     inSync,
     prepareCheckout: REFUSE_PREPARE,
     syncFn: REFUSE_SYNC,

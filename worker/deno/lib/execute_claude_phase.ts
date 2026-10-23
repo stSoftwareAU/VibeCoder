@@ -2040,6 +2040,32 @@ async function executeClaudePhaseBody(
       }
     }
 
+    // An agent that failed (non-zero exit) and changed nothing crashed; it did
+    // not conclude there was nothing to do. `no_changes` would hand a real
+    // implementation issue to a human as analysis-only — 46 on 2026-10-22,
+    // every one a run in which no model turn happened (Issue #4147). A
+    // failure keeps the issue on the retry ladder instead.
+    if (exitCode !== 0) {
+      const failureOutput = buildFailureOutputTail(claudeOutput);
+      return {
+        action: "failure",
+        failureType: "execution_error",
+        failureMessage:
+          `Claude execution failed: the agent exited ${exitCode} without ` +
+          `making any change. This is a run failure, not an analysis-only ` +
+          `answer; the issue stays queued for a retry.` +
+          (failureOutput
+            ? `\n\n<details>\n<summary>Agent output (tail)</summary>\n\n` +
+              "```\n" + failureOutput + "\n```\n\n</details>"
+            : ""),
+        elapsedSeconds,
+        promptsCommit,
+        promptTemplate,
+        promptSha,
+        promptCacheHit,
+      };
+    }
+
     // No changes at all
     return {
       action: "no_changes",
