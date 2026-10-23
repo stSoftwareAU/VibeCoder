@@ -469,10 +469,7 @@ flowchart LR
     T -. bound hit .-> L
 ```
 
-The **native** templates (`alert-feed`, `bash-script-refs`, `bash-syntax-audit`,
-`gate-skip-drift`, `workflow-annotation-scan`) are deliberately excluded: they invoke no LLM and
-file only fixed-id or fingerprinted findings, so they have no
-semantic-duplicate surface for a title list to guard.
+The **native** templates (`alert-feed`, `bash-script-refs`, `bash-syntax-audit`, `gate-skip-drift`, `simple-on-purpose-ledger`, `workflow-annotation-scan`) are deliberately excluded: they invoke no LLM and file only fixed-id, fingerprinted or one-report-per-repository findings, so they have no semantic-duplicate surface for a title list to guard.
 
 #### Adding a template — the conformance test enforces this
 
@@ -488,8 +485,7 @@ So a new template must do one of two things before CI goes green:
 
 - **wire it up** — add a `HARNESSES` entry naming its factory and its prompt
   assembler; or
-- **exempt it** — add it to `NON_PARTICIPATING` with a stated reason (the five
-  native templates above are the existing entries).
+- **exempt it** — add it to `NON_PARTICIPATING` with a stated reason (the six native templates above are the existing entries).
 
 An implicit skip is not available, which is the point: wiring twenty
 templates up once does not stop the twentieth being written against the old,
@@ -1701,8 +1697,7 @@ flowchart TD
 
 1. **Preflight.** If the run's write-repo allowlist is active and the target
    repo is not on it, the sweep aborts before a single body is built — naming
-   the blocked repo and the active allowlist — so a blocked sweep costs zero
-   `gh` calls and at most one blocked-write audit event instead of nineteen.
+   the blocked repo and the active allowlist — so a blocked sweep costs zero `gh` calls and at most one blocked-write audit event instead of twenty.
 2. **Terminal vs transient.** A `WriteRepoBlockedError` /
    `WriteTargetUndeterminableError` surfacing mid-sweep aborts immediately (a
    retry cannot succeed); any other per-template failure is recorded and the
