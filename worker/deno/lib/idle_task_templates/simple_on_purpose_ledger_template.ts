@@ -45,15 +45,15 @@ import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operatio
 import { repoCheckoutPath } from "../repo_checkout_path.ts";
 import { RUN_ID_ENV_VAR } from "../run_id.ts";
 import {
-  ATTRIBUTION_FOOTER_PREFIX,
   appendIdleTaskAttribution,
+  ATTRIBUTION_FOOTER_PREFIX,
   buildAttributionFooter,
 } from "../idle_task_attribution.ts";
 import {
   renderSimpleOnPurposeReport,
+  scanSimpleOnPurpose as defaultScan,
   type SimpleOnPurposeLedger,
   type SimpleOnPurposeScanResult,
-  scanSimpleOnPurpose as defaultScan,
 } from "../simple_on_purpose_scanner.ts";
 import type { Result } from "../../types.ts";
 
@@ -95,7 +95,8 @@ export const SIMPLE_ON_PURPOSE_LEDGER_BODY_FINGERPRINT =
  * Stable finding id for the one report a repository carries. The report is
  * keyed on this id, not on its title, because its title carries live counts.
  */
-export const SIMPLE_ON_PURPOSE_LEDGER_FINDING_ID = "BP-SIMPLE-ON-PURPOSE-LEDGER";
+export const SIMPLE_ON_PURPOSE_LEDGER_FINDING_ID =
+  "BP-SIMPLE-ON-PURPOSE-LEDGER";
 
 // ---------------------------------------------------------------------------
 // Public types

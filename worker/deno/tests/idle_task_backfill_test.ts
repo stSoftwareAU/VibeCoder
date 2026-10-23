@@ -557,9 +557,9 @@ Deno.test("formatBackfillEvent - renders each event kind", () => {
 });
 
 Deno.test(
-  "IDLE_TASK_WRAPPER_TITLES - allowlist contains exactly the nineteen wrapper titles (Issues #2322, #2398, #2904, #2930, #3228, #3238, #3319, #3394, #3488, #3549, #3609, #664, #1597)",
+  "IDLE_TASK_WRAPPER_TITLES - allowlist contains exactly the twenty wrapper titles (Issues #2322, #2398, #2904, #2930, #3228, #3238, #3319, #3394, #3488, #3549, #3609, #664, #1597, #4027)",
   () => {
-    assertEquals(IDLE_TASK_WRAPPER_TITLES.length, 19);
+    assertEquals(IDLE_TASK_WRAPPER_TITLES.length, 20);
     assert(IDLE_TASK_WRAPPER_TITLES.includes(SECURITY_SCAN_ISSUE_TITLE));
     assert(IDLE_TASK_WRAPPER_TITLES.includes(TEST_AUDIT_ISSUE_TITLE));
     assert(IDLE_TASK_WRAPPER_TITLES.includes(BEST_PRACTICES_ISSUE_TITLE));

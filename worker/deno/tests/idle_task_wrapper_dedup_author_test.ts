@@ -140,6 +140,19 @@ const FACTORIES = new Map<string, Factory>([
       }),
   ],
   [
+    "simple-on-purpose-ledger",
+    (gh, d) =>
+      createSimpleOnPurposeLedgerTemplate({
+        ghCommandFn: gh,
+        dedupAuthors: d,
+        // `shouldFile` never reaches the scanner; throwing rather than
+        // stubbing keeps a future change that does reach it loud.
+        scanFn: () => {
+          throw new Error("the wrapper dedup must not run the scanner");
+        },
+      }),
+  ],
+  [
     "orphan-deps",
     (gh, d) => createOrphanDepsTemplate({ ghCommandFn: gh, dedupAuthors: d }),
   ],
