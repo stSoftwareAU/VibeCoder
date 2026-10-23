@@ -306,6 +306,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // source lines and diffs; only a growth measurement separates their linear
   // patterns from a backtracking one (Issue #3779).
   "tests/caller_checks_3779_test.ts",
+  // The shell mutator scans untrusted added diff lines with a hand-written
+  // scanner; only a growth measurement (assertLinearGrowth) separates it from
+  // a quadratic one on long hostile lines (Issue #3860).
+  "tests/mutation_gate_test.ts",
 ];
 
 /**
