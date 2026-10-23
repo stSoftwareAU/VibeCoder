@@ -254,8 +254,8 @@ VIBE_REPOS="myorg/repo1,myorg/repo2" \
 ./run.sh
 
 # Move this host onto the newest release (setup pins a new host to a release;
-# each launch says when a newer one exists). Rewrites the pins in .config.json
-# and nothing else — the next launch installs exactly them.
+# a frozen host logs a WARNING at each launch when a newer one exists). Rewrites
+# the pins in .config.json and nothing else — the next launch installs exactly them.
 ./run.sh upgrade
 ```
 
