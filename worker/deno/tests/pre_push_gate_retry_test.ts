@@ -6,6 +6,10 @@
  * commit call is recorded. The fence assertions mirror
  * `summary_rule_gate_retry_test.ts`.
  *
+ * One real-git case (Issue #4128) wires the real `commitAndPushPending` and
+ * `reconcileHeadToBranch` against a bare origin, and proves the recovery
+ * commit lands locally and never reaches origin.
+ *
  * Australian English throughout.
  */
 
@@ -22,12 +26,15 @@ import {
   buildDefaultWorkerConfig,
   OPERATIONAL_DEFAULTS,
 } from "../lib/config_defaults.ts";
+import { reconcileHeadToBranch } from "../lib/git_branch.ts";
+import { commitAndPushPending } from "../lib/git_push.ts";
 import {
   buildPrePushGateRetryPrompt,
+  PrePushRecoveryPushDeferred,
   type PrePushRecoveryTurn,
   runPrePushGateRecoveryTurn,
 } from "../lib/pre_push_gate_retry.ts";
-import type { WorkerConfig } from "../types.ts";
+import type { Result, WorkerConfig } from "../types.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const ISSUE = 4128;
@@ -42,6 +49,7 @@ interface CommitCall {
   allowDefaultBranch: boolean | undefined;
   preFlight: unknown;
   cwd: string | undefined;
+  beforePush: (() => Promise<Result<void>>) | undefined;
 }
 
 interface Harness {
@@ -110,12 +118,16 @@ function makeHarness(options: {
         opts,
         allowDefault,
         preFlight,
+        _runId,
+        _formatBeforeGate,
+        beforePush,
       ) => {
         commits.push({
           message,
           allowDefaultBranch: allowDefault,
           preFlight,
           cwd: opts?.cwd,
+          beforePush,
         });
         return Promise.resolve({
           ok: true,
@@ -159,7 +171,7 @@ function insideFence(prompt: string, needle: string, id: string): boolean {
   return endAfterBegin > needleIndex;
 }
 
-Deno.test("pre-push gate retry - success: one agent turn, flag set on entry, fix committed under the gate (Issue #4128)", async () => {
+Deno.test("pre-push gate retry - success: one agent turn, flag set on entry, fix committed and never pushed (Issue #4128)", async () => {
   const h = makeHarness({});
 
   const result = await runPrePushGateRecoveryTurn(
@@ -183,12 +195,25 @@ Deno.test("pre-push gate retry - success: one agent turn, flag set on entry, fix
   assertEquals(call.sessionResumeState, h.state.sessionResumeState);
   assertEquals(call.cwd, h.state.repoPath);
 
-  // The commit is attempted once, with a pre-flight spec even though the repo
-  // has none: `{ commands: [] }` keeps the changed-file gate on.
+  // The commit is attempted once, with no pre-flight spec, and with a
+  // `beforePush` that refuses: the commit stays local and the completion
+  // phase's gate decides the push.
   assertEquals(h.commits.length, 1);
   const commit = h.commits[0]!;
-  assert(commit.preFlight !== undefined, "preFlight must never be undefined");
-  assertEquals(commit.preFlight, { commands: [] });
+  assertEquals(commit.preFlight, undefined);
+  assert(
+    typeof commit.beforePush === "function",
+    "beforePush must be supplied so the recovery commit never pushes",
+  );
+  const refusal = await commit.beforePush!();
+  assertEquals(refusal.ok, false);
+  assert(
+    refusal.ok === false &&
+      refusal.error instanceof PrePushRecoveryPushDeferred,
+    `beforePush must refuse with PrePushRecoveryPushDeferred, got ${
+      JSON.stringify(refusal)
+    }`,
+  );
   assertEquals(commit.allowDefaultBranch, false);
   assertEquals(commit.cwd, h.state.repoPath);
   assertStringIncludes(
@@ -396,4 +421,152 @@ Deno.test("pre-push gate retry prompt - a forged fence end in the gate output st
       ?.length ?? 0;
   assertEquals(beginCount, 1);
   assertEquals(endCount, 1);
+});
+
+/** Runs git, keeping the host's ambient git config out of the fixture. */
+async function gitRun(
+  args: string[],
+  cwd: string,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const out = await new Deno.Command("git", {
+    args,
+    cwd,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+    env: {
+      GIT_CONFIG_COUNT: "0",
+      GIT_AUTHOR_NAME: "Fixture",
+      GIT_AUTHOR_EMAIL: "fixture@example.com",
+      GIT_COMMITTER_NAME: "Fixture",
+      GIT_COMMITTER_EMAIL: "fixture@example.com",
+    },
+  }).output();
+  return {
+    code: out.code,
+    stdout: new TextDecoder().decode(out.stdout),
+    stderr: new TextDecoder().decode(out.stderr),
+  };
+}
+
+/** Runs git and fails the test when it exits non-zero. */
+async function mustGit(args: string[], cwd: string): Promise<string> {
+  const out = await gitRun(args, cwd);
+  assertEquals(out.code, 0, `git ${args.join(" ")}: ${out.stderr}`);
+  return out.stdout;
+}
+
+Deno.test("pre-push gate retry - real git: the fix is committed locally and never reaches origin (Issue #4128)", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "pre_push_retry_real_" });
+  try {
+    const upstream = `${tmp}/upstream.git`;
+    const repo = `${tmp}/repo`;
+    const noHooks = `${tmp}/no-hooks`;
+    await Deno.mkdir(noHooks);
+    await mustGit(["init", "--bare", "-b", "main", upstream], tmp);
+    await mustGit(["clone", upstream, repo], tmp);
+    // Local identity and no hooks, so the fixture does not depend on the host.
+    await mustGit(["config", "user.useConfigOnly", "true"], repo);
+    await mustGit(["config", "user.name", "Fixture"], repo);
+    await mustGit(["config", "user.email", "fixture@example.com"], repo);
+    await mustGit(["config", "core.hooksPath", noHooks], repo);
+    await Deno.writeTextFile(`${repo}/README.md`, "seed\n");
+    await mustGit(["add", "."], repo);
+    await mustGit(["commit", "-m", "seed"], repo);
+    await mustGit(["push", "origin", "main"], repo);
+    const branch = `issue-${ISSUE}`;
+    await mustGit(["checkout", "-b", branch], repo);
+    await mustGit(["push", "-u", "origin", branch], repo);
+    const originBefore = (await mustGit(
+      ["rev-parse", `refs/heads/${branch}`],
+      upstream,
+    )).trim();
+
+    // The leftover the agent turn produced, uncommitted, as the agent leaves it.
+    await Deno.writeTextFile(`${repo}/fix.txt`, "the agent's fix\n");
+
+    const errors: string[] = [];
+    const infos: string[] = [];
+    const deps = createMockDeps({
+      logger: {
+        info: (message: string) => {
+          infos.push(message);
+        },
+        error: (message: string) => {
+          errors.push(message);
+        },
+      },
+      claude: {
+        runClaudeWithRetry: () => cleanTurn(),
+      },
+      git: {
+        reconcileHeadToBranch,
+        commitAndPushPending,
+      },
+    });
+    const ctx: IssueContext = {
+      repo: REPO,
+      issueNumber: ISSUE,
+      issueTitle: "Pre-push gate block",
+      issueBody: "",
+      issueLabels: [],
+      issueComments: "",
+      githubUser: "testbot",
+      config: buildDefaultWorkerConfig(),
+    };
+    const state: PhaseState = {
+      branchName: branch,
+      baseBranch: "main",
+      defaultBranch: "main",
+      repoPath: repo,
+      clarityStatus: "not_assessed",
+      claudeOutput: "",
+      executeStartTime: 0,
+      baselineQualityPassed: true,
+      baselineQualityOutput: "",
+      sessionResumeState: { sessionId: "resume-session-4128", phaseCount: 1 },
+    };
+
+    const result = await runPrePushGateRecoveryTurn(
+      ctx,
+      state,
+      deps,
+      GATE_OUTPUT,
+    );
+    assertEquals(result, { ran: true });
+
+    // The leftover is committed on the issue branch, locally.
+    const localHead = (await mustGit(["rev-parse", "HEAD"], repo)).trim();
+    assertEquals(
+      (await mustGit(["log", "-1", "--format=%s"], repo)).trim(),
+      `fix: pre-push gate findings for #${ISSUE}`,
+    );
+    assertStringIncludes(
+      await mustGit(["show", "--name-only", "--format=", "HEAD"], repo),
+      "fix.txt",
+    );
+    assert(localHead !== originBefore, "the fix must be a new local commit");
+
+    // Origin does not move: the commit is not pushed, and the object is absent.
+    assertEquals(
+      (await mustGit(["rev-parse", `refs/heads/${branch}`], upstream)).trim(),
+      originBefore,
+      "origin's issue branch must not move during the recovery turn",
+    );
+    const onOrigin = await gitRun(["cat-file", "-e", localHead], upstream);
+    assert(
+      onOrigin.code !== 0,
+      "the recovery commit must not reach origin before the completion gate",
+    );
+
+    // The deferral is the expected outcome: no error-level log, one info line.
+    assertEquals(errors, [], `no error may be logged: ${errors.join(" | ")}`);
+    assertEquals(
+      infos.filter((m) => m.includes("committed locally")).length,
+      1,
+      `expected one deferral info line, got: ${infos.join(" | ")}`,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
 });

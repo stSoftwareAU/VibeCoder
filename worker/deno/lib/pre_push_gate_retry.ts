@@ -32,7 +32,6 @@ import {
 } from "./issue_worker_types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
-import { resolvePreFlightSpec } from "./git_push.ts";
 import {
   buildBoundaryIntegrityInstruction,
   fenceUntrustedIssueText,
@@ -121,9 +120,10 @@ ${buildBoundaryIntegrityInstruction(id, [PRE_PUSH_GATE_OUTPUT_BLOCK])}`;
  * extra turn per run, across every gate call in the completion phase.
  *
  * The turn resumes the same session with the gate's output. On a clean finish
- * whatever it left is committed on the issue branch. The commit runs the
- * changed-file gate (a `{ commands: [] }` spec at least), so this commit and
- * push can never bypass the gate. The caller re-runs the gate and decides.
+ * whatever it left is committed on the issue branch. The commit never pushes:
+ * a `beforePush` refusal leaves the push to the completion phase, which re-runs
+ * the formatters and the same whole-branch gate and pushes only if it passes.
+ * The caller re-runs the gate and decides.
  *
  * @param gateOutput - The pre-push gate's failure message for this block
  */
@@ -215,21 +215,39 @@ export async function runPrePushGateRecoveryTurn(
 }
 
 /**
+ * The recovery commit's push, deliberately left to the completion phase
+ * (Issue #4128).
+ *
+ * Raised by the `beforePush` refusal of {@link commitPrePushFindings}. The
+ * commit stays local; the completion phase's gate decides the push. This is
+ * the expected outcome of the recovery commit, not a failure.
+ */
+export class PrePushRecoveryPushDeferred extends Error {
+  constructor() {
+    super(
+      "the push is left to the completion phase's pre-push gate (Issue #4128)",
+    );
+    this.name = "PrePushRecoveryPushDeferred";
+  }
+}
+
+/**
  * Commit what the extra turn produced onto the issue branch (Issue #4128).
  *
  * HEAD is reconciled first, in case the turn left its commit on a detached
- * checkout. The pre-flight spec is never absent: `{ commands: [] }` still
- * turns on the changed-file gate in `commitAndPushPending`, so this commit
- * and push are gated exactly as the first push was. Failures are logged at
- * error level and never thrown — the caller re-runs the gate and reports its
- * latest output, which decides the run.
+ * checkout. The commit never pushes: no pre-flight spec is passed, and a
+ * `beforePush` refusal stops `commitAndPushPending` after Step 1's commit and
+ * before Step 2's push. The completion phase's gate (the formatters and the
+ * whole-branch gate) then decides the push. The refusal is logged at info
+ * level. Any other failure is logged at error level and never thrown — the
+ * caller re-runs the gate and reports its latest output, which decides the run.
  */
 async function commitPrePushFindings(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<void> {
-  const { repo, issueNumber, config } = ctx;
+  const { repo, issueNumber } = ctx;
   const logger = deps.logger;
 
   const reconcile = await deps.git.reconcileHeadToBranch(state.branchName, {
@@ -245,14 +263,32 @@ async function commitPrePushFindings(
     return;
   }
 
+  // Step 1 of commitAndPushPending commits the leftovers; the `beforePush`
+  // refusal then returns before any push. No pre-flight spec is passed, so
+  // Step 1b's gate (which has no base ref) does not run here either.
   const commit = await deps.git.commitAndPushPending(
     state.branchName,
     `fix: pre-push gate findings for #${issueNumber}\n\n` +
       `In-run pre-push-gate recovery (Issue #4128).`,
     { cwd: state.repoPath },
     false,
-    resolvePreFlightSpec(config.repoConfig, repo) ?? { commands: [] },
+    undefined,
+    undefined,
+    undefined,
+    () =>
+      Promise.resolve({
+        ok: false,
+        error: new PrePushRecoveryPushDeferred(),
+      }),
   );
+  if (!commit.ok && commit.error instanceof PrePushRecoveryPushDeferred) {
+    logger.error(
+      `Pre-push gate findings committed locally on '${state.branchName}'; ` +
+        `the completion phase's gate decides the push (Issue #4128)`,
+      { repo, issueNumber },
+    );
+    return;
+  }
   if (!commit.ok) {
     logger.error(
       `Could not commit the pre-push gate findings — they stay UNTRACKED on ` +
