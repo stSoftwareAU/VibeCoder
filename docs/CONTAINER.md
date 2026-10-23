@@ -1758,8 +1758,7 @@ averages (Issue #4225), so a freeze that never reaches an OOM kill still
 leaves its pressure in the log.
 
 Cargo is capped by default so that a test build cannot exhaust the guest on
-its own (Issue #4225). The entrypoint exports these unless the operator has
-already set them, and any value set in the environment is kept as given:
+its own (Issue #4225). The entrypoint exports these unless the operator has already set them to a non-empty value; an unset or empty variable gets the default, and any non-empty value is kept as given:
 
 | Env | Default | Effect |
 | --- | --- | --- |
