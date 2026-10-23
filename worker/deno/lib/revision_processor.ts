@@ -27,6 +27,7 @@ import {
   sanitiseDelimiterPatterns,
 } from "./prompt_delimiter.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { unwrapJsonFence } from "./fenced_json.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -128,13 +129,8 @@ export function parseRevisionResponse(
   output: string,
 ): Result<RevisionResponse> {
   // Extract JSON from Claude's output (may be wrapped in markdown code blocks)
-  let jsonStr = output.trim();
-
   // Strip markdown code block if present
-  const jsonMatch = jsonStr.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
-  if (jsonMatch?.[1]) {
-    jsonStr = jsonMatch[1].trim();
-  }
+  let jsonStr = unwrapJsonFence(output, { allowSurroundingProse: true });
 
   // Try to find JSON object in the output
   const objectMatch = jsonStr.match(/\{[\s\S]*\}/);
