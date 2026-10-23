@@ -25,6 +25,11 @@ import {
   terminalStyler,
 } from "../lib/console_style.ts";
 import { COPILOT_CODE_REVIEW_MODES } from "../lib/config_defaults.ts";
+import {
+  askOnConsole,
+  CONSOLE_ASK_IO,
+  type ConsoleAskIo,
+} from "./console_ask.ts";
 import type { CopilotCodeReviewMode, Result } from "../types.ts";
 import {
   readCopilotCodeReviewSetting,
@@ -64,20 +69,17 @@ export interface CopilotReviewSetupOptions {
 }
 
 /**
- * The real side effects: the terminal.
+ * The real side effects: the terminal. The question is asked through
+ * `askOnConsole`, so it reaches the operator under `setup.ps1`'s `Out-Host`
+ * pipe as well as on a terminal.
  *
- * `setup.ps1` runs this with stdout piped through `Out-Host`, which prints a
- * line only once it ends, so a question left waiting on its own line would
- * never be seen. When stdout is not a terminal the question is printed as a
- * whole line first; on a terminal it is asked exactly as `update-mode` asks.
+ * @param consoleIo - The console questions are asked on; tests supply one
  */
-export function createDefaultCopilotReviewDeps(): CopilotReviewSetupDeps {
+export function createDefaultCopilotReviewDeps(
+  consoleIo: ConsoleAskIo = CONSOLE_ASK_IO,
+): CopilotReviewSetupDeps {
   return {
-    ask: (question) => {
-      if (Deno.stdout.isTerminal()) return Promise.resolve(prompt(question));
-      console.log(question);
-      return Promise.resolve(prompt(">"));
-    },
+    ask: (question) => askOnConsole(question, consoleIo),
     say: (message) => console.log(message),
     style: terminalStyler(),
     interactive: () => Deno.stdin.isTerminal(),
