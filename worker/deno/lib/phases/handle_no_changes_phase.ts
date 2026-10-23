@@ -30,6 +30,7 @@ import {
 import { detectRunInterrupted, detectUsageLimit } from "../claude_executor.ts";
 import { listTemplates } from "../idle_task_template.ts";
 import { handOffAnalysisOnly } from "../analysis_only_handoff.ts";
+import { retryUnfinishedIssue } from "../unfinished_issue_retry.ts";
 import { hasAnalysisOnlyMarker } from "../analysis_only.ts";
 import { detectDescribedCodeChange } from "../described_code_change.ts";
 import {
@@ -186,6 +187,41 @@ async function postPartialAnswerAndHandOff(
     status: "early_exit",
     reason: "analysis_only_handed_off",
   };
+}
+
+/**
+ * The end of a no-change run that is not a deferral (Issue #4227).
+ *
+ * An issue its author declared analysis-only (`<!-- analysis-only -->`) gets
+ * its analysis posted and handed to a human: that analysis is the
+ * deliverable. Any other approved issue is not finished, so it is retried
+ * with the run's output carried to the next attempt — never `needs-human`.
+ */
+async function finishOrHandOff(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+  why: string,
+): Promise<PhaseResult> {
+  if (hasAnalysisOnlyMarker(ctx.issueBody)) {
+    return await postPartialAnswerAndHandOff(ctx, deps, state.claudeOutput);
+  }
+  return await retryUnfinishedIssue({
+    ghClient: deps.github.createClient(deps.logger),
+    repo: ctx.repo,
+    issueNumber: ctx.issueNumber,
+    why,
+    agentOutput: state.claudeOutput,
+    diagnostics: {
+      elapsedSeconds: state.executeStartTime > 0
+        ? Math.round((Date.now() - state.executeStartTime) / 1000)
+        : 0,
+      clarityStatus: state.clarityStatus,
+      outputSize: state.claudeOutput.length,
+      lastOutputSnippet: redactedTail(state.claudeOutput, 500) || undefined,
+    },
+    logger: deps.logger,
+  });
 }
 
 /**
@@ -387,12 +423,16 @@ export async function workOnIssueHandleNoChanges(
   // issue is the stronger signal, so it also wins over a usage-limit retry.
   if (selfFiledDependency) {
     logger.info(
-      "No-changes run depends on a self-filed dependency — handing off to " +
-        "a human on this run instead of retrying or deferring on a later " +
-        "one (Issue #3146)",
+      "No-changes run depends on a self-filed dependency — not deferring " +
+        "onto it (Issue #3146); retrying the approved issue (Issue #4227)",
       { repo, issueNumber },
     );
-    return await postPartialAnswerAndHandOff(ctx, deps, claudeOutput);
+    return await finishOrHandOff(
+      ctx,
+      state,
+      deps,
+      "it named a dependency it filed itself instead of doing the work",
+    );
   }
   if (detectUsageLimit(claudeOutput)) {
     logger.warn("Claude hit the subscription usage limit mid-run (no changes)");
@@ -477,14 +517,16 @@ export async function workOnIssueHandleNoChanges(
       }
     }
 
-    // Issue #2849: a no-code-change run on a `work-on` issue is the
-    // post-run "analysis-only / no-PR" signal. `work-on` treats a raised
-    // PR as its completion signal, so without an explicit hand-off the
-    // issue is re-picked-up and re-run indefinitely (the #2834 loop). Output
-    // that describes a code change never reaches here (Issue #2687, above).
-    // The existing `failed-once` → `failed` ladder remains the fallback loop
-    // guard for the no-useful-output path below.
-    return await postPartialAnswerAndHandOff(ctx, deps, claudeOutput);
+    // Issue #4227: an approved issue is completed, never handed back. A
+    // no-change run is a failure to retry on the `failed-once` ladder, whose
+    // escalating cooldown is the loop guard (#2834, #4158). Only an issue
+    // its author declared analysis-only is handed off with its analysis.
+    return await finishOrHandOff(
+      ctx,
+      state,
+      deps,
+      "it made no code change",
+    );
   }
 
   const elapsedSeconds = state.executeStartTime > 0
