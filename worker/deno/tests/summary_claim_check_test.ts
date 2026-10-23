@@ -1130,6 +1130,7 @@ Deno.test("runSummaryClaimCheck - a base ref that fails validation is notChecked
 });
 
 Deno.test("runSummaryClaimCheck - an ambiguous test-file reference reaches result.notChecked", async () => {
+  const logger = makeLogger();
   const result = await runSummaryClaimCheck(
     {
       repo: "acme/widgets",
@@ -1148,7 +1149,7 @@ Deno.test("runSummaryClaimCheck - an ambiguous test-file reference reaches resul
         "worker/deno/tests/foo_test.ts\nworker/other/foo_test.ts\n",
       ),
       askQuestion: async () => okResult("no findings worth noting"),
-      logger: makeLogger(),
+      logger,
     },
   );
   assertEquals(result.testPlanProblems, []);
@@ -1158,6 +1159,7 @@ Deno.test("runSummaryClaimCheck - an ambiguous test-file reference reaches resul
       JSON.stringify(result.notChecked)
     }`,
   );
+  assertWarnedWithContext(logger, "more than one tracked file");
 });
 
 Deno.test("runSummaryClaimCheck - an unreadable tracked test file reaches result.notChecked", async () => {

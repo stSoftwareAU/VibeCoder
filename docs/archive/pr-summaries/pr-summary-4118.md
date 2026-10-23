@@ -51,15 +51,7 @@ are asserted at WARNING instead.
 
 **Docs sweep** — grep: `error level`, `logs these at error`, `summary_claim_check`; section: `docs/workflows/issue-processing.md` (the claim-check section: base-ref logging and the not-checked paragraph); siblings: the other `error level` hits (pre-PR verifier hold post, standing-violation fail-closed) belong to other features and stay true; updated: `docs/workflows/issue-processing.md`
 
-**Branch outcomes:**
-- `worker/deno/lib/summary_claim_check.ts:764` — error (ls-files failed) logs warn with repo and issue — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - an ls-files failure logs one warning with repo and issue, no error (#4118)` — dropped `repo` / commented out the call, test went red
-- `worker/deno/lib/summary_claim_check.ts:789` — error (Test Plan backstop reason) logs warn — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - an ambiguous test-file reference reaches result.notChecked` — reached with `notChecked` assertion; level exercised through the shared warn path
-- `worker/deno/lib/summary_claim_check.ts:804` — absent (base ref null) logs warn with repo and issue — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - an unresolvable base ref logs one warning with repo and issue, no error (#4118)` — dropped `repo`, test went red
-- `worker/deno/lib/summary_claim_check.ts:812` — absent (changed files null) logs warn with repo and issue — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - null changedFiles logs one warning with repo and issue (#4118)` — dropped `repo`, test went red
-- `worker/deno/lib/summary_claim_check.ts:835` — error (non-NotFound read error) logs warn — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - an unreadable changed manual logs one warning with repo and issue (#4118)` — asserted at warn with context
-- `worker/deno/lib/summary_claim_check.ts:851` — empty (no scope.notChecked) logs nothing; non-empty logs one aggregated warn — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - a 20-file-cap overflow logs one warning, not one error per file (#4118)` — asserts exactly one warning and no errors
-- `worker/deno/lib/summary_claim_check.ts:854` — more than three names appends `; and N more`, three or fewer does not — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - cap overflow warning carries repo, issue, the count and 'and N more' (#4118)` and `::a small overflow warning lists every name with no 'and N more' (#4118)` — negated the ternary, both tests went red
-- `worker/deno/lib/summary_claim_check.ts:877` — error (prompt-build failure) logs warn with repo and issue — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - a prompt-build failure logs one warning with repo and issue (#4118)` — dropped `repo`, test went red
+<!-- vibe-branch-outcomes -->
 
 ## Mutation check
 
