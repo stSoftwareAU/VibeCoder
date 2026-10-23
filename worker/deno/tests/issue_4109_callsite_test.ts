@@ -552,3 +552,96 @@ Deno.test("execute_claude_phase - the runner receives the rerouted provider (Iss
     resetProviderConfig();
   }
 });
+
+Deno.test("execute_claude_phase - claude not enabled strips agents and disables the split (Issue #4109)", async () => {
+  // Codex is the run's provider, Claude is not enabled, and the run asks for
+  // the executor split, so it would carry `--agents`. The planner cannot
+  // reroute, so it strips the sub-agents instead of letting the runner refuse
+  // after the timeout (the planner's `agents-stripped` outcome).
+  //
+  // Positive control (same fixture, Claude enabled): the planner reroutes to
+  // Claude and the run still carries `--agents` with the split on. The reroute
+  // itself is also covered by "the runner receives the rerouted provider"
+  // above; the control here proves the fixture is not vacuous.
+  setConfiguredAgentProviderId("codex");
+  setConfiguredEnabledAgentProviderIds(["codex"]);
+  try {
+    const stripped: ClaudePhaseObserved = {
+      codegraphProviderIds: [],
+      logs: [],
+    };
+    await runExecuteClaudePhase(
+      claudePhaseOptions(),
+      {
+        ...claudePhaseDeps(stripped, rtkSeam([]), "codex"),
+        env: envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: "codex" }),
+      },
+    );
+
+    const strippedRun = stripped.runOptions;
+    assert(strippedRun, "the stripped run must reach the runner");
+    assertEquals(
+      strippedRun.agents,
+      undefined,
+      "a stripped run must carry no --agents definitions",
+    );
+    assert(
+      !strippedRun.issueExecutorSplit,
+      `a stripped run must not carry the executor split, saw: ${strippedRun.issueExecutorSplit}`,
+    );
+    assertEquals(
+      strippedRun.agentProvider,
+      "codex",
+      "a stripped run must stay on codex, not be rerouted",
+    );
+    assert(
+      stripped.logs.some((line) =>
+        line.includes(
+          "asked the codex provider for sub-agents it cannot carry and claude is not enabled; starting the run without sub-agents",
+        )
+      ),
+      `expected the strip warning naming the cause, saw: ${
+        JSON.stringify(stripped.logs)
+      }`,
+    );
+    assertEquals(
+      stripped.logs.some((line) => line.includes(REROUTE_WARNING)),
+      false,
+      "a stripped run must not log a reroute",
+    );
+
+    configureCodexWithClaude();
+    const control: ClaudePhaseObserved = {
+      codegraphProviderIds: [],
+      logs: [],
+    };
+    await runExecuteClaudePhase(
+      claudePhaseOptions(),
+      claudePhaseDeps(control, rtkSeam([]), "codex"),
+    );
+
+    const controlRun = control.runOptions;
+    assert(
+      controlRun?.agents,
+      "the Claude-enabled control must carry --agents",
+    );
+    assertEquals(
+      controlRun.issueExecutorSplit,
+      true,
+      "the Claude-enabled control must carry the executor split",
+    );
+    assertEquals(
+      controlRun.agentProvider,
+      CLAUDE_PROVIDER_ID,
+      "the Claude-enabled control must be rerouted to claude",
+    );
+    assert(
+      control.logs.some((line) => line.includes(REROUTE_WARNING)),
+      `the Claude-enabled control must log the reroute, saw: ${
+        JSON.stringify(control.logs)
+      }`,
+    );
+  } finally {
+    resetProviderConfig();
+  }
+});

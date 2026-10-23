@@ -1264,8 +1264,11 @@ async function runClaudeWithTimeoutBody(
   // Codex and Gemini silently, DeepSeek with a warning — so the advisor would
   // be told to dispatch sub-agents the CLI never defines. Refuse before spawn
   // instead. This is a backstop: the issue-run planner
-  // (lib/issue_run_provider_agents.ts) reroutes or strips such a run before it
-  // reaches here, so this guard fires only for a caller that bypasses it.
+  // (lib/issue_run_provider_agents.ts) normally reroutes or strips such a run
+  // before it reaches here, but the retry loop switches `agentProvider` to
+  // `agent_provider_fallback` after a model refusal and keeps `agents`, so this
+  // guard can still refuse a fallback provider such as Codex, as well as any
+  // caller that bypasses the planner.
   // `invocationRequest.agents` is present only when the run's flags
   // resolved some definition, and the check asks the provider's own argv rather
   // than a provider-id table.

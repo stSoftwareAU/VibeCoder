@@ -627,9 +627,10 @@ and reports five numbers.
   window. Since Issue #2812 the key is on by default, so a control host must
   set `issue_executor_split: false` explicitly.
 - **Not split by provider** — the pilot counters do not filter by provider.
-  Every completed `issue`-phase run is counted. A run on `codex`, `gemini` or
-  `deepseek` has its split state settled by the planner before spawn (Issue
-  #4109): rerouted to Claude, or stripped of sub-agents.
+  A run is counted only when run stats exist and its stats comment was not
+  already posted. A run on `codex`, `gemini` or `deepseek` has its split state
+  settled by the planner before spawn (Issue #4109): rerouted to Claude, or
+  stripped of sub-agents.
 
 **Window** — 30 implementation runs on the pilot hosts, or 4 weeks, whichever
 comes first.
