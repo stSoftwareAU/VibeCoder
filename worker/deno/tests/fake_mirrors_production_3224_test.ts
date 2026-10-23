@@ -174,7 +174,7 @@ Deno.test("issue prompt PR Raising Requirements require production-mirroring fak
 
   assert(
     text.includes(
-      "read the production implementation first and confirm it has that property",
+      "read the production implementation first and confirm it has the property the change relies on",
     ),
     `PR Raising Requirements is missing the read-production-first requirement: ${text}`,
   );

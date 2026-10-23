@@ -1190,12 +1190,13 @@ When creating the PR, include evidence based on the type of change:
   failure** and **A failure-reason test asserts the cause** in the guidelines).
   When the change relies on a property of one of the repository's own ports —
   a broker, database or store client with a production implementation — and
-  its tests run on an in-repo fake, or when a client test fakes a response
-  from the repository's own server or service by hand (an HTTP body, status or
-  header, a queue message, a file the other side writes), read the production
-  implementation first and confirm it has that property: which rows a read
-  returns, its filter, ordering or paging, the value types a write accepts, or
-  whether a conditional write can lose (see **A fake mirrors the production
+  its tests run on an in-repo fake, or when a test fakes a response from the
+  repository's own server or service by hand (an HTTP body, status or header,
+  a queue message, a file the other side writes), read the production
+  implementation first and confirm it has the property the change relies on
+  (a property of that port or response): which rows a read returns, its
+  filter, ordering or paging, the value types a write accepts, or whether a
+  conditional write can lose (see **A fake mirrors the production
   implementation it stands in for** in the guidelines). The rule applies across
   processes and languages, not only to in-process traits or interfaces. For a
   faked response, take the fixture from the producer's real output: a golden

@@ -1870,18 +1870,17 @@ produce or verify, or a contract test that runs the server's serialiser for
 that response kind; a PR adds a golden when the repository has none for that
 response kind. A header the client depends on is checked against what the
 deployed configuration lets the client read (for example, a CORS
-exposed-headers list), and the PR summary names where that is set. A change
-whose only proof is a fixture the producer never emits is a blocking
-self-review finding.
+exposed-headers list), and the PR summary names where that deployed setting
+is set. A change whose only proof is a fixture the producer never emits
+is a blocking self-review finding.
 
 **A test of a third-party tool's input uses that tool's semantics (Issue #3235).**
-The fake-mirrors rule covers the repository's own ports and server
-responses; fleet PRs instead
-tested config read by an external tool against an in-repo stand-in for that
-tool's engine. stSoftwareAU/TagsTS#93's hand-written glob matcher never
-matched `*` before `/`, so `milestone/foo` failed a `*/*` branch filter
-GitHub accepts; TagsTS#98 compiled a Renovate `matchStrings` look-ahead with
-JavaScript's `RegExp`, which accepts it, while Renovate's RE2 rejects the
+The fake-mirrors rule covers the repository's own ports and server responses;
+fleet PRs instead tested config read by an external tool against an in-repo
+stand-in for that tool's engine. stSoftwareAU/TagsTS#93's hand-written glob
+matcher never matched `*` before `/`, so `milestone/foo` failed a `*/*` branch
+filter GitHub accepts; TagsTS#98 compiled a Renovate `matchStrings` look-ahead
+with JavaScript's `RegExp`, which accepts it, while Renovate's RE2 rejects the
 whole config. The guidelines now require running the tool's own validator or
 engine where CI can run it, and otherwise testing the stand-in against
 documented cases — the case the change relies on and one the tool rejects or
