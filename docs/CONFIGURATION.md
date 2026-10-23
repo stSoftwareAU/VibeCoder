@@ -565,11 +565,13 @@ flowchart LR
 ### ⚖️ Idle-Task Template Weights
 
 When no claimable work exists, the worker files a background **idle-task**
-issue. It picks which template to run from the twenty registered templates by
-a random draw — the authoritative list lives in the
+issue. It picks which template to run from the twenty registered templates. A
+pair-first cadence bias runs first and can override the pick (see
+[Idle-Task Cadence](#%EF%B8%8F-idle-task-cadence)); otherwise the pick is a
+random draw — the authoritative list lives in the
 [idle-task registry](IDLE-TASK-FRAMEWORK.md#registry), which this page
-deliberately does not restate. By default the draw is **uniform** — each
-template has a 1/20 chance, so only ~2/20 of idle runs are
+deliberately does not restate. By default the random draw is **uniform** — each
+template has a 1/20 chance, so only ~2/20 of random-draw idle runs are
 supply-chain-relevant.
 
 Set `idle_task_template_weights` to bias the draw toward the templates you care
@@ -588,8 +590,8 @@ Semantics:
 
 - **Relative weights.** A template with weight `3` is drawn three times as often
   as one with weight `1`. With the example above the two named templates carry
-  weight `3` and the other fifteen keep the baseline `1`, so the totals are
-  `6 : 15` — ~29% (6 of 21) on the two boosted supply-chain templates.
+  weight `3` and the other eighteen keep the baseline `1`, so the totals are
+  `6 : 18` — 25% (6 of 24) on the two boosted supply-chain templates.
 - **Name only what you boost.** A template absent from the map keeps the
   baseline weight of `1`, so you do not need to list every template.
 - **Zero / negative / non-finite → baseline.** A weight that is not a finite
@@ -600,8 +602,9 @@ Semantics:
 
 ### 🗓️ Idle-Task Cadence
 
-Weights bias a random draw; they guarantee nothing. `idle_task_cadence` puts a
-**floor** under the scans that matter: three **important** templates
+Weights bias the random draw, which runs only when the cadence bias files nothing,
+and they guarantee nothing. `idle_task_cadence` puts a
+**floor** under the scans that matter: by default three **important** templates
 (`security-scan`, `supply-chain-readiness`, `github-actions-audit`) are owed a
 cheap `sonnet` scan at least weekly and an expensive `fable` scan at least
 monthly, per monitored repository. Every other template stays busy work, drawn at

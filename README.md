@@ -148,7 +148,8 @@ host builds and runs a Codex image rather than reusing the default one.
 - **Idle-task framework** — When no claimable work exists, the worker files a
   lowest-priority `idle-task` issue and runs one of the registered background
   templates (security, best-practices, test-audit, dependency, and documentation
-  scans, among others), picked at random. See
+  scans, among others), picked by the cadence bias for overdue scans or otherwise
+  at random. See
   [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the full
   catalogue.
 - **Security scans** — When the worker has no claimable work, it idle-runs a
@@ -498,7 +499,7 @@ flowchart LR
 | **[GitHub Actions Audit Scans](docs/GITHUB-ACTIONS-AUDIT-SCAN.md)**            | Operator manual for the weekly workflow-only Actions audit: SHA-pinning, permissions, script injection, pre-filers                                     |
 | **[Bash-Syntax Audit Scans](docs/BASH-SYNTAX-AUDIT-SCAN.md)**                  | Operator manual for the weekly bash syntax audit: the per-repo `bash -n` + ShellCheck CI gates it verifies, checks, labels, suppression                |
 | **[Gate-Skip Drift Scans](docs/GATE-SKIP-DRIFT-SCAN.md)**                      | Operator manual for the weekly gate-skip drift audit: a repo's `quality.sh` skipping a tool its own CI installs and runs, the `container/tools.json` suppression, and the two fixes |
-| **[SIMPLE-ON-PURPOSE Ledger](docs/SIMPLE-ON-PURPOSE-LEDGER.md)** | Operator manual for the report-only ledger of deliberate corner cuts: every `SIMPLE-ON-PURPOSE` marker in a repo, the markers missing an `upgrade when` clause, and the one report issue it refreshes |
+| **[SIMPLE-ON-PURPOSE Ledger](docs/SIMPLE-ON-PURPOSE-LEDGER.md)** | Operator manual for the report-only ledger of deliberate corner cuts: every `SIMPLE-ON-PURPOSE` marker in a repo's tracked text files (`.md` files, files over 1 MiB, binary files, and symlinks and submodule gitlinks are skipped), the markers missing an `upgrade when` clause, and the one report issue it refreshes |
 | **[Supply-Chain Readiness Scans](docs/SUPPLY-CHAIN-READINESS-SCAN.md)**        | Operator manual for the weekly static supply-chain readiness audit: check catalogue, labels, suppression                                               |
 | **[Orphan-Dependency Scans](docs/ORPHAN-DEPS-SCAN.md)**                        | Operator manual for the weekly orphan / unmaintained-dependency audit: signal catalogue, the sanctioned-network exception, labels, suppression         |
 | **[Supply-Chain Detection Scan](docs/SUPPLY-CHAIN-DETECTION-SCAN.md)**         | Design and catalogue for the proactive supply-chain compromise detection scan                                                                          |

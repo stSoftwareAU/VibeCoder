@@ -1695,10 +1695,13 @@ idle-trigger sequence diagram).
 ### Best-practices scans (template #2)
 
 The best-practices scan is the second registered idle-task template. Once it has
-selected an idle target repo, the idle-task filer picks uniformly at random
-between the registered templates, so every template shares the same trigger
-pipeline and the same per-repo dedup and cooldown gates. The authoritative
-enumeration — and the size of the uniform draw — lives in
+selected an idle target repo, the idle-task filer first runs the pair-first
+cadence bias (Issue #4009), which files the first overdue (repo, template) pair
+that clears every gate. Otherwise it falls back to a weighted draw between the
+registered templates (uniform only by default, from `idle_task_template_weights`),
+then a shuffled repo, so every template shares the same trigger pipeline and the
+same per-repo dedup and cooldown gates. The authoritative enumeration — and how
+the draw is weighted — lives in
 [Idle-task framework](#idle-task-framework); it is deliberately not
 repeated here, so registering a twenty-first template updates one passage rather
 than two that can drift apart.
@@ -2716,12 +2719,15 @@ and claim handler.
   tool `container/tools.json` already pins for that repository — see
   [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md));
   and `simple_on_purpose_ledger_template.ts` (#20, native report-only ledger
-  that lists every `SIMPLE-ON-PURPOSE` marker in a repository, flags each marker
+  that lists every `SIMPLE-ON-PURPOSE` marker in a repository's tracked files
+  (skipping `.md` files, files over 1 MiB, binary files, and symlinks and
+  submodule gitlinks; a failed list or read is a scanner error), flags each marker
   with no `upgrade when` clause, and posts or refreshes one report issue per
   repository; it never edits, commits or opens a pull request — see
   [`docs/SIMPLE-ON-PURPOSE-LEDGER.md`](docs/SIMPLE-ON-PURPOSE-LEDGER.md)).
-  The idle-task filer picks uniformly at random (1/20 each) between the
-  twenty on every idle pass.
+  When the pair-first cadence bias files nothing, the idle-task filer draws at
+  random between the twenty templates on every idle pass: uniform (1/20 each)
+  unless `idle_task_template_weights` is set.
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
 operator manual, lifecycle sequence diagram, registry flowchart, and

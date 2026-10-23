@@ -212,7 +212,7 @@ sequenceDiagram
 
     Main->>Filer: idle pass — nothing claimable
     Filer->>Filer: per-repo wrapper census<br/>(which repos already hold one?)
-    Filer->>Filer: 1/20 RNG picks documentation-audit
+    Filer->>Filer: 1/20 RNG picks documentation-audit<br/>(uniform by default, a cadence-bias pick overrides it)
     Filer->>Template: buildIssueBody(repo)
     Template->>Template: load prompts/documentation_audit/<br/>(substitute placeholders)
     Template->>GH: gh issue create — title `Run a documentation audit`,<br/>label `idle-task`, no milestone

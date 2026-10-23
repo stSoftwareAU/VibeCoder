@@ -150,6 +150,47 @@ Deno.test("parse - a continuation stops at the next marker, which stays its own 
   ]);
 });
 
+Deno.test("parse - a complete single-line marker followed by unrelated comment lines keeps only its own clause", () => {
+  const text = [
+    "# SIMPLE-ON-PURPOSE: 2-space names, 4-space keys, single-line Type — upgrade when a template uses flow-style, anchors, multi-line or tab-indented parameters",
+    "# The awk below walks only the Parameters: block of the template.",
+    '# Prints "<Name><TAB><Type>" for each SSM-typed parameter.',
+    "ssm_parameters() {",
+  ].join("\n");
+  const m = onlyMarker(parseSimpleOnPurposeMarkers("infra/t.sh", text));
+  assertEquals(m.line, 1);
+  assertEquals(m.ceiling, "2-space names, 4-space keys, single-line Type");
+  assertEquals(
+    m.upgradeWhen,
+    "a template uses flow-style, anchors, multi-line or tab-indented parameters",
+  );
+});
+
+Deno.test("parse - a clause-less marker joins an unrelated next line that says upgrade when, so that line's text becomes the clause", () => {
+  // Documented limit: a clause-less marker cannot tell a wrapped continuation
+  // from an unrelated comment, so the next line is joined. Its `upgrade when`
+  // text becomes the clause, and the words before it fold into the ceiling.
+  const text = [
+    "// SIMPLE-ON-PURPOSE: a quadratic scan is fine here",
+    "// Note: we will upgrade when the corpus grows.",
+    "// an unrelated comment line",
+  ].join("\n");
+  const m = onlyMarker(parseSimpleOnPurposeMarkers("lib/k.ts", text));
+  assertEquals(m.ceiling, "a quadratic scan is fine here Note: we will");
+  assertEquals(m.upgradeWhen, "the corpus grows.");
+});
+
+Deno.test("parse - a wrapped marker with an empty upgrade when still joins the next line, then stops", () => {
+  const text = [
+    "// SIMPLE-ON-PURPOSE: c — upgrade when:",
+    "// the condition continues here.",
+    "// an unrelated comment line",
+  ].join("\n");
+  const m = onlyMarker(parseSimpleOnPurposeMarkers("lib/l.ts", text));
+  assertEquals(m.ceiling, "c");
+  assertEquals(m.upgradeWhen, "the condition continues here.");
+});
+
 Deno.test("parse - hash, block, jsdoc, dash, semicolon and HTML comment openers", () => {
   const text = [
     "# SIMPLE-ON-PURPOSE: one shard — upgrade when shards exceed 8",

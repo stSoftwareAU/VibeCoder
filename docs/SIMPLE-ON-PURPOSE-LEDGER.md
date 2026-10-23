@@ -3,7 +3,8 @@
 The SIMPLE-ON-PURPOSE ledger is the twentieth registered
 [idle-task](IDLE-TASK-FRAMEWORK.md) template (template #20). When the worker
 has no claimable work it may pick this template, read one monitored repository's
-tracked files, and list every `SIMPLE-ON-PURPOSE` marker it finds. It then posts
+tracked text files, and list every `SIMPLE-ON-PURPOSE` marker it finds in them
+(the files it skips are named under [What the scanner counts](#what-the-scanner-counts)). It then posts
 or refreshes **one report issue** for that repository. The report answers a
 single question: which deliberate corner cuts are in this codebase, what limit
 each one accepts, and what should prompt an upgrade.
@@ -31,7 +32,7 @@ ledger, adopted here in our own words — see
 
 ```mermaid
 flowchart LR
-    W["Idle-task wrapper<br/>simple-on-purpose-ledger template"] --> L["List tracked files<br/>git ls-files"]
+    W["Idle-task wrapper<br/>simple-on-purpose-ledger template"] --> L["List tracked files<br/>git ls-files (skips .md, binary, over 1 MiB, symlinks, gitlinks)"]
     L --> S["Scan each comment line<br/>first token is the marker"]
     S --> J["Join wrapped markers<br/>same opener on the next line"]
     J --> F["Flag markers with no<br/>upgrade when clause"]
@@ -53,7 +54,10 @@ flowchart LR
 
 A marker may wrap. When the marker's line is followed by further comment lines
 that open the same way (`//` after `//`, `#` after `#`), the scanner joins them
-into one marker and reports the first line.
+into one marker and reports the first line. A marker whose `upgrade when` clause
+is missing from its own line has the following same-opener comment lines joined
+into it, up to the line that completes the clause; a marker that already carries
+`upgrade when <condition>` on its own line is not extended.
 
 ## What the scanner counts
 
@@ -86,7 +90,8 @@ that could not run.
 The report is a single issue per monitored repository, labelled
 `simple-on-purpose-ledger`. It lists:
 
-1. every marker, with its path, line, ceiling and upgrade condition; and
+1. every marker in the scanned files, with its path, line, ceiling and upgrade
+   condition; and
 2. the markers that have no `upgrade when` clause, called out separately.
 
 The issue is refreshed on later runs rather than duplicated, so a repository
@@ -111,13 +116,14 @@ ledger informs that decision and makes no change itself.
 The template is part of the standard idle-task draw, so it runs with no extra
 switch. Its place in that draw is governed as for every other template:
 
-- **Draw weight.** The default draw is uniform. To bias it, set an entry for
-  `simple-on-purpose-ledger` in `idle_task_template_weights`, as described in
+- **Draw weight.** The random draw is uniform by default. To bias it, set an
+  entry for `simple-on-purpose-ledger` in `idle_task_template_weights`, as
+  described in
   [Configuration](CONFIGURATION.md#%EF%B8%8F-idle-task-template-weights).
   Weights bias a random draw and guarantee nothing.
-- **Guaranteed cadence.** The `idle_task_cadence` floor covers three important
-  templates only. This template is not in that floor, so it is drawn at random
-  like the rest.
+- **Guaranteed cadence.** By default the `idle_task_cadence` floor covers three
+  important templates only. This template is not among them, so it is drawn at
+  random like the rest unless an operator names it in `idle_task_cadence`.
 - **Repeat scans.** How often one repository is scanned is governed by the
   cooldown gate (`idle_task_cooldown_gate.ts`), as for every template; see
   [Idle-task framework](IDLE-TASK-FRAMEWORK.md#registry) for the registry and

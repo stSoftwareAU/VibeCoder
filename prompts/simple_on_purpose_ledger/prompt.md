@@ -1,6 +1,6 @@
 # SIMPLE-ON-PURPOSE Ledger Audit
 
-This is a report-only idle-task. It lists every `SIMPLE-ON-PURPOSE` marker in the repository, with its ceiling (the limit the simple code accepts) and its upgrade condition (the event that should prompt a rewrite), and flags any marker that has no `upgrade when` clause.
+This is a report-only idle-task. It lists every `SIMPLE-ON-PURPOSE` marker in the repository's tracked text files (Markdown, binary, oversized, symlink and submodule-gitlink entries are skipped), with its ceiling (the limit the simple code accepts) and its upgrade condition (the event that should prompt a rewrite), and flags any marker that has no `upgrade when` clause.
 
 ## Who performs this audit
 

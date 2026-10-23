@@ -134,6 +134,35 @@ function toMarker(
   };
 }
 
+/**
+ * Joins the marker body with the fewest continuation pieces that complete its
+ * `upgrade when` clause, or with all of them when none does. A complete clause
+ * stays complete as pieces are appended, so the first complete prefix is found
+ * by binary search. Re-parsing per line instead would be quadratic on a long
+ * run of unrelated comment lines.
+ */
+function joinContinuation(
+  path: string,
+  line: number,
+  body: string,
+  pieces: string[],
+): SimpleOnPurposeMarker {
+  const prefix = (n: number) => [body, ...pieces.slice(0, n)].join(" ");
+  const complete = (n: number) =>
+    toMarker(path, line, prefix(n)).upgradeWhen !== null;
+  if (!complete(pieces.length)) {
+    return toMarker(path, line, prefix(pieces.length));
+  }
+  let lo = 0;
+  let hi = pieces.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (complete(mid)) hi = mid;
+    else lo = mid + 1;
+  }
+  return toMarker(path, line, prefix(lo));
+}
+
 /** Every marker in one file's text, in line order; wrapped lines are joined. */
 export function parseSimpleOnPurposeMarkers(
   path: string,
@@ -144,13 +173,13 @@ export function parseSimpleOnPurposeMarkers(
   for (const [i, line] of lines.entries()) {
     const found = markerLine(line);
     if (found === null) continue;
-    let body = found.body;
+    const pieces: string[] = [];
     for (let j = i + 1; j < lines.length; j++) {
       const more = continuationText(lines[j] ?? "", found.opener);
       if (more === null) break;
-      body = `${body} ${more}`;
+      pieces.push(more);
     }
-    markers.push(toMarker(path, i + 1, body));
+    markers.push(joinContinuation(path, i + 1, found.body, pieces));
   }
   return markers;
 }
