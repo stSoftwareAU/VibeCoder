@@ -721,6 +721,80 @@ Deno.test("pr_auto_merge - a marker-shaped milestone title cannot forge a marker
   assertStringIncludes(state.posted[0]!, OPEN_CHILDREN_LOOKUP_MARKER);
 });
 
+// Posted in the target repo, which autolinks a bare `#N` to its own issue or PR.
+Deno.test("pr_auto_merge - an unreadable open-children reason has no bare #N and links the milestone (Issue #4081)", async () => {
+  resetOpenChildrenLookupComments();
+  const state: GateStubState = {
+    openChildren: [],
+    comments: [],
+    merges: 0,
+    posted: [],
+  };
+  const base = createUnreadableChildrenStub(state);
+  // A backtick in the title must not break out of its code span.
+  const title = "Q3 `rollout`";
+  const ghFn = async (args: string[]): Promise<string> => {
+    if (args.join(" ").includes("/milestones?state=open")) {
+      return JSON.stringify([{ number: 53, title }]);
+    }
+    return await base(args);
+  };
+
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: createMilestoneBranchName(title),
+    ghCommandFn: ghFn,
+    log: () => {},
+  });
+
+  assertEquals(result.result, AutoMergeResult.BlockedOpenChildren);
+  assertEquals(state.posted.length, 1);
+  const body = state.posted[0]!;
+  assertEquals(body.includes("#53"), false, body);
+  assertEquals(/Issue #\d/.test(body), false, body);
+  assertStringIncludes(body, "https://github.com/owner/repo/milestone/53");
+  assertStringIncludes(body, "`Q3 'rollout'`");
+});
+
+// Posted in the target repo, which autolinks a bare `#N` to its own issue or PR.
+Deno.test("pr_auto_merge - an unreadable declared-dependencies reason has no bare #N and links the milestone (Issue #4081)", async () => {
+  resetOpenChildrenLookupComments();
+  const state: DependencyStubState = { comments: [], merges: 0, posted: [] };
+  const base = createDependencyStub(state);
+  const title = "Q3 `rollout`";
+  // The open-children read succeeds; only the declared-dependency read fails.
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/milestones?state=open")) {
+      return JSON.stringify([{ number: 53, title }]);
+    }
+    if (key.includes("/issues/50")) {
+      throw new Error("HTTP 502 Bad Gateway");
+    }
+    return await base(args);
+  };
+
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: createMilestoneBranchName(title),
+    ghCommandFn: ghFn,
+    log: () => {},
+  });
+
+  assertEquals(result.result, AutoMergeResult.BlockedOpenChildren);
+  assertEquals(state.posted.length, 1);
+  const body = state.posted[0]!;
+  assertEquals(body.includes("#53"), false, body);
+  assertEquals(/Issue #\d/.test(body), false, body);
+  assertStringIncludes(body, "the declared dependencies");
+  assertStringIncludes(body, "https://github.com/owner/repo/milestone/53");
+  assertStringIncludes(body, "`Q3 'rollout'`");
+  // Positive control: the target-repo dependency number is not rewritten.
+  assertStringIncludes(body, "#50");
+});
+
 Deno.test("pr_auto_merge - an ordinary fix PR is unaffected by the milestone gate", async () => {
   const calls: string[][] = [];
   const result = await enableAutoMerge({
@@ -1662,6 +1736,65 @@ Deno.test("pr_auto_merge - a behind base with no required checks is held, not ar
     false,
     "the #2457 reporting adds nothing to the one sync-reason comment",
   );
+});
+
+// Posted in the target repo, which autolinks a bare `#N` to its own issue or PR.
+Deno.test("pr_auto_merge - the armed in-cycle sync reason has no bare #N in the posted body (Issue #4081)", async () => {
+  resetBehindSyncComments();
+  _resetBaseProtectionMemo();
+  const comments: string[] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 43,
+    headRefName: "issue-43-child",
+    baseRefName: "milestone/1730-sync",
+    isBaseProtectedFn: async () => true,
+    decideMilestoneBaseFn: () => Promise.resolve(BEHIND_ONCE),
+    syncBehindMilestone: () =>
+      Promise.resolve({
+        status: "deferred" as const,
+        detail: "unresolved conflict on src/foo.ts",
+      }),
+    commentFn: async (_r, _n, body) => {
+      comments.push(body);
+    },
+    ghCommandFn: async () => "",
+  });
+  assertEquals(result.result, AutoMergeResult.Enabled);
+  assertEquals(comments.length, 1);
+  assertStringIncludes(comments[0]!, "Auto-merge is armed anyway");
+  assertEquals(comments[0]!.match(/#\d+/g), null, comments[0]);
+  assertEquals(comments[0]!.includes("Issue #"), false, comments[0]);
+});
+
+// Posted in the target repo, which autolinks a bare `#N` to its own issue or PR.
+Deno.test("pr_auto_merge - the unarmed in-cycle sync reason has no bare #N in the posted body (Issue #4081)", async () => {
+  resetBehindSyncComments();
+  _resetBaseProtectionMemo();
+  const comments: string[] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 44,
+    headRefName: "issue-44-child",
+    baseRefName: "milestone/1730-sync",
+    isBaseProtectedFn: async () => false,
+    decideMilestoneBaseFn: () => Promise.resolve(BEHIND_ONCE),
+    syncBehindMilestone: () =>
+      Promise.resolve({
+        status: "deferred" as const,
+        detail: "unresolved conflict on src/foo.ts",
+      }),
+    directMergeFn: async () => ({ ok: true as const, value: { merged: true } }),
+    commentFn: async (_r, _n, body) => {
+      comments.push(body);
+    },
+    ghCommandFn: async () => "",
+  });
+  assertEquals(result.result, AutoMergeResult.Deferred);
+  assertEquals(comments.length, 1);
+  assertStringIncludes(comments[0]!, "Auto-merge is not armed");
+  assertEquals(comments[0]!.match(/#\d+/g), null, comments[0]);
+  assertEquals(comments[0]!.includes("Issue #"), false, comments[0]);
 });
 
 Deno.test("pr_auto_merge - a failed in-cycle sync comments once per PR per cycle (Issue #2005)", async () => {
