@@ -399,7 +399,8 @@ export interface ClaudeDeps {
    */
   rtkProviderId: typeof rtkProviderId;
   /**
-   * Compact a resumed stream's conversation before the run (Issue #2337).
+   * Compact a resumed stream's conversation before the run (Issue #2337);
+   * `true` means the run must start a new session instead (Issue #4116).
    *
    * A seam (Issue #2642) because the production path spawns the real agent
    * CLI for a `/compact` turn and walks its transcript tree. A mocked test
@@ -1316,8 +1317,9 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     rtkProviderId: mockFn<ClaudeDeps["rtkProviderId"]>(rtkProviderId),
     // Nothing to compact by default (Issue #2642): the real one spawns the
     // agent CLI, so a mocked test that resumed a stream ran `claude` for real.
+    // `false` keeps the resumed session (Issue #4116).
     primeStreamCompaction: mockFn<ClaudeDeps["primeStreamCompaction"]>(() =>
-      Promise.resolve(undefined)
+      Promise.resolve(false)
     ),
     runHealthCheck: mockFn<ClaudeDeps["runHealthCheck"]>(() =>
       Promise.resolve({ healthy: true, exitCode: 0, message: "OK" })
