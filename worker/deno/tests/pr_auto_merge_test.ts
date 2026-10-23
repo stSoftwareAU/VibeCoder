@@ -757,6 +757,45 @@ Deno.test("pr_auto_merge - an unreadable open-children reason has no bare #N and
   assertStringIncludes(body, "`Q3 'rollout'`");
 });
 
+// A detail without the `milestone #N` phrase is posted verbatim.
+Deno.test("pr_auto_merge - an unreadable open-PRs read posts its detail verbatim, as it has no milestone #N phrase (Issue #4081)", async () => {
+  resetOpenChildrenLookupComments();
+  const state: GateStubState = {
+    openChildren: [],
+    comments: [],
+    merges: 0,
+    posted: [],
+  };
+  const base = createGateStub(state);
+  const title = "Q3 rollout";
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/milestones?state=open")) {
+      return JSON.stringify([{ number: 53, title }]);
+    }
+    if (key.includes("pr list") && key.includes("--base")) {
+      throw new Error("HTTP 502 Bad Gateway");
+    }
+    return await base(args);
+  };
+
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: GATE_PR,
+    headRefName: createMilestoneBranchName(title),
+    ghCommandFn: ghFn,
+    log: () => {},
+  });
+
+  assertEquals(result.result, AutoMergeResult.BlockedOpenChildren);
+  assertEquals(state.posted.length, 1);
+  const body = state.posted[0]!;
+  // The detail names the branch, not `milestone #53`, so it is left as written.
+  assertStringIncludes(body, "Failed to read open PRs targeting milestone/");
+  assertStringIncludes(body, "in owner/repo: HTTP 502 Bad Gateway");
+  assertEquals(body.includes("this milestone"), false, body);
+});
+
 // Posted in the target repo, which autolinks a bare `#N` to its own issue or PR.
 Deno.test("pr_auto_merge - an unreadable declared-dependencies reason has no bare #N and links the milestone (Issue #4081)", async () => {
   resetOpenChildrenLookupComments();
