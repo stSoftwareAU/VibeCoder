@@ -36,14 +36,14 @@ the rest). The `notChecked` list returned to callers is unchanged.
 
 ## Test Plan
 
-Run from `worker/deno`: `deno test -A tests/summary_claim_check_test.ts` — 75 passed, 0 failed.
+Run from `worker/deno`: `deno test -A tests/summary_claim_check_test.ts` — 76 passed, 0 failed.
 
 - Removed from `worker/deno/tests/summary_claim_check_test.ts`: `assert(logger.errors.some((e) => e.includes("well-formed base ref")));`
   Required by: "It no longer logs one ERROR per range"
   Replaced by: `assert(logger.warns.some((e) => e.includes("well-formed base ref")));`
 - Removed from `worker/deno/tests/summary_claim_check_test.ts`: `assert( logger.errors.some((e) => e.includes("changed files could not be listed")), );`
   Required by: "any that continue the run move to WARNING too"
-  Replaced by: `logger.warns.some((e) => e.includes("changed files could not be listed")),`
+  Replaced by: `assert( logger.warns.some((e) => e.includes("changed files could not be listed")), );`
 
 Both removed assertions pinned the old ERROR level for a degradation that
 continues the run; the issue makes that level untrue, and the same fragments
@@ -52,6 +52,12 @@ are asserted at WARNING instead.
 **Docs sweep** — grep: `error level`, `logs these at error`, `summary_claim_check`; section: `docs/workflows/issue-processing.md` (the claim-check section: base-ref logging and the not-checked paragraph); siblings: the other `error level` hits (pre-PR verifier hold post, standing-violation fail-closed) belong to other features and stay true; updated: `docs/workflows/issue-processing.md`
 
 <!-- vibe-branch-outcomes -->
+
+**Branch outcomes:**
+- `worker/deno/lib/summary_claim_check.ts:851` — present (cap overflow, `scope.notChecked` non-empty: one aggregated warning with `notCheckedCount`) — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - a 20-file-cap overflow logs one warning, not one error per file (#4118)` — flipped to never-true, test went red
+- `worker/deno/lib/summary_claim_check.ts:851` — absent (no overflow, `scope.notChecked` empty: no warning logged) — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - no overflow logs no cap warning at all (#4118)` — flipped to always-true, test went red
+- `worker/deno/lib/summary_claim_check.ts:854` — more than three not checked (`; and N more` suffix) — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - cap overflow warning carries repo, issue, the count and 'and N more' (#4118)` — flipped to never-more, test went red
+- `worker/deno/lib/summary_claim_check.ts:854` — three or fewer not checked (no suffix) — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - a small overflow warning lists every name with no 'and N more' (#4118)` — flipped to always-more, test went red
 
 ## Mutation check
 

@@ -1846,3 +1846,19 @@ Deno.test("runSummaryClaimCheck - a small overflow warning lists every name with
     assertFalse(capWarns[0]!.includes("; and "));
   });
 });
+
+Deno.test("runSummaryClaimCheck - no overflow logs no cap warning at all (#4118)", async () => {
+  const names = Array.from({ length: 3 }, (_, i) => `docs/m${i}.md`);
+  const files: Record<string, string> = {};
+  for (const n of names) files[n] = "# Doc\n";
+  await withDocRepo(files, async (dir) => {
+    const logger = makeLogger();
+    await runSummaryClaimCheck(docInput(dir, names), {
+      runGit: okGit(""),
+      askQuestion: async () => okResult("no findings"),
+      logger,
+    });
+    assertEquals(logger.warns.filter((w) => w.includes("range(s)")), []);
+    assertEquals(logger.errors, []);
+  });
+});
