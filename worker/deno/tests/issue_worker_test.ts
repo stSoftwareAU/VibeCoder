@@ -4618,7 +4618,19 @@ Deno.test("workOnIssue reconciles terminal failure before heartbeat publication 
           variant,
       );
       assert(result);
-      assertEquals(executions, variant === "closed" ? 0 : 1, variant);
+      // A non-zero exit that committed nothing is a crashed run, retried
+      // once in-process on a fresh session (Issue #4116). Change detection
+      // reads tracked changes and commits, so the dirty variant's untracked
+      // file does not count.
+      assertEquals(
+        executions,
+        variant === "closed"
+          ? 0
+          : variant === "success" || variant === "preexisting"
+          ? 1
+          : 2,
+        variant,
+      );
       assertEquals(
         result.success,
         variant === "closed" || variant === "success",
