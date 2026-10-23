@@ -283,6 +283,27 @@ Deno.test("redactSecrets - equals separators after an AWS key stay intact (Issue
   }
 });
 
+Deno.test("redactSecrets - punctuation-only lines after an AWS key stay intact (Issue #4103)", () => {
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  const lines = [
+    `+${"=".repeat(40)}`,
+    `//${"=".repeat(40)}`,
+    "/".repeat(40),
+    "+".repeat(40),
+  ];
+  for (const line of lines) {
+    assertEquals(
+      redactSecrets(`${id}\n${line}`),
+      `${REDACTION_PLACEHOLDER}\n${line}`,
+    );
+  }
+  // Positive control: a 40-character candidate with alphanumerics is masked.
+  assertEquals(
+    redactSecrets(`${id}\n+${"=".repeat(20)}${"a".repeat(19)}`),
+    `${REDACTION_PLACEHOLDER}\n${REDACTION_PLACEHOLDER}`,
+  );
+});
+
 Deno.test("redactSecrets - a git SHA with a run character after it beside an AWS key is left alone (Issue #4103)", () => {
   // `/` extends the alphabet run, so the trailing guard rejects a SHA with a
   // slash after it.

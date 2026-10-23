@@ -476,11 +476,13 @@ const RULES: readonly RedactionRule[] = [
   // characters but not word characters, so a secret starting or ending in one
   // was left verbatim. Lookarounds over the secret alphabet replace `\b`. The
   // context class omits `=` to preserve `id=secret` and `secret=…`. The
-  // old `\b` fired beside `=` only next to a word character. A separate
-  // guard rejects a leading `=`, so separator lines after an id are not
-  // mistaken for secrets. Every lookaround is constant width (the Issue
-  // #3942 linearity rule), and the escape alternative stays because the escape
-  // letter is itself an alphabet character.
+  // old `\b` fired beside `=` only next to a word character. Two guards
+  // keep separator lines after an id from being mistaken for secrets: one
+  // rejects a leading `=`, the other a candidate made only of `/`, `+` and `=`
+  // (a `+====+` border, a `//====` banner, a run of 40 `/`). Real secrets
+  // always contain an alphanumeric. Every lookaround is constant width (the
+  // Issue #3942 linearity rule), and the escape alternative stays because the
+  // escape letter is itself an alphabet character.
   //
   // `_` is in both context classes because `\b` treated it as a word
   // character, so a secret glued to `_` stays unmasked as it did for letters
@@ -490,7 +492,7 @@ const RULES: readonly RedactionRule[] = [
   {
     name: "aws-secret-access-key",
     pattern:
-      /((?:AKIA|ASIA)[0-9A-Z]{16}[\s\S]{0,120}?)(?:(?<![A-Za-z0-9/+_])|(?<=\\[nrt]))(?![0-9a-f]{40})(?!=)([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+_])/g,
+      /((?:AKIA|ASIA)[0-9A-Z]{16}[\s\S]{0,120}?)(?:(?<![A-Za-z0-9/+_])|(?<=\\[nrt]))(?![0-9a-f]{40})(?![/+=]{40})(?!=)([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+_])/g,
     replace: (_m, lead: string) => `${lead}${REDACTION_PLACEHOLDER}`,
   },
   // AWS access key id.
