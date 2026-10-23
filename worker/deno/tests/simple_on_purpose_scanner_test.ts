@@ -166,18 +166,85 @@ Deno.test("parse - a complete single-line marker followed by unrelated comment l
   );
 });
 
-Deno.test("parse - a clause-less marker joins an unrelated next line that says upgrade when, so that line's text becomes the clause", () => {
-  // Documented limit: a clause-less marker cannot tell a wrapped continuation
-  // from an unrelated comment, so the next line is joined. Its `upgrade when`
-  // text becomes the clause, and the words before it fold into the ceiling.
+Deno.test("parse - a clause-less marker does not borrow an unrelated next line's upgrade when", () => {
   const text = [
     "// SIMPLE-ON-PURPOSE: a quadratic scan is fine here",
     "// Note: we will upgrade when the corpus grows.",
     "// an unrelated comment line",
   ].join("\n");
   const m = onlyMarker(parseSimpleOnPurposeMarkers("lib/k.ts", text));
-  assertEquals(m.ceiling, "a quadratic scan is fine here Note: we will");
-  assertEquals(m.upgradeWhen, "the corpus grows.");
+  assertEquals(m.ceiling, "a quadratic scan is fine here");
+  assertEquals(m.upgradeWhen, null);
+});
+
+Deno.test("parse - a clause-less marker does not absorb an unrelated comment line with no clause", () => {
+  const text = [
+    "// SIMPLE-ON-PURPOSE: fixed buffer",
+    "// Unrelated note about the buffer.",
+  ].join("\n");
+  const m = onlyMarker(parseSimpleOnPurposeMarkers("lib/m.ts", text));
+  assertEquals(m.ceiling, "fixed buffer");
+  assertEquals(m.upgradeWhen, null);
+});
+
+Deno.test("parse - a clause-less marker joins a next line that starts with upgrade when", () => {
+  const text = [
+    "// SIMPLE-ON-PURPOSE: fixed buffer",
+    "// upgrade when inputs exceed 64 KiB",
+    "const x = 1;",
+  ].join("\n");
+  const m = onlyMarker(parseSimpleOnPurposeMarkers("lib/n.ts", text));
+  assertEquals(m.ceiling, "fixed buffer");
+  assertEquals(m.upgradeWhen, "inputs exceed 64 KiB");
+});
+
+Deno.test("parse - a clause-less marker ending in a hyphen or a comma joins the next line", () => {
+  const text = [
+    "# SIMPLE-ON-PURPOSE: flat keys only -",
+    "# nested maps — upgrade when a repo needs them",
+    "# SIMPLE-ON-PURPOSE: flat keys only,",
+    "# nested maps — upgrade when a repo needs them",
+  ].join("\n");
+  assertEquals(
+    parseSimpleOnPurposeMarkers("lib/p.sh", text).map((
+      m,
+    ) => [m.line, m.ceiling, m.upgradeWhen]),
+    [
+      [1, "flat keys only - nested maps", "a repo needs them"],
+      [3, "flat keys only, nested maps", "a repo needs them"],
+    ],
+  );
+});
+
+Deno.test("parse - a dash-ended marker joins at most five continuation lines, however many follow", () => {
+  const lines = ["// SIMPLE-ON-PURPOSE: head —"];
+  for (let n = 1; n <= 1000; n++) lines.push(`// piece ${n} —`);
+  const m = onlyMarker(
+    parseSimpleOnPurposeMarkers("lib/o.ts", lines.join("\n")),
+  );
+  assertEquals(
+    m.ceiling,
+    "head — piece 1 — piece 2 — piece 3 — piece 4 — piece 5",
+  );
+  assertEquals(m.upgradeWhen, null);
+});
+
+Deno.test("parse - the real test-floci.sh marker keeps its own clause and does not borrow the awk comment lines", () => {
+  // Copied verbatim from infra/cloudformation/test-floci.sh lines 117-121.
+  const text = [
+    "# --- Per-template helpers ----------------------------------------------------",
+    "# SIMPLE-ON-PURPOSE: 2-space names, 4-space keys, single-line Type — upgrade when a template uses flow-style, anchors, multi-line or tab-indented parameters",
+    "# The awk below walks only the Parameters: block of the template.",
+    '# Prints "<Name><TAB><Type>" for each SSM-typed parameter.',
+    "ssm_parameters() {",
+  ].join("\n");
+  const m = onlyMarker(parseSimpleOnPurposeMarkers("infra/cloudformation/test-floci.sh", text));
+  assertEquals(m.line, 2);
+  assertEquals(m.ceiling, "2-space names, 4-space keys, single-line Type");
+  assertEquals(
+    m.upgradeWhen,
+    "a template uses flow-style, anchors, multi-line or tab-indented parameters",
+  );
 });
 
 Deno.test("parse - a wrapped marker with an empty upgrade when still joins the next line, then stops", () => {
@@ -239,6 +306,16 @@ Deno.test("scan - a markdown file is not scanned, so its prose marker is not cou
   assert(result.ok);
   assertEquals(reads, ["/repo/lib/a.ts"]);
   assertEquals(result.value.markers.map((m) => m.path), ["lib/a.ts"]);
+});
+
+Deno.test("scan - an HTML comment marker in a non-Markdown file is listed, the same marker in Markdown is not", async () => {
+  const marker = "<!-- SIMPLE-ON-PURPOSE: x — upgrade when y -->\n";
+  const result = await scanFiles({
+    "docs/page.html": marker,
+    "docs/page.md": marker,
+  });
+  assert(result.ok);
+  assertEquals(result.value.markers.map((m) => m.path), ["docs/page.html"]);
 });
 
 Deno.test("scan - binary and oversized text is skipped, not failed", async () => {

@@ -52,12 +52,22 @@ flowchart LR
   the condition that should prompt the upgrade.
 - **Dash** — the em dash shown above is the house style between the two parts.
 
-A marker may wrap. When the marker's line is followed by further comment lines
-that open the same way (`//` after `//`, `#` after `#`), the scanner joins them
-into one marker and reports the first line. A marker whose `upgrade when` clause
-is missing from its own line has the following same-opener comment lines joined
-into it, up to the line that completes the clause; a marker that already carries
-`upgrade when <condition>` on its own line is not extended.
+A marker may wrap onto the comment lines that follow it, when those lines open
+the same way (`//` after `//`, `#` after `#`; a `/*` marker continues on `*`
+lines, and a `*/` line is never joined). The scanner joins at most five such
+lines (`MAX_CONTINUATION_LINES`) and reports the marker's first line. It joins
+the next line one at a time, and only while the join rule holds:
+
+- **Empty condition.** The text so far has an `upgrade when` clause with an
+  empty condition; the next line supplies the condition.
+- **No clause yet.** The text so far has no `upgrade when` clause, and either it
+  ends in a dash (`—`, `–` or `-`) or a comma, or the next line starts with
+  `upgrade when`.
+
+Otherwise the join stops. A closing `-->` or `*/` is removed before the dash and
+comma check, so a single-line HTML or block comment that ends in a dash does not
+join the comment line after it. A marker that already carries
+`upgrade when <condition>` on its own line is never extended.
 
 ## What the scanner counts
 

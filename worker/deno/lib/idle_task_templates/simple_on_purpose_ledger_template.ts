@@ -2,7 +2,8 @@
  * SIMPLE-ON-PURPOSE ledger idle-task template (Issue #4027, group B).
  *
  * Per monitored repository, lists every `SIMPLE-ON-PURPOSE:` marker the
- * deterministic, network-free `simple_on_purpose_scanner.ts` finds, flags each
+ * deterministic, network-free `simple_on_purpose_scanner.ts` finds in the
+ * tracked non-Markdown text files, flags each
  * marker that carries no `upgrade when` clause, and posts or refreshes ONE
  * report issue under the fixed finding id
  * {@link SIMPLE_ON_PURPOSE_LEDGER_FINDING_ID}. No Claude invocation is
@@ -64,8 +65,8 @@ import type { Result } from "../../types.ts";
 const NAME = "simple-on-purpose-ledger";
 
 const DESCRIPTION =
-  "List every SIMPLE-ON-PURPOSE marker in the repository with its ceiling and " +
-  "upgrade condition, flag markers missing an upgrade-when clause, and post " +
+  "List every SIMPLE-ON-PURPOSE marker in the tracked non-Markdown text files " +
+  "with its ceiling and upgrade condition, flag markers missing an upgrade-when clause, and post " +
   "or refresh one report issue. Report-only — never edits a file.";
 
 /** Label every SIMPLE-ON-PURPOSE report (and wrapper) carries. */

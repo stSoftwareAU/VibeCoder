@@ -1,10 +1,11 @@
 /**
  * Report-only ledger of `SIMPLE-ON-PURPOSE` markers (Issue #4027).
  *
- * Lists every marker in the tracked files for review. Deterministic and native
- * (no LLM, network or script execution). Fail-loud: a failed list or read
- * returns `ok: false`. Markdown, binary and oversized (over 1 MiB) files are
- * skipped; non-regular entries (submodule gitlinks, symlinks) are not read.
+ * Lists every marker in the tracked non-Markdown text files for review.
+ * Deterministic and native (no LLM, network or script execution). Fail-loud: a
+ * failed list or read returns `ok: false`. Markdown files, binary files (those
+ * holding a NUL byte) and oversized (over 1 MiB) files are skipped; non-regular
+ * entries (submodule gitlinks, symlinks) are not read.
  */
 
 import { runGitCommand } from "./git_timeout.ts";
@@ -59,6 +60,9 @@ const UPGRADE_CLAUSE = /upgrade when\b/i;
 /** Files larger than this are skipped rather than scanned. */
 const MAX_SCAN_BYTES = 1024 * 1024;
 
+/** Most same-opener comment lines one marker may join. */
+const MAX_CONTINUATION_LINES = 5;
+
 /** Longest cell rendered in the report before it is truncated. */
 const CELL_LIMIT = 300;
 
@@ -111,6 +115,21 @@ function trimCeiling(text: string): string {
   return text.slice(0, end);
 }
 
+/**
+ * The condition after `upgrade when`, or `null` when it is empty. The clause
+ * is matched in `body`, which must already have its closer stripped.
+ */
+function clauseCondition(
+  body: string,
+  clause: RegExpExecArray,
+): string | null {
+  let condition = body.slice(clause.index + clause[0].length).trim();
+  if (condition.startsWith(":") || condition.startsWith(",")) {
+    condition = condition.slice(1).trim();
+  }
+  return condition === "" ? null : condition;
+}
+
 /** Splits a joined marker body at the upgrade clause. */
 function toMarker(
   path: string,
@@ -122,48 +141,34 @@ function toMarker(
   if (clause === null) {
     return { path, line, ceiling: trimCeiling(body), upgradeWhen: null };
   }
-  let condition = body.slice(clause.index + clause[0].length).trim();
-  if (condition.startsWith(":") || condition.startsWith(",")) {
-    condition = condition.slice(1).trim();
-  }
   return {
     path,
     line,
     ceiling: trimCeiling(body.slice(0, clause.index)),
-    upgradeWhen: condition === "" ? null : condition,
+    upgradeWhen: clauseCondition(body, clause),
   };
 }
 
 /**
- * Joins the marker body with the fewest continuation pieces that complete its
- * `upgrade when` clause, or with all of them when none does. A complete clause
- * stays complete as pieces are appended, so the first complete prefix is found
- * by binary search. Re-parsing per line instead would be quadratic on a long
- * run of unrelated comment lines.
+ * Whether the next continuation line joins a marker whose body so far is
+ * `body`. Joins when the `upgrade when` clause has an empty condition, or when
+ * there is no clause and the body ends in a dash or comma (after any closer is
+ * stripped) or the next line starts with `upgrade when`. Otherwise stops.
  */
-function joinContinuation(
-  path: string,
-  line: number,
-  body: string,
-  pieces: string[],
-): SimpleOnPurposeMarker {
-  const prefix = (n: number) => [body, ...pieces.slice(0, n)].join(" ");
-  const complete = (n: number) =>
-    toMarker(path, line, prefix(n)).upgradeWhen !== null;
-  if (!complete(pieces.length)) {
-    return toMarker(path, line, prefix(pieces.length));
-  }
-  let lo = 0;
-  let hi = pieces.length;
-  while (lo < hi) {
-    const mid = Math.floor((lo + hi) / 2);
-    if (complete(mid)) hi = mid;
-    else lo = mid + 1;
-  }
-  return toMarker(path, line, prefix(lo));
+function joinsNext(body: string, next: string): boolean {
+  const text = stripCloser(body.trim());
+  const clause = UPGRADE_CLAUSE.exec(text);
+  if (clause !== null) return clauseCondition(text, clause) === null;
+  const last = text.slice(-1);
+  const endsOpen = last !== "" && (DASHES.includes(last) || last === ",");
+  return endsOpen || /^upgrade when\b/i.test(next);
 }
 
-/** Every marker in one file's text, in line order; wrapped lines are joined. */
+/**
+ * Every marker in one file's text, in line order. A marker may join up to
+ * `MAX_CONTINUATION_LINES` following same-opener comment lines, one at a time,
+ * under the rule in `joinsNext`; the marker reports its first line.
+ */
 export function parseSimpleOnPurposeMarkers(
   path: string,
   text: string,
@@ -173,13 +178,19 @@ export function parseSimpleOnPurposeMarkers(
   for (const [i, line] of lines.entries()) {
     const found = markerLine(line);
     if (found === null) continue;
-    const pieces: string[] = [];
-    for (let j = i + 1; j < lines.length; j++) {
+    let body = found.body;
+    let joined = 0;
+    for (
+      let j = i + 1;
+      j < lines.length && joined < MAX_CONTINUATION_LINES;
+      j++
+    ) {
       const more = continuationText(lines[j] ?? "", found.opener);
-      if (more === null) break;
-      pieces.push(more);
+      if (more === null || !joinsNext(body, more)) break;
+      body = `${body} ${more}`;
+      joined++;
     }
-    markers.push(joinContinuation(path, i + 1, found.body, pieces));
+    markers.push(toMarker(path, i + 1, body));
   }
   return markers;
 }
@@ -208,7 +219,10 @@ async function readScannableFile(absPath: string): Promise<string> {
   return new TextDecoder().decode(bytes);
 }
 
-/** Collects every marker in the tracked text files; Markdown is not scanned. */
+/**
+ * Collects every marker in the tracked non-Markdown text files. Markdown files
+ * are skipped, so a `SIMPLE-ON-PURPOSE:` marker in a `.md` file is not listed.
+ */
 export async function scanSimpleOnPurpose(
   opts: ScanSimpleOnPurposeOptions,
 ): Promise<SimpleOnPurposeScanResult> {
@@ -279,7 +293,7 @@ export function renderSimpleOnPurposeReport(
   const lines: string[] = [
     "# SIMPLE-ON-PURPOSE ledger",
     "",
-    "This is a report-only ledger of every `SIMPLE-ON-PURPOSE` marker in the repository. It lists the known limits of deliberately simple code for review; it does not fail a gate or change any file.",
+    "This is a report-only ledger of every `SIMPLE-ON-PURPOSE` marker in the tracked non-Markdown text files. It lists the known limits of deliberately simple code for review; it does not fail a gate or change any file.",
     "",
     `Markers: ${total}. Missing an \`upgrade when\` clause: ${flagged}.`,
   ];

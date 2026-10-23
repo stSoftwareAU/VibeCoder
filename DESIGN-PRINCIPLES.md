@@ -2716,8 +2716,9 @@ and claim handler.
   tool `container/tools.json` already pins for that repository — see
   [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md));
   and `simple_on_purpose_ledger_template.ts` (#20, native report-only ledger
-  that lists every `SIMPLE-ON-PURPOSE` marker in a repository's tracked files
-  (skipping `.md` files, files over 1 MiB, binary files, and symlinks and
+  that lists every `SIMPLE-ON-PURPOSE` marker in a repository's tracked
+  non-Markdown text files (skipping `.md` files, files over 1 MiB, binary files,
+  and symlinks and
   submodule gitlinks; a failed list or read is a scanner error), flags each marker
   with no `upgrade when` clause, and posts or refreshes one report issue per
   repository; it never edits, commits or opens a pull request — see
