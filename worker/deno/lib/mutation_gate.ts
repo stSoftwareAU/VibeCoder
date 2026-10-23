@@ -882,9 +882,8 @@ export function maskedLines(source: string): string[] | null {
     if (c === "{") {
       braces++;
     } else if (c === "}") {
-      if (
-        exprDepths.length > 0 && exprDepths[exprDepths.length - 1] === braces
-      ) {
+      // An empty stack reads `undefined`, which never equals a brace depth.
+      if (exprDepths[exprDepths.length - 1] === braces) {
         exprDepths.pop();
         mode = "tpl";
         buf.push(" ");
@@ -967,7 +966,7 @@ function operandCandidates(
       // An assignment or arrow (`=`, `+=`, `=>`, `||=`) is not a plain chain.
       if (ch === "=") {
         const pv = m.charAt(i - 1);
-        if (nx === ">" || (nx !== "=" && !"=!<>".includes(pv))) return out;
+        if (nx !== "=" && !"=!<>".includes(pv)) return out;
       }
     }
   }
@@ -980,8 +979,7 @@ function operandCandidates(
     } else if (ch === ")" || ch === "]" || ch === "}") {
       depth--;
     } else if (
-      (ch === "|" || ch === "&") && m.charAt(i + 1) === ch &&
-      m.charAt(i + 2) !== "="
+      (ch === "|" || ch === "&") && m.charAt(i + 1) === ch
     ) {
       splits.push({ at: i, op: ch === "|" ? "||" : "&&", depth });
       i++;
@@ -1008,14 +1006,12 @@ function operandCandidates(
   }
   segments.push([from, end]);
   for (const [a, b] of segments) {
-    let s = a;
-    let e = b;
-    while (s < e && /\s/.test(line.charAt(s))) s++;
-    while (e > s && /\s/.test(line.charAt(e - 1))) e--;
-    if (s === e) continue;
-    const text = line.slice(s, e);
-    // Only strings, templates or regexes: no plain operand to replace.
+    const raw = line.slice(a, b);
+    const s = a + raw.length - raw.trimStart().length;
+    const e = b - (raw.length - raw.trimEnd().length);
+    // Blank, or only strings, templates or regexes: no plain operand to replace.
     if (m.slice(s, e).trim() === "") continue;
+    const text = line.slice(s, e);
     const shown = (text.length > OPERAND_TEXT_MAX
       ? `${text.slice(0, OPERAND_TEXT_MAX - 3)}...`
       : text).replaceAll("`", "'");

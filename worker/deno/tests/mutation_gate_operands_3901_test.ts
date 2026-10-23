@@ -12,6 +12,7 @@ import {
   DEFAULT_MUTANT_CAP,
   generateDenoMutants,
   generateDenoMutantsDetailed,
+  maskedLines,
 } from "../lib/mutation_gate.ts";
 
 const FILE = "lib/sample.ts";
@@ -361,4 +362,215 @@ Deno.test("generateDenoMutants - an open template literal at end of file disable
     mutants.filter((m) => m.description === "negated if condition").length,
     1,
   );
+});
+
+// ---------------------------------------------------------------------------
+// maskedLines: the masked text of each literal and comment kind, exactly
+// ---------------------------------------------------------------------------
+
+/** `maskedLines` with the opaque marker shown as `#`, so expectations read. */
+function masked(source: string): string[] | null {
+  const out = maskedLines(source);
+  return out === null ? null : out.map((l) => l.replaceAll("\u0001", "#"));
+}
+
+Deno.test("maskedLines - a block comment is opaque for its whole length", () => {
+  assertEquals(masked("a /* x */ b || c"), ["a ####### b || c"]);
+});
+
+Deno.test("maskedLines - a block comment spanning lines is opaque on each line", () => {
+  assertEquals(masked("a /* x\n y */ b"), ["a ####", "##### b"]);
+});
+
+Deno.test("maskedLines - a line comment is opaque to the end of the line only", () => {
+  assertEquals(masked("a // c\nb"), ["a ####", "b"]);
+});
+
+Deno.test("maskedLines - a string is blanked, an escaped quote stays inside it", () => {
+  assertEquals(masked('"a\\"b" || c'), ["       || c"]);
+});
+
+Deno.test("maskedLines - a string closes at its own quote and code resumes", () => {
+  assertEquals(masked("'a' || \"b\" && c"), ["    ||     && c"]);
+});
+
+Deno.test("maskedLines - a template expression is opaque and the template resumes after it", () => {
+  assertEquals(masked("`a${b}c` d"), ["    #    d"]);
+});
+
+Deno.test("maskedLines - code after a template expression is plain code again", () => {
+  assertEquals(masked("`${a}` + b"), ["   #   + b"]);
+});
+
+Deno.test("maskedLines - braces nested inside a template expression do not end it early", () => {
+  assertEquals(masked("`a${ {x: 1} }c` + e || f"), [
+    "    ########    + e || f",
+  ]);
+});
+
+Deno.test("maskedLines - braces in code are counted so a template expression closes at its own brace", () => {
+  assertEquals(masked("{ { x } `${y}` } || z"), ["{ { x }    #   } || z"]);
+});
+
+Deno.test("maskedLines - a stray closing brace does not unbalance a later template expression", () => {
+  assertEquals(masked("} `${y}` || z"), ["}    #   || z"]);
+});
+
+Deno.test("maskedLines - a slash inside a regex character class does not end the regex", () => {
+  assertEquals(masked("x = /[/]/ || b"), ["x =       || b"]);
+});
+
+Deno.test("maskedLines - a regex ends at its closing slash after a character class", () => {
+  assertEquals(masked("x = /[a]/.test(y) || b"), ["x =      .test(y) || b"]);
+});
+
+Deno.test("maskedLines - a regex starts with a fresh character class state", () => {
+  assertEquals(masked("x = /[abc\ny = /a/ || b"), [
+    "x =      ",
+    "y =     || b",
+  ]);
+});
+
+Deno.test("maskedLines - a plain slash after an operand is division, not a regex", () => {
+  assertEquals(masked("a / b || c"), ["a / b || c"]);
+});
+
+Deno.test("maskedLines - null when a template literal is left open", () => {
+  assertEquals(maskedLines("`open\nx"), null);
+});
+
+Deno.test("maskedLines - null when a block comment is left open", () => {
+  assertEquals(maskedLines("/* open\nx"), null);
+});
+
+Deno.test("maskedLines - an unterminated string ends at the line break", () => {
+  assertEquals(masked("x = 'abc\ny || z"), ["x =     ", "y || z"]);
+});
+
+Deno.test("maskedLines - a star or slash alone inside a block comment does not end it", () => {
+  assertEquals(masked("/* a * b / c */ d"), ["############### d"]);
+});
+
+Deno.test("maskedLines - a star after an operand is multiplication, not a comment", () => {
+  assertEquals(masked("a * b || c"), ["a * b || c"]);
+});
+
+Deno.test("maskedLines - a backslash ending a line in a string does not swallow the line break", () => {
+  assertEquals(masked('"ab\\\n cd" || x'), ["    ", " cd      "]);
+});
+
+Deno.test("maskedLines - a backslash ending the source keeps the length", () => {
+  assertEquals(masked('"ab\\'), ["    "]);
+});
+
+Deno.test("maskedLines - a lone dollar or brace in a template is not an expression", () => {
+  assertEquals(masked("`a$b` || c"), ["      || c"]);
+  assertEquals(masked("`a{b}` || c"), ["       || c"]);
+});
+
+// ---------------------------------------------------------------------------
+// Chain boundaries: where the operand region ends and which operator splits it
+// ---------------------------------------------------------------------------
+
+/** The shown operands of the operand mutants, in order. */
+function shown(source: string, addedLines: number[]): string[] {
+  return operandMutants(source, addedLines).map((m) =>
+    m.description.replace(
+      /^dropped operand `(.*)` \(replaced with \w+\)$/,
+      "$1",
+    )
+  );
+}
+
+Deno.test("operand region - an array literal's comma and bracket stay inside an operand", () => {
+  assertEquals(shown("const x = a || [b, c].length;\n", [1]), [
+    "a",
+    "[b, c].length",
+  ]);
+});
+
+Deno.test("operand region - an object literal's colon and brace stay inside an operand", () => {
+  assertEquals(shown("const x = a || { b: 1 }.c;\n", [1]), [
+    "a",
+    "{ b: 1 }.c",
+  ]);
+});
+
+Deno.test("operand region - a call argument line ends at its trailing comma", () => {
+  assertEquals(shown("foo(\n  a || b,\n  c,\n);\n", [2]), ["a", "b"]);
+});
+
+Deno.test("operand region - a property line ends at its colon and has no chain", () => {
+  assertEquals(shown("const o = {\n  key: a || b,\n};\n", [2]), []);
+});
+
+Deno.test("operand region - a ternary ends at its question mark", () => {
+  assertEquals(shown("const x = a || b ? c : d;\n", [1]), ["a", "b"]);
+});
+
+Deno.test("operand region - ?? and ?. are not ternary question marks", () => {
+  assertEquals(shown("const x = a ?? b || c;\n", [1]), ["a ?? b", "c"]);
+  assertEquals(shown("const x = a?.b || c;\n", [1]), ["a?.b", "c"]);
+});
+
+Deno.test("operand region - a compound assignment is not a chain", () => {
+  assertEquals(shown("x += a || b;\n", [1]), []);
+});
+
+Deno.test("operand region - a comparison is part of an operand", () => {
+  assertEquals(shown("if (a >= 1 || b <= 2 || c != 3) {\n}\n", [1]), [
+    "a >= 1",
+    "b <= 2",
+    "c != 3",
+  ]);
+});
+
+Deno.test("chain operator - a bracketed || does not split an && chain", () => {
+  assertEquals(shown("return a && [b || c].length;\n", [1]), [
+    "a",
+    "[b || c].length",
+  ]);
+  assertEquals(shown("return [b || c].length && d;\n", [1]), [
+    "[b || c].length",
+    "d",
+  ]);
+});
+
+Deno.test("chain operator - a braced || does not split an && chain", () => {
+  assertEquals(shown("return a && { b: c || d }.e;\n", [1]), [
+    "a",
+    "{ b: c || d }.e",
+  ]);
+  assertEquals(shown("return { b: c || d }.e && f;\n", [1]), [
+    "{ b: c || d }.e",
+    "f",
+  ]);
+});
+
+Deno.test("chain operator - a single & or | is not a chain operator", () => {
+  assertEquals(shown("return a & b && c;\n", [1]), ["a & b", "c"]);
+  assertEquals(shown("return a | b || c;\n", [1]), ["a | b", "c"]);
+});
+
+Deno.test("chain operator - a string operand alone gets no mutant but its sibling does", () => {
+  assertEquals(shown('return "x" || b;\n', [1]), ["b"]);
+});
+
+Deno.test("chain operator - a trailing operator leaves no blank operand", () => {
+  assertEquals(shown("if (\n  a ||\n  b ||\n) {\n}\n", [2]), ["a"]);
+});
+
+Deno.test("operand region - == and === are comparisons, not assignments", () => {
+  assertEquals(shown("if (a === 1 || b == 2) {\n}\n", [1]), [
+    "a === 1",
+    "b == 2",
+  ]);
+});
+
+Deno.test("chain operator - a parenthesised || does not split an && chain", () => {
+  assertEquals(shown("return a && (b || c) && d;\n", [1]), [
+    "a",
+    "(b || c)",
+    "d",
+  ]);
 });
