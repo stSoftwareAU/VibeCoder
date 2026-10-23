@@ -409,12 +409,19 @@ Deno.test("compactStreamSession - a transcript that cannot be read after /compac
 
 Deno.test("compactStreamSession - a transcript that shrinks while its appended bytes are being read is not claimed as compacted (Issue #4116)", async () => {
   await withTranscript(async (ctx) => {
-    const realOpen = Deno.open;
     const stub = stubRunner(async () => {
       await ctx.append(COMPACT_BOUNDARY_RECORD);
-      // From here on the file reports more appended bytes than it can give.
-      Deno.open = (async (...args: Parameters<typeof Deno.open>) => {
-        const file = await realOpen(...args);
+      return { ok: true, exitCode: 0 };
+    });
+    const result = await compactStreamSession({
+      outcome: "resumed",
+      providerId: "claude",
+      sessionId: SESSION_ID,
+      transcriptRoot: ctx.root,
+      runner: stub.runner,
+      // From the scan onwards the file reports more appended bytes than it can give.
+      openTranscript: async (path, options) => {
+        const file = await Deno.open(path, options);
         return new Proxy(file, {
           get(target, prop) {
             if (prop === "stat") {
@@ -427,31 +434,19 @@ Deno.test("compactStreamSession - a transcript that shrinks while its appended b
             return typeof value === "function" ? value.bind(target) : value;
           },
         });
-      }) as typeof Deno.open;
-      return { ok: true, exitCode: 0 };
+      },
     });
-    try {
-      const result = await compactStreamSession({
-        outcome: "resumed",
-        providerId: "claude",
-        sessionId: SESSION_ID,
-        transcriptRoot: ctx.root,
-        runner: stub.runner,
-      });
-      assertEquals(result.action, "autocompact");
-      assertEquals(result.autocompactTokens, AUTOCOMPACT_WINDOW_TOKENS);
-      assertStringIncludes(
-        String(result.fields.reason),
-        "could not be read after /compact",
-      );
-      assertStringIncludes(
-        String(result.fields.transcriptScanError),
-        "shrank while it was being read",
-      );
-      assertEquals(result.fields.compactBoundaries, undefined);
-    } finally {
-      Deno.open = realOpen;
-    }
+    assertEquals(result.action, "autocompact");
+    assertEquals(result.autocompactTokens, AUTOCOMPACT_WINDOW_TOKENS);
+    assertStringIncludes(
+      String(result.fields.reason),
+      "could not be read after /compact",
+    );
+    assertStringIncludes(
+      String(result.fields.transcriptScanError),
+      "shrank while it was being read",
+    );
+    assertEquals(result.fields.compactBoundaries, undefined);
   });
 });
 

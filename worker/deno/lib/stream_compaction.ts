@@ -140,6 +140,12 @@ export type CompactionRunner = (
   request: CompactionRunRequest,
 ) => Promise<CompactionRunOutcome> | CompactionRunOutcome;
 
+/** Opens a transcript file for the appended-bytes scan; `Deno.open` in production. */
+export type TranscriptOpener = (
+  path: string,
+  options: Deno.OpenOptions,
+) => Promise<Deno.FsFile>;
+
 /** Everything {@link compactStreamSession} needs to decide and act. */
 export interface StreamCompactionOptions {
   /** What joining the stream did — only a `resumed` session has a history. */
@@ -169,6 +175,8 @@ export interface StreamCompactionOptions {
   workDir?: string;
   runner?: CompactionRunner;
   timeoutSeconds?: number;
+  /** Opens the transcript files the appended-bytes scan reads; `Deno.open` when omitted. */
+  openTranscript?: TranscriptOpener;
 }
 
 /** Does this provider expose a compaction lever to the worker? */
@@ -260,13 +268,14 @@ async function snapshotTranscript(
  */
 async function scanAppendedTranscript(
   snapshots: readonly TranscriptSnapshot[],
+  open: TranscriptOpener = (path, options) => Deno.open(path, options),
 ): Promise<AppendedScan | { unreadable: string }> {
   let boundaries = 0;
   let appendedBytes = 0;
   for (const snapshot of snapshots) {
     let file: Deno.FsFile | undefined;
     try {
-      file = await Deno.open(snapshot.path, { read: true });
+      file = await open(snapshot.path, { read: true });
       const info = await file.stat();
       if (info.size < snapshot.size) {
         return {
@@ -473,7 +482,7 @@ export async function compactStreamSession(
 
   // Size is never the verdict: the transcript is append-only, so a successful
   // /compact only shows as a boundary record appended after the offsets.
-  const scan = await scanAppendedTranscript(before);
+  const scan = await scanAppendedTranscript(before, options.openTranscript);
   if ("unreadable" in scan) {
     return autocompactResult({
       ...exitFields,
