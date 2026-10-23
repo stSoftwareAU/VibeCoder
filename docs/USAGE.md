@@ -118,29 +118,9 @@ is adopted (Issue #3804): rebuilt with the worker marker, digest and, when a
 criterion is `missing`, the withheld close (`Part of #N`). The issue run's
 completion phase adopts it at every exit, once the checkout's HEAD is the
 pushed head and the PR is open. A marker-less PR on any other branch is still left alone.
-A re-sync
-re-derives a leading `Degraded run` section from the issue's current body and
-the rebuilt summary
-rather than copying it, keeping only the original run's
-reason and follow-up number (Issue #3350). A leading `Partial delivery —
-follow-up filed` section is re-derived from the same inputs (Issue #3506): it is
-dropped, with no call to the follow-up, when no gap remains; kept as it is when
-the follow-up number cannot be read from its opening line; and, when a gap
-remains and the rebuilt section differs from the live one, rewritten to name the
-same follow-up while saying it was filed when the PR was raised and may not list
-every item. A leading `Partial delivery — handed to a human` section, which a
-healthy run on a partial-delivery follow-up carries instead of filing a nested
-one (PR #3676 review; a degraded run still files one), is rebuilt from the current gaps and dropped when none
-remains.
-Re-deriving a section the body already carries only reads the issue; it never
-edits or files the follow-up. The one case where a sync files or reuses the
-follow-up is a body with no such section whose rebuilt summary newly marks a
-criterion `partial` or `missing` (Issue #3678): the sync re-verifies the
-issue's content, then files or reuses the `idle-task` follow-up and prepends a
-`Partial delivery — follow-up filed` section, or hands a partial-delivery
-follow-up to a human. If the issue cannot be read or verified, or the filing
-fails, the sync fails and leaves the body as it was. See the degraded-run
-section of [issue-processing.md](workflows/issue-processing.md).
+A re-sync never files an issue: a criterion still `partial` or `missing`
+blocks the PR at completion instead (Issue #4146, see
+[issue-processing.md](workflows/issue-processing.md#-no-pr-until-every-acceptance-criterion-is-met)).
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale
@@ -322,27 +302,26 @@ For the full planning workflow, see
 
 ## ⚠️ Failed Issue Handling
 
-The worker uses a **two-attempt strategy** for issues that fail to process.
+An assigned issue is completed, never parked (Issue #4158). A failure is
+recorded on the issue and the worker tries again after a cooldown; it never
+applies `failed` and never hands the issue to a human.
 
 ```mermaid
 flowchart TD
-    A["🔨 Issue Attempt #1"] -->|failure| B["📝 Add comment,\nfailed-once label,\nclean stale branch"]
-    B -->|auto retry| C["🔨 Issue Attempt #2"]
-    C -->|success| D["✅ Issue resolved"]
-    C -->|failure| E["🚫 Add comment,\nfailed label,\nskip future scans"]
+    A["🔨 Issue attempt"] -->|success| D["✅ Issue resolved"]
+    A -->|failure| B["📝 Add comment,\nfailed-once label,\nclean stale branch"]
+    B --> C["⏳ Cooldown\n2 h → 6 h → 24 h"]
+    C -->|auto retry| A
 
     style A fill:#3a86ff,stroke:#023e8a,color:#fff
     style B fill:#ffbe0b,stroke:#e09f00,color:#000
-    style C fill:#3a86ff,stroke:#023e8a,color:#fff
+    style C fill:#8ecae6,stroke:#219ebc,color:#000
     style D fill:#06d6a0,stroke:#05a77d,color:#000
-    style E fill:#ef476f,stroke:#c5233c,color:#fff
 ```
 
-**First failure**: Comment added, `failed-once` label applied, stale remote
-branch deleted, issue unassigned for automatic retry.
-
-**Second failure**: Comment added, `failed` label replaces `failed-once`, issue
-skipped in future scans.
+**Every failure**: Comment added (headed *First Attempt*, then *Repeat
+Attempt*), `failed-once` label kept as the record, stale remote branch deleted,
+issue unassigned for automatic retry once its cooldown ends.
 
 **Which failures count (Issue #1949)**: a terminal coding-run failure the run
 reports enters the ladder unless it is transient infrastructure — a failed
@@ -370,33 +349,23 @@ Three groups are exempt and consume no attempt, keeping the flat retry cooldown:
   claiming it. See [SETUP.md](SETUP.md#the-workflow-scope).
 
 Each ladder failure also steps an escalating re-claim cooldown (2 h → 6 h →
-24 h) so a doomed issue cannot burn consecutive cycles while its attempts play
-out; a third consecutive ladder failure within 48 hours hands the issue to a
-human with `needs-human`.
-
-Infrastructure-category failures that do enter the ladder — a push refusal or a
-zero-output run — keep the bounded
-self-healing retries of Issue #387: they stay at `failed-once` for up to five
-attempts rather than going straight to `failed`, while still serving the
-escalating cooldown.
+24 h), so an issue that keeps failing is retried at most once a day rather than
+every cycle. It stays queued: repeated failures are a Vibe Coder defect to fix,
+not a reason to give the issue back (Issue #4158).
 
 ```mermaid
 flowchart LR
     F["🔨 Terminal run failure"] --> C{"Transient<br/>infrastructure?"}
     C -->|"account state:<br/>rate/usage limit, out of credit,<br/>interrupted, scheduled release,<br/>deadline-bound timeout<br/>host state:<br/>OOM, full disk, crash,<br/>missing tools, external kill<br/>host capability: token lacks<br/>the workflow scope"| T["⏳ Flat retry cooldown,<br/>no attempt consumed"]
-    C -->|"anything else"| L["📝 failed-once → failed<br/>+ 2 h / 6 h / 24 h cooldown"]
+    C -->|"anything else"| L["📝 failed-once record<br/>+ 2 h / 6 h / 24 h cooldown"]
 
     style F fill:#3a86ff,stroke:#023e8a,color:#fff
     style T fill:#8ecae6,stroke:#219ebc,color:#000
     style L fill:#ef476f,stroke:#c5233c,color:#fff
 ```
 
-**To retry a permanently failed issue:**
-
-1. Investigate the failure comments
-2. Address the underlying problem
-3. Remove the `failed` label
-4. The worker will pick it up again with two fresh attempts
+**A leftover `failed` label** (applied before Issue #4158) is stripped on the
+next scan, so the issue is picked up again with no action needed.
 
 **Diagnosing why issues are not being picked up:** Run the `diagnose-repo` Deno
 command to get a detailed report of blocking reasons for each issue in a
@@ -536,7 +505,8 @@ subsequent scan until a human removes the label.
 >> Those labels are controlled by humans (and, for internal state labels, by the
 >> worker's non-Claude code paths). If you see the worker stop retrying an issue
 >> with no `needs-human` label, check `worker.log` in the host log directory — it is probably in
->> cooldown or hit the `failed` threshold, not an escalation.
+>> its failure cooldown, not an escalation. The worker never parks an issue
+>> behind `failed` (Issue #4158).
 
 ## ❓ Question Clarification
 

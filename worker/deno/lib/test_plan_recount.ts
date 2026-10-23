@@ -16,10 +16,11 @@
  *
  * A block with several figures is read one figure at a time (Issue #3740).
  * A whole-file figure such as "`a_test.ts` (8 tests)" is compared with that
- * file. A partial addition ("3 tests added to `a_test.ts`", "+3 tests",
- * "Added to `a_test.ts` (8 tests") is never compared and is reported
- * unchecked, and it does not block the other figures. "now has N" gives a
- * file's whole total and takes precedence over a partial figure for it. A
+ * file. A partial addition ("3 tests added to `a_test.ts`", "Added 3 tests to
+ * `a_test.ts`", "+3 tests", "Added to `a_test.ts` (8 tests") is never compared
+ * and is reported unchecked, and it does not block the other figures (Issue
+ * #3983). "now has N" gives a file's whole total and takes precedence over a
+ * partial figure for it. A
  * figure whose file the PR did not change is unchecked on its own. A count
  * with no file name, in a sentence of its own, is unchecked on its own.
  * Partial markers apply only before their figure, including in a single-figure
@@ -585,6 +586,13 @@ const NOW_HAS_RE = /\bnow\s+has\s*$/i;
 /** A "now has N" total with no "tests" word after it (Issue #3740). */
 const TOTAL_RE = /\bnow\s+has\s+(\d{1,5})\b(?!\s+(?:tests?|passed)\b)/gi;
 const ADDED_TO_FOLLOW_RE = /^\s+(?:tests?\s+)?added\s+to[\s`*_]*$/i;
+/**
+ * An "added" directly before a figure, after optional markdown and whitespace:
+ * "Added 5 tests to `file`", "**Added** 5 tests" (Issue #3983).
+ */
+const ADDED_BEFORE_RE = /\badded[\s`*_]{1,40}$/i;
+/** The "to" between a figure and the file it adds to (Issue #3983). */
+const ADDED_TO_GAP_RE = /^\s+to[\s`*_]*$/i;
 const WHOLE_GAP_RE = /^[`*_\s]*\(\s*$/;
 const PARTIAL_GAP_RE = /^[`*_\s]*(?:\(|with)?[`*_\s]*$/i;
 const MARKER_RE = /\b(?:added|extended)\b/i;
@@ -615,8 +623,9 @@ function scanBlockTokens(
  * Read each figure of a block on its own (Issue #3740). A figure
  * is a whole-file count when only "`file` (" sits between the file name and
  * it, with no "added", "extended" or "+" since the previous claim or file
- * name. "N tests added to `file`", "N to `file`", "+N tests", "Added to `file`
- * (N tests" and "`file` with N tests" are partial. "now has N" is
+ * name. "N tests added to `file`", "Added N tests to `file`", "N to `file`",
+ * "+N tests", "Added to `file` (N tests" and "`file` with N tests" are partial
+ * (Issue #3983). "now has N" is
  * the file's total and takes precedence over a partial figure for it.
  *
  * Two scope rules refine this (Issue #3740). First, "extended" governs every
@@ -679,7 +688,9 @@ function classifyBlockClaims(
     if (
       !isPassed && next !== -1 && tokens[next]!.start - end <= 40 &&
       !claimBetween(end, tokens[next]!.start) &&
-      ADDED_TO_FOLLOW_RE.test(raw.slice(end, tokens[next]!.start))
+      (ADDED_TO_FOLLOW_RE.test(raw.slice(end, tokens[next]!.start)) ||
+        (ADDED_BEFORE_RE.test(before) &&
+          ADDED_TO_GAP_RE.test(raw.slice(end, tokens[next]!.start))))
     ) {
       return { start, end, claimed, role: "partial", owner: next };
     }

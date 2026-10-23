@@ -35,10 +35,14 @@ to complete that issue; nothing more from a person is needed or wanted.
 - **A crash is not an answer.** A run that failed, made no model turn, or
   stopped early is retried on the normal ladder. It is never read as "nothing
   to do".
-- **`failed` is honest, `needs-human` is the last resort.** When automated
-  recovery is genuinely exhausted, the issue is marked `failed` with the
-  evidence, so the failure is visible and countable. It is never relabelled as
-  a hand-off, an analysis, or a partial success.
+- **A failure is recorded, never parked.** Every failed run writes its
+  evidence on the issue and keeps `failed-once`, so the failure is visible and
+  countable. It is never relabelled as a hand-off, an analysis, or a partial
+  success. The worker never applies `failed` and never hands an issue to a
+  human after repeated failures (Issue #4158): the escalating cooldown
+  (2 h → 6 h → 24 h) paces the retries, at most one a day, and the issue stays
+  queued until it is done. An issue stuck in that loop is a Vibe Coder defect
+  to fix, not an issue to give up on.
 
 ### Fully unattended operation and self-healing
 
@@ -608,6 +612,26 @@ no auto-close (multi-account operation retained). The fleet-wide regression
 suite lives in `worker/deno/tests/fleet_duplicate_prevention_test.ts`; see
 [`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md) and
 [`docs/DUPLICATE-PR-ROOT-CAUSE-3138.md`](docs/DUPLICATE-PR-ROOT-CAUSE-3138.md).
+
+### No PR until every acceptance criterion is met
+
+"Partially completed" is never a resolution (Issue #4146). A run whose PR
+summary leaves any criterion `partial`, `missing` or unassessed raises **no
+PR**: the unmet-criteria gate (`worker/deno/lib/unmet_criteria_gate.ts`) sends
+the agent back in the same run to finish the work, round after round while
+each one makes progress, and a run that still cannot finish fails as
+`criteria_unmet` with its branch kept for the next run. No follow-up issue is
+ever filed for the remainder — the issue was approved to be done, and a new
+issue would need a human to read and approve it — and nothing is labelled
+`needs-human`. **Incomplete PRs are drafts**, so CI and code review are not
+spent on them: a PR the agent raised itself with criteria unmet, or a run that
+**times out**, keeps a draft `Part of #N` PR
+(`worker/deno/lib/draft_continuation_pr.ts`) that never holds its issue, so the
+next run resumes the branch and finishes. Only once every criterion is met is
+the draft marked ready with `Closes #N`, and squash auto-merge is armed in the
+same step so it merges as soon as possible. Whether the run was degraded
+changes none of this. See
+[`docs/workflows/issue-processing.md`](docs/workflows/issue-processing.md#-no-pr-until-every-acceptance-criterion-is-met).
 
 ### Fleet-aware PR maintenance (`fleet_pr_authors`)
 
@@ -2824,9 +2848,9 @@ applies `needs-human` + a paired explanation comment and (via
 `stripDiscoveryLabelsOnEscalation`) drops the `work-on` label server-side so the
 issue leaves discovery. A clean hand-off is **not** a `failed` outcome — the task
 did its job. The fallback loop guard for the remaining case (no changes **and**
-no useful output) is the existing `failed-once` → `failed` / `needs-human` ladder
-in [`label_failure.ts`](worker/deno/lib/label_failure.ts), so `work-on` never
-re-runs the same issue indefinitely.
+no useful output) is the `failed-once` record and its escalating cooldown in
+[`label_failure.ts`](worker/deno/lib/label_failure.ts), so `work-on` re-runs
+the same issue at most once a day, and never parks it (Issue #4158).
 
 **Implementation:** [`analysis_only_handoff.ts`](worker/deno/lib/analysis_only_handoff.ts)
 (`hasAnalysisOnlyMarker`, `handOffAnalysisOnly`), wired into

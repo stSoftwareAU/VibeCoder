@@ -254,8 +254,8 @@ VIBE_REPOS="myorg/repo1,myorg/repo2" \
 ./run.sh
 
 # Move this host onto the newest release (setup pins a new host to a release;
-# each launch says when a newer one exists). Rewrites the pins in .config.json
-# and nothing else — the next launch installs exactly them.
+# a frozen host logs a WARNING at each launch when a newer one exists). Rewrites
+# the pins in .config.json and nothing else — the next launch installs exactly them.
 ./run.sh upgrade
 ```
 
@@ -614,7 +614,7 @@ remove them manually to change the workflow.
 | Label                   | Default               | Config Key                  | Description                                                                                                                                 |
 | ----------------------- | --------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Failed once**         | `failed-once`         | `failed_once_label`         | Applied after the first non-transient processing failure — coding, planning and question runs alike (Issue #1949). The issue is unassigned and automatically retried on the next scan. Transient infrastructure consumes no attempt — account state (rate/usage limit, out of credit, interruption, scheduled release, deadline-bound timeout) and host state (OOM, full disk, worker crash, missing tools, external kill). A coding run that dies in the `setup` phase, or on a recognised host fault, is released unlabelled and consumes no attempt either (Issue #2954). |
-| **Failed**              | `failed`              | `failed_label`              | Applied after the second failure (replaces `failed-once`). The issue is permanently skipped. Remove this label to allow two fresh attempts. |
+| **Failed**              | `failed`              | `failed_label`              | Retired (Issue #4158): the worker never applies it, because an assigned issue is never parked. A repeat failure keeps `failed-once` and is retried after the escalating cooldown. A leftover `failed` is stripped on the next scan. |
 | **Needs screenshot**    | `needs-screenshot`    | — (hardwired)               | Applied when a previous attempt lacked screenshot evidence. Injects explicit screenshot instructions into the retry attempt. Hardwired — no config key.                |
 | **Documentation**       | `documentation`       | — (hardwired)               | Marks an issue as documentation-related. Hardwired — no config key.                                                                                                    |
 

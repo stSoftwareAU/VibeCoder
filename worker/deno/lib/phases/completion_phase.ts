@@ -16,6 +16,7 @@ import { assertNever } from "../assert_never.ts";
 import { summaryScrubProblem } from "../summary_scrub_gate.ts";
 
 import {
+  CRITERIA_UNMET_GATE_MARKER,
   type FailureCategory,
   PRE_PUSH_GATE_MARKER,
   PRE_PUSH_LOOKUP_FAILED_MARKER,
@@ -40,7 +41,6 @@ import {
 } from "../pr_body_sync.ts";
 import { adoptAgentRaisedPrBody } from "../agent_pr_adoption.ts";
 import { disarmAutoMerge } from "../auto_merge_disarm.ts";
-import { buildSyncFollowUpFiling } from "../pr_body_sync_follow_up.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
@@ -88,10 +88,7 @@ import {
   buildClosureGateComment,
   validateAcceptanceClosure,
 } from "../acceptance_criteria_gate.ts";
-import {
-  findMissingCriteria,
-  withholdIssueClose,
-} from "../missing_criterion_close_guard.ts";
+import { findMissingCriteria } from "../missing_criterion_close_guard.ts";
 import {
   buildIndependentReviewComment,
   validateIndependentReview,
@@ -261,19 +258,17 @@ import {
   recoverFromScreenshotGateBlock,
   SCREENSHOT_EVIDENCE_MISSING_REASON,
 } from "../screenshot_gate_retry.ts";
+import type { DegradedShortfall } from "../degraded_delivery.ts";
 import {
-  assessDegradedDelivery,
-  assessReportedGaps,
-  buildDegradedNoFollowUpSection,
-  buildDegradedPrSection,
-  buildFollowUpChainStopSection,
-  buildReportedGapPrSection,
-  degradedNeedsFollowUp,
-  fileDegradedFollowUp,
-  handFollowUpToHuman,
-  isPartialDeliveryFollowUp,
-} from "../degraded_delivery.ts";
-import { IDLE_TASK_LABEL } from "../idle_task_issue.ts";
+  convertToDraftContinuation,
+  markReadyAndAwaitCi,
+} from "../draft_continuation_pr.ts";
+import {
+  assessUnmetCriteria,
+  buildUnmetCriteriaGateComment,
+  MAX_UNMET_CRITERIA_ROUNDS,
+  unmetCriteriaReason,
+} from "../unmet_criteria_gate.ts";
 
 /**
  * Phase name the `work-on` coding run is routed under (`PHASE_MODEL_DEFAULTS`).
@@ -290,6 +285,8 @@ interface LinkedPrLookup {
   state: string | null;
   /** The PR's head branch (Issue #1799), or null when it could not be read. */
   headRefName: string | null;
+  /** True for a draft — a timed-out run's continuation PR (Issue #4146). */
+  isDraft?: boolean;
 }
 
 /**
@@ -311,14 +308,16 @@ async function lookupPrState(
       "--repo",
       repo,
       "--json",
-      "state,headRefName",
+      "state,headRefName,isDraft",
     ]);
     const parsed = JSON.parse(output) as {
       state?: string;
       headRefName?: string;
+      isDraft?: boolean;
     };
     return {
       state: parsed.state ?? null,
+      ...(parsed.isDraft === true ? { isDraft: true } : {}),
       headRefName: typeof parsed.headRefName === "string" &&
           parsed.headRefName.length > 0
         ? parsed.headRefName
@@ -648,6 +647,12 @@ interface SummaryRuleBlock {
    * so the recovery prompt allows test changes.
    */
   allowsTestChanges?: boolean;
+  /**
+   * The acceptance criteria the run has not met (Issue #4146). Non-empty
+   * means no PR may be raised or finalised: the recovery turn must finish
+   * them, and a later block fails the run as `criteria_unmet`.
+   */
+  unmetCriteria?: readonly DegradedShortfall[];
 }
 
 /**
@@ -679,30 +684,26 @@ interface SummaryRuleBlock {
  *   straight off this first block used to ship it with the gate's shortfall
  *   unrepaired (#3155/#3158/#3159). The verdict is recorded the same way as
  *   the no-PR case (carrying the PR's URL), and this also blocks `failure`
- *   for `workOnIssueCompletion` to recover from in-run — the guard below is
- *   *not* run and the PR is *not* finalised on this first block;
+ *   for `workOnIssueCompletion` to recover from in-run — the PR is *not*
+ *   finalised on this first block;
  * - **a second (or later) block in the same run, with a PR** — the in-run
  *   recovery already had its turn and failed to clear the gate, so this is
- *   where the existing-PR path finalises: the degraded-run delivery guard
- *   (Issue #2562) runs first, against this PR, before it is finalised:
- *   arming auto-merge on it ahead of that guard would close the issue with
- *   any undelivered scope recorded nowhere (Issue #3092). Only once the
- *   guard succeeds is the PR finalised the way the recovery path finalises
- *   it (body, labels, link, auto-merge — except that auto-merge is withheld
+ *   where the existing-PR path finalises the PR the way the recovery path
+ *   finalises it (body, labels, link, auto-merge — except that auto-merge is withheld
  *   and the PR labelled `standing-violation` when a Standards violation on
  *   the branch's own lines survived the recovery turn, Issue #3382), and the
  *   run reports
  *   `summary_incomplete`: the work is done, the summary is short, and the
- *   issue stays attached to its PR instead of going back in the queue. If
- *   the guard itself cannot file its follow-up, this reports `failure`
- *   instead and the PR is left unfinalised. An existing PR whose URL cannot
- *   be numbered also fails the run — before the PR is recovered or
- *   finalised (Issue #3139).
- *
- * On the no-PR branch the guard is *not* run here — a follow-up it files
- * would promise "that run's PR still completes #N on merge" for a PR that
- * may never be raised (Issue #3092); the caller decides separately whether
- * to run the guard before reaching this gate.
+ *   issue stays attached to its PR instead of going back in the queue. An
+ *   existing PR whose URL cannot be numbered fails the run instead — before
+ *   the PR is recovered or finalised (Issue #3139).
+ * - **a block with unmet acceptance criteria** (Issue #4146) is never
+ *   finalised: it is always recorded, a PR the agent raised itself is turned
+ *   back into a draft at once (`convertToDraftContinuation`), and while
+ *   another in-run round is due it fails for `workOnIssueCompletion` to
+ *   recover from; once the rounds are spent the run fails as
+ *   `criteria_unmet` (`failWithUnmetCriteria`) and the draft waits for the
+ *   next run.
  *
  * Either way the gate's remediation comment is posted, so the shortfall is on
  * the issue thread rather than only in this host's log — once per distinct
@@ -723,8 +724,8 @@ interface SummaryRuleBlock {
  *   numbered "REQUIRED ITEM" per gate rather than one undifferentiated
  *   notice.
  * @returns `failure` on the run's first block (PR or no PR, both recovered
- *   in-run by `workOnIssueCompletion`), or on a later block whose follow-up
- *   could not be filed, or whose PR URL cannot be numbered; `early_exit`
+ *   in-run by `workOnIssueCompletion`), on any block with unmet criteria, or
+ *   on a later block whose PR URL cannot be numbered; `early_exit`
  *   carrying the `summary_incomplete` outcome on a later block that reached
  *   and finalised an existing PR.
  */
@@ -740,7 +741,13 @@ async function reportSummaryRuleBlock(
 ): Promise<PhaseResult> {
   const { reason, comment, sections, standingViolations, allowsTestChanges } =
     block;
-  const category: FailureCategory = block.categories.includes("quality_check")
+  // Issue #4146: unmet criteria are unfinished work, so they name the run's
+  // category whatever else blocked alongside them.
+  const unmetCriteria = block.unmetCriteria ?? [];
+  const criteriaUnmet = unmetCriteria.length > 0;
+  const category: FailureCategory = criteriaUnmet
+    ? "criteria_unmet"
+    : block.categories.includes("quality_check")
     ? "quality_check"
     : block.categories[0] ?? "summary_incomplete";
   const { repo, issueNumber } = ctx;
@@ -753,7 +760,9 @@ async function reportSummaryRuleBlock(
   });
   // Issue #3431: the failure reason leads with the worker's own marker so the
   // category detector never reads the gates' quoted agent text as a crash.
-  const failureReason = `${SUMMARY_RULE_GATE_MARKER}: ${reason}`;
+  const failureReason = `${
+    criteriaUnmet ? CRITERIA_UNMET_GATE_MARKER : SUMMARY_RULE_GATE_MARKER
+  }: ${reason}`;
 
   const existingPr = await deps.pr.findExistingPrForBranch(
     repo,
@@ -766,7 +775,9 @@ async function reportSummaryRuleBlock(
   const verdicts = state.summaryRuleBlocks ?? [];
   const alreadyOnThread = verdicts.some((v) => v.comment === comment);
   const isFirstBlock = verdicts.length === 0;
-  if (!existingPr.ok || isFirstBlock) {
+  // An unmet-criteria block is always recorded (Issue #4146): further
+  // recovery rounds read their progress off these verdicts.
+  if (!existingPr.ok || isFirstBlock || criteriaUnmet) {
     state.summaryRuleBlocks = [
       ...verdicts,
       {
@@ -776,6 +787,7 @@ async function reportSummaryRuleBlock(
         sections,
         ...(standingViolations.length > 0 ? { standingViolations } : {}),
         ...(allowsTestChanges ? { allowsTestChanges } : {}),
+        ...(criteriaUnmet ? { unmetCriteria } : {}),
         ...(existingPr.ok ? { existingPrUrl: existingPr.value } : {}),
       },
     ];
@@ -816,6 +828,22 @@ async function reportSummaryRuleBlock(
   const prUrl = existingPr.value;
   const prNumber = prNumberFromUrl(prUrl);
 
+  // Issue #4146 (owner): "make sure that incomplete PRs are draft so the CI
+  // and code reviews aren't done." The agent raised this PR itself, and the
+  // work is not finished, so it goes back to a draft at once — every round,
+  // since converting an existing draft is a no-op.
+  if (criteriaUnmet && prNumber > 0) {
+    await convertToDraftContinuation({
+      repo,
+      issueNumber,
+      prNumber,
+      body: prBody,
+      gh: (args) => deps.github.runGhCommand(args),
+      log: (message) =>
+        logger.warn(`Draft conversion (Issue #4146): ${message}`),
+    });
+  }
+
   if (isFirstBlock) {
     // The run's FIRST summary-rule block gets the same in-run recovery turn
     // whether or not a PR already exists (Issue #3163): finalising an
@@ -852,30 +880,35 @@ async function reportSummaryRuleBlock(
     };
   }
 
+  if (criteriaUnmet) {
+    // Issue #4146: another in-run round is coming, so the agent's PR is left
+    // alone — unfinalised, auto-merge unarmed — for that round to finish.
+    if (shouldContinueUnmetCriteria(state)) {
+      return {
+        category,
+        categories: block.categories,
+        status: "failure",
+        reason: failureReason,
+      };
+    }
+    // The rounds are spent. A PR is never left standing for partial work —
+    // the auto-merge sweep would arm it and the merge would close the issue.
+    // The agent raised this one itself, so close it; its branch stays pushed
+    // and the next run resumes it and raises the PR once every criterion is
+    // met.
+    return failWithUnmetCriteria(ctx, state, deps, {
+      category,
+      categories: block.categories,
+      reason: failureReason,
+    });
+  }
+
   logger.warn(
     "PR-summary rule broken on a run that had already raised its PR — " +
       "recording the shortfall against that PR instead of failing the run " +
       "(Issue #1140)",
     { repo, issueNumber, prUrl, reason },
   );
-  const guarded = await applyDegradedDeliveryGuard(ctx, state, prBody, deps);
-  if (!guarded.ok) {
-    // The follow-up could not be filed, so the PR stays unfinalised — but it
-    // is still the run's PR. Naming it here is what makes the outcome `pr`
-    // + `blocked` instead of `no_pr` over a live PR (Issue #2044). An
-    // unnumberable URL names no PR instead (Issue #3136).
-    if (prNumber > 0) {
-      state.prUrl = prUrl;
-      state.prNumber = prNumber;
-    } else {
-      logger.warn(
-        "Could not read a PR number from the existing PR URL — the " +
-          "summary-rule block names no PR rather than naming #0",
-        { repo, issueNumber, prUrl },
-      );
-    }
-    return guarded.result;
-  }
 
   // A PR URL this phase cannot number is a PR it cannot name on the
   // outcome, and an outcome that reads "Raised #0" is worse than a failure
@@ -899,7 +932,7 @@ async function reportSummaryRuleBlock(
     prUrl,
     ctx,
     state,
-    guarded.prBody,
+    prBody,
     deps,
     {
       docsSweepHitsComment,
@@ -927,188 +960,40 @@ async function reportSummaryRuleBlock(
 }
 
 /**
- * Degraded-run delivery guard (Issue #2562).
+ * End the run on criteria it could not meet (Issue #4146).
  *
- * A run served by a fallback model must not read as complete delivery: on
- * #2543 a Haiku-fallback run shipped one of seven accepted changes and its
- * PR closed the issue with the rest recorded nowhere. The PR is still raised
- * (the work is kept, and a PR that does not close its issue loops — #520),
- * but every accepted scope item not shown `met`, and any unmatched
- * `partial` or `missing` closure entry, is filed as an `idle-task`
- * follow-up the fleet picks up, and the PR body names the gap. A degraded
- * run that met every scope item is left alone only when it reported no
- * unmatched `partial` or `missing` entry.
- *
- * Issue #3506: a healthy run whose own summary closes out a criterion as
- * `partial` or `missing` files the same follow-up (same finding-id key, so a
- * re-run reuses it) and its PR body gains the partial-delivery section.
- * `unassessed` items file nothing; otherwise a healthy run is untouched.
- *
- * Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
- *
- * Issue #3092: also called from `reportSummaryRuleBlock`'s existing-PR
- * branch, immediately before it recovers and finalises that PR. Before
- * #3092 only the docs-sweep gate took this guard on an existing-PR branch,
- * because that gate ran after the guard; the closure, independent-review
- * and reproduction-status gates ran ahead of it and skipped it. The call
- * in `completionBody` runs once all seven late-summary gates (Issue #3393
- * added the mutation check as the fifth, Issue #3795 the coverage carry-over
- * check as the sixth and Issue #3257 the summary claim check as the seventh)
- * pass, whether the PR is then raised or recovered.
- *
- * PR #3676 review: a healthy run on an issue that is itself a
- * partial-delivery follow-up files no nested one. It labels the issue
- * `needs-human`, comments naming the gaps, and its PR body carries the
- * chain-stop section, so the merge leaves the issue open.
- *
- * PR #3676 review: the follow-up joins the parent's milestone when it has
- * one, so the fleet works it on the milestone branch. `followUp` on the
- * success result lets `completionBody` retract a follow-up this call newly
- * filed when the claim-freshness check then stops the PR (`abortStaleClaim`).
- *
- * @returns `{ ok: true, prBody }` with the (possibly prefixed) PR body on
- *   success (plus `followUp` when one was filed or reused), or `{ ok: false, result }` carrying the failure `PhaseResult`
- *   when the follow-up could not be filed.
+ * "Partially completed" is not a resolution, so the run fails on the ordinary
+ * `failed-once` → `failed` ladder. No follow-up issue is filed and nothing is
+ * labelled `needs-human`. A PR the agent raised itself was already turned
+ * back into a draft by `reportSummaryRuleBlock` (`Part of #N`, auto-merge
+ * disarmed), which never holds the issue, so the next run resumes the branch
+ * and finishes the job.
  */
-async function applyDegradedDeliveryGuard(
+function failWithUnmetCriteria(
   ctx: IssueContext,
   state: PhaseState,
-  prBody: string,
   deps: WorkerDeps,
-): Promise<
-  | {
-    ok: true;
-    prBody: string;
-    /** The follow-up this call filed or reused, when it filed any. */
-    followUp?: { number: number; reused: boolean };
-  }
-  | { ok: false; result: PhaseResult }
-> {
-  const { repo, issueNumber, issueTitle, issueBody, milestoneTitle } = ctx;
-  const logger = deps.logger;
-
-  const degradedDelivery = assessDegradedDelivery({
-    claudeResults: state.claudeRunStats ?? [],
-    issueBody,
-    prBody,
-  });
-  // Issue #3506: a healthy run's own `partial`/`missing` closure entries file the same follow-up.
-  const verdict = degradedDelivery.degraded
-    ? degradedDelivery
-    : assessReportedGaps(issueBody, prBody);
-  if (
-    degradedNeedsFollowUp(verdict) && !verdict.degraded &&
-    isPartialDeliveryFollowUp(issueBody)
-  ) {
-    // PR #3676 review: this issue is itself a partial-delivery follow-up.
-    // Filing `Finish #F: Finish #N: …` would chain fleet runs without end on
-    // an item no run can deliver, so the gaps go to a human instead.
-    const handed = await handFollowUpToHuman({
-      repo,
-      issueNumber,
-      verdict,
-      runId: getRunId(),
-      gh: deps.github.runGhCommand,
-    });
-    if (!handed.ok) {
-      logger.error(
-        "Could not hand this partial-delivery follow-up to a human — failing the run without finalising a PR",
-        { error: handed.error.message },
-      );
-      return {
-        ok: false,
-        result: {
-          category: "unknown",
-          status: "failure",
-          reason:
-            `Run reported ${verdict.shortfalls.length} acceptance criteria as partial or missing on a partial-delivery follow-up, and it could not be handed to a human: ${handed.error.message}`,
-        },
-      };
-    }
-    logger.warn(
-      "Run on a partial-delivery follow-up left gaps — handed to a human, no nested follow-up filed",
-      { shortfalls: verdict.shortfalls.length },
-    );
-    // The PR must not close the follow-up natively either: a merge into the
-    // default branch would otherwise close it with its closing keyword.
-    return {
-      ok: true,
-      prBody: buildFollowUpChainStopSection(verdict, issueNumber) +
-        withholdIssueClose(prBody, issueNumber),
-    };
-  }
-  if (degradedNeedsFollowUp(verdict)) {
-    const labelled = await deps.github.ensureLabelExists(
-      repo,
-      IDLE_TASK_LABEL,
-    );
-    if (!labelled.ok) {
-      logger.warn(
-        "Could not ensure the idle-task label for the follow-up; filing anyway",
-        { error: labelled.error.message },
-      );
-    }
-    const followUp = await fileDegradedFollowUp({
-      repo,
-      parentNumber: issueNumber,
-      parentTitle: issueTitle,
-      verdict,
-      runId: getRunId(),
-      gh: deps.github.runGhCommand,
-      dedupAuthors: { fleetAuthors: fleetAuthorsFor(ctx) },
-      ...(milestoneTitle ? { milestoneTitle } : {}),
-    });
-    if (!followUp.ok) {
-      // Raising the PR now would close the issue with the residue recorded
-      // nowhere — the exact silent loss this guard exists to stop.
-      logger.error(
-        "Could not file the follow-up for this run's undelivered scope — failing the run without finalising a PR",
-        { degraded: verdict.degraded, error: followUp.error.message },
-      );
-      return {
-        ok: false,
-        result: {
-          category: "unknown",
-          status: "failure",
-          reason: verdict.degraded
-            ? `Degraded run (${verdict.reason}) left ${verdict.shortfalls.length} ` +
-              `shortfall(s) (scope items short of met, or gaps the run reported), and the follow-up recording them ` +
-              `could not be filed or brought up to date: ${followUp.error.message}`
-            : `Run reported ${verdict.shortfalls.length} acceptance criteria as partial or missing, and the follow-up recording them could not be filed or brought up to date: ${followUp.error.message}`,
-        },
-      };
-    }
-    logger.warn(
-      "Run delivered partial scope — residue recorded in a follow-up",
-      {
-        degraded: verdict.degraded,
-        reason: verdict.reason,
-        shortfalls: verdict.shortfalls.length,
-        followUp: followUp.value.number,
-        reused: followUp.value.reused,
-      },
-    );
-    return {
-      ok: true,
-      prBody: (verdict.degraded
-        ? buildDegradedPrSection(verdict, followUp.value.number)
-        : buildReportedGapPrSection(verdict, followUp.value.number)) + prBody,
-      followUp: followUp.value,
-    };
-  } else if (degradedDelivery.shortfalls.length > 0) {
-    logger.warn(
-      "Degraded run: no shortfall partial or missing — no follow-up filed",
-      {
-        reason: degradedDelivery.reason,
-        unassessed: degradedDelivery.shortfalls.length,
-      },
-    );
-    return {
-      ok: true,
-      prBody: buildDegradedNoFollowUpSection(degradedDelivery) + prBody,
-    };
-  }
-  return { ok: true, prBody };
+  failure: {
+    category: FailureCategory;
+    categories: readonly FailureCategory[];
+    reason: string;
+  },
+): PhaseResult {
+  deps.logger.warn(
+    "Acceptance criteria still unmet after the in-run rounds — failing the " +
+      "run; the next run resumes the branch (Issue #4146)",
+    { repo: ctx.repo, issueNumber: ctx.issueNumber, branch: state.branchName },
+  );
+  // The draft is work in progress, not the run's deliverable, so the outcome
+  // names no PR.
+  delete state.prUrl;
+  delete state.prNumber;
+  return {
+    category: failure.category,
+    categories: failure.categories,
+    status: "failure",
+    reason: failure.reason,
+  };
 }
 
 /**
@@ -1195,7 +1080,8 @@ export async function recoverAndFinaliseExistingPr(
 
   // Issue #1559: Check PR state up front so we can suppress the redundant
   // "PR created" link comment when the PR is already merged.
-  const prState = (await lookupPrState(repo, prNumber, deps))?.state ?? null;
+  const prLookup = await lookupPrState(repo, prNumber, deps);
+  const prState = prLookup?.state ?? null;
   const prAlreadyMerged = prState === "MERGED";
 
   // Post-recovery finalisation (best-effort)
@@ -1285,7 +1171,28 @@ export async function recoverAndFinaliseExistingPr(
         }
       }
     } else if (prNumber > 0) {
-      await armAutoMergeAtCreation(ctx, state, prNumber, deps);
+      // Issue #4146: a timed-out run's draft continuation, now that every
+      // criterion is met (the unmet-criteria gate never lets a partial run
+      // reach here). Its body already says `Closes #N`; mark it ready so it
+      // takes the normal review and auto-merge path. Auto-merge waits for
+      // the ready-for-review CI to start: the draft's checks were skipped,
+      // and a skipped required check counts as passing (Issue #4160).
+      let ciStarted = true;
+      if (prLookup?.isDraft === true) {
+        ciStarted = await markReadyAndAwaitCi({
+          repo,
+          prNumber,
+          gh: deps.github.runGhCommand,
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          log: (message) => logger.warn(message, { repo, prNumber }),
+        });
+        logger.info("Marked the draft continuation PR ready (Issue #4146)", {
+          repo,
+          prNumber,
+          ciStarted,
+        });
+      }
+      if (ciStarted) await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
 
     // Issue #3237: advisory docs-sweep stale-hits comment, posted once.
@@ -1388,6 +1295,21 @@ export async function workOnIssueCompletion(
     );
   }
 
+  // Issue #4146: unmet criteria keep the run working rather than ending it on
+  // the second block — another round while the last one met more criteria
+  // than the one before, up to MAX_UNMET_CRITERIA_ROUNDS.
+  while (
+    result.status === "failure" && shouldContinueUnmetCriteria(state)
+  ) {
+    result = await recoverFromSummaryRuleBlock(
+      ctx,
+      state,
+      deps,
+      result,
+      () => runCompletionAttempt(ctx, state, deps),
+    );
+  }
+
   // Claim-sentence correction turn (Issue #3324): the recovery turn above
   // has already been spent, and the completion attempt deferred a
   // claim-check-only later block here rather than failing or finalising the
@@ -1429,11 +1351,32 @@ export async function workOnIssueCompletion(
       runGhCommand: (a) => deps.github.runGhCommand(a),
       runGitCommand: deps.git.runGitCommand,
       logger: deps.logger,
-      followUpFiling: buildSyncFollowUpFiling(ctx.config, ctx.githubUser),
     },
   );
 
   return result;
+}
+
+/**
+ * Whether an unmet-criteria block earns another in-run round (Issue #4146).
+ *
+ * Only when the latest recorded verdict still has unmet criteria, the rounds
+ * spent so far (one per recorded unmet verdict after the first) are below
+ * {@link MAX_UNMET_CRITERIA_ROUNDS}, and the latest round made progress: fewer
+ * unmet criteria than the verdict before it. A round that moves nothing ends
+ * the run — repeating it would only spend the same turn again.
+ */
+function shouldContinueUnmetCriteria(state: PhaseState): boolean {
+  const unmetCounts = (state.summaryRuleBlocks ?? [])
+    .map((v) => v.unmetCriteria?.length ?? 0);
+  const latest = unmetCounts.at(-1) ?? 0;
+  if (latest === 0 || unmetCounts.length < 2) return false;
+  const roundsSpent = unmetCounts.length - 1;
+  if (roundsSpent >= MAX_UNMET_CRITERIA_ROUNDS) return false;
+  const previous = unmetCounts.at(-2)!;
+  // A first block from another gate carried no unmet criteria; the round that
+  // surfaced them is progress towards finishing, not a regression.
+  return previous === 0 || latest < previous;
 }
 
 /**
@@ -1782,7 +1725,6 @@ async function abortStaleClaim(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
-  newFollowUp?: number,
 ): Promise<PhaseResult> {
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
@@ -1816,35 +1758,6 @@ async function abortStaleClaim(
           err instanceof Error ? err.message : String(err)
         }`,
     );
-  }
-
-  // PR #3676 review: a follow-up this run newly filed names a PR that will
-  // now never be raised, so close it rather than leave the fleet to work an
-  // `idle-task` for a stale claim. Best-effort, like the comment above.
-  if (newFollowUp !== undefined) {
-    try {
-      await deps.github.runGhCommand([
-        "issue",
-        "close",
-        String(newFollowUp),
-        "--repo",
-        repo,
-        "--reason",
-        "not planned",
-        "--comment",
-        `Closed by the worker: the claim on #${issueNumber} went stale ` +
-        `(${stale.reason}) before the run raised its PR, so this ` +
-        `follow-up has no PR to continue from. Reopen it if the scope ` +
-        `listed here still stands.`,
-      ]);
-    } catch (err) {
-      logger.warn(
-        `Could not close the stale-claim follow-up ${repo}#${newFollowUp} ` +
-          `— it stays open: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-      );
-    }
   }
 
   return {
@@ -3037,7 +2950,7 @@ async function completionBody(
   // `recoverFromSummaryRuleBlock` only re-invokes the agent on a run's FIRST
   // summary-rule block; a second block in the same run just fails. The
   // docs-sweep gate itself runs after the closure, independent-review and
-  // reproduction-status gates (and before the degraded-run guard), so a
+  // reproduction-status gates (and before the unmet-criteria gate), so a
   // summary that also fails an earlier gate used to consume that one
   // recovery turn on the earlier gate alone — the agent was never told about
   // the sweep, fixed only what it was asked, and failed on the second,
@@ -3620,6 +3533,15 @@ async function completionBody(
     reason: scrubProblem ?? "",
     comment: () => scrubProblem ?? "",
   };
+  // Issue #4146: an unmet criterion blocks the PR like any summary gate, and
+  // folds into every other gate's block so a recovery turn always sees it.
+  const unmetCriteria = assessUnmetCriteria(ctx.issueBody, prBody);
+  const unmetCriteriaVerdict: LateSummaryVerdict = {
+    categories: ["criteria_unmet"],
+    blocked: unmetCriteria.length > 0,
+    reason: unmetCriteria.length > 0 ? unmetCriteriaReason(unmetCriteria) : "",
+    comment: () => buildUnmetCriteriaGateComment(unmetCriteria),
+  };
   const lateSummaryVerdicts: LateSummaryVerdict[] = [
     scrubVerdict,
     docsSweepVerdict,
@@ -3630,6 +3552,7 @@ async function completionBody(
     coverageCarryOverVerdict,
     claimCheckVerdict,
     prePrVerifierVerdict,
+    unmetCriteriaVerdict,
   ];
 
   // Issue #3382: the #3196 gate refuses a Standards violation left standing,
@@ -3719,6 +3642,7 @@ async function completionBody(
         ? prePrVerifierVerdict.comment()
         : "",
       ...(allowsTestChanges ? { allowsTestChanges } : {}),
+      ...(unmetCriteria.length > 0 ? { unmetCriteria } : {}),
     };
   }
 
@@ -3852,13 +3776,9 @@ async function completionBody(
   // carry a `Branch outcomes:` list whose every named test exists at the head,
   // and get its claims about named code right.
   //
-  // Issue #3092: `reportSummaryRuleBlock` now applies the degraded-run
-  // delivery guard itself, against the existing PR, before it recovers and
-  // finalises that PR — so every summary-rule gate, these five included,
-  // records the degraded follow-up before an existing PR is finalised, and
-  // none of them needs to run after the guard or short-circuit around it for
-  // the no-PR case: either way `reportSummaryRuleBlock` does the right thing
-  // by branch below. Each gate folds every later-named gate still blocked
+  // `reportSummaryRuleBlock` does the right thing by branch below, PR or no
+  // PR, and unmet criteria fold into every block (Issue #4146), so none of
+  // these gates needs to short-circuit around another. Each gate folds every later-named gate still blocked
   // into its own comment, so a summary failing more than one of them is
   // told about all of them in the one recovery turn it gets.
   // ---------------------------------------------------------------------
@@ -3895,10 +3815,7 @@ async function completionBody(
   // checked it. GRQ-AutoTrader#2370 raised a PR with no `## Test Plan` at
   // all and silently dropped a still-true assertion, and it reached a
   // milestone PR unnoticed. Blocked the same way as the docs-sweep gate
-  // immediately above: `reportSummaryRuleBlock` applies the degraded-run
-  // delivery guard itself against any existing PR before it recovers and
-  // finalises that PR, so this gate does not need to run after the guard
-  // either.
+  // immediately above.
   // ---------------------------------------------------------------------
   if (removedAssertionsBlocked) {
     logger.warn("Removed-assertion gate blocked PR creation", {
@@ -3930,10 +3847,7 @@ async function completionBody(
   // summary where a command's actual result belongs reads as "the gate was
   // run" to anyone who does not know the fleet's internal scaffolding, when
   // nothing was actually reported. Blocked the same way as the docs-sweep
-  // and removed-assertion gates above: `reportSummaryRuleBlock` applies the
-  // degraded-run delivery guard itself against any existing PR before it
-  // recovers and finalises that PR, so this gate does not need to run after
-  // the guard either.
+  // and removed-assertion gates above.
   // ---------------------------------------------------------------------
   if (scrubVerdict.blocked) {
     return await reportSummaryRuleBlock(
@@ -4176,6 +4090,7 @@ async function completionBody(
         standingViolations,
         verifierHoldComment: comment,
         docHoldComment: "",
+        ...(unmetCriteria.length > 0 ? { unmetCriteria } : {}),
       },
       ctx,
       state,
@@ -4186,47 +4101,34 @@ async function completionBody(
   }
 
   // ---------------------------------------------------------------------
-  // Degraded-run delivery guard (Issue #2562).
+  // Unmet-criteria gate (Issue #4146).
   //
-  // A run served by a fallback model must not read as complete delivery: on
-  // #2543 a Haiku-fallback run shipped one of seven accepted changes and its
-  // PR closed the issue with the rest recorded nowhere. The PR is still raised
-  // (the work is kept, and a PR that does not close its issue loops — #520),
-  // but every accepted scope item not shown `met`, and any unmatched
-  // `partial` or `missing` closure entry, is filed as an `idle-task`
-  // follow-up the fleet picks up, and the PR body names the gap. A degraded
-  // run that met every scope item is left alone only when it reported no
-  // unmatched `partial` or `missing` entry.
-  //
-  // Issue #3506: a healthy run whose summary has a `partial` or `missing`
-  // closure entry files the same follow-up (same finding-id key) and its PR
-  // body gains the partial-delivery section. `unassessed` items file nothing;
-  // otherwise a healthy run is untouched. PR #3676 review: on an issue that is
-  // itself a partial-delivery follow-up a healthy run files no nested one; it
-  // takes the chain-stop path instead. A degraded run still files one.
-  //
-  // PR #3676 review: the follow-up joins the parent's milestone, and the
-  // claim-freshness check below retracts one this run newly filed.
-  //
-  // Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
-  // Issue #3092: extracted to `applyDegradedDeliveryGuard` so this same
-  // chokepoint logic also runs from `reportSummaryRuleBlock`'s existing-PR
-  // branch.
+  // "If the criteria is not met then don't raise a PR, just complete the
+  // job." A run whose summary closes a criterion out `partial` or `missing`
+  // (or leaves one unassessed) raises no PR: the block sends the agent back
+  // in this run to finish the work (`workOnIssueCompletion`), and a run that
+  // still cannot fails as `criteria_unmet` with its branch kept for the next
+  // run. It replaces the degraded-delivery guard (Issues #2562, #3506), which
+  // raised the partial PR anyway and filed a `Finish #N` follow-up. Last in
+  // the chain, so every other gate has already passed.
   // ---------------------------------------------------------------------
-  const guarded = await applyDegradedDeliveryGuard(ctx, state, prBody, deps);
-  if (!guarded.ok) {
-    // The follow-up could not be filed, so nothing is raised or finalised.
-    // An existing PR is still this run's PR: naming it makes the outcome
-    // `pr` + `blocked` instead of `no_pr` over a live PR (Issue #3092).
-    // A branch with no open PR stays unnamed, which is the no-PR failure.
-    const blockedPr = await lookupBlockedGatePr(repo, state.branchName, deps);
-    if (blockedPr) {
-      state.prUrl = blockedPr.url;
-      state.prNumber = blockedPr.number;
-    }
-    return guarded.result;
+  if (unmetCriteriaVerdict.blocked) {
+    logger.warn("Unmet-criteria gate blocked PR creation (Issue #4146)", {
+      unmet: unmetCriteria.length,
+    });
+    return await reportSummaryRuleBlock(
+      foldInLateSummaryVerdicts(
+        unmetCriteriaVerdict.reason,
+        unmetCriteriaVerdict.comment(),
+        [unmetCriteriaVerdict],
+      ),
+      ctx,
+      state,
+      prBody,
+      deps,
+      docsSweepHitsComment,
+    );
   }
-  prBody = guarded.prBody;
 
   // Issue #869 (by issue number), #623 (by branch), #872 (defence in depth),
   // and Issue #174, which reordered them.
@@ -4318,17 +4220,7 @@ async function completionBody(
     },
   });
   if (freshness.kind === "stale") {
-    // Retract only a follow-up this run newly filed — a reused one predates
-    // the run and is not ours to close.
-    return await abortStaleClaim(
-      freshness,
-      ctx,
-      state,
-      deps,
-      guarded.followUp && !guarded.followUp.reused
-        ? guarded.followUp.number
-        : undefined,
-    );
+    return await abortStaleClaim(freshness, ctx, state, deps);
   }
 
   // Opening a PR for this branch even though something else references the

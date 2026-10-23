@@ -65,12 +65,12 @@ Deno.test("classifyIssues - excludes issues with no approved-work label as label
   assertEquals(verdicts[0]!.excludedBy, "label_filter");
 });
 
-Deno.test("classifyIssues - excludes blocked labels (failed, needs-human) as blocking_label", () => {
+Deno.test("classifyIssues - excludes blocked labels (needs-revision, needs-human) as blocking_label", () => {
   const verdicts = classifyIssues(
     [
       {
         number: 7,
-        labels: ["work-on", "failed"],
+        labels: ["work-on", "needs-revision"],
         assignees: [],
         milestone: "",
       },

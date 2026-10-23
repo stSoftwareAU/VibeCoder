@@ -3218,9 +3218,9 @@ resolves `opus` to `claude-opus-5-5` (2.1.261 resolved it to `claude-opus-5`).
 2.1.280 is above 2.1.260, so a phase pinned back to Fable still gets Fable 5.1
 with its cache fixes. `CURRENT_TIER_MODELS` gained an `opus` row at the same
 time, so a container still serving `claude-opus-5` is reported as a previous
-generation — but only for the label and the stats comment: the
-degraded-delivery guard (Issue #2562) ignores a stale generation, since the run
-was not handed to a fallback model.
+generation — but only for the label and the stats comment. Delivery never
+depends on it: any unmet criterion blocks the PR whatever model served the run
+(Issue #4146).
 
 **Moved a third time for Haiku 5.5 (PR #3432 review, Issue #3400).** #3400 set
 `MODEL_CONTEXT_WINDOWS.haiku` to 1M on the premise that the `haiku` alias is

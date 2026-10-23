@@ -430,7 +430,6 @@ Deno.test("createMockDeps - handleIssueFailure mock returns HandleFailureResult 
   });
   assertEquals(result.ok, true);
   if (result.ok) {
-    assertEquals(result.value.markedAsFailed, false);
     assertEquals(result.value.markedAsFailedOnce, true);
     assertEquals(result.value.failureCategory, "unknown");
     assertEquals(result.value.isInfrastructure, false);

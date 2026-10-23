@@ -1243,10 +1243,8 @@ async function runClaudeWithTimeoutBody(
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
     // Issue #2344's advisor edit guard, merged with this spawn's own hooks
     // (Issue #2383's RTK settings) rather than one silently replacing the
-    // other when a run has both on. Claude only — DeepSeek drops the
-    // executor definitions, so a guard there would deny the advisor's edits
-    // with no executor to make them, and the other providers take no such
-    // flag.
+    // other when a run has both on. The advisor guard remains Claude-only;
+    // Codex translates RTK settings to its own per-spawn hook configuration.
     ...settingsJsonOption(
       options.issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID
         ? resolveIssueExecutorHookSettings()

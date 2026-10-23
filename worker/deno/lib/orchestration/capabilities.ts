@@ -79,7 +79,8 @@ function probeProvider(provider: TargetProvider): ProbedProvider {
   const argv = descriptor.buildInvocation({
     prompt: "capability probe",
     agents: { probe: PROBE_AGENT },
-    settingsJson: "{}",
+    // Codex rejects hook settings without a PreToolUse array (Issue #4121).
+    settingsJson: JSON.stringify({ hooks: { PreToolUse: [] } }),
     disallowedTools: [PROBE_DENIED_TOOL],
   });
   const denialIndex = argv.indexOf("--disallowed-tools");

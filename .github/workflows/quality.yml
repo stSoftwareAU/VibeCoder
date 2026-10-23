@@ -20,6 +20,12 @@ name: Quality
 
 on:
   pull_request:
+    # Draft PRs are work in progress (owner, 2026-10-23): the checks run
+    # once, when the PR is marked ready. `gate` still runs on a draft and
+    # fails (its dependencies were skipped), so a draft never carries a
+    # passing required check that auto-merge could act on when it is marked
+    # ready before the new run starts.
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [Develop, main, milestone/*]
 
 permissions:
@@ -32,16 +38,19 @@ concurrency:
 
 jobs:
   validate-scripts:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     uses: ./.github/workflows/validate-scripts.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
     permissions:
       contents: read
 
   container-build:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     uses: ./.github/workflows/container-build.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
     permissions:
       contents: read
 
   gitleaks:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     uses: ./.github/workflows/gitleaks.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
     # Named, never inherited (semgrep secrets-inherit): the called workflow
     # declares exactly what it takes.
@@ -52,11 +61,13 @@ jobs:
       pull-requests: read
 
   markdown-lint:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     uses: ./.github/workflows/markdown-lint.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
     permissions:
       contents: read
 
   semgrep:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     uses: ./.github/workflows/semgrep.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
     secrets:
       SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
@@ -64,6 +75,7 @@ jobs:
       contents: read
 
   checkov:
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     uses: ./.github/workflows/checkov.yml # zizmor: ignore[self-repository] — `$/` is rejected by actionlint; `./` is the documented self-repository syntax
     permissions:
       contents: read

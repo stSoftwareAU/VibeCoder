@@ -72,7 +72,6 @@ import { assertPushTargetAllowed, resolvePreFlightSpec } from "./git_push.ts";
 import { buildPushArgs } from "./git_ref_args.ts";
 import { appendRunIdTrailer, getRunId } from "./run_id.ts";
 import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
-import type { SyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
 import {
@@ -300,14 +299,6 @@ export interface MergeConflictProcessorDeps {
    * {@link syncPrBodyFromSummary}.
    */
   syncPrBodyFn?: typeof syncPrBodyFromSummary;
-  /**
-   * Files the follow-up a PR-body sync needs when this run's rewritten summary
-   * newly marks a criterion `partial` or `missing` on a body with no leading
-   * section (Issue #3678). Production wiring passes
-   * `buildSyncFollowUpFiling(config, githubUser)`; when absent, such a sync
-   * fails loudly instead of filing.
-   */
-  syncFollowUpFiling?: SyncFollowUpFiling;
   /**
    * Configured worker name, used in the refreshed PR body's footer
    * (Issue #3089). Omitted → empty string.
@@ -1859,7 +1850,6 @@ async function resolveConflict(
       runGhCommand: deps.github.runGhCommand,
       runGitCommand: run,
       logger,
-      followUpFiling: processorDeps.syncFollowUpFiling,
     },
     syncFn,
   );

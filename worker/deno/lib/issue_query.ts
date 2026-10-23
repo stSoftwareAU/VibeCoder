@@ -14,10 +14,7 @@ import {
   extractClosingIssueNumbers,
   extractIssueNumberFromPrTitle,
 } from "./pr_body.ts";
-import {
-  findMissingCriteria,
-  hasFollowUpChainStop,
-} from "./missing_criterion_close_guard.ts";
+import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
 import { runGhCommand } from "./github.ts";
 import {
   prTitleMatchesIssue,
@@ -159,13 +156,6 @@ export interface MergedPR {
    * field was collected — treat as none.
    */
   missingCriteria?: string[];
-  /**
-   * Whether the PR body carries the chain-stop section's marker (PR #3676
-   * review): the PR worked a partial-delivery follow-up whose gaps no further
-   * follow-up holds, so it does not close its issue. Absent on a cache entry
-   * written before this field was collected — treat as false.
-   */
-  followUpChainStop?: boolean;
   /**
    * The sub-agent tier from the PR body's `vibe-sub-agent-tier` marker,
    * `sonnet` when the body has none (Issue #3404). Absent on a cache entry
@@ -2173,7 +2163,6 @@ function parseMergedPrListing(output: string): MergedPR[] {
       subAgentTier: subAgentTierFromBody(body) ?? "sonnet",
       lifecycleAssignmentId: assignmentIdFromBody(body) ?? null,
       ...(missingCriteria.length > 0 ? { missingCriteria } : {}),
-      ...(hasFollowUpChainStop(body) ? { followUpChainStop: true } : {}),
     });
   }
   return prs;
@@ -2349,9 +2338,15 @@ export function getBlockingPRForIssue(
 ): BlockingPRInfo | null {
   if (prs.length === 0) return null;
 
-  // Issue #4133: someone else's PR is not the worker's work stream.
+  // Issue #4133: someone else's PR is not the worker's work stream. Issue
+  // #4146: neither is the fleet's own DRAFT for this issue — a timed-out run
+  // keeps one so the next run can resume the branch and finish the job, and
+  // holding the issue on it would strand the work it exists to continue.
   const fleetPrs = prs.filter(
-    (pr) => !isHumanAuthoredPr(prAuthorForGate(pr), pushCapableAuthors),
+    (pr) =>
+      !isHumanAuthoredPr(prAuthorForGate(pr), pushCapableAuthors) &&
+      !(issueNumber !== undefined && pr.isDraft === true &&
+        isPrForIssue(pr, issueNumber)),
   );
   if (fleetPrs.length === 0) return null;
 

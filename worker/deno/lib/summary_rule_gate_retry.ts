@@ -81,6 +81,7 @@ import {
 import { reviewBlockTemplateLines } from "./review_block_template.ts";
 import { PRE_PR_VERIFIER_COMMENT_HEADING } from "./pre_pr_verifier.ts";
 import type { StandingViolation } from "./standing_violation_routing.ts";
+import type { DegradedShortfall } from "./degraded_delivery.ts";
 
 /** One summary-rule gate verdict observed during a single run. */
 export interface SummaryRuleRunVerdict {
@@ -121,6 +122,13 @@ export interface SummaryRuleRunVerdict {
    * final. Absent means every item is a documentation shortfall.
    */
   allowsTestChanges?: boolean;
+  /**
+   * The acceptance criteria the run has not met (Issue #4146). Each becomes an
+   * UNMET CRITERION item the turn must finish in code and tests — a summary
+   * that re-labels it `met` without the work is the over-claim the reviewers
+   * exist to catch. Absent or empty means every criterion is met.
+   */
+  unmetCriteria?: readonly DegradedShortfall[];
 }
 
 /**
@@ -267,17 +275,62 @@ ${blocks.join("\n\n")}
 
 `;
   }
+  // Issue #4146: an unmet criterion is unfinished work, not a summary
+  // shortfall. The turn must finish it in code; re-labelling it `met` is the
+  // over-claim the Spec reviewer exists to catch.
+  const unmet = (verdict.unmetCriteria ?? []).filter((c) =>
+    c.criterion.trim() !== ""
+  );
+  const unmetBlockNames: string[] = [];
+  let unmetSection = "";
+  if (unmet.length > 0) {
+    const n = unmet.length;
+    const blocks = unmet.map((c, i) => {
+      unmetBlockNames.push(`the unmet criterion, ${i + 1} of ${n}`);
+      return fenceUntrustedIssueText(
+        `${c.status}: ${c.criterion}`,
+        `UNMET CRITERION ${
+          i + 1
+        } of ${n} — FINISH THE WORK (untrusted data — quotes the issue's criteria):`,
+        id,
+      ).join("\n");
+    });
+    unmetSection = `The PR summary does not show ${
+      n === 1 ? "this acceptance criterion" : `these ${n} acceptance criteria`
+    } as met, listed below as UNMET CRITERION items. No PR is raised until every criterion is met (Issue #4146): "partially completed" is not an outcome, and no follow-up issue will carry the rest. The REQUIRED ITEM headed "Acceptance criteria not met" is answered by finishing these items, not by editing the summary. For these items this turn MUST change code:
+
+- Implement what each UNMET CRITERION asks for, with the tests that prove it, dispatching the executor sub-agent for the edits as usual.
+- Run the tests covering what you changed with stdin from \`/dev/null\`.
+- Re-dispatch the Spec reviewer sub-agent over the new \`git diff\` and record its verdict; mark a criterion \`met\` only when the reviewer agrees it is met.
+- Never re-label a criterion \`met\` without the work, and never narrow a criterion to what was done.
+
+The worker re-runs the quality gate over the changed tree before completion re-runs.
+
+${blocks.join("\n\n")}
+
+`;
+  }
   const allowsTests = verdict.allowsTestChanges === true;
-  const step2 = standing.length > 0
+  const step2Base = standing.length > 0
     ? `2. Fix every REQUIRED ITEM the notice lists, and every CODE FIX item below, and nothing else. ${
       allowsTests ? STEP_TWO_MUTATION_RULE : ""
     }A REQUIRED ITEM is a documentation shortfall in the summary file: do not change the code for it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change. A CODE FIX item is the one exception: change the code it cites, as described under the CODE FIX items.`
     : allowsTests
     ? STEP_TWO_WITH_TESTS
     : STEP_TWO_DOCS_ONLY;
-  const itemRef = standing.length > 0
-    ? "each REQUIRED ITEM and CODE FIX item"
-    : "each REQUIRED ITEM";
+  // An unmet criterion is the one item the "do not change the code" rule
+  // never covers: say so before that rule is stated.
+  const step2 = unmet.length > 0
+    ? step2Base.replace(
+      /^2\. /,
+      "2. First finish every UNMET CRITERION item — change the code and tests those need, as described under them; the rule below never covers them. Then: ",
+    )
+    : step2Base;
+  const itemRef = [
+    "each REQUIRED ITEM",
+    ...(standing.length > 0 ? ["CODE FIX item"] : []),
+    ...(unmet.length > 0 ? ["UNMET CRITERION item"] : []),
+  ].join(" and ");
 
   return `${openingLine}
 
@@ -293,7 +346,7 @@ ${itemsIntro}
 
 ${itemBlocks.join("\n\n")}
 
-${standingSection}Do exactly this, and nothing else:
+${standingSection}${unmetSection}Do exactly this, and nothing else:
 
 1. Read \`${summaryPath}\` — the summary the gate just read — and \`git diff\` against the base branch, so the block you write describes the change that is actually on the branch.
 ${step2} One exception (Issue #3395): a REQUIRED ITEM headed \`${PRE_PR_VERIFIER_HEADING_WORDS}\` can name a defect in the code itself. For that item only, fix the code and its tests where a finding asks for it, run the tests covering what you changed, then make the summary describe the head; the worker re-runs the quality gate and the verifier afterwards. For that verifier item, a finding is closed only by fixing it or disputing it with evidence in the final message, naming the finding and the evidence. Marking a criterion \`partial\`, listing a known gap or open limitation in the PR summary, or noting a test as "not red-checked" does not close a finding.
@@ -312,6 +365,7 @@ ${
       SUMMARY_RULE_REASON_BLOCK,
       ...itemBlockNames,
       ...standingBlockNames,
+      ...unmetBlockNames,
     ])
   }`;
 }
@@ -329,7 +383,9 @@ ${
  * #3382). A block on that attempt is the run's
  * second and is returned as the failure (or, over an existing PR,
  * `summary_incomplete`) it is — the caller does not re-enter here, so a run
- * spends at most one recovery invocation.
+ * spends at most one recovery invocation, except for unmet acceptance
+ * criteria (Issue #4146): those get further rounds while each one makes
+ * progress, up to `MAX_UNMET_CRITERIA_ROUNDS`.
  *
  * @param blocked - The failure the gate reported, returned unchanged when the
  *   recovery invocation cannot be launched and no PR exists yet. When a PR

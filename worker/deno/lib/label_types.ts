@@ -80,16 +80,19 @@ export interface FailureOptions {
    * setup/clone or run-level reason that can carry host output.
    */
   qualityGateOutput?: boolean;
+  /**
+   * True when the issue already carried `failed-once`, so this is a repeat
+   * failure (Issue #4158). The record says so, and the issue still keeps
+   * `failed-once` and stays claimable: an assigned issue is never parked.
+   */
+  repeat?: boolean;
 }
 
 /** Options for the unified failure handler. */
-export interface HandleFailureOptions extends FailureOptions {
-  maxInfraRetries?: number;
-}
+export type HandleFailureOptions = FailureOptions;
 
 /** Result of handle_issue_failure — reports actions taken (caller handles git). */
 export interface HandleFailureResult {
-  markedAsFailed: boolean;
   markedAsFailedOnce: boolean;
   failureCategory: FailureCategory;
   isInfrastructure: boolean;
