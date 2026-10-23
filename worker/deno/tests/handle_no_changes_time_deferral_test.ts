@@ -16,7 +16,12 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssueHandleNoChanges } from "../lib/phases/handle_no_changes_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
+import type {
+  IssueContext,
+  PhaseResult,
+  PhaseState,
+} from "../lib/issue_worker_types.ts";
+import { UNFINISHED_RETRY_HEADING } from "../lib/unfinished_issue_retry.ts";
 import type { GitHubClient, GitHubComment, GitHubIssue } from "../types.ts";
 import { MAX_TIME_DEFERRALS } from "../lib/time_deferral.ts";
 
@@ -61,6 +66,26 @@ interface StubCalls {
 
 function makeCalls(): StubCalls {
   return { addLabel: [], postComment: [], editIssue: [], unassignIssue: 0 };
+}
+
+/**
+ * The approved-issue invariant (Issue #4227): no PR means a `no_changes`
+ * failure to retry, never `needs-human`, with one not-finished comment.
+ */
+function assertRetried(
+  result: PhaseResult,
+  calls: StubCalls,
+  message?: string,
+): void {
+  assertEquals(result.status, "failure", message);
+  assertEquals((result as { category: string }).category, "no_changes");
+  assertEquals(calls.addLabel, [], "an approved issue never gets needs-human");
+  assertEquals(
+    calls.postComment.filter((c) => c.startsWith(UNFINISHED_RETRY_HEADING))
+      .length,
+    1,
+    "exactly one not-finished comment",
+  );
 }
 
 function makeClient(
@@ -214,7 +239,7 @@ Deno.test(
 );
 
 Deno.test(
-  "handle_no_changes_phase - analysis output with no marker still hands off (#2834)",
+  "handle_no_changes_phase - analysis output with no marker retries (#2834, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -227,16 +252,12 @@ Deno.test(
       deps,
     );
 
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
-    assertEquals(calls.addLabel, ["needs-human"]);
+    assertRetried(result, calls);
   },
 );
 
 Deno.test(
-  "handle_no_changes_phase - deferral limit reached hands off to a human",
+  "handle_no_changes_phase - deferral limit reached retries, never a human (#4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -252,11 +273,7 @@ Deno.test(
       deps,
     );
 
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
-    assertEquals(calls.addLabel, ["needs-human"]);
+    assertRetried(result, calls);
     assertStringIncludes(
       calls.postComment.find((c) => c.includes("## Deferral limit reached")) ??
         "",
@@ -266,7 +283,7 @@ Deno.test(
 );
 
 Deno.test(
-  "handle_no_changes_phase - a past 'until' is not deferred, falls through to hand-off",
+  "handle_no_changes_phase - a past 'until' is not deferred, falls through to a retry (#4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -279,11 +296,7 @@ Deno.test(
       deps,
     );
 
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
-    assertEquals(calls.addLabel, ["needs-human"]);
+    assertRetried(result, calls);
     assertEquals(calls.editIssue, []);
   },
 );
@@ -329,12 +342,11 @@ Deno.test(
       deps,
     );
 
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
+    assertRetried(
+      result,
+      calls,
       "a fourth park must not happen",
     );
-    assertEquals(calls.addLabel, ["needs-human"]);
     assertEquals(calls.editIssue, []);
   },
 );
@@ -413,13 +425,12 @@ Deno.test(
       deps,
     );
 
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
+    assertRetried(
+      result,
+      calls,
       "a sibling fleet login's park comments must count — a fourth park " +
         "must not happen",
     );
-    assertEquals(calls.addLabel, ["needs-human"]);
   },
 );
 
@@ -439,9 +450,6 @@ Deno.test(
       deps,
     );
 
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
+    assertRetried(result, calls);
   },
 );

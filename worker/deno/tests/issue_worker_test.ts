@@ -27,6 +27,7 @@ import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { CLARIFICATION_NEXT_STEP } from "../lib/phases/clarity_assessment_phase.ts";
 import { MILESTONE_BRANCH_NEXT_STEP } from "../lib/phases/setup_branch_phase.ts";
+import { UNFINISHED_RETRY_HEADING } from "../lib/unfinished_issue_retry.ts";
 
 /**
  * Stub GitHubClient that records mutation calls instead of running gh
@@ -1682,17 +1683,14 @@ Deno.test("handleNoChanges - does not close issue for non-complete output", asyn
 
   const result = await workOnIssueHandleNoChanges(ctx, state, deps);
 
-  assertEquals(result.status, "early_exit");
-  // Issue #2849: the partial-answer path now hands off to needs-human.
-  assertEquals(
-    (result as { reason: string }).reason,
-    "analysis_only_handed_off",
-  );
-  // Issue should NOT be closed for partial answers / hand-offs.
+  // Issue #4227: an approved issue with no change is retried, not handed off.
+  assertEquals(result.status, "failure");
+  assertEquals((result as { category: string }).category, "no_changes");
+  // Issue should NOT be closed for an unfinished run.
   assertEquals(calls.closeIssue.length, 0);
 });
 
-Deno.test("handleNoChanges - posts partial answer for text output", async () => {
+Deno.test("handleNoChanges - posts a not-finished comment for text output and retries (Issue #4227)", async () => {
   const calls = makeStubGhCalls();
   const longOutput = "A".repeat(200) + " Here is my analysis of the issue...";
   const ctx = makeContext();
@@ -1705,25 +1703,33 @@ Deno.test("handleNoChanges - posts partial answer for text output", async () => 
 
   const result = await workOnIssueHandleNoChanges(ctx, state, deps);
 
-  assertEquals(result.status, "early_exit");
-  // Issue #2849: no-code-change text output is the analysis-only signal —
-  // hand off to needs-human rather than leaving the issue to re-loop.
+  // Issue #4227 supersedes #2849: no-code-change text output on an approved
+  // issue is retried on the failure ladder (its cooldown is the loop guard),
+  // never handed to needs-human.
+  assertEquals(result.status, "failure");
+  assertEquals((result as { category: string }).category, "no_changes");
   assertEquals(
-    (result as { reason: string }).reason,
-    "analysis_only_handed_off",
+    calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+    false,
+  );
+  assertEquals(calls.postComment.length, 1);
+  assertEquals(
+    calls.postComment[0]!.body.startsWith(UNFINISHED_RETRY_HEADING),
+    true,
+  );
+  assertEquals(
+    calls.postComment[0]!.body.includes("Here is my analysis of the issue"),
+    true,
   );
 });
 
-Deno.test("handleNoChanges - does not add the question label in the partial-answer branch (Issue #1475, #2849)", async () => {
+Deno.test("handleNoChanges - does not add the question label on a no-change run (Issue #1475, #4227)", async () => {
   // Operational labels added by the worker's service account are stripped
   // by the trusted-label security layer (Issue #1344). The worker must not
-  // call addLabel(questionLabel) here — instead the comment invites a
-  // trusted human to add it themselves.
+  // call addLabel(questionLabel) here.
   //
-  // Issue #2849: the path now ALSO hands the analysis-only issue off to
-  // `needs-human` (the one operational label the worker is allowed to add,
-  // via the sanctioned escalation chokepoint). So `question` must still
-  // NOT be added, but `needs-human` is.
+  // Issue #4227: the approved issue is retried, so no label is added at all
+  // — not `question`, and not `needs-human`.
   const calls = makeStubGhCalls();
   const longOutput = "A".repeat(200) + " Here is my analysis of the issue...";
   const ctx = makeContext({
@@ -1738,30 +1744,25 @@ Deno.test("handleNoChanges - does not add the question label in the partial-answ
 
   const result = await workOnIssueHandleNoChanges(ctx, state, deps);
 
-  assertEquals(result.status, "early_exit");
-  assertEquals(
-    (result as { reason: string }).reason,
-    "analysis_only_handed_off",
-  );
-  // The worker must not add the question label itself — only needs-human.
+  assertEquals(result.status, "failure");
+  assertEquals((result as { category: string }).category, "no_changes");
+  // The worker must not add the question label itself — nor needs-human.
   assertEquals(
     calls.addLabel.some((c) => c.label === "question"),
     false,
   );
   assertEquals(
     calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+    false,
+  );
+  // One comment: the not-finished note the next run reads.
+  assertEquals(calls.postComment.length, 1);
+  assertEquals(
+    calls.postComment[0]!.body.startsWith(UNFINISHED_RETRY_HEADING),
     true,
   );
-  // Two comments: the partial answer (with the question-label invite) and
-  // the needs-human hand-off explanation.
-  assertEquals(calls.postComment.length, 2);
-  const body = calls.postComment[0]?.body ?? "";
-  assertEquals(body.includes("Partial Answer"), true);
-  assertEquals(body.includes("`question`"), true);
-  assertEquals(body.includes("trusted reviewer"), true);
-  // The worker still unassigns itself (claim released by the hand-off).
-  assertEquals(calls.unassignIssue.length, 1);
-  assertEquals(calls.unassignIssue[0]?.assignees, ["testbot"]);
+  // The claim is not released as a hand-off: the retry keeps the issue.
+  assertEquals(calls.unassignIssue.length, 0);
 });
 
 Deno.test("handleNoChanges - fails for empty output", async () => {
@@ -4618,7 +4619,19 @@ Deno.test("workOnIssue reconciles terminal failure before heartbeat publication 
           variant,
       );
       assert(result);
-      assertEquals(executions, variant === "closed" ? 0 : 1, variant);
+      // A non-zero exit that committed nothing is a crashed run, retried
+      // once in-process on a fresh session (Issue #4116). Change detection
+      // reads tracked changes and commits, so the dirty variant's untracked
+      // file does not count.
+      assertEquals(
+        executions,
+        variant === "closed"
+          ? 0
+          : variant === "success" || variant === "preexisting"
+          ? 1
+          : 2,
+        variant,
+      );
       assertEquals(
         result.success,
         variant === "closed" || variant === "success",

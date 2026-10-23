@@ -37,10 +37,9 @@ import {
   isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
 } from "../fleet_authors.ts";
-import {
-  type AnalysisOnlyTrigger,
-  handOffAnalysisOnly,
-} from "../analysis_only_handoff.ts";
+import type { AnalysisOnlyTrigger } from "../analysis_only_handoff.ts";
+import { retryUnfinishedIssue } from "../unfinished_issue_retry.ts";
+import { redactedTail } from "../redacted_text.ts";
 import {
   type BlockedOutcome,
   detectBlockedOutcome,
@@ -490,8 +489,8 @@ export async function handOffDeclaredOutcome(
     }
 
     logger.warn(
-      "Time-deferral limit reached — handing off to a human instead of " +
-        "deferring again",
+      "Time-deferral limit reached — retrying the approved issue instead of " +
+        "deferring again (Issue #4227)",
       { repo, issueNumber, priorCount: history.length },
     );
     if (committed) {
@@ -511,25 +510,22 @@ export async function handOffDeclaredOutcome(
         error: err instanceof Error ? err.message : String(err),
       });
     }
-    await handOffAnalysisOnly({
+    // Issue #4227: the approved issue is retried on the failure ladder,
+    // whose cooldown spaces the attempts out; never `needs-human`.
+    const result = await retryUnfinishedIssue({
       ghClient,
       repo,
       issueNumber,
-      needsHumanLabel: config.needsHumanLabel,
-      githubUser,
-      trigger,
-      logger,
-      deps: { ensureLabelExists: deps.github.ensureLabelExists },
-    });
-    return {
-      blocked,
-      declared: true,
-      result: {
-        category: "unknown",
-        status: "early_exit",
-        reason: "analysis_only_handed_off",
+      why: `its data was still not there after ${history.length} deferrals`,
+      agentOutput: claudeOutput,
+      diagnostics: {
+        clarityStatus: state.clarityStatus,
+        outputSize: claudeOutput.length,
+        lastOutputSnippet: redactedTail(claudeOutput, 500) || undefined,
       },
-    };
+      logger,
+    });
+    return { blocked, declared: true, result };
   }
 
   // Issue #2688 — a run that judged the issue too large for one PR asks for
