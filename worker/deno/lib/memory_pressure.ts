@@ -218,7 +218,7 @@ const PSI_FIELD = /^(avg10|avg60|avg300|total)=(\d+(?:\.\d+)?)$/;
  * so the cost is linear in the input length.
  */
 export function parsePsi(text: string): PsiReading | null {
-  if (typeof text !== "string" || text.length === 0) return null;
+  if (typeof text !== "string") return null;
   if (text.length > PSI_MAX_CHARS) return null;
   let some: PsiLine | undefined;
   let full: PsiLine | undefined;
@@ -229,12 +229,14 @@ export function parsePsi(text: string): PsiReading | null {
     const kind = tokens.shift();
     if (kind === "some") {
       if (some) return null;
-      some = parsePsiFields(tokens) ?? undefined;
-      if (!some) return null;
+      const fields = parsePsiFields(tokens);
+      if (fields === null) return null;
+      some = fields;
     } else if (kind === "full") {
       if (full) return null;
-      full = parsePsiFields(tokens) ?? undefined;
-      if (!full) return null;
+      const fields = parsePsiFields(tokens);
+      if (fields === null) return null;
+      full = fields;
     } else {
       return null;
     }
@@ -298,23 +300,20 @@ export interface LivenessResourceReading {
 /**
  * Probe the three resource sources for the liveness tick (Issue #4225):
  * `/proc/meminfo` through {@link probeMemoryPressure}, then the memory and
- * CPU PSI files. The reads run concurrently and never throw; an unreadable
- * source is reported as unknown rather than failing the tick.
+ * CPU PSI files. The reads run concurrently; each probe catches its own read
+ * failure, so the function never throws and an unreadable source is reported
+ * as unknown rather than failing the tick.
  */
 export async function probeLivenessResources(options: {
   readMemInfo?: () => Promise<string>;
   readPsi?: (path: string) => Promise<string>;
 } = {}): Promise<LivenessResourceReading> {
-  try {
-    const [mem, psiMem, psiCpu] = await Promise.all([
-      probeMemoryPressure({ readMemInfo: options.readMemInfo }),
-      probePsi(PSI_MEMORY_PATH, options.readPsi),
-      probePsi(PSI_CPU_PATH, options.readPsi),
-    ]);
-    return { mem, psiMem, psiCpu };
-  } catch {
-    return { mem: { level: "unknown" } };
-  }
+  const [mem, psiMem, psiCpu] = await Promise.all([
+    probeMemoryPressure({ readMemInfo: options.readMemInfo }),
+    probePsi(PSI_MEMORY_PATH, options.readPsi),
+    probePsi(PSI_CPU_PATH, options.readPsi),
+  ]);
+  return { mem, psiMem, psiCpu };
 }
 
 /**

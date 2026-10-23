@@ -144,6 +144,11 @@ Deno.test("parsePsi - malformed or empty text is null, never a zero (Issue #4225
     "some avg10=1.00 avg60=1.00 avg300=1.00 total=5\nsome avg10=1.00 avg60=1.00 avg300=1.00 total=5", // repeated line
     "full avg10=1.00 avg60=1.00 avg300=1.00 total=5", // full without some
     "some", // no fields
+    `${PSI_MEMORY_TEXT}\npartial avg10=1.00 avg60=1.00 avg300=1.00 total=5`, // unknown kind after valid lines
+    `${PSI_MEMORY_TEXT}\nfull avg10=1.00 avg60=1.00 avg300=1.00 total=5`, // repeated full line
+    `${PSI_MEMORY_TEXT}${" ".repeat(PSI_MAX_CHARS)}`, // valid but oversized
+    "some avg10=1.00 avg60=1.00 avg300=1.00 total=5\nfull avg10=1.00", // bad full line
+    "some avg10=1.00\nsome avg10=1.00 avg60=1.00 avg300=1.00 total=5", // bad some line then a good one
     "partial avg10=1.00 avg60=1.00 avg300=1.00 total=5", // unknown line kind
   ];
   for (const text of malformed) {
