@@ -248,7 +248,7 @@ longer listed. When it differs, the pass logs that it is
 rebuilding, fetches the PR head into a disposable shallow clone in a temporary
 directory, runs the same `syncPrBodyFromSummary` rebuild there, and then deletes
 the clone. Every part of that rebuild applies unchanged: the milestone section,
-the leading degraded-run, partial-delivery and chain-stop sections, the bump
+the bump
 note, the footer markers, and the head check against the PR's current
 `headRefOid`, so a head that moved since the listing is skipped. A body with no
 digest marker (raised before Issue #3315) is skipped, and the older
@@ -261,15 +261,8 @@ clone it does not run in the maintenance lane. The module is
 `worker/deno/lib/pr_body_reconcile.ts`, and the entry point is
 `reconcilePrBodyDigests`.
 
-When the live body carries no leading degraded or partial-delivery section and
-the rebuilt summary newly marks a criterion `partial` or `missing`, the sync
-also reads the parent issue, re-verifies its content, and files or reuses the
-follow-up (or hands a partial-delivery follow-up to a human) before it writes
-the new section. This is the one path where a re-sync touches the follow-up;
-the Priority 1.64 reconcile pass reaches it too, because it runs the same sync.
-See
-[the fix-run gap case](issue-processing.md#a-healthy-runs-own-gaps-get-a-follow-up-too-issue-3506)
-(Issue #3678).
+A re-sync never files a follow-up issue (Issue #4146): a criterion still
+`partial` or `missing` blocks the PR at completion instead.
 
 Writing `Refs #N` in the summary does not stop the rebuilt description from
 closing the issue, since the rebuild appends `Closes #N` unless a closing
@@ -545,9 +538,10 @@ Six checks run, each only when it applies:
    command continued onto the next line with a trailing `\` or `/`.
    An issue number (`#3143`) is not a count. Each count is decided on its own
    (Issue #3740): a partial figure — a per-round addition such as "3 tests
-   added to `a_test.ts`", "2 to `b_test.ts`", "+N tests", or "Added to
-   `x_test.ts` (N tests" without "now has" — is not compared with that file's
-   whole count, while a whole-file count in the same unit ("the new
+   added to `a_test.ts`", "Added N tests to `a_test.ts`", "2 to `b_test.ts`",
+   "+N tests", or "Added to `x_test.ts` (N tests" without "now has" — is not
+   compared with that file's whole count (Issue #3983 added the "Added N
+   tests to" form), while a whole-file count in the same unit ("the new
    `b_test.ts` (N tests", "`b_test.ts` (N tests" with no "added" or "+" before
    it, "now has N", "the file now has N") is. Partial markers are read only
    before their figure, regardless of the gap shape: "Extended `a_test.ts`

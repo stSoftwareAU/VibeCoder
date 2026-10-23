@@ -106,6 +106,11 @@ import {
 export interface PrEntry {
   number: number;
   headRefName: string;
+  /**
+   * Whether the PR is a draft — work in progress (owner, 2026-10-23). The CI
+   * scan skips drafts: their checks are deliberately not run.
+   */
+  isDraft?: boolean;
   headRefOid?: string;
   body?: string;
   createdAt?: string;
@@ -410,7 +415,7 @@ export interface CiCheckScanOptions extends PrScanOptions {
  * harmless to callers, which read only what they use.
  */
 export const PR_MAINTENANCE_LIST_FIELDS =
-  "number,title,headRefName,headRefOid,baseRefName,baseRefOid,autoMergeRequest,createdAt,updatedAt,author,mergeable,labels,body,reviewDecision";
+  "number,title,headRefName,headRefOid,baseRefName,baseRefOid,autoMergeRequest,createdAt,updatedAt,author,mergeable,labels,body,reviewDecision,isDraft";
 
 /**
  * Explicit page size for the cached superset listing (Issue #4303). The
@@ -1523,13 +1528,16 @@ export async function findFailedCiChecks(
       }
     }
 
-    const prs = await listActionablePrs(
+    // A draft is work in progress (owner, 2026-10-23): its checks are not
+    // run, and its required `gate` fails on purpose, so it is never handed to
+    // the CI fixer. Marking it ready runs CI, and this scan sees it then.
+    const prs = (await listActionablePrs(
       repo,
       scanAuthors,
       // headRefOid pins a human-gate park to the head it was confirmed on.
-      "number,headRefName,headRefOid,baseRefName,body,createdAt,reviewDecision",
+      "number,headRefName,headRefOid,baseRefName,body,createdAt,reviewDecision,isDraft",
       options,
-    );
+    )).filter((pr) => pr.isDraft !== true);
 
     // Batch all check-run lookups for this repo into a single GraphQL
     // call (Issue #1806), with REST fallback handled internally. Reads
