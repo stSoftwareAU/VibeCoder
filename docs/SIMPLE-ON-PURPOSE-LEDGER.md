@@ -3,7 +3,7 @@
 The SIMPLE-ON-PURPOSE ledger is the twentieth registered
 [idle-task](IDLE-TASK-FRAMEWORK.md) template (template #20). When the worker
 has no claimable work it may pick this template, read one monitored repository's
-tracked text files, and list every `SIMPLE-ON-PURPOSE` marker it finds in them
+tracked non-Markdown text files, and list every `SIMPLE-ON-PURPOSE` marker it finds in them
 (the files it skips are named under [What the scanner counts](#what-the-scanner-counts)). It then posts
 or refreshes **one report issue** for that repository. The report answers a
 single question: which deliberate corner cuts are in this codebase, what limit
@@ -34,7 +34,7 @@ ledger, adopted here in our own words — see
 flowchart LR
     W["Idle-task wrapper<br/>simple-on-purpose-ledger template"] --> L["List tracked files<br/>git ls-files (skips .md, binary, over 1 MiB, symlinks, gitlinks)"]
     L --> S["Scan each comment line<br/>first token is the marker"]
-    S --> J["Join wrapped markers<br/>same opener on the next line"]
+    S --> J["Join wrapped markers<br/>same opener, by the join rule"]
     J --> F["Flag markers with no<br/>upgrade when clause"]
     F --> R["One report issue<br/>posted or refreshed"]
     S -. no markers .-> E["No markers, nothing to list"]
@@ -73,21 +73,21 @@ join the comment line after it. A marker that already carries
 
 The rules are implemented by
 [`simple_on_purpose_scanner.ts`](../worker/deno/lib/simple_on_purpose_scanner.ts).
-The scan is deterministic, uses no LLM and no network, and treats every file as
+The scan is deterministic, uses no LLM and no network, and treats each scanned file as
 text.
 
 | Input | Rule |
 | --- | --- |
 | Comment line | The keyword `SIMPLE-ON-PURPOSE:` must be the **first token** of a comment line. The recognised openers are `//`, `#`, `--`, `;`, `/*`, `*` and `<!--`. |
 | Mid-line or string text | Not a marker. A string literal, a mention in prose or a keyword after code on the same line does not count. |
-| `.md` files | Skipped. Prose documentation may quote the marker without owning it. |
+| `.md` files | Skipped entirely, including any `<!-- -->` marker in them. Prose documentation may quote the marker without owning it. |
 | Binary files | Skipped when the file holds a NUL byte. |
 | Oversized files | Skipped when over 1 MiB. |
 | Submodule gitlinks and symlinks | Not read at all. |
 
 ## What is flagged
 
-Every marker is listed with its path, its line, its ceiling and its upgrade
+Every marker in the scanned files is listed with its path, its line, its ceiling and its upgrade
 condition. The report then calls out **markers missing `upgrade when`**. A marker
 with a ceiling but no condition is the failure this ledger exists to catch: it
 records a limit without saying when the limit stops being acceptable.

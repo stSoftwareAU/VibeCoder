@@ -238,7 +238,9 @@ Deno.test("parse - the real test-floci.sh marker keeps its own clause and does n
     '# Prints "<Name><TAB><Type>" for each SSM-typed parameter.',
     "ssm_parameters() {",
   ].join("\n");
-  const m = onlyMarker(parseSimpleOnPurposeMarkers("infra/cloudformation/test-floci.sh", text));
+  const m = onlyMarker(
+    parseSimpleOnPurposeMarkers("infra/cloudformation/test-floci.sh", text),
+  );
   assertEquals(m.line, 2);
   assertEquals(m.ceiling, "2-space names, 4-space keys, single-line Type");
   assertEquals(
