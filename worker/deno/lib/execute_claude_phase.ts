@@ -2028,7 +2028,8 @@ async function executeClaudePhaseBody(
     // not conclude there was nothing to do. `no_changes` would hand a real
     // implementation issue to a human as analysis-only — 46 on 2026-10-22,
     // every one a run in which no model turn happened (Issue #4147). A
-    // failure keeps the issue on the retry ladder instead.
+    // failure keeps the issue on the retry ladder instead. Keep the live
+    // phases/execute_phase.ts guard in sync; both entry points need this check.
     if (exitCode !== 0) {
       const failureOutput = buildFailureOutputTail(claudeOutput);
       return {

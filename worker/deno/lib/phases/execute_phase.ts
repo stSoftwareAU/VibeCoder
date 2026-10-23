@@ -2093,6 +2093,31 @@ async function executeClaudeBody(
       };
     }
 
+    // Keep the standalone runExecuteClaudePhase guard in sync (Issue #4147).
+    // A failed agent with no recoverable work must enter the retry ladder;
+    // no_changes would hand the implementation issue to a human as analysis.
+    if (claudeResult.value.exitCode !== 0) {
+      return {
+        category: "internal_error",
+        status: "failure",
+        reason: formatDetailedFailureMessage(
+          `Claude execution failed: the agent exited ${claudeResult.value.exitCode} ` +
+            "without making any change. The issue stays queued for a retry.",
+          {
+            elapsedSeconds: Math.round(
+              (Date.now() - state.executeStartTime) / 1000,
+            ),
+            rawExitCode: claudeResult.value.rawExitCode ??
+              claudeResult.value.exitCode,
+            lastOutputSnippet: joinRedacted([
+              redactedTail(state.claudeOutput, 350),
+              redactedTail(claudeResult.value.stderr ?? "", 100),
+            ], "\n--- stderr ---\n"),
+          },
+        ),
+      };
+    }
+
     return {
       category: "unknown",
       status: "early_exit",
