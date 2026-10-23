@@ -39,6 +39,12 @@ A block with no PR ends the run instead of recovering in-run.
 - [ ] A second block in the same run fails as today.
 `;
 
+/** A bug report that states no acceptance criteria. */
+const ISSUE_WITHOUT_CRITERIA = `## Problem
+
+The gate ends the run instead of recovering in-run.
+`;
+
 /** The summary the agent wrote: no closure block at all. */
 const SUMMARY_WITHOUT_BLOCK = `## Summary
 
@@ -552,8 +558,12 @@ Deno.test(
 Deno.test(
   "completion - an existing PR with no fix from the recovery is finalised as summary_incomplete",
   async () => {
+    // An issue with no acceptance criteria (Issue #4146: unmet criteria
+    // never take this path), blocked by the reproduction gate alone.
     const outcome = await runCompletion({
-      summary: SUMMARY_WITHOUT_BLOCK,
+      summary: BUG_SUMMARY_WITHOUT_REPRODUCTION,
+      labels: ["bug", "work-on"],
+      issueBody: ISSUE_WITHOUT_CRITERIA,
       prExistsForBranch: true,
     });
 
@@ -574,7 +584,9 @@ Deno.test(
   "completion - a recovery invocation that cannot be launched over an existing PR still finalises it (Issue #1140)",
   async () => {
     const outcome = await runCompletion({
-      summary: SUMMARY_WITHOUT_BLOCK,
+      summary: BUG_SUMMARY_WITHOUT_REPRODUCTION,
+      labels: ["bug", "work-on"],
+      issueBody: ISSUE_WITHOUT_CRITERIA,
       prExistsForBranch: true,
       retryInvocationFails: true,
     });

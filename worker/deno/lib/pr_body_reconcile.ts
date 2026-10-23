@@ -35,7 +35,6 @@ import type {
   runGitCommand as runGitCommandType,
 } from "./git_timeout.ts";
 import type { IssueCache } from "./issue_cache.ts";
-import type { SyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
 import {
   issueNumberFromMarker,
   prSummaryDigest,
@@ -335,7 +334,6 @@ export interface ReconcilePrBodiesDeps {
   runGhCommand: (args: string[]) => Promise<string>;
   runGitCommand: typeof runGitCommandType;
   logger: Logger;
-  followUpFiling: SyncFollowUpFiling | undefined;
   cache?: IssueCache;
   /**
    * Memo keyed per PR as `${repo}#${pr}`, holding `${headRefOid}:${recordedDigest}`
@@ -489,7 +487,6 @@ export async function reconcilePrBodyDigests(
           runGhCommand: deps.runGhCommand,
           runGitCommand: deps.runGitCommand,
           logger: deps.logger,
-          followUpFiling: deps.followUpFiling,
         },
         syncFn,
       );
