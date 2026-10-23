@@ -120,6 +120,51 @@ Deno.test("generateDenoMutants - operand of a wrapped if is mutated on each line
   ]);
 });
 
+Deno.test("generateDenoMutants - operand of an else if condition is mutated", () => {
+  assertEquals(operandMutants("} else if (a || b) {\n}\n", [1]), [
+    {
+      line: 1,
+      text: "} else if (false || b) {",
+      description: "dropped operand `a` (replaced with false)",
+    },
+    {
+      line: 1,
+      text: "} else if (a || false) {",
+      description: "dropped operand `b` (replaced with false)",
+    },
+  ]);
+});
+
+Deno.test("generateDenoMutants - operand of a while condition is mutated", () => {
+  assertEquals(operandMutants("while (a || b) {\n}\n", [1]), [
+    {
+      line: 1,
+      text: "while (false || b) {",
+      description: "dropped operand `a` (replaced with false)",
+    },
+    {
+      line: 1,
+      text: "while (a || false) {",
+      description: "dropped operand `b` (replaced with false)",
+    },
+  ]);
+});
+
+Deno.test("generateDenoMutants - operand of a wrapped while is mutated on each line", () => {
+  assertEquals(operandMutants("while (a &&\n  b) {\n}\n", [1, 2]), [
+    {
+      line: 1,
+      text: "while (true &&",
+      description: "dropped operand `a` (replaced with true)",
+    },
+    {
+      line: 2,
+      text: "  true) {",
+      description: "dropped operand `b` (replaced with true)",
+    },
+  ]);
+});
+
 Deno.test("generateDenoMutants - an operator at the start of the next line is sourced", () => {
   const source = "const ok = a\n  || b;\n";
   assertEquals(operandMutants(source, [1, 2]), [
