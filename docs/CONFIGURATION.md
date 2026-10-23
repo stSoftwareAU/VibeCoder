@@ -3820,7 +3820,8 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   a non-zero `/compact` run, appended bytes that cannot be read, a transcript
   rewritten shorter than its offset, a spawn that failed — is treated as
   uncompacted, and a transcript that cannot be located at all skips the
-  `/compact` turn unpaid. Every agent run of the issue then instead carries `--autocompact 100000` (the smallest window the CLI
+  `/compact` turn unpaid. Every agent run of the issue then instead carries
+  `--autocompact 100000` (the smallest window the CLI
   accepts, so its own compaction happens earliest), logged as
   `compaction: autocompact 100000`. A `new` or `reset` stream session has no
   conversation to compact and logs `compaction skipped: new stream session`

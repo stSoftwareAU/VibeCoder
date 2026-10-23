@@ -250,8 +250,8 @@ Supporting lifecycle code, each cited from the file it lives in:
   `releaseClaimWithCooldown` cover the heartbeat and release.
 - `worker/deno/lib/pr_review_claim_lease.ts:70` `isLeaseLive` and `:102`
   `createClaimLeaseRenewer` cover the lease used by PR review.
-- `worker/deno/lib/stream_compaction.ts:67-70` lists the compactable
-  providers (`claude` and `deepseek` only). `:160` is `supportsCompaction`.
+- `worker/deno/lib/stream_compaction.ts:79-82` lists the compactable
+  providers (`claude` and `deepseek` only). `:183` is `supportsCompaction`.
 - **Session persistence and resume.** `worker/deno/lib/session_resume.ts:132`
   `recordPhaseCompletion` increments the phase count on a session-state record
   (called from `worker/deno/lib/planning_processor.ts:1872`). `:216`
@@ -260,7 +260,7 @@ Supporting lifecycle code, each cited from the file it lives in:
   provider. A state tagged with another `providerId` is dropped (`:238`). An
   untagged legacy state is kept only for `claude` or `deepseek` (`:239-245`).
   DeepSeek calls it at `worker/deno/lib/agent_provider.ts:1125-1128`. Compaction
-  is a separate path (`stream_compaction.ts:67-70`, see section 7).
+  is a separate path (`stream_compaction.ts:79-82`, see section 7).
 
 ### Target
 
@@ -362,7 +362,7 @@ refuses loudly before spawn when `--agents` is dropped (Issue #4010).
 
 | Provider | Prompt transport | `--agents` | `--settings` (edit guard) | `supportsCompaction` | Behaviour with split on |
 | --- | --- | --- | --- | --- | --- |
-| `claude` | stdin (`agent_provider.ts:720`) | Emitted (`:617-618`) | Emitted (`:622-623`) | Yes (`stream_compaction.ts:67-70`) | Prompt block renders; executors defined; edit guard active. |
+| `claude` | stdin (`agent_provider.ts:720`) | Emitted (`:617-618`) | Emitted (`:622-623`) | Yes (`stream_compaction.ts:79-82`) | Prompt block renders; executors defined; edit guard active. |
 | `codex` | stdin (`:853`) | Not carried, silent at `buildInvocation` | Translated to per-spawn `hooks.PreToolUse` `-c` arguments when present (`agent_provider.ts:904`, `codex_executor.ts:414`); carries the RTK hook only, never the edit guard | No | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; no edit guard (the Codex `--settings` column carries only the RTK hook). |
 | `gemini` | argv (`:973`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; no edit guard. |
 | `deepseek` | stdin (`:1067`) | Stripped, warned (`:1120-1121`) | Stripped, silent (`:1120`, `:1132`) | Yes | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; the descriptor warns for `agents` only. No edit guard. |
