@@ -1134,20 +1134,25 @@ third-party tool's input uses that tool's semantics**.
 
 ### Writing a gate over text
 
-A deterministic gate over text — a PR summary, a Markdown file, a diff, a
-closure entry, or source code it counts or scans — fails in two ways its own
-tests rarely show: the matcher misses a realistic variant of the thing it
-exists to catch (or fires on a look-alike it should ignore), and input it
-cannot handle is skipped while the gate reports a clean pass. Fleet PRs have
-shipped both. VibeCoder#3148 counted a commented-out assertion as "moved"
-because its text was a substring of an added block. VibeCoder#3132 recognised
-only column-0 fences and paired inline code spans one line at a time, which a
-run over `docs/archive/pr-summaries/` would have exposed. VibeCoder#3134
-skipped every non-matching closure entry with `continue`, including the
-`partial`/`missing` entries that were the run's own evidence of a gap.
-VibeCoder#3157 counted `Deno.test(` inside string literals and counted
-`Deno.test.ignore` declarations, so it flagged correct Test Plan counts as
-stale. Before calling a gate done (Issue #3149):
+A deterministic gate over text — any text a matcher reads: a PR summary or other
+Markdown file, a diff, a closure entry, source code it counts or scans, or a
+config or CI workflow file (YAML, JSON, TOML) — fails in two ways its own tests
+rarely show: the matcher misses a realistic variant of the thing it exists to
+catch (or fires on a look-alike it should ignore), and input it cannot handle is
+skipped while the gate reports a clean pass. Fleet PRs have shipped both.
+VibeCoder#3148 counted a commented-out assertion as "moved" because its text was
+a substring of an added block. VibeCoder#3132 recognised only column-0 fences
+and paired inline code spans one line at a time, which a run over
+`docs/archive/pr-summaries/` would have exposed. VibeCoder#3134 skipped every
+non-matching closure entry with `continue`, including the `partial`/`missing`
+entries that were the run's own evidence of a gap. VibeCoder#3157 counted
+`Deno.test(` inside string literals and counted `Deno.test.ignore` declarations,
+so it flagged correct Test Plan counts as stale. VibeCoder#3716 decided whether
+a repo's CI runs cspell with a per-line regex over workflow YAML, so the
+`run: |` form with the command on the next line passed with no notice, and a
+stale version-comment checker in a fleet repo read only the line directly above
+`uses:`, missing a comment block of several lines and a `- name:` line before it
+(Issue #3929). Before calling a gate done (Issue #3149):
 
 1. **Evasion table.** For each thing the gate must catch, add a test per
    nearby variant an agent or human would plausibly produce — commented out,
@@ -1179,11 +1184,22 @@ stale. Before calling a gate done (Issue #3149):
    splits the matched phrase or claim itself across a line break, not only a
    nearby code span, and uses a real wrapped shape from the corpus, not an
    invented fixture.
-2. **Corpus run.** When a real corpus exists — `docs/archive/pr-summaries/`,
-   recent PR diffs, closure-verdict logs, the PR's own test files — run the
-   matcher across it and report the false-positive and false-negative counts
-   in the Test Plan. A counting gate compares its count with the tool's own
-   (the number of tests `deno test` reports it ran).
+
+   A gate over config or CI workflow YAML reads the structure, not one physical
+   line or only the line above: a `run: |` block scalar with the command on the
+   next line, a comment block of several lines above a step, and a `- name:`
+   line before `uses:` are layouts the policed files already use, and each gets
+   an evasion test (VibeCoder#3716, Issue #3929).
+2. **Corpus run.** Run the matcher over every file it polices, as it stands on
+   the base branch and at head — for a gate over workflow or config files,
+   those files themselves (`.github/workflows/*.yml`) — and report the
+   false-positive and false-negative counts in the Test Plan. When the PR also
+   fixes instances by hand, the matcher must report each line the fix changes
+   on the base copy, for every reason the PR's docs say it checks. Then add the
+   other corpora where they apply — `docs/archive/pr-summaries/`, recent PR
+   diffs, closure-verdict logs, the PR's own test files. A counting gate
+   compares its count with the tool's own (the number of tests `deno test`
+   reports it ran).
 3. **No silent pass on unread input.** Input the gate truncates, filters out,
    cannot parse, or skips with `continue` either fails closed or is logged and
    reported as not checked (for example `testDiffKnown=false`) — never a clean

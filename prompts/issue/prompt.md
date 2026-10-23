@@ -124,16 +124,25 @@ guessing — the analysis-only hand-off then routes it to a human.
      green while the feature stays broken for every other input.
    - **A gate over text catches the variants and never passes what it
      skipped.** When the change adds or changes a deterministic gate or
-     matcher over text — a PR summary, Markdown, a diff, closure entries,
-     source code it counts — follow **Writing a gate over text** in
-     `CODING-STANDARDS.md`: an evasion test per realistic variant of each
-     target, run both ways (variants it must still block, look-alikes it
-     must not fire on); a corpus run with false-positive and false-negative
-     counts in the Test Plan where a corpus exists
-     (`docs/archive/pr-summaries/`, the PR's own test files); input it
-     truncates, filters out, cannot parse or skips with `continue` fails
-     closed or is reported as not checked, never a clean pass; and both
-     sides of a comparison normalised the same way.
+     matcher over text — any text a matcher reads: Markdown and PR summaries,
+     diffs, closure entries, source code it counts, and config or CI workflow
+     files (YAML, JSON, TOML) — follow **Writing a gate over text** in
+     VibeCoder's `CODING-STANDARDS.md`
+     (https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#writing-a-gate-over-text;
+     the target repo's own file, if it has one, may lack the section), and do
+     not rely on this summary alone: an evasion test per realistic variant of
+     each target, including the re-wrapped across lines variant (a `run: |`
+     block whose command is on the next line, a comment block of several lines
+     above a step, a Markdown phrase split by a hard wrap), run both ways
+     (variants it must still block, look-alikes it must not fire on); a corpus
+     run, first over every file the matcher polices, as it stands on the base
+     branch and at head, then over the archive and test-file corpora
+     (`docs/archive/pr-summaries/`, the PR's own test files) where they apply,
+     with false-positive and false-negative counts in the Test Plan; when the
+     PR also fixes instances by hand, the matcher must report each line the fix
+     changes on the base copy; input it truncates, filters out, cannot parse or
+     skips with `continue` fails closed or is reported as not checked, never a
+     clean pass; and both sides of a comparison normalised the same way.
      Reading the worker's own marker out of a body that also holds agent,
      issue or comment text is such a gate: read the marker only at the
      anchored position where the worker writes it, or after the agent text is
