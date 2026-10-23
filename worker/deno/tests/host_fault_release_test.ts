@@ -11,15 +11,16 @@ import {
   type FailureCategory,
   SUMMARY_RULE_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
-import {
-  markIssueAsFailed,
-  markIssueAsFailedOnce,
-} from "../lib/label_failure.ts";
+import { markIssueAsFailedOnce } from "../lib/label_failure.ts";
 import {
   buildHostFaultReleaseComment,
   releaseHostFaultFailureLabels,
   resetHostFaultReleaseSweepsForTest,
 } from "../lib/host_fault_release.ts";
+
+/** A repeat failure's record (Issue #4158 replaced the old second-failure path). */
+const markRepeatFailure: typeof markIssueAsFailedOnce = (options, deps) =>
+  markIssueAsFailedOnce({ ...options, repeat: true }, deps);
 
 const REPO = "stSoftwareAU/GRQ-FX-validation";
 const FLEET_AUTHOR = "VibeCoderST";
@@ -551,7 +552,7 @@ Deno.test("releaseHostFaultFailureLabels - a marked summary-gate refusal quoting
     MARKED_REFUSAL_QUOTING_BROKEN_REF,
   );
   const second = await postedRecord(
-    markIssueAsFailed,
+    markRepeatFailure,
     MARKED_REFUSAL_QUOTING_BROKEN_REF,
   );
   // Fixture check: the reason alone is no host fault, but the posted body —
@@ -608,9 +609,9 @@ Deno.test("releaseHostFaultFailureLabels - a quality-gate record quoting host-lo
   const gate = { qualityGateOutput: true };
   const bodies: string[] = [
     await postedRecord(markIssueAsFailedOnce, diskFull, gate),
-    await postedRecord(markIssueAsFailed, diskFull, gate),
+    await postedRecord(markRepeatFailure, diskFull, gate),
     await postedRecord(markIssueAsFailedOnce, brokenRef, gate),
-    await postedRecord(markIssueAsFailed, brokenRef, gate),
+    await postedRecord(markRepeatFailure, brokenRef, gate),
   ];
   const [d1, d2, b1, b2] = bodies as [string, string, string, string];
   // Fixture check: the legacy body match would fire without the Source line.
@@ -645,7 +646,7 @@ Deno.test("declared substantive verifier records survive the host-fault release 
   const first = await postedRecord(markIssueAsFailedOnce, reason, {
     category: "quality_check",
   });
-  const second = await postedRecord(markIssueAsFailed, reason, {
+  const second = await postedRecord(markRepeatFailure, reason, {
     category: "quality_check",
   });
   assert(first.includes("**Category:** `quality-failure`"));

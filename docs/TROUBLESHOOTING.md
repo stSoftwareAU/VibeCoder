@@ -605,8 +605,9 @@ occupancy) with actionable suggestions.
 - Check the issue is not already assigned (unless assigned to the worker itself)
 - Check there's no open PR for that repo (worker waits for PR review before
   starting new work)
-- Check the issue doesn't have the `failed` label (permanently failed issues are
-  skipped)
+- A leftover `failed` label no longer blocks pickup: the worker strips it on
+  the next scan (Issue #4158). A recently failed issue waits out its cooldown
+  (2 h → 6 h → 24 h) before it is retried
 - Check the issue doesn't have the `needs-human` label (issues escalated to a
   human are skipped until the label is removed — see
   [Worker escalation via `needs-human`](USAGE.md#-worker-escalation-via-needs-human))
@@ -614,7 +615,7 @@ occupancy) with actionable suggestions.
   showing:
   - How many issues were returned from GitHub API
   - How many were filtered out due to being assigned to other users
-  - How many were filtered out due to having the `failed` label
+  - How many still carried a leftover `failed` label (stripped, not skipped)
   - Summary when all issues were filtered out explaining why
 
 ### Diagnostic decision tree
@@ -851,9 +852,9 @@ causes and remedies:
    may cause early termination.
 3. If the issue recurs, add `custom_instructions` to the repository config with
    hints for Claude.
-4. For persistent silent failures on a specific issue, the worker applies the
-   `failed-once` label after the first failure and `failed` after the second,
-   preventing infinite loops.
+4. For persistent silent failures on a specific issue, the worker records each
+   failure with `failed-once` and an escalating cooldown (2 h → 6 h → 24 h), so
+   it retries at most once a day. It never parks the issue (Issue #4158).
 
 ## 💳 Rate limits and subscription usage limits
 
@@ -949,14 +950,16 @@ when all issues across all repos fail consecutively. When active:
 The worker tracks failure counts per issue using persistent state.
 If an issue fails:
 
-1. **First failure** — `failed-once` label applied, issue unassigned, retried on
-   next scan
-2. **Second failure** — `failed` label applied, issue permanently skipped
+1. **Every failure** — a failure record is posted, `failed-once` is kept on the
+   issue, the issue is unassigned, and the escalating cooldown starts
+2. **Retry** — the worker claims it again when the cooldown ends. It is never
+   parked behind `failed` or handed to a human (Issue #4158): an assigned
+   issue is completed, and an issue that keeps failing is a Vibe Coder defect
+   to fix
 
-Failure state survives worker crashes and restarts. If you want the worker to
-retry:
+Failure state survives worker crashes and restarts. To see why it keeps
+failing:
 
-- Remove the `failed` label to allow two fresh attempts
 - Check the issue comments for crash reports or error details
 - The issue retry cooldown (`issue_retry_cooldown`, default: 600 seconds)
   prevents immediate re-attempts of recently failed issues
@@ -966,7 +969,7 @@ planning and question runs: a failed quality gate, a run that produced no
 changes and no useful output, or an unexplained failure all step the ladder, and
 each one also steps an escalating re-claim cooldown (2 h → 6 h → 24 h) instead
 of the flat 600 s base. If an issue you expected to be retried is sitting idle,
-check whether it now carries `failed-once` or `failed`.
+it is most likely waiting out that cooldown.
 
 Transient infrastructure is deliberately exempt and consumes no attempt. That
 covers account state — a rate or usage limit, an out-of-credit account, a run
@@ -1292,8 +1295,9 @@ let you know:
 - **Persistent state** — failure counts and circuit breaker state survive the
   crash, so the worker won't blindly retry the same failing work on restart.
 
-If crashes repeat on the same issue, the `failed-once` → `failed` label
-progression kicks in to prevent infinite crash loops.
+If crashes repeat on the same issue, the escalating cooldown (2 h → 6 h → 24 h)
+spaces the retries out, so a crash loop costs at most one attempt a day; the
+issue itself stays queued (Issue #4158).
 
 ## 🧊 Issue stuck as "assigned" with no progress
 

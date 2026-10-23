@@ -214,10 +214,9 @@ export async function workOnIssueSetupBranch(
     repo,
     issueNumber,
     githubUser,
-    allowedAuthors: config.allowedAuthors,
   });
   if (churnResult.ok && churnResult.value.escalated) {
-    logger.warn("Claim churn detected, escalating to planning", {
+    logger.warn("Claim churn detected, cooling down", {
       repo,
       issueNumber,
     });

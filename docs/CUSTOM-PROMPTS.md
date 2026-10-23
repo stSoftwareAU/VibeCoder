@@ -366,7 +366,7 @@ is**, checked in this order after the trust gate above:
 
 | Gate | The issue is skipped when |
 | --- | --- |
-| Blocking label | It carries `failed`, `needs-human`, `needs-revision`, `refine-issue`, `planning` or `question`, or it is a milestone-tracking issue. A `failed` label applied before the issue was reopened is cleared first, so reopening the issue is enough to make it workable again. |
+| Blocking label | It carries `needs-human`, `needs-revision`, `refine-issue`, `planning` or `question`, or it is a milestone-tracking issue. A leftover `failed` label is stripped first and never blocks (Issue #4158). |
 | Retry cooldown | This host recently failed on it, or has already worked it this run. |
 | Milestone occupancy | Another fleet account already holds an issue in the same milestone. |
 | Closed or merged PR | A fleet PR for this issue closed inside `closed_pr_cooldown_seconds` (default one hour), or merged at any time in the past. A trusted re-add of the custom label dated **after** the PR closed lifts either. |

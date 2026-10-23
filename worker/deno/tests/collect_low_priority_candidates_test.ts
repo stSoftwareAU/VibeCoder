@@ -755,7 +755,6 @@ async function collectSuppression(
 const WAITING_ON_HUMAN_CASES: Array<
   { name: string; labels: string[]; assignees: string[] }
 > = [
-  { name: "failed label", labels: ["failed"], assignees: [] },
   { name: "refine-issue label", labels: ["refine-issue"], assignees: [] },
   { name: "planning label", labels: ["planning"], assignees: [] },
   { name: "question label", labels: ["question"], assignees: [] },

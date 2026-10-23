@@ -23,20 +23,20 @@ import { DEFAULT_LABEL_CONFIG } from "./label_types.ts";
 /**
  * Heading patterns that indicate planning escalation in issue comments.
  *
- * These headings are posted by `escalateToPlanning()` and `checkClaimChurn()`
- * before the label is added. If the label add fails, these comments remain
- * as the only signal that planning mode was requested.
+ * This heading is posted by `escalateToPlanning()` before the label is
+ * added. If the label add fails, the comment remains as the only signal that
+ * planning mode was requested. Claim churn no longer asks for planning
+ * (Issue #4158), so its heading is not one.
  */
 export const PLANNING_ESCALATION_HEADINGS = [
   "## Automatic Escalation to Planning Mode",
-  "## Claim Churn Detected",
 ] as const;
 
 /**
  * Detect whether issue comments contain a planning escalation heading.
  *
  * This is a pure function — no side effects. It checks for the heading
- * patterns posted by `escalateToPlanning()` and claim churn detection.
+ * pattern posted by `escalateToPlanning()`.
  *
  * Issue #977: Fallback detection when the planning label was not
  * successfully added.

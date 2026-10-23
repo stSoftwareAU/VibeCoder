@@ -20,10 +20,11 @@ import {
   QUALITY_GATE_SOURCE_NOTE,
 } from "../lib/host_fault.ts";
 import { SECURITY_FIX_GATE_MARKER } from "../lib/failure_diagnosis.ts";
-import {
-  markIssueAsFailed,
-  markIssueAsFailedOnce,
-} from "../lib/label_failure.ts";
+import { markIssueAsFailedOnce } from "../lib/label_failure.ts";
+
+/** A repeat failure's record (Issue #4158 replaced the old second-failure path). */
+const markRepeatFailure: typeof markIssueAsFailedOnce = (options, deps) =>
+  markIssueAsFailedOnce({ ...options, repeat: true }, deps);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -335,16 +336,16 @@ Deno.test("label_failure - markIssueAsFailedOnce never marks quality-gate output
   assertEquals(body.includes(QUALITY_GATE_SOURCE_NOTE), true);
 });
 
-Deno.test("label_failure - markIssueAsFailed never marks quality-gate output as a host fault (Issue #3445)", async () => {
+Deno.test("label_failure - a repeat failure record never marks quality-gate output as a host fault (Issue #3445)", async () => {
   assertEquals(detectHostFault(QUALITY_GATE_DISK_FULL_MESSAGE), "disk-full");
-  const body = await postedBody(markIssueAsFailed, true);
+  const body = await postedBody(markRepeatFailure, true);
   assertEquals(body.includes("**Host fault:**"), false);
   assertEquals(parseHostFaultMarker(body), null);
   assertEquals(body.includes(QUALITY_GATE_SOURCE_NOTE), true);
 });
 
 Deno.test("isQualityGateFailureRecord - recognises only the worker-written head (Issue #3445)", async () => {
-  for (const write of [markIssueAsFailedOnce, markIssueAsFailed]) {
+  for (const write of [markIssueAsFailedOnce, markRepeatFailure]) {
     assertEquals(
       isQualityGateFailureRecord(await postedBody(write, true)),
       true,
@@ -392,14 +393,14 @@ Deno.test("label_failure - markIssueAsFailedOnce keeps the marker last after a w
   }
 });
 
-Deno.test("label_failure - markIssueAsFailed marks a host fault in the comment", async () => {
+Deno.test("label_failure - a repeat failure record marks a host fault in the comment", async () => {
   const dir = await makeTempDir();
   try {
     const { ghCommandFn, calls } = createMockGh({
       "label list": "failed\n",
     });
 
-    const result = await markIssueAsFailed({
+    const result = await markRepeatFailure({
       repo: "org/repo",
       issueNumber: 1815,
       githubUser: "worker-user",
@@ -415,14 +416,14 @@ Deno.test("label_failure - markIssueAsFailed marks a host fault in the comment",
   }
 });
 
-Deno.test("label_failure - markIssueAsFailed keeps the marker last after a workerFooter", async () => {
+Deno.test("label_failure - a repeat failure record keeps the marker last after a workerFooter", async () => {
   const dir = await makeTempDir();
   try {
     const { ghCommandFn, calls } = createMockGh({
       "label list": "failed\n",
     });
 
-    await markIssueAsFailed({
+    await markRepeatFailure({
       repo: "org/repo",
       issueNumber: 1815,
       githubUser: "worker-user",

@@ -49,7 +49,6 @@ export async function findPlanningIssuesWithFallback(
   const labelResult = await findIssuesByLabel(
     config,
     config.planningLabel,
-    true,
     options,
   );
 
