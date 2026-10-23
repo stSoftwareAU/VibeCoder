@@ -12,6 +12,8 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { CLAUDE_OUTPUT_ADAPTER } from "../lib/claude_output_adapter.ts";
+import { buildRunStats } from "../lib/run_stats.ts";
 import {
   attemptPrSelfHealing,
   buildDiagnosticContext,
@@ -877,6 +879,47 @@ Deno.test("runExecuteClaudePhase - a clean exit with no changes is still no_chan
   );
   assertEquals(result.action, "no_changes");
 });
+
+for (
+  const [output, expected] of [
+    [
+      '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1}',
+      "failure",
+    ],
+    ['{"type":"result","is_error":false,"num_turns":0}', "failure"],
+    [
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Starting work"}]}}',
+      "failure",
+    ],
+    [
+      '{"type":"result","is_error":false,"num_turns":1,"result":"Already correct"}',
+      "no_changes",
+    ],
+  ] as const
+) {
+  Deno.test(`runExecuteClaudePhase - structured empty run ${output} returns ${expected} (Issue #4147)`, async () => {
+    const result = await runExecuteClaudePhase(
+      createTestOptions(),
+      createMockDeps({
+        runClaudeWithRetry: async () => ({
+          ok: true,
+          value: {
+            exitCode: 0,
+            output,
+            timedOut: false,
+            agentOutput: CLAUDE_OUTPUT_ADAPTER.decode(output),
+            runStats: buildRunStats(output, {
+              requestedModel: "test",
+              wallClockMs: 0,
+            }),
+          },
+        }),
+        runGitCommand: async () => ({ ok: true, value: "" }),
+      }),
+    );
+    assertEquals(result.action, expected);
+  });
+}
 
 Deno.test("runExecuteClaudePhase - screenshot label triggers screenshot instructions", async () => {
   let promptOptions: Record<string, unknown> | undefined;

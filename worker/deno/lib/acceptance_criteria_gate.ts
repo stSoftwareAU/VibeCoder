@@ -205,22 +205,13 @@ function listItemsUnder(markdown: string, heading: RegExp): string[] {
 }
 
 /**
- * Match the entry's status word — the earliest standalone status token in the
- * text, so a criterion that merely mentions another status word in its prose
- * ("the block is not missing") is still classified by its own leading status.
+ * Match the entry's leading status, allowing Markdown emphasis/code markers.
+ * Status words inside criterion prose or nested test descriptions are not an
+ * assessment (for example, "a missing or unreadable value" in a negative test).
  */
 function statusOf(entry: string): ClosureEntry["status"] | null {
-  const normalised = entry.toLowerCase();
-  let best: { status: ClosureEntry["status"]; index: number } | null = null;
-  for (const status of ["unrequested", "partial", "missing", "met"] as const) {
-    const match = normalised.match(
-      new RegExp(`(?:^|[^a-z])(${status})(?:[^a-z]|$)`),
-    );
-    if (!match) continue;
-    const index = match.index! + match[0].indexOf(status);
-    if (!best || index < best.index) best = { status, index };
-  }
-  return best?.status ?? null;
+  const match = entry.match(/^[\s*_`]*(unrequested|partial|missing|met)\b/i);
+  return match ? match[1]!.toLowerCase() as ClosureEntry["status"] : null;
 }
 
 // Hardcoded per-label patterns — a `new RegExp(label…)` built from an argument
@@ -246,7 +237,7 @@ function hasFilledLabel(
 /**
  * Parse the `## Acceptance Criteria` closure block out of a PR summary.
  *
- * Only list items carrying a recognised status word are treated as assessment
+ * Only list items starting with a recognised status are treated as assessment
  * entries, so a prose lead-in above the list is ignored rather than mis-counted.
  *
  * @param prSummaryContent - The PR summary (or assembled PR body).

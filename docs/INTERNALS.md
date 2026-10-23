@@ -390,9 +390,9 @@ bash `worker/run_core.sh` conductor. It sequences:
    #3177, [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)).
    A PR into a milestone branch merges unreviewed on green CI, so a PR whose
    `## Acceptance Criteria` block marks any criterion `missing` used to close
-   its issue as completed. Now the issue stays open: the closer labels it
-   `needs-human` and comments naming each missing criterion, and an issue that
-   already carries `needs-human` is left alone so the comment is not repeated.
+   its issue as completed. The issue stays open with its existing labels so the worker can finish
+   it. Both closers record the missing criteria in their diagnostic output;
+   they neither apply `needs-human` nor post repeated hand-off comments.
    The PR itself is raised as `Part of #N` rather than `Closes #N` in that case
    (`assemblePrBody`), but a fleet PR's title still names its issue, so the
    closer check is what actually holds it open.
@@ -421,7 +421,7 @@ flowchart TD
     R -->|No| F{"Merge landed on the<br/>default branch? (#4396)"}
     F -->|No| Z
     F -->|Yes| M{"PR's closure block marks<br/>a criterion missing? (#3177)"}
-    M -->|Yes| H["Left open, labelled needs-human,<br/>comment names the missing criteria"]
+    M -->|Yes| H["Left open and queued<br/>to finish the missing criteria"]
     M -->|No| G["Closed, naming the PR<br/>and the merge commit"]
     style G fill:#2d6a4f,stroke:#1b4332,color:#fff
     style H fill:#e9c46a,stroke:#b08900,color:#000
@@ -5758,7 +5758,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file)                                                                                                                           |
 |                             | [merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts)                                           | Housekeeping sweep closing issues whose fix already merged and landed (Issue #504)                                                                                                                                              |
 |                             | [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)                                   | The fleet-authored milestone roll-back marker both merged-PR closers honour, so a reverted child stays reopened (Issue #1770)                                                                                                   |
-|                             | [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)                           | A PR whose closure block marks a criterion `missing` is raised as `Part of #N`, and the merged-PR closers leave its issue open for a human (Issue #3177)                                                                        |
+|                             | [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)                           | A PR whose closure block marks a criterion `missing` is raised as `Part of #N`, and the merged-PR closers keep its issue queued for completion (Issue #3177)                                                                        |
 |                             | [milestone_rollback_requeue.ts](../worker/deno/lib/milestone_rollback_requeue.ts)                                 | After a successful roll-back, reopen and re-queue each reverted child and close its PRs; after a failed one, escalate once on an issue that already exists (Issue #1781)                                                        |
 |                             | [quality_gate.ts](../worker/deno/lib/quality_gate.ts)                                                             | Quality gate entry point                                                                                                                                                                                                        |
 |                             | [quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)                                                       | Quality check runner utilities                                                                                                                                                                                                  |

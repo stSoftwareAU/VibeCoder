@@ -19,21 +19,19 @@
  *     M -- yes --> P["PR body says Part of #N<br/>and names the missing criteria"]
  *     C --> X["Merge: closer closes the issue"]
  *     P --> H{"Merge: closer reads<br/>the merged PR body"}
- *     H --> O["Issue left open, labelled needs-human,<br/>comment names the missing criteria"]
+ *     H --> O["Issue left open and queued<br/>to finish the missing criteria"]
  * ```
  *
  * The closer check is the belt and braces: a fleet PR title names its issue
  * (`(Issue #N)`), so a closer that reads titles would close the issue even
  * with no closing keyword in the body.
  *
- * Every function here is pure except {@link holdIssueOpenForMissingCriteria},
- * which takes `gh` injected.
+ * Every function here is pure. The closers preserve the existing labels.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { parseClosureEntries } from "./acceptance_criteria_gate.ts";
-import { LABEL_DEFAULTS } from "./config_defaults.ts";
 
 /** Longest criterion text quoted back in a comment or PR note. */
 const MAX_QUOTED_LENGTH = 300;
@@ -106,87 +104,8 @@ export function buildMissingCriteriaPrNote(
     "",
     ...missing.map(quote),
     "",
-    `When it merges, the worker leaves #${issueNumber} open, labels it ` +
-    `\`${LABEL_DEFAULTS.needsHumanLabel}\` and names the missing criteria ` +
-    "on the issue (Issue #3177).",
+    `When it merges, the worker leaves #${issueNumber} open with its existing ` +
+    "labels so it remains queued to finish the missing criteria (Issue #3177).",
     "",
   ].join("\n");
-}
-
-/**
- * The issue comment posted when a merged PR is not allowed to close its
- * issue.
- *
- * @param args.prNumber - The merged PR.
- * @param args.baseRefName - The branch it merged into, when known.
- * @param args.missing - The `missing` entries from the merged PR's body.
- */
-export function buildMissingCriteriaHoldComment(args: {
-  prNumber: number;
-  baseRefName?: string;
-  missing: readonly string[];
-}): string {
-  const where = args.baseRefName ? ` into \`${args.baseRefName}\`` : "";
-  return [
-    `⚠️ **Left open — PR #${args.prNumber} merged${where}, but its own ` +
-    `\`## Acceptance Criteria\` block marks ${args.missing.length} ` +
-    `criteri${args.missing.length === 1 ? "on" : "a"} \`missing\`:**`,
-    "",
-    ...args.missing.map(quote),
-    "",
-    "A PR that says the deliverable is absent does not complete the issue, " +
-    "so the worker has not closed it and has labelled it " +
-    `\`${LABEL_DEFAULTS.needsHumanLabel}\` (Issue #3177). Finish the ` +
-    "missing criteria in a follow-up PR, or close this issue by hand if the " +
-    "gap is acceptable.",
-  ].join("\n");
-}
-
-/**
- * Leave an issue open after its PR merged with `missing` criteria: label it
- * `needs-human`, then comment naming the criteria.
- *
- * The label goes on first. A failed label throws before the comment is
- * posted, so the caller retries next cycle without having commented twice;
- * an issue that already carries the label is left alone, which is what keeps
- * a closer that runs every cycle from repeating itself.
- *
- * @returns `"held"` when the label and comment were applied, or
- *   `"already-held"` when the issue already carried the label.
- * @throws when `gh` fails.
- */
-export async function holdIssueOpenForMissingCriteria(args: {
-  repo: string;
-  issueNumber: number;
-  prNumber: number;
-  baseRefName?: string;
-  missing: readonly string[];
-  issueLabels: readonly string[];
-  ghCommandFn: (args: string[]) => Promise<string>;
-}): Promise<"held" | "already-held"> {
-  const label = LABEL_DEFAULTS.needsHumanLabel;
-  if (args.issueLabels.includes(label)) return "already-held";
-  await args.ghCommandFn([
-    "issue",
-    "edit",
-    String(args.issueNumber),
-    "--repo",
-    args.repo,
-    "--add-label",
-    label,
-  ]);
-  await args.ghCommandFn([
-    "issue",
-    "comment",
-    String(args.issueNumber),
-    "--repo",
-    args.repo,
-    "--body",
-    buildMissingCriteriaHoldComment({
-      prNumber: args.prNumber,
-      ...(args.baseRefName ? { baseRefName: args.baseRefName } : {}),
-      missing: args.missing,
-    }),
-  ]);
-  return "held";
 }

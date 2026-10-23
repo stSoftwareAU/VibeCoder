@@ -8,6 +8,8 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
+import { CLAUDE_OUTPUT_ADAPTER } from "../lib/claude_output_adapter.ts";
+import { buildRunStats } from "../lib/run_stats.ts";
 
 type Work = "none" | "uncommitted" | "local" | "remote" | "pr";
 
@@ -48,7 +50,16 @@ async function run(exitCode: number, output: string, work: Work = "none") {
             invocations++;
             return Promise.resolve({
               ok: true,
-              value: { output, exitCode, timedOut: false },
+              value: {
+                output,
+                exitCode,
+                timedOut: false,
+                agentOutput: CLAUDE_OUTPUT_ADAPTER.decode(output),
+                runStats: buildRunStats(output, {
+                  requestedModel: "test",
+                  wallClockMs: 0,
+                }),
+              },
             });
           },
         },
@@ -113,6 +124,31 @@ Deno.test("#4147 fleet execute: completed empty run can reach no_changes", async
   if (result.status !== "early_exit") return;
   assertEquals(result.reason, "no_changes");
   assertEquals(invocations, 1);
+});
+
+for (
+  const output of [
+    '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1}',
+    '{"type":"result","is_error":false,"num_turns":0}',
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"Starting work"}]}}',
+  ]
+) {
+  Deno.test(`#4147 fleet execute: exit-zero incomplete run is retried: ${output}`, async () => {
+    const { result, invocations } = await run(0, output);
+    assertEquals(result.status, "failure");
+    assertEquals(invocations, 2);
+  });
+}
+
+Deno.test("#4147 fleet execute: completed one-turn result can reach no_changes", async () => {
+  const { result } = await run(
+    0,
+    '{"type":"result","is_error":false,"num_turns":1,"result":"Already correct"}',
+  );
+  assertEquals(
+    result.status === "early_exit" ? result.reason : result.status,
+    "no_changes",
+  );
 });
 
 for (const work of ["uncommitted", "local", "remote", "pr"] as const) {

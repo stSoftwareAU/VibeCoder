@@ -181,6 +181,20 @@ Deno.test("parseClosureEntries - reads evidence from a nested continuation line"
   assertEquals(entries[0]!.hasEvidence, true);
 });
 
+Deno.test("parseClosureEntries - status words inside criterion prose are not assessments", () => {
+  assertEquals(
+    parseClosureEntries(summary([
+      "## Acceptance Criteria",
+      "",
+      "- **Each negative test fails for its reason**:",
+      "  - a missing or unreadable data-effective-value is reported",
+      "- The partial response is covered by a regression test.",
+      "- The condition is met by the existing implementation.",
+    ])),
+    [],
+  );
+});
+
 Deno.test("parseClosureEntries - no block yields no entries", () => {
   assertEquals(parseClosureEntries(summary([])), []);
 });

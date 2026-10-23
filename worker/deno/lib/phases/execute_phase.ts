@@ -40,7 +40,10 @@ import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { getPromptsCommit } from "../prompt_manager.ts";
 import { promptOverrideMappings } from "../custom_label_prompts_config.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
-import { detectScreenshotRequired } from "../execute_claude_phase.ts";
+import {
+  detectScreenshotRequired,
+  emptyRunFailureReason,
+} from "../execute_claude_phase.ts";
 import {
   describeGraftContext,
   graftContextFacts,
@@ -2096,12 +2099,13 @@ async function executeClaudeBody(
     // Keep the standalone runExecuteClaudePhase guard in sync (Issue #4147).
     // A failed agent with no recoverable work must enter the retry ladder;
     // no_changes would hand the implementation issue to a human as analysis.
-    if (claudeResult.value.exitCode !== 0) {
+    const emptyFailure = emptyRunFailureReason(claudeResult.value);
+    if (emptyFailure) {
       return {
         category: "internal_error",
         status: "failure",
         reason: formatDetailedFailureMessage(
-          `Claude execution failed: the agent exited ${claudeResult.value.exitCode} ` +
+          `Claude execution failed: the agent ${emptyFailure} ` +
             "without making any change. The issue stays queued for a retry.",
           {
             elapsedSeconds: Math.round(

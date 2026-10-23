@@ -37,9 +37,7 @@ import {
 } from "./merged_sweep_watermark.ts";
 import { defaultLogger } from "./logger.ts";
 import { redactSecrets } from "./secret_redaction.ts";
-import {
-  holdIssueOpenForMissingCriteria,
-} from "./missing_criterion_close_guard.ts";
+import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
 
 /** Build a canonical PR URL for the given repo and PR number. */
 function buildPrUrl(repo: string, prNumber: number): string {
@@ -367,6 +365,8 @@ const CLOSED_PR_COOLDOWN_MS = 3600 * 1000;
  * the idempotency marker. Checks open PRs first, then merged, then
  * recently-closed (Issue #1427) — a recently-closed PR indicates the
  * worker already attempted this issue and should not immediately retry.
+ * A merged PR that admits missing criteria does not suppress the remaining
+ * work. Its body is read live on the cached path, whose rows omit the body.
  *
  * @param repo - Repository in "owner/repo" format
  * @param issueNumber - The issue number to search for
@@ -412,7 +412,7 @@ export async function findExistingPrForIssue(
       return { ok: true, value: buildPrUrl(repo, openMatch.number) };
     }
 
-    // Merged: present means work already done.
+    // Merged: only a PR without declared missing criteria can mean done.
     const mergedPrs = await fetchPRsForIssueByTitle(
       repo,
       issueNumber,
@@ -421,11 +421,20 @@ export async function findExistingPrForIssue(
       ghCommandFn,
       log,
     );
-    const mergedMatch = mergedPrs.find((pr) =>
-      prTitleMatchesIssue(pr.title, issueNumber)
-    );
-    if (mergedMatch) {
-      return { ok: true, value: buildPrUrl(repo, mergedMatch.number) };
+    for (const pr of mergedPrs) {
+      if (!prTitleMatchesIssue(pr.title, issueNumber)) continue;
+      const output = await ghCommandFn([
+        "pr",
+        "view",
+        String(pr.number),
+        "--repo",
+        repo,
+        "--json",
+        "body",
+      ]);
+      const { body } = JSON.parse(output) as { body?: string };
+      if (findMissingCriteria(body ?? "").length > 0) continue;
+      return { ok: true, value: buildPrUrl(repo, pr.number) };
     }
 
     // Closed-not-merged: only block within the cooldown window.
@@ -461,7 +470,7 @@ export async function findExistingPrForIssue(
       // (Issue #1124): a PR title and body are attacker-writable on a
       // public repository, and a match here suppresses work on the issue.
       const fields = state === "closed"
-        ? "number,title,body,url,closedAt,author,isCrossRepository"
+        ? "number,title,body,url,closedAt,mergedAt,author,isCrossRepository"
         : "number,title,body,url,author,isCrossRepository";
       const output = await ghCommandFn([
         "pr",
@@ -482,6 +491,7 @@ export async function findExistingPrForIssue(
         body?: string;
         url: string;
         closedAt?: string;
+        mergedAt?: string | null;
         author?: { login?: string };
         isCrossRepository?: boolean;
       }> = JSON.parse(output.trim() || "[]");
@@ -508,6 +518,13 @@ export async function findExistingPrForIssue(
           );
           continue;
         }
+
+        // The closed listing also includes merged PRs. A partial merge
+        // skipped above must not reappear here as a recent closed attempt.
+        if (state === "closed" && pr.mergedAt) continue;
+        if (
+          state === "merged" && findMissingCriteria(pr.body ?? "").length > 0
+        ) continue;
 
         // For closed PRs, only block if closed within the cooldown window
         if (state === "closed") {
@@ -1049,25 +1066,14 @@ export async function closeIssuesForMergedPrs(
           // Issue #3177: the merged PR's own closure block says a criterion
           // is missing, so the merge does not complete the issue. A milestone
           // PR merges unreviewed on green CI, so this is the only check.
-          // Leave it open for a human; a failed label throws to the catch
-          // below and is retried next cycle.
+          // Leave its discovery labels intact so the next run finishes it.
           const missing = pr.missingCriteria ?? [];
           if (missing.length > 0) {
-            const held = await holdIssueOpenForMissingCriteria({
-              repo,
-              issueNumber,
-              prNumber: pr.number,
-              baseRefName: landing.baseRefName,
-              missing,
-              issueLabels: issueData.labels.map((l) => l.name),
-              ghCommandFn,
-            });
             options?.logFn?.(
               `[close-merged-pr] ${repo}#${issueNumber}: PR #${pr.number} ` +
-                `marks ${missing.length} criteria missing — left open ` +
-                `(${held}) (Issue #3177)`,
+                `marks ${missing.length} criteria missing — left queued ` +
+                `for completion (Issue #3177): ${missing.join("; ")}`,
             );
-            if (held === "held") mutated = true;
             continue;
           }
 

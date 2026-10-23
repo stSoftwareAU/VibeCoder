@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "line": 636,
+        "outcome": "Non-zero exits fail; zero exits continue to structured checks.",
+        "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
+        "testName": "#4147 fleet execute: failed empty run is retried: The agent process crashed before produci",
+        "flipWentRed": "Forced the condition false: crashed-run assertions failed. Forced it true: clean-run assertions failed."
+      },
+      {
+        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "line": 637,
+        "outcome": "Rejects a failed run with exit zero; clean one-turn and legacy raw output remain eligible.",
+        "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
+        "testName": "#4147 fleet execute: exit-zero incomplete run is retried: {\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"num_turns\":1}",
+        "flipWentRed": "Forced failed-result condition false: the corresponding fleet and standalone failure assertions failed."
+      },
+      {
+        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "line": 638,
+        "outcome": "Rejects a incomplete run with exit zero; clean one-turn and legacy raw output remain eligible.",
+        "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
+        "testName": "#4147 fleet execute: exit-zero incomplete run is retried: {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Starting work\"}]}}",
+        "flipWentRed": "Forced unfinished-result condition false: the corresponding fleet and standalone failure assertions failed."
+      },
+      {
+        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "line": 641,
+        "outcome": "Rejects a zero-turn run with exit zero; clean one-turn and legacy raw output remain eligible.",
+        "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
+        "testName": "#4147 fleet execute: exit-zero incomplete run is retried: {\"type\":\"result\",\"is_error\":false,\"num_turns\":0}",
+        "flipWentRed": "Forced zero-turns condition false: the corresponding fleet and standalone failure assertions failed."
+      },
+      {
+        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "line": 642,
+        "outcome": "A completed one-turn result produces no failure reason.",
+        "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
+        "testName": "#4147 fleet execute: completed one-turn result can reach no_changes",
+        "flipWentRed": "Forced the non-zero exit condition true: the completed-result no_changes assertion failed."
+      },
+      {
+        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "line": 2053,
+        "outcome": "A reason returns execution_error; clean empty runs reach no_changes.",
+        "test": "worker/deno/tests/execute_claude_phase_test.ts",
+        "testName": "runExecuteClaudePhase - an agent that failed with no changes is a failure, never no_changes (Issue #4147)",
+        "flipWentRed": "Forced the condition false: the standalone failure assertion failed."
+      },
+      {
+        "path": "worker/deno/lib/phases/execute_phase.ts",
+        "line": 2103,
+        "outcome": "A reason returns internal_error and retries; clean empty runs reach no_changes.",
+        "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
+        "testName": "#4147 fleet execute: failed empty run is retried: The agent process crashed before produci",
+        "flipWentRed": "Forced the condition false: fleet failure and bounded-retry assertions failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_issue_linking.ts",
+        "line": 436,
+        "outcome": "Cached merged PR with missing criteria is skipped; an all-met body is found.",
+        "test": "worker/deno/tests/missing_criterion_close_guard_3177_test.ts",
+        "testName": "incomplete merged PR does not suppress the remaining work (cache=true)",
+        "flipWentRed": "Forced the condition false: the cached partial-merge eligibility assertion failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_issue_linking.ts",
+        "line": 524,
+        "outcome": "Closed-state operand: a merged row in the closed listing is skipped; the merged-state pass can still return a complete merge.",
+        "test": "worker/deno/tests/missing_criterion_close_guard_3177_test.ts",
+        "testName": "incomplete merged PR does not suppress the remaining work (cache=false)",
+        "flipWentRed": "Removed the state operand: the complete-merge lookup assertion failed. Disabled the guard: the partial-merge assertion failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_issue_linking.ts",
+        "line": 524,
+        "outcome": "Merged-at operand: a closed unmerged attempt retains its cooldown.",
+        "test": "worker/deno/tests/missing_criterion_close_guard_3177_test.ts",
+        "testName": "incomplete closed PR still blocks a duplicate attempt (cache=false)",
+        "flipWentRed": "Removed the mergedAt operand: the recently-closed duplicate-prevention assertion failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_issue_linking.ts",
+        "line": 526,
+        "outcome": "Merged-state operand: an open incomplete PR still blocks a duplicate.",
+        "test": "worker/deno/tests/missing_criterion_close_guard_3177_test.ts",
+        "testName": "incomplete open PR still blocks a duplicate attempt (cache=false)",
+        "flipWentRed": "Removed the merged-state operand: the open-PR duplicate-prevention assertion failed."
+      },
+      {
+        "path": "worker/deno/lib/pr_issue_linking.ts",
+        "line": 526,
+        "outcome": "Missing-criteria operand: an incomplete merged PR is skipped and an all-met merge remains findable.",
+        "test": "worker/deno/tests/missing_criterion_close_guard_3177_test.ts",
+        "testName": "incomplete merged PR does not suppress the remaining work (cache=false)",
+        "flipWentRed": "Forced the condition false: the uncached partial-merge eligibility assertion failed."
+      },
+      {
+        "path": "worker/deno/lib/acceptance_criteria_gate.ts",
+        "line": 215,
+        "outcome": "Leading assessment statuses parse; status words inside ordinary criterion prose do not.",
+        "test": "worker/deno/tests/acceptance_criteria_gate_test.ts",
+        "testName": "parseClosureEntries - status words inside criterion prose are not assessments",
+        "flipWentRed": "The unanchored original parser failed this assertion and the real closer regression; the anchored parser passed both."
+      }
+    ]
+  }
+}
