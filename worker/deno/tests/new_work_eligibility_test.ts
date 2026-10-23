@@ -274,7 +274,7 @@ Deno.test(
 );
 
 Deno.test(
-  "new_work_eligibility - an issue still carrying failed is refused (Issue #937)",
+  "new_work_eligibility - an issue still carrying a leftover failed is stripped and eligible (Issues #937, #4158)",
   async () => {
     const gh = createGh({ issues: [], timelines: { 7: [] } });
     const ctx = await buildNewWorkGateContext(
@@ -290,8 +290,8 @@ Deno.test(
       ctx,
     );
 
-    assertEquals(verdict.eligible, []);
-    assertEquals(verdict.blocked[0]?.reason, "filtered-out");
+    assertEquals(verdict.eligible.map((i) => i.number), [7]);
+    assertEquals(verdict.blocked, []);
   },
 );
 

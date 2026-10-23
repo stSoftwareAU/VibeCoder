@@ -211,6 +211,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // "now has N" totals; only a growth measurement separates its linear
   // scans from a quadratic one on a long hostile line (Issue #3740).
   "tests/test_plan_recount_partial_3740_test.ts",
+  // The "Added N tests to `file`" partial-addition pattern reads agent-written
+  // Test Plan prose; only a growth measurement separates its linear scan from
+  // a backtracking one on a long hostile line (Issue #3983).
+  "tests/test_plan_recount_added_n_to_3983_test.ts",
   // The change-request quote extractor scans reviewer-written text; only a
   // growth measurement separates its linear hand-written scanners from a
   // backtracking regex (#3244).

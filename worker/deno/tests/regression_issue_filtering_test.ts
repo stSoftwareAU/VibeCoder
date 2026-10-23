@@ -52,7 +52,6 @@ function makeIssue(overrides: Partial<FilterableIssue> = {}): FilterableIssue {
 
 function makeLabels(): FilterLabels {
   return {
-    failedLabel: "failed",
     needsRevisionLabel: "needs-revision",
     refineIssueLabel: "refine-issue",
     planningLabel: "planning",
@@ -115,7 +114,8 @@ Deno.test("regression issue_filter - filterAndSort with empty array", () => {
 Deno.test("regression issue_filter - filterAndSort excludes all blocking labels", () => {
   const labels = makeLabels();
   const issues = [
-    makeIssue({ number: 1, labels: [labels.failedLabel] }),
+    // Issue #4158: `failed` no longer parks an issue, so it stays eligible.
+    makeIssue({ number: 1, labels: ["failed"] }),
     // Issue #2031: needs-clarification retired; needs-human is the handoff label.
     makeIssue({ number: 2, labels: [labels.needsHumanLabel] }),
     makeIssue({ number: 3, labels: [labels.needsRevisionLabel] }),
@@ -125,8 +125,7 @@ Deno.test("regression issue_filter - filterAndSort excludes all blocking labels"
     makeIssue({ number: 7, labels: [] }), // eligible
   ];
   const result = filterAndSort(issues, labels);
-  assertEquals(result.length, 1);
-  assertEquals(result[0]!.number, 7);
+  assertEquals(result.map((i) => i.number), [1, 7]);
 });
 
 Deno.test("regression issue_filter - filterAndSort sorts by createdAt ascending", () => {

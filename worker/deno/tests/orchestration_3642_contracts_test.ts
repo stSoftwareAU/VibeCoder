@@ -129,6 +129,15 @@ Deno.test("codex refuses arbitrary tool denials outside the role sandbox policy"
   );
 });
 
+Deno.test("providerCapabilities - every registered target provider can be probed (Issue #4121)", () => {
+  for (const p of ["claude", "codex", "gemini", "deepseek"] as const) {
+    const caps = providerCapabilities(p);
+    assertEquals(typeof caps, "object");
+    assertEquals(typeof caps.settingsHook, "boolean");
+  }
+  assertEquals(providerCapabilities("codex").settingsHook, false);
+});
+
 Deno.test("a manager on a provider without compaction is refused as unsupported_capability", () => {
   // The denied list is empty, so only the compaction rule can refuse the manager.
   for (const provider of ["gemini"] as const) {

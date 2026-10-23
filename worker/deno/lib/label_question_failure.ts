@@ -58,7 +58,7 @@ export function buildQuestionFailureComment(
   const reason = getQuestionFailureReason(failureCategory);
 
   const header = isSecondFailure
-    ? "## Question Answering Failed (Second Attempt)"
+    ? "## Question Answering Failed (Repeat Attempt)"
     : "## Question Answering Failed";
 
   let commentBody = `${header}
@@ -80,8 +80,7 @@ ${failureMessage}
     commentBody += `
 
 ### What happened?
-This question has failed twice. The \`failed\` label has been added to prevent further automatic attempts.
-To retry, remove the \`failed\` label — the \`${questionLabel}\` label is still present so the question will be retried automatically.`;
+This question has failed more than once. It keeps the \`${questionLabel}\` label and is retried automatically once its cooldown ends — the Vibe Coder never parks it (Issue #4158).`;
   }
 
   commentBody += `
@@ -137,63 +136,27 @@ export async function handleQuestionFailure(
     // Best-effort
   }
 
-  // Handle labels
-  if (isSecondFailure) {
-    try {
-      await ghCommandFn([
-        "issue",
-        "edit",
-        String(options.issueNumber),
-        "--repo",
-        options.repo,
-        "--remove-label",
-        labels.failedOnceLabel,
-      ]);
-    } catch {
-      // Best-effort
-    }
-    // Issue #368: colour + description come from the canonical label table.
-    await ensureLabelExists(
-      options.repo,
-      labels.failedLabel,
-      undefined,
-      undefined,
-      deps,
+  // Issue #4158: a repeat failure keeps `failed-once` and is never parked
+  // behind `failed`; the question stays queued for its next attempt.
+  await ensureLabelExists(
+    options.repo,
+    labels.failedOnceLabel,
+    "fbca04",
+    "Issue failed once - will be retried",
+    deps,
+  );
+  // Issue #976: Use REST API with CLI fallback for label operations
+  // Issue #978: Label-add is non-fatal — the comment is the primary signal
+  const failedOnceResult = await addLabelToIssue(
+    options.repo,
+    options.issueNumber,
+    labels.failedOnceLabel,
+    deps,
+  );
+  if (!failedOnceResult.ok) {
+    console.warn(
+      `[label_manager] Warning: Failed to add '${labels.failedOnceLabel}' label to issue #${options.issueNumber} in ${options.repo} — continuing workflow (Issue #978)`,
     );
-    // Issue #976: Use REST API with CLI fallback for label operations
-    // Issue #978: Label-add is non-fatal — the comment is the primary signal
-    const failedResult = await addLabelToIssue(
-      options.repo,
-      options.issueNumber,
-      labels.failedLabel,
-      deps,
-    );
-    if (!failedResult.ok) {
-      console.warn(
-        `[label_manager] Warning: Failed to add '${labels.failedLabel}' label to issue #${options.issueNumber} in ${options.repo} — continuing workflow (Issue #978)`,
-      );
-    }
-  } else {
-    await ensureLabelExists(
-      options.repo,
-      labels.failedOnceLabel,
-      "fbca04",
-      "Issue failed once - will be retried",
-      deps,
-    );
-    // Issue #976: Use REST API with CLI fallback for label operations
-    // Issue #978: Label-add is non-fatal — the comment is the primary signal
-    const failedOnceResult = await addLabelToIssue(
-      options.repo,
-      options.issueNumber,
-      labels.failedOnceLabel,
-      deps,
-    );
-    if (!failedOnceResult.ok) {
-      console.warn(
-        `[label_manager] Warning: Failed to add '${labels.failedOnceLabel}' label to issue #${options.issueNumber} in ${options.repo} — continuing workflow (Issue #978)`,
-      );
-    }
   }
 
   // Remove assignee

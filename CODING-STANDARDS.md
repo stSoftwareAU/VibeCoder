@@ -1061,35 +1061,45 @@ the PR summary with a source link to the callee's code or docs.
 
 **A fake mirrors the production implementation it stands in for.** The stub
 rule above covers another repository's binary; this covers the repository's
-own ports. When a test double replaces one of the repository's own ports (a
-trait or interface with a production implementation) and the change relies
-on a property of that port, read the production implementation first and
-confirm it has that property. Examples of such properties: which rows a read
-returns, a filter, ordering or paging, which value types a write accepts, or
-whether a conditional write can lose. If the fake behaves differently, fix
-whichever side is wrong. Then pin the two together with one contract test
-that runs against both, or against the production adapter's parsing of a
-recorded response, or test the behaviour at the production adapter itself. A
-fix to the fake is still held to **A red run counts only against the base
-branch**. In the PR summary, name the production implementation each
-load-bearing fake stands in for and the property the change relies on. A
-change whose only proof is a fake more permissive than its production
-implementation is a blocking self-review finding.
+own producers. It applies when a test double replaces one of the repository's
+own ports (a trait or interface with a production implementation), and
+equally when a test fakes a response from the repository's own server or
+service by hand: an HTTP body, status or header, a queue message, or a file
+the other side writes. It applies across processes and languages, not only
+to in-process traits or interfaces. When the change relies on a property of
+that port or response, read the production implementation first and confirm
+it has that property. Examples of such properties: which rows a read returns,
+a filter, ordering or paging, which value types a write accepts, or whether a
+conditional write can lose. If the fake behaves differently, fix whichever side
+is wrong. Then pin the two together with one contract test that runs against
+both, or against the production adapter's parsing of a recorded response,
+or test the behaviour at the production adapter itself. For a faked response,
+take the fixture from the producer's real output: a golden the server's tests
+produce or verify, or a contract test that runs the server's serialiser for
+that response kind. When the repository has no golden for that response kind
+yet, the PR adds one. Check a header the client depends on against what the
+deployed configuration lets the client read (for example a CORS exposed-headers
+list), and name in the PR summary where that is set. A fix to the fake is
+still held to **A red run counts only against the base branch**. In the PR
+summary, name the production implementation each load-bearing fake stands in
+for and the property the change relies on. A change whose only proof is a fake
+more permissive than its production implementation is a blocking self-review
+finding, and so is one whose only proof is a fixture the producer never emits.
 
 **A test of a third-party tool's input uses that tool's semantics.** The
-fake rule above covers the repository's own ports; this covers a pattern or
-config that an external tool reads — Renovate `matchStrings` or
-`managerFilePatterns`, Actions `branches` or `paths` filters, linter or
-scanner configs. When the tool's own validator or engine can run in the
-repository's CI (for example `renovate-config-validator`, or RE2 for a
-Renovate regex), run the test through it. When it cannot, test the in-repo
-stand-in against cases taken from the tool's documentation: the exact case
-the change relies on, and at least one input the tool rejects or does not
-match. For example, GitHub's `*/*` branch filter matches `milestone/foo`,
-and RE2 rejects a negative look-ahead that JavaScript's `RegExp` accepts.
-Name that documentation in the PR summary. A stand-in more permissive or
-more restrictive than the tool, so a test passes on input the tool rejects
-or fails on input it accepts, is a blocking self-review finding.
+fake rule above covers the repository's own ports and server responses;
+this covers a pattern or config that an external tool reads — Renovate
+`matchStrings` or `managerFilePatterns`, Actions `branches` or `paths`
+filters, linter or scanner configs. When the tool's own validator or engine
+can run in the repository's CI (for example `renovate-config-validator`,
+or RE2 for a Renovate regex), run the test through it. When it cannot, test
+the in-repo stand-in against cases taken from the tool's documentation: the
+exact case the change relies on, and at least one input the tool rejects
+or does not match. For example, GitHub's `*/*` branch filter matches
+`milestone/foo`, and RE2 rejects a negative look-ahead that JavaScript's
+`RegExp` accepts. Name that documentation in the PR summary. A stand-in more
+permissive or more restrictive than the tool, so a test passes on input the
+tool rejects or fails on input it accepts, is a blocking self-review finding.
 
 **Observe the real tool before you rely on it.** When a decision depends on
 how git, `gh`, the GitHub API or another external tool behaves in a
@@ -1492,10 +1502,7 @@ there is a real signal and must be read; it is not the gate.
 **One named exception, and it is the prerequisite that moved, not the rule**
 (Issue #1598). The container image now ships PowerShell 7 (Issue #1596), so
 the three `run.ps1` launcher suites have their interpreter wherever the worker
-runs its gate. They are named in `IN_GATE_SCRIPT_SUITES`, each with a reason
-and its measured cost, and the gate runs them — about 97s for the Windows
-containment boundary being verified before the push rather than in a job that
-cannot block a merge. `pwsh_suites_in_the_gate_test.ts` fails the gate on a
+runs its gate. They are named, with the other launcher suites, in `IN_GATE_SCRIPT_SUITES`, each with a reason and its measured cost, and the gate runs them — about 125s across the map's four entries (about 87s of it for `run_ps1_launcher_test.ts` alone) for the Windows containment boundary being verified before the push rather than in a job that cannot block a merge. `pwsh_suites_in_the_gate_test.ts` fails the gate on a
 host without PowerShell rather than letting those suites report "ignored"
 while the gate reports green. The `setup.ps1` suites stay excluded. An entry
 there is an exception a change has to argue for, never a place to move a slow

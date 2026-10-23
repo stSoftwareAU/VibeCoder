@@ -53,7 +53,6 @@ export {
 export {
   checkIssueHasFailedOnce,
   handleIssueFailure,
-  markIssueAsFailed,
   markIssueAsFailedOnce,
 } from "./label_failure.ts";
 

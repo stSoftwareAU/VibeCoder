@@ -240,6 +240,8 @@ export interface CodexInvocation extends CodexPromptParts {
    * (Issue #1702). Codex has no `--mcp-config` flag.
    */
   mcpConfigOverrides?: readonly string[];
+  /** Worker-authored command hook settings, translated to per-spawn TOML. */
+  settingsJson?: string;
 }
 
 /** A TOML string value, quoted. */
@@ -332,6 +334,43 @@ export function buildCodexMcpConfigArgs(configJson: string): string[] {
 }
 
 /**
+ * Translate the worker's synchronous command hooks to Codex TOML (Issue #4121).
+ * Codex presents shell tools to hooks as Bash with a string command, so RTK's
+ * existing processor works unchanged. No user configuration file is written.
+ */
+function codexHookArgs(settingsJson: string): string[] {
+  const settings = JSON.parse(settingsJson);
+  const groups: unknown = settings?.hooks?.PreToolUse;
+  if (!Array.isArray(groups)) {
+    throw new Error("Codex hook settings require a PreToolUse array");
+  }
+  const entries = groups.map((group) => {
+    if (typeof group?.matcher !== "string" || !Array.isArray(group.hooks)) {
+      throw new Error("Codex PreToolUse requires a matcher and hooks array");
+    }
+    const hooks = group.hooks.map(
+      (hook: { type?: unknown; command?: unknown } | null) => {
+        if (hook?.type !== "command" || typeof hook.command !== "string") {
+          throw new Error(
+            "Codex PreToolUse requires command hooks with a string command",
+          );
+        }
+        return `{type="command",command=${tomlString(hook.command)}}`;
+      },
+    );
+    return `{matcher=${tomlString(group.matcher)},hooks=[${hooks.join(",")}]}`;
+  });
+  if (entries.length === 0) return [];
+  return [
+    "--dangerously-bypass-hook-trust",
+    "-c",
+    "features.hooks=true",
+    "-c",
+    `hooks.PreToolUse=[${entries.join(",")}]`,
+  ];
+}
+
+/**
  * Build the Codex CLI argument list for one non-interactive run.
  *
  * Session continuity uses `codex exec resume <SESSION_ID>` with the thread
@@ -371,6 +410,9 @@ export function buildCodexArgs(invocation: CodexInvocation): string[] {
   if (invocation.model) args.push("--model", invocation.model);
   if (invocation.effort) {
     args.push("-c", `${REASONING_EFFORT_KEY}="${invocation.effort}"`);
+  }
+  if (invocation.settingsJson) {
+    args.push(...codexHookArgs(invocation.settingsJson));
   }
   if (invocation.mcpConfigOverrides) {
     args.push(...invocation.mcpConfigOverrides);
