@@ -998,7 +998,6 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
       Promise.resolve({
         ok: true,
         value: {
-          markedAsFailed: false,
           markedAsFailedOnce: true,
           failureCategory: "unknown",
           isInfrastructure: false,

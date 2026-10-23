@@ -460,7 +460,7 @@ explicitly overridden.
 
 | Setting                      | Default                   | Description                                                                                                                                                                                                                                                                                      |
 | ---------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `failed_label`               | `failed`                  | Label applied after second failure (issue permanently failed)                                                                                                                                                                                                                                    |
+| `failed_label`               | `failed`                  | Retired label: never applied, and a leftover one is stripped (Issue #4158)                                                                                                                                                                                                                       |
 | `failed_once_label`          | `failed-once`             | Label applied after first failure (issue will be retried)                                                                                                                                                                                                                                        |
 | `refine_issue_label`         | `refine-issue`            | Label for collaborative issue refinement                                                                                                                                                                                                                                                         |
 | `planning_label`             | `planning`                | Label for planning mode (task breakdown instead of implementation)                                                                                                                                                                                                                               |
@@ -860,7 +860,7 @@ flowchart LR
   `unassign_on_pr_created` hands the issue back unassigned, so without a gate
   the next cycle re-ran the whole pipeline against the still-open PR. The scan
   therefore applies the same gates the claim scan applies to `work-on`: a
-  blocking label (`failed` among them), the retry cooldown, milestone
+  blocking label (never `failed`, Issue #4158), the retry cooldown, milestone
   occupancy, a closed or merged fleet PR, an open fleet PR, and an open
   dependency. A run that produces no work puts the issue into the retry
   cooldown, so a persistently failing issue backs off. The label-removing
@@ -2743,7 +2743,7 @@ release**, not as the issue defeating the agent:
 - The release comment therefore never says "Claude ran out of time" and never
   advises splitting the issue into sub-issues — that diagnosis is reserved for
   a run that genuinely exhausted its own `claude_timeout`.
-- A scheduled release does **not** enter the `failed-once` → `failed` ladder,
+- A scheduled release does **not** enter the `failed-once` ladder,
   does **not** feed the escalating timeout cooldown, and is **not** auto-filed
   as a worker fault. It is also not classed as an infrastructure failure: the
   bounded in-process retry exists to re-run a transient blip, and a run

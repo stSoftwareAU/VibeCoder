@@ -196,7 +196,10 @@ Deno.test("regression label_manager - buildQuestionFailureComment second failure
     "Process timed out after 600s",
     true,
   );
-  assert(comment.includes("Second Attempt"), "Should indicate second failure");
+  assert(
+    comment.includes("Repeat Attempt"),
+    "Should indicate a repeat failure",
+  );
 });
 
 Deno.test("regression label_manager - buildQuestionFailureComment with empty message", () => {

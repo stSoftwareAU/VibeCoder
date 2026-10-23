@@ -2,9 +2,8 @@
  * Terminal coding-run failure disposition (Issue #1949).
  *
  * The planning and question processors have always routed their failures
- * through `handleIssueFailure` — the `failed-once` → `failed` ladder that
- * writes a diagnostic comment and, on the second failure, takes the issue
- * out of discovery entirely. The ordinary *coding* path never did. Every
+ * through `handleIssueFailure`, which writes a diagnostic comment and the
+ * `failed-once` label. The ordinary *coding* path never did. Every
  * failure there recorded a flat 600 s cooldown and nothing else, so an
  * issue that failed in 40 seconds was fully eligible again six minutes
  * later and was re-claimed every cycle for ever: a weekly fleet review
@@ -15,15 +14,21 @@
  * infrastructure, or is it the issue?* — and applies the ladder when it is
  * the issue.
  *
+ * Issue #4158: the ladder is never terminal. An assigned issue is completed,
+ * never parked (DESIGN-PRINCIPLES.md): every non-transient failure writes
+ * its record and keeps `failed-once`, and the escalating cooldown alone
+ * paces the next attempt — at most one a day once the failures repeat. The
+ * worker never applies `failed`, and never hands the issue to a human.
+ *
  * ```mermaid
  * flowchart TD
  *     F["Coding run fails"] --> S{"phase=setup, or<br/>detectHostFault(reason)?"}
  *     S -->|"yes (Issue #2954)"| U["released unlabelled,<br/>no attempt consumed"]
  *     S -->|"no"| C{"classifyCodingFailure"}
  *     C -->|"account state: rate limit,<br/>out of credit, interrupted,<br/>scheduled release, deadline-bound timeout<br/>host state: OOM, full disk,<br/>crash, missing tools, external kill<br/>host capability: token lacks<br/>the workflow scope"| T["transient:<br/>flat 600 s cooldown,<br/>no attempt consumed"]
- *     C -->|"anything else"| L["ladder:<br/>failed-once → failed<br/>+ escalating cooldown"]
- *     L --> L1["1st: failed-once,<br/>2 h cooldown, retried once"]
- *     L1 --> L2["2nd: failed,<br/>excluded from discovery"]
+ *     C -->|"anything else"| L["ladder:<br/>failed-once record<br/>+ escalating cooldown"]
+ *     L --> L1["each failure: record,<br/>cooldown 2 h → 6 h → 24 h"]
+ *     L1 --> L2["retried when the cooldown ends,<br/>never parked (Issue #4158)"]
  * ```
  *
  * Pure classification (`classifyCodingFailure`) is separated from the side
@@ -66,7 +71,7 @@ export type CodingFailureDisposition =
    * and no escalating cooldown, exactly as `transient`.
    */
   | "record-only"
-  /** The issue's own failure — `failed-once` → `failed` plus the ladder. */
+  /** The issue's own failure — the `failed-once` record plus the cooldown. */
   | "ladder";
 
 /** The decision for one terminal coding-run failure. */
@@ -130,8 +135,7 @@ const TRANSIENT_FAILURE_CLASSES: ReadonlySet<string> = new Set([
  * `repo-config` is a ruleset or protection the repository carries: it
  * refuses every issue in the milestone identically and no attempt of the
  * issue's can clear it, so it must not consume an attempt or earn the
- * escalating 2 h → 6 h → 24 h cooldown and its three-strike `needs-human`
- * park — the human chore this change exists to remove, one rung later.
+ * escalating 2 h → 6 h → 24 h cooldown.
  *
  * It is deliberately NOT in {@link TRANSIENT_FAILURE_CLASSES}, because a
  * transient decision returns before `handleIssueFailure` is ever reached
@@ -260,7 +264,7 @@ export interface CodingFailureLadderOutcome {
 }
 
 /**
- * Apply the `failed-once` → `failed` ladder to a terminal coding failure.
+ * Apply the `failed-once` ladder to a terminal coding failure.
  *
  * A transient failure returns without touching GitHub, so it keeps today's
  * plain cooldown and consumes no attempt. A `record-only` failure does call
@@ -379,7 +383,7 @@ export function planCodingFailure(
   }
 
   // A setup fault (Issue #2954) is the host's or the repository's, not the
-  // issue's: no cooldownKind, so no `failed-once`, no `failed`, no
+  // issue's: no cooldownKind, so no `failed-once`, no
   // escalating cooldown — the issue is released unlabelled and the release
   // comment carries the diagnosis. A `record-only` refusal (e.g. Issue
   // #2220's milestone-branch refusal) keeps its own comment instead — it
@@ -404,51 +408,5 @@ export function planCodingFailure(
       decision.disposition === "record-only",
     ...(decision.cooldownKind ? { cooldownKind: decision.cooldownKind } : {}),
     decision,
-  };
-}
-
-/** The hand-off copy for an issue that has used up its retries. */
-export interface RepeatedFailureEscalation {
-  heading: string;
-  reason: string;
-  nextStep: string;
-}
-
-/**
- * Wording for the `needs-human` hand-off after three consecutive ladder
- * failures inside the escalation window.
- *
- * A timeout keeps the Issue #4304 wording — the operator's next step really
- * is a budget or a split. Every other non-transient failure gets wording
- * that points at the per-attempt failure comments instead (Issue #1949),
- * because nothing about it says the run ran out of time.
- */
-export function buildRepeatedFailureEscalation(
-  failureKind: CooldownFailureKind,
-  attempts: number,
-): RepeatedFailureEscalation {
-  if (failureKind === "timeout") {
-    return {
-      heading: "Repeated execute timeouts",
-      reason: `This issue has now failed ${attempts} times in a row within ` +
-        `48 h, the latest by timing out — each attempt burned a full agent ` +
-        `run and produced no changes. The worker has stopped retrying ` +
-        `(24 h escalating cooldown, Issue #4304).`,
-      nextStep:
-        "Split the issue into smaller pieces, raise its timeout budget, or " +
-        "investigate why the agent cannot finish it (see the worker logs for " +
-        "the per-attempt progress lines).",
-    };
-  }
-  return {
-    heading: "Repeated run failures",
-    reason: `This issue has now failed ${attempts} times in a row within ` +
-      `48 h for non-transient reasons — no pull request was raised by any ` +
-      `attempt. The worker has stopped retrying (24 h escalating cooldown, ` +
-      `Issue #1949).`,
-    nextStep:
-      "Review the per-attempt failure comments on this issue and either " +
-      "clarify the requirements or close it — the worker will not re-claim " +
-      "it until the failure labels are cleared.",
   };
 }
