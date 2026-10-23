@@ -10,14 +10,14 @@ trailing `\b`. The Issue #3857 escape alternative, the git-SHA exclusion and the
 unchanged behaviour for `id=secret` and `secret=…` are all kept. Closes #4103.
 
 - `worker/deno/lib/secret_redaction.ts`: the `aws-secret-access-key` regex
-  (line 491) replaces both `\b` anchors with fixed-width lookarounds; the doc
-  comment above the rule (lines 447-487) records the Issue #4103 change and the
+  (line 493) replaces both `\b` anchors with fixed-width lookarounds; the doc
+  comment above the rule (lines 447-489) records the Issue #4103 change and the
   reason for the `_` and hex-guard shape.
-- `worker/deno/tests/secret_redaction_test.ts`: six new tests (lines 209, 220,
-  230, 240, 250, 275) for a leading `/` after a comma, a trailing `+` at end of
+- `worker/deno/tests/secret_redaction_test.ts`: seven new tests (lines 209, 220,
+  230, 240, 250, 275, 286) for a leading `/` after a comma, a trailing `+` at end of
   text, a trailing `/` before a comma, a leading `+` after a colon, an
-  AWS-alphabet run glued to the secret, and a git SHA with a run character after
-  it.
+  AWS-alphabet run glued to the secret, an equals separator after the key ID,
+  and a git SHA with a run character after it.
 - `worker/deno/tests/secret_redaction_redos_test.ts`: one new test (line 141)
   that feeds a hostile run of comma-separated slash pads and asserts the rule
   stays linear.
@@ -32,7 +32,7 @@ of anything (`[\s\S]{0,120}?`), then a 40-character secret drawn from
 `[A-Za-z0-9/+=]`. Only the secret is replaced by the placeholder; the id and the
 text between it and the secret are kept.
 
-The secret must satisfy three context conditions:
+The secret must satisfy four context conditions:
 
 - Leading: the character before it is not in `[A-Za-z0-9/+_]`, or it follows a
   literal `\n`, `\r` or `\t` escape (`(?<![A-Za-z0-9/+_])|(?<=\\[nrt])`). The
@@ -40,22 +40,25 @@ The secret must satisfy three context conditions:
 - Hex guard: the 40 characters are not all lowercase hex, `(?![0-9a-f]{40})`, so
   a git commit SHA beside a key is left alone. The trailing guard already rejects
   a SHA with a class character after it, so no inner trailing `\b` is needed.
+- No leading equals: `(?!=)` rejects a candidate starting with `=`, preserving
+  40-, 70- and 120-character separator lines after the key ID.
 - Trailing: the character after it is not in `[A-Za-z0-9/+_]`, or there is no
   character after it (end of input), `(?![A-Za-z0-9/+_])`.
 
 `=` is not in either context class, so `id=secret` and `secret=…` behave as they
-did under `\b`. Every lookaround is constant width, and the `[\s\S]{0,120}?`
+did under `\b` when the adjacent character was a word character. The
+leading-equals guard preserves separator lines that `\b` never matched. Every lookaround is constant width, and the `[\s\S]{0,120}?`
 window is bounded, so the regex stays linear (the Issue #3942 rule).
 
 ## Evidence
 
-- Branch diff against `main`: 3 files changed (`worker/deno/lib/secret_redaction.ts`,
+- The implementation changes three library/test files (`worker/deno/lib/secret_redaction.ts`,
   `worker/deno/tests/secret_redaction_test.ts`,
-  `worker/deno/tests/secret_redaction_redos_test.ts`); no `VERSION` or manifest
+  `worker/deno/tests/secret_redaction_redos_test.ts`); the archived summary and facts are updated too; no `VERSION` or manifest
   change.
 - Test run (stdin from `/dev/null`):
   `deno test -A tests/secret_redaction_test.ts tests/secret_redaction_redos_test.ts tests/secret_redaction_bounds_test.ts tests/secret_redaction_markdown_1727_test.ts tests/secret_redaction_boolean_setting_test.ts`
-  gave `ok | 117 passed | 0 failed (2s)`, exit 0.
+  gave `118 passed | 0 failed`, exit 0 on the corrected head.
 - Red-checks, recorded in `pr-summary-4103.facts.json`: dropping the leading
   lookbehind turned red "masks the AWS secret beside its access key id", "a
   temporary (ASIA) key's secret is masked too" and the four #4103 leading and
@@ -66,16 +69,18 @@ window is bounded, so the regex stays linear (the Issue #3942 rule).
   glued-run test and "a word glued to the secret with no backslash is not masked
   (Issue #3857)"; removing `_` or `/` from the trailing class turned the
   glued-run test red; the trailing-`+`-at-end-of-text test turned red when the
-  base `\b` rule was used.
+  base `\b` rule was used. The new equals-separator test was run before
+  adding `(?!=)` and failed because a 40-character separator was redacted;
+  the same test passes with the guard, covering 40, 70 and 120 characters.
 - Docs sweep: grep: `aws-secret-access-key`, `aws-access-key-id`, `github-token`
   over `worker/deno/lib`, `README.md`, `SECURITY.md`, `CODING-STANDARDS.md`,
   `DESIGN-PRINCIPLES.md` and non-archive `docs/`, and "AWS" over `SECURITY.md`,
   `docs/THREAT-MODEL.md` and `README.md`; section: `SECURITY.md`, "Secret
   Redaction — Every Outbound Sink" (line 301), whose known-shape list at lines
   477-485 still holds because the rule set is unchanged; siblings:
-  `aws-access-key-id` (`secret_redaction.ts:496`) and `github-token` (`:402`) are
+  `aws-access-key-id` (`secret_redaction.ts:498`) and `github-token` (`:402`) are
   unchanged, and no other RULES entry changed; hits: the rule's doc comment in
-  `secret_redaction.ts` (lines 447-487) is updated in this PR; `SECURITY.md:480`
+  `secret_redaction.ts` (lines 447-489) is updated in this PR; `SECURITY.md:480`
   ("AWS access-key ids") is still true; `docs/audits/security-sweep-1217-env-config-secrets.md:271-272`
   ("matched only through the `AKIA…` id that precedes it") is still true, and was
   found by that phrase rather than by the rule names; no other README, SECURITY,
@@ -87,7 +92,7 @@ window is bounded, so the regex stays linear (the Issue #3942 rule).
   `redactSecrets`; no caller passes it a pattern. Other tests that touch
   `redactSecrets` were run and are green: `secret_redaction_bounds_test.ts`,
   `secret_redaction_markdown_1727_test.ts` and
-  `secret_redaction_boolean_setting_test.ts` (all in the 117 passed run above).
+  `secret_redaction_boolean_setting_test.ts` (all in the 118 passed run above).
 - Twinned-rule search: none found. `worker/deno/lib/secret_transform_redaction.ts`
   exists and was grepped for `aws-secret-access-key` and `aws-access-key-id`; it
   has no matching rule.
@@ -102,18 +107,10 @@ window is bounded, so the regex stays linear (the Issue #3942 rule).
 - Real-tool observation: the behaviour was observed by running the real
   `redactSecrets` in the tests listed under Evidence; no separate `deno eval` run
   was made.
-- Not done / not checked: the full quality gate result is to be appended by the
-  author. The full `deno test` suite was not run; only the five test files above
-  were run. Quality gate (`./quality.sh`): every stage passed or was skipped
-  except `deno tests [parallel]`, which reported 29579 passed, 5 failed; the
-  serial pass did not run because of that failure. The 5 failures are
-  environmental and unrelated to secret redaction: 3
-  (`claude_runner_provider_fallback_4034_test.ts` x2,
-  `external_orchestration_3642_config_test.ts` x1) need a `codex`
-  coding-agent provider the container image lacks; 2 in
-  `completion_phase_repo_formatters_test.ts` ("formatter should commit the Rust
-  fix") need a Rust formatter the container lacks (not verified further). The
-  five redaction test files passed when run directly (117 passed, 0 failed).
+- Not checked in this repair: the full quality gate and full test suite.
+  The five redaction suites, Deno formatting and lint were checked locally.
+  The existing head's GitHub Quality and Dependency Review workflows passed;
+  CI must check the new commit after publication.
 
 <!-- vibe-branch-outcomes -->
 

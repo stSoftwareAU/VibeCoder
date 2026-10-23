@@ -5,7 +5,7 @@
     "entries": [
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "leading context: a secret beside its access key id is masked when the character before it is not in the secret alphabet",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - masks the AWS secret beside its access key id",
@@ -13,7 +13,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "temporary key: an ASIA key's secret is masked by the same leading and trailing context",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - a temporary (ASIA) key's secret is masked too",
@@ -21,7 +21,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "leading context: a secret starting with / after a comma is masked (Issue #4103)",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - an AWS secret starting with / after a comma is masked (Issue #4103)",
@@ -29,7 +29,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "trailing context: a secret ending in / before a comma is masked and the comma survives (Issue #4103)",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - an AWS secret ending in / before a comma is masked and the comma survives (Issue #4103)",
@@ -37,7 +37,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "leading context: a secret starting with + after a colon is masked (Issue #4103)",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - an AWS secret starting with + after a colon is masked (Issue #4103)",
@@ -45,7 +45,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "end of input: a secret ending in + at end of text is masked because the trailing lookahead succeeds at end of input",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - an AWS secret ending in + at end of text is masked (Issue #4103)",
@@ -53,7 +53,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "leading class: an AWS-alphabet run glued to the secret is not masked when _ is in the leading class",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - an AWS-alphabet run glued to the secret is not masked (Issue #4103)",
@@ -61,7 +61,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "escape alternative: a JSON-encoded AWS key pair has its secret masked after a literal backslash-n",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - a JSON-encoded AWS key pair has its secret masked (Issue #3857)",
@@ -69,7 +69,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "escape alternative: a secret after a literal backslash-t escape is masked",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - a secret after a literal backslash-t escape is masked (Issue #3857)",
@@ -77,7 +77,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "escape alternative: a secret after a literal backslash-r escape is masked",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - a secret after a literal backslash-r escape is masked (Issue #3857)",
@@ -85,7 +85,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "hex guard: a git SHA beside an AWS key is left alone",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - a git SHA beside an AWS key is left alone",
@@ -93,7 +93,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "trailing lookahead: an AWS-alphabet run glued after the secret is not masked",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - an AWS-alphabet run glued to the secret is not masked (Issue #4103)",
@@ -101,7 +101,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "trailing lookahead: a word glued to the secret with no backslash is not masked",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - a word glued to the secret with no backslash is not masked (Issue #3857)",
@@ -109,7 +109,7 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "trailing class: _ in the trailing lookahead keeps a secret glued to _ unmasked",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - an AWS-alphabet run glued to the secret is not masked (Issue #4103)",
@@ -117,11 +117,19 @@
       },
       {
         "path": "worker/deno/lib/secret_redaction.ts",
-        "line": 491,
+        "line": 493,
         "outcome": "trailing class: / in the trailing lookahead keeps a secret glued to / unmasked",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - an AWS-alphabet run glued to the secret is not masked (Issue #4103)",
         "flipWentRed": "removing / from the trailing lookahead class turned it red"
+      },
+      {
+        "path": "worker/deno/lib/secret_redaction.ts",
+        "line": 493,
+        "outcome": "a candidate beginning with equals is rejected so separator lines survive",
+        "test": "worker/deno/tests/secret_redaction_test.ts",
+        "testName": "redactSecrets - equals separators after an AWS key stay intact (Issue #4103)",
+        "flipWentRed": "Before adding (?!=), the new test failed: a 40-character equals separator was replaced by the redaction placeholder; with the guard all three separator lengths pass."
       }
     ]
   }

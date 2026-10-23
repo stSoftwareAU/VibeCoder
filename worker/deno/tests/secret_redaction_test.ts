@@ -272,6 +272,17 @@ Deno.test("redactSecrets - an AWS-alphabet run glued to the secret is not masked
   }
 });
 
+Deno.test("redactSecrets - equals separators after an AWS key stay intact (Issue #4103)", () => {
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  for (const length of [40, 70, 120]) {
+    const separator = "=".repeat(length);
+    assertEquals(
+      redactSecrets(`${id}\n${separator}`),
+      `${REDACTION_PLACEHOLDER}\n${separator}`,
+    );
+  }
+});
+
 Deno.test("redactSecrets - a git SHA with a run character after it beside an AWS key is left alone (Issue #4103)", () => {
   // `/` extends the alphabet run, so the trailing guard rejects a SHA with a
   // slash after it.
