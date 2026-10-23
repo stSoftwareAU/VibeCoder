@@ -199,9 +199,13 @@ gets its mutant even when the `if (` line itself is unchanged. Only top-level
 operands are dropped, so `a || (b && c)` drops `(b && c)` as one operand; an
 inner operand is mutated only when it sits on its own added line. A `||` or `&&`
 inside a string, template literal, comment or regex literal is never mutated,
-nor is a single `|` or `&` (a type union such as `type T = A | B`). A file with
-an unterminated string, comment or template gets none of these mutants. They
-count towards the same 40-mutant cap, after the other kinds on each line.
+nor is a single `|` or `&` (a type union such as `type T = A | B`). Operand
+mutants are disabled for a file only when a block comment or template literal is
+still open at end of file; an unterminated string or line comment ends at its
+line break and does not disable them. A segment with unbalanced brackets is
+skipped, and on a line with a chain operator at its edge the text between
+operators is one operand. They count towards the same 40-mutant cap, after the
+other kinds on each line.
 
 Each mutant runs only the test files that import the mutated module
 (`deno test --no-check -A <those files>`). `--no-check` is deliberate: a mutant

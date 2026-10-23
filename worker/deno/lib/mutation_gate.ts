@@ -920,12 +920,35 @@ function sourcedOperator(
 }
 
 /**
+ * Whether `text` has balanced brackets: `(`, `[` and `{` never close more than
+ * they open, and all are closed at the end. Applied to masked text, so a
+ * bracket inside a string, comment or template is not counted.
+ */
+function bracketsBalanced(text: string): boolean {
+  let depth = 0;
+  for (const ch of text) {
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth++;
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      depth--;
+      if (depth < 0) return false;
+    }
+  }
+  return depth === 0;
+}
+
+/**
  * Operand mutants for line `n` (Issue #3901): for the operands of one top-level
  * `||` or `&&` chain, each operand replaced by the chain identity (`false` for
- * `||`, `true` for `&&`). The chain is taken at the shallowest bracket depth on
- * the line, `||` preferred over `&&`; a line with no operator takes its
- * operator from the adjacent line. Lines that are types, assignments, arrows
- * or `||=`/`&&=` yield nothing.
+ * `||`, `true` for `&&`). The chain operator is the line's edge operator when
+ * it has one: its own trailing `||`/`&&`, else its own leading one, else the one
+ * sourced from the adjacent line. Only that operator splits the line, and only
+ * at bracket depth 0 relative to the region start, so a wrapped group such as
+ * `(a && b)` after `!x ||` is one operand, and the other kind stays inside its
+ * operand. A line with no edge operator takes the shallowest operator on the
+ * line, `||` preferred over `&&`. A segment whose masked text does not balance
+ * its brackets is skipped, so every mutant stays syntactically valid. Lines
+ * that are types, assignments, arrows or `||=`/`&&=` yield nothing.
  */
 function operandCandidates(
   line: string,
@@ -985,17 +1008,28 @@ function operandCandidates(
       i++;
     }
   }
+  // Issue #3901: the edge operator first, so a wrapped group is one operand.
+  const tail = m.trimEnd().length;
+  const lead = m.length - m.trimStart().length;
+  const trailing = splits.find((s) => s.depth === 0 && s.at === tail - 2);
+  const leading = splits.find((s) =>
+    s.depth === 0 && s.at === lead && m.charAt(lead + 2) !== "="
+  );
+  const edge = trailing?.op ?? leading?.op ?? sourcedOperator(masked, n);
   let op: "||" | "&&";
-  let bounds: number[] = [];
-  if (splits.length > 0) {
+  let bounds: number[];
+  if (edge !== null) {
+    op = edge;
+    bounds = splits.filter((s) => s.depth === 0 && s.op === edge).map((s) =>
+      s.at
+    );
+  } else if (splits.length > 0) {
     const minDepth = Math.min(...splits.map((s) => s.depth));
     const atMin = splits.filter((s) => s.depth === minDepth);
     op = atMin.some((s) => s.op === "||") ? "||" : "&&";
     bounds = atMin.filter((s) => s.op === op).map((s) => s.at);
   } else {
-    const sourced = sourcedOperator(masked, n);
-    if (sourced === null) return out;
-    op = sourced;
+    return out;
   }
   const identity = op === "||" ? "false" : "true";
   const segments: Array<[number, number]> = [];
@@ -1011,6 +1045,8 @@ function operandCandidates(
     const e = b - (raw.length - raw.trimEnd().length);
     // Blank, or only strings, templates or regexes: no plain operand to replace.
     if (m.slice(s, e).trim() === "") continue;
+    // Issue #3901: a segment cut inside a bracket pair is not an operand.
+    if (!bracketsBalanced(m.slice(s, e))) continue;
     const text = line.slice(s, e);
     const shown = (text.length > OPERAND_TEXT_MAX
       ? `${text.slice(0, OPERAND_TEXT_MAX - 3)}...`

@@ -574,3 +574,78 @@ Deno.test("chain operator - a parenthesised || does not split an && chain", () =
     "d",
   ]);
 });
+
+// ---------------------------------------------------------------------------
+// Bracket balance and edge operators (Issue #3901)
+// ---------------------------------------------------------------------------
+
+/** `(`, `[`, `{` open and `)`, `]`, `}` close; balanced when none close early and all close. */
+function bracketsBalanced(text: string): boolean {
+  let depth = 0;
+  for (const ch of text) {
+    if ("([{".includes(ch)) depth++;
+    else if (")]}".includes(ch)) depth--;
+    if (depth < 0) return false;
+  }
+  return depth === 0;
+}
+
+/** The 1-based numbers of every line in `source`. */
+function everyLine(source: string): number[] {
+  return Array.from({ length: source.split("\n").length - 1 }, (_, i) => i + 1);
+}
+
+Deno.test("generateDenoMutants - every operand mutant keeps its brackets balanced", () => {
+  const sources = [
+    "foo(a || b);\n",
+    " (s.code !== 0 && s.code !== 2)\n",
+    "if (\n  !s.ok ||\n  (s.code !== 0 && s.code !== 2)\n) {\n}\n",
+    "for (const x of y) if (a || b) z();\n",
+  ];
+  for (const source of sources) {
+    const mutants = generateDenoMutants(
+      FILE,
+      source,
+      everyLine(source),
+      DEFAULT_MUTANT_CAP,
+    ).filter((m) => m.description.startsWith("dropped operand"));
+    for (const m of mutants) {
+      const changed = m.mutatedSource.split("\n")[m.line - 1] ?? "";
+      assert(bracketsBalanced(changed), `${m.description}: ${changed}`);
+      assert(bracketsBalanced(m.mutatedSource), m.description);
+    }
+  }
+});
+
+Deno.test("generateDenoMutants - a chain cut inside a call or a for head gets no operand mutant", () => {
+  assertEquals(operandMutants("foo(a || b);\n", [1]), []);
+  assertEquals(
+    operandMutants("for (const x of y) if (a || b) z();\n", [1]),
+    [],
+  );
+});
+
+Deno.test("generateDenoMutants - a wrapped group line alone gets no operand mutant", () => {
+  assertEquals(operandMutants(" (s.code !== 0 && s.code !== 2)\n", [1]), []);
+});
+
+Deno.test("generateDenoMutants - a wrapped group after || is one operand replaced with false", () => {
+  const source = "if (\n  !s.ok ||\n  (x !== 0 && x !== 2)\n) {\n}\n";
+  assertEquals(operandMutants(source, [2, 3, 4]), [
+    {
+      line: 2,
+      text: "  false ||",
+      description: "dropped operand `!s.ok` (replaced with false)",
+    },
+    {
+      line: 3,
+      text: "  false",
+      description:
+        "dropped operand `(x !== 0 && x !== 2)` (replaced with false)",
+    },
+  ]);
+  assertEquals(operandMutants(source, [4]), []);
+  const group = generateDenoMutants(FILE, source, [3], DEFAULT_MUTANT_CAP)
+    .find((m) => m.description.startsWith("dropped operand"));
+  assertEquals(group?.mutatedSource, "if (\n  !s.ok ||\n  false\n) {\n}\n");
+});
