@@ -2395,8 +2395,8 @@ costs depends on the provider:
 
 | Provider | Behaviour | Logged as |
 |----------|-----------|-----------|
-| `claude`, `deepseek` | One CLI, so one pair of levers: `/compact` is sent as the prompt of a `--resume` print run, and the session transcript under `CLAUDE_CONFIG_DIR` is then **measured**. Smaller means it worked. | `compaction: /compact` |
-| `claude`, `deepseek` (unproven) | Anything short of that proof — an unchanged or larger transcript, a non-zero `/compact` run, a transcript that cannot be measured, a spawn that failed — is treated as uncompacted, and every agent run of the issue instead carries `--autocompact 100000`, the smallest window the CLI accepts, so its own compaction happens earliest. | `compaction: autocompact 100000` |
+| `claude`, `deepseek` | One CLI, so one lever: `/compact` is sent as the prompt of a `--resume` print run, and the session transcript under `CLAUDE_CONFIG_DIR` is then **checked** for a new `compact_boundary` record. The transcript is append-only, so the file grows when it works (Issue #4116). | `compaction: /compact` |
+| `claude`, `deepseek` (unproven) | Anything short of that proof — no new boundary, a non-zero `/compact` run, a transcript that cannot be read, a spawn that failed — starts the issue on a new session instead of resuming the uncompacted one. No `--autocompact` window is ever passed: `100000` put the trigger below the issue prompt's own size and the CLI aborted with "Autocompact is thrashing". | `compaction: fresh session` |
 | `codex`, `gemini` | No compaction control is exposed, so the full transcript is carried. | `compaction unavailable` (naming the provider) |
 
 A `new` or `reset` stream session has no conversation to compact and logs
