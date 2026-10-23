@@ -162,7 +162,7 @@ const SCAN_CATEGORY_LABELS: readonly LabelDefinition[] = [
   },
   {
     name: "simple-on-purpose-ledger",
-    colour: "1D76DB",
+    colour: "1d76db",
     description:
       "Report-only ledger of SIMPLE-ON-PURPOSE markers and their upgrade conditions",
     category: "content",

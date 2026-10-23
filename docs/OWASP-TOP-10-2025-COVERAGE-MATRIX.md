@@ -48,6 +48,7 @@ work (see [Maintenance](#maintenance)).
 | `documentation_audit` | `prompts/documentation_audit/` | Prose-documentation hygiene — not a security audit |
 | `duplicated_knowledge` | `prompts/duplicated_knowledge/` | Copy-pasted blocks encoding one rule — a diverged copy is a fix applied in one place only, weakly A02/A05 when the rule is a guard |
 | `gate_skip_drift` | `prompts/gate_skip_drift/` | Flags a repo whose local gate skips a tool its own CI enforces — a gate that reports a pass it did not earn, weakly A02 misconfiguration |
+| `simple_on_purpose_ledger` | `prompts/simple_on_purpose_ledger/` | Report-only ledger of `SIMPLE-ON-PURPOSE` markers and their upgrade conditions — maintainability hygiene, not a security class |
 | `private_repo_reference_audit` | `prompts/private_repo_reference_audit/` | Detects references to private `stSoftwareAU` repos from public ones — information disclosure |
 | `retro` | `prompts/retro/` | Retrospects a finished run and proposes environment and prompt improvements — process hygiene, not a security audit |
 | `workflow_annotation_scan` | `prompts/workflow_annotation_scan/` | Files annotations attached to *passing* workflow runs (e.g. deprecated runtimes) — overlaps GHA workflow hardening |

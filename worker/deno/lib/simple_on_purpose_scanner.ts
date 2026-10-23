@@ -7,6 +7,8 @@
  * skipped; non-regular entries (submodule gitlinks, symlinks) are not read.
  */
 
+import { runGitCommand } from "./git_timeout.ts";
+
 /** One `SIMPLE-ON-PURPOSE:` marker found in a file. */
 export interface SimpleOnPurposeMarker {
   /** Repository-relative path of the file holding the marker. */
@@ -159,19 +161,13 @@ function describe(error: unknown): string {
 
 /** Tracked files from `git ls-files -z`, run in the repository. */
 async function listTrackedFiles(repoPath: string): Promise<string[]> {
-  const out = await new Deno.Command("git", {
-    args: ["ls-files", "-z"],
-    cwd: repoPath,
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  if (!out.success) {
-    const stderr = new TextDecoder().decode(out.stderr).trim();
-    throw new Error(`git ls-files exited ${out.code}: ${stderr}`);
+  const result = await runGitCommand(["ls-files", "-z"], { cwd: repoPath });
+  if (!result.ok) throw result.error;
+  const out = result.value;
+  if (out.code !== 0) {
+    throw new Error(`git ls-files exited ${out.code}: ${out.stderr.trim()}`);
   }
-  return new TextDecoder().decode(out.stdout).split("\0").filter((p) =>
-    p.length > 0
-  );
+  return out.stdout.split("\0").filter((p) => p.length > 0);
 }
 
 /** Default reader: regular files only; binary or oversized files read as "". */

@@ -76,7 +76,7 @@ export const SIMPLE_ON_PURPOSE_LEDGER_ISSUE_TITLE =
   "Run a SIMPLE-ON-PURPOSE ledger audit";
 
 /** Colour for the `simple-on-purpose-ledger` label. */
-export const SIMPLE_ON_PURPOSE_LEDGER_LABEL_COLOUR = "1D76DB";
+export const SIMPLE_ON_PURPOSE_LEDGER_LABEL_COLOUR = "1d76db";
 
 /** Prompt template directory under `prompts/`. */
 const PROMPT_NAME = "simple_on_purpose_ledger";
