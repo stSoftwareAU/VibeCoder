@@ -72,15 +72,16 @@ Deno.test("quality cap - the cap itself survives (Issue #785)", async () => {
   assertStringIncludes(text, "Do not loop indefinitely");
 });
 
-Deno.test("quality cap - exhaustion hands off instead of raising a PR (Issue #785)", async () => {
+Deno.test("quality cap - exhaustion raises no PR and is retried, never parked for a person (Issues #785, #4227)", async () => {
   const text = await issueText();
   assertStringIncludes(text, "do **not** create a pull request");
   // The branch is preserved, so the next run resumes rather than restarts.
   assertStringIncludes(text, "the branch is preserved");
-  // The failures are reported where a human will read them.
-  assertStringIncludes(text, "comment on the issue with the checks still");
-  // And the issue is parked for a person.
-  assertStringIncludes(text, "add the `needs-human` label");
+  // The failures are recorded for the retry.
+  assertStringIncludes(text, "end your final message with the checks still");
+  // An approved issue is never handed back (Issue #4227).
+  assertEquals(text.includes("add the `needs-human` label"), false);
+  assertStringIncludes(text, "Do not add a label");
 });
 
 Deno.test("quality cap - the must-pass gate the hand-off defers to is still stated (Issue #785)", async () => {

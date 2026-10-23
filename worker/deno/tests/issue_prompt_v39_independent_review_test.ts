@@ -42,7 +42,6 @@ Deno.test("issue - keeps the placeholders and the existing gated blocks", async 
       // leaves a split run with executors and no instructions for them.
       "{{EXECUTOR_SPLIT_INSTRUCTIONS}}",
       "{{ISSUE_NUMBER}}",
-      "{{REPO}}",
       "## Reproduction",
       "## Acceptance Criteria",
       "`verified`",
