@@ -258,7 +258,10 @@ import {
   SCREENSHOT_EVIDENCE_MISSING_REASON,
 } from "../screenshot_gate_retry.ts";
 import type { DegradedShortfall } from "../degraded_delivery.ts";
-import { convertToDraftContinuation } from "../draft_continuation_pr.ts";
+import {
+  convertToDraftContinuation,
+  markReadyAndAwaitCi,
+} from "../draft_continuation_pr.ts";
 import {
   assessUnmetCriteria,
   buildUnmetCriteriaGateComment,
@@ -1170,21 +1173,25 @@ export async function recoverAndFinaliseExistingPr(
       // Issue #4146: a timed-out run's draft continuation, now that every
       // criterion is met (the unmet-criteria gate never lets a partial run
       // reach here). Its body already says `Closes #N`; mark it ready so it
-      // takes the normal review and auto-merge path.
+      // takes the normal review and auto-merge path. Auto-merge waits for
+      // the ready-for-review CI to start: the draft's checks were skipped,
+      // and a skipped required check counts as passing (Issue #4160).
+      let ciStarted = true;
       if (prLookup?.isDraft === true) {
-        await deps.github.runGhCommand([
-          "pr",
-          "ready",
-          String(prNumber),
-          "--repo",
+        ciStarted = await markReadyAndAwaitCi({
           repo,
-        ]);
+          prNumber,
+          gh: deps.github.runGhCommand,
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          log: (message) => logger.warn(message, { repo, prNumber }),
+        });
         logger.info("Marked the draft continuation PR ready (Issue #4146)", {
           repo,
           prNumber,
+          ciStarted,
         });
       }
-      await armAutoMergeAtCreation(ctx, state, prNumber, deps);
+      if (ciStarted) await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
 
     // Issue #3237: advisory docs-sweep stale-hits comment, posted once.

@@ -175,6 +175,82 @@ export function buildUnmetDraftBody(issueNumber: number, body: string): string {
   ].join("\n");
 }
 
+/**
+ * Mark a draft continuation ready and wait for its CI to start (Issue
+ * #4160). Draft PRs skip CI (Issue #4152) and GitHub counts a skipped
+ * required check as passing, so arming auto-merge straight after `gh pr
+ * ready` could merge on the draft's skipped checks before the
+ * ready-for-review run registers.
+ *
+ * Returns `true` once the head commit carries a check run that was not there
+ * before the PR was marked ready and was not skipped — the caller arms
+ * auto-merge only then. Returns `false` when marking it ready fails or no
+ * such run appears within `timeoutMs`; auto-merge is then left for the
+ * sweep, which arms it once CI has run. Never throws.
+ */
+export async function markReadyAndAwaitCi(args: {
+  repo: string;
+  prNumber: number;
+  gh: (args: string[]) => Promise<string>;
+  sleep: (ms: number) => Promise<void>;
+  log: (message: string) => void;
+  timeoutMs?: number;
+  pollMs?: number;
+}): Promise<boolean> {
+  const { repo, prNumber, gh, sleep, log } = args;
+  const timeoutMs = args.timeoutMs ?? 120_000;
+  const pollMs = args.pollMs ?? 10_000;
+  const pr = String(prNumber);
+  let headRefOid = "";
+  let before: Set<number> | undefined;
+  const checkRuns = async () =>
+    JSON.parse(
+      await gh([
+        "api",
+        `repos/${repo}/commits/${headRefOid}/check-runs?per_page=100`,
+        "--jq",
+        "[.check_runs[] | {id, conclusion}]",
+      ]),
+    ) as { id: number; conclusion: string | null }[];
+  try {
+    ({ headRefOid } = JSON.parse(
+      await gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid"]),
+    ) as { headRefOid: string });
+    before = new Set((await checkRuns()).map((run) => run.id));
+  } catch (err) {
+    log(
+      `could not read PR #${prNumber}'s check runs, so auto-merge is not ` +
+        `armed this run (Issue #4160): ${errText(err)}`,
+    );
+  }
+  try {
+    await gh(["pr", "ready", pr, "--repo", repo]);
+  } catch (err) {
+    log(`could not mark PR #${prNumber} ready: ${errText(err)}`);
+    return false;
+  }
+  if (!before) return false;
+  try {
+    // Checked at once, then every `pollMs` up to and including `timeoutMs`.
+    for (let waited = 0;; waited += pollMs) {
+      const started = (await checkRuns()).some((run) =>
+        !before.has(run.id) && run.conclusion !== "skipped"
+      );
+      if (started) return true;
+      if (waited >= timeoutMs) break;
+      await sleep(pollMs);
+    }
+    log(
+      `PR #${prNumber}'s ready-for-review CI had not started after ` +
+        `${timeoutMs / 1000}s; auto-merge not armed, the sweep arms it once ` +
+        "CI has run (Issue #4160)",
+    );
+  } catch (err) {
+    log(`could not read PR #${prNumber}'s check runs: ${errText(err)}`);
+  }
+  return false;
+}
+
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
