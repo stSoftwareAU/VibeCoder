@@ -18,7 +18,12 @@
  * pairs backticks with a per-line regex. Issue #3696 adds a fifth point:
  * reading the worker's own marker out of a body that also holds agent text
  * is a gate over text, read only at the anchored position or after
- * neutralisation.
+ * neutralisation. Issue #3929 widens the trigger to any text a matcher reads,
+ * including config and CI workflow files (YAML, JSON, TOML), where the matcher
+ * must read the structure rather than one physical line or only the line
+ * above; the corpus run names the policed files at base and head first; and
+ * the issue prompt's gate-over-text bullet is self-contained for repos other
+ * than VibeCoder.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -149,6 +154,37 @@ Deno.test("issue prompt gate-over-text bullet covers reading the worker's own ma
       "only at the anchored position where the worker writes it",
       "never with `includes()` or a first-occurrence match over the whole body",
       "after the worker re-wraps the body",
+    ],
+  );
+});
+
+Deno.test("CODING-STANDARDS.md Writing a gate over text covers config and CI workflow files and the policed-files corpus (Issue #3929)", async () => {
+  assertPins(
+    section(
+      await readRepoDoc("CODING-STANDARDS.md"),
+      "Writing a gate over text",
+    ),
+    [
+      "any text a matcher reads",
+      "config or CI workflow file (YAML, JSON, TOML)",
+      "reads the structure, not one physical line or only the line above",
+      "Run the matcher over every file it polices, as it stands on the base branch and at head",
+      "report each line the fix changes on the base copy, for every reason the PR's docs say it checks",
+      "Then add the other corpora where they apply",
+    ],
+  );
+});
+
+Deno.test("issue prompt gate-over-text bullet is self-contained for repos other than VibeCoder (Issue #3929)", async () => {
+  assertPins(
+    section(await readRepoDoc("prompts/issue/prompt.md"), "Instructions"),
+    [
+      "any text a matcher reads",
+      "config or CI workflow files (YAML, JSON, TOML)",
+      "https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#writing-a-gate-over-text",
+      "re-wrapped across lines",
+      "every file the matcher polices, as it stands on the base branch and at head",
+      "report each line the fix changes on the base copy",
     ],
   );
 });
