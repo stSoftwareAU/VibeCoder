@@ -1122,7 +1122,7 @@ Deno.test("runSummaryClaimCheck - a base ref that fails validation is notChecked
       JSON.stringify(result.notChecked)
     }`,
   );
-  assert(logger.errors.some((e) => e.includes("well-formed base ref")));
+  assert(logger.warns.some((e) => e.includes("well-formed base ref")));
 });
 
 Deno.test("runSummaryClaimCheck - an ambiguous test-file reference reaches result.notChecked", async () => {
@@ -1521,7 +1521,7 @@ Deno.test("runSummaryClaimCheck - null changedFiles is notChecked and the doc in
     ),
   );
   assert(
-    logger.errors.some((e) => e.includes("changed files could not be listed")),
+    logger.warns.some((e) => e.includes("changed files could not be listed")),
   );
 });
 
@@ -1546,6 +1546,36 @@ Deno.test("runSummaryClaimCheck - manual files over the cap are reported and lef
     assertStringIncludes(note, "docs/m20.md");
     assertStringIncludes(captured, "docs/m19.md");
     assertFalse(captured.includes("docs/m20.md"));
+  });
+});
+
+Deno.test("runSummaryClaimCheck - a 20-file-cap overflow logs one warning, not one error per file (#4118)", async () => {
+  const names = Array.from({ length: 40 }, (_, i) => `docs/m${i}.md`);
+  const files: Record<string, string> = {};
+  for (const n of names) files[n] = "# Doc\n";
+  await withDocRepo(files, async (dir) => {
+    const logger = makeLogger();
+    const result = await runSummaryClaimCheck(docInput(dir, names), {
+      runGit: okGit(""),
+      askQuestion: async () =>
+        okResult(
+          `${DRIFT_VERDICT_OPEN}\n${
+            JSON.stringify({ findings: [] })
+          }\n<!-- /vibe-drift-verdict -->`,
+        ),
+      logger,
+    });
+    const overCap = result.notChecked.filter((n) =>
+      n.includes("over the 20-file cap")
+    );
+    assertEquals(overCap.length, 20);
+    assertEquals(logger.errors, []);
+    assertEquals(logger.warns.length, 1);
+    const capWarns = logger.warns.filter((w) => w.includes("20-file cap"));
+    assertEquals(capWarns.length, 1);
+    assertStringIncludes(capWarns[0], "20");
+    assertStringIncludes(capWarns[0], "docs/m20.md");
+    assertFalse(capWarns[0].includes("docs/m39.md"));
   });
 });
 

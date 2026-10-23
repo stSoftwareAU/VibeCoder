@@ -2365,12 +2365,12 @@ Two independent checks feed one result:
    the head — an illustrative "for example `X`" counts too. A finding blocks
    only when it names the summary file and its sentence is found in the
    summary's own text; otherwise it is logged as unconfirmed and never acted
-   on. A base ref that cannot be resolved is logged at error level; a
-   question that cannot be launched, or a reply with no readable verdict, is
-   logged at warn level instead — the same as the review-fix drift check's
-   own model pass. All three are recorded in `notChecked` and never block on
-   their own — an unreachable model or an unreadable file is never reported
-   as a clean check, but it also never blocks a PR by itself.
+   on. A base ref that cannot be resolved, a question that cannot be
+   launched, and a reply with no readable verdict are each logged at warn
+   level — the same as the review-fix drift check's own model pass. All three
+   are recorded in `notChecked` and never block on their own — an unreachable
+   model or an unreadable file is never reported as a clean check, but it also
+   never blocks a PR by itself.
 2. **A deterministic Test Plan backstop**
    (`findTestPlanClaimProblems`). In the `## Test Plan` section, a list item
    that names a test file in backticks and quotes a behaviour ("…" or
@@ -2431,10 +2431,11 @@ The combined prose scope is capped at 20 files and the extra manual scope at
 40 sections. The prompt lists selected paths and line ranges inside its
 untrusted-data boundary. Files/sections past a cap, unreadable tracked files,
 unavailable diffs and unterminated source literals/comments are recorded as
-not checked, never passed. The first-run check logs these at error level; the
-review-fix check logs them at warning level. A deleted file has no prose to
-check. If the changed-file list itself is unavailable, the summary is still
-questioned and its prose extension is recorded as not checked.
+not checked, never passed. Both checks log these at warning level; the
+first-run check aggregates cap overflow into one warning per claim check (the
+count and the first few names), not one line per range. A deleted file has no
+prose to check. If the changed-file list itself is unavailable, the summary is
+still questioned and its prose extension is recorded as not checked.
 
 `docProseClaimInstruction` retains the trigger classes: when behaviour
 happens, what it refuses, rejects, allows or skips, absolute words, and counted
