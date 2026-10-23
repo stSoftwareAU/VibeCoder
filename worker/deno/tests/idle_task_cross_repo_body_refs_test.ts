@@ -45,6 +45,7 @@ const CROSS_REPO_PROMPT_NAMES = [
   "format_drift",
   "gate_skip_drift",
   "github_actions_audit",
+  "simple_on_purpose_ledger",
   "orphan_deps",
   "private_repo_reference_audit",
   "retro",

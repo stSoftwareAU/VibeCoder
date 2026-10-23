@@ -48,6 +48,7 @@ import { WORKFLOW_ANNOTATION_SCAN_ISSUE_TITLE } from "../lib/idle_task_templates
 import { PRIVATE_REPO_REFERENCE_ISSUE_TITLE } from "../lib/idle_task_templates/private_repo_reference_template.ts";
 import { DUPLICATED_KNOWLEDGE_ISSUE_TITLE } from "../lib/idle_task_templates/duplicated_knowledge_template.ts";
 import { GATE_SKIP_DRIFT_ISSUE_TITLE } from "../lib/idle_task_templates/gate_skip_drift_template.ts";
+import { SIMPLE_ON_PURPOSE_LEDGER_ISSUE_TITLE } from "../lib/idle_task_templates/simple_on_purpose_ledger_template.ts";
 import { RETRO_ISSUE_TITLE } from "../lib/idle_task_templates/retro_template.ts";
 import type { Result } from "../types.ts";
 
@@ -590,6 +591,9 @@ Deno.test(
     );
     assert(IDLE_TASK_WRAPPER_TITLES.includes(RETRO_ISSUE_TITLE));
     assert(IDLE_TASK_WRAPPER_TITLES.includes(GATE_SKIP_DRIFT_ISSUE_TITLE));
+    assert(
+      IDLE_TASK_WRAPPER_TITLES.includes(SIMPLE_ON_PURPOSE_LEDGER_ISSUE_TITLE),
+    );
   },
 );
 

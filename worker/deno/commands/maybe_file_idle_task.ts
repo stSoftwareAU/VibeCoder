@@ -178,6 +178,7 @@ import "../lib/idle_task_templates/private_repo_reference_template.ts";
 import "../lib/idle_task_templates/duplicated_knowledge_template.ts";
 import "../lib/idle_task_templates/retro_template.ts";
 import "../lib/idle_task_templates/gate_skip_drift_template.ts";
+import "../lib/idle_task_templates/simple_on_purpose_ledger_template.ts";
 
 // ---------------------------------------------------------------------------
 // Public data shape

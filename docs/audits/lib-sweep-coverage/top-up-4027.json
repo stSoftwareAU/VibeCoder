@@ -1,0 +1,14 @@
+{
+  "issue": 4027,
+  "chunk": "top-up-4027",
+  "title": "top-up: SIMPLE-ON-PURPOSE ledger idle task",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4027",
+  "definition": "modules added to worker/deno/lib/ and prompts/ after 12a-12af recorded their coverage: simple_on_purpose_scanner.ts, idle_task_templates/simple_on_purpose_ledger_template.ts and prompts/simple_on_purpose_ledger/prompt.md (#4027)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/simple_on_purpose_scanner.ts",
+    "worker/deno/lib/idle_task_templates/simple_on_purpose_ledger_template.ts",
+    "prompts/simple_on_purpose_ledger/prompt.md"
+  ],
+  "sweptAt": "09ae76d28d8cad937e701e90dea45bb08cc2a30c"
+}

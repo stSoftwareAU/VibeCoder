@@ -46,6 +46,7 @@ import { createDocumentationAuditTemplate } from "../lib/idle_task_templates/doc
 import { createDuplicatedKnowledgeTemplate } from "../lib/idle_task_templates/duplicated_knowledge_template.ts";
 import { createFormatDriftTemplate } from "../lib/idle_task_templates/format_drift_template.ts";
 import { createGateSkipDriftTemplate } from "../lib/idle_task_templates/gate_skip_drift_template.ts";
+import { createSimpleOnPurposeLedgerTemplate } from "../lib/idle_task_templates/simple_on_purpose_ledger_template.ts";
 import { createGitHubActionsAuditTemplate } from "../lib/idle_task_templates/github_actions_audit_template.ts";
 import { createOrphanDepsTemplate } from "../lib/idle_task_templates/orphan_deps_template.ts";
 import { createPrivateRepoReferenceTemplate } from "../lib/idle_task_templates/private_repo_reference_template.ts";

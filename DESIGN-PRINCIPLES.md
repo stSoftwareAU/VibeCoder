@@ -1700,7 +1700,7 @@ between the registered templates, so every template shares the same trigger
 pipeline and the same per-repo dedup and cooldown gates. The authoritative
 enumeration — and the size of the uniform draw — lives in
 [Idle-task framework](#idle-task-framework); it is deliberately not
-repeated here, so registering a nineteenth template updates one passage rather
+repeated here, so registering a twenty-first template updates one passage rather
 than two that can drift apart.
 
 **Bucket-scoped, LLM-only review.** A single run targets one bucket — one of
@@ -2657,7 +2657,7 @@ and claim handler.
 - [`worker/deno/lib/idle_task_claim_handler.ts`](worker/deno/lib/idle_task_claim_handler.ts)
   — Routes claimed `idle-task` issues to the template's `runTask()`.
 - [`worker/deno/lib/idle_task_templates/`](worker/deno/lib/idle_task_templates/)
-  — Per-template implementations. Nineteen production templates:
+  — Per-template implementations. Twenty production templates:
   `security_scan_template.ts` (#1, security audit), `best_practices_template.ts`
   (#2, bucket-scoped best-practices review — see
   [`docs/BEST-PRACTICES-SCAN.md`](docs/BEST-PRACTICES-SCAN.md)),
@@ -2714,9 +2714,14 @@ and claim handler.
   tool the gate skips with a warning while CI installs and runs it — the drift
   that let NEAT-AI-core PR 597 pass locally and fail in CI; suppressed for a
   tool `container/tools.json` already pins for that repository — see
-  [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md)).
-  The idle-task filer picks uniformly at random (1/19 each) between the
-  nineteen on every idle pass.
+  [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md));
+  and `simple_on_purpose_ledger_template.ts` (#20, native report-only ledger
+  that lists every `SIMPLE-ON-PURPOSE` marker in a repository, flags each marker
+  with no `upgrade when` clause, and posts or refreshes one report issue per
+  repository; it never edits, commits or opens a pull request — see
+  [`docs/SIMPLE-ON-PURPOSE-LEDGER.md`](docs/SIMPLE-ON-PURPOSE-LEDGER.md)).
+  The idle-task filer picks uniformly at random (1/20 each) between the
+  twenty on every idle pass.
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
 operator manual, lifecycle sequence diagram, registry flowchart, and
@@ -2732,7 +2737,7 @@ claimed issue to the `process-add-repo` command, which validates access and
 detects visibility at runtime, idempotently appends the slug to the per-machine
 `.config.json` (a forbidden-to-commit secrets file — never committed), syncs the
 full canonical GitHub label set to the target repo, configures the
-default-branch protection "wall", seeds all nineteen idle-task wrappers
+default-branch protection "wall", seeds all twenty idle-task wrappers
 in the target repo, then comments and closes the add-repo issue.
 
 - **Timing.** The monitored-list change takes effect on the next config reload /
@@ -2761,7 +2766,7 @@ in the target repo, then comments and closes the add-repo issue.
   (through `escalateToHuman`), and the repo is **not** added.
 - **Deliberate skips.** The remaining one-off setup syncs (workflows,
   `.gitignore`, collaborator precheck) are **not** re-run — best-practice setup
-  is delegated to the nineteen idle tasks. Visibility gating (which idle checks fire
+  is delegated to the twenty idle tasks. Visibility gating (which idle checks fire
   on private repos) is handled at runtime per.
 - **Labels.** No new worker-applied label behaviour: the flow relies on the
   existing `idle-task` self-apply (via the wrappers) and `needs-human` (only

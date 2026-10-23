@@ -158,6 +158,7 @@ export const WORKER_APPLIABLE_CONTENT_LABELS: ReadonlySet<string> = new Set([
   "private-repo-reference",
   "retro",
   "security-tree-sweep",
+  "simple-on-purpose-ledger",
   "supply-chain-readiness",
   "workflow-annotation-scan",
 ]);

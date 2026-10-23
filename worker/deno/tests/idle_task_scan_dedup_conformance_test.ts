@@ -596,6 +596,11 @@ const NON_PARTICIPATING = new Map<string, string>([
     "Native: reports GitHub Actions annotations verbatim, keyed on the " +
     "annotation. No LLM, no prompt.",
   ],
+  [
+    "simple-on-purpose-ledger",
+    "Native: lists every SIMPLE-ON-PURPOSE marker with its ceiling and " +
+    "upgrade condition, keyed on one report per repository. No LLM, no prompt.",
+  ],
 ]);
 
 const harnessNames = new Set(HARNESSES.map((h) => h.name));

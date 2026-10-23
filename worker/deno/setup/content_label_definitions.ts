@@ -161,6 +161,12 @@ const SCAN_CATEGORY_LABELS: readonly LabelDefinition[] = [
     category: "content",
   },
   {
+    name: "simple-on-purpose-ledger",
+    colour: "1D76DB",
+    description: "Report-only ledger of SIMPLE-ON-PURPOSE markers and their upgrade conditions",
+    category: "content",
+  },
+  {
     name: "bash-syntax-audit",
     colour: "b60205",
     description: "Bash syntax audit finding",

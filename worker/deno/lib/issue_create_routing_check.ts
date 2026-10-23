@@ -118,6 +118,10 @@ export const ISSUE_CREATE_ROUTING_ALLOWLIST: ReadonlyMap<string, string> =
       "#1597 gate-skip drift idle-task template; files into the scanned repository; not yet routed",
     ],
     [
+      "worker/deno/lib/idle_task_templates/simple_on_purpose_ledger_template.ts",
+      "#4027 SIMPLE-ON-PURPOSE ledger idle-task template; files into the scanned repository; not yet routed",
+    ],
+    [
       "worker/deno/lib/idle_task_templates/github_actions_audit_template.ts",
       "#2256 GitHub Actions audit idle-task template; files into the scanned repository; not yet routed",
     ],
