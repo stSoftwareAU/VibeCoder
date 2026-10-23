@@ -1214,6 +1214,25 @@ Deno.test("runMutationCheck shell - a mutant bash -n rejects is unviable, not ki
   assertEquals(testRuns.length, 4);
 });
 
+Deno.test("runMutationCheck shell - bash -n exiting 127 is an error, not unviable mutants and a clean pass", async () => {
+  const f = shellFake(
+    shellFiles(),
+    (_c, args) =>
+      args[0] === "-n"
+        ? {
+          code: 127,
+          stdout: "",
+          stderr: "bash: not found\n",
+          timedOut: false,
+        }
+        : ok(0),
+  );
+  const r = await runMutationCheck(shellInput(SH_DIFF), f.seams);
+  const e = asKind(r, "error");
+  assertStringIncludes(e.reason, "bash is unavailable");
+  assertEquals(f.files.get(SCRIPT_PATH), SH, "script must be restored");
+});
+
 Deno.test("runMutationCheck shell - a surviving export deletion mutant blocks the gate until a matching exempt entry is added", async () => {
   const f = shellFake(shellFiles(), () => ok(0));
   const r = await runMutationCheck(shellInput(SH_DIFF), f.seams);

@@ -324,7 +324,15 @@ async function runMutantLoop(
           ...childEnv,
         });
         if (syntax.timedOut) timedOut = true;
-        else if (syntax.code !== 0) unviable = true;
+        else if (syntax.code === 126 || syntax.code === 127) {
+          // bash is missing or not executable: no syntax verdict was reached,
+          // so this is not a mutant the parser rejected.
+          return {
+            kind: "error",
+            reason: "bash is unavailable (`bash -n` exited " +
+              `${syntax.code}); cannot check shell mutants`,
+          };
+        } else if (syntax.code !== 0) unviable = true;
       }
       for (const inv of plan.invocations) {
         if (timedOut || unviable) break;

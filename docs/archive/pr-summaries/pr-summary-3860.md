@@ -16,6 +16,14 @@ test-file walker and the shebang check now each have a test that goes red when
 the line is changed, and one redundant early return in the shell pass
 (`covered.length === 0`) was removed because its removal changed no outcome.
 
+Fix for the second retry: a `bash -n` that exits 126 or 127 (bash missing or not
+executable) is no longer counted as an unviable mutant, which let the run report
+`completed` with nothing tested. `runMutantLoop` now returns an `error` saying
+bash is unavailable, and the script is restored. `docs/mutation-check.md` now
+says that a `foo()` header with the brace on the next line is not recognised as
+structural, and that a covered-scripts `error` (failing baseline or bash
+unavailable) is returned as the result rather than `not_checked`.
+
 Closes #3860.
 
 ## Spec
@@ -41,7 +49,7 @@ scripts. Each requirement and how this change meets it:
 - **Shared budget and result.** The shell pass draws on the same budget clock as
   the Deno pass, and the merged result takes the worst kind.
 - **`bash -n` rejects are unviable.** A mutant that `bash -n` rejects is unviable:
-  it is neither killed nor a survivor.
+  it is neither killed nor a survivor. Exit 126 or 127 is not a rejection: it is an `error` (bash unavailable).
 - **Case syntax is never replaced by `:`.** Case patterns and their `;;`
   terminators are never mutated by `:` replacement.
 - **Out of scope.** #3901 and #3875 are untouched by this change.
@@ -64,6 +72,7 @@ shebang names sh or bash`.
 **Red-checks** (temporary breaks in `worker/deno/lib/`, each restored with
 `git checkout --`, run with `deno task test:unit tests/mutation_gate_test.ts tests/mutation_runner_test.ts < /dev/null` from `worker/deno`):
 - `lib/mutation_runner.ts:327` `else if (syntax.code !== 0) unviable = true;` removed: `runMutationCheck shell - a mutant bash -n rejects is unviable, not killed, and parseable siblings are still killed` went red.
+- `lib/mutation_runner.ts:327` 126/127 branch disabled: `runMutationCheck shell - bash -n exiting 127 is an error, not unviable mutants and a clean pass` went red.
 - `lib/mutation_gate.ts:956` whole case-pattern guard disabled: `generateShellMutantsDetailed - case patterns and terminators are never deleted` and `generateShellMutantsDetailed - a command beside case clauses still mutates, as do $(...) statements` went red.
 - `lib/mutation_gate.ts:956` `SHELL_CASE_PATTERN` operand alone removed: the same two tests went red.
 - `lib/mutation_gate.ts:956` `SHELL_CASE_TERMINATOR` operand alone removed: `generateShellMutantsDetailed - case patterns and terminators are never deleted` went red.
