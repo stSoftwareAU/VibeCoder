@@ -848,12 +848,22 @@ export async function runSummaryClaimCheck(
       for (const message of scope.notChecked) {
         notChecked.push(message);
       }
-      if (scope.notChecked.length > 0) {
-        const n = scope.notChecked.length;
-        const shown = scope.notChecked.slice(0, 3);
+      // Cap overflow is aggregated; every other reason is logged on its own so
+      // an operator still sees why a range was not checked.
+      const overflow = new Set(scope.capOverflow);
+      for (const message of scope.notChecked) {
+        if (overflow.has(message)) continue;
+        deps.logger.warn(`Summary claim check: ${message}`, {
+          repo,
+          issueNumber,
+        });
+      }
+      if (scope.capOverflow.length > 0) {
+        const n = scope.capOverflow.length;
+        const shown = scope.capOverflow.slice(0, 3);
         const more = n > shown.length ? `; and ${n - shown.length} more` : "";
         deps.logger.warn(
-          `Summary claim check: ${n} doc-prose range(s) not checked (first ${shown.length}): ${
+          `Summary claim check: ${n} doc-prose range(s) over a cap, not checked (first ${shown.length}): ${
             shown.join("; ")
           }${more}`,
           { repo, issueNumber, notCheckedCount: n },

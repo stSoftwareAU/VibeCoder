@@ -1820,7 +1820,7 @@ Deno.test("runSummaryClaimCheck - cap overflow warning carries repo, issue, the 
       askQuestion: async () => okResult("no findings"),
       logger,
     });
-    assertWarnedWithContext(logger, "doc-prose range(s) not checked");
+    assertWarnedWithContext(logger, "doc-prose range(s) over a cap");
     const hit = logger.warnMeta[0]!;
     assertStringIncludes(hit.message, "and 17 more");
     assertStringIncludes(hit.message, "(first 3)");
@@ -1841,9 +1841,53 @@ Deno.test("runSummaryClaimCheck - a small overflow warning lists every name with
     });
     const capWarns = logger.warns.filter((w) => w.includes("range(s)"));
     assertEquals(capWarns.length, 1);
-    assertStringIncludes(capWarns[0]!, "1 doc-prose range(s)");
+    assertStringIncludes(capWarns[0]!, "1 doc-prose range(s) over a cap");
     assertStringIncludes(capWarns[0]!, "docs/m20.md");
     assertFalse(capWarns[0]!.includes("; and "));
+  });
+});
+
+Deno.test("runSummaryClaimCheck - a non-cap reason after >3 cap overflows gets its own warning and is not aggregated (PR #4228 review)", async () => {
+  const names = Array.from({ length: 24 }, (_, i) => `docs/m${i}.md`);
+  const files: Record<string, string> = {};
+  for (const n of names) files[n] = "# Doc\n";
+  await withDocRepo(files, async (dir) => {
+    const logger = makeLogger();
+    // The tracked manual is missing on disk, so its reason follows the 4 cap entries.
+    const result = await runSummaryClaimCheck(
+      docInput(dir, [...names, "docs/gone.md"]),
+      {
+        runGit: okGit("docs/gone.md\n"),
+        askQuestion: async () => okResult("no findings"),
+        logger,
+      },
+    );
+    assertEquals(logger.errors, []);
+    const agg = logger.warnMeta.filter((w) =>
+      w.message.includes("range(s) over a cap")
+    );
+    assertEquals(agg.length, 1);
+    assertStringIncludes(agg[0]!.message, "4 doc-prose range(s) over a cap");
+    assertEquals(
+      (agg[0]!.meta as Record<string, unknown>).notCheckedCount,
+      4,
+    );
+    assertFalse(agg[0]!.message.includes("docs/gone.md"));
+    // m23 is past the first three shown, so only a per-range line could name it.
+    assertEquals(
+      logger.warnMeta.filter((w) => w.message.includes("docs/m23.md")).length,
+      0,
+    );
+    const own = logger.warnMeta.filter((w) =>
+      w.message.includes("docs/gone.md: tracked prose could not be read")
+    );
+    assertEquals(own.length, 1);
+    const meta = own[0]!.meta as Record<string, unknown>;
+    assertEquals(meta.repo, "acme/widgets");
+    assertEquals(meta.issueNumber, 7);
+    assert(
+      result.notChecked.some((n) => n.includes("docs/gone.md")),
+    );
   });
 });
 

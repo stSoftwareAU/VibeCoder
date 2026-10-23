@@ -2432,8 +2432,9 @@ The combined prose scope is capped at 20 files and the extra manual scope at
 untrusted-data boundary. Files/sections past a cap, unreadable tracked files,
 unavailable diffs and unterminated source literals/comments are recorded as
 not checked, never passed. Both checks log these at warning level; the
-first-run check aggregates cap overflow into one warning per claim check (the
-count and the first few names), not one line per range. A deleted file has no
+first-run check aggregates only cap overflow into one warning per claim check
+(the count and the first few names), not one line per range; every other
+not-checked reason is logged as its own warning. A deleted file has no
 prose to check. If the changed-file list itself is unavailable, the summary is
 still questioned and its prose extension is recorded as not checked.
 
