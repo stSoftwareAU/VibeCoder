@@ -145,6 +145,10 @@ and the RTK row in `docs/CONFIGURATION.md`; siblings: `Claude`, `Gemini`,
 The trial's Claude-specific historical population and unmeasured performance
 bar remain historical. `docs/PROVIDER-FEASIBILITY.md:168` still describes the
 Claude-only advisor edit guard, which this change does not extend to Codex.
+`docs/RTK-OUTPUT-TRIAL.md` exclusion rule now names only Gemini and DeepSeek as
+`unsupported` and says Codex runs are compared separately. The contract manual
+(`docs/MANAGER-WORKER-CONTRACT.md` §6 and §7) now says Codex consumes the
+settings payload for the RTK hook only, never the edit guard.
 `docs/CALLBACKS.md:516` still defines unsupported as a provider without hooks.
 
 ## Test Plan
@@ -155,9 +159,27 @@ Claude-only advisor edit guard, which this change does not extend to Codex.
   multiple-entry and malformed-input tests.
 - Before implementation, the enabled Codex test failed with `unsupported`
   versus `ok`, and the invocation test failed because hook flags were absent.
-- No assertions were removed. Codex was removed from the unsupported-provider
-  fixture because the issue requires “A Codex run reports `ok`, not
-  `unsupported`”; Gemini and DeepSeek retain the original assertions.
+- Codex was removed from the unsupported-provider fixture loop, so its
+  iteration of each loop assertion no longer runs; Gemini and DeepSeek retain
+  them. Each is named below.
+- Removed from `worker/deno/tests/rtk_output_test.ts`: `assertEquals(run.result.status, "unsupported", providerId);`
+  Required by: "Give Codex runs RTK through Codex's PreToolUse hook"
+  Replaced by: `assertEquals(run.result.status, "ok");`
+- Removed from `worker/deno/tests/rtk_output_test.ts`: `assertEquals(run.result.enabled, true, providerId);`
+  Required by: "Give Codex runs RTK through Codex's PreToolUse hook"
+  Replaced by: `assertEquals(run.result.status, "ok");`
+- Removed from `worker/deno/tests/rtk_output_test.ts`: `assertEquals( run.result.provider, providerId, "the stats line names the provider that could not take the hook", );`
+  Required by: "Give Codex runs RTK through Codex's PreToolUse hook"
+  Replaced by: `assertEquals(run.result.status, "ok");`
+- Removed from `worker/deno/tests/rtk_output_test.ts`: `assertEquals(run.hookSettings(), undefined, providerId);`
+  Required by: "Give Codex runs RTK through Codex's PreToolUse hook"
+  Replaced by: `assert(args.includes("--dangerously-bypass-hook-trust"));`
+- Removed from `worker/deno/tests/rtk_output_test.ts`: `assertEquals(run.applyPrompt("Prompt."), "Prompt.", providerId);`
+  Required by: "Give Codex runs RTK through Codex's PreToolUse hook"
+  Replaced by: `assertStringIncludes(args.at(-1)!, RTK_PROMPT_LINE);`
+- Removed from `worker/deno/tests/rtk_output_test.ts`: `assertEquals(stub.calls, [], providerId);`
+  Required by: "Give Codex runs RTK through Codex's PreToolUse hook"
+  Replaced by: `assertEquals(stub.calls.length, 3);`
 - Twinned rules: no duplicated RTK support gate was found. Existing phase
   callers already use `prepareRtkRun`, `hookSettings` and `settingsJsonOption`;
   only the Codex descriptor needed additional argument wiring.
@@ -190,8 +212,8 @@ Claude-only advisor edit guard, which this change does not extend to Codex.
   `prepareRtkRun - support follows the provider capability` — reviewer: met.
 - **met** — Codex argv, disabled behaviour and `ok` status tests, including
   observed pre-fix failures — evidence: Automated checks and Test Plan — reviewer: met.
-- **met** — Manuals list Codex support — evidence: RTK trial and configuration
-  documentation changes — reviewer: met.
+- **met** — Manuals list Codex support — evidence: RTK trial (sections 1 and the exclusion rule), configuration and
+  manager-worker contract documentation changes — reviewer: met.
 
 ## Standards Review
 
@@ -199,7 +221,7 @@ Claude-only advisor edit guard, which this change does not extend to Codex.
 
 - **clean** — Self-review checked the provider boundary, existing call sites,
   per-spawn isolation, failure messages, changed comments, documentation and
-  preservation of the unsupported-provider assertions. No dependency was added.
+  preservation of the unsupported-provider assertions for Gemini and DeepSeek. No dependency was added.
 - **clean** — The implementation reuses the existing RTK hook and accounting;
   it introduces no instruction-based routing, payload shim or separate store.
 

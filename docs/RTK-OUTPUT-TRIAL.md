@@ -154,8 +154,11 @@ Two exclusions and one inclusion carry the rule:
 
 - A run from **before 1.7.0** carries no `- **RTK:**` line at all. It is
   excluded from both sides rather than assumed to be a control run.
-- An `unsupported` run is excluded: it is a Codex, Gemini or DeepSeek run whose
-  cost profile is not comparable with a Claude run either way.
+- An `unsupported` run is excluded: it is a Gemini or DeepSeek run whose
+  cost profile is not comparable with a Claude run either way. Codex runs
+  report `ok` (Issue #4121) and so fall in the enabled population; the trial's
+  baseline population is Claude-only, so compare Codex runs separately by
+  provider rather than pooling them with Claude runs.
 - A **`failed`** run stays in, on the enabled side. It cost what an enabled host
   really costs when the binary is missing or the store is unreadable, and hiding
   that cost would flatter the candidate.

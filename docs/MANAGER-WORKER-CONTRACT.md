@@ -316,8 +316,11 @@ stateDiagram-v2
   `agent_id` is absent (`worker/deno/lib/issue_executor_enforcement.ts:124`,
   `:138`), except on the advisor's own run-record files: the PR summary and
   the PR-feedback reply file are allowed without `agent_id` (`:142-145`). The
-  hook is delivered through `--settings`, which only the Claude provider
-  carries.
+  hook is delivered through `--settings`, and the runner supplies the edit
+  guard in that payload for the Claude provider only
+  (`worker/deno/lib/claude_runner.ts`). Codex also consumes a `settingsJson`
+  payload (`worker/deno/lib/codex_executor.ts:414`), but only for the RTK
+  `PreToolUse` hook (Issue #4121), never the edit guard.
 - **Executors cannot dispatch.** `["Agent"]` is disallowed for executors
   (`worker/deno/lib/issue_executor_agents.ts:114`). The reviewers and explorer
   are read-only.
@@ -362,7 +365,7 @@ refuses loudly before spawn when `--agents` is dropped (Issue #4010).
 | Provider | Prompt transport | `--agents` | `--settings` (edit guard) | `supportsCompaction` | Behaviour with split on |
 | --- | --- | --- | --- | --- | --- |
 | `claude` | stdin (`agent_provider.ts:720`) | Emitted (`:617-618`) | Emitted (`:622-623`) | Yes (`stream_compaction.ts:67-70`) | Prompt block renders; executors defined; edit guard active. |
-| `codex` | stdin (`:853`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; no edit guard. |
+| `codex` | stdin (`:853`) | Not carried, silent at `buildInvocation` | Translated to per-spawn `hooks.PreToolUse` `-c` arguments when present (`agent_provider.ts:904`, `codex_executor.ts:414`); carries the RTK hook only, never the edit guard | No | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; no edit guard (the Codex `--settings` column carries only the RTK hook). |
 | `gemini` | argv (`:973`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; no edit guard. |
 | `deepseek` | stdin (`:1067`) | Stripped, warned (`:1120-1121`) | Stripped, silent (`:1120`, `:1132`) | Yes | Prompt block renders; the run is refused before spawn when it carries `--agents` (Issue #4010), because the argv lacks `--agents`; the descriptor warns for `agents` only. No edit guard. |
 
