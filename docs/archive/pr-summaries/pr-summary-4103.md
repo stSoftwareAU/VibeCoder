@@ -104,7 +104,16 @@ window is bounded, so the regex stays linear (the Issue #3942 rule).
   was made.
 - Not done / not checked: the full quality gate result is to be appended by the
   author. The full `deno test` suite was not run; only the five test files above
-  were run.
+  were run. Quality gate (`./quality.sh`): every stage passed or was skipped
+  except `deno tests [parallel]`, which reported 29579 passed, 5 failed; the
+  serial pass did not run because of that failure. The 5 failures are
+  environmental and unrelated to secret redaction: 3
+  (`claude_runner_provider_fallback_4034_test.ts` x2,
+  `external_orchestration_3642_config_test.ts` x1) need a `codex`
+  coding-agent provider the container image lacks; 2 in
+  `completion_phase_repo_formatters_test.ts` ("formatter should commit the Rust
+  fix") need a Rust formatter the container lacks (not verified further). The
+  five redaction test files passed when run directly (117 passed, 0 failed).
 
 <!-- vibe-branch-outcomes -->
 
