@@ -531,10 +531,7 @@ export function parseChecklistVerdicts(value: unknown): ChecklistVerdict[] {
     if (typeof item !== "string" || item.trim() === "") continue;
     if (typeof verdict !== "string") continue;
     const normalised = verdict.trim().toLowerCase();
-    if (!VERDICTS.includes(normalised)) {
-      out.push({ checklist, item, verdict: "met", note: typeof note === "string" ? note : "" });
-      continue;
-    }
+    if (!VERDICTS.includes(normalised)) continue;
     if (note !== undefined && typeof note !== "string") continue;
     out.push({
       checklist,

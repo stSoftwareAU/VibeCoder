@@ -328,6 +328,8 @@ Deno.test("parseChecklistVerdicts drops each bad shape and keeps valid neighbour
     {},
     { ...ok, checklist: "" },
     { ...ok, item: 3 },
+    { ...ok, item: "" },
+    { ...ok, item: "   " },
     { ...ok, verdict: "maybe" },
     { ...ok, verdict: "partial" },
     { ...ok, verdict: "n/a" },
