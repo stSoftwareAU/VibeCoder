@@ -565,10 +565,7 @@ flowchart LR
 ### ⚖️ Idle-Task Template Weights
 
 When no claimable work exists, the worker files a background **idle-task**
-issue. It picks which template to run from the twenty registered templates. A
-pair-first cadence bias runs first and can override the pick (see
-[Idle-Task Cadence](#%EF%B8%8F-idle-task-cadence)); otherwise the pick is a
-random draw — the authoritative list lives in the
+issue. It picks which template to run from the twenty registered templates. The pick is a random draw, which a pair-first cadence bias that runs after it can override (see [Idle-Task Cadence](#%EF%B8%8F-idle-task-cadence)) — the authoritative list lives in the
 [idle-task registry](IDLE-TASK-FRAMEWORK.md#registry), which this page
 deliberately does not restate. By default the random draw is **uniform** — each
 template has a 1/20 chance, so only ~2/20 of random-draw idle runs are

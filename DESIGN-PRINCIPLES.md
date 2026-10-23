@@ -1695,10 +1695,7 @@ idle-trigger sequence diagram).
 ### Best-practices scans (template #2)
 
 The best-practices scan is the second registered idle-task template. Once it has
-selected an idle target repo, the idle-task filer first runs the pair-first
-cadence bias (Issue #4009), which files the first overdue (repo, template) pair
-that clears every gate. Otherwise it falls back to a weighted draw between the
-registered templates (uniform only by default, from `idle_task_template_weights`),
+selected an idle target repo, the idle-task filer first draws a template, then runs the pair-first cadence bias (Issue #4009), which files the first overdue (repo, template) pair that clears every gate in place of that draw. Otherwise the drawn template stands, a weighted pick between the registered templates (uniform only by default, from `idle_task_template_weights`),
 then a shuffled repo, so every template shares the same trigger pipeline and the
 same per-repo dedup and cooldown gates. The authoritative enumeration — and how
 the draw is weighted — lives in
