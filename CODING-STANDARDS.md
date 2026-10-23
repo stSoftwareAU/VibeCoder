@@ -1388,6 +1388,12 @@ as two passes over disjoint halves of one scope: everything parallel-safe under
 among the files named, split the same way, and says which integration suites it
 left out — use it for targeted runs instead of a raw `deno test <files>`.
 
+Run one test or build suite at a time, in the foreground: never with
+`run_in_background` or a trailing `&`, and scope it to the touched crates or
+files (`cargo test -p <crate>`, `deno test <file>`). The guest VM has no swap,
+so concurrent or backgrounded builds can exhaust its memory and freeze the
+container (Issue #4225).
+
 **A unit test that cannot run in parallel is still a unit test.** It is capped
 debt, not a reclassification. Exactly three reasons put a file in the serial
 pass: it mutates process state, it asserts on a real elapsed reading, or it

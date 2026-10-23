@@ -366,7 +366,10 @@ import {
 let lastGraphqlQuotaReading: GraphqlQuotaReading | null = null;
 
 // Liveness guard (Issue #2479)
-import { checkLivenessWindow } from "./liveness_guard.ts";
+import {
+  checkLivenessWindow,
+  formatLivenessTickLine,
+} from "./liveness_guard.ts";
 
 // Crash handling
 import { cleanupInProgressIssue as crashCleanupFn } from "./crash_cleanup.ts";
@@ -494,7 +497,11 @@ import {
 import { fileRunFailureIssue } from "./run_failure_issue.ts";
 import { setMarkerReleaseHook } from "./claim_release.ts";
 import { readMarkerState } from "./heartbeat_storage.ts";
-import { probeHostMemoryPressure } from "./memory_pressure.ts";
+import {
+  livenessResourceLogFields,
+  probeHostMemoryPressure,
+  probeLivenessResources,
+} from "./memory_pressure.ts";
 import { runFailureDetectionResumePass } from "./failure_detection_resume.ts";
 import {
   createFeatureRegistry,
@@ -6402,6 +6409,13 @@ export async function createProductionRunCoreDeps(
           ghCommandFn: runGhCommand,
           log: (line: string) => logger.info(line),
         });
+        // Issue #4225: MemAvailable and PSI (memory + CPU) ride on every tick
+        // line so a freeze under a heavy build leaves its pressure in the log
+        // even with no OOM kill. The probe never throws and reports an
+        // unreadable source as `unknown`, so it cannot block or fail the tick.
+        const resourceFields = livenessResourceLogFields(
+          await probeLivenessResources(),
+        );
         if (result.ok) {
           const v = result.value;
           // Issue #2297: the one line per cycle a host-side reader already
@@ -6423,17 +6437,23 @@ export async function createProductionRunCoreDeps(
             ),
           );
           // Per-tick decision line so operators can confirm from the log
-          // alone that the guard ran this cadence tick and what it saw.
+          // alone that the guard ran this cadence tick and what it saw. The
+          // resource fields (Issue #4225) are appended last.
           logger.info(
-            `[liveness] tick=${tick} alerted=${v.alerted} ` +
-              `live_epoch=${v.liveEpoch ?? "none"} ` +
-              `last_idle_claimed=${v.lastIdleClaimedEpoch ?? "none"} ` +
-              `last_productive=${v.lastProductiveEpoch ?? "none"} ` +
+            formatLivenessTickLine({
+              tick,
+              alerted: v.alerted,
+              liveEpoch: v.liveEpoch,
+              lastIdleClaimedEpoch: v.lastIdleClaimedEpoch,
+              lastProductiveEpoch: v.lastProductiveEpoch,
               hookFields,
+              resourceFields,
+            }),
           );
         } else {
           logger.warn("Liveness guard write failed (continuing)", {
             error: result.error.message,
+            resources: resourceFields,
           });
         }
       } catch (err) {

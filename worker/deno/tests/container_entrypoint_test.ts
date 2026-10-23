@@ -1445,6 +1445,51 @@ Deno.test("entrypoint - the tool caches every CLI reaches for are relocated off 
   }
 });
 
+Deno.test("entrypoint - cargo defaults to 2 build jobs and line-table debug info, honouring operator overrides (Issue #4225)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const envFile = await stubDenoDumpingEnv(dir, [
+      "CARGO_BUILD_JOBS",
+      "CARGO_PROFILE_DEV_DEBUG",
+      "CARGO_PROFILE_TEST_DEBUG",
+    ]);
+    await fakeRepo(dir);
+    const home = `${dir}/home`;
+    await Deno.mkdir(home, { recursive: true });
+
+    // Defaults: nothing set by the operator.
+    const defaults = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: { VIBE_BASE_DIR: `${dir}/repo`, HOME: home },
+    });
+    assertEquals(defaults.code, 0, defaults.stderr);
+    const defaultEnv = parseEnvDump(await Deno.readTextFile(envFile));
+    assertEquals(defaultEnv["CARGO_BUILD_JOBS"], "2");
+    assertEquals(defaultEnv["CARGO_PROFILE_DEV_DEBUG"], "line-tables-only");
+    assertEquals(defaultEnv["CARGO_PROFILE_TEST_DEBUG"], "line-tables-only");
+
+    // Operator override: the value set on the host is preserved, not clobbered.
+    const overridden = await runEntrypoint({
+      dir,
+      path: `${dir}/bin:/usr/bin:/bin`,
+      env: {
+        VIBE_BASE_DIR: `${dir}/repo`,
+        HOME: home,
+        CARGO_BUILD_JOBS: "4",
+        CARGO_PROFILE_DEV_DEBUG: "false",
+      },
+    });
+    assertEquals(overridden.code, 0, overridden.stderr);
+    const overriddenEnv = parseEnvDump(await Deno.readTextFile(envFile));
+    assertEquals(overriddenEnv["CARGO_BUILD_JOBS"], "4");
+    assertEquals(overriddenEnv["CARGO_PROFILE_DEV_DEBUG"], "false");
+    assertEquals(overriddenEnv["CARGO_PROFILE_TEST_DEBUG"], "line-tables-only");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("entrypoint - an unusable /tmp degrades loudly onto the work volume, never silently (Issue #515)", async () => {
   // Apple `container` reports supportsTmpfs: false, so on that runtime /tmp
   // is ordinary root filesystem and stops being writable the moment the root

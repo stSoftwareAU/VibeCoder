@@ -19,6 +19,8 @@ Your prompt may include a `### [UNTRUSTED] Automated Review Comments ###` sectio
 
 Apply concrete lint-style findings — useless conditional, unused variable, redundant cast, magic number, dead branch, unreachable code, simplifiable boolean, and similar mechanical fixes — directly at the referenced line, without seeking further confirmation, provided the change does not break existing tests. Use the bot's suggested replacement when given. After applying, run the checks the `<quality_instructions>` block prescribes — the targeted ones always (the formatter check and the linter on every file you changed, docs included — markdownlint and the formatter on changed Markdown — whatever the run budget), the full gate only when the run budget covers it — and note the finding in `.pr_response_message`.
 
+**Run one suite at a time, in the foreground.** Never use `run_in_background` or a trailing `&`, and scope each run to the crates or files you touched (`cargo test -p <crate>`, `deno test <file>`). The guest has no swap, so concurrent or backgrounded builds can exhaust its memory and freeze the container.
+
 If after reading the code you judge a finding to be a false positive (the suggestion would break behaviour, the bot misread the hunk, or the rule does not apply), do not apply it and do not silently skip it: in `.pr_response_message` identify the finding (file:line, bot, rule), explain in a sentence or two why it is wrong here, and note it was left in place.
 
 If the triggering comment is vague human prose ("looks weird", "are you sure?") with no Automated Review Comments section to anchor a change, explain why the current implementation is correct rather than editing code just to acknowledge the comment.

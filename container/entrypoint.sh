@@ -257,6 +257,14 @@ else
   echo "Warning: no writable durable state root (tried ${VIBE_WORK_ROOT}/.container-state) — tool caches keep their image defaults (\${HOME}, and /tmp for npm) and need a writable root filesystem" >&2
 fi
 
+# Cargo build parallelism and debug info, sized for the 8 GiB guest with no
+# swap (Issue #4225). Unlike the paths above these do not depend on a writable
+# root, so they sit outside the branch. Each honours an operator-set value, so
+# a larger VM can raise CARGO_BUILD_JOBS (e.g. to 4) without editing this file.
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
+export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-line-tables-only}"
+export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-line-tables-only}"
+
 # Trust the mounted repositories. The runtime maps mount roots as root-owned
 # while files map to the container user, so git's dubious-ownership guard
 # refuses /workspace and every worker-managed clone ("fatal: detected dubious

@@ -693,6 +693,11 @@ reviewer.
   all checks pass BEFORE creating a Pull Request: the targeted ones (formatter,
   linter, type check, the tests covering your change) always, and the full gate
   once at the end when the remaining run budget covers it.
+- Run one test or build suite at a time, in the foreground: never with
+  `run_in_background` or a trailing `&`, and scope it to the crates or files
+  you touched (`cargo test -p <crate>`, `deno test <file>`). The guest has no
+  swap, so concurrent or backgrounded builds can exhaust its memory and freeze
+  the container.
 - All checks must pass before PR creation: lint, type checks, unit tests, and
   every other gate you ran. When the run budget did not cover the full gate,
   record the skip in the PR summary with the note the `<quality_instructions>`

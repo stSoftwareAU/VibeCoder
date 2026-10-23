@@ -13,9 +13,14 @@ import { assertEquals } from "@std/assert";
 import {
   checkLivenessWindow,
   DEFAULT_LIVENESS_THRESHOLD_HOURS,
+  formatLivenessTickLine,
   type IdleTaskActivitySignal,
   LIVENESS_STATE_FILENAME,
 } from "../lib/liveness_guard.ts";
+import {
+  livenessResourceLogFields,
+  probeLivenessResources,
+} from "../lib/memory_pressure.ts";
 
 const HOUR = 3600;
 const T = 1_000_000;
@@ -392,4 +397,73 @@ Deno.test("liveness guard - ALERT routes through the injected log sink, not cons
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #4225 — the per-cycle `[liveness] tick` line
+// ---------------------------------------------------------------------------
+
+const HOOK_FIELDS =
+  "hook_fail_success=0 hook_fail_failure=0 hook_fail_always=0";
+
+Deno.test("formatLivenessTickLine - existing fields keep their order and the resource fields come last (Issue #4225)", () => {
+  const resourceFields =
+    "mem_available_mib=400 mem_total_mib=8192 psi_mem_some_avg10=1.23 psi_mem_full_avg10=0.50 psi_cpu_some_avg10=45.00";
+  assertEquals(
+    formatLivenessTickLine({
+      tick: 3,
+      alerted: false,
+      liveEpoch: 1000,
+      lastIdleClaimedEpoch: null,
+      lastProductiveEpoch: 900,
+      hookFields: HOOK_FIELDS,
+      resourceFields,
+    }),
+    "[liveness] tick=3 alerted=false live_epoch=1000 last_idle_claimed=none " +
+      "last_productive=900 " + HOOK_FIELDS + " " + resourceFields,
+  );
+});
+
+Deno.test("formatLivenessTickLine - the resource fields are the last thing on the line (Issue #4225)", () => {
+  const line = formatLivenessTickLine({
+    tick: 7,
+    alerted: true,
+    liveEpoch: null,
+    lastIdleClaimedEpoch: 5,
+    lastProductiveEpoch: null,
+    hookFields: HOOK_FIELDS,
+    resourceFields: "mem_available_mib=unknown",
+  });
+  assertEquals(line.endsWith(" mem_available_mib=unknown"), true);
+  assertEquals(
+    line.startsWith(
+      "[liveness] tick=7 alerted=true live_epoch=none last_idle_claimed=5 " +
+        "last_productive=none " + HOOK_FIELDS + " ",
+    ),
+    true,
+  );
+});
+
+Deno.test("tick wiring - a real probe reading feeds the tick line with resource fields last (Issue #4225)", async () => {
+  const resources = await probeLivenessResources({
+    readMemInfo: () =>
+      Promise.resolve("MemTotal: 8388608 kB\nMemAvailable: 409600 kB\n"),
+    readPsi: () => Promise.reject(new Error("no PSI in this kernel")),
+  });
+  const line = formatLivenessTickLine({
+    tick: 1,
+    alerted: false,
+    liveEpoch: 10,
+    lastIdleClaimedEpoch: 10,
+    lastProductiveEpoch: 10,
+    hookFields: HOOK_FIELDS,
+    resourceFields: livenessResourceLogFields(resources),
+  });
+  assertEquals(
+    line,
+    "[liveness] tick=1 alerted=false live_epoch=10 last_idle_claimed=10 " +
+      "last_productive=10 " + HOOK_FIELDS + " " +
+      "mem_available_mib=400 mem_total_mib=8192 psi_mem_some_avg10=unknown " +
+      "psi_mem_full_avg10=unknown psi_cpu_some_avg10=unknown",
+  );
 });

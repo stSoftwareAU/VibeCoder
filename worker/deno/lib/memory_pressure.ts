@@ -15,6 +15,14 @@
  * the file is unreadable, the probe reports "unknown" and callers do
  * nothing — the probe is telemetry, never control flow.
  *
+ * Issue #4225: the per-cycle `[liveness] tick` line also carries the
+ * resource picture — `MemAvailable` plus the kernel's pressure-stall
+ * information (PSI, `/proc/pressure/{memory,cpu}`) — so a guest that
+ * freezes under a heavy build leaves its memory and CPU pressure in the
+ * log even when no OOM kill fires. See {@link probeLivenessResources} and
+ * {@link livenessResourceLogFields}. Every value there is best-effort:
+ * an unreadable source is written as `unknown`, never as a zero.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -163,4 +171,176 @@ export function memoryPressureLogFields(
     parts.push(`total_mib=${Math.round(reading.totalBytes / 1024 ** 2)}`);
   }
   return parts.join(" ");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #4225 — PSI (pressure-stall information) and the liveness tick
+// ---------------------------------------------------------------------------
+
+/** Default PSI file for memory pressure (Linux 4.20+). */
+export const PSI_MEMORY_PATH = "/proc/pressure/memory";
+
+/** Default PSI file for CPU pressure (Linux 4.20+). */
+export const PSI_CPU_PATH = "/proc/pressure/cpu";
+
+/**
+ * Largest PSI text the parser will look at. A real file is about 150
+ * characters; anything far bigger is not PSI, and refusing it up front
+ * bounds the work a hostile or corrupt file can cause.
+ */
+export const PSI_MAX_CHARS = 4096;
+
+/** One PSI line: the averages are percentages, `totalUs` is microseconds. */
+export interface PsiLine {
+  avg10: number;
+  avg60: number;
+  avg300: number;
+  totalUs: number;
+}
+
+/** A parsed PSI file: the `some` line, plus the `full` line when reported. */
+export interface PsiReading {
+  some: PsiLine;
+  full?: PsiLine;
+}
+
+/** One `key=value` token of a PSI line. Only the four known keys match. */
+const PSI_FIELD = /^(avg10|avg60|avg300|total)=(\d+(?:\.\d+)?)$/;
+
+/**
+ * Parse Linux PSI text, e.g.
+ * `some avg10=0.00 avg60=0.00 avg300=0.00 total=0` with an optional `full`
+ * line after it. Returns null for empty, oversized or malformed text: a
+ * missing field, a repeated or unknown key, a line that is neither `some`
+ * nor `full`, a repeated line, or a `full` line without a `some` line.
+ *
+ * Parsed by splitting lines and tokens rather than one backtracking regex,
+ * so the cost is linear in the input length.
+ */
+export function parsePsi(text: string): PsiReading | null {
+  if (typeof text !== "string" || text.length === 0) return null;
+  if (text.length > PSI_MAX_CHARS) return null;
+  let some: PsiLine | undefined;
+  let full: PsiLine | undefined;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line === "") continue;
+    const tokens = line.split(/\s+/);
+    const kind = tokens.shift();
+    if (kind === "some") {
+      if (some) return null;
+      some = parsePsiFields(tokens) ?? undefined;
+      if (!some) return null;
+    } else if (kind === "full") {
+      if (full) return null;
+      full = parsePsiFields(tokens) ?? undefined;
+      if (!full) return null;
+    } else {
+      return null;
+    }
+  }
+  if (!some) return null;
+  return full ? { some, full } : { some };
+}
+
+/** The four `key=value` tokens of one PSI line, or null if any is off. */
+function parsePsiFields(tokens: string[]): PsiLine | null {
+  const values = new Map<string, number>();
+  for (const token of tokens) {
+    const match = PSI_FIELD.exec(token);
+    const key = match?.[1];
+    const digits = match?.[2];
+    if (key === undefined || digits === undefined) return null;
+    if (values.has(key)) return null;
+    const value = Number(digits);
+    const valid = key === "total"
+      ? Number.isSafeInteger(value)
+      : Number.isFinite(value);
+    if (!valid) return null;
+    values.set(key, value);
+  }
+  const avg10 = values.get("avg10");
+  const avg60 = values.get("avg60");
+  const avg300 = values.get("avg300");
+  const totalUs = values.get("total");
+  if (
+    avg10 === undefined || avg60 === undefined || avg300 === undefined ||
+    totalUs === undefined
+  ) {
+    return null;
+  }
+  return { avg10, avg60, avg300, totalUs };
+}
+
+/**
+ * Read and parse one PSI file. Unknown (`undefined`) when the file is
+ * missing, unreadable (no PSI in the kernel, or not Linux) or malformed —
+ * never a made-up zero. Never throws. `readFile` is injectable for tests.
+ */
+export async function probePsi(
+  path: string,
+  readFile: (path: string) => Promise<string> = (p) => Deno.readTextFile(p),
+): Promise<PsiReading | undefined> {
+  try {
+    return parsePsi(await readFile(path)) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** What the per-cycle liveness probe saw. Each source is independently optional. */
+export interface LivenessResourceReading {
+  mem: MemoryPressureReading;
+  psiMem?: PsiReading;
+  psiCpu?: PsiReading;
+}
+
+/**
+ * Probe the three resource sources for the liveness tick (Issue #4225):
+ * `/proc/meminfo` through {@link probeMemoryPressure}, then the memory and
+ * CPU PSI files. The reads run concurrently and never throw; an unreadable
+ * source is reported as unknown rather than failing the tick.
+ */
+export async function probeLivenessResources(options: {
+  readMemInfo?: () => Promise<string>;
+  readPsi?: (path: string) => Promise<string>;
+} = {}): Promise<LivenessResourceReading> {
+  try {
+    const [mem, psiMem, psiCpu] = await Promise.all([
+      probeMemoryPressure({ readMemInfo: options.readMemInfo }),
+      probePsi(PSI_MEMORY_PATH, options.readPsi),
+      probePsi(PSI_CPU_PATH, options.readPsi),
+    ]);
+    return { mem, psiMem, psiCpu };
+  } catch {
+    return { mem: { level: "unknown" } };
+  }
+}
+
+/**
+ * `key=value` resource fields appended to the `[liveness] tick` line
+ * (Issue #4225):
+ * `mem_available_mib=400 mem_total_mib=8192 psi_mem_some_avg10=1.23
+ * psi_mem_full_avg10=0.50 psi_cpu_some_avg10=45.00`.
+ *
+ * Convention: the key set is fixed, in this order, on every tick, so a
+ * host-side reader never has to infer absence (the same convention as the
+ * `hook_fail_*` fields). A value whose source was unreadable, missing or
+ * malformed is written as `unknown`, never `0`. PSI averages print to two
+ * decimal places, as the kernel does.
+ */
+export function livenessResourceLogFields(
+  reading: LivenessResourceReading,
+): string {
+  const mib = (bytes: number | undefined): string =>
+    bytes === undefined ? "unknown" : String(Math.round(bytes / 1024 ** 2));
+  const avg10 = (line: PsiLine | undefined): string =>
+    line === undefined ? "unknown" : line.avg10.toFixed(2);
+  return [
+    `mem_available_mib=${mib(reading.mem.availableBytes)}`,
+    `mem_total_mib=${mib(reading.mem.totalBytes)}`,
+    `psi_mem_some_avg10=${avg10(reading.psiMem?.some)}`,
+    `psi_mem_full_avg10=${avg10(reading.psiMem?.full)}`,
+    `psi_cpu_some_avg10=${avg10(reading.psiCpu?.some)}`,
+  ].join(" ");
 }

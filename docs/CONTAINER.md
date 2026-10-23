@@ -1752,7 +1752,26 @@ probes `/proc/meminfo` every minute and, when available memory drops under
 10 %, takes an early checkpoint with a loud warning — so a kill loses at
 most the last minute, and the warning tells you the VM needs more memory
 (or the host needs its batch jobs deprioritised: `taskpolicy -c background`
-/ `nice` for anything sharing the machine).
+/ `nice` for anything sharing the machine). Each per-cycle `[liveness] tick`
+line also logs `mem_available_mib` and the kernel's PSI memory and CPU
+averages (Issue #4225), so a freeze that never reaches an OOM kill still
+leaves its pressure in the log.
+
+Cargo is capped by default so that a test build cannot exhaust the guest on
+its own (Issue #4225). The entrypoint exports these unless the operator has
+already set them, and any value set in the environment is kept as given:
+
+| Env | Default | Effect |
+| --- | --- | --- |
+| `CARGO_BUILD_JOBS` | `2` | Parallel rustc jobs per cargo invocation |
+| `CARGO_PROFILE_DEV_DEBUG` | `line-tables-only` | Debug info for `dev` builds (backtraces kept, far less disk and memory than full DWARF) |
+| `CARGO_PROFILE_TEST_DEBUG` | `line-tables-only` | Debug info for `test` builds |
+
+A larger VM can raise `CARGO_BUILD_JOBS` (e.g. `4`) for the container. These
+defaults apply to the agent's own shell. The worker's quality gate runs its
+children under the allowlist in `worker/deno/lib/untrusted_command_env.ts`,
+which does not pass these names through, so the gate's cargo uses cargo's own
+defaults.
 
 ### Least privilege and lifecycle
 

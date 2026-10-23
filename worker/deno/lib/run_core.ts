@@ -1627,6 +1627,8 @@ export interface RunCoreDeps {
    * which unions the #2476 productive-work signal with the #2477
    * idle-task-claim signal across the monitored fleet and emits a single
    * `[liveness] ALERT` once a dual-silent window exceeds the threshold.
+   * The production implementation also logs one `[liveness] tick` line per
+   * cadence tick, ending with the memory and PSI resource fields (Issue #4225).
    *
    * `tick` is a monotonic per-cycle counter so the production hook can
    * bound `gh` cost by only doing real work on a cadence boundary (the

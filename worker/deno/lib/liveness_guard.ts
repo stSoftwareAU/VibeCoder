@@ -226,6 +226,38 @@ function logEpoch(epoch: number | null): string {
   return epoch === null ? "none" : String(epoch);
 }
 
+/** The fields of one per-cycle `[liveness] tick` line. */
+export interface LivenessTickFields {
+  tick: number;
+  alerted: boolean;
+  liveEpoch: number | null;
+  lastIdleClaimedEpoch: number | null;
+  lastProductiveEpoch: number | null;
+  /** Pre-rendered `hook_fail_*` fields (Issue #2297). */
+  hookFields: string;
+  /** Pre-rendered resource fields (Issue #4225), appended last. */
+  resourceFields: string;
+}
+
+/**
+ * Render the per-cycle `[liveness] tick` line that a host-side reader
+ * parses (Issue #2479, #2297, #4225):
+ * `[liveness] tick=N alerted=B live_epoch=… last_idle_claimed=…
+ * last_productive=… hook_fail_success=… hook_fail_failure=…
+ * hook_fail_always=… mem_available_mib=… psi_cpu_some_avg10=…`.
+ * The existing fields keep their order; the resource fields come last.
+ */
+export function formatLivenessTickLine(fields: LivenessTickFields): string {
+  return [
+    `[liveness] tick=${fields.tick} alerted=${fields.alerted}`,
+    `live_epoch=${logEpoch(fields.liveEpoch)}`,
+    `last_idle_claimed=${logEpoch(fields.lastIdleClaimedEpoch)}`,
+    `last_productive=${logEpoch(fields.lastProductiveEpoch)}`,
+    fields.hookFields,
+    fields.resourceFields,
+  ].join(" ");
+}
+
 /** Post the best-effort once-per-period fleet-health comment. */
 async function postFleetHealthComment(
   gh: (args: string[]) => Promise<string>,

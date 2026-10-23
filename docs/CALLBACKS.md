@@ -372,9 +372,15 @@ flowchart LR
   that has succeeded stays in the file at `"streak": 0` — "this hook ran and is
   healthy" is a fact a reader needs, and absence cannot state it.
 - **The per-cycle liveness line** carries the same counts:
-  `[liveness] tick=… live_epoch=… last_productive=… hook_fail_success=0
-  hook_fail_failure=0 hook_fail_always=0`. All three hooks are always named, so
-  a host-side parser reads a fixed set of fields.
+  `[liveness] tick=… alerted=… live_epoch=… last_idle_claimed=…
+  last_productive=… hook_fail_success=0 hook_fail_failure=0 hook_fail_always=0
+  mem_available_mib=… mem_total_mib=… psi_mem_some_avg10=… psi_mem_full_avg10=…
+  psi_cpu_some_avg10=…`.
+  All three hooks are always named, so a host-side parser reads a fixed set of
+  fields. The resource fields come last (Issue #4225): `MemAvailable` and the
+  kernel's memory and CPU pressure-stall averages, read from `/proc/meminfo` and
+  `/proc/pressure/{memory,cpu}`. Every key is always present; a source that
+  cannot be read is written as `unknown`, never as a zero.
 - **`fleet-summary:` carries `hook_failures=N`** — failing hook invocations
   this run — beside `claims=`, `successes=` and `failures=`, so a run whose
   every heartbeat was lost cannot read as clean.
