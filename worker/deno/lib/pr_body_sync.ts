@@ -3,18 +3,11 @@
  *
  * The PR body is assembled once, at PR creation, from
  * `docs/archive/pr-summaries/pr-summary-<N>.md` (and a handful of other
- * sections — evidence, milestone, the leading degraded-run or
- * partial-delivery section, bump note, footer). That leading section is
- * re-derived at sync time from the current issue and summary rather than
- * copied forward (Issue #3350, #3506), except that a partial-delivery section
- * whose follow-up number cannot be read is kept as it is. Re-deriving a
- * section the live body already carries only reads the issue and never writes
- * to the follow-up (PR #3676 review). When the live body has no leading
- * section and the rebuilt summary newly marks a criterion `partial` or
- * `missing`, the sync files or reuses the follow-up (or, on a partial-delivery
- * follow-up, hands the issue to a human) through `pr_body_sync_follow_up.ts`,
- * from issue content that passed the pickup content-integrity check, and fails
- * loudly if it cannot (Issue #3678). Before Issue #3089, a review-fix run that
+ * sections — evidence, milestone, bump note, footer). A sync never files an
+ * issue: a criterion still `partial` or `missing` blocks the PR at completion
+ * instead (Issue #4146), so the degraded-run and partial-delivery sections and
+ * the follow-up filing they carried (Issues #3350, #3506, #3678) are gone.
+ * Before Issue #3089, a review-fix run that
  * rewrote that summary file and pushed new commits never touched the PR body
  * again, so a reviewer reading the description kept seeing the original summary
  * while the diff underneath it changed.
@@ -93,25 +86,10 @@ import {
 import { resolveImagePaths } from "./image_path_resolver.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "./bump_deps.ts";
 import {
-  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
-  rederiveDegradedSection,
-  rederiveFollowUpChainStopSection,
-  rederiveReportedGapSection,
-  REPORTED_GAP_SECTION_HEADING,
-} from "./degraded_delivery.ts";
-import {
   buildMissingCriteriaPrNote,
   findMissingCriteria,
   withholdIssueClose,
 } from "./missing_criterion_close_guard.ts";
-import {
-  addReportedGapSectionOnSync,
-  parseSyncParentIssue,
-  summaryReportsGap,
-  SYNC_PARENT_ISSUE_FIELDS,
-  type SyncFollowUpFiling,
-  type SyncParentIssue,
-} from "./pr_body_sync_follow_up.ts";
 
 /** Relative path of the PR summary file inside a repo checkout. */
 function prSummaryPath(issueNumber: number): string {
@@ -320,12 +298,6 @@ export interface SyncPrBodyDeps {
   /** Runs a `git` command. */
   runGitCommand: typeof runGitCommandType;
   logger: Logger;
-  /**
-   * Files the follow-up when the rebuilt summary newly reports a gap on a body
-   * with no leading section (Issue #3678). `undefined` means not wired, and
-   * such a sync then fails loudly rather than filing nothing.
-   */
-  followUpFiling: SyncFollowUpFiling | undefined;
 }
 
 /** Outcome of a sync attempt. */
@@ -380,36 +352,6 @@ function extractBumpSkipNote(body: string): string {
   return body.includes(MILESTONE_CHILD_BUMP_NOTE)
     ? `\n${MILESTONE_CHILD_BUMP_NOTE}\n`
     : "";
-}
-
-/**
- * The leading section PR creation prepends under `heading`: the degraded-run
- * section (Issue #2562) or a healthy run's partial-delivery section
- * (Issue #3506).
- *
- * It exists only on the live body — the summary file does not carry it — so
- * this only locates it; the caller re-derives its content from current state
- * rather than copying it forward (Issue #3350), keeping a partial-delivery
- * section as it is when its follow-up number cannot be read. Only a block that opens the
- * body counts; a later mention is the summary quoting the phrase.
- */
-function extractLeadingSection(body: string, heading: string): string {
-  const start = body.indexOf(heading);
-  if (start === -1) return "";
-  if (body.slice(0, start).trim().length > 0) return "";
-  // Stop at the next heading of any level. Archived summaries open with an
-  // H1 (`# PR Summary — …`) before `## Summary`, and cutting only at `\n## `
-  // carried that title — and one more copy of it on every later sync.
-  const lines = body.slice(start).split("\n");
-  let end = lines.length;
-  for (let i = 1; i < lines.length; i++) {
-    if (/^#{1,6} /.test(lines[i] ?? "")) {
-      end = i;
-      break;
-    }
-  }
-  const block = lines.slice(0, end).join("\n").trimEnd();
-  return block ? `${block}\n\n` : "";
 }
 
 /**
@@ -724,135 +666,6 @@ export async function syncPrBodyFromSummary(
     { repoPath: input.repoPath, githubRepo: input.repo, headSha },
     logger,
   );
-
-  // Issue #3350: re-derive the degraded-run section from the current issue and
-  // summary. Copying the live one forward left a banner that had become false
-  // (for example "states no acceptance criteria") uncorrectable. A healthy
-  // run's partial-delivery section is re-derived the same way (Issue #3506).
-  const liveDegraded = extractLeadingSection(
-    view.body ?? "",
-    "## ⚠️ Degraded run —",
-  );
-  const liveReportedGap = liveDegraded ? "" : extractLeadingSection(
-    view.body ?? "",
-    REPORTED_GAP_SECTION_HEADING,
-  );
-  // PR #3676 review: a healthy run on a partial-delivery follow-up carries
-  // the chain-stop section instead, re-derived from the current gaps. A
-  // degraded run on one still files its own follow-up.
-  const liveChainStop = liveDegraded || liveReportedGap
-    ? ""
-    : extractLeadingSection(
-      view.body ?? "",
-      FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
-    );
-  const liveSection = liveDegraded || liveReportedGap || liveChainStop;
-  if (liveSection) {
-    const sectionName = liveDegraded
-      ? "degraded-run section"
-      : liveChainStop
-      ? "chain-stop section"
-      : "partial-delivery section";
-    let issueBody: string;
-    try {
-      const raw = await deps.runGhCommand([
-        "issue",
-        "view",
-        String(issueNumber),
-        "--repo",
-        input.repo,
-        "--json",
-        "body",
-      ]);
-      const parsed = JSON.parse(raw) as { body?: unknown };
-      if (typeof parsed.body !== "string") {
-        throw new Error("issue body missing from gh output");
-      }
-      issueBody = parsed.body;
-    } catch (err) {
-      return {
-        ok: false,
-        error: new Error(
-          `Failed to read issue #${issueNumber} to re-derive the ${sectionName} of PR #${input.prNumber}: ${
-            (err as Error).message
-          }`,
-        ),
-      };
-    }
-    const rederived = liveChainStop
-      ? rederiveFollowUpChainStopSection({
-        issueNumber,
-        issueBody,
-        prBody: body,
-      })
-      : (liveDegraded ? rederiveDegradedSection : rederiveReportedGapSection)({
-        liveSection,
-        issueBody,
-        prBody: body,
-      });
-    if (rederived !== liveSection) {
-      logger.info(
-        liveDegraded
-          ? "Re-derived the degraded-run section (Issue #3350)"
-          : liveChainStop
-          ? "Re-derived the chain-stop section (PR #3676 review)"
-          : "Re-derived the partial-delivery section (Issue #3506)",
-        {
-          repo: input.repo,
-          prNumber: input.prNumber,
-          issueNumber,
-          dropped: rederived === "",
-        },
-      );
-    }
-    // PR #3676 review: a kept chain-stop section keeps the PR from closing
-    // the follow-up it hands to a human.
-    body = rederived +
-      (liveChainStop && rederived !== ""
-        ? withholdIssueClose(body, issueNumber)
-        : body);
-  } else if (summaryReportsGap(body)) {
-    // Issue #3678: a fix run that newly marks a criterion partial or missing
-    // on a body with no leading section files or reuses the follow-up the
-    // completion phase would, rather than rebuilding the body with the gap
-    // recorded nowhere. The issue is re-verified before any of its text is
-    // written (see pr_body_sync_follow_up.ts).
-    let parentIssue: SyncParentIssue;
-    try {
-      const raw = await deps.runGhCommand([
-        "issue",
-        "view",
-        String(issueNumber),
-        "--repo",
-        input.repo,
-        "--json",
-        SYNC_PARENT_ISSUE_FIELDS,
-      ]);
-      parentIssue = parseSyncParentIssue(raw);
-    } catch (err) {
-      return {
-        ok: false,
-        error: new Error(
-          `Failed to read issue #${issueNumber} to file the follow-up for PR #${input.prNumber}: ${
-            (err as Error).message
-          }`,
-        ),
-      };
-    }
-    const filed = await addReportedGapSectionOnSync({
-      repo: input.repo,
-      issueNumber,
-      prNumber: input.prNumber,
-      body,
-      issue: parentIssue,
-      filing: deps.followUpFiling,
-      gh: deps.runGhCommand,
-      runId: input.runId ?? "",
-      logger,
-    });
-    if (!filed.ok) return filed;
-    body = filed.value;
-  }
 
   if (body.trim() === (view.body ?? "").trim()) {
     return {

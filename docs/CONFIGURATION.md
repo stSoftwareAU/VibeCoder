@@ -460,7 +460,7 @@ explicitly overridden.
 
 | Setting                      | Default                   | Description                                                                                                                                                                                                                                                                                      |
 | ---------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `failed_label`               | `failed`                  | Label applied after second failure (issue permanently failed)                                                                                                                                                                                                                                    |
+| `failed_label`               | `failed`                  | Retired label: never applied, and a leftover one is stripped (Issue #4158)                                                                                                                                                                                                                       |
 | `failed_once_label`          | `failed-once`             | Label applied after first failure (issue will be retried)                                                                                                                                                                                                                                        |
 | `refine_issue_label`         | `refine-issue`            | Label for collaborative issue refinement                                                                                                                                                                                                                                                         |
 | `planning_label`             | `planning`                | Label for planning mode (task breakdown instead of implementation)                                                                                                                                                                                                                               |
@@ -469,7 +469,7 @@ explicitly overridden.
 | `quorum_label` | `quorum` | Label for the Quorum plan-off. Human-applied only: it runs two plan drafts and a judgement ahead of the planning phase, so it is a reserved workflow label the worker refuses to self-apply. On completion the worker removes it and adds `needs-human`. |
 | `needs_human_label` | `needs-human` | Label applied by the worker to escalate an issue to a human. Issues carrying this label are excluded from discovery until a human removes it. The worker never self-applies `top-priority` or other human-scheduling labels — `needs-human` is its only escalation channel. |
 | `run_mode` | `container` | Where the worker runs. The only value is `container` (the default — leaving the key unset is fine): containment is mandatory (Issue #4). The former `native` and `seatbelt` opt-ins were removed; a configuration still naming one fails loudly with the removal explained, and any other value fails loudly naming the only mode. `VIBE_RUN_MODE` overrides it for one run, and the launchers read the resolved value from `deno run worker/deno/mod.ts run-mode` rather than parsing this file. A missing container runtime never selects any host mode — there is none. |
-| `update_mode` | `dynamic` | How this host tracks Vibe Coder releases. `dynamic` (the load-time default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. `./setup.sh` offers `frozen` as its default answer to a host being configured, and `./run.sh upgrade` moves a frozen host's pins onto the newest release — see [The upgrade loop](#the-upgrade-loop). |
+| `update_mode` | `dynamic` | How this host tracks Vibe Coder releases. `dynamic` (the load-time default — leaving the key unset is fine) follows the latest, exactly as every host did before the key existed. `frozen` holds the host at `pinned_ref` with the exact versions in `pinned_tool_versions`; both are then required, and a missing or malformed one fails loudly at config load naming the offending field. Any other value fails loudly naming the accepted values. `./setup.sh` and `setup.ps1` offer whatever `update_mode` the config already holds (so a host that says `frozen` is offered `frozen` on a re-run); when the key is absent they offer `frozen` only if no `.config.json` existed before the setup run, and `dynamic` for an existing config with no `update_mode`. `./run.sh upgrade` moves a frozen host's pins onto the newest release — see [The upgrade loop](#the-upgrade-loop). |
 | `pinned_ref` | _(unset)_ | Commit SHA or tag the worker checkout is held at under `update_mode: "frozen"`. Ignored in `dynamic` mode, so a host can flip back without deleting its pins. Hand-editable: the value is passed to `git`, so it must start with a letter or digit and contain only letters, digits and `. _ + - / @` — whitespace and shell metacharacters are refused. |
 | `pinned_tool_versions` | _(unset)_ | Exact `claude`, `gh` and `deno` versions a frozen host installs, e.g. `{"claude": "2.0.76", "gh": "2.62.0", "deno": "2.5.4"}`. All three are required under `update_mode: "frozen"` — a partially pinned host would silently drift on whichever tool was left out. Same character rules as `pinned_ref`; ignored in `dynamic` mode. |
 | `copilot_code_review` | `leave` | Whether setup's `repo-settings-harden` turns Copilot code review `on` or `off` on every monitored repository, or leaves each as it is (`leave`, the default — an absent key means the same, so an existing host changes nothing). Copilot code review is **billed per review, never free — even on a public repository**: GitHub charges each automatic review to the PR author's Copilot plan, or to the organisation. `off` removes the `copilot_code_review` rule from every repository ruleset, deleting a ruleset it leaves empty; an organisation ruleset is reported, never edited. `on` makes sure a review rule applies to the default branch, creating a `Vibe Coder Copilot review` ruleset when none does. `./setup.sh` and `setup.ps1` ask the question (Issue #2701). Any other value fails loudly at config load, naming the accepted values. |
@@ -860,7 +860,7 @@ flowchart LR
   `unassign_on_pr_created` hands the issue back unassigned, so without a gate
   the next cycle re-ran the whole pipeline against the still-open PR. The scan
   therefore applies the same gates the claim scan applies to `work-on`: a
-  blocking label (`failed` among them), the retry cooldown, milestone
+  blocking label (never `failed`, Issue #4158), the retry cooldown, milestone
   occupancy, a closed or merged fleet PR, an open fleet PR, and an open
   dependency. A run that produces no work puts the issue into the retry
   cooldown, so a persistently failing issue backs off. The label-removing
@@ -1054,23 +1054,29 @@ deno run --allow-env --allow-read worker/deno/mod.ts run-mode   # container
 
 ### 🧊 Update Mode
 
-`update_mode` names how a host tracks Vibe Coder releases. `frozen` — the
-default answer `./setup.sh` offers a host being configured (Issue #692) —
-holds the host at a pinned checkout with pinned tool versions. `dynamic`
-follows the latest, and is both the deliberate opt-in answer at setup and what
-an **absent** `update_mode` resolves to at config load.
+`update_mode` names how a host tracks Vibe Coder releases. `dynamic` follows
+the latest, and is what an **absent** `update_mode` resolves to at config load.
+`frozen` holds the host at a pinned checkout with pinned tool versions. Setup
+offers whatever `update_mode` the config already holds, so a host that already
+says `frozen` is offered `frozen` on a re-run. With no `update_mode` key, setup
+offers `frozen` only when no `.config.json` existed before the setup run — a
+fresh host (Issue #692). A `.config.json` that already exists with no
+`update_mode` is read as `dynamic`, the mode the host already runs, and setup
+keeps it, interactive or not.
 
-**Two different defaults, deliberately.** The setup conversation defaults to
-`frozen`, because a new host should reproduce a released, tested combination.
-The *load-time* default for a missing key stays `dynamic`, because an existing
-host carries no pins and frozen is all-or-nothing — resolving an absent key to
-`frozen` would fail that host's config validation at its very next launch. So:
-a `.config.json` with no `update_mode` loads as `dynamic` with no warning and
-no new pin requirement, whatever setup would offer a fresh host.
+**Two different defaults, deliberately.** The setup conversation offers
+`frozen` to a fresh host, because a new host should reproduce a released,
+tested combination. The *load-time* default for a missing key stays `dynamic`,
+because an existing host carries no pins and frozen is all-or-nothing —
+resolving an absent key to `frozen` would fail that host's config validation at
+its very next launch. So: a `.config.json` with no `update_mode` loads as
+`dynamic` with no warning and no new pin requirement, and setup keeps it as
+`dynamic`, whether or not a terminal is attached. A non-interactive setup run on
+such a config writes no pins.
 
 | Field | Accepted values | Default | Read in |
 | --- | --- | --- | --- |
-| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` at config load — and the behaviour of any host with the key absent; `"frozen"` is the answer setup offers a host being configured | both modes |
+| `update_mode` | `"dynamic"` or `"frozen"` | `"dynamic"` at config load — and the behaviour of any host with the key absent, including an existing config with no key; setup offers the value the config already holds; with the key absent it offers `"frozen"` only on a fresh host (no `.config.json` before the run) and `"dynamic"` otherwise | both modes |
 | `pinned_ref` | A commit SHA or a tag name: starts with a letter or digit, and contains only letters, digits and `. _ + - / @` | _(unset)_ | `frozen` only |
 | `pinned_tool_versions` | An object with an exact version string for each of `claude`, `gh` and `deno`, same character rules as `pinned_ref` | _(unset)_ | `frozen` only |
 
@@ -1138,9 +1144,11 @@ because an absent `update_mode` resolves to `dynamic`:
 - **Dynamic ignores the pins, it does not reject them.** Flipping back to
   `dynamic` needs one edit — the stale pins stay in the file and nothing reads
   them.
-- **Setup asks for all of it, and defaults to `frozen`.** `./setup.sh` runs
-  `setup update-mode`, which asks for the mode — defaulting to `frozen` on a
-  fresh host and, on a re-run, to whatever the host already says — and then,
+- **Setup asks for all of it, and defaults only a new config to `frozen`.**
+  `./setup.sh` and `setup.ps1` run `setup update-mode`, which asks for the mode — defaulting to
+  the mode the host already has; with no `update_mode` key it defaults to
+  `frozen` when no `.config.json` existed before the run, and to `dynamic`
+  for an existing config — and then,
   under `frozen`, for the pinned ref and one exact version per tool. The ref
   defaults to the latest release tag and is validated by resolving it in the
   worker checkout after a fetch, so a ref that does not resolve is rejected by
@@ -1150,12 +1158,16 @@ because an absent `update_mode` resolves to `dynamic`:
   resolvable manifest the defaults fall back to what `dynamic` mode would
   install today and setup says so in one line. Blank accepts the default
   everywhere, so a re-run that presses Enter throughout leaves `.config.json`
-  unchanged — on a `dynamic` host as well as a frozen one. A run with no
-  terminal never asks: existing values are left alone, and a fresh config is
-  pinned to the latest release when it resolves with a manifest, or left
-  `dynamic` with one warning line when it does not. `setup.ps1` does not ask yet —
-  a Windows host sets these keys by hand, and the Windows counterpart is a
-  follow-up. The prompts in the order they are asked are
+  unchanged on a host whose config already says `dynamic` or `frozen`. On a
+  config that exists with no `update_mode`, Enter writes
+  `"update_mode": "dynamic"` — the mode the host already ran. A run with no
+  terminal never asks: an existing `.config.json` is left alone — a host with no
+  `update_mode` stays `dynamic` and gets no pins — and a fresh config is pinned
+  to the latest release when it resolves with a manifest, or left `dynamic` with
+  one warning line when it does not. `setup.ps1` asks the same questions: it
+  notes whether `.config.json` existed before the run and passes that to
+  `setup update-mode` as `--config-existed`, exactly as `setup.sh` does. The
+  prompts in the order they are asked are
   [Setup — update mode](SETUP.md#update-mode-dynamic-or-frozen).
 - **Shell surface.** `load-config` exports `VIBE_UPDATE_MODE`, so the launchers
   see the resolved mode without re-parsing `.config.json`.
@@ -1167,7 +1179,7 @@ because an absent `update_mode` resolves to `dynamic`:
   content, a frozen checkout holds the image steady too.
 - **Frozen says when it is behind.** A pin holds the host still; it does not
   hide that the world moved on. When a release newer than `pinned_ref` exists,
-  each launch prints one notice line naming both versions and the command that
+  each launch logs one WARNING line naming both versions and the command that
   installs the new one (Issue #690) — see
   [New-Release Notice](#-new-release-notice).
 
@@ -1247,7 +1259,7 @@ happens at the launch you choose to make.
 flowchart TD
     L["Launch — ./run.sh"] --> C["release check:<br/>newest release vs pinned_ref"]
     C -->|"dynamic host, SHA pin,<br/>already newest, or check failed"| S["silent — the launch continues"]
-    C -->|"frozen and behind"| N["one notice line on stderr<br/>and in run_core.log"]
+    C -->|"frozen and behind"| N["one WARNING line on stderr<br/>and in run_core.log"]
     N --> U["./run.sh upgrade — rewrites pinned_ref<br/>and all three pinned_tool_versions"]
     U --> W["nothing installed,<br/>no checkout moved"]
     W --> X["Next launch: checkout onto the new pinned_ref,<br/>claude, gh and deno at the pinned versions"]
@@ -1255,7 +1267,9 @@ flowchart TD
 ```
 
 1. **The launch tells you.** A frozen host pinned behind the newest release
-   prints one line per launch, to stderr and `run_core.log`:
+   logs one line per launch at WARNING: on stderr as `[run.sh] WARNING: …`, and
+   in `run_core.log` as `WARNING: …`. The host is degraded but continuing on its
+   pin. The line reads:
 
    ```text
    A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
@@ -1327,8 +1341,9 @@ releases recorded their tool versions, an unreachable GitHub or a value that
 fails the config validator is a loud refusal with `.config.json` left exactly
 as it was, never a fresh `pinned_ref` beside stale tool versions.
 
-Windows hosts move their pins by hand for now; `run.ps1 upgrade` is a
-follow-up, exactly as `setup.ps1`'s update-mode prompts are.
+Windows hosts move their pins by hand for now: `run.ps1 upgrade` is still a
+follow-up. `setup.ps1` already runs the same `setup update-mode` prompts as
+`setup.sh`, passing `--config-existed`.
 
 #### Moving a pin by hand
 
@@ -1506,8 +1521,9 @@ flowchart TD
 ### 🔔 New-Release Notice
 
 Beside the checkout update, each launch asks whether this host is pinned behind
-the newest release (Issue #690). When it is, one line goes to stderr and to
-`run_core.log`:
+the newest release (Issue #690). When it is, the launcher logs one line at
+WARNING — `[run.sh] WARNING: …` (`[run.ps1] WARNING: …` on Windows) on stderr
+and `WARNING: …` in `run_core.log` — and the host is degraded but continuing on its pin. The notice wording is:
 
 ```text
 A new release of Vibe Coder is available: 1.0.4 → 1.0.5. Run ./run.sh upgrade to install it.
@@ -1543,9 +1559,16 @@ deno run --allow-env --allow-read --allow-run \
   same constant the upgrade command registers under
   ([`worker/deno/lib/upgrade_command.ts`](../worker/deno/lib/upgrade_command.ts)),
   so the wording cannot drift from the command that exists.
-- **Windows is a follow-up.** `run.ps1` does not print the notice yet; the
-  logic living in the Deno command is what keeps that a port rather than a
-  rewrite.
+- **Windows prints it too.** `run.ps1` runs the same `release-notice` command
+  after its checkout update (Issue #4119): the notice is one
+  `[run.ps1] WARNING: …` line on stderr and one `WARNING: …` line in
+  `run_core.log`, and a failed check is a
+  `[run.ps1] warning: could not check for a newer release …` line with a
+  `release-notice: failed …` line in `run_core.log`, and the launch continues.
+  `run.ps1` has no outer 120 s bound; it relies on the command's own bound on
+  each `gh` call. The notice names `./run.sh upgrade` on every platform, and
+  `run.ps1 upgrade` does not exist yet: a Windows host moves its pin by hand —
+  see [Moving a pin by hand](#moving-a-pin-by-hand).
 
 ```mermaid
 flowchart TD
@@ -1556,7 +1579,7 @@ flowchart TD
     L --> C{"pinned_ref vs latest"}
     C -->|"commit SHA — not orderable"| S
     C -->|"already newest"| S
-    C -->|"behind"| N["one notice line:<br/>1.0.4 → 1.0.5, run ./run.sh upgrade"]
+    C -->|"behind"| N["one WARNING line:<br/>1.0.4 → 1.0.5, run ./run.sh upgrade"]
 ```
 
 ### 🧠 Phase Model Overrides
@@ -1896,7 +1919,7 @@ unless explicitly overridden.
 | Include codebase map | `include_codebase_map` | `true` | Whether to inject the generated per-repo codebase map (layout, modules, canonical commands) into issue prompts. See [Codebase Map](MODEL-AND-CACHING.md#codebase-map). |
 | Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. See [Graft repo-context injection](#-graft-repo-context-injection). |
 | CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback, CI-fix, grill-me, clarity-assessment, refinement, revision and quorum** paths (Issues #2159, #2160, #2561, #2569) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
-| RTK output | `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash commands through RTK, the output filter trialled by Issue #2328. On by default since Issue #2432 — the owner's decision once it was seen to function in a live run, not a verdict on the trial's token bar: an unset or empty block filters, and a host that wants the raw output back sets `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum** (Issue #2380 added the key, Issue #2382 the module `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both implementation phases, Issue #2384 the wiring into the planning, question, PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue #2569 the wiring into the clarification-family phases through `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered alike. A path that spawns the agent more than once in a run — planning's draft, publish, retry and self-repair turns, a quorum plan-off's two drafts and judge, and the CI fix's post-quality retry — prepares RTK once and hands every spawn the same hook and prompt line, so the saved-token figure covers the whole run from one baseline. An **issue** run's run-stats comment reports it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare `ok` when the saved-token figure could not be read), `- **RTK:** failed`, `- **RTK:** off` on a host that opted out, or `- **RTK:** unsupported (gemini)` naming the provider. It is a status line, never a cost line, so it never moves the published issue total. A **question** round's run-stats comment, a **planning** round's published stats — on its failure path too — and a **grill-me** round's stats comment carry the same line, and since Issue #2561 the planning and grill-me comments carry the `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment, refinement, revision and quorum stats comments carry all three lines too (Issue #2569) — though clarity assessment and quorum post theirs only on a degraded run. A **PR-feedback** or **CI-fix** round's run-stats comment, posted on the PR it worked on, carries the `Graft:`, `CodeGraph:` and `RTK:` lines too, above the cumulative PR total ([One cost/model stats comment per run](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)). Every issue run also publishes it to the post-run callbacks as the additive `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite hook to the `--settings` payload of every Claude spawn on the ten wired paths (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum), so `git status` runs as `rtk git status`, and one line in the prompt telling the agent its Bash output is filtered and that `rtk recall` shows a failed command's full output. The rewrite hook is a Claude-CLI feature, so a run routed to **Codex, Gemini or DeepSeek** records RTK as `unsupported` and proceeds without it. RTK never fails a run: a missing `rtk` binary, a preflight that times out or exits non-zero, or a gain read that returns no usable figure, is logged as `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on unfiltered — the fault is surfaced, never swallowed as a clean pass. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `rtk_output.enabled` rather than reading as the default. It is independent of the repo-context switches `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any combination on, and none reads another. The trial protocol it is judged by — the bar, the window, the comparison rule and the verdict template — is [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
+| RTK output | `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash commands through RTK, the output filter trialled by Issue #2328. On by default since Issue #2432 — the owner's decision once it was seen to function in a live run, not a verdict on the trial's token bar: an unset or empty block filters, and a host that wants the raw output back sets `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum** (Issue #2380 added the key, Issue #2382 the module `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both implementation phases, Issue #2384 the wiring into the planning, question, PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue #2569 the wiring into the clarification-family phases through `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered alike. A path that spawns the agent more than once in a run — planning's draft, publish, retry and self-repair turns, a quorum plan-off's two drafts and judge, and the CI fix's post-quality retry — prepares RTK once and hands every spawn the same hook and prompt line, so the saved-token figure covers the whole run from one baseline. An **issue** run's run-stats comment reports it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare `ok` when the saved-token figure could not be read), `- **RTK:** failed`, `- **RTK:** off` on a host that opted out, or `- **RTK:** unsupported (gemini)` naming the provider. It is a status line, never a cost line, so it never moves the published issue total. A **question** round's run-stats comment, a **planning** round's published stats — on its failure path too — and a **grill-me** round's stats comment carry the same line, and since Issue #2561 the planning and grill-me comments carry the `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment, refinement, revision and quorum stats comments carry all three lines too (Issue #2569) — though clarity assessment and quorum post theirs only on a degraded run. A **PR-feedback** or **CI-fix** round's run-stats comment, posted on the PR it worked on, carries the `Graft:`, `CodeGraph:` and `RTK:` lines too, above the cumulative PR total ([One cost/model stats comment per run](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)). Every issue run also publishes it to the post-run callbacks as the additive `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite hook to the `--settings` payload of every Claude spawn on the ten wired paths (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum), so `git status` runs as `rtk git status`, and one line in the prompt telling the agent its Bash output is filtered and that `rtk recall` shows a failed command's full output. Codex receives the same worker-authored hook through per-spawn `-c hooks.PreToolUse` configuration with `features.hooks=true` and `--dangerously-bypass-hook-trust`, without writing the operator's `~/.codex`. Codex normalises shell input to `Bash` with a string `command`, so RTK needs no shim. Support is declared by the provider seam's `supportsPreToolUseHooks` capability: Claude and Codex can report `ok` and a saved-token delta; **Gemini and DeepSeek** record `unsupported` and proceed without it. When the switch is off, Codex receives no RTK hook configuration or hook-trust flag. RTK never fails a run: a missing `rtk` binary, a preflight that times out or exits non-zero, or a gain read that returns no usable figure, is logged as `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on unfiltered — the fault is surfaced, never swallowed as a clean pass. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `rtk_output.enabled` rather than reading as the default. It is independent of the repo-context switches `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any combination on, and none reads another. The trial protocol it is judged by — the bar, the window, the comparison rule and the verdict template — is [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red or carry an unanswered authorised comment before the watchdog repairs it (sync and rerun once, then abandon and redo), or sit green and unmerged before the watchdog tries to merge it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 | Fleet PR slots                 | `fleet_pr_slots`                 | `8`        | How many fleet PRs may be open at once on a repository's **default branch** before a non-milestone issue is held — the owner's rule is one fleet PR per slot (Issue #2663). Set it to the fleet's total slot count: the sum of every host's `max_concurrent_issues`. No host's config carries the fleet's size, so the default cannot be derived; `8` is the ceiling of `max_concurrent_issues`, so one host at its maximum never holds itself and four hosts at the default two slots fill it exactly. Only fleet PRs count — `github_user` plus `fleet_pr_authors` ∪ `service_accounts` — never a human's. Milestone issues are unaffected: each `milestone/*` branch still holds one PR, so several milestones run several PRs at once. A non-positive or non-integer value falls back to `8`. Per repository via `repo_config.<repo>.fleet_pr_slots`. See [Open PR blocking](workflows/issue-processing.md). |
@@ -2720,7 +2743,7 @@ release**, not as the issue defeating the agent:
 - The release comment therefore never says "Claude ran out of time" and never
   advises splitting the issue into sub-issues — that diagnosis is reserved for
   a run that genuinely exhausted its own `claude_timeout`.
-- A scheduled release does **not** enter the `failed-once` → `failed` ladder,
+- A scheduled release does **not** enter the `failed-once` ladder,
   does **not** feed the escalating timeout cooldown, and is **not** auto-filed
   as a worker fault. It is also not classed as an infrastructure failure: the
   bounded in-process retry exists to re-run a transient blip, and a run

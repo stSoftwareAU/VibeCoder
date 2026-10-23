@@ -113,9 +113,13 @@ const FAILURE_RECORD_RE = new RegExp(FAILURE_RECORD_HEADING_PATTERN);
 /** Only an `Automated Processing Failed` record can be a host fault. */
 const HOST_FAULT_CANDIDATE_RE = /^##\s+Automated Processing Failed\b/;
 
-/** The record of the run that applied `failed` (`label_failure.ts`). */
+/**
+ * The record of a repeat failure (`label_failure.ts`). Until Issue #4158 the
+ * second attempt applied `failed`; a leftover `failed` is explained by such a
+ * record, under either heading.
+ */
 const SECOND_ATTEMPT_RE =
-  /^##\s+Automated Processing Failed \(Second Attempt\b/;
+  /^##\s+Automated Processing Failed \((?:Second|Repeat) Attempt\b/;
 
 /** Whether a comment body is a failure record: it starts with a heading. */
 function isFailureRecord(body: string): boolean {

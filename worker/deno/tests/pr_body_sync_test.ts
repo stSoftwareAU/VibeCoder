@@ -22,17 +22,6 @@ import {
   buildSubAgentTierMarker,
   WORKER_PR_MARKER_PREFIX,
 } from "../lib/pr_body.ts";
-import {
-  assessReportedGaps,
-  buildDegradedPrSection,
-  buildReportedGapStaleFollowUpSection,
-  degradedFollowUpFindingId,
-  FOLLOW_UP_CHAIN_STOP_MARKER,
-  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
-  REPORTED_GAP_SECTION_HEADING,
-} from "../lib/degraded_delivery.ts";
-import type { PickupContentIntegrityOutcome } from "../lib/pickup_content_integrity.ts";
-import type { SyncFollowUpFiling } from "../lib/pr_body_sync_follow_up.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "../lib/bump_deps.ts";
 import type {
   GitCommandOptions,
@@ -370,7 +359,6 @@ Deno.test("sync - summary changed: edits the PR once with the refreshed body", a
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -426,7 +414,6 @@ Deno.test("sync - a legacy body with no tier marker gets none added (Issue #3403
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -472,7 +459,6 @@ Deno.test("sync - a live body carrying the haiku tier marker rebuilds with exact
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -513,7 +499,6 @@ Deno.test("sync - summary unchanged: skips without editing", async () => {
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: false }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -565,7 +550,6 @@ Deno.test("sync - no worker marker: skips without editing or diffing", async () 
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -610,7 +594,6 @@ Deno.test("syncPrBodyFromSummary - Issue #3804: adopts a marker-less agent draft
     const ghCalls: GhCall[] = [];
     const gitCalls: string[][] = [];
     const issueCalls: string[][] = [];
-    const filer = fakeFiling();
     const deps: SyncPrBodyDeps = {
       runGhCommand: (args) => {
         if (args[0] === "pr" && args[1] === "view") {
@@ -629,7 +612,6 @@ Deno.test("syncPrBodyFromSummary - Issue #3804: adopts a marker-less agent draft
       },
       runGitCommand: stubGit(gitCalls),
       logger,
-      followUpFiling: filer.filing,
     };
 
     // No beforeSha: adoption must not need the before-push SHA.
@@ -663,9 +645,8 @@ Deno.test("syncPrBodyFromSummary - Issue #3804: adopts a marker-less agent draft
     assertStringIncludes(newBody, `Part of #${ISSUE_NUMBER}`);
     assertStringIncludes(newBody, `## Not closing #${ISSUE_NUMBER}`);
     assertEquals(newBody.includes(`Closes #${ISSUE_NUMBER}`), false);
-    assertEquals(filer.verified.length, 1);
-    assertEquals(issueCalls.filter((args) => args[1] === "create").length, 1);
-    assertStringIncludes(newBody, "continue in #99:");
+    // Issue #4146: the gap is never filed as a follow-up issue.
+    assertEquals(issueCalls.filter((args) => args[1] === "create").length, 0);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }
@@ -686,7 +667,6 @@ Deno.test("syncPrBodyFromSummary - Issue #3804: does not adopt when the head is 
       },
       runGitCommand: stubGit([]),
       logger,
-      followUpFiling: undefined,
     };
 
     const result = await syncPrBodyFromSummary(
@@ -735,7 +715,6 @@ Deno.test("syncPrBodyFromSummary - Issue #3804: does not adopt a marker-less PR 
       },
       runGitCommand: stubGit([]),
       logger,
-      followUpFiling: undefined,
     };
 
     const result = await syncPrBodyFromSummary(
@@ -778,7 +757,6 @@ Deno.test("syncPrBodyFromSummary - Issue #3804: adoptOnly leaves a body that alr
       },
       runGitCommand: stubGit([]),
       logger,
-      followUpFiling: undefined,
     };
 
     const result = await syncPrBodyFromSummary(
@@ -827,7 +805,6 @@ Deno.test("sync - a summary quoting an earlier numeric worker marker is not mist
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -880,7 +857,6 @@ Deno.test("sync - a non-numeric placeholder marker in the summary does not block
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -942,7 +918,6 @@ Deno.test("sync - checkout HEAD differs from the PR's remote head: skips without
         diffChanged: true,
         ancestorPairs: [[HEAD_SHA, "newer-remote-head-sha"]],
       }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -1003,7 +978,6 @@ Deno.test("sync - PR's reported head lags behind this checkout's own verified pu
         diffChanged: true,
         ancestorPairs: [[BEFORE_SHA, HEAD_SHA]],
       }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -1058,7 +1032,6 @@ Deno.test("sync - merge-base itself fails: skips without editing (PR #3353 revie
         diffChanged: true,
         mergeBaseFails: true,
       }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -1101,7 +1074,6 @@ Deno.test("sync - no before-push SHA: skips without editing", async () => {
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -1147,7 +1119,6 @@ Deno.test("sync - gh pr edit throws: returns an error Result", async () => {
         return stubGh(ghCalls, { throwOnEdit: true })(args);
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -1186,7 +1157,6 @@ Deno.test("sync - git diff fails: returns an error Result", async () => {
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls, { diffFails: true }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -1233,7 +1203,6 @@ Deno.test("sync - carries over the milestone section and bump-skip note from the
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -1273,7 +1242,6 @@ Deno.test("sync - empty repoPath: returns an error without calling gh", async ()
   const deps: SyncPrBodyDeps = {
     runGhCommand: stubGh(ghCalls),
     runGitCommand: stubGit(gitCalls),
-    followUpFiling: undefined,
     logger,
   };
 
@@ -1311,7 +1279,6 @@ Deno.test("sync - summary file deleted: skips without editing", async () => {
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -1341,106 +1308,6 @@ Deno.test("sync - summary file deleted: skips without editing", async () => {
   }
 });
 
-Deno.test("sync - keeps a leading degraded-run section (Issue #2562)", async () => {
-  const repoPath = await makeRepo();
-  try {
-    await Deno.writeTextFile(
-      `${repoPath}/docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`,
-      `# PR Summary — Issue #${ISSUE_NUMBER}: new title\n\n` +
-        `## Summary\n\nRewritten summary text. Closes #${ISSUE_NUMBER}.\n`,
-    );
-    const degraded = [
-      "## ⚠️ Degraded run — partial delivery",
-      "",
-      "This run was degraded (served by a fallback model) and did not show " +
-      "every accepted scope item as met. The outstanding items continue in #77:",
-      "",
-      "- the export",
-      "",
-    ].join("\n");
-    const oldSummary = [
-      `# PR Summary — Issue #${ISSUE_NUMBER}: old title`,
-      "",
-      "Old preamble that must not survive.",
-      "",
-      "## Summary",
-      "",
-      `Original summary. Closes #${ISSUE_NUMBER}.`,
-      "",
-      "---",
-      "",
-      `🤖 Processed by: old-worker\n${marker(ISSUE_NUMBER)}`,
-    ].join("\n");
-    let live = `${degraded}\n${oldSummary}`;
-    const ghCalls: GhCall[] = [];
-    const record = stubGh(ghCalls);
-    const deps: SyncPrBodyDeps = {
-      runGhCommand: async (args) => {
-        if (args[0] === "pr" && args[1] === "view") {
-          return viewJson(live);
-        }
-        // Issue #3350: the banner is re-derived from the current issue.
-        if (args[0] === "issue" && args[1] === "view") {
-          return JSON.stringify({
-            body: "## Acceptance Criteria\n\n- the export\n",
-          });
-        }
-        const out = await record(args);
-        const edited = ghCalls.at(-1)?.bodyFileContent;
-        if (args[0] === "pr" && args[1] === "edit" && edited) live = edited;
-        return out;
-      },
-      runGitCommand: stubGit([], { diffChanged: true }),
-      followUpFiling: undefined,
-      logger,
-    };
-    const input = {
-      repo: REPO,
-      prNumber: PR_NUMBER,
-      repoPath,
-      beforeSha: BEFORE_SHA,
-      branchName: BRANCH,
-      workerName: "worker-a",
-      githubUser: "ghuser",
-    };
-
-    const first = await syncPrBodyFromSummary(input, deps);
-    assert(first.ok);
-    if (first.ok) assertEquals(first.value.status, "updated");
-    const synced = ghCalls[0]?.bodyFileContent ?? "";
-    assert(synced.startsWith("## ⚠️ Degraded run — partial delivery"));
-    // Issue #3677: a legacy-worded section is not byte-identical to the rebuilt one, so it takes the wording that does not claim the follow-up holds the items.
-    assertStringIncludes(
-      synced,
-      "The worker filed #77 for the outstanding items",
-    );
-    assertStringIncludes(synced, "new title");
-    assertStringIncludes(synced, "Rewritten summary text.");
-    assertEquals(synced.includes("old title"), false);
-    assertEquals(synced.includes("Old preamble that must not survive."), false);
-    assertEquals(synced.includes("Original summary."), false);
-
-    // Issue #3315: the first sync recorded the summary digest inside the
-    // body, so the second call now short-circuits on that recorded digest
-    // (reason "summary unchanged") rather than reaching the "body already
-    // current" comparison — same observable outcome (skipped, no edit).
-    const second = await syncPrBodyFromSummary(input, deps);
-    assert(second.ok);
-    if (second.ok) {
-      assertEquals(second.value, {
-        status: "skipped",
-        reason: "summary unchanged",
-      });
-    }
-    assertEquals(ghCalls.length, 1);
-    assertEquals(live, synced);
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-});
-
-// --- recorded-digest staleness (Issue #3315 / GRQ#5175) -------------------
-
 Deno.test("sync - recorded digest of an OLDER summary, no before-push SHA, git stub reports unchanged: still updates", async () => {
   const repoPath = await makeRepo();
   try {
@@ -1465,7 +1332,6 @@ Deno.test("sync - recorded digest of an OLDER summary, no before-push SHA, git s
       // "unchanged" (it only catches a change made by *this* run), but the
       // recorded digest is stale regardless.
       runGitCommand: stubGit(gitCalls, { diffChanged: false }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -1527,7 +1393,6 @@ Deno.test("sync - recorded digest equals the current summary's digest: skips eve
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -1574,7 +1439,6 @@ Deno.test("sync - round trip: a body produced by one sync is skipped as unchange
         return out;
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
     const input = {
@@ -1623,7 +1487,6 @@ Deno.test("sync - recorded digest present and summary file deleted: skips withou
         return stubGh(ghCalls)(args);
       },
       runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
 
@@ -1674,7 +1537,6 @@ Deno.test("runPrBodySync - a failed sync warns once and does not fail the caller
     {
       runGhCommand: () => Promise.resolve(""),
       runGitCommand: stubGit([]),
-      followUpFiling: undefined,
       logger: counting,
     },
     () =>
@@ -1688,16 +1550,6 @@ Deno.test("runPrBodySync - a failed sync warns once and does not fail the caller
 });
 
 // --- degraded-run section re-derivation (Issue #3350) ---------------------
-
-const STALE_NO_FOLLOW_UP = [
-  "## ⚠️ Degraded run — no follow-up filed",
-  "",
-  "This run was degraded (served model `claude-haiku-4-5` does not match " +
-  "expected `opus`). No follow-up was filed because the issue states no " +
-  "acceptance criteria.",
-  "",
-  "",
-].join("\n");
 
 const OLD_SUMMARY_WITH_FOOTER = [
   `# PR Summary — Issue #${ISSUE_NUMBER}: old title`,
@@ -1724,50 +1576,6 @@ function criterionSummary(status: string, reviewer: string): string {
     `evidence: \`worker/deno/tests/x_test.ts\` — reviewer: ${reviewer}\n`;
 }
 
-Deno.test("sync - re-derives a stale degraded-run section from the current issue and summary (Issue #3350)", async () => {
-  const repoPath = await makeRepo();
-  try {
-    await writeSummary(repoPath, criterionSummary("met", "met"));
-    const live = `${STALE_NO_FOLLOW_UP}\n${OLD_SUMMARY_WITH_FOOTER}`;
-    const ghCalls: GhCall[] = [];
-    const record = stubGh(ghCalls);
-    const deps: SyncPrBodyDeps = {
-      runGhCommand: (args) => {
-        if (args[0] === "pr" && args[1] === "view") {
-          return Promise.resolve(viewJson(live));
-        }
-        if (args[0] === "issue" && args[1] === "view") {
-          return Promise.resolve(JSON.stringify({
-            body: "## Acceptance Criteria\n\n- the export works\n",
-          }));
-        }
-        return record(args);
-      },
-      runGitCommand: stubGit([], { diffChanged: true }),
-      followUpFiling: undefined,
-      logger,
-    };
-    const result = await syncPrBodyFromSummary({
-      repo: REPO,
-      prNumber: PR_NUMBER,
-      repoPath,
-      beforeSha: BEFORE_SHA,
-      branchName: BRANCH,
-      workerName: "worker-a",
-      githubUser: "ghuser",
-    }, deps);
-    assert(result.ok);
-    if (result.ok) assertEquals(result.value.status, "updated");
-    const edit = ghCalls.find((c) => c.args[1] === "edit");
-    const synced = edit?.bodyFileContent ?? "";
-    assert(synced.length > 0, "expected a pr edit");
-    assertEquals(synced.startsWith("## ⚠️ Degraded run"), false);
-    assertEquals(synced.includes("states no acceptance criteria"), false);
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-});
-
 /** Runs one sync against `live` with the given issue-view behaviour. */
 async function syncWithDegradedLive(opts: {
   summary: string;
@@ -1792,7 +1600,6 @@ async function syncWithDegradedLive(opts: {
         return record(args);
       },
       runGitCommand: stubGit([], { diffChanged: true }),
-      followUpFiling: undefined,
       logger: opts.logger ?? logger,
     };
     const result = await syncPrBodyFromSummary({
@@ -1810,21 +1617,6 @@ async function syncWithDegradedLive(opts: {
   }
 }
 
-Deno.test("sync - fails loudly when the issue cannot be read to re-derive the degraded-run section (Issue #3350)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: criterionSummary("met", "met"),
-    live: `${STALE_NO_FOLLOW_UP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () => {
-      throw new Error("gh issue view boom");
-    },
-  });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertStringIncludes(result.error.message, `#${ISSUE_NUMBER}`);
-  }
-  assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
-});
-
 Deno.test("sync - makes no issue call when the body carries no degraded-run section (Issue #3350)", async () => {
   const repoPath = await makeRepo();
   try {
@@ -1839,7 +1631,6 @@ Deno.test("sync - makes no issue call when the body carries no degraded-run sect
         return record(args);
       },
       runGitCommand: stubGit([], { diffChanged: true }),
-      followUpFiling: undefined,
       logger,
     };
     const result = await syncPrBodyFromSummary({
@@ -1859,33 +1650,6 @@ Deno.test("sync - makes no issue call when the body carries no degraded-run sect
   }
 });
 
-Deno.test("sync - a summary that now marks the criterion partial replaces the no-follow-up banner (Issue #3350)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: criterionSummary("partial", "partial"),
-    live: `${STALE_NO_FOLLOW_UP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () =>
-      JSON.stringify({
-        body: "## Acceptance Criteria\n\n- the export works\n",
-      }),
-  });
-  assert(result.ok);
-  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
-    "";
-  assertStringIncludes(synced, "The worker filed no follow-up for these items");
-  assertStringIncludes(synced, "**partial** — the export works");
-  assertEquals(synced.includes("No follow-up was filed because"), false);
-});
-
-Deno.test("sync - fails when the issue view carries no string body (Issue #3350)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: criterionSummary("met", "met"),
-    live: `${STALE_NO_FOLLOW_UP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () => JSON.stringify({}),
-  });
-  assertEquals(result.ok, false);
-  assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
-});
-
 // --- healthy run's partial-delivery section re-derivation (Issue #3506) ----
 
 const LIVE_REPORTED_GAP = [
@@ -1899,39 +1663,6 @@ const LIVE_REPORTED_GAP = [
   "",
 ].join("\n");
 
-Deno.test("sync - re-derives a live partial-delivery section and keeps the follow-up number while a gap remains (Issue #3506)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: criterionSummary("partial", "partial"),
-    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () =>
-      JSON.stringify({
-        body: "## Acceptance Criteria\n\n- the export works\n",
-      }),
-  });
-  assert(result.ok);
-  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
-    "";
-  assert(synced.startsWith("## ⚠️ Partial delivery — follow-up filed"));
-  assertStringIncludes(synced, "continue in #77:");
-  assertStringIncludes(synced, "- **partial** — the export works");
-});
-
-Deno.test("sync - drops the partial-delivery section when the rebuilt summary marks every criterion met (Issue #3506)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: criterionSummary("met", "met"),
-    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () =>
-      JSON.stringify({
-        body: "## Acceptance Criteria\n\n- the export works\n",
-      }),
-  });
-  assert(result.ok);
-  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
-    "";
-  assert(synced.length > 0, "expected a pr edit");
-  assertEquals(synced.includes("Partial delivery"), false);
-});
-
 /** A logger that records each `info` call, for the re-derivation log. */
 function recordingLogger() {
   const infos: { message: string; context: unknown }[] = [];
@@ -1941,32 +1672,6 @@ function recordingLogger() {
   };
   return { infos, recording };
 }
-
-Deno.test("sync - logs the dropped partial-delivery section with the PR it belongs to (Issue #3506)", async () => {
-  const { infos, recording } = recordingLogger();
-  const { result } = await syncWithDegradedLive({
-    summary: criterionSummary("met", "met"),
-    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () =>
-      JSON.stringify({
-        body: "## Acceptance Criteria\n\n- the export works\n",
-      }),
-    logger: recording,
-  });
-  assert(result.ok);
-  assertEquals(
-    infos.filter((i) => i.message.includes("partial-delivery section")),
-    [{
-      message: "Re-derived the partial-delivery section (Issue #3506)",
-      context: {
-        repo: REPO,
-        prNumber: PR_NUMBER,
-        issueNumber: ISSUE_NUMBER,
-        dropped: true,
-      },
-    }],
-  );
-});
 
 Deno.test("sync - logs no re-derivation when the partial-delivery section is unchanged (Issue #3506)", async () => {
   const { infos, recording } = recordingLogger();
@@ -1985,209 +1690,6 @@ Deno.test("sync - logs no re-derivation when the partial-delivery section is unc
     [],
   );
 });
-
-Deno.test("sync - fails loudly when the issue cannot be read to re-derive the partial-delivery section (Issue #3506)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: criterionSummary("partial", "partial"),
-    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () => {
-      throw new Error("gh issue view boom");
-    },
-  });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertStringIncludes(result.error.message, "partial-delivery section");
-  }
-  assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
-});
-
-// --- a sync never writes to the follow-up (PR #3676 review) -----------------
-
-/** Issue with two criteria; the summary delivers `export`, leaves `import` partial. */
-const TWO_CRITERIA_ISSUE = JSON.stringify({
-  title: "Move the data",
-  body: "## Acceptance Criteria\n\n- the export works\n- the import works\n",
-});
-const IMPORT_PARTIAL_SUMMARY =
-  `## Summary\n\nDid it. Closes #${ISSUE_NUMBER}.\n\n` +
-  `## Acceptance Criteria\n\n` +
-  `- **met** — the export works — evidence: \`worker/deno/tests/x_test.ts\` — reviewer: met\n` +
-  `- **partial** — the import works — reviewer: partial\n`;
-
-Deno.test("sync - changed gaps never write to the follow-up, and the section says it may not list them (PR #3676 review)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () => TWO_CRITERIA_ISSUE,
-  });
-  assert(result.ok);
-  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
-    ?.bodyFileContent ?? "";
-  assertStringIncludes(
-    synced,
-    "The worker filed #77 for the outstanding items",
-  );
-  assertStringIncludes(synced, "- **partial** — the import works");
-  assertEquals(synced.includes("continue in #77:"), false);
-  // The issue text reached only the PR body: no issue was listed, edited or created.
-  assertEquals(
-    ghCalls.filter((c) => c.args[0] === "issue" && c.args[1] !== "view").length,
-    0,
-  );
-});
-
-Deno.test("sync - an issue edited after approval is never copied into a follow-up (PR #3676 review)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () =>
-      JSON.stringify({
-        title: "Move the data (edited by an outside author)",
-        body:
-          "## Acceptance Criteria\n\n- the export works\n- the import works\n",
-      }),
-  });
-  assert(result.ok);
-  assertEquals(
-    ghCalls.filter((c) =>
-      c.args[0] === "issue" &&
-      (c.args[1] === "edit" || c.args[1] === "create")
-    ).length,
-    0,
-  );
-});
-
-Deno.test("sync - a section already marked as possibly stale is re-derived under the same follow-up number (PR #3676 review)", async () => {
-  const stale = buildReportedGapStaleFollowUpSection(
-    assessReportedGaps(
-      JSON.parse(TWO_CRITERIA_ISSUE).body as string,
-      IMPORT_PARTIAL_SUMMARY,
-    ),
-    77,
-  );
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: criterionSummary("partial", "partial"),
-    live: `${stale}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () =>
-      JSON.stringify({
-        body: "## Acceptance Criteria\n\n- the export works\n",
-      }),
-  });
-  assert(result.ok);
-  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
-    ?.bodyFileContent ?? "";
-  assertStringIncludes(
-    synced,
-    "The worker filed #77 for the outstanding items",
-  );
-  assertStringIncludes(synced, "- **partial** — the export works");
-  assertEquals(synced.includes("the import works\n"), false);
-});
-
-Deno.test("sync - a degraded-run section whose rebuilt gaps differ never claims they continue in the follow-up (Issue #3677)", async () => {
-  const live = buildDegradedPrSection({
-    degraded: true,
-    reason: "served by a fallback model",
-    delivered: [],
-    shortfalls: [{ criterion: "the export works", status: "partial" }],
-  }, 77);
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: `${live}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () => TWO_CRITERIA_ISSUE,
-  });
-  assert(result.ok);
-  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
-    ?.bodyFileContent ?? "";
-  assert(synced.startsWith("## ⚠️ Degraded run — partial delivery"));
-  assertStringIncludes(
-    synced,
-    "The worker filed #77 for the outstanding items",
-  );
-  assertStringIncludes(synced, "- **partial** — the import works");
-  assertEquals(synced.includes("continue in #77:"), false);
-  // The follow-up is never listed, edited or created.
-  assertEquals(
-    ghCalls.filter((c) => c.args[0] === "issue" && c.args[1] !== "view").length,
-    0,
-  );
-});
-
-Deno.test("sync - a degraded-run section with the same gaps keeps naming its follow-up (Issue #3677)", async () => {
-  const live = buildDegradedPrSection({
-    degraded: true,
-    reason: "served by a fallback model",
-    delivered: [],
-    shortfalls: [{ criterion: "the export works", status: "partial" }],
-  }, 77);
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: criterionSummary("partial", "partial"),
-    live: `${live}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () =>
-      JSON.stringify({
-        body: "## Acceptance Criteria\n\n- the export works\n",
-      }),
-  });
-  assert(result.ok);
-  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
-    ?.bodyFileContent ?? "";
-  assertStringIncludes(synced, "The outstanding items continue in #77:");
-  assertEquals(synced.includes("may not list every item"), false);
-});
-
-// --- chain-stop section on a partial-delivery follow-up (PR #3676 review) ---
-
-const LIVE_CHAIN_STOP = [
-  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
-  FOLLOW_UP_CHAIN_STOP_MARKER,
-  "",
-  "This run's PR summary closed out the criteria below as `partial` or " +
-  "`missing`.",
-  "",
-  "- **partial** — the export works",
-  "",
-  "",
-].join("\n");
-
-Deno.test("sync - keeps the chain-stop section and its marker while a gap remains (PR #3676 review)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: criterionSummary("partial", "partial"),
-    live: `${LIVE_CHAIN_STOP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () =>
-      JSON.stringify({
-        body: "## Acceptance Criteria\n\n- the export works\n",
-      }),
-  });
-  assert(result.ok);
-  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
-    "";
-  assert(synced.startsWith(FOLLOW_UP_CHAIN_STOP_SECTION_HEADING));
-  assertStringIncludes(synced, FOLLOW_UP_CHAIN_STOP_MARKER);
-  assertStringIncludes(synced, "**partial** — the export works");
-  assert(!synced.includes(`Closes #${ISSUE_NUMBER}`), "never closes it");
-  assertEquals(
-    ghCalls.some((c) => c.args[0] === "issue" && c.args[1] !== "view"),
-    false,
-    "a re-sync never writes to the issue",
-  );
-});
-
-Deno.test("sync - drops the chain-stop section once no gap remains (PR #3676 review)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: criterionSummary("met", "met"),
-    live: `${LIVE_CHAIN_STOP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () =>
-      JSON.stringify({
-        body: "## Acceptance Criteria\n\n- the export works\n",
-      }),
-  });
-  assert(result.ok);
-  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
-    "";
-  assertEquals(synced.includes(FOLLOW_UP_CHAIN_STOP_MARKER), false);
-});
-
-// --- Branch outcomes facts file (Issue #3535) -------------------------------
 
 const FACTS: SummaryFacts = {
   version: 1,
@@ -2231,7 +1733,6 @@ async function syncFactsCase(opts: {
       return stubGh(ghCalls)(args);
     },
     runGitCommand: stubGit(gitCalls, { diffChanged: true }),
-    followUpFiling: undefined,
     logger,
   };
   const result = await syncPrBodyFromSummary(
@@ -2338,34 +1839,6 @@ Deno.test("sync - an invalid facts file fails loud", async () => {
   }
 });
 
-Deno.test("sync - a legacy body's before-push diff includes the facts file path (Issue #3535)", async () => {
-  const repoPath = await makeRepo({
-    summary: PLAIN_SUMMARY,
-    facts: FACTS_JSON,
-  });
-  try {
-    const { result, gitCalls } = await syncFactsCase({
-      repoPath,
-      liveBody: baseBody(ISSUE_NUMBER),
-    });
-    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-    const diff = gitCalls.find((c) => c[0] === "diff");
-    assertEquals(diff, [
-      "diff",
-      "--name-only",
-      BEFORE_SHA,
-      "HEAD",
-      "--",
-      `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`,
-      prSummaryFactsPath(ISSUE_NUMBER),
-    ]);
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-});
-
-// --- a fix run's newly reported gap files a follow-up (Issue #3678) ---------
-
 /** `gh issue view --json title,body,labels,author,milestone`, two criteria. */
 const GAP_ISSUE_JSON = JSON.stringify({
   title: "Move the data",
@@ -2373,382 +1846,6 @@ const GAP_ISSUE_JSON = JSON.stringify({
   labels: [{ name: "work-on" }],
   author: { login: "owner" },
   milestone: { title: "M1" },
-});
-
-/** A fake follow-up filer that records each content check and label ensure. */
-function fakeFiling(opts: {
-  verdict?: PickupContentIntegrityOutcome;
-  labelResult?: Result<void>;
-  fleetAuthors?: string[];
-} = {}) {
-  const verified: Array<
-    { repo: string; issueNumber: number; title: string; body: string }
-  > = [];
-  const labels: Array<{ repo: string; label: string }> = [];
-  const filing: SyncFollowUpFiling = {
-    verifyIssueContent: (repo, issueNumber, issue) => {
-      verified.push({
-        repo,
-        issueNumber,
-        title: issue.title,
-        body: issue.body,
-      });
-      return Promise.resolve(opts.verdict ?? { blocked: false });
-    },
-    ensureLabelExists: (repo, label) => {
-      labels.push({ repo, label });
-      return Promise.resolve(
-        opts.labelResult ?? { ok: true, value: undefined },
-      );
-    },
-    fleetAuthors: opts.fleetAuthors ?? ["vibe-bot"],
-  };
-  return { filing, verified, labels };
-}
-
-interface GapRunOptions {
-  summary: string;
-  live: string;
-  filing: SyncFollowUpFiling | undefined;
-  /** Answers `gh issue view`; defaults to {@link GAP_ISSUE_JSON}. */
-  issueView?: () => string;
-  /** Answers `gh issue list` (the dedup look-up); defaults to none open. */
-  openIssues?: string;
-  /** When set, `gh issue create` fails with this message. */
-  createError?: string;
-  /** The PR's remote head; defaults to the checkout's HEAD. */
-  headRefOid?: string;
-  /** The fix run's id; defaults to none. */
-  runId?: string;
-}
-
-/** Runs one sync against `opts.live` with a fake follow-up filer. */
-async function runGapSync(opts: GapRunOptions) {
-  const repoPath = await makeRepo();
-  try {
-    await writeSummary(repoPath, opts.summary);
-    const ghCalls: GhCall[] = [];
-    const record = stubGh(ghCalls);
-    const deps: SyncPrBodyDeps = {
-      runGhCommand: (args) => {
-        if (args[0] === "pr" && args[1] === "view") {
-          return Promise.resolve(
-            viewJson(opts.live, [], opts.headRefOid ?? HEAD_SHA),
-          );
-        }
-        if (args[0] === "issue") {
-          ghCalls.push({ args });
-          if (args[1] === "view") {
-            return Promise.resolve(
-              (opts.issueView ?? (() => GAP_ISSUE_JSON))(),
-            );
-          }
-          if (args[1] === "list") {
-            return Promise.resolve(opts.openIssues ?? "[]");
-          }
-          if (args[1] === "create") {
-            return opts.createError
-              ? Promise.reject(new Error(opts.createError))
-              : Promise.resolve("https://github.com/owner/repo/issues/99\n");
-          }
-          return Promise.resolve("");
-        }
-        return record(args);
-      },
-      runGitCommand: stubGit([], { diffChanged: true }),
-      logger,
-      followUpFiling: opts.filing,
-    };
-    const result = await syncPrBodyFromSummary({
-      repo: REPO,
-      prNumber: PR_NUMBER,
-      branchName: BRANCH,
-      repoPath,
-      beforeSha: BEFORE_SHA,
-      workerName: "worker-a",
-      githubUser: "ghuser",
-      ...(opts.runId !== undefined ? { runId: opts.runId } : {}),
-    }, deps);
-    return { result, ghCalls };
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-}
-
-/** The body the sync wrote with `gh pr edit`, or "" when it wrote none. */
-function syncedBody(ghCalls: GhCall[]): string {
-  return ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
-    ?.bodyFileContent ?? "";
-}
-
-/** The issue writes (create, edit, comment) the sync made. */
-function issueWrites(ghCalls: GhCall[]): GhCall[] {
-  return ghCalls.filter((c) =>
-    c.args[0] === "issue" &&
-    ["create", "edit", "comment"].includes(c.args[1] ?? "")
-  );
-}
-
-Deno.test("sync - a fix run's newly reported partial criterion files a follow-up (Issue #3678)", async () => {
-  const fake = fakeFiling();
-  const { result, ghCalls } = await runGapSync({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: OLD_SUMMARY_WITH_FOOTER,
-    filing: fake.filing,
-  });
-  assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-  if (result.ok) assertEquals(result.value.status, "updated");
-  const synced = syncedBody(ghCalls);
-  assert(synced.startsWith(REPORTED_GAP_SECTION_HEADING));
-  assertStringIncludes(synced, "continue in #99:");
-  assertStringIncludes(synced, "- **partial** — the import works");
-
-  const create = ghCalls.find((c) =>
-    c.args[0] === "issue" && c.args[1] === "create"
-  );
-  assert(create, "gh issue create must run");
-  assertEquals(create.args[create.args.indexOf("--milestone") + 1], "M1");
-  assertEquals(create.args[create.args.indexOf("--label") + 1], "idle-task");
-
-  assertEquals(fake.verified.length, 1);
-  assertEquals(fake.verified[0]?.repo, REPO);
-  assertEquals(fake.verified[0]?.issueNumber, ISSUE_NUMBER);
-  assertEquals(fake.verified[0]?.title, "Move the data");
-  assertEquals(
-    fake.verified[0]?.body,
-    "## Acceptance Criteria\n\n- the export works\n- the import works\n",
-  );
-  assertEquals(fake.labels, [{ repo: REPO, label: "idle-task" }]);
-});
-
-Deno.test("sync - the parent issue is read from the PR's repo and the follow-up names the fix run (Issue #3678)", async () => {
-  const { result, ghCalls } = await runGapSync({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: OLD_SUMMARY_WITH_FOOTER,
-    filing: fakeFiling().filing,
-    runId: "run-3678",
-  });
-  assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-  const view = ghCalls.find((c) =>
-    c.args[0] === "issue" && c.args[1] === "view"
-  );
-  assertEquals(view?.args, [
-    "issue",
-    "view",
-    String(ISSUE_NUMBER),
-    "--repo",
-    REPO,
-    "--json",
-    "title,body,labels,author,milestone",
-  ]);
-  const create = ghCalls.find((c) =>
-    c.args[0] === "issue" && c.args[1] === "create"
-  );
-  assert(create, "gh issue create must run");
-  assertStringIncludes(
-    create.args[create.args.indexOf("--body") + 1] ?? "",
-    "_Run id: `run-3678`_",
-  );
-});
-
-Deno.test("sync - a fix run reuses the open follow-up for the parent rather than filing another (Issue #3678)", async () => {
-  const fake = fakeFiling();
-  const openIssues = JSON.stringify([{
-    number: 55,
-    body: `<!-- finding-id: ${degradedFollowUpFindingId(ISSUE_NUMBER)} -->`,
-    author: { login: "vibe-bot" },
-  }]);
-  const { result, ghCalls } = await runGapSync({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: OLD_SUMMARY_WITH_FOOTER,
-    filing: fake.filing,
-    openIssues,
-  });
-  assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-  assertEquals(
-    ghCalls.some((c) => c.args[1] === "create"),
-    false,
-    "must not file a second follow-up",
-  );
-  const edit = ghCalls.find((c) =>
-    c.args[0] === "issue" && c.args[1] === "edit" && c.args[2] === "55"
-  );
-  assert(edit, "the reused follow-up must be brought up to date");
-  assert(edit.args.includes("--body"), "the edit must carry --body");
-  assertStringIncludes(syncedBody(ghCalls), "continue in #55:");
-});
-
-Deno.test("sync - a parent issue that fails the content-integrity check files nothing (Issue #3678)", async () => {
-  const fake = fakeFiling({
-    verdict: { blocked: true, reason: "content-modified-after-approval" },
-  });
-  const { result, ghCalls } = await runGapSync({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: OLD_SUMMARY_WITH_FOOTER,
-    filing: fake.filing,
-  });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertStringIncludes(
-      result.error.message,
-      "content-modified-after-approval",
-    );
-  }
-  assertEquals(issueWrites(ghCalls), []);
-  assertEquals(
-    ghCalls.some((c) => c.args[0] === "pr" && c.args[1] === "edit"),
-    false,
-  );
-});
-
-Deno.test("sync - a follow-up that cannot be filed fails the sync and names the cause (Issue #3678)", async () => {
-  const fake = fakeFiling();
-  const { result, ghCalls } = await runGapSync({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: OLD_SUMMARY_WITH_FOOTER,
-    filing: fake.filing,
-    createError: "gh: label not found",
-  });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertStringIncludes(result.error.message, "gh: label not found");
-    assertStringIncludes(result.error.message, `PR #${PR_NUMBER}`);
-    assertStringIncludes(result.error.message, `#${ISSUE_NUMBER}`);
-  }
-  assertEquals(
-    ghCalls.some((c) => c.args[0] === "pr" && c.args[1] === "edit"),
-    false,
-  );
-});
-
-Deno.test("sync - a sync with no follow-up filer wired fails loudly rather than filing nothing (Issue #3678)", async () => {
-  const { result, ghCalls } = await runGapSync({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: OLD_SUMMARY_WITH_FOOTER,
-    filing: undefined,
-  });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertStringIncludes(result.error.message, "no follow-up filer is wired");
-  }
-  assertEquals(issueWrites(ghCalls), []);
-  assertEquals(
-    ghCalls.some((c) => c.args[0] === "pr" && c.args[1] === "edit"),
-    false,
-  );
-});
-
-Deno.test("sync - a gap on a partial-delivery follow-up is handed to a human, not filed again (Issue #3678)", async () => {
-  const fake = fakeFiling();
-  const followUpBody = `<!-- finding-id: ${
-    degradedFollowUpFindingId(12)
-  } -->\n\n## Acceptance Criteria\n\n- the export works\n- the import works\n`;
-  const { result, ghCalls } = await runGapSync({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: OLD_SUMMARY_WITH_FOOTER,
-    filing: fake.filing,
-    issueView: () =>
-      JSON.stringify({
-        title: "Finish the import",
-        body: followUpBody,
-        labels: [{ name: "idle-task" }],
-        author: { login: "vibe-bot" },
-        milestone: null,
-      }),
-  });
-  assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-  const edit = ghCalls.find((c) =>
-    c.args[0] === "issue" && c.args[1] === "edit" && c.args[2] === "42"
-  );
-  assert(edit, "the follow-up must be labelled for a human");
-  assert(edit.args.includes("--add-label"));
-  assert(edit.args.includes("needs-human"));
-  assert(
-    ghCalls.some((c) =>
-      c.args[0] === "issue" && c.args[1] === "comment" && c.args[2] === "42"
-    ),
-    "the gaps must be commented on the follow-up",
-  );
-  assertEquals(
-    ghCalls.some((c) => c.args[1] === "create"),
-    false,
-    "no nested follow-up may be filed",
-  );
-  const synced = syncedBody(ghCalls);
-  assert(synced.startsWith(FOLLOW_UP_CHAIN_STOP_SECTION_HEADING));
-  assertEquals(synced.includes(`Closes #${ISSUE_NUMBER}`), false);
-});
-
-Deno.test("sync - an issue that cannot be read fails the sync naming the issue (Issue #3678)", async () => {
-  const fake = fakeFiling();
-  const { result, ghCalls } = await runGapSync({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: OLD_SUMMARY_WITH_FOOTER,
-    filing: fake.filing,
-    issueView: () => {
-      throw new Error("gh issue view boom");
-    },
-  });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertStringIncludes(result.error.message, `#${ISSUE_NUMBER}`);
-    assertStringIncludes(result.error.message, "gh issue view boom");
-  }
-  assertEquals(fake.verified.length, 0);
-  assertEquals(
-    ghCalls.some((c) => c.args[0] === "pr" && c.args[1] === "edit"),
-    false,
-  );
-});
-
-Deno.test("sync - a rebuilt summary with no gap makes no issue call and never checks the issue (Issue #3678)", async () => {
-  const fake = fakeFiling();
-  const { result, ghCalls } = await runGapSync({
-    summary: criterionSummary("met", "met"),
-    live: OLD_SUMMARY_WITH_FOOTER,
-    filing: fake.filing,
-  });
-  assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-  if (result.ok) assertEquals(result.value.status, "updated");
-  assertEquals(ghCalls.filter((c) => c.args[0] === "issue").length, 0);
-  assertEquals(fake.verified.length, 0);
-});
-
-Deno.test("sync - a stale checkout is skipped before any gap is filed (Issue #3678)", async () => {
-  const fake = fakeFiling();
-  const { result, ghCalls } = await runGapSync({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: OLD_SUMMARY_WITH_FOOTER,
-    filing: fake.filing,
-    headRefOid: "newer-remote-head-sha",
-  });
-  assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-  if (result.ok) {
-    assertEquals(result.value, {
-      status: "skipped",
-      reason: "checkout is not the PR head",
-    });
-  }
-  assertEquals(ghCalls.filter((c) => c.args[0] === "issue").length, 0);
-  assertEquals(fake.verified.length, 0);
-});
-
-Deno.test("sync - a follow-up is still filed when the idle-task label cannot be ensured (Issue #3678)", async () => {
-  const fake = fakeFiling({
-    labelResult: { ok: false, error: new Error("label boom") },
-  });
-  const { result, ghCalls } = await runGapSync({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: OLD_SUMMARY_WITH_FOOTER,
-    filing: fake.filing,
-  });
-  assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
-  if (result.ok) assertEquals(result.value.status, "updated");
-  assert(
-    ghCalls.some((c) => c.args[0] === "issue" && c.args[1] === "create"),
-    "the follow-up must still be filed",
-  );
-  assertStringIncludes(syncedBody(ghCalls), "continue in #99:");
 });
 
 Deno.test("Issue #3720: summary refresh preserves the originating assignment", async () => {
@@ -2777,7 +1874,6 @@ Deno.test("Issue #3720: summary refresh preserves the originating assignment", a
           : stubGh(ghCalls)(args),
       runGitCommand: stubGit([], { diffChanged: true }),
       logger,
-      followUpFiling: undefined,
     });
     assert(result.ok);
     assertEquals(ghCalls.length, 1);
@@ -2839,45 +1935,28 @@ Deno.test("sync - ambiguous outcome ownership fails without editing the PR (Issu
   }
 });
 
-Deno.test("sync - pending verification stays visible without a partial-delivery follow-up banner (Issue #3961)", async () => {
-  const summary =
-    `## Summary\n\nCloses #${ISSUE_NUMBER}.\n\n## Acceptance Criteria\n\n- **partial** — required CI — evidence: PR checks pending — reviewer: partial — reason: CI not yet verified\n`;
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary,
-    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () =>
-      JSON.stringify({ body: "## Acceptance Criteria\n\n- required CI\n" }),
+Deno.test("sync - a legacy body's before-push diff includes the facts file path (Issue #3535)", async () => {
+  const repoPath = await makeRepo({
+    summary: PLAIN_SUMMARY,
+    facts: FACTS_JSON,
   });
-  assert(result.ok);
-  assertEquals(result.value.status, "updated");
-  const synced =
-    ghCalls.find((call) => call.args[0] === "pr" && call.args[1] === "edit")
-      ?.bodyFileContent ?? "";
-  assertStringIncludes(synced, "CI not yet verified");
-  assert(!synced.includes("Partial delivery —"));
-  assert(!synced.includes("#77"));
-  assertEquals(
-    ghCalls.filter((call) =>
-      call.args[0] === "issue" && call.args[1] !== "view"
-    ),
-    [],
-  );
-});
-
-Deno.test("sync - newly pending-only verification does not discover or file a follow-up (Issue #3961)", async () => {
-  const summary =
-    `## Summary\n\nCloses #${ISSUE_NUMBER}.\n\n## Acceptance Criteria\n\n- **partial** — required CI — evidence: PR checks pending — reviewer: partial — reason: CI not yet verified\n`;
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary,
-    live: OLD_SUMMARY_WITH_FOOTER,
-    issueView: () => {
-      throw new Error("pending-only sync must not fetch the issue");
-    },
-  });
-  assert(result.ok, result.ok ? "" : result.error.message);
-  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
-    ?.bodyFileContent ?? "";
-  assertStringIncludes(synced, "CI not yet verified");
-  assert(!synced.includes("Partial delivery —"));
-  assertEquals(ghCalls.filter((c) => c.args[0] === "issue"), []);
+  try {
+    const { result, gitCalls } = await syncFactsCase({
+      repoPath,
+      liveBody: baseBody(ISSUE_NUMBER),
+    });
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    const diff = gitCalls.find((c) => c[0] === "diff");
+    assertEquals(diff, [
+      "diff",
+      "--name-only",
+      BEFORE_SHA,
+      "HEAD",
+      "--",
+      `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`,
+      prSummaryFactsPath(ISSUE_NUMBER),
+    ]);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
 });

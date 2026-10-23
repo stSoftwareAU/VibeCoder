@@ -65,9 +65,6 @@ export const claimIssueCommand: Command = {
         const issueNumber = toNumber(args["issue-number"], 0);
         const githubUser = String(args["github-user"] ?? "");
         const threshold = toNumber(args["threshold"], 5);
-        const failedLabel = String(
-          args["failed-label"] ?? config.failedLabel ?? "failed",
-        );
 
         if (!repo || !issueNumber || !githubUser) {
           return {
@@ -82,8 +79,6 @@ export const claimIssueCommand: Command = {
           issueNumber,
           githubUser,
           threshold,
-          failedLabel,
-          allowedAuthors: config.allowedAuthors,
         });
 
         if (!result.ok) {

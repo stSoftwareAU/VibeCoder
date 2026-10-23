@@ -1838,8 +1838,9 @@ produces no work. The `work-on` content-integrity (TOCTOU) check stays with
 `work-on`: it verifies an issue against an approval snapshot only the `work-on`
 approval flow captures.
 
-Issues are **excluded** from selection if they carry any of: `failed`,
-`refine-issue`, `planning`, `question`, `needs-human`. retired the standalone
+Issues are **excluded** from selection if they carry any of:
+`refine-issue`, `planning`, `question`, `needs-human`. A leftover `failed` is
+stripped instead (Issue #4158). retired the standalone
 `needs-clarification` label and folded the clarification handoff onto
 `needs-human`.
 
@@ -1861,14 +1862,14 @@ Each candidate issue is checked by functions in
 | Filter                           | Function                                        | Module             | Behaviour                                                                                               |
 | -------------------------------- | ----------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------- |
 | **Assignee**                     | `filter_issues_by_assignee()`                   | issue_filter       | Must be unassigned or assigned to the current worker (multi-worker safe)                                |
-| **Blocking labels**              | `build_issue_filter_jq`                         | issue_filter       | Exclude `failed`, `refine-issue`, `planning`, `question`, `needs-human` (retired `needs-clarification`) |
+| **Blocking labels**              | `build_issue_filter_jq`                         | issue_filter       | Exclude `refine-issue`, `planning`, `question`, `needs-human` (never `failed`, Issue #4158)              |
 | **Open PR blocking**             | `get_blocking_pr_for_issue()`                   | issue_query        | Milestone-aware: only blocked by PRs targeting the same milestone branch                                |
 | **Ignore-open-prs bypass**       | `has_ignore_open_prs_label_by_allowed_author()` | issue_query        | Bypass open PR blocking when label added by allowed author                                              |
 | **One issue per repo/milestone** | `is_milestone_occupied`                         | issue_filter       | Only one issue per repo/milestone can be in-progress at a time                                          |
 | **Milestone behind default**     | `milestonePacedUntil()`                         | milestone_presync  | Skips every issue of a milestone whose branch ledger is pacing the next merge attempt — an open attempt, a wedged resolution gate (Issue #2388) or a spent conflict budget (Issue #1780) |
 | **Forward dependencies**         | `has_unmet_dependencies()`                      | dependency_checker | Blocked if any `Depends on` / `Blocked by` issue is open, or is closed in another still-open milestone (Issue #2173) |
 | **Parent blocking**              | `has_open_sub_issues()`                         | dependency_checker | Blocked if parent has open child issues (task list items); a failed native sub-issues lookup also counts as blocked rather than as "no children" (Issue #3321) |
-| **Stale label cleanup**          | `clean_stale_labels_for_reopened_issues`        | issue_filter       | Removes `failed`, `failed-once` from reopened issues (retired the `needs-clarification` cleanup)        |
+| **Stale label cleanup**          | `clean_stale_labels_for_reopened_issues`        | issue_filter       | Removes `failed-once` from reopened issues and a leftover `failed` always (Issue #4158)                 |
 
 #### 🔗 Dependency-chain promotion
 
@@ -2688,14 +2689,6 @@ claim at two points, with one decision function:
   elsewhere — GRQ-AutoTrader#127 was resolved through the agent's own PR into
   the milestone branch — and the run takes the stale-claim exit, naming the
   agent's branch; an open issue keeps the #4286 failure.
-
-A `pre-pr` stale verdict also retracts a partial-delivery follow-up that the
-partial-delivery guard newly filed earlier in the same run, for a degraded or a
-healthy run alike (PR #3676 review): that follow-up names a PR which will not be
-raised, so `abortStaleClaim` tries to close it as "not planned". The close is
-best-effort: if it fails, a warning is logged and the follow-up stays open. A
-reused follow-up is never closed. See
-[issue-processing.md](workflows/issue-processing.md).
 
 Two rules, most decisive first: **the issue closed** during the cycle; and **a
 merged PR already carries this run's branch**, decided by `pr_run_provenance.ts`
@@ -5213,7 +5206,7 @@ returns a `ladder` decision with cooldown `non_transient` for it,
 quotes the marker later keeps its own category. A retry that could not be
 launched at all (a rate limit, a failed spawn) is deliberately not marked: that
 is a real launch fault and its own error text must still be classified. The
-posted issue comment is unchanged. The host-fault and milestone-refusal label-release sweeps also skip the separate failure record that `markIssueAsFailedOnce` or `markIssueAsFailed` posts for the marked reason, because its head `**Category:** \`security-fix-gate\`` line names a registered gate category (`isWorkerGateFailureRecord`), so a quoted test declaration cannot strip `failed-once` or `failed`.
+posted issue comment is unchanged. The host-fault and milestone-refusal label-release sweeps also skip the separate failure record that `markIssueAsFailedOnce` posts for the marked reason, because its head `**Category:** \`security-fix-gate\`` line names a registered gate category (`isWorkerGateFailureRecord`), so a quoted test declaration cannot strip `failed-once` or `failed`.
 
 #### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
 

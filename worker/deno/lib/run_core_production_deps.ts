@@ -195,7 +195,6 @@ import {
   refreshSubscriptionAllocation,
   startSubscriptionAllocationRefresh,
 } from "./subscription_allocation_runtime.ts";
-import { buildSyncFollowUpFiling } from "./pr_body_sync_follow_up.ts";
 import { reconcilePrBodyDigests as runPrBodyDigestReconcile } from "./pr_body_reconcile.ts";
 import { cleanupMergedPrBranches } from "./branch_cleanup.ts";
 import {
@@ -291,7 +290,6 @@ import { workflowScopeState } from "./workflow_scope.ts";
 // `failed-once` -> `failed` ladder the planning and question routes use.
 import {
   applyCodingFailureLadder,
-  buildRepeatedFailureEscalation,
   isSetupFault,
   planCodingFailure,
 } from "./coding_failure_ladder.ts";
@@ -497,9 +495,7 @@ import { fileRunFailureIssue } from "./run_failure_issue.ts";
 import { setMarkerReleaseHook } from "./claim_release.ts";
 import { readMarkerState } from "./heartbeat_storage.ts";
 import { probeHostMemoryPressure } from "./memory_pressure.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
 import { runFailureDetectionResumePass } from "./failure_detection_resume.ts";
-import { ensureLabelExists as ensureLabelExistsFn } from "./label_operations.ts";
 import {
   createFeatureRegistry,
   registerBuiltinFeatures,
@@ -1778,7 +1774,7 @@ export async function createProductionRunCoreDeps(
     // never took it and must keep their behaviour.
     const runLocalHold = gateNewWork ? await loadRunLocalHolds() : undefined;
 
-    const result = await findIssuesByLabel(config, label, false, {
+    const result = await findIssuesByLabel(config, label, {
       githubUser,
       ghCommandFn: runGhCommand,
       cache: issueCache,
@@ -2430,8 +2426,6 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feeds the refreshed PR body's footer.
             workerName: config.workerName,
-            // Issue #3678: files the follow-up for a newly reported gap.
-            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
           },
         );
 
@@ -2679,8 +2673,6 @@ export async function createProductionRunCoreDeps(
             graftContextEnabled: isGraftContextEnabled(config),
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
-            // Issue #3678: files the follow-up for a newly reported gap.
-            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
           },
         );
@@ -3115,8 +3107,6 @@ export async function createProductionRunCoreDeps(
             trustedAuthors,
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
-            // Issue #3678: files the follow-up for a newly reported gap.
-            syncFollowUpFiling: buildSyncFollowUpFiling(config, githubUser),
             githubUser,
             // Issue #3031: a milestone head is resolved through the takeover
             // in this same cycle.
@@ -3480,7 +3470,6 @@ export async function createProductionRunCoreDeps(
             runGhCommand,
             runGitCommand,
             logger,
-            followUpFiling: buildSyncFollowUpFiling(config, githubUser),
             cache: issueCache,
             inSync: prBodyDigestInSync,
           },
@@ -4896,7 +4885,6 @@ export async function createProductionRunCoreDeps(
             failureClass: ladderOutcome.decision.failureClass,
             markedAsFailedOnce: ladderOutcome.ladder?.markedAsFailedOnce ??
               false,
-            markedAsFailed: ladderOutcome.ladder?.markedAsFailed ?? false,
           });
         }
       }
@@ -4981,55 +4969,16 @@ export async function createProductionRunCoreDeps(
       issueNumber: number,
       failureKind?: CooldownFailureKind,
     ) {
-      const recorded = await cooldownRecordFn(
+      // Issue #4158: the cooldown is the whole response to a repeated
+      // failure. It escalates 2 h → 6 h → 24 h, so a failing issue is
+      // retried at most daily, and never handed to a human: an assigned
+      // issue is completed, never parked.
+      await cooldownRecordFn(
         cooldownConfig,
         repo,
         issueNumber,
         failureKind,
       );
-      // Third consecutive ladder failure inside the escalation window
-      // (Issue #4304, broadened by Issue #1949): retrying stops being
-      // credible — hand the issue to a human with the attempt evidence
-      // instead of burning a fourth cycle. Best-effort: the cooldown
-      // itself already blocks re-claims for 24 h even if the escalation
-      // cannot be posted.
-      if (
-        failureKind && recorded.ok && recorded.value.consecutiveFailures >= 3
-      ) {
-        const escalation = buildRepeatedFailureEscalation(
-          failureKind,
-          recorded.value.consecutiveFailures,
-        );
-        try {
-          const ghClient = createGitHubClient(logger);
-          await escalateToHuman({
-            ghClient,
-            repo,
-            target: { kind: "issue", number: issueNumber },
-            needsHumanLabel: config.needsHumanLabel,
-            heading: escalation.heading,
-            reason: escalation.reason,
-            nextStep: escalation.nextStep,
-            // The key keeps its historical name on purpose: one hand-off per
-            // issue is the behaviour wanted, and renaming it would post a
-            // second comment on an issue a timeout escalation already
-            // covered (Issue #1949).
-            dedupKey: `timeout-escalation-${issueNumber}`,
-            githubUser,
-            deps: { github: { ensureLabelExists: ensureLabelExistsFn } },
-            logger,
-          });
-        } catch (err) {
-          logger.warn(
-            "Repeated-failure escalation handoff failed (non-fatal)",
-            {
-              repo,
-              issueNumber,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
-      }
     },
 
     // -- Circuit breaker --

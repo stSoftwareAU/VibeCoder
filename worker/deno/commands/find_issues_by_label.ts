@@ -36,8 +36,6 @@ export const findIssuesByLabelCommand: Command = {
   ): Promise<CommandResult<FindIssuesByLabelData>> {
     const label = args["label"] as string | undefined;
     const githubUser = args["github-user"] as string | undefined;
-    const filterFailed = args["filter-failed"] === true ||
-      args["filter-failed"] === "true";
     const withCommentFallback = args["with-comment-fallback"] === true ||
       args["with-comment-fallback"] === "true";
 
@@ -63,7 +61,7 @@ export const findIssuesByLabelCommand: Command = {
     // Issue #977: Use comment-based fallback for planning issues
     const result = withCommentFallback
       ? await findPlanningIssuesWithFallback(config, { githubUser, cache })
-      : await findIssuesByLabel(config, label, filterFailed, {
+      : await findIssuesByLabel(config, label, {
         githubUser,
         cache,
       });

@@ -27,7 +27,6 @@ import {
 } from "../lib/milestone_branch_rejection.ts";
 import {
   handleIssueFailure,
-  markIssueAsFailed,
   markIssueAsFailedOnce,
 } from "../lib/label_failure.ts";
 import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
@@ -47,6 +46,10 @@ import {
   releaseMilestoneBranchRefusalLabels,
   resetMilestoneBranchRefusalSweepsForTest,
 } from "../lib/milestone_branch_refusal_release.ts";
+
+/** A repeat failure's record (Issue #4158 replaced the old second-failure path). */
+const markRepeatFailure: typeof markIssueAsFailedOnce = (options, deps) =>
+  markIssueAsFailedOnce({ ...options, repeat: true }, deps);
 
 /** The exact GH013 message from the issue report. */
 const GH013 = [
@@ -162,7 +165,6 @@ Deno.test("refusal release - handleIssueFailure adds no failed-once/failed label
   assert(result.ok);
   assertEquals(result.value.failureCategory, "repo_config");
   assertEquals(result.value.markedAsFailedOnce, false);
-  assertEquals(result.value.markedAsFailed, false);
   assertEquals(result.value.isInfrastructure, false);
 
   const flat = gh.calls.map((c) => c.join(" "));
@@ -602,7 +604,7 @@ Deno.test("refusalIsMostRecentFailure - a marked summary-gate refusal quoting th
     `repository rule violations)`;
   // At failure time the marker wins: the refusal is `summary_incomplete`.
   assertEquals(detectFailureCategory(reason), "summary_incomplete");
-  for (const write of [markIssueAsFailedOnce, markIssueAsFailed]) {
+  for (const write of [markIssueAsFailedOnce, markRepeatFailure]) {
     let body = "";
     await write({
       repo: REPO,
@@ -678,7 +680,6 @@ Deno.test("applyCodingFailureLadder - a milestone refusal comments and labels no
       }),
   });
   assertEquals(outcome.error, undefined);
-  assertEquals(outcome.ladder?.markedAsFailed, false);
   assertEquals(outcome.ladder?.markedAsFailedOnce, false);
   assert(
     !calls.some((c) => c.includes("--add-label")),

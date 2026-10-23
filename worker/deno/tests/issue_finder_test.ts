@@ -444,7 +444,7 @@ Deno.test("issue_finder - findOldestIssue respects cooldown", async () => {
 
 Deno.test("issue_finder - findIssuesByLabel returns not found for empty repos", async () => {
   const config = makeConfig({ repos: [] });
-  const result = await findIssuesByLabel(config, "refine-issue", false, {
+  const result = await findIssuesByLabel(config, "refine-issue", {
     githubUser: "bot",
     cache: createTestCache(),
   });
@@ -475,7 +475,7 @@ Deno.test("issue_finder - findIssuesByLabel finds issues by label", async () => 
     ],
   });
 
-  const result = await findIssuesByLabel(config, "refine-issue", false, {
+  const result = await findIssuesByLabel(config, "refine-issue", {
     githubUser: "bot",
     ghCommandFn: mockGh,
     cache: createTestCache(),
@@ -508,7 +508,7 @@ Deno.test("issue_finder - findIssuesByLabel finds needs-revision issues (Issue #
     ],
   });
 
-  const result = await findIssuesByLabel(config, "needs-revision", false, {
+  const result = await findIssuesByLabel(config, "needs-revision", {
     githubUser: "bot",
     ghCommandFn: mockGh,
     cache: createTestCache(),
@@ -555,7 +555,7 @@ Deno.test(
       ],
     });
 
-    const result = await findIssuesByLabel(config, "grill-me", false, {
+    const result = await findIssuesByLabel(config, "grill-me", {
       githubUser: "bot",
       ghCommandFn: mockGh,
       cache: createTestCache(),
@@ -581,7 +581,7 @@ Deno.test("issue_finder - findIssuesByLabel filters failed when requested", asyn
     ],
   });
 
-  const result = await findIssuesByLabel(config, "question", true, {
+  const result = await findIssuesByLabel(config, "question", {
     githubUser: "bot",
     ghCommandFn: mockGh,
     cache: createTestCache(),
@@ -623,7 +623,7 @@ Deno.test(
       ],
     });
 
-    const result = await findIssuesByLabel(config, "planning", false, {
+    const result = await findIssuesByLabel(config, "planning", {
       githubUser: "bot",
       ghCommandFn: mockGh,
       cache: createTestCache(),
@@ -660,7 +660,7 @@ Deno.test(
       ],
     });
 
-    const result = await findIssuesByLabel(config, "planning", false, {
+    const result = await findIssuesByLabel(config, "planning", {
       githubUser: "bot",
       ghCommandFn: mockGh,
       cache: createTestCache(),
@@ -710,7 +710,7 @@ Deno.test(
       ],
     });
 
-    const result = await findIssuesByLabel(config, "deploy-review", false, {
+    const result = await findIssuesByLabel(config, "deploy-review", {
       githubUser: "bot",
       ghCommandFn: mockGh,
       cache: createTestCache(),
@@ -753,7 +753,7 @@ Deno.test(
       ],
     });
 
-    const result = await findIssuesByLabel(config, "deploy-review", false, {
+    const result = await findIssuesByLabel(config, "deploy-review", {
       githubUser: "bot",
       ghCommandFn: mockGh,
       cache: createTestCache(),
@@ -792,7 +792,7 @@ Deno.test(
       timeline: [],
     });
 
-    const result = await findIssuesByLabel(config, "deploy-review", false, {
+    const result = await findIssuesByLabel(config, "deploy-review", {
       githubUser: "bot",
       ghCommandFn: mockGh,
       cache: createTestCache(),
@@ -1056,13 +1056,13 @@ Deno.test("issue_finder - findPlanningIssuesWithFallback finds failed issues wit
       ]));
     }
 
-    // Comment fallback — issue has claim churn escalation comment
+    // Comment fallback — issue has a planning escalation comment
     if (
       command.includes("issue view") && command.includes("comments") &&
       command.includes("--jq")
     ) {
       return Promise.resolve(
-        "## Claim Churn Detected\n\nThis issue has been claimed and released 5 times.\n\ncc @alice @bob — please add the `planning` label.",
+        "## Automatic Escalation to Planning Mode\n\nThis issue has been detected as too complex.",
       );
     }
 
@@ -1497,7 +1497,7 @@ Deno.test("issue_finder - findIssuesByLabel skips issues with cross-worker coold
     ],
   });
 
-  const result = await findIssuesByLabel(config, "planning", false, {
+  const result = await findIssuesByLabel(config, "planning", {
     githubUser: "bot",
     ghCommandFn: mockGh,
     cache: createTestCache(),
@@ -1975,7 +1975,7 @@ Deno.test(
       "owner/low": [niceIssue(2, "2024-06-01T00:00:00Z")],
     });
 
-    const result = await findIssuesByLabel(config, "refine-issue", false, {
+    const result = await findIssuesByLabel(config, "refine-issue", {
       githubUser: "bot",
       ghCommandFn: mockGh,
       cache: createTestCache(),
@@ -2005,7 +2005,7 @@ Deno.test(
       "owner/b": [niceIssue(2, "2024-06-01T00:00:00Z")],
     });
 
-    const pickFirst = await findIssuesByLabel(config, "refine-issue", false, {
+    const pickFirst = await findIssuesByLabel(config, "refine-issue", {
       githubUser: "bot",
       ghCommandFn: mockGh,
       cache: createTestCache(),
@@ -2013,7 +2013,7 @@ Deno.test(
     });
     assertStringIncludes(pickFirst.output.split("\n")[0] ?? "", "owner/a|1|");
 
-    const pickSecond = await findIssuesByLabel(config, "refine-issue", false, {
+    const pickSecond = await findIssuesByLabel(config, "refine-issue", {
       githubUser: "bot",
       ghCommandFn: mockGh,
       cache: createTestCache(),
@@ -2038,7 +2038,7 @@ Deno.test(
       "owner/b": [niceIssue(6, "2024-01-01T00:00:00Z")],
     });
 
-    const result = await findIssuesByLabel(config, "refine-issue", false, {
+    const result = await findIssuesByLabel(config, "refine-issue", {
       githubUser: "bot",
       ghCommandFn: mockGh,
       cache: createTestCache(),

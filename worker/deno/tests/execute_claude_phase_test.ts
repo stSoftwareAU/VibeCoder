@@ -828,6 +828,56 @@ Deno.test("runExecuteClaudePhase - no changes and no remote commits returns no_c
   assertEquals(result.hasNewCommits, false);
 });
 
+Deno.test("runExecuteClaudePhase - an agent that failed with no changes is a failure, never no_changes (Issue #4147)", async () => {
+  // The CLI died before any model turn: exit 1, zero turns. "No changes" here
+  // is a crash, not an analysis-only answer — handing it off as analysis-only
+  // put needs-human on 46 implementation issues on 2026-10-22.
+  const result = await runExecuteClaudePhase(
+    createTestOptions(),
+    createMockDeps({
+      runClaudeWithRetry: async () => ({
+        ok: true,
+        value: {
+          exitCode: 1,
+          output:
+            '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"errors":["No conversation found with session ID: e42c3312-11f8-478a-98fa-86458e5880b3"]}',
+          timedOut: false,
+        },
+      }),
+      runGitCommand: async (args: string[]) => {
+        if (args[0] === "status") return { ok: true, value: "" };
+        if (args[0] === "log") return { ok: true, value: "" };
+        return { ok: true, value: "" };
+      },
+    }),
+  );
+  assertEquals(result.action, "failure");
+  assertEquals(result.failureType, "execution_error");
+  assertStringIncludes(result.failureMessage ?? "", "No conversation found");
+});
+
+Deno.test("runExecuteClaudePhase - a clean exit with no changes is still no_changes (Issue #4147)", async () => {
+  const result = await runExecuteClaudePhase(
+    createTestOptions(),
+    createMockDeps({
+      runClaudeWithRetry: async () => ({
+        ok: true,
+        value: {
+          exitCode: 0,
+          output: "The behaviour is already correct; no change needed.",
+          timedOut: false,
+        },
+      }),
+      runGitCommand: async (args: string[]) => {
+        if (args[0] === "status") return { ok: true, value: "" };
+        if (args[0] === "log") return { ok: true, value: "" };
+        return { ok: true, value: "" };
+      },
+    }),
+  );
+  assertEquals(result.action, "no_changes");
+});
+
 Deno.test("runExecuteClaudePhase - screenshot label triggers screenshot instructions", async () => {
   let promptOptions: Record<string, unknown> | undefined;
   const result = await runExecuteClaudePhase(
