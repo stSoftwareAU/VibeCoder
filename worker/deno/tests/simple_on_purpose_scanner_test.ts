@@ -166,23 +166,44 @@ Deno.test("parse - a complete single-line marker followed by unrelated comment l
   );
 });
 
-Deno.test("parse - a clause-less marker does not borrow an unrelated next line's upgrade when", () => {
+Deno.test("parse - a marker that wraps mid-sentence reaches an upgrade when on a later line", () => {
   const text = [
     "// SIMPLE-ON-PURPOSE: a quadratic scan is fine here",
-    "// Note: we will upgrade when the corpus grows.",
-    "// an unrelated comment line",
+    "// for a handful of criteria",
+    "// upgrade when the corpus grows.",
+    "const x = 1;",
   ].join("\n");
   const m = onlyMarker(parseSimpleOnPurposeMarkers("lib/k.ts", text));
-  assertEquals(m.ceiling, "a quadratic scan is fine here");
-  assertEquals(m.upgradeWhen, null);
+  assertEquals(
+    m.ceiling,
+    "a quadratic scan is fine here for a handful of criteria",
+  );
+  assertEquals(m.upgradeWhen, "the corpus grows.");
 });
 
-Deno.test("parse - a clause-less marker does not absorb an unrelated comment line with no clause", () => {
+Deno.test("parse - a clause-less marker stops at a blank comment line or code and stays flagged", () => {
   const text = [
     "// SIMPLE-ON-PURPOSE: fixed buffer",
+    "//",
     "// Unrelated note about the buffer.",
+    "// SIMPLE-ON-PURPOSE: fixed cache",
+    "const cache = 1;",
+    "// Unrelated note about the cache.",
   ].join("\n");
-  const m = onlyMarker(parseSimpleOnPurposeMarkers("lib/m.ts", text));
+  assertEquals(
+    parseSimpleOnPurposeMarkers("lib/m.ts", text).map((
+      m,
+    ) => [m.line, m.ceiling, m.upgradeWhen]),
+    [[1, "fixed buffer", null], [4, "fixed cache", null]],
+  );
+});
+
+Deno.test("parse - a closed single-line block comment does not join the lines after it", () => {
+  const text = [
+    "/* SIMPLE-ON-PURPOSE: fixed buffer */",
+    " * unrelated jsdoc line",
+  ].join("\n");
+  const m = onlyMarker(parseSimpleOnPurposeMarkers("lib/q.ts", text));
   assertEquals(m.ceiling, "fixed buffer");
   assertEquals(m.upgradeWhen, null);
 });
@@ -216,7 +237,7 @@ Deno.test("parse - a clause-less marker ending in a hyphen or a comma joins the 
   );
 });
 
-Deno.test("parse - a dash-ended marker joins at most five continuation lines, however many follow", () => {
+Deno.test("parse - a clause-less marker joins at most five continuation lines, however many follow", () => {
   const lines = ["// SIMPLE-ON-PURPOSE: head —"];
   for (let n = 1; n <= 1000; n++) lines.push(`// piece ${n} —`);
   const m = onlyMarker(
@@ -247,6 +268,77 @@ Deno.test("parse - the real test-floci.sh marker keeps its own clause and does n
     m.upgradeWhen,
     "a template uses flow-style, anchors, multi-line or tab-indented parameters",
   );
+});
+
+Deno.test("parse - the real idle_detect_diagnostics.ts marker joins across lines to its upgrade when", () => {
+  // Copied verbatim from worker/deno/lib/idle_detect_diagnostics.ts lines 602-607.
+  const text = [
+    "  // SIMPLE-ON-PURPOSE: the closed dependency's own milestone is not fetched, so",
+    "  // this models the hold's precondition — some other milestone of the repo is",
+    "  // open — exactly as the census does (Issue #2455). It over-holds towards",
+    '  // "not claimable", the direction that cannot manufacture a false',
+    "  // `mis_classification` ALERT — upgrade when the audit already has each",
+    "  // dependency's milestone to hand without an extra API call per tick.",
+    "  const otherMilestoneOpen = [...openMilestones].some(",
+  ].join("\n");
+  const m = onlyMarker(
+    parseSimpleOnPurposeMarkers(
+      "worker/deno/lib/idle_detect_diagnostics.ts",
+      text,
+    ),
+  );
+  assertEquals(m.line, 1);
+  assertEquals(
+    m.ceiling,
+    "the closed dependency's own milestone is not fetched, so this models the hold's precondition — some other milestone of the repo is open — exactly as the census does (Issue #2455). It over-holds towards \"not claimable\", the direction that cannot manufacture a false `mis_classification` ALERT",
+  );
+  assertEquals(m.upgradeWhen, "the audit already has each");
+});
+
+Deno.test("parse - the real branch_conflict_pass.ts marker joins its second line", () => {
+  // Copied verbatim from worker/deno/lib/branch_conflict_pass.ts lines 275-277.
+  const text = [
+    "  // SIMPLE-ON-PURPOSE: exit codes ignored — whichever operation the agent left",
+    "  // in flight, only one of these four abort calls applies and the rest fail",
+    "  // harmlessly — upgrade when a caller needs to know which state was aborted.",
+    '  await runGit(["rebase", "--abort"], opts);',
+  ].join("\n");
+  const m = onlyMarker(
+    parseSimpleOnPurposeMarkers(
+      "worker/deno/lib/branch_conflict_pass.ts",
+      text,
+    ),
+  );
+  assertEquals(
+    m.ceiling,
+    "exit codes ignored — whichever operation the agent left in flight, only one of these four abort calls applies and the rest fail harmlessly",
+  );
+  assertEquals(
+    m.upgradeWhen,
+    "a caller needs to know which state was aborted.",
+  );
+});
+
+Deno.test("parse - the real guidance.ts jsdoc marker joins its ` * ` lines to its upgrade when", () => {
+  // Copied verbatim from .claude/skills/review-fleet-prs/scripts/guidance.ts lines 15-17.
+  const text = [
+    " * SIMPLE-ON-PURPOSE: the ledger is per machine, like everything else under",
+    " * `<logs>/review-fleet-prs/`; upgrade when the loop runs on more than one",
+    " * machine.",
+    " *",
+    " *   deno run --allow-run=gh guidance.ts track --issue=<n>",
+  ].join("\n");
+  const m = onlyMarker(
+    parseSimpleOnPurposeMarkers(
+      ".claude/skills/review-fleet-prs/scripts/guidance.ts",
+      text,
+    ),
+  );
+  assertEquals(
+    m.ceiling,
+    "the ledger is per machine, like everything else under `<logs>/review-fleet-prs/`;",
+  );
+  assertEquals(m.upgradeWhen, "the loop runs on more than one");
 });
 
 Deno.test("parse - a wrapped marker with an empty upgrade when still joins the next line, then stops", () => {

@@ -151,23 +151,23 @@ function toMarker(
 
 /**
  * Whether the next continuation line joins a marker whose body so far is
- * `body`. Joins when the `upgrade when` clause has an empty condition, or when
- * there is no clause and the body ends in a dash or comma (after any closer is
- * stripped) or the next line starts with `upgrade when`. Otherwise stops.
+ * `body`. Joins until the marker carries an `upgrade when` clause with a
+ * non-empty condition, so a marker that wraps mid-sentence still reaches a
+ * clause on a later line. Stops at once when a block-comment closer ends the
+ * body, because the comment is then over.
  */
-function joinsNext(body: string, next: string): boolean {
-  const text = stripCloser(body.trim());
+function joinsNext(body: string): boolean {
+  const trimmed = body.trim();
+  const text = stripCloser(trimmed);
+  if (text !== trimmed) return false;
   const clause = UPGRADE_CLAUSE.exec(text);
-  if (clause !== null) return clauseCondition(text, clause) === null;
-  const last = text.slice(-1);
-  const endsOpen = last !== "" && (DASHES.includes(last) || last === ",");
-  return endsOpen || /^upgrade when\b/i.test(next);
+  return clause === null || clauseCondition(text, clause) === null;
 }
 
 /**
  * Every marker in one file's text, in line order. A marker may join up to
  * `MAX_CONTINUATION_LINES` following same-opener comment lines, one at a time,
- * under the rule in `joinsNext`; the marker reports its first line.
+ * until the rule in `joinsNext` stops it; the marker reports its first line.
  */
 export function parseSimpleOnPurposeMarkers(
   path: string,
@@ -186,7 +186,7 @@ export function parseSimpleOnPurposeMarkers(
       j++
     ) {
       const more = continuationText(lines[j] ?? "", found.opener);
-      if (more === null || !joinsNext(body, more)) break;
+      if (more === null || !joinsNext(body)) break;
       body = `${body} ${more}`;
       joined++;
     }

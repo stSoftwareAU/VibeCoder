@@ -10,9 +10,9 @@
  * `idle-task` label, so they sit invisible to the priority queue and to
  * the cross-repo dedup gate. This module sweeps the open wrappers in
  * every monitored repo and applies `idle-task` where missing — for any
- * of the ten registered idle-task templates (security-scan, test-audit,
- * best-practices, github-actions-audit, supply-chain-readiness,
- * orphan-deps, dead-code, doc-coverage, format-drift, deprecated-api).
+ * of the twenty registered idle-task templates (the wrapper titles in
+ * `TITLE_TO_TEMPLATE`, from security-scan and test-audit to
+ * simple-on-purpose-ledger).
  *
  * The sweep is idempotent — a labelled wrapper produces an
  * `already_labelled` event and is not re-touched. Per-repo failures are

@@ -18,8 +18,9 @@
  * runs it exactly as if the worker had filed the wrapper itself.
  *
  * Issue #2083 regression guard: an issue is treated as an idle-task
- * wrapper when EITHER its labels include `idle-task` OR its title
- * matches a registered template. The label-only check used to be the
+ * wrapper when its title matches a registered template or its body matches
+ * a template's `matchesIdleTaskBody` (the `idle-task` label alone no longer
+ * decides). The label-only check used to be the
  * single signal — if the `idle-task` label was missing (race with the
  * label-sync layer, human-filed wrapper not yet labelled, or a tool
  * stripping operational labels) the wrapper fell through to the
@@ -35,9 +36,10 @@
  * (e.g. a stale worker filed an older-format wrapper, then a human
  * renamed the issue, then the label-sync layer stripped `idle-task`).
  *
- * The handler never throws — every failure mode (no matching template,
- * runTask exception or failure) logs a structured warning and returns
- * `{ handled: true }` so the worker still closes the issue and the
+ * The handler never throws — an issue that matches no template returns
+ * `{ handled: false }` and falls through to the standard pipeline, and every
+ * other failure mode (runTask exception or failure) logs a structured warning
+ * and returns `{ handled: true }` so the worker still closes the issue and the
  * queue does not block.
  *
  * Issue closure itself is the caller's responsibility.
@@ -230,7 +232,7 @@ export async function handleIdleTaskIssue(
   // The label alone no longer forces wrapper handling. The wrapper-
   // identity signals (title + body fingerprint) still keep a genuine
   // scan wrapper out of the PR flow even if its `idle-task` label was
-  // stripped (Issue #2083 / #2087) — all seventeen templates implement
+  // stripped (Issue #2083 / #2087) — all twenty templates implement
   // `matchesIdleTaskBody`, so a real wrapper is always recognised by
   // its body even with a mangled title.
   if (template === undefined) {

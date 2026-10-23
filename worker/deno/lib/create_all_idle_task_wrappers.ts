@@ -1,5 +1,5 @@
 /**
- * Seed all seventeen standard idle-task wrappers in a target repo (Issue #2577,
+ * Seed all twenty standard idle-task wrappers in a target repo (Issue #2577,
  * extended in Issue #2930 to cover the four Boy Scout templates).
  *
  * When a repo is freshly added to the monitored set, the normal idle-task
@@ -8,7 +8,7 @@
  * cross-repo "any open idle-task blocks filing" check
  * (`findAnyOpenIdleTaskWrapper`). That is the right behaviour for steady-state
  * background work, but it is too slow for bringing a brand-new repo up to best
- * practice: it can take many idle cycles before all seventeen templates have run at
+ * practice: it can take many idle cycles before all twenty templates have run at
  * least once.
  *
  * {@link createAllIdleTaskWrappers} deliberately bypasses the random
@@ -23,7 +23,7 @@
  * and the exact canonical-title dedup still skips wrappers already open, so
  * re-running never produces duplicates.
  *
- * Which of the seventeen actually *fire* on a given (e.g. private) repo is governed
+ * Which of the twenty actually *fire* on a given (e.g. private) repo is governed
  * at runtime elsewhere (Issue #2571); this helper only seeds the wrappers.
  *
  * Failure handling (Issue #3862). A sweep no longer throws away its progress
@@ -37,7 +37,7 @@
  *     aborts the sweep immediately — it would fail identically for every
  *     remaining template;
  *   - a **non-terminal** per-template failure is recorded and the sweep
- *     carries on, so one `gh` hiccup no longer costs the other sixteen;
+ *     carries on, so one `gh` hiccup no longer costs the other nineteen;
  *   - every failure path returns an {@link IdleTaskSweepError} carrying the
  *     `created` / `skipped` / `failed` lists so callers can report them
  *     (`formatIdleTaskOutcomeTable`).
@@ -123,7 +123,7 @@ export interface CreateAllIdleTaskWrappersDeps {
   force?: boolean;
   /**
    * Per-template milestone helper. Only consulted for templates that do NOT
-   * set `skipMilestone: true`. All seventeen production templates set it, so this
+   * set `skipMilestone: true`. All twenty production templates set it, so this
    * is never called in practice. Defaults to `ensureIdleTaskMilestone`.
    */
   ensureMilestoneFn?: (
@@ -149,7 +149,7 @@ export interface CreateAllIdleTaskWrappersDeps {
   /**
    * Optional template-name allowlist (Issue #2933). When provided, only
    * templates whose `name` is in this set are seeded; the rest are ignored
-   * entirely (not even reported as skipped). Defaults to "all seventeen canonical
+   * entirely (not even reported as skipped). Defaults to "all twenty canonical
    * wrappers" when omitted, preserving the original behaviour. Used by the
    * Boy Scout multi-repo raiser to seed just the four Boy Scout wrappers.
    */
@@ -329,13 +329,13 @@ async function defaultFindOpenIdleTaskIssues(
 }
 
 /**
- * File all seventeen standard idle-task wrappers in `repo` when it holds no
+ * File all twenty standard idle-task wrappers in `repo` when it holds no
  * open `idle-task` issue (Issue #2752).
  *
  * Iterates the template registry via {@link listTemplates} and acts only on
  * templates whose `buildIssueTitle(repo)` matches the canonical wrapper
  * allowlist — this naturally excludes any test-only templates registered into
- * the shared registry and guarantees a clean repo gets exactly the seventeen
+ * the shared registry and guarantees a clean repo gets exactly the twenty
  * production wrappers.
  *
  * Bypasses the random single-pick so one call seeds every wrapper. Any open
@@ -388,7 +388,7 @@ export async function createAllIdleTaskWrappers(
   const log = deps.log ?? (() => {});
   const rootDir = deps.rootDir;
 
-  // The canonical seventeen wrappers only. Filtering by the allowlist excludes any
+  // The canonical twenty wrappers only. Filtering by the allowlist excludes any
   // test-only template registered into the shared registry. An optional
   // template-name allowlist (Issue #2933) narrows this further — e.g. to the
   // four Boy Scout templates.
@@ -476,7 +476,7 @@ export async function createAllIdleTaskWrappers(
     // rather than escaping as an unhandled exception.
     let stage: "prepare" | "create" = "prepare";
     try {
-      // Respect `skipMilestone` per template (all seventeen set it `true`, so
+      // Respect `skipMilestone` per template (all twenty set it `true`, so
       // no per-template milestone is created in practice).
       let milestone: IdleTaskMilestone | null = null;
       if (template.skipMilestone !== true) {

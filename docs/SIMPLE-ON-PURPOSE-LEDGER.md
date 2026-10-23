@@ -56,18 +56,20 @@ A marker may wrap onto the comment lines that follow it, when those lines open
 the same way (`//` after `//`, `#` after `#`; a `/*` marker continues on `*`
 lines, and a `*/` line is never joined). The scanner joins at most five such
 lines (`MAX_CONTINUATION_LINES`) and reports the marker's first line. It joins
-the next line one at a time, and only while the join rule holds:
+the next line one at a time, and keeps joining until the marker carries an
+`upgrade when` clause with a non-empty condition. A marker that wraps
+mid-sentence therefore still reaches an `upgrade when` on a later line. The join
+stops sooner when:
 
-- **Empty condition.** The text so far has an `upgrade when` clause with an
-  empty condition; the next line supplies the condition.
-- **No clause yet.** The text so far has no `upgrade when` clause, and either it
-  ends in a dash (`—`, `–` or `-`) or a comma, or the next line starts with
-  `upgrade when`.
+- the next line is blank, is not a comment line of the same opener, is another
+  marker, or is a `*/` line;
+- the text so far ends in a closing `-->` or `*/`, because the comment is over,
+  so a single-line HTML or block comment never joins the line after it; or
+- the text so far already has `upgrade when <condition>` with a non-empty
+  condition, so a marker that carries its clause is never extended.
 
-Otherwise the join stops. A closing `-->` or `*/` is removed before the dash and
-comma check, so a single-line HTML or block comment that ends in a dash does not
-join the comment line after it. A marker that already carries
-`upgrade when <condition>` on its own line is never extended.
+A marker with no `upgrade when` clause can join up to five unrelated comment
+lines that follow it, and is still flagged when none of them holds the clause.
 
 ## What the scanner counts
 

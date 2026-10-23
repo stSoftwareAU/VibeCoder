@@ -1701,7 +1701,7 @@ flowchart TD
 2. **Terminal vs transient.** A `WriteRepoBlockedError` /
    `WriteTargetUndeterminableError` surfacing mid-sweep aborts immediately (a
    retry cannot succeed); any other per-template failure is recorded and the
-   sweep carries on, so one `gh` hiccup no longer costs the other seventeen.
+   sweep carries on, so one `gh` hiccup no longer costs the other nineteen.
 3. **Partial progress survives.** Every failure path returns an
    `IdleTaskSweepError` carrying the `created` / `skipped` / `failed` lists, and
    the CLI prints a per-template outcome table on **both** exit paths before
@@ -2140,8 +2140,11 @@ The load-bearing rules:
   (`DUE_SCAN_CACHE_TTL_MS`, driven by the caller's clock) and the per-wrapper
   closing-comment read is skipped entirely — cadence needs dates, not outcomes.
   A slightly stale due list is harmless because every gate re-runs before filing.
-- **Weights are the fallback's business.** `idleTaskTemplateWeights` is
-  consulted only on the random path; a biased pick ignores it.
+- **Weights shape the draw, not the bias.** `idleTaskTemplateWeights` is
+  consulted by `weightedPickTemplate` on every idle tick, before the cadence
+  lookup runs. When a biased pair is filed, its template replaces the drawn one
+  (`biasedPick?.template ?? template`), so the weights do not choose a biased
+  pick.
 
 Each tick emits exactly one decision line, so an operator can tell a biased tick
 from a random one:
