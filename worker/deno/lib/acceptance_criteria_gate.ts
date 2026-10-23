@@ -178,8 +178,13 @@ function collectListItems(sectionLines: string[]): string[] {
  * @returns The criterion texts, in body order (empty when there are none).
  */
 export function extractAcceptanceCriteria(issueBody: string): string[] {
-  const criteria = listItemsUnder(issueBody, ISSUE_ACCEPTANCE_HEADING_RE);
-  if (criteria.length > 0) return criteria;
+  // The exact heading wins, as before; the wider heading is only a fallback,
+  // and an earlier prose heading that merely ends in the phrase must not hide
+  // a later list, so every wider match is tried (Issue #4107).
+  const exact = listItemsUnder(issueBody, ACCEPTANCE_HEADING_RE);
+  if (exact.length > 0) return exact;
+  const wider = firstListUnderAny(issueBody, ISSUE_ACCEPTANCE_HEADING_RE);
+  if (wider.length > 0) return wider;
   return listItemsUnder(issueBody, DEFINITION_OF_DONE_HEADING_RE);
 }
 
@@ -206,13 +211,36 @@ export function extractAcceptedScope(issueBody: string): string[] {
   return listItemsUnder(issueBody, DONE_WHEN_HEADING_RE);
 }
 
+/**
+ * The checkbox-stripped list items under the first `heading` match that
+ * carries any, or none. Unlike {@link listItemsUnder}, a matching heading with
+ * no list items does not stop the search.
+ */
+function firstListUnderAny(markdown: string, heading: RegExp): string[] {
+  const lines = markdown.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (!heading.test(lines[i]!)) continue;
+    const section: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      if (ANY_HEADING_RE.test(lines[j]!)) break;
+      section.push(lines[j]!);
+    }
+    const items = stripCheckboxes(collectListItems(section));
+    if (items.length > 0) return items;
+  }
+  return [];
+}
+
+function stripCheckboxes(items: string[]): string[] {
+  return items.map((item) => item.replace(CHECKBOX_RE, "").trim())
+    .filter((item) => item !== "");
+}
+
 /** The checkbox-stripped list items under `heading`, or none. */
 function listItemsUnder(markdown: string, heading: RegExp): string[] {
   const section = extractSection(markdown, heading);
   if (section === null) return [];
-  return collectListItems(section)
-    .map((item) => item.replace(CHECKBOX_RE, "").trim())
-    .filter((item) => item !== "");
+  return stripCheckboxes(collectListItems(section));
 }
 
 /**

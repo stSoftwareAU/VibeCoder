@@ -114,6 +114,30 @@ Deno.test("extractAcceptanceCriteria - a plain Acceptance Criteria heading is un
   assertEquals(extractAcceptanceCriteria(body), ["The plain item."]);
 });
 
+Deno.test("extractAcceptanceCriteria - a prose heading ending in the phrase before the plain heading does not hide it (Issue #4107)", () => {
+  const body =
+    "### Why the acceptance criteria\n\nSome prose only.\n\n## Acceptance Criteria\n\n- [ ] real one\n";
+  assertEquals(extractAcceptanceCriteria(body), ["real one"]);
+});
+
+Deno.test("extractAcceptanceCriteria - a wider heading with a list before the plain heading does not win (Issue #4107)", () => {
+  const body =
+    "## Open question about the acceptance criteria\n\n- who decides?\n\n## Acceptance Criteria\n\n- [ ] real one\n";
+  assertEquals(extractAcceptanceCriteria(body), ["real one"]);
+});
+
+Deno.test("extractAcceptanceCriteria - a list-less wider heading before another wider heading does not hide it (Issue #4107)", () => {
+  const body =
+    "### Why the acceptance criteria\n\nProse.\n\n## Scope and acceptance criteria\n\n- [ ] real one\n";
+  assertEquals(extractAcceptanceCriteria(body), ["real one"]);
+});
+
+Deno.test("extractAcceptedScope - a prose heading before the plain Acceptance Criteria heading does not hide it (Issue #4107)", () => {
+  const body =
+    "### Why the acceptance criteria\n\nProse.\n\n## Acceptance Criteria\n\n- [ ] real one\n\n## Done when\n\n- other\n";
+  assertEquals(extractAcceptedScope(body), ["real one"]);
+});
+
 Deno.test("extractAcceptanceCriteria - a sentence that begins with acceptance criteria is not a heading (Issue #4107)", () => {
   const body =
     "## Acceptance criteria are listed below\n\n- [ ] not a criterion\n";
@@ -454,6 +478,18 @@ Deno.test("validateAcceptanceClosure - applies to a heading ending in acceptance
     result.problems.join("\n"),
     "no `## Acceptance Criteria`",
   );
+});
+
+Deno.test("validateAcceptanceClosure - a prose heading before the plain heading still applies the gate (Issue #4107)", () => {
+  const result = validateAcceptanceClosure({
+    issueBody:
+      "### Why the acceptance criteria\n\nProse.\n\n## Acceptance Criteria\n\n- [ ] real one\n",
+    prSummaryContent: summary([]),
+  });
+
+  assertEquals(result.applicable, true);
+  assertEquals(result.criteria, ["real one"]);
+  assertEquals(result.valid, false);
 });
 
 Deno.test("validateAcceptanceClosure - a complete block passes for a heading ending in acceptance criteria (Issue #4107)", () => {
