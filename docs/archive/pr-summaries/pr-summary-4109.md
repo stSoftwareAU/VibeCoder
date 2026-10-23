@@ -11,21 +11,27 @@ through a new planner, `planIssueRunProvider`
 
 - the provider's own argv decides whether it carries sub-agents
   (`probeDescriptorInvocationCapabilities`), so no provider-id table;
-- **rerouted-to-claude** — Claude is enabled and installed: the run, its
-  CodeGraph / RTK / graft sinks and the recorded assignment all use Claude;
+- **rerouted-to-claude** — Claude is enabled and installed: the run and the
+  recorded assignment use Claude in both call sites, and in
+  `lib/execute_claude_phase.ts` its CodeGraph / RTK / graft sinks do too. In
+  `lib/phases/execute_phase.ts` the sinks (`prepareCodegraphRun`,
+  `bindGraftRun`, `rtkProviderId(undefined, logger)`) pass no planned provider
+  and still follow the active provider;
 - **agents-stripped** — Claude is not usable: the run starts on its own provider
   with the split, reviewers and tier switches off, and a warning says so;
 - **unchanged** — no sub-agents wanted, or the provider carries them.
 
 Both issue-run call sites use it (`lib/phases/execute_phase.ts`,
 `lib/execute_claude_phase.ts`); external orchestration is never planned. The #4010
-refusal stays as a backstop for callers that bypass the planner. Docs that said
+refusal stays as a backstop: it still fires for a caller that bypasses the
+planner and when the retry ladder switches to `agent_provider_fallback` with
+`agents` kept (Issue #4034). Docs that said
 such a run "is refused before spawn" now say it is rerouted or stripped.
 
 ## Reproduction
 
 - **symptom** — an `issue` run on `codex` (also `gemini`, `deepseek`) with sub-agents on is refused before spawn with "Refused to start the agent: Codex CLI cannot carry the issue run's sub-agent definitions (--agents)…" and releases its claim with no PR
-- **status** — `verified` — `issue_4109_callsite_test.ts` was run against the branch with `lib/phases/execute_phase.ts` and `lib/execute_claude_phase.ts` restored to the merge-base: 7 of 9 tests failed (reroute, assignment, strip and all four execute_claude_phase sink tests); on the branch all 9 pass
+- **status** — `verified` — `issue_4109_callsite_test.ts` was run against the branch with `lib/phases/execute_phase.ts` and `lib/execute_claude_phase.ts` restored to the merge-base: 8 of 10 tests failed (the execute_phase reroute, assignment and strip tests and all five execute_claude_phase tests, including `claude not enabled strips agents and disables the split`; the execute_phase non-external-allocation and external-orchestration tests pass either way); on the branch all 10 pass
 - **regression test** — `worker/deno/tests/issue_4109_callsite_test.ts::execute_phase - a run asked for sub-agents on codex is rerouted to claude at the runner (Issue #4109)`
 
 ## Test Plan
@@ -39,7 +45,7 @@ comment re-worded in `worker/deno/tests/manager_worker_contract_3641_test.ts`
 
 ## Docs sweep
 
-**Docs sweep** — grep: `refused before spawn`, `refuses loudly before spawn`, `Issue #4010`, `planIssueRunProvider`, `plannedActiveAgentProvider`, `externalOrchestration`; section: `docs/MANAGER-WORKER-CONTRACT.md` (provider table, "Two paths now", rollback), `docs/MODEL-AND-CACHING.md` (advisor/executor split, reviewer sub-agents, Haiku tier, pilot counters), `docs/PROVIDER-FEASIBILITY.md` (`--agents` carried row, fail-loud refusal), `docs/CONFIGURATION.md` (`agent_provider`, `issue_executor_split`, `issue_sub_agent_tier`, `issue_reviewer_agents`); siblings: `Gemini CLI`, `DeepSeek`, `issue_reviewer_agents`, `issue_sub_agent_tier` (the Codex, Gemini and DeepSeek rows of each provider table, all three updated together, and the three sub-agent feature rows, split, reviewers and tier, each re-read); updated: `docs/MANAGER-WORKER-CONTRACT.md`, `docs/MODEL-AND-CACHING.md`, `docs/PROVIDER-FEASIBILITY.md`, `docs/CONFIGURATION.md`; remaining `#4010` hits re-read and kept (they describe the runner refusal as the backstop); also corrected the `file:line` cites in `docs/MANAGER-WORKER-CONTRACT.md` for the external-orchestration test (`execute_claude_phase.ts:1255-1258`, `execute_phase.ts:796-804`), the `isIssueExecutorSplitEnabled` calls and the `buildPrompt` calls, which the branch moved
+**Docs sweep** — grep: `refused before spawn`, `refuses loudly before spawn`, `Issue #4010`, `planIssueRunProvider`, `plannedActiveAgentProvider`, `externalOrchestration`; section: `docs/MANAGER-WORKER-CONTRACT.md` (provider table, "Two paths now", rollback), `docs/MODEL-AND-CACHING.md` (advisor/executor split, reviewer sub-agents, Haiku tier, pilot counters), `docs/PROVIDER-FEASIBILITY.md` (`--agents` carried row, fail-loud refusal), `docs/CONFIGURATION.md` (`agent_provider`, `issue_executor_split`, `issue_sub_agent_tier`, `issue_reviewer_agents`); siblings: `Gemini CLI`, `DeepSeek`, `issue_reviewer_agents`, `issue_sub_agent_tier` (the Codex, Gemini and DeepSeek rows of each provider table, all three updated together, and the three sub-agent feature rows, split, reviewers and tier, each re-read); updated: `docs/MANAGER-WORKER-CONTRACT.md`, `docs/MODEL-AND-CACHING.md`, `docs/PROVIDER-FEASIBILITY.md`, `docs/CONFIGURATION.md`; remaining `#4010` hits re-read and kept (they describe the runner refusal as the backstop, for a caller that bypasses the planner and for the retry ladder's fallback provider); also corrected the `file:line` cites in `docs/MANAGER-WORKER-CONTRACT.md` for the external-orchestration test (`execute_claude_phase.ts:1255-1258`, `execute_phase.ts:796-804`), the `isIssueExecutorSplitEnabled` calls and the `buildPrompt` calls, which the branch moved
 
 ## Branch outcomes
 

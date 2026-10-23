@@ -351,7 +351,8 @@ stateDiagram-v2
   path that `--agents` drop is no longer reachable for an `issue` run: the
   issue-run planner reroutes or strips such a run before spawn (Issue #4109),
   and `runClaudeWithTimeoutBody` (`worker/deno/lib/claude_runner.ts`) refuses
-  loudly as a backstop for any other caller (Issue #4010). The target still
+  loudly as a backstop for a caller that bypasses the planner and for a run the
+  retry ladder moves to `agent_provider_fallback` (Issue #4010, #4034). The target still
   closes the descriptor-layer drop with a refusal (section 8).
 
 ## 7. Compatibility matrix
@@ -384,10 +385,12 @@ block renders there. The block renders on the unchanged and rerouted-to-Claude
 outcomes. `prompt_builder.ts:832-834` splices the block whenever it is true.
 The `--settings` hook is gated to Claude (`worker/deno/lib/claude_runner.ts:1251`,
 the `issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID` guard). The
-`agents` request reaches a non-Claude provider's `buildInvocation` only from a
-caller that bypasses the planner, or after the retry loop falls back to another
-provider (section 8). There the Codex, Gemini and DeepSeek rows above drop it,
-and the runner refuses it (Issue #4010). On the native split path the planner
+`agents` request reaches a non-Claude provider's `buildInvocation` from the
+planner's own capability probe (`probeDescriptorInvocationCapabilities`, which
+builds the argv quietly to see whether it carries `--agents`), from a caller
+that bypasses the planner, and after the retry loop falls back to another
+provider (section 8). The Codex, Gemini and DeepSeek rows above drop it there;
+the runner refuses a real spawn that still carries it (Issue #4010). On the native split path the planner
 settles the run first, so the advisor is not silently told to dispatch
 `executor` sub-agents the CLI never defines.
 

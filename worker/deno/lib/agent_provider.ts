@@ -384,7 +384,9 @@ export interface AgentInvocationRequest {
    * The issue-run path decides this before spawn: it reroutes the run to
    * Claude or strips the definitions (see `lib/issue_run_provider_agents.ts`).
    * The runner's refusal of a native run that still asks for them (Issue
-   * #4010) is only a backstop for callers that bypass that planner.
+   * #4010) is a backstop: it fires for a caller that bypasses that planner and
+   * when the retry ladder switches to `agent_provider_fallback` with `agents`
+   * kept.
    */
   agents?: Readonly<Record<string, AgentDefinition>>;
   /** Session continuity state, when session resume is enabled. */
