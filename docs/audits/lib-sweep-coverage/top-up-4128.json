@@ -1,0 +1,12 @@
+{
+  "issue": 4128,
+  "chunk": "top-up-4128",
+  "title": "top-up: pre-push gate extra agent turn",
+  "ledger": "docs/audits/security-sweep-4128-pre-push-gate-retry.md",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pre_push_gate_retry.ts, one extra in-run agent turn to fix a pre-push gate block before the run fails (#4128)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/pre_push_gate_retry.ts"
+  ],
+  "sweptAt": "df37422f5c8f6c98563bc841b9e41acea56e1b57"
+}

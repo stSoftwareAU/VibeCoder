@@ -58,8 +58,8 @@ export type PrePushRecoveryTurn =
 /**
  * Prompt for the pre-push gate's one extra agent turn (Issue #4128).
  *
- * A fresh invocation (never `--resume`) carrying the gate's output. The
- * output is fenced as untrusted data, since it quotes repository content, and
+ * The prompt for the turn that resumes the run's own agent session and carries
+ * the gate's output. The output is fenced as untrusted data, since it quotes repository content, and
  * the turn is told plainly that it must not push or go around the gate: the
  * worker re-runs the same gate and pushes only when it passes.
  *
