@@ -76,9 +76,9 @@ Per-provider behaviour, from the same file:
 - **Claude:** `promptTransport` is `"stdin"` (`agent_provider.ts:720`). Its
   `buildInvocation` is at `:748` and `buildChildEnv` at `:761-762`, which calls
   `buildClaudeChildEnv` (`worker/deno/lib/claude_env.ts:228`).
-- **Codex:** `promptTransport` is `"stdin"` (`:853`). `buildInvocation` (`:870`)
-  calls `buildCodexArgs` (`:893`, defined at `worker/deno/lib/codex_executor.ts:343`)
-  and carries no `agents` or `settingsJson`. `buildChildEnv` (`:916`) calls
+- **Codex:** `promptTransport` is `"stdin"` (`:853`). `buildInvocation` (`:878`)
+  calls `buildCodexArgs` (`:901`, defined at `worker/deno/lib/codex_executor.ts:384`),
+  which carries no `agents` but does pass `settingsJson` through (`:904`) and turns it into per-spawn `hooks.PreToolUse` `-c` arguments (`codex_executor.ts:414-415`). `buildChildEnv` (`:916`) calls
   `buildIsolatedCodexChildEnv` (`worker/deno/lib/codex_env.ts:116`), which calls
   `buildCodexChildEnv` (`worker/deno/lib/codex_env.ts:90`).
 - **Gemini:** `promptTransport` is `"argv"` (`:973`). `buildInvocation` (`:988`)
@@ -348,9 +348,7 @@ stateDiagram-v2
     (`worker/deno/lib/deepseek_env.ts:172-173`).
   - Gemini: `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`) delegates to
     `buildAgentChildEnv` with a Gemini denylist and secret allowlist.
-- **The gap today.** The edit guard exists only for Claude. Codex and Gemini
-  drop `agents` and `settingsJson` silently, and DeepSeek drops `settingsJson`
-  silently, at the descriptor's `buildInvocation` layer. On the native split
+- **The gap today.** The edit guard exists only for Claude. Gemini drops `agents` and `settingsJson` silently, Codex drops `agents` silently but forwards `settingsJson` as per-spawn hook arguments (throwing on a malformed payload), and DeepSeek drops `settingsJson` silently, at the descriptor's `buildInvocation` layer. On the native split
   path that `--agents` drop is no longer reachable: `runClaudeWithTimeoutBody`
   (`worker/deno/lib/claude_runner.ts`) refuses loudly before spawn when a run
   carries `agents` but the provider's argv lacks `--agents` (Issue #4010). The
