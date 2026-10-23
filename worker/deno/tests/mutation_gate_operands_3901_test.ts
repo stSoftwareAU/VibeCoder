@@ -9,10 +9,12 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  buildMutationGateComment,
   DEFAULT_MUTANT_CAP,
   generateDenoMutants,
   generateDenoMutantsDetailed,
   maskedLines,
+  type MutationGateVerdict,
 } from "../lib/mutation_gate.ts";
 
 const FILE = "lib/sample.ts";
@@ -648,4 +650,31 @@ Deno.test("generateDenoMutants - a wrapped group after || is one operand replace
   const group = generateDenoMutants(FILE, source, [3], DEFAULT_MUTANT_CAP)
     .find((m) => m.description.startsWith("dropped operand"));
   assertEquals(group?.mutatedSource, "if (\n  !s.ok ||\n  false\n) {\n}\n");
+});
+
+// ---------------------------------------------------------------------------
+// Recovery comment: the dropped operand is named (Issue #3901)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildMutationGateComment - a surviving operand mutant names the dropped operand", () => {
+  const mutant = generateDenoMutants(
+    FILE,
+    "const ok = a || b;\n",
+    [1],
+    DEFAULT_MUTANT_CAP,
+  ).find((m) =>
+    m.description.startsWith("dropped operand") && m.description.includes("`b`")
+  );
+  assert(mutant !== undefined, "no dropped operand `b` mutant was generated");
+  const verdict: MutationGateVerdict = {
+    blocked: true,
+    reason: "survivors",
+    survivors: [mutant],
+    exempted: [],
+    budgetExhausted: false,
+    note: "",
+  };
+  const comment = buildMutationGateComment(verdict);
+  assert(comment.includes("dropped operand b (replaced with false)"), comment);
+  assert(comment.includes("lib/sample.ts:1"), comment);
 });
