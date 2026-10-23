@@ -45,12 +45,13 @@ Grep results (the other hits are unrelated):
 - **met** — `runPrePrVerifier` with no findings and only a `partial` verdict is still `checked` and blocked — evidence: `worker/deno/tests/pre_pr_verifier_3395_test.ts::runPrePrVerifier: only a partial verdict and no findings still blocks, naming the item` — reviewer: met
 - **met** — Fleet review: an out-of-vocabulary verdict for an expected item gives `changes_requested` from `decideOutcome`, and `met` for the same item approves — evidence: `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts::a reply with an out-of-vocabulary verdict for an expected item is sent back naming that item; a met verdict for it is approved` — reviewer: met
 - **met** — The throw assertions are replaced, and each removed assertion is named in the Test Plan — evidence: `worker/deno/tests/pre_pr_verifier_3395_test.ts::parseReviewReply parses a checklist array, defaults to [] and drops a bad verdict` — reviewer: met
+- **met** — `deno task check` exits 0, and the three targeted test files pass (138 passed, 0 failed, stdin from `/dev/null`). The full `deno task test` was not run in this session, so this row rests on the targeted run and the check — evidence: `/tmp/check-4200.log` (exit 0) and the test output in the final results — reviewer: met
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — Compound-condition rule: the `typeof` operands of `review_checklists.ts:530`, `:531` and `:535` had not been flipped on their own; the first pass only flipped the trim and empty-string operands — fixed in this run: each operand is now flipped on its own and turns a test red (see Test Plan) — reason: fixed in this diff
+- **violation** — Compound-condition rule: the `typeof` operands of `review_checklists.ts:530`, `:531` and `:535` had not been flipped on their own; the first pass only flipped the trim and empty-string operands — fixed in this run: each operand is now flipped on its own and turns a test red (see Test Plan) — reason: fixed in this diff — evidence: `worker/deno/lib/review_checklists.ts:530-535`, `worker/deno/tests/review_checklists_3594_test.ts:322`
 - **clean** — Australian English, KISS and DRY (the closure parser's shape is reused, no new helper), TDD (each test was red-checked against a broken parser), no new dependency, and the valid-entry default `note: ""` is unchanged
 
 ## Test Plan
@@ -82,4 +83,14 @@ The continue outcomes are listed in `docs/archive/pr-summaries/pr-summary-4200.f
 
 <!-- vibe-branch-outcomes -->
 
-Test runs (stdin from `/dev/null`): results are recorded in the final results below.
+Test runs (stdin from `/dev/null`): `deno task test:unit` on `worker/deno/tests/review_checklists_3594_test.ts`, `worker/deno/tests/pre_pr_verifier_3395_test.ts` and `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts` reported `ok | 138 passed | 0 failed`; `deno task check` exited 0.
+
+## Reproduction
+
+Symptom: a checklist verdict outside `met` / `missing` / `not applicable` (for example `partial` or `n/a`) made `parseChecklistVerdicts` throw, so the pre-PR verifier returned `not_checked` and its findings were lost.
+
+Status: partial
+
+Regression test: `worker/deno/tests/pre_pr_verifier_3395_test.ts::runPrePrVerifier: a partial verdict keeps the model's finding and adds a gap finding naming the item`
+
+Reason: the regression test was not observed failing against the unfixed code this session; the fail-before behaviour is recorded from the issue body, and the red-checks in the Test Plan were run against the fixed file with single operands flipped.
