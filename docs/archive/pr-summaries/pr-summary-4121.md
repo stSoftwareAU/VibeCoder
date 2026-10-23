@@ -88,7 +88,8 @@ and `updatedInput` rewrite contract.
 
 ### Automated checks
 
-- 121 focused tests passed across RTK, provider invocation, both implementation
+- Original author evidence on the RTK implementation: 121 focused tests passed
+  across RTK, provider invocation, both implementation
   phase paths and the RTK documentation checks.
 - `deno task check:manifests`: 805 passed, 1 existing ignored test.
 - Changed TypeScript files passed lint and formatting; `git diff --check` passed.
@@ -105,6 +106,37 @@ and `updatedInput` rewrite contract.
 - Provenance checked: #4121, “Give Codex runs RTK through Codex's PreToolUse
   hook (the image's Codex 0.147 supports updatedInput), instead of reporting
   unsupported”.
+
+### Feasibility probe follow-up
+
+The existing feasibility probe supplied `{}` as hook settings. Strict Codex
+validation correctly refused it, so the probe crashed before it could report
+capabilities. The probe now supplies a valid empty `PreToolUse` array. This
+grants no hook trust and does not extend the Claude-only advisor edit guard.
+Malformed settings still fail with the same validation error.
+
+On this follow-up tree, the two existing feasibility suites reproduced all
+12 failures before the correction. After it, the feasibility, command,
+provider-settings and RTK suites passed all 96 tests. The manifest check also
+passed: 805 tests, zero failures and one existing ignored test. The changed
+TypeScript file passed formatting and lint. These are new local results;
+the original full-suite and runtime-spike limitations above remain applicable.
+
+The follow-up also ran `./quality.sh --sequential` once to completion. It
+failed: the parallel unit pass reported 29,538 passed, five failed and nine
+ignored. Two cache-directory tests could not allocate temporary directories
+while this workspace was full. Two existing process-cleanup tests failed
+their real descendant-liveness assertions, and the PowerShell prerequisite
+test correctly failed because PowerShell 7 is absent. The serial and container
+passes did not run after that failure. Lint, type checking and formatting
+passed; locally unavailable scanners remained reported as skipped. No test,
+signal-cleanup guard or scanner requirement was disabled. This is not a full
+quality pass; final-head hosted CI remains required.
+
+An isolated recheck after freeing derived cache space passed all cache tests
+and 17 tests overall; the same two cleanup tests still failed. The first
+reported descendant was a zombie owned by PID 1 when inspected. No cleanup
+assertion was weakened to accommodate this host's process reaping.
 
 **Docs sweep** — grep: `rtk_output.enabled`, `PreToolUse`, `settingsJson`,
 "Only Claude Code takes"; section: `docs/RTK-OUTPUT-TRIAL.md#1-the-candidate-and-how-it-is-wired`
@@ -129,6 +161,9 @@ Claude-only advisor edit guard, which this change does not extend to Codex.
 - Twinned rules: no duplicated RTK support gate was found. Existing phase
   callers already use `prepareRtkRun`, `hookSettings` and `settingsJsonOption`;
   only the Codex descriptor needed additional argument wiring.
+- The follow-up uses the existing feasibility suites as its regression: they
+  invoke the real provider builder and went red on malformed probe input.
+  No test assertion, hook validation or unsupported-provider guard was relaxed.
 - In a separate checkout, all ten deliberate mutations went red: restore the
   Claude-only gate; remove the Codex capability; remove descriptor wiring;
   remove each of the three validation guards; remove the empty-entry guard;
