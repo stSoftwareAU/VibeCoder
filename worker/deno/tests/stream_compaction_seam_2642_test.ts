@@ -7,7 +7,8 @@
  * any round after the first on a shared `workDir` — ran `claude` for real and
  * took one to three seconds a round. These tests pin that both phases reach
  * compaction only through the seam, and that the seam's answer is what the
- * run carries.
+ * run carries: a fresh-session answer drops the stream's resume (Issue #4116),
+ * and a verified compaction keeps it.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -27,17 +28,20 @@ import { stopHeartbeat } from "../lib/heartbeat.ts";
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 /** An RFC 4122 v4 id — the CLI rejects anything else (Issue #204). */
 const STREAM_SESSION_ID = "0199fd1e-2a4b-4c3d-8e5f-000000002642";
-/** A window no default produces, so seeing it proves the seam's answer won. */
-const SEAM_WINDOW = 26_420;
-
 type PrimeOptions = Parameters<ClaudeDeps["primeStreamCompaction"]>[0];
 
-/** A compaction seam that records its calls and answers {@link SEAM_WINDOW}. */
-function recordingCompaction(calls: PrimeOptions[]) {
+/** A compaction seam that records its calls and answers `freshSession`. */
+function recordingCompaction(calls: PrimeOptions[], freshSession = true) {
   return ((options: PrimeOptions) => {
     calls.push(options);
-    return Promise.resolve(SEAM_WINDOW);
+    return Promise.resolve(freshSession);
   }) as ClaudeDeps["primeStreamCompaction"];
+}
+
+/** The session id a run's options carry, if any. */
+function sessionIdOf(run: Record<string, unknown>): string | undefined {
+  return (run.sessionResumeState as { sessionId?: string } | undefined)
+    ?.sessionId;
 }
 
 /** Seed the stream record a sibling issue left behind. */
@@ -80,7 +84,7 @@ function stubGhClient(): GitHubClient {
   } as unknown as GitHubClient;
 }
 
-Deno.test("#2642 - planning compacts a resumed stream through deps.claude, and every turn carries its window", async () => {
+Deno.test("#2642 - planning compacts a resumed stream through deps.claude, and an unproved compaction starts every turn fresh", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "issue2642-planning-" });
   try {
     const repo = "org/repo";
@@ -131,7 +135,13 @@ Deno.test("#2642 - planning compacts a resumed stream through deps.claude, and e
     assertEquals(calls[0]?.sessionId, STREAM_SESSION_ID);
     assertEquals(calls[0]?.providerId, providerId);
     assert(runs.length >= 1, "the round must make at least one turn");
-    for (const run of runs) assertEquals(run.autocompactTokens, SEAM_WINDOW);
+    for (const run of runs) {
+      assert(
+        sessionIdOf(run) !== STREAM_SESSION_ID,
+        "an unproved compaction must not resume the stream's session",
+      );
+      assertEquals("autocompactTokens" in run, false);
+    }
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
@@ -182,19 +192,75 @@ Deno.test("#2642 - the setup phase compacts a resumed stream through deps.claude
     assertEquals(calls[0]?.outcome, "resumed");
     assertEquals(calls[0]?.sessionId, STREAM_SESSION_ID);
     assertEquals(calls[0]?.providerId, providerId);
-    assertEquals(state.autocompactTokens, SEAM_WINDOW);
+    assert(
+      state.sessionResumeState?.sessionId !== STREAM_SESSION_ID,
+      "an unproved compaction must start the issue on a new session",
+    );
+    assertEquals(state.sessionResumeState?.phaseCount, 0);
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
 });
 
-Deno.test("#2642 - the mock deps' compaction answers no window and runs nothing", async () => {
+Deno.test("#4116 - a verified compaction keeps the stream's session for the issue", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue4116-setup-" });
+  try {
+    const repo = "stSoftwareAU/VibeCoder";
+    const milestoneTitle = "#2642 fast unit tests";
+    const providerId = await seedStream(workDir, repo, milestoneTitle);
+    const ctx: IssueContext = {
+      repo,
+      issueNumber: 2642,
+      issueTitle: "Unit tests should be fast",
+      issueBody: "",
+      issueLabels: ["work-on"],
+      issueComments: "",
+      githubUser: "vibe-worker",
+      milestoneTitle,
+      config: {
+        ...buildDefaultWorkerConfig(),
+        workDir,
+        enableSessionResume: true,
+      },
+    };
+    const state: PhaseState = {
+      branchName: "",
+      baseBranch: "main",
+      defaultBranch: "main",
+      repoPath: "/tmp/test-repo",
+      clarityStatus: "not_assessed",
+      claudeOutput: "",
+      executeStartTime: 0,
+      baselineQualityPassed: true,
+      baselineQualityOutput: "",
+    };
+    const calls: PrimeOptions[] = [];
+    const deps = createMockDeps({
+      claude: { primeStreamCompaction: recordingCompaction(calls, false) },
+    });
+
+    const result = await workOnIssueSetupBranch(ctx, state, deps);
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+
+    assertEquals(result.status, "continue");
+    assertEquals(calls.length, 1);
+    assertEquals(calls[0]?.outcome, "resumed");
+    assertEquals(calls[0]?.sessionId, STREAM_SESSION_ID);
+    assertEquals(calls[0]?.providerId, providerId);
+    assertEquals(state.sessionResumeState?.sessionId, STREAM_SESSION_ID);
+    assertEquals(state.sessionResumeState?.phaseCount, 1);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("#2642 - the mock deps' compaction keeps the session and runs nothing", async () => {
   const deps = createMockDeps();
-  const window = await deps.claude.primeStreamCompaction({
+  const fresh = await deps.claude.primeStreamCompaction({
     outcome: "resumed",
     providerId: "claude",
     sessionId: STREAM_SESSION_ID,
     logger: deps.logger,
   });
-  assertEquals(window, undefined);
+  assertEquals(fresh, false);
 });

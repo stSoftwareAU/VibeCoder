@@ -202,9 +202,12 @@ export const sameLogin = (a: string | undefined, b: string) =>
 
 export const prKey = (repo: string, number: number) => `${repo}#${number}`;
 
-// Throws on anything that is not the JSON the review prompt asks for, so a
-// malformed reply posts nothing and the PR is retried next pass. The parser
-// is shared with the pre-PR verifier (Issue #3395).
+// A reply that is not the JSON the review prompt asks for throws, so it posts
+// nothing and the PR is retried next pass. A malformed checklist verdict inside
+// an otherwise valid reply is dropped by `parseChecklistVerdicts` instead of
+// throwing: its item reaches `withChecklistGaps` as unreported, so the PR is
+// sent back, never approved. The parser is shared with the pre-PR verifier
+// (Issue #3395).
 export function parseFableReview(text: string): FableReview {
   const r = parseReviewReply(text);
   return { ...r, unrelatedIssues: r.unrelatedIssues.map(keepValidExisting) };
