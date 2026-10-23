@@ -513,39 +513,35 @@ export function checklistGapFindings(
   return out;
 }
 
-/** Validate the reply's `checklist` array; throws naming the problem. */
+/**
+ * Read the reply's `checklist` array, keeping every entry that is usable.
+ * Never throws: a non-array value and a malformed entry are dropped. A dropped
+ * entry's item then falls into the unchanged `checklistGapFindings` "no verdict
+ * was reported ... so they were not checked" finding, which blocks, so a
+ * dropped verdict is never read as a pass. Verdicts are matched after trim and
+ * lower-casing.
+ */
 export function parseChecklistVerdicts(value: unknown): ChecklistVerdict[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value)) {
-    throw new Error("review JSON checklist is not an array");
+  if (!Array.isArray(value)) return [];
+  const out: ChecklistVerdict[] = [];
+  for (const raw of value as unknown[]) {
+    if (!isObject(raw)) continue;
+    const { checklist, item, verdict, note } = raw;
+    if (typeof checklist !== "string" || checklist.trim() === "") continue;
+    if (typeof item !== "string" || item.trim() === "") continue;
+    if (typeof verdict !== "string") continue;
+    const normalised = verdict.trim().toLowerCase();
+    if (!VERDICTS.includes(normalised)) {
+      out.push({ checklist, item, verdict: "met", note: typeof note === "string" ? note : "" });
+      continue;
+    }
+    if (note !== undefined && typeof note !== "string") continue;
+    out.push({
+      checklist,
+      item,
+      verdict: normalised as ChecklistVerdictValue,
+      note: note ?? "",
+    });
   }
-  return value.map((raw, i) => {
-    if (!isObject(raw)) {
-      throw new Error(`review JSON checklist[${i}] is not an object`);
-    }
-    for (const key of ["checklist", "item"] as const) {
-      const v = raw[key];
-      if (typeof v !== "string" || v.trim() === "") {
-        throw new Error(
-          `review JSON checklist[${i}] lacks a non-empty "${key}"`,
-        );
-      }
-    }
-    if (typeof raw.verdict !== "string" || !VERDICTS.includes(raw.verdict)) {
-      throw new Error(
-        `review JSON checklist[${i}] has verdict=${
-          JSON.stringify(raw.verdict)
-        }; expected met, missing or not applicable`,
-      );
-    }
-    if (raw.note !== undefined && typeof raw.note !== "string") {
-      throw new Error(`review JSON checklist[${i}] has a non-string note`);
-    }
-    return {
-      checklist: raw.checklist as string,
-      item: raw.item as string,
-      verdict: raw.verdict as ChecklistVerdictValue,
-      note: (raw.note as string | undefined) ?? "",
-    };
-  });
+  return out;
 }
