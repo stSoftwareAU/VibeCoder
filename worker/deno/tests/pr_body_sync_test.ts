@@ -9,6 +9,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assemblePrBody,
   buildSummaryDigestMarker,
+  buildSyncedPrBodyCandidate,
   PR_SUMMARY_DIGEST_PREFIX,
   prSummaryDigest,
   runPrBodySync,
@@ -1956,6 +1957,85 @@ Deno.test("sync - a legacy body's before-push diff includes the facts file path 
       `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`,
       prSummaryFactsPath(ISSUE_NUMBER),
     ]);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+for (const scenario of ["marker", "adoptable", "foreign", "missing"] as const) {
+  Deno.test(`candidate - ${scenario} uses shared ownership without publication or image conversion`, async () => {
+    const repoPath = await makeRepo({
+      withSummary: scenario !== "missing",
+      summary:
+        "## Summary\n\nCorrected summary.\n\n![Evidence](docs/evidence/fix.png)\n",
+    });
+    try {
+      const result = await buildSyncedPrBodyCandidate({
+        ...SYNC_INPUT,
+        repoPath,
+        branchName: BRANCH,
+        beforeSha: undefined,
+      }, {
+        logger,
+        runGitCommand: () => {
+          throw new Error("candidate must not inspect publication state");
+        },
+      }, {
+        body: scenario === "adoptable" || scenario === "foreign"
+          ? "Agent draft"
+          : baseBody(ISSUE_NUMBER),
+        headRefName: scenario === "foreign" ? "someone-elses-branch" : BRANCH,
+        files: [],
+      });
+      assert(result.ok);
+      if (scenario === "foreign" || scenario === "missing") {
+        assertEquals(result.value, {
+          kind: "ineligible",
+          reason: scenario === "foreign"
+            ? "no worker marker"
+            : "summary file deleted",
+        });
+      } else {
+        assertEquals(result.value.kind, "candidate");
+        if (result.value.kind !== "candidate") {
+          throw new Error("expected candidate");
+        }
+        assertEquals(result.value.adopting, scenario === "adoptable");
+        assertEquals(result.value.issueNumber, ISSUE_NUMBER);
+        assertStringIncludes(result.value.body, "Corrected summary.");
+        assertStringIncludes(
+          result.value.body,
+          "![Evidence](docs/evidence/fix.png)",
+        );
+      }
+    } finally {
+      await Deno.remove(repoPath, { recursive: true });
+    }
+  });
+}
+
+Deno.test("candidate - facts and metadata match the body published by sync", async () => {
+  const repoPath = await makeRepo({
+    summary: PLAIN_SUMMARY,
+    facts: FACTS_JSON,
+  });
+  try {
+    const liveBody = bodyRecording(await prSummaryDigest(PLAIN_SUMMARY));
+    const input = {
+      ...SYNC_INPUT,
+      repoPath,
+      branchName: BRANCH,
+      beforeSha: BEFORE_SHA,
+    };
+    const result = await buildSyncedPrBodyCandidate(input, {
+      logger,
+      runGitCommand: stubGit([]),
+    }, JSON.parse(viewJson(liveBody)));
+    assert(result.ok && result.value.kind === "candidate");
+    const published = await syncFactsCase({ repoPath, liveBody });
+    assert(published.result.ok);
+    assertEquals(published.ghCalls[0]?.bodyFileContent, result.value.body);
+    assertStringIncludes(result.value.body, renderBranchOutcomes(FACTS));
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }
