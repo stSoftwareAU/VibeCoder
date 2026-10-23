@@ -3812,12 +3812,15 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
   (Issue #2337), because it has carried every issue of the stream so far and
   left alone it is the *next* issue that fills the context window. Claude and
   DeepSeek — one CLI, so one pair of levers — send `/compact` as the prompt of
-  a `--resume` print run, then **measure** the session's transcript file under
-  `CLAUDE_CONFIG_DIR`: smaller means it worked, and the run logs
-  `compaction: /compact`. Anything short of that proof — an unchanged or larger
-  transcript, a non-zero `/compact` run, a transcript that cannot be measured,
-  a spawn that failed — is treated as uncompacted, and every agent run of the
-  issue instead carries `--autocompact 100000` (the smallest window the CLI
+  a `--resume` print run, then **read** the bytes the run appended to the
+  session's transcript file under `CLAUDE_CONFIG_DIR` (Claude's transcript is
+  append-only, so its size says nothing, Issue #4116): a `compact_boundary`
+  system record after the pre-run offset means it worked, and the run logs
+  `compaction: /compact`. Anything short of that proof — no boundary appended,
+  a non-zero `/compact` run, appended bytes that cannot be read, a transcript
+  rewritten shorter than its offset, a spawn that failed — is treated as
+  uncompacted, and a transcript that cannot be located at all skips the
+  `/compact` turn unpaid. Every agent run of the issue then instead carries `--autocompact 100000` (the smallest window the CLI
   accepts, so its own compaction happens earliest), logged as
   `compaction: autocompact 100000`. A `new` or `reset` stream session has no
   conversation to compact and logs `compaction skipped: new stream session`

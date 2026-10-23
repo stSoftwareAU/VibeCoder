@@ -218,7 +218,7 @@ async function snapshotTranscript(
   sessionId: string,
 ): Promise<TranscriptSnapshot[] | undefined> {
   const wanted = `${sessionId}.jsonl`;
-  let found: TranscriptSnapshot[] | undefined;
+  const found: TranscriptSnapshot[] = [];
   const walk = async (dir: string): Promise<void> => {
     // `Deno.readDir` hands back the iterable synchronously and raises
     // `NotFound` on the first `next()`, so the iteration — not the call —
@@ -234,7 +234,7 @@ async function snapshotTranscript(
         if (entry.name !== wanted) continue;
         try {
           const stat = await Deno.stat(path);
-          found = [...(found ?? []), { path, size: stat.size }];
+          found.push({ path, size: stat.size });
         } catch {
           // Vanished between readDir and stat — it cannot be snapshotted.
         }
@@ -245,7 +245,7 @@ async function snapshotTranscript(
     }
   };
   await walk(`${transcriptRoot}/projects`);
-  return found;
+  return found.length > 0 ? found : undefined;
 }
 
 /**
@@ -294,7 +294,6 @@ async function scanAppendedTranscript(
       appendedBytes += filled;
       const text = new TextDecoder().decode(buffer);
       for (const line of text.split("\n")) {
-        if (line.trim() === "") continue;
         let record: unknown;
         try {
           record = JSON.parse(line);
@@ -303,7 +302,7 @@ async function scanAppendedTranscript(
         }
         const parsed = record as Record<string, unknown> | null;
         if (
-          parsed !== null && typeof parsed === "object" &&
+          parsed !== null &&
           parsed["type"] === "system" &&
           parsed["subtype"] === "compact_boundary"
         ) {

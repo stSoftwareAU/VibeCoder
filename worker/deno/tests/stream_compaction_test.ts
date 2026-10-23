@@ -17,6 +17,7 @@ import {
   COMPACT_PROMPT,
   type CompactionRunRequest,
   compactStreamSession,
+  MAX_APPENDED_SCAN_BYTES,
   primeStreamCompaction,
 } from "../lib/stream_compaction.ts";
 import { resolveAgentProvider } from "../lib/agent_provider.ts";
@@ -213,6 +214,32 @@ Deno.test("compactStreamSession - an unchanged transcript falls back to autocomp
   });
 });
 
+Deno.test("compactStreamSession - a non-zero /compact run falls back and never fails the issue", async () => {
+  await withTranscript(async (ctx) => {
+    const stub = stubRunner(async () => {
+      // A failed run may still have appended a boundary; the exit alone decides.
+      await ctx.append(COMPACT_BOUNDARY_RECORD);
+      return { ok: true, exitCode: 2, detail: "compact refused" };
+    });
+    const result = await compactStreamSession({
+      outcome: "resumed",
+      providerId: "claude",
+      sessionId: SESSION_ID,
+      transcriptRoot: ctx.root,
+      runner: stub.runner,
+    });
+    assertEquals(result.action, "autocompact");
+    assertEquals(result.autocompactTokens, AUTOCOMPACT_WINDOW_TOKENS);
+    assertEquals(result.fields.compactExitCode, 2);
+    assertEquals(result.fields.compactError, "compact refused");
+    assertStringIncludes(
+      String(result.fields.reason),
+      "did not exit cleanly",
+    );
+    assertEquals(result.fields.compactBoundaries, undefined);
+  });
+});
+
 Deno.test("compactStreamSession - a transcript that grows with ordinary records but no compact_boundary falls back (Issue #4116)", async () => {
   await withTranscript(async (ctx) => {
     const before = await fileSize(ctx.path);
@@ -278,6 +305,9 @@ Deno.test("compactStreamSession - malformed and partial lines among the appended
   await withTranscript(async (ctx) => {
     const appended = '{"type":"assistant"\n' + // malformed: unclosed object
       "not json at all\n" +
+      "\n" + // blank line
+      "null\n" + // valid JSON, but not a record
+      "42\n" +
       COMPACT_BOUNDARY_RECORD +
       '{"type":"system","subtype":"compact_bou'; // partial: no trailing newline
     const stub = stubRunner(async () => {
@@ -339,6 +369,11 @@ Deno.test("compactStreamSession - a transcript rewritten shorter than its offset
       String(result.fields.reason),
       "could not be read after /compact",
     );
+    assertEquals(result.fields.transcriptOffsetBefore, before);
+    assertStringIncludes(
+      String(result.fields.transcriptScanError),
+      "smaller than its recorded offset",
+    );
   });
 });
 
@@ -361,6 +396,62 @@ Deno.test("compactStreamSession - a transcript that cannot be read after /compac
       String(result.fields.reason),
       "could not be read after /compact",
     );
+    assertEquals(
+      result.fields.transcriptOffsetBefore,
+      byteLength(TRANSCRIPT_HISTORY),
+    );
+    assertStringIncludes(
+      String(result.fields.transcriptScanError),
+      "could not be read:",
+    );
+  });
+});
+
+Deno.test("compactStreamSession - a transcript that shrinks while its appended bytes are being read is not claimed as compacted (Issue #4116)", async () => {
+  await withTranscript(async (ctx) => {
+    const realOpen = Deno.open;
+    const stub = stubRunner(async () => {
+      await ctx.append(COMPACT_BOUNDARY_RECORD);
+      // From here on the file reports more appended bytes than it can give.
+      Deno.open = (async (...args: Parameters<typeof Deno.open>) => {
+        const file = await realOpen(...args);
+        return new Proxy(file, {
+          get(target, prop) {
+            if (prop === "stat") {
+              return async () => {
+                const info = await target.stat();
+                return { ...info, size: info.size + 64 };
+              };
+            }
+            const value = Reflect.get(target, prop, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      }) as typeof Deno.open;
+      return { ok: true, exitCode: 0 };
+    });
+    try {
+      const result = await compactStreamSession({
+        outcome: "resumed",
+        providerId: "claude",
+        sessionId: SESSION_ID,
+        transcriptRoot: ctx.root,
+        runner: stub.runner,
+      });
+      assertEquals(result.action, "autocompact");
+      assertEquals(result.autocompactTokens, AUTOCOMPACT_WINDOW_TOKENS);
+      assertStringIncludes(
+        String(result.fields.reason),
+        "could not be read after /compact",
+      );
+      assertStringIncludes(
+        String(result.fields.transcriptScanError),
+        "shrank while it was being read",
+      );
+      assertEquals(result.fields.compactBoundaries, undefined);
+    } finally {
+      Deno.open = realOpen;
+    }
   });
 });
 
@@ -399,6 +490,87 @@ Deno.test("compactStreamSession - a boundary-shaped substring inside another rec
   });
 });
 
+Deno.test("compactStreamSession - records that only resemble a boundary in one field do not count (Issue #4116)", async () => {
+  const lookalikes = [
+    { type: "system", subtype: "init" },
+    { type: "user", subtype: "compact_boundary" },
+    { type: "system" },
+    { subtype: "compact_boundary" },
+  ].map((record) => JSON.stringify(record) + "\n").join("");
+  await withTranscript(async (ctx) => {
+    const stub = stubRunner(async () => {
+      await ctx.append(lookalikes);
+      return { ok: true, exitCode: 0 };
+    });
+    const result = await compactStreamSession({
+      outcome: "resumed",
+      providerId: "claude",
+      sessionId: SESSION_ID,
+      transcriptRoot: ctx.root,
+      runner: stub.runner,
+    });
+    assertEquals(result.action, "autocompact");
+    assertEquals(result.fields.reason, NO_BOUNDARY_REASON);
+  });
+});
+
+Deno.test("compactStreamSession - a boundary appended to any copy of the session's transcript counts, and the offsets are summed (Issue #4116)", async () => {
+  await withTranscript(async (ctx) => {
+    const otherDir = `${ctx.root}/projects/-another-project`;
+    await Deno.mkdir(otherDir, { recursive: true });
+    const otherPath = `${otherDir}/${SESSION_ID}.jsonl`;
+    await Deno.writeTextFile(otherPath, TRANSCRIPT_HISTORY);
+    const ordinary = userRecord("Carrying on.");
+    const stub = stubRunner(async () => {
+      await ctx.append(ordinary);
+      await Deno.writeTextFile(otherPath, COMPACT_BOUNDARY_RECORD, {
+        append: true,
+      });
+      return { ok: true, exitCode: 0 };
+    });
+    const result = await compactStreamSession({
+      outcome: "resumed",
+      providerId: "claude",
+      sessionId: SESSION_ID,
+      transcriptRoot: ctx.root,
+      runner: stub.runner,
+    });
+    assertEquals(result.action, "compacted");
+    assertEquals(
+      result.fields.transcriptOffsetBefore,
+      byteLength(TRANSCRIPT_HISTORY) * 2,
+    );
+    assertEquals(result.fields.compactBoundaries, 1);
+    assertEquals(
+      result.fields.transcriptBytesAppended,
+      byteLength(ordinary) + byteLength(COMPACT_BOUNDARY_RECORD),
+    );
+  });
+});
+
+Deno.test("compactStreamSession - a boundary beyond the scan cap is missed and falls back rather than being claimed (Issue #4116)", async () => {
+  await withTranscript(async (ctx) => {
+    const filler = "x".repeat(MAX_APPENDED_SCAN_BYTES);
+    const stub = stubRunner(async () => {
+      await ctx.append(filler + "\n" + COMPACT_BOUNDARY_RECORD);
+      return { ok: true, exitCode: 0 };
+    });
+    const result = await compactStreamSession({
+      outcome: "resumed",
+      providerId: "claude",
+      sessionId: SESSION_ID,
+      transcriptRoot: ctx.root,
+      runner: stub.runner,
+    });
+    assertEquals(result.action, "autocompact");
+    assertEquals(result.fields.reason, NO_BOUNDARY_REASON);
+    assertEquals(
+      result.fields.transcriptBytesAppended,
+      MAX_APPENDED_SCAN_BYTES,
+    );
+  });
+});
+
 Deno.test("compactStreamSession - no transcript located: /compact is not run and the fallback is taken (Issue #4116)", async () => {
   await withTranscript(async (ctx) => {
     await ctx.remove();
@@ -414,6 +586,7 @@ Deno.test("compactStreamSession - no transcript located: /compact is not run and
     assertEquals(result.action, "autocompact");
     assertEquals(result.autocompactTokens, AUTOCOMPACT_WINDOW_TOKENS);
     assertStringIncludes(String(result.fields.reason), "could not be located");
+    assertEquals(result.fields.providerId, "claude");
   });
 });
 
