@@ -761,6 +761,272 @@ export interface DenoMutantGeneration {
   dropped: number;
 }
 
+// ---------------------------------------------------------------------------
+// Operand mutants (Issue #3901)
+// ---------------------------------------------------------------------------
+
+const OPERAND_TEXT_MAX = 60;
+/**
+ * Masks comments and template `${}` code in {@link maskedLines}. Unlike a blank,
+ * it ends an operand region, so a comment or expression never joins an operand.
+ */
+const OPAQUE_MASK = "\u0001";
+/** Statement heads stripped before an operand scan, so the scan starts at the operands. */
+const OPERAND_PREFIX =
+  /^\s*(?:\}\s*)?(?:else\s+)?(?:\b(?:if|while)\s*\(|return\b\s*|(?:export\s+)?(?:const|let|var)\s+[\w$]+\s*(?::[^=]*)?=(?![=>])\s*|[\w$.]+\s*=(?![=>])\s*)/;
+
+/**
+ * `source` line by line with string, template, comment and regex literal text
+ * blanked to spaces. Lengths are kept, so an index into a masked line is the
+ * same index into the raw line. Returns `null` when a block comment or template
+ * literal is still open at the end of the file.
+ */
+export function maskedLines(source: string): string[] | null {
+  type Mode = "code" | "line" | "block" | "str" | "re" | "tpl";
+  const out: string[] = [];
+  let buf: string[] = [];
+  let mode: Mode = "code";
+  let quote = "";
+  let inClass = false;
+  let prev = "";
+  let braces = 0;
+  // Brace depth at each open `${`, so its closing brace returns to the template.
+  const exprDepths: number[] = [];
+  for (let i = 0; i < source.length; i++) {
+    const c = source.charAt(i);
+    const next = source.charAt(i + 1);
+    if (c === "\n") {
+      out.push(buf.join(""));
+      buf = [];
+      if (mode === "line" || mode === "str" || mode === "re") mode = "code";
+      continue;
+    }
+    if (mode === "block") {
+      if (c === "*" && next === "/") {
+        buf.push(OPAQUE_MASK + OPAQUE_MASK);
+        i++;
+        mode = "code";
+      } else {
+        buf.push(OPAQUE_MASK);
+      }
+      continue;
+    }
+    if (mode === "line") {
+      buf.push(OPAQUE_MASK);
+      continue;
+    }
+    if (mode === "tpl" || mode === "str" || mode === "re") {
+      if (c === "\\" && next !== "\n" && next !== "") {
+        buf.push("  ");
+        i++;
+        continue;
+      }
+      if (mode === "tpl") {
+        if (c === "`") {
+          mode = "code";
+          prev = c;
+        } else if (c === "$" && next === "{") {
+          exprDepths.push(braces);
+          mode = "code";
+          prev = "{";
+          buf.push("  ");
+          i++;
+          continue;
+        }
+      } else if (mode === "str") {
+        if (c === quote) {
+          mode = "code";
+          prev = c;
+        }
+      } else if (c === "[") {
+        inClass = true;
+      } else if (c === "]") {
+        inClass = false;
+      } else if (c === "/" && !inClass) {
+        mode = "code";
+        prev = c;
+      }
+      buf.push(" ");
+      continue;
+    }
+    if (c === "/" && next === "/") {
+      mode = "line";
+      buf.push(OPAQUE_MASK + OPAQUE_MASK);
+      i++;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      mode = "block";
+      buf.push(OPAQUE_MASK + OPAQUE_MASK);
+      i++;
+      continue;
+    }
+    if (c === "/" && (prev === "" || REGEX_PRECEDERS.includes(prev))) {
+      mode = "re";
+      inClass = false;
+      buf.push(" ");
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      mode = "str";
+      quote = c;
+      prev = c;
+      buf.push(" ");
+      continue;
+    }
+    if (c === "`") {
+      mode = "tpl";
+      buf.push(" ");
+      continue;
+    }
+    if (c === "{") {
+      braces++;
+    } else if (c === "}") {
+      if (
+        exprDepths.length > 0 && exprDepths[exprDepths.length - 1] === braces
+      ) {
+        exprDepths.pop();
+        mode = "tpl";
+        buf.push(" ");
+        continue;
+      }
+      if (braces > 0) braces--;
+    }
+    // Code inside a `${}` is opaque too: an operator there is not a plain operand.
+    buf.push(exprDepths.length > 0 ? OPAQUE_MASK : c);
+    if (!/\s/.test(c)) prev = c;
+  }
+  if (mode === "block" || mode === "tpl") return null;
+  out.push(buf.join(""));
+  return out;
+}
+
+/**
+ * The chain operator that continues onto line `n` from a line break: a
+ * trailing `||`/`&&` on the line before, or a leading one on the line after.
+ */
+function sourcedOperator(
+  masked: readonly string[],
+  n: number,
+): "||" | "&&" | null {
+  const prior = masked[n - 2] ?? "";
+  const cut = prior.indexOf(OPAQUE_MASK);
+  const before = (cut < 0 ? prior : prior.slice(0, cut)).trimEnd();
+  const after = (masked[n] ?? "").trimStart();
+  if (/(?:\|\||&&)$/.test(before)) return before.endsWith("||") ? "||" : "&&";
+  if (/^(?:\|\||&&)(?!=)/.test(after)) {
+    return after.startsWith("||") ? "||" : "&&";
+  }
+  return null;
+}
+
+/**
+ * Operand mutants for line `n` (Issue #3901): for the operands of one top-level
+ * `||` or `&&` chain, each operand replaced by the chain identity (`false` for
+ * `||`, `true` for `&&`). The chain is taken at the shallowest bracket depth on
+ * the line, `||` preferred over `&&`; a line with no operator takes its
+ * operator from the adjacent line. Lines that are types, assignments, arrows
+ * or `||=`/`&&=` yield nothing.
+ */
+function operandCandidates(
+  line: string,
+  masked: readonly string[],
+  n: number,
+): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  if (TYPE_ALIAS_LINE.test(line)) return out;
+  const m = (masked[n - 1] ?? "").slice(0, line.length);
+  const start = OPERAND_PREFIX.exec(m)?.[0].length ?? 0;
+  // The region ends at the first unmatched closer, or a depth-0 separator.
+  let end = m.length;
+  let depth = 0;
+  for (let i = start; i < m.length; i++) {
+    const ch = m.charAt(i);
+    if (ch === OPAQUE_MASK) {
+      end = i;
+      break;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth++;
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+      depth--;
+    } else if (depth === 0) {
+      const nx = m.charAt(i + 1);
+      if (ch === ";" || ch === "," || ch === ":") {
+        end = i;
+        break;
+      }
+      if (ch === "?" && nx !== "?" && nx !== "." && m.charAt(i - 1) !== "?") {
+        end = i;
+        break;
+      }
+      // An assignment or arrow (`=`, `+=`, `=>`, `||=`) is not a plain chain.
+      if (ch === "=") {
+        const pv = m.charAt(i - 1);
+        if (nx === ">" || (nx !== "=" && !"=!<>".includes(pv))) return out;
+      }
+    }
+  }
+  const splits: Array<{ at: number; op: "||" | "&&"; depth: number }> = [];
+  depth = 0;
+  for (let i = start; i < end; i++) {
+    const ch = m.charAt(i);
+    if (ch === "(" || ch === "[" || ch === "{") {
+      depth++;
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      depth--;
+    } else if (
+      (ch === "|" || ch === "&") && m.charAt(i + 1) === ch &&
+      m.charAt(i + 2) !== "="
+    ) {
+      splits.push({ at: i, op: ch === "|" ? "||" : "&&", depth });
+      i++;
+    }
+  }
+  let op: "||" | "&&";
+  let bounds: number[] = [];
+  if (splits.length > 0) {
+    const minDepth = Math.min(...splits.map((s) => s.depth));
+    const atMin = splits.filter((s) => s.depth === minDepth);
+    op = atMin.some((s) => s.op === "||") ? "||" : "&&";
+    bounds = atMin.filter((s) => s.op === op).map((s) => s.at);
+  } else {
+    const sourced = sourcedOperator(masked, n);
+    if (sourced === null) return out;
+    op = sourced;
+  }
+  const identity = op === "||" ? "false" : "true";
+  const segments: Array<[number, number]> = [];
+  let from = start;
+  for (const at of bounds) {
+    segments.push([from, at]);
+    from = at + 2;
+  }
+  segments.push([from, end]);
+  for (const [a, b] of segments) {
+    let s = a;
+    let e = b;
+    while (s < e && /\s/.test(line.charAt(s))) s++;
+    while (e > s && /\s/.test(line.charAt(e - 1))) e--;
+    if (s === e) continue;
+    const text = line.slice(s, e);
+    // Only strings, templates or regexes: no plain operand to replace.
+    if (m.slice(s, e).trim() === "") continue;
+    const shown = (text.length > OPERAND_TEXT_MAX
+      ? `${text.slice(0, OPERAND_TEXT_MAX - 3)}...`
+      : text).replaceAll("`", "'");
+    out.push([
+      `${line.slice(0, s)}${identity}${line.slice(e)}`,
+      `dropped operand \`${shown}\` (replaced with ${identity})`,
+    ]);
+  }
+  return out;
+}
+
 /**
  * Generate mutants for the added lines of one source file. One mutant per
  * mutation kind per line, ordered by line then kind, stopping at `cap`; the
@@ -779,6 +1045,8 @@ export function generateDenoMutantsDetailed(
   const lines = source.split("\n");
   // Issue #3601: computed once per file; null disables only the wiring kinds.
   const contexts = lineContexts(source);
+  // Issue #3901: masked once per file; null disables only the operand kind.
+  const masks = maskedLines(source);
   const sorted = [...new Set(addedLines)].sort((a, b) => a - b);
   for (const n of sorted) {
     if (n < 1 || n > lines.length) continue;
@@ -818,6 +1086,7 @@ export function generateDenoMutantsDetailed(
         ...wiringCandidates(line, contexts[n - 1] ?? "other", lines, n),
       );
     }
+    if (masks !== null) candidates.push(...operandCandidates(line, masks, n));
 
     for (const [text, description] of candidates) {
       if (text === null) continue;

@@ -101,13 +101,23 @@ function mutate(source: string, lines: number[], cap = 40) {
 
 Deno.test("generateDenoMutants - negates a single-line if", () => {
   const [m, ...rest] = mutate("  if (a && b) {\n  }\n", [1]);
-  assertEquals(rest.length, 0);
+  // Issue #3901: the two `&&` operands also yield mutants, after the if negation.
+  assertEquals(rest.map((r) => r.description), [
+    "dropped operand `a` (replaced with true)",
+    "dropped operand `b` (replaced with true)",
+  ]);
   assertEquals(m?.description, "negated if condition");
   assertEquals(m?.mutatedSource, "  if (!(a && b)) {\n  }\n");
 });
 
 Deno.test("generateDenoMutants - skips an if whose parens do not balance on the line", () => {
-  assertEquals(mutate("if (a &&\n  b) {\n}\n", [1]), []);
+  // Issue #3901: the operand `a` of the wrapped chain is still mutated, but no if negation.
+  assertEquals(
+    mutate("if (a &&\n  b) {\n}\n", [1]).filter((x) =>
+      x.description === "negated if condition"
+    ),
+    [],
+  );
 });
 
 Deno.test("generateDenoMutants - negates a simple ternary condition", () => {
