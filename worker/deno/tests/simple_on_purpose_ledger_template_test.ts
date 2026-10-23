@@ -435,13 +435,21 @@ Deno.test("simple-on-purpose-ledger buildIssueBody - substitutes the footer with
     loadPromptFn: () =>
       Promise.resolve({ ok: true, value: "body\n{{ATTRIBUTION_FOOTER}}" }),
   });
-  const body = await t.buildIssueBody({
-    repo: "acme/widget",
-    workDir: "/tmp",
-  } as never);
-  assertStringIncludes(body, `\`${NAME}\``);
-  assertStringIncludes(body, "Run id:");
-  assert(!body.includes("{{ATTRIBUTION_FOOTER}}"));
+  const opts = { repo: "acme/widget", workDir: "/tmp" } as never;
+  const previous = Deno.env.get("VIBE_RUN_ID");
+  try {
+    Deno.env.set("VIBE_RUN_ID", "run-xyz");
+    const body = await t.buildIssueBody(opts);
+    assertStringIncludes(body, `\`${NAME}\``);
+    assertStringIncludes(body, "`run-xyz`");
+    assert(!body.includes("{{ATTRIBUTION_FOOTER}}"));
+
+    Deno.env.delete("VIBE_RUN_ID");
+    assertStringIncludes(await t.buildIssueBody(opts), "`unknown`");
+  } finally {
+    if (previous === undefined) Deno.env.delete("VIBE_RUN_ID");
+    else Deno.env.set("VIBE_RUN_ID", previous);
+  }
 });
 
 Deno.test("simple-on-purpose-ledger buildIssueBody - a prompt that fails to load throws naming the template", async () => {

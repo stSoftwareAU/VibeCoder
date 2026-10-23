@@ -207,7 +207,7 @@ export function createSimpleOnPurposeLedgerTemplate(
         repo,
         SIMPLE_ON_PURPOSE_LEDGER_LABEL,
         SIMPLE_ON_PURPOSE_LEDGER_LABEL_COLOUR,
-        "A SIMPLE-ON-PURPOSE marker lists a known limit of deliberately simple code",
+        "Report-only ledger of SIMPLE-ON-PURPOSE markers and their upgrade conditions",
       ));
   const scanFn = deps.scanFn ?? ((repoPath) => defaultScan({ repoPath }));
 
