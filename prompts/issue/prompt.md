@@ -946,7 +946,7 @@ delivers every case the criterion names.
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
 If the issue body carries a `## Acceptance Criteria` (or `## Acceptance
-criteria`) section, those criteria are the target this run is measured against.
+criteria`) section (or a heading that ends in “acceptance criteria”, such as `## Scope and acceptance criteria`), those criteria are the target this run is measured against.
 A `## Definition of done` list counts the same way when the issue has no
 Acceptance Criteria list (Issue #3761). The `## Acceptance Criteria` block
 inside

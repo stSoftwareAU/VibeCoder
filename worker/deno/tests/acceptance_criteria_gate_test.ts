@@ -77,6 +77,97 @@ Deno.test("extractAcceptanceCriteria - heading with no list items yields none", 
   assertEquals(extractAcceptanceCriteria(body), []);
 });
 
+const SCOPE_HEADING_ISSUE = [
+  "## Problem",
+  "",
+  "The scope is unclear.",
+  "",
+  "## Scope and acceptance criteria",
+  "",
+  "- [ ] The first criterion.",
+  "- The second criterion.",
+  "",
+  "## Failure detection",
+  "",
+  "- not a criterion",
+].join("\n");
+
+Deno.test("extractAcceptanceCriteria - reads items under a heading ending in acceptance criteria and stops at the next heading (Issue #4107)", () => {
+  assertEquals(extractAcceptanceCriteria(SCOPE_HEADING_ISSUE), [
+    "The first criterion.",
+    "The second criterion.",
+  ]);
+});
+
+Deno.test("extractAcceptanceCriteria - reads items under a Required acceptance criteria heading with a colon (Issue #4107)", () => {
+  const body =
+    "## Problem\n\nX.\n\n### Required acceptance criteria:\n\n- [ ] The guard runs.\n- [ ] A test pins it.\n\n## Notes\n\n- not a criterion\n";
+  assertEquals(extractAcceptanceCriteria(body), [
+    "The guard runs.",
+    "A test pins it.",
+  ]);
+});
+
+Deno.test("extractAcceptanceCriteria - a plain Acceptance Criteria heading is unchanged (Issue #4107)", () => {
+  const body =
+    "## Problem\n\nX.\n\n## Acceptance Criteria\n\n- [ ] The plain item.\n\n## Notes\n\n- not a criterion\n";
+  assertEquals(extractAcceptanceCriteria(body), ["The plain item."]);
+});
+
+Deno.test("extractAcceptanceCriteria - a sentence that begins with acceptance criteria is not a heading (Issue #4107)", () => {
+  const body =
+    "## Acceptance criteria are listed below\n\n- [ ] not a criterion\n";
+  assertEquals(extractAcceptanceCriteria(body), []);
+});
+
+Deno.test("extractAcceptanceCriteria - a heading with acceptance criteria followed by more words is not a heading (Issue #4107)", () => {
+  const body = "## Acceptance Criteria Review\n\n- [ ] not a criterion\n";
+  assertEquals(extractAcceptanceCriteria(body), []);
+});
+
+Deno.test("extractAcceptanceCriteria - a long prefix that does not end in the phrase is not a heading (Issue #4107)", () => {
+  const body =
+    "## Our acceptance criteria for the migration of the old billing system to the new one\n\n- [ ] not a criterion\n";
+  assertEquals(extractAcceptanceCriteria(body), []);
+});
+
+Deno.test("extractAcceptanceCriteria - a heading with seven prefix words before the phrase is not a heading (Issue #4107)", () => {
+  const sevenWords =
+    "## One two three four five six seven acceptance criteria\n\n- [ ] not a criterion\n";
+  assertEquals(extractAcceptanceCriteria(sevenWords), []);
+
+  // Five prefix words is the most the heading may carry.
+  const fiveWords =
+    "## One two three four five acceptance criteria\n\n- [ ] The fifth-word heading item.\n";
+  assertEquals(extractAcceptanceCriteria(fiveWords), [
+    "The fifth-word heading item.",
+  ]);
+});
+
+Deno.test("extractAcceptanceCriteria - plain text ending in acceptance criteria is not a heading (Issue #4107)", () => {
+  const body = "Scope and acceptance criteria\n\n- [ ] not a criterion\n";
+  assertEquals(extractAcceptanceCriteria(body), []);
+});
+
+Deno.test("extractAcceptanceCriteria - a heading hard-wrapped over two lines is not a heading (Issue #4107)", () => {
+  const body = "## Scope and\nacceptance criteria\n\n- [ ] not a criterion\n";
+  assertEquals(extractAcceptanceCriteria(body), []);
+});
+
+Deno.test("extractAcceptanceCriteria - a hostile padded heading returns promptly with no criteria (Issue #4107)", () => {
+  const wordRun = "## " + "a ".repeat(50_000) + "!";
+  assertEquals(
+    extractAcceptanceCriteria(`${wordRun}\n- [ ] not a criterion\n`),
+    [],
+  );
+
+  const padded = "## acceptance" + " ".repeat(50_000) + "x";
+  assertEquals(
+    extractAcceptanceCriteria(`${padded}\n- [ ] not a criterion\n`),
+    [],
+  );
+});
+
 Deno.test("extractAcceptanceCriteria - reads criteria under a Definition of done heading (Issue #3761)", () => {
   const body =
     "## Problem\n\nX.\n\n## Definition of done\n\n- [ ] The guard runs.\n- [ ] A test pins it.\n\n## Notes\n\n- not a criterion\n";
@@ -132,6 +223,23 @@ Deno.test("extractAcceptedScope - a Definition of done list is the scope (Issue 
     "The scope is unclear.",
     "",
     "## Definition of done",
+    "",
+    "- [ ] The scope item.",
+    "- [ ] The second item.",
+  ].join("\n");
+  assertEquals(extractAcceptedScope(body), [
+    "The scope item.",
+    "The second item.",
+  ]);
+});
+
+Deno.test("extractAcceptedScope - a heading ending in acceptance criteria is the scope (Issue #4107)", () => {
+  const body = [
+    "## Problem",
+    "",
+    "The scope is unclear.",
+    "",
+    "## Scope and acceptance criteria",
     "",
     "- [ ] The scope item.",
     "- [ ] The second item.",
@@ -331,6 +439,37 @@ Deno.test("validateAcceptanceClosure - criterion prose mentioning a status word 
 
   assertEquals(result.entries[0]!.status, "met");
   assertEquals(result.valid, true);
+});
+
+Deno.test("validateAcceptanceClosure - applies to a heading ending in acceptance criteria and fails without the closure block (Issue #4107)", () => {
+  const result = validateAcceptanceClosure({
+    issueBody: SCOPE_HEADING_ISSUE,
+    prSummaryContent: summary([]),
+  });
+
+  assertEquals(result.applicable, true);
+  assertEquals(result.valid, false);
+  assertEquals(result.criteria.length, 2);
+  assertStringIncludes(
+    result.problems.join("\n"),
+    "no `## Acceptance Criteria`",
+  );
+});
+
+Deno.test("validateAcceptanceClosure - a complete block passes for a heading ending in acceptance criteria (Issue #4107)", () => {
+  const result = validateAcceptanceClosure({
+    issueBody: SCOPE_HEADING_ISSUE,
+    prSummaryContent: summary([
+      "## Acceptance Criteria",
+      "",
+      "- **met** — first criterion is wired — evidence: `prompts/issue/v36.md`",
+      "- **met** — second criterion is tested — evidence: `worker/deno/tests/acceptance_criteria_gate_test.ts`",
+    ]),
+  });
+
+  assertEquals(result.applicable, true);
+  assertEquals(result.valid, true);
+  assertEquals(result.problems, []);
 });
 
 // --- buildClosureGateComment ---

@@ -992,7 +992,7 @@ inside the existing implementation run rather than as a new loop (see
 [SPEC-KIT-COMPARISON.md](../SPEC-KIT-COMPARISON.md)).
 
 **What the run must produce.** When the issue body carries a
-`## Acceptance Criteria` section (or, with none, a `## Definition of done`
+`## Acceptance Criteria` section (a heading that ends in “acceptance criteria” counts too, such as `## Scope and acceptance criteria` — up to five words may precede it, Issue #4107) (or, with none, a `## Definition of done`
 list, Issue #3761), `prompts/issue/` requires the run to walk
 each criterion before writing the PR summary and record the assessment as a
 `## Acceptance Criteria` block in
