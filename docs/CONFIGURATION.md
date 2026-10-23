@@ -602,8 +602,8 @@ Semantics:
 
 ### 🗓️ Idle-Task Cadence
 
-Weights bias the random draw, which runs only when the cadence bias files nothing,
-and they guarantee nothing. `idle_task_cadence` puts a
+Weights bias the random draw, which runs on every idle tick and is overridden
+whenever the cadence bias files a pair, so they guarantee nothing. `idle_task_cadence` puts a
 **floor** under the scans that matter: by default three **important** templates
 (`security-scan`, `supply-chain-readiness`, `github-actions-audit`) are owed a
 cheap `sonnet` scan at least weekly and an expensive `fable` scan at least

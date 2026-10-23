@@ -2371,9 +2371,10 @@ flowchart TD
 
 ### Weighting the template draw
 
-The random template draw is **weighted** and **config-driven**. It runs only when
-the pair-first cadence bias (see [Cadence bias on the idle tick](#cadence-bias-on-the-idle-tick))
-files nothing. By default every registered template carries an equal weight, so
+The random template draw is **weighted** and **config-driven**. It runs on every
+idle tick, before the pair-first cadence bias (see
+[Cadence bias on the idle tick](#cadence-bias-on-the-idle-tick)); a pair the bias
+files then overrides the drawn template. By default every registered template carries an equal weight, so
 that draw is uniform (1/20 each with twenty templates) — no behaviour change
 unless configured. An operator
 can bias the draw toward higher-priority templates (e.g. `security-scan` and
