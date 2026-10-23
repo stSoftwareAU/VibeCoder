@@ -24,7 +24,8 @@ unchanged behaviour for `id=secret` and `secret=…` are all kept. Closes #4103.
   stays linear.
 
 Version bump: no `VERSION` change on this branch; the diff touches only
-`worker/deno` library and test files.
+`worker/deno` library and test files, plus this archived summary and its facts
+file.
 
 ## Spec
 
@@ -102,9 +103,10 @@ window is bounded, so the regex stays linear (the Issue #3942 rule).
 
 - Callers checked: the rule is one entry in the RULES table applied by
   `redactSecrets`; no caller passes it a pattern. Other tests that touch
-  `redactSecrets` were run and are green: `secret_redaction_bounds_test.ts`,
-  `secret_redaction_markdown_1727_test.ts` and
-  `secret_redaction_boolean_setting_test.ts` (all in the 119 passed run above).
+  `redactSecrets` were run and are green: `worker/deno/tests/secret_redaction_bounds_test.ts` (11 tests at head),
+  `worker/deno/tests/secret_redaction_markdown_1727_test.ts` (17 tests at head)
+  and `worker/deno/tests/secret_redaction_boolean_setting_test.ts` (10 tests at
+  head); these are unchanged by this PR and all passed when re-run on the head.
 - Twinned-rule search: none found.
   `worker/deno/lib/secret_transform_redaction.ts` exists and was grepped for
   `aws-secret-access-key` and `aws-access-key-id`; it has no matching rule.
