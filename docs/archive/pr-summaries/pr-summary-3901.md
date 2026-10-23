@@ -39,12 +39,13 @@ count towards the existing 40-mutant cap, after the other kinds on each line.
 
 ## Evidence
 
-- `deno test --no-check -A worker/deno/tests/mutation_gate_operands_3901_test.ts worker/deno/tests/mutation_gate_test.ts` passes (112 tests before the
-  mutation-pinning tests, 127 mutants of the new code afterwards).
-- A local harness applied every mutant `generateDenoMutants` makes for the new
-  code (`worker/deno/lib/mutation_gate.ts` lines 779-1040, 127 mutants, no cap)
-  and ran both test files against each: all 127 went red except the one
-  exempted below.
+- `cd worker/deno && deno task test:unit tests/mutation_gate_operands_3901_test.ts tests/mutation_gate_test.ts < /dev/null` gives `ok | 119 passed | 0 failed` (70 tests in the new file, 49 in `mutation_gate_test.ts`).
+- A local harness applied the mutants `generateDenoMutants` makes for the new
+  code (`worker/deno/lib/mutation_gate.ts` lines 764-1121) and ran both test
+  files against each. The earlier run reported 127 mutants, all red except the
+  one exempted below. That count, and the 112-test figure from before the
+  mutation-pinning tests, cannot be reproduced from the repository, so they are
+  not relied on here.
 - Dead code removed where a mutant showed it unreachable: the redundant
   `exprDepths.length > 0 &&` (an empty stack reads `undefined`, never equal to
   a depth), `nx === ">" ||` (the next clause already catches `=>`),
@@ -56,6 +57,8 @@ Docs sweep — grep: `Drop one operand`, `Swap booleans`, "dropped operand", "fl
 ## Test Plan
 
 - Added `worker/deno/tests/mutation_gate_operands_3901_test.ts`: single-line `||`/`&&`, wrapped `if (`, leading/trailing operator, `return`, ternary, mixed and nested chains, strings/templates/regex/comments, types, `||=`/`&&=`, arrows, truncation and backtick escaping, the cap and order, open comment/template files, the region boundaries (`,`, `:`, `?`, `??`, `?.`, `+=`, `==`) and exact-output tests of every `maskedLines` branch.
+- Added to the same file: `buildMutationGateComment - a surviving operand mutant names the dropped operand`, which asserts the comment names `dropped operand b (replaced with false)` and `lib/sample.ts:1`.
+  Red-check: renders the comment without the operand text (description built without `${shown}`) → red; `buildMutationGateComment` omitting the description → red.
 - Removed from `worker/deno/tests/mutation_gate_test.ts`: `assertEquals(rest.length, 0);`
   Required by: "make one mutant per operand"
   Replaced by: ``assertEquals(rest.map((r) => r.description), [ "dropped operand `a` (replaced with true)", "dropped operand `b` (replaced with true)", ]);``
@@ -65,16 +68,38 @@ Docs sweep — grep: `Drop one operand`, `Swap booleans`, "dropped operand", "fl
   Replaced by: `assertEquals( mutate("if (a &&\n  b) {\n}\n", [1]).filter((x) => x.description === "negated if condition" ), [], );`
   (the wrapped `if` still gets no `negated if condition` mutant; its operand `a` now gets a `dropped operand` mutant).
 
-## Branch outcomes
+<!-- vibe-branch-outcomes -->
 
-**Branch outcomes:**
-- `worker/deno/lib/mutation_gate.ts:784` — masking: block comment, string, template, template expression, regex and code each blanked or opaque; open block comment / template returns null — `worker/deno/tests/mutation_gate_operands_3901_test.ts::maskedLines - a block comment is opaque for its whole length` (and the sibling `maskedLines - ...` tests) — each `buf.push`, mode and brace branch flipped by the local mutant harness, a test went red
-- `worker/deno/lib/mutation_gate.ts:790` — exempt (untestable): the initial `inClass = false` is always overwritten when a regex opens (`inClass = false` at the regex start), so no input can observe the initial value; searched `maskedLines - a regex starts with a fresh character class state` and the other `maskedLines` tests
-- `worker/deno/lib/mutation_gate.ts:965-995` — operand region ends at an unmatched closer, `;`, `,`, `:`, a ternary `?` (not `??`/`?.`), or an opaque comment; an assignment/arrow returns nothing — `worker/deno/tests/mutation_gate_operands_3901_test.ts::operand region - a call argument line ends at its trailing comma` (and the other `operand region - ...` tests) — flipped each terminator, test went red
-- `worker/deno/lib/mutation_gate.ts:1004-1006` and `1027-1030` — a single `&`/`|` is not a split (only a doubled `||`/`&&` is), and a line with no edge operator takes the shallowest-depth operator, `||` preferred — `worker/deno/tests/mutation_gate_operands_3901_test.ts::chain operator - a single & or | is not a chain operator` (and the bracketed/braced/parenthesised variants) — flipped, test went red
-- `worker/deno/lib/mutation_gate.ts:1018` and `1031-1033` — no edge operator on the line: sourced from the neighbouring line (`sourcedOperator`), and with no operator at all no mutant — `worker/deno/tests/mutation_gate_operands_3901_test.ts::generateDenoMutants - an operator at the end of the previous line is sourced` — flipped, test went red
-- `worker/deno/lib/mutation_gate.ts:1046-1053` — blank or literal-only operand skipped; long operand truncated and backticks replaced — `worker/deno/tests/mutation_gate_operands_3901_test.ts::chain operator - a trailing operator leaves no blank operand` — flipped, test went red
-- `worker/deno/lib/mutation_gate.ts:1121` — `masks === null` (unbalanced file, computed at line 1081) disables only the operand kind — `worker/deno/tests/mutation_gate_operands_3901_test.ts::generateDenoMutants - an open template literal at end of file disables only the operand kind` — flipped, test went red
+## Acceptance Criteria
+
+Drawn from the issue body's proposal items 1-5 and its list of required tests.
+
+- [x] Item 1, drop one operand at a time: one mutant per top-level operand, replaced with the chain identity. Covered for single-line `||` and `&&` (tests at lines 54 and 69), `if` (107), `return` (154), ternary (169) and boolean assignment (55).
+- [ ] Item 1, `else if` and `while` conditions: uncovered. No test names either. Left unchecked; see Standards Review.
+- [x] Item 2, reach wrapped conditions via the line's own or neighbouring operator: tests at lines 107, 123, 139 and 561.
+- [x] Item 3, nested groups: only top-level operands are dropped; operand mutants come after the other kinds under the cap: tests at lines 199 and 298.
+- [x] Item 4, the recovery message names the operand: test at line 659.
+- [x] Item 5, required tests:
+  - [x] single-line `||` and `&&`: lines 54, 69.
+  - [x] wrapped `if (` where only one operand line is added: line 561 (the `[2]` case at line 562).
+  - [x] boolean `const` split across lines: lines 123, 139.
+  - [x] nested `a || (b && c)`: line 199.
+  - [x] `||` or `&&` in a string, template literal or comment is never mutated: lines 215, 230, 238, 242, 246.
+  - [x] type-only line is never mutated: line 254.
+  - [x] recovery message naming the operand: line 659.
+
+## Standards Review
+
+- Red-check: the comment test was recorded as red when the description is built without the operand text, and when `buildMutationGateComment` omits the description (see Test Plan).
+- Per-operand outcomes: each operand of a chain has its own outcome and named test in `docs/archive/pr-summaries/pr-summary-3901.facts.json` (`noneAdded: false`). The one exemption is at `worker/deno/lib/mutation_gate.ts:790`: the initial `inClass = false` is overwritten before any read, so it is an equivalent mutant. Removing the initial assignment is the alternative to exempting it, and a reviewer should decide which.
+- `maskedLines` is exported so the tests can pin its exact output. Production calls it at `worker/deno/lib/mutation_gate.ts:1081`.
+- Docs owed: `docs/mutation-check.md` is updated with a new `Drop one operand` row and paragraph. That paragraph claims `else if` and `while` coverage that no test names, so it needs a test or a narrower wording.
+- Regex vetting: four new regexes, at `worker/deno/lib/mutation_gate.ts` lines 775-776 (`OPERAND_PREFIX`), 896 (`/\s/`) and 915-916. None has nested or overlapping quantifiers on reading. Input length is bounded by `MAX_MUTATED_LINE_LENGTH` (line 71, 400 characters). No per-pattern hostile test exists; the closest is the hostile long-line test at `worker/deno/tests/mutation_gate_test.ts:289`.
+- Shared helper callers: `generateDenoMutantsDetailed` has one production caller, `worker/deno/lib/mutation_runner.ts:341`. `generateDenoMutants` is a wrapper used only by tests.
+- Twinned rules: "flip each operand" also appears in `prompts/coding_guidelines/prompt.md`. This PR does not change that rule, so no twin edit is made.
+- Persisted data shape: no change.
+- Tooling: Deno-native only (`deno task`); no new dependencies.
+- Secrets: none added.
 
 ## Merge verification
 
