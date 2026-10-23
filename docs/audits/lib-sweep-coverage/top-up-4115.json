@@ -1,0 +1,12 @@
+{
+  "issue": 4115,
+  "chunk": "top-up-4115",
+  "title": "top-up: fenced JSON unwrapping for claim correction",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4115",
+  "definition": "module added after 12af recorded its coverage: worker/deno/lib/fenced_json.ts (fence-tolerant unwrapping of a model's JSON reply by plain string scanning, no regex, no I/O) (#4115)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/fenced_json.ts"
+  ],
+  "sweptAt": "79f1ff231c4017084a3034a4061bff1a3fe768e7"
+}
