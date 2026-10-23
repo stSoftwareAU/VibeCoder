@@ -129,7 +129,6 @@ export function parseRevisionResponse(
   output: string,
 ): Result<RevisionResponse> {
   // Extract JSON from Claude's output (may be wrapped in markdown code blocks)
-  // Strip markdown code block if present
   let jsonStr = unwrapJsonFence(output, { allowSurroundingProse: true });
 
   // Try to find JSON object in the output

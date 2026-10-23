@@ -80,7 +80,7 @@ Deno.test("unwrapJsonFence - a bare run of three backticks is not a fence", () =
   assertEquals(unwrapJsonFence("`````"), "`````");
 });
 
-Deno.test("unwrapJsonFence - long backtick and whitespace runs before a rejected char finish with the expected value", () => {
+Deno.test("unwrapJsonFence - long hostile backtick and whitespace runs are handled in linear time", () => {
   const ticks = "`".repeat(200000) + "x";
   assertEquals(unwrapJsonFence(ticks), ticks);
   assertEquals(
