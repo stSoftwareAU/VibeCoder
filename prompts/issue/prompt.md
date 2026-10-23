@@ -1190,15 +1190,26 @@ When creating the PR, include evidence based on the type of change:
   failure** and **A failure-reason test asserts the cause** in the guidelines).
   When the change relies on a property of one of the repository's own ports —
   a broker, database or store client with a production implementation — and
-  its tests run on an in-repo fake, read the production implementation first
-  and confirm it has that property: which rows a read returns, its filter,
-  ordering or paging, the value types a write accepts, or whether a
+  its tests run on an in-repo fake, or when a test fakes a response from the
+  repository's own server or service by hand (an HTTP body, status or header,
+  a queue message, a file the other side writes), read the production
+  implementation first and confirm it has the property the change relies on
+  (a property of that port or response): which rows a read returns, its
+  filter, ordering or paging, the value types a write accepts, or whether a
   conditional write can lose (see **A fake mirrors the production
-  implementation it stands in for** in the guidelines). The PR summary's
-  Evidence names the production implementation each load-bearing fake stands
-  in for and the property relied on. A change whose only proof is a fake more
-  permissive than its production implementation is a blocking self-review
-  finding.
+  implementation it stands in for** in the guidelines). The rule applies across
+  processes and languages, not only to in-process traits or interfaces. For a
+  faked response, take the fixture from the producer's real output: a golden
+  the server's tests produce or verify, or a contract test that runs the
+  server's serialiser for that response kind; when the repository has no golden
+  for that response kind yet, the PR adds one. Check a header the client
+  depends on against what the deployed configuration lets the client read (for
+  example a CORS exposed-headers list). The PR summary's Evidence names the
+  production implementation each load-bearing fake stands in for and the
+  property relied on, and, for such a header, where that deployed setting is
+  set. A change whose only proof is a fake more permissive than its
+  production implementation is a blocking self-review finding, and so is one
+  whose only proof is a fixture the producer never emits.
 
 **Path invariant — the Markdown path MUST resolve in the committed tree.**
 Whatever path you write inside `![Description](path)` MUST point at the file

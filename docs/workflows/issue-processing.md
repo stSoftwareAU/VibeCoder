@@ -1841,7 +1841,7 @@ documentation or source when the case cannot be observed safely. The issue
 prompt's Bugs/Enhancements requirement makes a fake built from expected
 rather than observed behaviour a blocking self-review finding.
 
-**A fake mirrors the production implementation it stands in for (Issue #3224).**
+**A fake mirrors the production implementation it stands in for (Issues #3224, #3900).**
 The stub-contract and observe-real-tool rules cover external callees —
 another repository's binary, git, `gh`, the GitHub API. Fleet
 PRs instead relied on a property of the repository's own port that only
@@ -1857,15 +1857,30 @@ adapter), and naming in the PR summary the production implementation
 each load-bearing fake stands in for and the property relied on. The
 issue prompt's Bugs/Enhancements requirement makes a change whose only
 proof is a fake more permissive than its production implementation a
-blocking self-review finding.
+blocking self-review finding. The rule also covers a test that fakes a
+response from the repository's own server or service by hand — an HTTP
+body, status or header, a queue message, or a file the other side writes —
+across processes and languages, not only in-process traits or interfaces.
+Two private fleet PRs (Issue #3900) were sent back for a card test with
+server-measure values the server never produces, and for a "retry later"
+detection that read the error code from the wrong JSON key or from a header
+the deployed CORS config does not expose. For such a response the fixture
+must come from the producer's real output: a golden the server's tests
+produce or verify, or a contract test that runs the server's serialiser for
+that response kind; a PR adds a golden when the repository has none for that
+response kind. A header the client depends on is checked against what the
+deployed configuration lets the client read (for example, a CORS
+exposed-headers list), and the PR summary names where that deployed setting
+is set. A change whose only proof is a fixture the producer never emits
+is a blocking self-review finding.
 
 **A test of a third-party tool's input uses that tool's semantics (Issue #3235).**
-The fake-mirrors rule covers the repository's own ports; fleet PRs instead
-tested config read by an external tool against an in-repo stand-in for that
-tool's engine. stSoftwareAU/TagsTS#93's hand-written glob matcher never
-matched `*` before `/`, so `milestone/foo` failed a `*/*` branch filter
-GitHub accepts; TagsTS#98 compiled a Renovate `matchStrings` look-ahead with
-JavaScript's `RegExp`, which accepts it, while Renovate's RE2 rejects the
+The fake-mirrors rule covers the repository's own ports and server responses;
+fleet PRs instead tested config read by an external tool against an in-repo
+stand-in for that tool's engine. stSoftwareAU/TagsTS#93's hand-written glob
+matcher never matched `*` before `/`, so `milestone/foo` failed a `*/*` branch
+filter GitHub accepts; TagsTS#98 compiled a Renovate `matchStrings` look-ahead
+with JavaScript's `RegExp`, which accepts it, while Renovate's RE2 rejects the
 whole config. The guidelines now require running the tool's own validator or
 engine where CI can run it, and otherwise testing the stand-in against
 documented cases — the case the change relies on and one the tool rejects or
