@@ -32,6 +32,15 @@ to complete that issue; nothing more from a person is needed or wanted.
   files a new issue for the remainder: a new issue needs a human to read and
   approve it, and the original issue was already approved. "You ask for a
   hamburger, you don't get two buns and a follow-up ticket for the patty."
+- **"Too large" is a planning defect, not an exit.** An approved issue,
+  especially one grill-me or planning wrote, that cannot be completed is a bug
+  in the Vibe Coder (owner, 24 October 2026). Planning and grill-me therefore
+  write only criteria the implementing run can meet inside the repository, and
+  split anything bigger than one PR. A step only a person can take (a
+  production deploy, a reading days later) is recorded as an owner step, never
+  as a criterion. The issue run has no escape hatch: it finishes, or it ends on
+  one of the defined markers (already resolved, blocked on an open issue,
+  deferred for data, sent to planning) and is otherwise retried.
 - **A crash is not an answer.** A run that failed, made no model turn, or
   stopped early is retried on the normal ladder. It is never read as "nothing
   to do".
