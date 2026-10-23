@@ -563,7 +563,21 @@ Deno.test({
       1,
       "the re-run passed, so the completion phase's own push is the only push",
     );
-    assert(!(o.reason ?? "").includes("PRE_PUSH_BLOCKED"));
+    // The run's status is not asserted: a later phase may fail on this mock.
+    // What is asserted is that the gate did not stop the run. A block would
+    // carry the pre-push category and the gate marker.
+    assert(
+      o.category !== "pre_push_gate",
+      `the gate must not be the failure category, got ${String(o.category)}`,
+    );
+    assert(
+      !(o.reason ?? "").startsWith(PRE_PUSH_GATE_MARKER),
+      `the gate must not be the failure reason, got ${o.reason}`,
+    );
+    // The run got past the gate to PR creation (the `pr create` call is
+    // counted). On this mock it may then fail later, in PR creation's own
+    // environment checks, which is why the status above is not asserted.
+    assertEquals(o.prCreates, 1, "the run must reach PR creation");
   },
 });
 

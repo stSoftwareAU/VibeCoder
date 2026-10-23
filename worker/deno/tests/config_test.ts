@@ -2017,6 +2017,28 @@ Deno.test("config - a non-number pre-push retry timeout is rejected (Issue #4128
   });
 });
 
+Deno.test("config - an infinite pre-push retry timeout is rejected (Issue #4128)", async () => {
+  // JSON.stringify writes Infinity as null, so the file is written as text:
+  // the literal `1e999` parses to Infinity, which the finiteness check must
+  // reject. The message renders the value with JSON.stringify, hence `null`.
+  const tempDir = await Deno.makeTempDir();
+  const configPath = `${tempDir}/.config.json`;
+  await Deno.writeTextFile(
+    configPath,
+    '{"allowed_authors":["testuser"],"repos":["org/repo1"],' +
+      '"pre_push_retry_timeout_seconds":1e999}',
+  );
+  try {
+    await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+      "pre_push_retry_timeout_seconds must be a positive finite number, got null",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
 // ── Issue #1453: trusted_authors_cache_hours ─────────────────────────────
 
 Deno.test("config - trusted_authors_cache_hours defaults to one hour (Issue #1453)", async () => {

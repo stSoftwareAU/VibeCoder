@@ -36,7 +36,6 @@ import {
   buildBoundaryIntegrityInstruction,
   fenceUntrustedIssueText,
   generateBoundaryId,
-  isBoundaryId,
 } from "./prompt_delimiter.ts";
 
 /** What {@link buildPrePushGateRetryPrompt} tells the model it fenced. */
@@ -65,17 +64,16 @@ export type PrePushRecoveryTurn =
  * Fails loud on an unusable input — a prompt that names no gate output would
  * send the agent off to re-derive the failure itself.
  *
+ * The fence nonce is minted fresh on every render (Issue #3152).
+ *
  * @param gateOutput - The pre-push gate's failure message
  * @param repo - The repository, `owner/name`
  * @param issueNumber - The issue the run works on
- * @param boundaryId - Pinned nonce for tests; production mints a fresh one
- *   per render. A malformed id is discarded and a fresh nonce minted instead.
  */
 export function buildPrePushGateRetryPrompt(
   gateOutput: string,
   repo: string,
   issueNumber: number,
-  boundaryId?: string,
 ): string {
   if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
     throw new Error(
@@ -87,7 +85,7 @@ export function buildPrePushGateRetryPrompt(
       "buildPrePushGateRetryPrompt requires the pre-push gate's output",
     );
   }
-  const id = isBoundaryId(boundaryId) ? boundaryId : generateBoundaryId();
+  const id = generateBoundaryId();
 
   return `A pre-push gate blocked the push for ${repo}#${issueNumber}, in THIS run. Nothing else about the run has changed: your branch and its commits are intact. Some of the branch's commits may already be on origin, since the worker's WIP checkpoints push ungated. So the fix must be committed locally: the worker pushes only after it re-runs the gate and the gate passes.
 
