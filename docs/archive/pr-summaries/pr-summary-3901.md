@@ -58,11 +58,11 @@ Docs sweep — grep: `Drop one operand`, `Swap booleans`, "dropped operand", "fl
 - Added `worker/deno/tests/mutation_gate_operands_3901_test.ts`: single-line `||`/`&&`, wrapped `if (`, leading/trailing operator, `return`, ternary, mixed and nested chains, strings/templates/regex/comments, types, `||=`/`&&=`, arrows, truncation and backtick escaping, the cap and order, open comment/template files, the region boundaries (`,`, `:`, `?`, `??`, `?.`, `+=`, `==`) and exact-output tests of every `maskedLines` branch.
 - Removed from `worker/deno/tests/mutation_gate_test.ts`: `assertEquals(rest.length, 0);`
   Required by: "make one mutant per operand"
-  Replaced by: `assertEquals(rest.map((r) => r.description), [`
+  Replaced by: ``assertEquals(rest.map((r) => r.description), [ "dropped operand `a` (replaced with true)", "dropped operand `b` (replaced with true)", ]);``
   (the same test now lists the two `dropped operand` descriptions that follow the `if` negation).
 - Removed from `worker/deno/tests/mutation_gate_test.ts`: `assertEquals(mutate("if (a &&\n  b) {\n}\n", [1]), []);`
   Required by: "operand line then gets its mutant, even when the"
-  Replaced by: `mutate("if (a &&\n  b) {\n}\n", [1]).filter((x) =>`
+  Replaced by: `assertEquals( mutate("if (a &&\n  b) {\n}\n", [1]).filter((x) => x.description === "negated if condition" ), [], );`
   (the wrapped `if` still gets no `negated if condition` mutant; its operand `a` now gets a `dropped operand` mutant).
 
 ## Branch outcomes
@@ -70,11 +70,11 @@ Docs sweep — grep: `Drop one operand`, `Swap booleans`, "dropped operand", "fl
 **Branch outcomes:**
 - `worker/deno/lib/mutation_gate.ts:784` — masking: block comment, string, template, template expression, regex and code each blanked or opaque; open block comment / template returns null — `worker/deno/tests/mutation_gate_operands_3901_test.ts::maskedLines - a block comment is opaque for its whole length` (and the sibling `maskedLines - ...` tests) — each `buf.push`, mode and brace branch flipped by the local mutant harness, a test went red
 - `worker/deno/lib/mutation_gate.ts:790` — exempt (untestable): the initial `inClass = false` is always overwritten when a regex opens (`inClass = false` at the regex start), so no input can observe the initial value; searched `maskedLines - a regex starts with a fresh character class state` and the other `maskedLines` tests
-- `worker/deno/lib/mutation_gate.ts:940` — operand region ends at an unmatched closer, `;`, `,`, `:`, a ternary `?` (not `??`/`?.`), or an opaque comment; an assignment/arrow returns nothing — `worker/deno/tests/mutation_gate_operands_3901_test.ts::operand region - a call argument line ends at its trailing comma` (and the other `operand region - ...` tests) — flipped each terminator, test went red
-- `worker/deno/lib/mutation_gate.ts:991` — chain operator taken at the shallowest depth, `||` preferred, single `&`/`|` ignored — `worker/deno/tests/mutation_gate_operands_3901_test.ts::chain operator - a single & or | is not a chain operator` (and the bracketed/braced/parenthesised variants) — flipped, test went red
-- `worker/deno/lib/mutation_gate.ts:997` — no operator on the line: sourced from the neighbouring line, else no mutant — `worker/deno/tests/mutation_gate_operands_3901_test.ts::generateDenoMutants - an operator at the end of the previous line is sourced` — flipped, test went red
-- `worker/deno/lib/mutation_gate.ts:1013` — blank or literal-only operand skipped; long operand truncated and backticks replaced — `worker/deno/tests/mutation_gate_operands_3901_test.ts::chain operator - a trailing operator leaves no blank operand` — flipped, test went red
-- `worker/deno/lib/mutation_gate.ts:1085` — `masks === null` (unbalanced file) disables only the operand kind — `worker/deno/tests/mutation_gate_operands_3901_test.ts::generateDenoMutants - an open template literal at end of file disables only the operand kind` — flipped, test went red
+- `worker/deno/lib/mutation_gate.ts:965-995` — operand region ends at an unmatched closer, `;`, `,`, `:`, a ternary `?` (not `??`/`?.`), or an opaque comment; an assignment/arrow returns nothing — `worker/deno/tests/mutation_gate_operands_3901_test.ts::operand region - a call argument line ends at its trailing comma` (and the other `operand region - ...` tests) — flipped each terminator, test went red
+- `worker/deno/lib/mutation_gate.ts:1004-1006` and `1027-1030` — a single `&`/`|` is not a split (only a doubled `||`/`&&` is), and a line with no edge operator takes the shallowest-depth operator, `||` preferred — `worker/deno/tests/mutation_gate_operands_3901_test.ts::chain operator - a single & or | is not a chain operator` (and the bracketed/braced/parenthesised variants) — flipped, test went red
+- `worker/deno/lib/mutation_gate.ts:1018` and `1031-1033` — no edge operator on the line: sourced from the neighbouring line (`sourcedOperator`), and with no operator at all no mutant — `worker/deno/tests/mutation_gate_operands_3901_test.ts::generateDenoMutants - an operator at the end of the previous line is sourced` — flipped, test went red
+- `worker/deno/lib/mutation_gate.ts:1046-1053` — blank or literal-only operand skipped; long operand truncated and backticks replaced — `worker/deno/tests/mutation_gate_operands_3901_test.ts::chain operator - a trailing operator leaves no blank operand` — flipped, test went red
+- `worker/deno/lib/mutation_gate.ts:1121` — `masks === null` (unbalanced file, computed at line 1081) disables only the operand kind — `worker/deno/tests/mutation_gate_operands_3901_test.ts::generateDenoMutants - an open template literal at end of file disables only the operand kind` — flipped, test went red
 
 ## Merge verification
 
