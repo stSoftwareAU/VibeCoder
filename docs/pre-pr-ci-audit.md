@@ -368,7 +368,9 @@ Findings:
   The gate "fails closed and never enters push recovery" (a comment above
   `gateBeforePush()` in `lib/phases/completion_phase.ts`), so the agent gets
   no turn to fix what the gate found. This gap is tracked in #4128 (open);
-  no new issue is filed.
+  no new issue is filed. #4128 later added one in-run recovery turn
+  (`worker/deno/lib/pre_push_gate_retry.ts`), so a first block now gets one
+  agent turn before the run fails closed.
 - The sweptAt block recurred on 2026-10-20 to 2026-10-22
   ([#3970](https://github.com/stSoftwareAU/VibeCoder/issues/3970),
   [#4045](https://github.com/stSoftwareAU/VibeCoder/issues/4045),

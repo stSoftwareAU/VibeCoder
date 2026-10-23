@@ -124,6 +124,11 @@ interface Outcome {
   gateCalls: number;
   /** Agent invocations the run made, including the pre-push gate's turn (Issue #4128). */
   agentCalls: number;
+  /**
+   * Calls to `commitAndPushPending` (the recovery turn's commit, Issue #4128).
+   * Each call pushes only when no `beforePush` refuses it.
+   */
+  recoveryCommits: number;
   /** The prompt of each agent invocation, in order. */
   agentPrompts: string[];
   /** The `baseRef` each gate call received (5th argument). */
@@ -156,6 +161,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let recoveries = 0;
   let gateCalls = 0;
   let agentCalls = 0;
+  let recoveryCommits = 0;
   const agentPrompts: string[] = [];
   const gateBaseRefs: Array<string | undefined> = [];
   const warnings: string[] = [];
@@ -349,6 +355,37 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           })
           : Promise.resolve({ ok: true as const, value: 1 });
       },
+      // The recovery turn's one commit call (Issue #4128), with production's
+      // contract: a `beforePush` refusal is returned as is and nothing is
+      // pushed; otherwise the commit pushes.
+      commitAndPushPending: async (
+        _branchName,
+        _message,
+        _opts,
+        _allowDefault,
+        _preFlight,
+        _runId,
+        _formatBeforeGate,
+        beforePush,
+      ) => {
+        recoveryCommits++;
+        if (beforePush) {
+          const verified = await beforePush();
+          if (!verified.ok) {
+            return { ok: false as const, error: verified.error };
+          }
+        }
+        pushes++;
+        return {
+          ok: true as const,
+          value: {
+            committedNewChanges: true,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+            finalUnpushedSource: "remote-head" as const,
+          },
+        };
+      },
       recoverFromPushRejection: () => {
         recoveries++;
         return Promise.resolve({
@@ -465,6 +502,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       gateCalls,
       gateBaseRefs,
       agentCalls,
+      recoveryCommits,
       agentPrompts,
       warnings,
       infos,
@@ -518,8 +556,13 @@ Deno.test({
     });
     assertEquals(o.agentCalls, 1);
     assertStringIncludes(o.agentPrompts[0] ?? "", BLOCK);
+    assertEquals(o.recoveryCommits, 1, "the turn's commit ran once");
     assertEquals(o.gateCalls, 2, "the same gate runs again after the turn");
-    assertEquals(o.pushes, 1, "the re-run passed, so the push goes through");
+    assertEquals(
+      o.pushes,
+      1,
+      "the re-run passed, so the completion phase's own push is the only push",
+    );
     assert(!(o.reason ?? "").includes("PRE_PUSH_BLOCKED"));
   },
 });
@@ -537,6 +580,11 @@ Deno.test({
     assertEquals(o.status, "failure");
     assertEquals(o.category, "pre_push_gate");
     assertEquals(o.agentCalls, 1);
+    assertEquals(
+      o.recoveryCommits,
+      1,
+      "the turn's commit ran once, and its push was refused",
+    );
     assertEquals(
       o.pushes,
       0,
@@ -574,6 +622,11 @@ for (const agent of ["error", "throw"] as const) {
         "a turn that did not finish left nothing to re-gate",
       );
       assertEquals(o.pushes, 0, "a blocked gate must never reach the push");
+      assertEquals(
+        o.recoveryCommits,
+        0,
+        "a turn that did not finish commits nothing",
+      );
       const reason = o.reason ?? "";
       assert(reason.startsWith(PRE_PUSH_GATE_MARKER));
       assertStringIncludes(reason, BLOCK);
@@ -960,6 +1013,11 @@ Deno.test({
         o.category,
         category,
         "the phase must declare its cause instead of depending on reason wording",
+      );
+      assertEquals(
+        o.agentCalls,
+        category === "pre_push_gate" ? 1 : 0,
+        "only a verdict block earns the one agent turn (Issue #4128)",
       );
       if (category === "push_failure") {
         assert(o.gateCalls > 1, "only the network failure is retried in-run");

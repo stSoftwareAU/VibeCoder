@@ -60,6 +60,10 @@ interface Harness {
   /** `state.prePushRetryAttempted` as read at the moment the agent is entered. */
   flagsAtEntry: Array<boolean | undefined>;
   commits: CommitCall[];
+  /** Error-level log lines the turn wrote. */
+  errors: string[];
+  /** Info-level log lines the turn wrote. */
+  infos: string[];
 }
 
 /** A clean agent turn: exit 0, not timed out. */
@@ -74,6 +78,10 @@ function cleanTurn(): AgentResult {
 function makeHarness(options: {
   config?: Partial<WorkerConfig>;
   script?: (runOptions: RunClaudeOptions) => AgentResult;
+  /** When set, `reconcileHeadToBranch` fails with this error. */
+  reconcileError?: Error;
+  /** When set, `commitAndPushPending` fails with this error (a non-sentinel). */
+  commitError?: Error;
 }): Harness {
   const ctx: IssueContext = {
     repo: REPO,
@@ -101,9 +109,19 @@ function makeHarness(options: {
   const agentCalls: RunClaudeOptions[] = [];
   const flagsAtEntry: Array<boolean | undefined> = [];
   const commits: CommitCall[] = [];
+  const errors: string[] = [];
+  const infos: string[] = [];
   const script = options.script ?? (() => cleanTurn());
 
   const deps = createMockDeps({
+    logger: {
+      info: (message: string) => {
+        infos.push(message);
+      },
+      error: (message: string) => {
+        errors.push(message);
+      },
+    },
     claude: {
       runClaudeWithRetry: (runOptions: RunClaudeOptions) => {
         agentCalls.push(runOptions);
@@ -112,6 +130,16 @@ function makeHarness(options: {
       },
     },
     git: {
+      reconcileHeadToBranch: () =>
+        options.reconcileError
+          ? Promise.resolve({
+            ok: false as const,
+            error: options.reconcileError,
+          })
+          : Promise.resolve({
+            ok: true as const,
+            value: { action: "already-on-branch" as const, fromRef: "mock" },
+          }),
       commitAndPushPending: (
         _branchName,
         message,
@@ -129,6 +157,12 @@ function makeHarness(options: {
           cwd: opts?.cwd,
           beforePush,
         });
+        if (options.commitError) {
+          return Promise.resolve({
+            ok: false as const,
+            error: options.commitError,
+          });
+        }
         return Promise.resolve({
           ok: true,
           value: {
@@ -142,7 +176,7 @@ function makeHarness(options: {
     },
   });
 
-  return { ctx, state, deps, agentCalls, flagsAtEntry, commits };
+  return { ctx, state, deps, agentCalls, flagsAtEntry, commits, errors, infos };
 }
 
 /** The detail of a turn that did not run; fails the test if it ran. */
@@ -320,6 +354,70 @@ Deno.test("pre-push gate retry - timed out: not run, detail names the timeout, n
   assertEquals(h.agentCalls.length, 1);
   assertEquals(h.state.prePushRetryAttempted, true);
   assertEquals(h.commits.length, 0);
+});
+
+Deno.test("pre-push gate retry - reconcile fails: the turn still counts as run, no commit, error log names the cause (Issue #4128)", async () => {
+  const h = makeHarness({
+    reconcileError: new Error("HEAD is detached at 0123abc"),
+  });
+
+  const result = await runPrePushGateRecoveryTurn(
+    h.ctx,
+    h.state,
+    h.deps,
+    GATE_OUTPUT,
+  );
+
+  assertEquals(result, { ran: true });
+  assertEquals(h.agentCalls.length, 1);
+  assertEquals(
+    h.commits.length,
+    0,
+    "commitAndPushPending must not be called after a failed reconcile",
+  );
+  assertEquals(
+    h.errors.length,
+    1,
+    `expected one error-level line, got: ${h.errors.join(" | ")}`,
+  );
+  assertStringIncludes(
+    h.errors[0]!,
+    `Could not put HEAD back on 'issue-${ISSUE}'`,
+  );
+  assertStringIncludes(h.errors[0]!, "HEAD is detached at 0123abc");
+});
+
+Deno.test("pre-push gate retry - commit fails with a non-sentinel error: the turn still counts as run, error log names the message (Issue #4128)", async () => {
+  const h = makeHarness({
+    commitError: new Error(
+      "pre-flight gate blocked: cspell unknown word 'sweptAtt'",
+    ),
+  });
+
+  const result = await runPrePushGateRecoveryTurn(
+    h.ctx,
+    h.state,
+    h.deps,
+    GATE_OUTPUT,
+  );
+
+  assertEquals(result, { ran: true });
+  assertEquals(h.agentCalls.length, 1);
+  assertEquals(h.commits.length, 1);
+  assertEquals(
+    h.errors.length,
+    1,
+    `expected one error-level line, got: ${h.errors.join(" | ")}`,
+  );
+  assertStringIncludes(
+    h.errors[0]!,
+    "pre-flight gate blocked: cspell unknown word 'sweptAtt'",
+  );
+  assertEquals(
+    h.infos.filter((m) => m.includes("committed locally")).length,
+    0,
+    "a real commit failure is not the deferral",
+  );
 });
 
 Deno.test("pre-push gate retry - configured timeout is used (Issue #4128)", async () => {
