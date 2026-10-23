@@ -172,6 +172,7 @@ The mutator works on added lines of non-test source files.
 | Swap booleans              | `true` becomes `false` and the reverse                   |
 | Replace a return value     | `return x` becomes `return undefined;`; `true`/`false`, numbers and plain strings flip to `false`/`true`, `0`/`1` and `""` |
 | Delete a call statement    | A single call statement is removed                       |
+| Drop one operand           | An operand of a top-level `\|\|` or `&&` chain on an added line is replaced with `false` (for `\|\|`) or `true` (for `&&`); one mutant per operand (Issue #3901) |
 | Delete an object property  | A property line (`repo,`, `key: value,`, `...rest,`) directly inside an object literal is removed, or one entry of a single-line `f({ repo, ...rest })` argument (Issue #3601) |
 | Delete an array element    | A string or identifier element alone on its line in an array literal is removed, such as one name in a `--json` field list (Issue #3601) |
 | Revert a property value    | `key: otherName,` becomes `key,` when `key` is a name used just above, undoing a renamed value at a call site (Issue #3601) |
@@ -185,6 +186,22 @@ type, an interface, an annotation or a generic argument: mutants run with
 block the PR. A file whose brackets the scan cannot balance gets none of these
 three, only the kinds above. They count towards the same mutant cap, after the
 other kinds on each line.
+
+`Drop one operand` (Issue #3901) works on added lines that hold an operand of a
+top-level `||` or `&&` chain. One mutant per operand replaces that operand with
+the chain identity (`false` for `||`, `true` for `&&`) and is described to the
+author as ``dropped operand `b` (replaced with false)``. It applies in `if`,
+`else if` and `while` conditions, ternary conditions, `return` expressions and
+boolean assignments (`const x =`, `let x =`, `x =`). Wrapped conditions are
+covered: the operator is taken from the line's own trailing or leading `||` or
+`&&`, or else from the neighbouring operand line's, so each added operand line
+gets its mutant even when the `if (` line itself is unchanged. Only top-level
+operands are dropped, so `a || (b && c)` drops `(b && c)` as one operand; an
+inner operand is mutated only when it sits on its own added line. A `||` or `&&`
+inside a string, template literal, comment or regex literal is never mutated,
+nor is a single `|` or `&` (a type union such as `type T = A | B`). A file with
+an unterminated string, comment or template gets none of these mutants. They
+count towards the same 40-mutant cap, after the other kinds on each line.
 
 Each mutant runs only the test files that import the mutated module
 (`deno test --no-check -A <those files>`). `--no-check` is deliberate: a mutant
