@@ -45,7 +45,7 @@ Grep results (the other hits are unrelated):
 - **met** — `runPrePrVerifier` with no findings and only a `partial` verdict is still `checked` and blocked — evidence: `worker/deno/tests/pre_pr_verifier_3395_test.ts::runPrePrVerifier: only a partial verdict and no findings still blocks, naming the item` — reviewer: met
 - **met** — Fleet review: an out-of-vocabulary verdict for an expected item gives `changes_requested` from `decideOutcome`, and `met` for the same item approves — evidence: `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts::a reply with an out-of-vocabulary verdict for an expected item is sent back naming that item; a met verdict for it is approved` — reviewer: met
 - **met** — The throw assertions are replaced, and each removed assertion is named in the Test Plan — evidence: `worker/deno/tests/pre_pr_verifier_3395_test.ts::parseReviewReply parses a checklist array, defaults to [] and drops a bad verdict` — reviewer: met
-- **met** — `deno task check` exits 0, and the three targeted test files pass (138 passed, 0 failed, stdin from `/dev/null`). The full `deno task test` was not run in this session, so this row rests on the targeted run and the check — evidence: `/tmp/check-4200.log` (exit 0) and the test output in the final results — reviewer: met
+- **met** — `deno task check` exits 0, and the three targeted test files pass (138 passed, 0 failed, stdin from `/dev/null`). The full `deno task test` reported 5 failures, none in code this change touches: 2 in `worker/deno/tests/completion_phase_repo_formatters_test.ts` ("formatter should commit the Rust fix"), which fail identically at base `7ec75d5b` (6 passed, 2 failed in both trees, checked in a temporary worktree), and 3 that fail with "codex provider not installed in container image" (2 in `worker/deno/tests/claude_runner_provider_fallback_4034_test.ts`, 1 in `worker/deno/tests/external_orchestration_3642_config_test.ts`), which is environmental and was not run at base — evidence: `/tmp/check-4200.log` (exit 0) and the test output in the final results — reviewer: met
 
 ## Standards Review
 
@@ -84,6 +84,10 @@ The continue outcomes are listed in `docs/archive/pr-summaries/pr-summary-4200.f
 <!-- vibe-branch-outcomes -->
 
 Test runs (stdin from `/dev/null`): `deno task test:unit` on `worker/deno/tests/review_checklists_3594_test.ts`, `worker/deno/tests/pre_pr_verifier_3395_test.ts` and `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts` reported `ok | 138 passed | 0 failed`; `deno task check` exited 0.
+
+Semgrep suppression: `./quality.sh` ran semgrep (p/default) over the changed test file and flagged the pre-existing line `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts:529` (`assert(!r.body.includes("<script>"), r.body);`) as a false positive (the assertion checks that a script tag is absent from output). It now carries the repo's trailing `// nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag` comment. The line is not part of this change's logic.
+
+Not checked: the serial pass of `deno task test` never ran because the parallel pass failed; the three codex-provider failures were not run at base `7ec75d5b`; the Reproduction regression test was not observed failing against the unfixed code.
 
 ## Reproduction
 

@@ -526,7 +526,7 @@ Deno.test("a hostile reason or item cannot inject markup or a mention into the p
     expected: [{ checklist: "n@me", item: "<script>alert(1)</script>" }],
   } as never);
   assert(!r.body.includes("<img"), r.body);
-  assert(!r.body.includes("<script>"), r.body);
+  assert(!r.body.includes("<script>"), r.body); // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
   assert(!r.body.includes("@octocat"), r.body);
 });
 
