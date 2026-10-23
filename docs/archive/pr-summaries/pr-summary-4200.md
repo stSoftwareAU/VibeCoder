@@ -56,9 +56,22 @@ Grep results (the other hits are unrelated):
 
 ## Test Plan
 
-Removed or replaced assertions (named as required):
-- `worker/deno/tests/pre_pr_verifier_3395_test.ts`, "parseReviewReply parses a checklist array, defaults to [] and drops a bad verdict": `assertThrows` for `verdict: "probably"` replaced by `dropped.checklist.map((c) => c.item)` equal to `["i"]`; `assertThrows` for `checklist: "nope"` replaced by `checklist` equal to `[]`. These are committed in `ef6934bd`.
-- `worker/deno/tests/review_checklists_3594_test.ts`, "parseChecklistVerdicts rejects each bad shape naming the problem": the `assertThrows` per bad shape is replaced by "parseChecklistVerdicts drops each bad shape and keeps valid neighbours", which also adds `{ ...ok, item: "" }` and `{ ...ok, item: "   " }` (`:322-336`).
+Removed assertions (each named as the issue requires; the replacements are committed in `ef6934bd` and `c66ce611`):
+
+- Removed from `worker/deno/tests/pre_pr_verifier_3395_test.ts`: `assertThrows( () => parseReviewReply(JSON.stringify({ ...base, checklist: [{ checklist: "M", item: "i", verdict: "probably" }], })), Error, "verdict", );`
+  Required by: "a malformed entry instead of throwing"
+  Replaced by: `assertEquals(dropped.checklist.map((c) => c.item), ["i"]);`
+- Removed from `worker/deno/tests/pre_pr_verifier_3395_test.ts`: `assertThrows( () => parseReviewReply(JSON.stringify({ ...base, checklist: "nope" })), Error, "checklist", );`
+  Required by: "The old throw assertions are replaced, and the PR summary names each one"
+  Replaced by: `assertEquals( parseReviewReply(JSON.stringify({ ...base, checklist: "nope" })).checklist, [], );`
+- Removed from `worker/deno/tests/review_checklists_3594_test.ts`: `const err = assertThrows(() => parseChecklistVerdicts(value), Error);`
+  Required by: "each bad shape is dropped and the valid entries alongside it are kept"
+  Replaced by: `assertEquals(parseChecklistVerdicts([ok, entry]), [kept], label);`, `assertEquals(parseChecklistVerdicts([entry, ok]), [kept], label);`, `assertEquals(parseChecklistVerdicts(value), []);`
+- Removed from `worker/deno/tests/review_checklists_3594_test.ts`: `assertStringIncludes(err.message, message);`
+  Required by: "each bad shape is dropped and the valid entries alongside it are kept"
+  Replaced by: `assertEquals(parseChecklistVerdicts([ok, entry]), [kept], label);`, `assertEquals(parseChecklistVerdicts([entry, ok]), [kept], label);`
+
+The "parseChecklistVerdicts rejects each bad shape naming the problem" test is replaced by "parseChecklistVerdicts drops each bad shape and keeps valid neighbours", which also adds `{ ...ok, item: "" }` and `{ ...ok, item: "   " }` (`:322-336`).
 
 Added: the `runPrePrVerifier` partial-verdict tests (`pre_pr_verifier_3395_test.ts:1188`, `:1231`), and the fleet out-of-vocabulary test (`review_fleet_prs_checklists_3594_test.ts:457`).
 
