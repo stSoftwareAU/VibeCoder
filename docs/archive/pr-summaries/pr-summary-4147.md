@@ -59,6 +59,16 @@ missing and prevents closure.
 - The prose-status regression failed in both the parser and the real merged-PR
   closer before the fix. Its related parser, PR-body and closure suite then
   passed 105 tests.
+- Full-suite investigation reproduced an existing file-lock test hang: its
+  missing-file watcher starved pending lock I/O. Yielding between observations
+  and stopping the watcher in `finally` preserves its atomicity assertions.
+  The startup fixture also disables real host package updates. Both fixture
+  suites passed all 29 tests afterwards.
+- The completed full-suite run exposed six subprocess-fixture failures from
+  permission flags that `deno eval` rejects. Those fixtures now use eval's
+  implicit permissions; environment-isolation assertions are unchanged.
+  Two terminal-reconciliation integration tests now assert the bounded retry
+  before checking their existing failure-accounting and heartbeat outcomes.
 - No UI changed; screenshots are not applicable.
 
 **Docs sweep** — grep: `holdIssueOpenForMissingCriteria`,
@@ -90,6 +100,11 @@ still prevents false closure.
   Parser callers also include claim freshness, unmet criteria, closure-met
   checks and degraded delivery; their explicit-status fixtures retain the
   same meaning.
+- Execution fixtures use the production `CLAUDE_OUTPUT_ADAPTER.decode` and
+  `buildRunStats`, matching the metadata produced by the real runner. Git and
+  PR ports separately model absent work and each recovery path. The closure
+  fixtures preserve GitHub's distinction between merged PRs and closed,
+  unmerged PRs, including `mergedAt` in closed-list responses.
 - Removed assertions expecting `needs-human` and one hand-off comment are
   replaced by no-label/no-comment assertions, as required by the operator's
   request to restore incorrectly parked assignments. The removed

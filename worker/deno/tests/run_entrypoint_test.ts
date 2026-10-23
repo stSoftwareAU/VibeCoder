@@ -267,6 +267,8 @@ Deno.test("run-entrypoint command - blocked guard yields exit 0 without a shadow
             HOME: tmpDir,
             USERPROFILE: tmpDir,
             PATH: Deno.env.get("PATH") ?? "",
+            // This fixture tests startup plumbing, not host package updates.
+            SKIP_SOFTWARE_UPDATE: "true",
           }),
           setEnv: (name, value) => {
             exported[name] = value;

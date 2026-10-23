@@ -4618,7 +4618,16 @@ Deno.test("workOnIssue reconciles terminal failure before heartbeat publication 
           variant,
       );
       assert(result);
-      assertEquals(executions, variant === "closed" ? 0 : 1, variant);
+      assertEquals(
+        executions,
+        variant === "closed"
+          ? 0
+          : variant === "success" || variant === "preexisting"
+          ? 1
+          : 2,
+        "failed empty runs receive one bounded retry before reconciliation: " +
+          variant,
+      );
       assertEquals(
         result.success,
         variant === "closed" || variant === "success",

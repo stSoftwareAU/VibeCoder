@@ -294,7 +294,6 @@ Deno.test(
     const child = new Deno.Command(Deno.execPath(), {
       args: [
         "eval",
-        "--allow-all",
         `const { detectTool } = await import(${JSON.stringify(moduleUrl)});\n` +
         `const r = await detectTool("deno", "/nonexistent-home-xyzzy");\n` +
         `console.log(JSON.stringify(r));`,

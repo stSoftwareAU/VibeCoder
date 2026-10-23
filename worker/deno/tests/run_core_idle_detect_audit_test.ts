@@ -533,7 +533,7 @@ Deno.test(
       }));
     `;
     const child = new Deno.Command(Deno.execPath(), {
-      args: ["eval", "--no-check", "--allow-env", "--allow-read", script],
+      args: ["eval", "--no-check", script],
       env: { ...Deno.env.toObject(), WORK_DIR: planted },
       stdout: "piped",
       stderr: "piped",

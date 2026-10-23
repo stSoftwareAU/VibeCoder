@@ -877,7 +877,7 @@ Deno.test("production coding dispatch defers actual heartbeat publication throug
       const result = observation[0]!.value;
       assertEquals(result.ok, true);
       if (!result.ok) throw result.error;
-      assertEquals(executions, 1);
+      assertEquals(executions, 2, "failed empty runs receive one bounded retry");
       assertEquals(result.value.success, false);
       assertEquals(result.value.skipped, !dirty);
       assertEquals(result.value.outcome?.kind === "claim_stale", !dirty);

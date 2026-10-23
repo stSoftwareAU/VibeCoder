@@ -111,7 +111,7 @@ Deno.test("test stage env - a scrubbed variable really is absent from the child 
     }));
   `;
   const intermediate = new Deno.Command(Deno.execPath(), {
-    args: ["eval", "--allow-run", "--allow-env", "--allow-read", script],
+    args: ["eval", script],
     env: { ...Deno.env.toObject(), [scrubbed]: planted },
     stdout: "piped",
     stderr: "piped",
@@ -165,7 +165,7 @@ Deno.test("test stage env - a token in the worker's environment cannot be read b
     console.log(JSON.stringify({ own, seen }));
   `;
   const intermediate = new Deno.Command(Deno.execPath(), {
-    args: ["eval", "--allow-run", "--allow-env", "--allow-read", script],
+    args: ["eval", script],
     env: { ...Deno.env.toObject(), GH_TOKEN: planted },
     stdout: "piped",
     stderr: "piped",
