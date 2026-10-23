@@ -112,6 +112,9 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   // CONFIG_FILE). Stays here by decision: 9s, and nothing in the
   // containment story turns on setup.ps1 being verified before the push.
   "tests/setup_ps1_test.ts",
+  // Issue #4119: drives the real setup.ps1 update mode and setup.sh's config-exists path.
+  "tests/setup_ps1_update_mode_test.ts",
+  "tests/setup_sh_config_existed_test.ts",
   "tests/setup_token_transcript_cleanup_test.ts",
   "tests/setup_workdir_reminder_test.ts",
   "tests/volume_init_script_test.ts",
@@ -163,7 +166,8 @@ export const IN_GATE_SCRIPT_SUITES: ReadonlyMap<string, string> = new Map([
     "tests/run_ps1_launcher_test.ts",
     "drives run.ps1, the Windows containment boundary, against a stub " +
     "PATH; the image ships pwsh 7.6.5 (Issue #1596) so the gate can run " +
-    "it — 76s, in the serial pass because it times a launcher watchdog",
+    "it — 76s, plus about 11s for Issue #4119's three release-notice " +
+    "cases, in the serial pass because it times a launcher watchdog",
   ],
   [
     "tests/launcher_parity_test.ts",

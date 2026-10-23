@@ -1492,10 +1492,7 @@ there is a real signal and must be read; it is not the gate.
 **One named exception, and it is the prerequisite that moved, not the rule**
 (Issue #1598). The container image now ships PowerShell 7 (Issue #1596), so
 the three `run.ps1` launcher suites have their interpreter wherever the worker
-runs its gate. They are named in `IN_GATE_SCRIPT_SUITES`, each with a reason
-and its measured cost, and the gate runs them — about 97s for the Windows
-containment boundary being verified before the push rather than in a job that
-cannot block a merge. `pwsh_suites_in_the_gate_test.ts` fails the gate on a
+runs its gate. They are named, with the other launcher suites, in `IN_GATE_SCRIPT_SUITES`, each with a reason and its measured cost, and the gate runs them — about 125s across the map's four entries (about 87s of it for `run_ps1_launcher_test.ts` alone) for the Windows containment boundary being verified before the push rather than in a job that cannot block a merge. `pwsh_suites_in_the_gate_test.ts` fails the gate on a
 host without PowerShell rather than letting those suites report "ignored"
 while the gate reports green. The `setup.ps1` suites stay excluded. An entry
 there is an exception a change has to argue for, never a place to move a slow
