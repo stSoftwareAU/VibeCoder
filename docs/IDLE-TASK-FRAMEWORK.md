@@ -133,9 +133,7 @@ Key points:
   it) or as a **failure** (the claim itself could not be made — a `gh` outage,
   a non-collaborator worker) — never as the ordinary success that made two
   hosts' duplicate audits look like one host working twice.
-- The claim handler **never throws** — every failure mode (malformed body,
-  unknown template, runner error) logs a structured warning and returns a
-  `{ handled: true, ok: false }` result so the queue does not stall.
+- The claim handler **never throws** — an issue that matches no template returns `{ handled: false }` and falls through to the standard pipeline, and every other failure mode (a `runTask` exception or failure) logs a structured warning and returns `{ handled: true }`, with `ok: false` on an exception, so the queue does not stall.
 - **Only a scan that actually ran closes its wrapper** (Issue #179). A run that
   returns `ok: false` — a missing clone, a detector crash, an `ENOENT` — gets a
   failure **comment** and the wrapper stays **open**. The ordinary failure
