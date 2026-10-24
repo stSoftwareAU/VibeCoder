@@ -66,7 +66,7 @@ Greps were run from the repo root over `*.md`, `*.ts` and `*.json`. Hits in
   - `worker/deno/tests/milestone_health_test.ts:947`, `:966`, `:984`, `:1022`: assert the phrase is absent for failed repos, still true.
   - `worker/deno/tests/milestone_health_command_test.ts:39` and `:102`: assert the phrase for a clean report and a healthy empty repo, still true.
 - `milestone-health`: still true, it names the command, the GraphQL source label, a comment or a temp prefix:
-  - `worker/deno/commands/milestone_health.ts:10`, `:54`; `worker/deno/mod.ts:622`, `:754`.
+  - `worker/deno/commands/milestone_health.ts:10`, `:86`; `worker/deno/mod.ts:622`, `:754`.
   - `worker/deno/lib/milestone_health.ts:264`, `:265`; `worker/deno/lib/gh_call_metrics.ts:235`, `:708`.
   - `worker/deno/lib/issue_query.ts:591`, `:949`, `:973`.
   - `worker/deno/tests/gh_call_metrics_test.ts:421`, `:428`, `:480`, `:494`; `worker/deno/tests/run_core_test.ts:2711`, `:2712`, `:2744`.
@@ -127,8 +127,8 @@ The two assertions are kept, now unconditional after `if (!result.ok) throw new 
 Red checks, one flip at a time on the head. Each flip was restored with `git checkout` and `git diff --stat` was checked empty. Baseline was `ok | 35 passed | 0 failed`.
 
 - Milestone-list catch (`worker/deno/lib/milestone_health.ts:462`) returns `{ repo, milestones: [] }`: red is `getMilestoneHealth - failed milestone list transport marks the repo as failed (Issue #4106)` (`milestone_health_test.ts:866`).
-- Closed-list catch (`:505`) swallowed: red is `getMilestoneHealth - failed closed issue list marks the repo as failed, not complete (Issue #4106)` (`:941`) and `getMilestoneHealth - non-JSON closed issue list marks the repo as failed, not complete (Issue #4106)` (`:960`).
-- Open-list catch (`:526`) swallowed: red is `getMilestoneHealth - failed open issue list marks the repo as failed, not complete (Issue #4106)` (`:922`) and `getMilestoneHealth - a failing repo is reported with error while a healthy repo is reported normally (Issue #4106)` (`:1016`).
+- Closed-list catch (`:505`) swallowed: red is `getMilestoneHealth - failed closed issue list marks the repo as failed, not complete (Issue #4106)` (`:950`) and `getMilestoneHealth - non-JSON closed issue list marks the repo as failed, not complete (Issue #4106)` (`:969`).
+- Open-list catch (`:526`) swallowed: red is `getMilestoneHealth - failed open issue list marks the repo as failed, not complete (Issue #4106)` (`:931`) and `getMilestoneHealth - a failing repo is reported with error while a healthy repo is reported normally (Issue #4106)` (`:1025`).
 - Formatter error branch (`:672`) deleted: red is seven tests: `buildMilestoneHealthCommandResult - a repo with an error fails and names the failure (Issue #4106)`, `buildMilestoneHealthCommandResult - a mixed report with one errored repo fails (Issue #4106)`, `formatMilestoneHealthReport - a repo with an error prints the failure, not no milestones (Issue #4106)`, `getMilestoneHealth - a failing repo is reported with error while a healthy repo is reported normally (Issue #4106)`, `getMilestoneHealth - failed open issue list marks the repo as failed, not complete (Issue #4106)`, `getMilestoneHealth - failed closed issue list marks the repo as failed, not complete (Issue #4106)`, `getMilestoneHealth - non-JSON closed issue list marks the repo as failed, not complete (Issue #4106)`.
 - Command `failed.length > 0` (`worker/deno/commands/milestone_health.ts:37`) forced to the success path: red is `buildMilestoneHealthCommandResult - a repo with an error fails and names the failure (Issue #4106)` (`milestone_health_command_test.ts:37`) and `buildMilestoneHealthCommandResult - a mixed report with one errored repo fails (Issue #4106)` (`:45`).
 - Command failure branch forced on a clean report (`failed.length >= 0`): red is `buildMilestoneHealthCommandResult - clean report succeeds with the formatted text (Issue #4106)` (`milestone_health_command_test.ts:29`).
