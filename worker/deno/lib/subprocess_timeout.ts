@@ -40,7 +40,8 @@ export interface SubprocessResult {
  *
  * @param executable - The command to run (e.g., "gh", "git", "df").
  * @param args - Command-line arguments.
- * @param options - Optional settings: cwd, timeout, quiet mode, environment.
+ * @param options - Settings. `timeoutMs` is required. Also cwd, quiet mode
+ *   and environment.
  *   `quiet` suppresses stdout only — stderr is always piped and captured so
  *   failure diagnostics survive (Issue #1979). `clearEnv` starts the child
  *   from an empty environment so only `env` reaches it — the callback
@@ -50,9 +51,9 @@ export interface SubprocessResult {
 export async function runWithTimeout(
   executable: string,
   args: string[],
-  options?: {
+  options: {
     cwd?: string;
-    timeoutMs?: number;
+    timeoutMs: number;
     quiet?: boolean;
     /** Environment entries to set on the child. */
     env?: Record<string, string>;
@@ -70,7 +71,7 @@ export async function runWithTimeout(
     captureOutputOnTimeout?: boolean;
   },
 ): Promise<Result<SubprocessResult>> {
-  const timeoutMs = options?.timeoutMs ?? DEFAULT_SUBPROCESS_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs;
 
   if (!(timeoutMs > 0)) {
     return {

@@ -1,19 +1,17 @@
 /**
  * Tests for the spawn-timeout quality-gate check (Issue #4248).
  *
- * The scanner is exercised on literal file contents. The directory walk and
- * the shrink-only baseline are exercised against a temporary tree and against
- * this checkout.
+ * The scanner is exercised on literal file contents. The directory walk is
+ * exercised against a temporary tree and against this checkout, which must
+ * report no offence.
  *
  * Uses Australian English throughout.
  */
 
 import { assert, assertEquals } from "@std/assert";
 import {
-  diffSpawnTimeoutBaseline,
   scanContentForSpawnTimeout,
   scanDirectoriesForSpawnTimeout,
-  SPAWN_TIMEOUT_BASELINE,
   SPAWN_TIMEOUT_SCAN_DIRS,
 } from "../lib/spawn_timeout_check.ts";
 
@@ -118,33 +116,6 @@ Deno.test("scanContentForSpawnTimeout - a local helper of the same name is not t
   assertEquals(offences, []);
 });
 
-Deno.test("diffSpawnTimeoutBaseline - a stale baseline entry fails and a known gap does not", () => {
-  const offences = scanContentForSpawnTimeout(
-    'new Deno.Command("ps", { args: ["-p", "1"] });',
-    "worker/deno/lib/still_open.ts",
-  );
-  const diff = diffSpawnTimeoutBaseline(
-    offences,
-    new Set([
-      "worker/deno/lib/still_open.ts",
-      "worker/deno/lib/already_fixed.ts",
-    ]),
-  );
-  assertEquals(diff.newOffences, []);
-  assertEquals(diff.staleBaseline, ["worker/deno/lib/already_fixed.ts"]);
-});
-
-Deno.test("diffSpawnTimeoutBaseline - an offender outside the baseline fails", () => {
-  const offences = scanContentForSpawnTimeout(
-    'new Deno.Command("ps", {});',
-    "worker/deno/lib/new_gap.ts",
-  );
-  const diff = diffSpawnTimeoutBaseline(offences, new Set());
-  assertEquals(diff.staleBaseline, []);
-  assertEquals(diff.newOffences.length, 1);
-  assertEquals(diff.newOffences[0]?.file, "worker/deno/lib/new_gap.ts");
-});
-
 Deno.test("scanDirectoriesForSpawnTimeout - the chokepoint file is skipped, a sibling is not", async () => {
   const root = await Deno.makeTempDir({ prefix: "spawn-timeout-" });
   try {
@@ -171,7 +142,7 @@ Deno.test("scanDirectoriesForSpawnTimeout - the chokepoint file is skipped, a si
   }
 });
 
-Deno.test("scanDirectoriesForSpawnTimeout - this checkout matches the shrink-only baseline", async () => {
+Deno.test("scanDirectoriesForSpawnTimeout - this checkout has no untimed spawn", async () => {
   const repoRoot = decodeURIComponent(
     new URL("../../../", import.meta.url).pathname,
   );
@@ -180,15 +151,6 @@ Deno.test("scanDirectoriesForSpawnTimeout - this checkout matches the shrink-onl
     root,
     SPAWN_TIMEOUT_SCAN_DIRS,
   );
-  const offending = [...new Set(result.offences.map((offence) => offence.file))]
-    .sort();
-  const baseline = [...SPAWN_TIMEOUT_BASELINE].sort();
-  assertEquals(offending, baseline);
-  const diff = diffSpawnTimeoutBaseline(
-    result.offences,
-    SPAWN_TIMEOUT_BASELINE,
-  );
-  assertEquals(diff.newOffences, []);
-  assertEquals(diff.staleBaseline, []);
+  assertEquals(result.offences, []);
   assert(result.filesScanned > 0);
 });

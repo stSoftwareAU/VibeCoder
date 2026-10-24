@@ -38,9 +38,7 @@ import {
   scanDirectoriesForGitSpawn,
 } from "./git_spawn_chokepoint_check.ts";
 import {
-  diffSpawnTimeoutBaseline,
   scanDirectoriesForSpawnTimeout,
-  SPAWN_TIMEOUT_BASELINE,
   SPAWN_TIMEOUT_SCAN_DIRS,
 } from "./spawn_timeout_check.ts";
 import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
@@ -735,9 +733,7 @@ async function runGitSpawnChokepointCheck(
  * Run the spawn-timeout check (Issue #4248).
  *
  * A `new Deno.Command` with no `signal`, outside the chokepoint modules, or a
- * `runWithTimeout` call with no `timeoutMs`, fails the gate. Files already
- * offending are named in the baseline; that list may only shrink, so a stale
- * entry fails until it is removed.
+ * `runWithTimeout` call with no `timeoutMs`, fails the gate.
  */
 async function runSpawnTimeoutCheck(
   config: QualityGateConfig,
@@ -765,12 +761,8 @@ async function runSpawnTimeoutCheck(
     config.scriptDir,
     relDirs,
   );
-  const diff = diffSpawnTimeoutBaseline(
-    result.offences,
-    SPAWN_TIMEOUT_BASELINE,
-  );
 
-  if (diff.newOffences.length === 0 && diff.staleBaseline.length === 0) {
+  if (result.offences.length === 0) {
     return {
       name,
       status: "PASSED",
@@ -779,19 +771,13 @@ async function runSpawnTimeoutCheck(
   }
 
   const output = [
-    ...diff.newOffences.map(
+    ...result.offences.map(
       (offence) =>
         `VIOLATION: ${offence.file}:${offence.line}: ${offence.text}`,
     ),
-    ...diff.staleBaseline.map(
-      (file) =>
-        `STALE BASELINE: ${file} no longer spawns without a timeout — remove it`,
-    ),
     "",
     "A subprocess spawn has no explicit timeout (Issue #4248). Pass `signal`",
-    "to `new Deno.Command`, or `timeoutMs` to `runWithTimeout`. The baseline",
-    "in `spawn_timeout_check.ts` lists today's gaps and may only shrink: delete",
-    "an entry once its file is clean, and do not add one.",
+    "to `new Deno.Command`, or `timeoutMs` to `runWithTimeout`.",
   ].join("\n");
 
   return {

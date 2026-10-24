@@ -9,9 +9,7 @@
  *  - a `runWithTimeout(` call that imports the helper from
  *    `subprocess_timeout.ts` and passes no `timeoutMs`.
  *
- * Today's offenders are listed in {@link SPAWN_TIMEOUT_BASELINE}. A new
- * offender fails the check. A baseline entry whose file no longer offends
- * fails until the entry is removed, so the list only shrinks.
+ * Any offender fails the check. There is no baseline of known gaps.
  *
  * Scanning reuses the comment stripper and directory walk from
  * `spawn_chokepoint_scan.ts`. The match itself is string walking: a
@@ -48,18 +46,6 @@ export interface SpawnTimeoutScanResult {
 }
 
 /**
- * What the shrink-only baseline says about a scan.
- *
- * `newOffences` are calls in files the baseline does not already name.
- * `staleBaseline` are baseline paths that no longer offend and must be
- * deleted before the check will pass.
- */
-export interface SpawnTimeoutBaselineDiff {
-  newOffences: SpawnTimeoutViolation[];
-  staleBaseline: string[];
-}
-
-/**
  * Modules that own the subprocess timeout. Their own `Deno.Command` is the
  * timeout implementation, so the check does not flag them.
  */
@@ -74,14 +60,6 @@ export const SPAWN_TIMEOUT_SCAN_DIRS: readonly string[] = [
   "worker/deno/lib",
   "worker/deno/commands",
 ];
-
-/**
- * Files that still spawn without an explicit timeout (Issue #4248).
- *
- * Shrink only: delete an entry once that file no longer offends. Adding an
- * entry is a new gap, and the check fails it.
- */
-export const SPAWN_TIMEOUT_BASELINE: ReadonlySet<string> = new Set([]);
 
 const COMMAND_NEEDLE = "new Deno.Command";
 const RUN_NEEDLE = "runWithTimeout";
@@ -366,26 +344,6 @@ export function scanContentForSpawnTimeout(
   }
 
   return offences;
-}
-
-/**
- * Compare offences with the shrink-only baseline.
- *
- * A file named by the baseline may still offend. A file that offends and is
- * not named is a new gap. A named file that does not offend is stale.
- */
-export function diffSpawnTimeoutBaseline(
-  offences: readonly SpawnTimeoutViolation[],
-  baseline: ReadonlySet<string>,
-): SpawnTimeoutBaselineDiff {
-  const offendingFiles = new Set(offences.map((offence) => offence.file));
-  const staleBaseline = [...baseline]
-    .filter((file) => !offendingFiles.has(file))
-    .sort();
-  return {
-    newOffences: offences.filter((offence) => !baseline.has(offence.file)),
-    staleBaseline,
-  };
 }
 
 /**
