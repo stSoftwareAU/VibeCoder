@@ -54,10 +54,14 @@ to complete that issue; nothing more from a person is needed or wanted.
   to fix, not an issue to give up on. A second run still blocked by a worker
   gate is not another retry of that same issue (Issue #4130): the worker files
   sub-issues that quote the gate and what the branch already did, closes the
-  parent, and deletes the blocked branch and pull request. It does not apply
-  `failed` on that path, and it does not mark the pull request ready or arm
-  auto-merge while the gate is still failing. When planning publishes nothing,
-  the repeat `failed-once` record stands and the log says why.
+  parent, and deletes the blocked branch and pull request. It does not mark
+  the pull request ready or arm auto-merge while the gate is still failing.
+  When planning publishes nothing, the repeat `failed-once` record stands and
+  the log says why. A child of that split is stamped with a fleet-authored
+  depth. Depth 0 and 1 split again, with children one level deeper. Depth 2
+  does not: the worker comments, applies `failed`, and deletes the branch and
+  pull request, and it files no further issues (Issue #4131). A depth marker
+  whose author is not in the fleet is ignored.
 
 ### Fully unattended operation and self-healing
 

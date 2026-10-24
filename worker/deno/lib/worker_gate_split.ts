@@ -12,6 +12,7 @@
 
 import type { FailureCategory } from "./failure_diagnosis.ts";
 import { getFailureCategoryDisplay } from "./failure_diagnosis.ts";
+import { selectFleetAuthoredMatches } from "./alert_dedup_authors.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
@@ -79,7 +80,8 @@ export interface FiledSubIssue {
 
 export type WorkerGateSplitOutcome =
   | { kind: "fallback"; reason: string }
-  | { kind: "split"; subIssues: readonly FiledSubIssue[] };
+  | { kind: "split"; subIssues: readonly FiledSubIssue[] }
+  | { kind: "terminal" };
 
 export interface RunWorkerGateSplitOptions {
   repo: string;
@@ -91,8 +93,8 @@ export interface RunWorkerGateSplitOptions {
   plan: PlanWorkerGateSplit;
   gh: GhCommand;
   readBranchProgress?: ReadBranchProgress;
-  /** Defaults to 1 — an ordinary issue's children (Issue #4130). */
-  childDepth?: number;
+  /** Fleet logins trusted to have written a split-depth marker. */
+  fleetAuthors?: readonly string[];
 }
 
 /** Remove a split-depth marker so untrusted text cannot stamp one. */
@@ -224,9 +226,26 @@ export async function runWorkerGateSplit(
   const { repo, issueNumber, gh } = options;
   assertRepo(repo);
   assertIssueNumber(issueNumber);
-  const childDepth = options.childDepth ?? 1;
   const categoryDisplay = getFailureCategoryDisplay(options.category);
-  const parentTitle = await readIssueTitle(repo, issueNumber, gh);
+  const issue = await readIssueRecord(repo, issueNumber, gh);
+  const depth = await fleetSplitDepth(
+    repo,
+    issueNumber,
+    issue,
+    options.fleetAuthors,
+  );
+  if (depth >= 2) {
+    await postTerminalComment(
+      repo,
+      issueNumber,
+      categoryDisplay,
+      options.failureMessage,
+      gh,
+    );
+    return { kind: "terminal" };
+  }
+  const childDepth = depth + 1;
+  const parentTitle = issue.title;
   const priorGateOutput = await readPriorGateOutput(repo, issueNumber, gh);
   const readProgress = options.readBranchProgress ??
     ((r, n) => readIssueBranchProgress(r, n, gh));
@@ -514,11 +533,11 @@ async function finishParent(
   }
 }
 
-async function readIssueTitle(
+async function readIssueRecord(
   repo: string,
   issueNumber: number,
   gh: GhCommand,
-): Promise<string> {
+): Promise<{ title: string; body: string; authorLogin: string }> {
   const raw = await gh([
     "issue",
     "view",
@@ -529,7 +548,74 @@ async function readIssueTitle(
     "title,body,author",
   ]);
   const parsed = parseJsonObject(raw, `${repo}#${issueNumber} issue view`);
-  return typeof parsed.title === "string" ? parsed.title : "";
+  const author = isRecord(parsed.author) ? parsed.author : {};
+  return {
+    title: typeof parsed.title === "string" ? parsed.title : "",
+    body: typeof parsed.body === "string" ? parsed.body : "",
+    authorLogin: typeof author.login === "string" ? author.login : "",
+  };
+}
+
+/**
+ * Split depth from a fleet-authored marker. A missing marker, a marker
+ * outside 0–2, or a marker whose issue author is not in the fleet is 0.
+ */
+async function fleetSplitDepth(
+  repo: string,
+  issueNumber: number,
+  issue: { body: string; authorLogin: string },
+  fleetAuthors: readonly string[] | undefined,
+): Promise<number> {
+  const marked = lastSplitDepth(issue.body);
+  if (marked === null) return 0;
+  const kept = await selectFleetAuthoredMatches(
+    [{
+      number: issueNumber,
+      body: issue.body,
+      author: { login: issue.authorLogin },
+    }],
+    `worker-gate split depth ${repo}#${issueNumber}`,
+    fleetAuthors !== undefined ? { fleetAuthors } : {},
+    (message) => console.log(message),
+    "the depth marker is ignored and the issue is treated as depth 0",
+  );
+  return kept.length > 0 ? marked : 0;
+}
+
+/** The last valid `vibe-split-depth` marker, or null when none is 0, 1 or 2. */
+export function lastSplitDepth(body: string): number | null {
+  const re = /<!--\s*vibe-split-depth:\s*(\d+)\s*-->/g;
+  let found: number | null = null;
+  for (const match of body.matchAll(re)) {
+    const depth = Number(match[1]);
+    if (depth === 0 || depth === 1 || depth === 2) found = depth;
+  }
+  return found;
+}
+
+async function postTerminalComment(
+  repo: string,
+  issueNumber: number,
+  categoryDisplay: string,
+  failureMessage: string,
+  gh: GhCommand,
+): Promise<void> {
+  const body = [
+    "## Worker gate still failing",
+    "",
+    `The \`${categoryDisplay}\` gate is still blocking this issue at split depth 2, so it was not split again.`,
+    "",
+    quoteBlock(prepareQuotedText(failureMessage)),
+  ].join("\n");
+  await gh([
+    "issue",
+    "comment",
+    String(issueNumber),
+    "--repo",
+    repo,
+    "--body",
+    body,
+  ]);
 }
 
 async function readPriorGateOutput(

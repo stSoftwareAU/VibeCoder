@@ -52,6 +52,12 @@ export interface LabelManagerDeps {
    * remote branches. When omitted, the split reads them with `ghCommandFn`.
    */
   readBranchProgress?: ReadBranchProgress;
+  /**
+   * Fleet logins trusted to stamp a split-depth marker (Issue #4131).
+   * When omitted, the configured fleet identity is read. An empty list
+   * cannot verify a marker, so the issue is treated as depth 0.
+   */
+  fleetAuthors?: readonly string[];
 }
 
 /** Label configuration. */
@@ -116,8 +122,10 @@ export interface HandleFailureResult {
   /**
    * Set when a second worker-gate failure took the split path (Issue #4130).
    * `fallback` means planning published nothing and the repeat record stands.
+   * `terminal` means split depth 2: comment, `failed`, and no new issues
+   * (Issue #4131).
    */
-  workerGateSplit?: "split" | "fallback";
+  workerGateSplit?: "split" | "fallback" | "terminal";
 }
 
 /** Options for handling question failure. */

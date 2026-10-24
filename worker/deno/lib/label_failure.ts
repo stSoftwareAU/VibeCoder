@@ -31,7 +31,7 @@ import {
   isInfrastructureFailure,
   isWorkerGateSplitCategory,
 } from "./failure_diagnosis.ts";
-import { runWorkerGateSplit } from "./worker_gate_split.ts";
+import { retireBlockedRun, runWorkerGateSplit } from "./worker_gate_split.ts";
 import type {
   FailureOptions,
   HandleFailureOptions,
@@ -439,7 +439,49 @@ export async function handleIssueFailure(
         ...(deps.readBranchProgress
           ? { readBranchProgress: deps.readBranchProgress }
           : {}),
+        ...(deps.fleetAuthors !== undefined
+          ? { fleetAuthors: deps.fleetAuthors }
+          : {}),
       });
+      if (outcome.kind === "terminal") {
+        const ensured = await ensureLabelExists(
+          options.repo,
+          labels.failedLabel,
+          undefined,
+          undefined,
+          deps,
+        );
+        if (!ensured.ok) return ensured;
+        const added = await addLabelToIssue(
+          options.repo,
+          options.issueNumber,
+          labels.failedLabel,
+          deps,
+        );
+        if (!added.ok) return added;
+        try {
+          await retireBlockedRun(
+            options.repo,
+            options.issueNumber,
+            ghCommandFn,
+          );
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          console.log(
+            `[worker-gate-split] ${options.repo}#${options.issueNumber}: split stopped: ${error.message}`,
+          );
+          return { ok: false, error };
+        }
+        return {
+          ok: true,
+          value: {
+            markedAsFailedOnce: false,
+            failureCategory,
+            isInfrastructure: isInfra,
+            workerGateSplit: "terminal",
+          },
+        };
+      }
       if (outcome.kind === "split") {
         return {
           ok: true,
