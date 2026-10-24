@@ -1058,6 +1058,30 @@ function precededByDot(tokens: readonly CodeTok[], i: number): boolean {
 }
 
 /**
+ * Parenthesis depth of the `{` block that contains `assign`, or 0 at file
+ * scope. A statement inside an arrow passed as an argument shares that
+ * block's depth (`withLock(async () => { const keep = a && b; })`). A
+ * default parameter and a `for (...)` header are deeper than the block, so
+ * comparing against this depth keeps them excluded.
+ */
+function enclosingBlockParen(
+  tokens: readonly CodeTok[],
+  assign: number,
+): number {
+  let closed = 0;
+  for (let j = assign - 1; j >= 0; j--) {
+    const t = tokens[j];
+    if (t === undefined) break;
+    if (t.text === "}") closed++;
+    else if (t.text === "{") {
+      if (closed === 0) return t.paren;
+      closed--;
+    }
+  }
+  return 0;
+}
+
+/**
  * Source spans of operands to drop. `visit` walks an expression token range;
  * the seen set keeps a nested group from being entered twice.
  */
@@ -1088,7 +1112,8 @@ function collectOperandHits(source: string): OperandHit[] {
     ) {
       visit(i + 1, statementEnd(tokens, i + 1, t));
     } else if (
-      t.kind === "assign" && t.paren === 0 && t.bracket === 0 &&
+      t.kind === "assign" && t.bracket === 0 &&
+      t.paren === enclosingBlockParen(tokens, i) &&
       !isTypeAliasAssign(tokens, i)
     ) {
       visit(i + 1, statementEnd(tokens, i + 1, t));

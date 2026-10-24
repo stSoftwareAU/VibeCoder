@@ -348,6 +348,36 @@ Deno.test("generateDenoMutants - an operand that is already the identity is not 
   );
 });
 
+Deno.test("generateDenoMutants - drops operands of a boolean const inside an arrow callback (Issue #3901)", () => {
+  const src = "await withLock(async () => { const keep = s.ok && fresh; })\n";
+  const ms = droppedOperands(src, [1]);
+  assertEquals(ms.map((m) => m.description), [
+    "dropped operand `s.ok` (replaced with true)",
+    "dropped operand `fresh` (replaced with true)",
+  ]);
+  assertEquals(ms.map((m) => m.mutatedSource), [
+    "await withLock(async () => { const keep = true && fresh; })\n",
+    "await withLock(async () => { const keep = s.ok && true; })\n",
+  ]);
+  // The same const in a function body is covered, and still is.
+  assertEquals(
+    droppedOperands(
+      "function f() {\n  const keep = s.ok && fresh;\n}\n",
+      [2],
+    ).map((m) => m.description),
+    [
+      "dropped operand `s.ok` (replaced with true)",
+      "dropped operand `fresh` (replaced with true)",
+    ],
+  );
+  // Default parameters and for headers are deeper than their block.
+  assertEquals(
+    droppedOperands("function f(x = a && b) { return x; }\n", [1]),
+    [],
+  );
+  assertEquals(droppedOperands("for (let i = 0; a && b; i++) {}\n", [1]), []);
+});
+
 Deno.test("generateDenoMutants - operand mutants follow the other kinds and count towards the cap (Issue #3901)", () => {
   const detailed = generateDenoMutantsDetailed(
     "lib/m.ts",
