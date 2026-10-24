@@ -11,6 +11,10 @@
  * `failed-once`, writes its record and stays claimable once the escalating
  * cooldown ends. The worker never applies `failed`.
  *
+ * Issue #4130: a repeat failure whose category is a worker gate is split
+ * into sub-issues instead of another retry of the same blocked run. The
+ * planner is injected. When it publishes nothing, the repeat record stands.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -25,7 +29,9 @@ import {
   getFailureDiagnosis,
   getFailureDiagnosisOneliner,
   isInfrastructureFailure,
+  isWorkerGateSplitCategory,
 } from "./failure_diagnosis.ts";
+import { runWorkerGateSplit } from "./worker_gate_split.ts";
 import type {
   FailureOptions,
   HandleFailureOptions,
@@ -411,6 +417,68 @@ export async function handleIssueFailure(
     ghCommandFn,
   );
 
+  // Issue #4130: a second worker-gate failure is split. The planner is
+  // injected, so a caller that does not bind one keeps the repeat record
+  // and never calls a model. Planning that publishes nothing falls back
+  // to that same record and says why.
+  let workerGateSplit: "fallback" | undefined;
+  if (
+    repeat && isWorkerGateSplitCategory(failureCategory) &&
+    deps.planWorkerGateSplit
+  ) {
+    try {
+      const outcome = await runWorkerGateSplit({
+        repo: options.repo,
+        issueNumber: options.issueNumber,
+        githubUser: options.githubUser,
+        failureMessage: options.failureMessage,
+        category: failureCategory,
+        failedOnceLabel: labels.failedOnceLabel,
+        plan: deps.planWorkerGateSplit,
+        gh: ghCommandFn,
+        ...(deps.readBranchProgress
+          ? { readBranchProgress: deps.readBranchProgress }
+          : {}),
+      });
+      if (outcome.kind === "split") {
+        return {
+          ok: true,
+          value: {
+            markedAsFailedOnce: false,
+            failureCategory,
+            isInfrastructure: isInfra,
+            workerGateSplit: "split",
+          },
+        };
+      }
+      workerGateSplit = "fallback";
+      console.log(
+        `[worker-gate-split] ${options.repo}#${options.issueNumber}: ${outcome.reason}`,
+      );
+      await ghCommandFn([
+        "issue",
+        "comment",
+        String(options.issueNumber),
+        "--repo",
+        options.repo,
+        "--body",
+        [
+          "## Worker-gate split published nothing",
+          "",
+          outcome.reason,
+          "",
+          `The repeat failure record stands and this issue keeps \`${labels.failedOnceLabel}\`.`,
+        ].join("\n"),
+      ]);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      console.log(
+        `[worker-gate-split] ${options.repo}#${options.issueNumber}: split stopped: ${error.message}`,
+      );
+      return { ok: false, error };
+    }
+  }
+
   await markIssueAsFailedOnce({ ...options, repeat }, deps);
   return {
     ok: true,
@@ -418,6 +486,7 @@ export async function handleIssueFailure(
       markedAsFailedOnce: true,
       failureCategory,
       isInfrastructure: isInfra,
+      ...(workerGateSplit ? { workerGateSplit } : {}),
     },
   };
 }
