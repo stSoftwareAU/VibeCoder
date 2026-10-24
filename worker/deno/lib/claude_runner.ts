@@ -178,7 +178,7 @@ import {
   MIN_AGENT_SESSION_SECONDS,
   planAgentSessionBudget,
 } from "./agent_session_deadline.ts";
-import { getRunTimeline } from "./run_timeline.ts";
+import { getRunTimeline, type RunTimeline } from "./run_timeline.ts";
 
 // Re-export for convenience
 export {
@@ -352,7 +352,9 @@ export interface ClaudeRunResult {
    * `timedOut` and `timeoutReason` read exactly as a genuine timeout does —
    * the kill path is the only place that knows the difference, and this is
    * how it says so. Present only when the release was scheduled; absent
-   * means the run really did exhaust its own budget.
+   * means the run really did exhaust its own budget. A progress extension
+   * refused at the run's finish-deadline ceiling (Issue #4244) is also
+   * released as "hard-cap".
    */
   scheduledRelease?: ScheduledReleaseReason;
   /**
@@ -538,6 +540,12 @@ export interface RunClaudeOptions {
    * called. The #1825 silence watchdog is untouched either way.
    */
   progressExtension?: ProgressExtensionOptions;
+  /**
+   * The run's timeline (Issue #4244). Defaults to the process-wide one from
+   * getRunTimeline(); a test passes its own so it never mutates the
+   * process-wide timeline.
+   */
+  runTimeline?: RunTimeline;
   /**
    * Issue number this invocation is working, for the transcript file name
    * (Issue #4169) and any other per-issue telemetry. Optional — phases
@@ -1195,7 +1203,7 @@ async function runClaudeWithTimeoutBody(
   // outlive the finish (less the kill grace and the WIP checkpoint reserve),
   // and told the deadline on the last line of its user prompt. The system
   // prompt is never touched: the prompt cache keys on its bytes.
-  const timeline = getRunTimeline();
+  const timeline = options.runTimeline ?? getRunTimeline();
   const budget = timeline
     ? planAgentSessionBudget({
       timeline,
@@ -1480,8 +1488,6 @@ async function runClaudeWithTimeoutBody(
           ? ` claude_timeout=${timeoutSeconds} claude_max_turns=${
             args[args.indexOf("--max-turns") + 1]
           }`
-          : budget?.kind === "run" && budget.clamped
-          ? ` claude_timeout=${timeoutSeconds}`
           : "") +
         // Issue #4244: say the timeout was cut short by the finish deadline.
         (budget?.kind === "run" && budget.clamped

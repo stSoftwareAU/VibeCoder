@@ -112,7 +112,9 @@ export interface ClaudeExecutionResult {
    * parent #397) — the supervisor's hard cap left no runway while the run
    * was still progressing. A hard-cap release fires the same watchdog and
    * exits with the same status as a genuine timeout, so this flag is the
-   * only thing that tells the two apart downstream.
+   * only thing that tells the two apart downstream. A progress extension
+   * refused at the run's finish-deadline ceiling (Issue #4244) is also
+   * released as "hard-cap".
    */
   scheduledRelease?: ScheduledReleaseReason;
   /**

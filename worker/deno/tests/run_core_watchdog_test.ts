@@ -31,6 +31,7 @@ import {
   runClaudeWithRetry,
   terminateActiveAgentRuns,
 } from "../lib/claude_runner.ts";
+import { resetRunTimelineForTests } from "../lib/run_timeline.ts";
 import type { Logger } from "../types.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
@@ -393,6 +394,9 @@ Deno.test({
           },
           // Priority 1 is the abandoned handler: its ladder is asleep.
           findAndProcessPrFeedback: () => {
+            // the runCoreLoop above publishes a timeline anchored at its mock
+            // now (0), so it would refuse this agent (Issue #4244)
+            resetRunTimelineForTests();
             ladder = startLadder();
             return ladder.then(() => ({
               ok: true as const,

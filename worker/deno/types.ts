@@ -318,8 +318,9 @@ export interface WorkerConfig {
   /**
    * Seconds from run start to the run's finish deadline (`.config.json`
    * `run_finish_seconds`, Issue #4242). Accepted, validated and logged at run
-   * start; not yet applied to any claim or agent deadline. Must exceed the
-   * run duration target. See `lib/run_timeline.ts`.
+   * start. Caps each agent session's timeout (lib/agent_session_deadline.ts);
+   * not applied to claim deadlines. Must exceed the run duration target.
+   * See `lib/run_timeline.ts`.
    */
   runFinishSeconds?: number;
   /**

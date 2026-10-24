@@ -26,6 +26,7 @@ import {
   type RunCoreDeps,
   runCoreLoop,
 } from "../lib/run_core.ts";
+import { resetRunTimelineForTests } from "../lib/run_timeline.ts";
 import { type AgentStub, withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
@@ -465,6 +466,8 @@ Deno.test({
     "claude runner - a later priority's agent launch proceeds after a watchdog abandonment (Issue #55)",
   ignore: Deno.build.os === "windows",
   async fn() {
+    // a runCoreLoop earlier in this file left its timeline process-wide (Issue #4244)
+    resetRunTimelineForTests();
     resetAgentRunsTerminating();
     // The watchdog abandons a handler: terminate its agents but clear the flag.
     await terminateActiveAgentRuns(
