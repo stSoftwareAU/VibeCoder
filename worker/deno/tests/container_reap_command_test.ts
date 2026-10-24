@@ -7,8 +7,10 @@
  * that leaves a wedged container running (Issue #3234).
  *
  * The reaping behaviour itself is covered by `container_watchdog_test.ts`
- * (injected seams) and end-to-end by the launcher tests; nothing here starts a
- * subprocess or signals a process.
+ * (injected seams) and end-to-end by the launcher tests. The evidence tests
+ * (Issue #4253) name a runtime path that does not exist, so every runtime step
+ * fails to start and no container is touched; the reaper's read-only process
+ * listing is the only subprocess they run. Nothing here signals a process.
  *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
@@ -50,4 +52,67 @@ Deno.test("container-reap - the 'another worker is running' status is its own nu
   // The launchers branch on this exact value; 0 and 1 already mean "clean
   // host" and "the reaper could not run".
   assertEquals(ANOTHER_WORKER_RUNNING_EXIT, 4);
+});
+
+Deno.test("container-reap - --evidence-dir writes exactly one hard-kill file, even when every runtime step fails", async () => {
+  const evidenceDir = await Deno.makeTempDir({ prefix: "hard-kill-evidence-" });
+  const workDir = await Deno.makeTempDir({ prefix: "hard-kill-work-" });
+  try {
+    const result = await reap({
+      runtime: "/nonexistent-dir/docker",
+      name: "vibe-coder-4253",
+      "evidence-dir": evidenceDir,
+      "work-dir": workDir,
+      "grace-seconds": 0,
+    });
+
+    // The runtime cannot run, so the container survives and the reap fails.
+    assertEquals(result.success, false);
+
+    const names: string[] = [];
+    for await (const entry of Deno.readDir(evidenceDir)) {
+      names.push(entry.name);
+    }
+    const evidenceFiles = names.filter((name) =>
+      /^hard-kill-vibe-coder-4253-\d+\.json$/.test(name)
+    );
+    assertEquals(evidenceFiles.length, 1);
+    assertEquals(
+      result.data?.reaped[0]?.evidenceFile,
+      `${evidenceDir}/${evidenceFiles[0]}`,
+    );
+
+    const record = JSON.parse(
+      await Deno.readTextFile(`${evidenceDir}/${evidenceFiles[0]}`),
+    ) as { container: string; evidence: { bootLogs: string } };
+    assertEquals(record.container, "vibe-coder-4253");
+    assertStringIncludes(record.evidence.bootLogs, "unavailable: exit -1:");
+  } finally {
+    await Deno.remove(evidenceDir, { recursive: true });
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("container-reap - without --evidence-dir no evidence file is written", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "hard-kill-work-" });
+  try {
+    const result = await reap({
+      runtime: "/nonexistent-dir/docker",
+      name: "vibe-coder-4254",
+      "work-dir": workDir,
+      "grace-seconds": 0,
+    });
+
+    assertEquals(result.data?.reaped[0]?.evidenceFile, null);
+    const names: string[] = [];
+    for await (const entry of Deno.readDir(workDir)) {
+      names.push(entry.name);
+    }
+    assertEquals(
+      names.filter((name) => name.startsWith("hard-kill-")),
+      [],
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
 });

@@ -166,6 +166,8 @@ Backoff only helps once the launcher returns. On host-23 it never did: a worker 
 
 Every forced reap is emitted as a `container_wedged` self-heal event, so `self-heal-summary` surfaces a chronically wedging host instead of losing it in a local log. Diagnosing the VM wedge itself is out of scope — the fleet survives it either way.
 
+**Hard-kill evidence (Issue #4253).** Before the reap kills anything, the watchdog's `container-reap --evidence-dir <worker log dir>` writes `hard-kill-<container>-<epoch>.json` into the host-visible worker log directory — the one the next container mounts, so the record outlives the container it describes. It records the host, the container, the run id (`unknown` when it is not in the worker log tail or the transcript name), the last worker-log line and its timestamp, and the last tool call from the newest `agent-*.jsonl` transcript. It also keeps the evidence: the last ~200 lines of the newest `worker*.log`, the tail of the newest agent transcript, the runtime's boot logs (`container logs --boot`; other runtimes `logs --tail 200`) and — only when a probe `exec` answers within 10 seconds — the guest's `ps`, `/proc/meminfo` and `/proc/pressure/{cpu,memory,io}`. Every step is bounded (10 seconds per `exec`, 15 seconds per other step, 60 seconds in all). A step that fails is recorded as `unavailable: <cause>`, all text passes through the same redaction the worker applies to GitHub bodies, and capture never blocks the reap. Only `run.sh` passes `--evidence-dir` today: the PowerShell launcher's deadline reap does not, so a wedge reaped by `run.ps1` writes no record yet.
+
 ```mermaid
 flowchart TD
   Start["run.sh / run.ps1"]
@@ -173,6 +175,7 @@ flowchart TD
   Launch["🚀 runtime run &lt;container&gt;"]
   Deadline{"exited within the<br/>watchdog deadline?"}
   Normal["Exit with the container's status"]
+  Evidence["hard-kill record (run.sh only)<br/>captured first, never blocks the reap"]
   Kill["&lt;runtime&gt; kill &lt;container&gt;"]
   Grace{"gone after the<br/>grace period?"}
   Sigkill["SIGKILL the runtime client<br/>+ the runtime helper"]
@@ -180,7 +183,7 @@ flowchart TD
   Wedged["Exit 87 — next cycle runs"]
   Start --> Pre --> Launch --> Deadline
   Deadline -->|yes| Normal
-  Deadline -->|no| Kill --> Grace
+  Deadline -->|no| Evidence --> Kill --> Grace
   Grace -->|yes| Event
   Grace -->|no| Sigkill --> Event
   Event --> Wedged
