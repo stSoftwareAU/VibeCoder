@@ -11,7 +11,7 @@ import {
   AutoMergeResult,
   buildArmingReasonComment,
   classifyAutoMergeFailure,
-  enableAutoMerge as enableAutoMergeReal,
+  enableAutoMerge,
   type EnableAutoMergeResult,
   finalisePr,
   isBasePolicyRefusal,
@@ -29,13 +29,6 @@ import {
 } from "../lib/milestone_children_gate.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import type { LogContext, Logger } from "../types.ts";
-import { armWithNoReviewRecord } from "./support/arm_with_no_review_record.ts";
-
-function enableAutoMerge(
-  options: Parameters<typeof enableAutoMergeReal>[0],
-): ReturnType<typeof enableAutoMergeReal> {
-  return armWithNoReviewRecord(enableAutoMergeReal, options);
-}
 
 // --- classifyAutoMergeFailure ---
 
@@ -1871,26 +1864,63 @@ Deno.test("pr_auto_merge - a failed in-cycle sync comments once per PR per cycle
   assertEquals(comments.length, 2, "a sibling PR still gets the reason");
 });
 
-Deno.test("pr_auto_merge - enableAutoMerge does not arm when the fleet set is missing (Issue #4236)", async () => {
+/**
+ * Arm one PR through the real `enableAutoMerge`, answering the comment list
+ * with `comments` (or rejecting it when `comments` is an Error). Returns the
+ * outcome and every argv issued (Issue #4291).
+ */
+async function armWithComments(
+  comments: string | Error,
+  fleetAuthors?: readonly string[],
+): Promise<{ outcome: EnableAutoMergeResult; issued: string[][] }> {
   const issued: string[][] = [];
-  const outcome = await enableAutoMergeReal({
+  const outcome = await enableAutoMerge({
     repo: "owner/repo",
     prNumber: 7,
+    baseRefName: "main",
+    headRefName: "issue-7-change",
+    ...(fleetAuthors ? { fleetAuthors } : {}),
+    // A protected base, so GitHub's own auto-merge is armed.
+    isBaseProtectedFn: () => Promise.resolve(true),
     ghCommandFn: async (args) => {
       issued.push(args);
+      if (args.some((arg) => arg.endsWith("/comments"))) {
+        if (comments instanceof Error) throw comments;
+        return comments;
+      }
       return "Enabled auto-merge";
     },
   });
-  assertEquals(outcome.result, AutoMergeResult.Deferred);
-  assertStringIncludes(outcome.message, "fleet logins were not supplied");
-  assertEquals(outcome.message.includes("WARNING:"), false);
-  assertEquals(outcome.message.includes("ERROR:"), false);
-  assertEquals(
-    issued.some((args) => args.includes("--auto")),
-    false,
-    "a missing fleet set must not arm",
-  );
-});
+  return { outcome, issued };
+}
+
+const OPEN_PREPR_RECORD = JSON.stringify([{
+  author: "vibe-bot",
+  body:
+    '<!-- vibe-prepr-review state="changes_requested" -->\n\npre-PR review requested changes: 1 findings',
+}]);
+
+for (
+  const [name, comments, fleet] of [
+    ["the fleet set is missing", "[]", undefined],
+    ["the comment list cannot be read", new Error("HTTP 502"), ["vibe-bot"]],
+    ["a pre-PR review record is unresolved", OPEN_PREPR_RECORD, ["vibe-bot"]],
+  ] as const
+) {
+  Deno.test(`pr_auto_merge - enableAutoMerge arms when ${name} (Issue #4291)`, async () => {
+    const { outcome, issued } = await armWithComments(comments, fleet);
+    assertEquals(outcome.result, AutoMergeResult.Enabled, outcome.message);
+    assert(
+      issued.some((args) => args.includes("--auto")),
+      "the CI quality gate is the only merge gate, so the PR must be armed",
+    );
+    assertEquals(
+      issued.some((args) => args.includes("--disable-auto")),
+      false,
+      "nothing may disarm the PR",
+    );
+  });
+}
 
 // ---------------------------------------------------------------------------
 // finalisePr returns the real arming outcome, and latch refusals never retry

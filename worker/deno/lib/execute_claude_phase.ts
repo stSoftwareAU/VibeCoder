@@ -519,7 +519,7 @@ export interface ExecuteClaudePhaseDeps {
       repo: string;
       prNumber: number;
       skipAutoMerge?: boolean;
-      /** Fleet logins whose pre-PR review markers count (Issue #4236). */
+      /** Fleet logins the gated direct merge needs (Issue #1082). */
       fleetAuthors?: readonly string[];
     },
   ) => Promise<Result<string, Error>>;
@@ -866,9 +866,10 @@ export async function attemptPrSelfHealing(
           "(skip_auto_merge, Issue #1650)",
       );
     }
-    // Issue #4236: arming without a fleet set is refused. This host's login
-    // is the identity the self-heal path already holds; a sibling set is
-    // read from the configured fleet when that read succeeds.
+    // Issue #1082: the gated direct merge needs the fleet set to tell a
+    // genuine review. This host's login is the identity the self-heal path
+    // already holds; a sibling set is read from the configured fleet when
+    // that read succeeds.
     const configuredFleet = await resolveAlertDedupAuthors(
       {},
       (message) => deps.log(message),

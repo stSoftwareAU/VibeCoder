@@ -5,16 +5,15 @@
  * reads only the PR summary and cannot see the diff. This module reads the
  * diff to find which standing violations sit on lines the branch adds or
  * changes, so the completion phase can (a) hand those to the in-run recovery
- * turn as code fixes, and (b) withhold auto-merge when such a violation
- * survives that turn.
+ * turn as code fixes, and (b) post any that survive that turn on the PR as a
+ * findings comment. The PR is armed either way (Issue #4291).
  *
  * A violation on unchanged context is not routed here: its remedy is
  * `pre-existing, filed #<n>`, which is a summary change, not a code change.
  *
  * A violation whose cited location cannot be placed (its path matches no file
  * in the diff and no file at HEAD) is treated as on the branch's own lines, so
- * an unplaceable citation fails closed rather than arming auto-merge (Issue
- * #3613).
+ * an unplaceable citation fails closed and is routed for a fix (Issue #3613).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -28,15 +27,6 @@ import {
   type ReviewEntry,
   validateIndependentReview,
 } from "./independent_review_gate.ts";
-
-/**
- * The PR label the worker applies when it finalises a PR with an own-line
- * standing violation or surviving pre-PR verifier block instead of arming
- * auto-merge. The Priority 1.65 sweep
- * skips and disarms a PR carrying it (Issue #3517), and the CI-fix pass does
- * not re-arm one after pushing a fix (Issue #3685).
- */
-export const STANDING_VIOLATION_LABEL = "standing-violation";
 
 /** Leading worker-owned marker for actionable verifier findings (Issue #3798). */
 export const PRE_PR_VERIFIER_HOLD_MARKER = "<!-- vibe-pre-pr-verifier-hold -->";

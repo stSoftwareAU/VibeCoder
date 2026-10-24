@@ -62,17 +62,7 @@ to complete that issue; nothing more from a person is needed or wanted.
   human after repeated failures (Issue #4158): the escalating cooldown
   (2 h → 6 h → 24 h) paces the retries, at most one a day, and the issue stays
   queued until it is done. An issue stuck in that loop is a Vibe Coder defect
-  to fix, not an issue to give up on. A second run still blocked by a worker
-  gate is not another retry of that same issue (Issue #4130): the worker files
-  sub-issues that quote the gate and what the branch already did, closes the
-  parent, and deletes the blocked branch and pull request. It does not mark
-  the pull request ready or arm auto-merge while the gate is still failing.
-  When planning publishes nothing, the repeat `failed-once` record stands and
-  the log says why. A child of that split is stamped with a fleet-authored
-  depth. Depth 0 and 1 split again, with children one level deeper. Depth 2
-  does not: the worker comments, applies `failed`, and deletes the branch and
-  pull request, and it files no further issues (Issue #4131). A depth marker
-  whose author is not in the fleet is ignored.
+  to fix, not an issue to give up on.
 
 ### Fully unattended operation and self-healing
 
@@ -3215,7 +3205,7 @@ summary-only correction turn (Issue #3324), and only a block that survives it
 finalises the PR. A standing Standards violation on the branch's own lines is
 a defect in the change, not a documentation shortfall, so that recovery turn
 may fix the code for it, and an existing PR finalised with one still standing
-is labelled `standing-violation` rather than auto-merged (Issue #3382).
+has it posted on the PR for the next run to fix (Issues #3382, #4291).
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in

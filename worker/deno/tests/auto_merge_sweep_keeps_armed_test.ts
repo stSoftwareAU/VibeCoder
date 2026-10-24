@@ -1,10 +1,12 @@
 /**
- * The production factory wires the auto-merge sweep's disarm (Issue #3517).
+ * The production auto-merge sweep never disarms a fleet PR (Issue #4291).
  *
- * The sweep's own tests inject `disarmAutoMerge`, so they cannot show that
- * `run_core_production_deps.ts` hands the sweep a disarm that really issues
- * `gh pr merge --disable-auto`. This drives the real `ensureAutoMerge` with a
- * recording `gh` runner (`autoMergeGhCommandFn`) and asserts on the argv.
+ * The CI quality gate is the only merge gate, so neither the retired
+ * `standing-violation` label nor an unresolved pre-PR review record may
+ * disarm a PR. The sweep's own tests drive it through injected seams, so they
+ * cannot show what `run_core_production_deps.ts` really wires. This drives the
+ * real `ensureAutoMerge` with a recording `gh` runner (`autoMergeGhCommandFn`)
+ * and asserts on the argv.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -118,43 +120,35 @@ function isDisarm(args: string[]): boolean {
   return JSON.stringify(args) === JSON.stringify(DISARM);
 }
 
-Deno.test("Issue #3517: production ensureAutoMerge disarms an armed standing-violation PR", async () => {
-  const calls = await sweepOnePr({
-    armed: true,
-    labels: ["standing-violation"],
-    behind: false,
-  });
-  assertEquals(calls.filter(isDisarm).length, 1, JSON.stringify(calls));
-  const arms = calls.filter((c) =>
-    c[0] === "pr" && c[1] === "merge" && !c.includes("--disable-auto")
-  );
-  assertEquals(arms, [], "a standing-violation PR must never be armed");
-});
-
-Deno.test("Issue #4236: production ensureAutoMerge disarms an armed PR with an open pre-PR review record", async () => {
-  const body = renderPreprReviewRequest([{
+const OPEN_RECORD = JSON.stringify([{
+  author: WORKER_USER,
+  body: renderPreprReviewRequest([{
     file: "src/balance.ts",
     line: 42,
     problem: "rounding drops the final cent",
-  }]);
-  const calls = await sweepOnePr(
-    { armed: true, labels: [], behind: false },
-    JSON.stringify([{ author: WORKER_USER, body }]),
-  );
-  assertEquals(calls.filter(isDisarm).length, 1, JSON.stringify(calls));
-  const arms = calls.filter((c) =>
-    c[0] === "pr" && c[1] === "merge" && !c.includes("--disable-auto")
-  );
-  assertEquals(arms, [], "an open pre-PR review record must not be armed");
-});
+  }]),
+}]);
 
-Deno.test("Issue #3517: production ensureAutoMerge does not disarm a PR without the label", async () => {
-  // Armed and behind, so the sweep takes the branch-update path rather than
-  // the real merge ladder (which is not behind this seam).
-  const calls = await sweepOnePr({ armed: true, labels: [], behind: true });
-  assertEquals(calls.filter(isDisarm), [], JSON.stringify(calls));
-  assert(
-    calls.some((c) => c.join(" ").includes("update-branch")),
-    "the unlabelled PR was swept normally (branch update requested)",
-  );
-});
+// Armed and behind, so the sweep takes the branch-update path rather than the
+// real merge ladder (which is not behind this seam).
+for (
+  const [name, labels, comments] of [
+    ["a PR with no label or record", [], "[]"],
+    ["a PR still carrying the retired standing-violation label", [
+      "standing-violation",
+    ], "[]"],
+    ["a PR with an open pre-PR review record", [], OPEN_RECORD],
+  ] as const
+) {
+  Deno.test(`Issue #4291: production ensureAutoMerge keeps ${name} armed and sweeps it`, async () => {
+    const calls = await sweepOnePr(
+      { armed: true, labels: [...labels], behind: true },
+      comments,
+    );
+    assertEquals(calls.filter(isDisarm), [], JSON.stringify(calls));
+    assert(
+      calls.some((c) => c.join(" ").includes("update-branch")),
+      "the PR was swept normally (branch update requested)",
+    );
+  });
+}

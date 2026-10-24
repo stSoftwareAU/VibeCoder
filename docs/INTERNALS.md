@@ -2054,10 +2054,8 @@ VibeCoder#1732 was closed as superseded and, eight minutes later, the CI-fix
 pass claimed it from the cached listing and started writing to it. All four PR
 passes — **CI fix**, **review feedback**, **merge conflict** and **auto-merge**
 — therefore reach `readPrLiveState(repo, prNumber, gh)` at their claim point,
-before the first write: one `gh pr view --json` call, no cache, for the six
-fields `state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels`
-(the last is what the auto-merge sweep and the CI-fix pass read for the
-`standing-violation` hold, Issues #3517, #3685; still one round trip). The
+before the first write: one `gh pr view --json` call, no cache, for the five
+fields `state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision`. The
 two processors call it directly through `guardPrStillOpen`; the drain and the
 sweep take it as a **required** injected seam, wired to the same function in
 `run_core_production_deps.ts`, so neither can be left unguarded by omission. A `CLOSED` or
@@ -2243,8 +2241,10 @@ runs the disposable verifier after committing and formatting, before pushing
 one evidenced `fixed` verdict per numbered finding. Missing, duplicate,
 `partly` or `not fixed` verdicts become blocking findings. An unavailable
 verifier also blocks this path. One correction turn is allowed; a remaining
-block keeps the review outstanding, charges a failed attempt, labels the PR
-`standing-violation` and disables auto-merge. A push-recovery merge gets a
+block keeps the review outstanding and charges a failed attempt. The PR stays
+armed for auto-merge: GitHub holds the merge on the outstanding review, and PRs
+do not merge until they have a review approval and CI is green (Issue #4291).
+A push-recovery merge gets a
 fresh verdict before its retry push. Ordinary inline and issue comments retain
 their existing flow. The fleet reviewer applies the same verdict check before
 posting its review.
@@ -2256,8 +2256,8 @@ An ineligible body stays live and its reason is logged; a build error blocks
 verification. If a hold remains and the branch has exactly zero unpushed
 commits, the worker still refreshes the description before recording the hold.
 A failed measurement or outstanding local commit skips that refresh. The sync's
-remote-head guard remains in force, as do the failed attempt, outstanding
-review, `standing-violation` label and disabled auto-merge.
+remote-head guard remains in force, as do the failed attempt and the
+outstanding review.
 
 ### 📏 How "did we push?" is answered (Issue #211)
 
@@ -5821,7 +5821,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [execute_claude_phase.ts](../worker/deno/lib/execute_claude_phase.ts)                                             | Claude execution phase                                                                                                                                                                                                          |
 |                             | [quality_gate_phase.ts](../worker/deno/lib/quality_gate_phase.ts)                                                 | Quality gate phase                                                                                                                                                                                                              |
 |                             | [phases/completion_phase.ts](../worker/deno/lib/phases/completion_phase.ts)                                       | PR completion phase — push, PR creation, screenshot and security-fix gates                                                                                                                                                      |
-|                             | [standing_violation_routing.ts](../worker/deno/lib/standing_violation_routing.ts)                                 | Finds standing Standards violations on the branch's own diff lines; routes them to a code-capable recovery turn and holds auto-merge on a PR finalised with one (Issue #3382)                                                   |
+|                             | [standing_violation_routing.ts](../worker/deno/lib/standing_violation_routing.ts)                                 | Finds standing Standards violations on the branch's own diff lines; routes them to a code-capable recovery turn and posts any that survive on the PR (Issues #3382, #4291)                                                      |
 |                             | [pr_summary_loader.ts](../worker/deno/lib/pr_summary_loader.ts)                                                   | PR summary file loading                                                                                                                                                                                                         |
 |                             | [screenshot_validation.ts](../worker/deno/lib/screenshot_validation.ts)                                           | Screenshot evidence validation                                                                                                                                                                                                  |
 |                             | [imgbb_upload.ts](../worker/deno/lib/imgbb_upload.ts)                                                             | ImgBB screenshot upload client                                                                                                                                                                                                  |

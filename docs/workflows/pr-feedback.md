@@ -140,8 +140,8 @@ fleet set. It logs `worker-verifier-hold` as the trust reason. This is the
 exception to skipping the host's own comments; an ordinary own-login comment,
 an inline marker or a marker merely quoted in the body does not qualify.
 A fleet eyes reaction marks the hold processed, as for other comments.
-The repair pass does not release `standing-violation` or arm auto-merge;
-independent verification and release remain the follow-up in Issue #3784.
+The PR stays armed for auto-merge throughout (Issue #4291): PRs do not
+merge until they have a review approval and CI is green.
 
 1. **Discover** — Find an open PR by this user that has unprocessed feedback
    (comment with thumbs-up or from authorised commenter, or CHANGES_REQUESTED
@@ -450,8 +450,9 @@ Candidate construction neither edits GitHub nor resolves evidence images.
 When verification still blocks, a measured zero unpushed commits lets the worker
 refresh the already-pushed description before recording the hold. Unpushed or
 unmeasurable work is never described early. The publisher also retains its
-remote-head guard; refreshing a description does not dismiss a review, remove
-`standing-violation`, or enable auto-merge.
+remote-head guard; refreshing a description does not dismiss a review. The
+review stays outstanding and GitHub holds the merge on it; the worker neither
+labels the PR nor disarms auto-merge (Issue #4291).
 
 #### Recount the Test Plan after a review fix (Issue #3117)
 
@@ -849,13 +850,9 @@ intervene.
   and the repo supports it and the PR **is mergeable**: enable auto-merge. This
   catches PRs where auto-merge was not set due to transient failures during
   creation or where merge issues have since been fixed.
-- **Standing-violation hold** (Issue #3517) — a PR carrying the
-  `standing-violation` label (Issue #3382) is skipped: the sweep never arms
-  or branch-updates it, and one already armed is disarmed (`gh pr merge
-  --disable-auto`) on every sweep until that succeeds. It runs after the live
-  read confirms the PR is open and before the base-integrity check and any
-  attempt. The label comes from that same per-PR live read, and the hold is
-  logged once per process.
+- **No review hold** (Issue #4291) — the sweep never withholds arming, or
+  disarms, for a review, a pre-PR finding or a label. PRs do not merge until
+  they have a review approval and CI is green, and GitHub enforces both.
 - **Armed and behind** (Issue #2462) — an armed PR whose head has fallen behind
   its base gets one `update-branch` request per pass, since GitHub never
   updates it under the strict up-to-date rule. Not when a reviewer has
