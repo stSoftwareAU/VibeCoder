@@ -2247,6 +2247,16 @@ fresh verdict before its retry push. Ordinary inline and issue comments retain
 their existing flow. The fleet reviewer applies the same verdict check before
 posting its review.
 
+The verifier judges the rebuilt description from the branch's archived summary
+and facts, using the same ownership/adoption checks and body builder as
+publication (Issue #3982). It does not edit GitHub or resolve evidence images.
+An ineligible body stays live and its reason is logged; a build error blocks
+verification. If a hold remains and the branch has exactly zero unpushed
+commits, the worker still refreshes the description before recording the hold.
+A failed measurement or outstanding local commit skips that refresh. The sync's
+remote-head guard remains in force, as do the failed attempt, outstanding
+review, `standing-violation` label and disabled auto-merge.
+
 ### 📏 How "did we push?" is answered (Issue #211)
 
 `commitAndPushPending` reports `finalUnpushedCount`, and every processor treats
