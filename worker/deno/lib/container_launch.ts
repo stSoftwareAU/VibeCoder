@@ -103,6 +103,7 @@ import {
 } from "./agent_provider.ts";
 import { extensionBuildArguments } from "./container_extension_build.ts";
 import { EXTENSION_START_ENV } from "./container_extension_start.ts";
+import { HARD_KILL_AT_EPOCH_ENV } from "./run_timeline.ts";
 import type { ContainerExtensionSpec } from "../types.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
 import { resolveAgentStateDir } from "./agent_state_dir.ts";
@@ -258,6 +259,17 @@ export interface ContainerLaunchInputs {
    * ceiling, which is the behaviour that shipped before this issue.
    */
   runCap?: { maxSeconds: number; startedEpochSeconds: number };
+  /**
+   * The epoch-seconds at which the launch plan was made, passed in as
+   * VIBE_HARD_KILL_AT_EPOCH (`planEpochSeconds + watchdogSeconds`) so the
+   * worker's run timeline can name the launcher watchdog's kill instant.
+   * Required: a plan without it cannot hand over a hard-kill instant, so the
+   * launch is refused. The sum is conservative: the plan instant precedes the
+   * watchdog start (an image build may run in between), so the real kill
+   * lands at or after this instant, and the worker's view is the earliest the
+   * kill could land.
+   */
+  planEpochSeconds: number;
   /**
    * VM sizing for the worker container. Optional: absent falls back to the
    * built-in floor (8g / 6 cpus) — never to the runtime's 1 GiB default,
@@ -1247,6 +1259,25 @@ export function buildContainerLaunchPlan(
       `VIBE_RUN_STARTED_EPOCH=${Math.floor(inputs.runCap.startedEpochSeconds)}`,
     );
   }
+  // The launcher watchdog's kill instant (the plan's epoch plus the watchdog
+  // seconds validated above), so the worker's run timeline can report the
+  // hard-kill deadline. Required: a launch with no usable plan epoch is
+  // refused rather than launched without a hard-kill instant.
+  if (
+    !Number.isFinite(inputs.planEpochSeconds) ||
+    Math.floor(inputs.planEpochSeconds) < 1
+  ) {
+    throw new Error(
+      `Refusing to launch: planEpochSeconds ${inputs.planEpochSeconds} is not ` +
+        `a positive number of epoch seconds.`,
+    );
+  }
+  runArgs.push(
+    "--env",
+    `${HARD_KILL_AT_EPOCH_ENV}=${
+      Math.floor(inputs.planEpochSeconds) + Math.floor(inputs.watchdogSeconds)
+    }`,
+  );
   // Last, so the launcher can append the worker's own arguments after it.
   runArgs.push(runImage);
 

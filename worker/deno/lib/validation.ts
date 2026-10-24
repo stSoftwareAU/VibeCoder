@@ -159,6 +159,8 @@ export interface ConfigFileJson {
   best_planning_model?: string;
   claude_timeout?: number;
   min_claim_runway_seconds?: number;
+  /** Seconds from run start to the run's finish deadline (Issue #4242). */
+  run_finish_seconds?: number;
   /** Labels marking an issue as a long job (Issue #245). */
   claim_long_job_labels?: string[];
   claude_kill_after?: number;
@@ -757,6 +759,7 @@ export function validateConfigFileJson(
   const numberFields = [
     "claude_timeout",
     "min_claim_runway_seconds",
+    "run_finish_seconds",
     "claude_kill_after",
     "max_clarification_rounds",
     "sleep_interval",

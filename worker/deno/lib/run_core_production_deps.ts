@@ -1593,6 +1593,10 @@ export async function createProductionRunCoreDeps(
   const runCoreConfig = createDefaultRunCoreConfig();
   const coreConfig: RunCoreConfig = {
     runDurationSeconds: runCoreConfig.runDurationSeconds,
+    // Issue #4242: the run's finish deadline and the agent kill-after grace,
+    // so the run timeline logs the values the run actually uses.
+    runFinishSeconds: config.runFinishSeconds ?? runCoreConfig.runFinishSeconds,
+    claudeKillAfterSeconds: config.claudeKillAfter,
     sleepInterval: config.sleepInterval ?? runCoreConfig.sleepInterval,
     maxConcurrentIssues: config.maxConcurrentIssues ??
       runCoreConfig.maxConcurrentIssues,
@@ -1933,6 +1937,9 @@ export async function createProductionRunCoreDeps(
   });
 
   const deps: RunCoreDeps = {
+    // -- Environment (Issue #4242: the run timeline reads the hard-kill pin) --
+    env,
+
     // -- Logging --
     log: (msg) => logger.info(msg),
     logError: (msg) => logger.error(msg),
@@ -4478,7 +4485,7 @@ export async function createProductionRunCoreDeps(
     // Resolved by `loadConfig` (Issue #289) from `.config.json`
     // `min_claim_runway_seconds`, falling back to MIN_CLAIM_RUNWAY_SECONDS.
     // Reading the environment here was inert on a containerised host:
-    // `container_launch.ts` forwards only the five variables it sets itself,
+    // `container_launch.ts` forwards only the variables it sets itself,
     // so an operator's override never crossed the boundary and the floor
     // stayed at its default while the docs said otherwise.
     minClaimRunwaySeconds: config.minClaimRunwaySeconds,

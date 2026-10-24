@@ -111,6 +111,13 @@ import {
   describeRunOutcome,
   type RunOutcome,
 } from "./run_outcome.ts";
+import {
+  DEFAULT_RUN_FINISH_SECONDS,
+  DEFAULT_RUN_TARGET_SECONDS,
+  describeRunTimeline,
+  resolveRunTimeline,
+  setRunTimeline,
+} from "./run_timeline.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
 import type {
@@ -196,8 +203,25 @@ import {
 
 /** Configuration for the main worker loop. */
 export interface RunCoreConfig {
-  /** Total duration to run before planned shutdown (seconds, default: 3600). */
+  /**
+   * Total duration to run before planned shutdown (seconds, default: 3600).
+   * This is the run's *target* deadline; the run timeline (Issue #4242)
+   * derives the target instant from it.
+   */
   runDurationSeconds: number;
+  /**
+   * The run's *finish* deadline (seconds from start, default: 7200 —
+   * `DEFAULT_RUN_FINISH_SECONDS`). Logged and published by the run timeline
+   * (Issue #4242); not yet applied to any claim or agent deadline.
+   */
+  runFinishSeconds: number;
+  /**
+   * The agent subprocess's kill-after grace (seconds, default:
+   * `OPERATIONAL_DEFAULTS.claudeKillAfter`). Feeds the run timeline's
+   * hard-kill fallback (Issue #4242) so the logged kill pair matches what
+   * the agent launch actually uses.
+   */
+  claudeKillAfterSeconds: number;
   /** Base sleep interval between scan cycles (seconds, default: 300). */
   sleepInterval: number;
   /**
@@ -545,6 +569,14 @@ function warnOf(
 }
 
 export interface RunCoreDeps {
+  /**
+   * Environment reader for the run timeline (Issue #4242) — it reads
+   * `VIBE_HARD_KILL_AT_EPOCH`. Absent means no environment is read, so the
+   * timeline's hard kill reads as "not set"; the production factory passes
+   * the real environment.
+   */
+  env?: (name: string) => string | undefined;
+
   // Logging
   log: (message: string) => void;
   logError: (message: string) => void;
@@ -1738,7 +1770,9 @@ export const LIVENESS_CHECK_CADENCE = 20;
  */
 export function createDefaultRunCoreConfig(): RunCoreConfig {
   return {
-    runDurationSeconds: 3600,
+    runDurationSeconds: DEFAULT_RUN_TARGET_SECONDS,
+    runFinishSeconds: DEFAULT_RUN_FINISH_SECONDS,
+    claudeKillAfterSeconds: OPERATIONAL_DEFAULTS.claudeKillAfter,
     // Issue #2446: 120 s, sourced from OPERATIONAL_DEFAULTS so the loop
     // default and the config default cannot drift apart again.
     sleepInterval: OPERATIONAL_DEFAULTS.sleepInterval,
@@ -5719,6 +5753,20 @@ export async function runCoreLoop(
   // Issue #1780: pull `endTime` up so the pre-flight pause-and-resume
   // path can refuse to wait past the run-duration cap.
   const endTime = startTime + config.runDurationSeconds * 1000;
+
+  // Issue #4242: resolve the run timeline once at start, publish it for any
+  // later reader, and log it beside the `Run hard cap:` line the execute
+  // phase logs per execution.
+  const timeline = resolveRunTimeline({
+    startedMs: startTime,
+    runDurationSeconds: config.runDurationSeconds,
+    runFinishSeconds: config.runFinishSeconds,
+    env: deps.env ?? (() => undefined),
+    killAfterSeconds: config.claudeKillAfterSeconds,
+    warn: deps.logWarn ?? deps.log,
+  });
+  setRunTimeline(timeline);
+  deps.log(`Run timeline: ${describeRunTimeline(timeline)}`);
 
   // Log the configured concurrency once at loop start (Issue #4174). Above
   // one slot the Priority-2 scan runs as a pool (Issue #4177); the effective

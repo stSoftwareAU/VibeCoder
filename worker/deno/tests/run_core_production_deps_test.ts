@@ -30,6 +30,7 @@ import { isHeartbeatRunning } from "../lib/heartbeat.ts";
 import { captureContentSnapshot } from "../lib/content_approval_tracker.ts";
 import { resolveContentApprovalStateDir } from "../lib/content_approval_state_dir.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import type { WorkerConfig } from "../types.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { cacheDirUserSuffix } from "../lib/private_cache_dir.ts";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
@@ -301,6 +302,39 @@ Deno.test("createProductionRunCoreDeps - enable_session_resume reaches the loop'
     config: { ...buildDefaultWorkerConfig(), enableSessionResume: true },
   }));
   assertEquals(on.config.enableSessionResume, true);
+});
+
+Deno.test("createProductionRunCoreDeps - run finish and kill-after reach the loop's config (Issue #4242)", async () => {
+  // The run timeline logs these two values, so the operator's `.config.json`
+  // has to arrive in RunCoreConfig with the same numbers, not the defaults.
+  const { config } = await createProductionRunCoreDeps(createTestOptions({
+    config: {
+      ...buildDefaultWorkerConfig(),
+      runFinishSeconds: 9000,
+      claudeKillAfter: 45,
+    },
+  }));
+  assertEquals(config.runFinishSeconds, 9000);
+  assertEquals(config.claudeKillAfterSeconds, 45);
+});
+
+Deno.test("createProductionRunCoreDeps - run finish falls back to 2 h when the config omits it (Issue #4242)", async () => {
+  const omitted: Partial<WorkerConfig> = { ...buildDefaultWorkerConfig() };
+  delete omitted.runFinishSeconds;
+  const { config } = await createProductionRunCoreDeps(createTestOptions({
+    config: omitted as WorkerConfig,
+  }));
+  assertEquals(config.runFinishSeconds, 7200);
+});
+
+Deno.test("createProductionRunCoreDeps - deps.env is the injected environment reader (Issue #4242)", async () => {
+  const injected = (name: string): string | undefined =>
+    name === "X" ? "injected-value" : undefined;
+  const { deps } = await createProductionRunCoreDeps(createTestOptions({
+    env: injected,
+  }));
+  assert(deps.env === injected);
+  assertEquals(deps.env?.("X"), "injected-value");
 });
 
 Deno.test("createProductionRunCoreDeps - PID check returns canProceed true", async () => {

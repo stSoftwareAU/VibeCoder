@@ -87,6 +87,7 @@ function inputs(
     // The build stamp the launch plan resolves from the checkout (Issue #1572).
     buildCommit: "0123456789abcdef0123456789abcdef01234567",
     watchdogSeconds: 11_400,
+    planEpochSeconds: 1_700_000_000,
     hostPaths: {
       homeDir: "/home/operator",
       baseDir: "/opt/VibeCoder",

@@ -2216,3 +2216,101 @@ Deno.test("config - a non-boolean rtk_output.enabled fails the load (Issue #2380
     assertStringIncludes(error.message, "rtk_output.enabled");
   });
 });
+
+// =============================================================================
+// run_finish_seconds tests (Issue #4242)
+// =============================================================================
+
+Deno.test("config - run_finish_seconds defaults to two hours when absent (Issue #4242)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+  }, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.runFinishSeconds, 7200);
+  });
+});
+
+Deno.test("config - an explicit run_finish_seconds loads (Issue #4242)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    run_finish_seconds: 10800,
+  }, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.runFinishSeconds, 10800);
+  });
+});
+
+Deno.test("config - run_finish_seconds just past the one-hour target is accepted (Issue #4242)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    run_finish_seconds: 3601,
+  }, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.runFinishSeconds, 3601);
+  });
+});
+
+Deno.test("config - run_finish_seconds equal to the one-hour target is rejected (Issue #4242)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    run_finish_seconds: 3600,
+  }, async (configPath) => {
+    const error = await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+    );
+    assertStringIncludes(
+      error.message,
+      "run_finish_seconds must be greater than the run duration target (3600), got 3600",
+    );
+  });
+});
+
+Deno.test("config - a non-number run_finish_seconds is rejected (Issue #4242)", async () => {
+  await withTempConfig({
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    run_finish_seconds: "soon",
+  } as unknown as ConfigFile, async (configPath) => {
+    const error = await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+    );
+    // The structural check in validation.ts refuses it before the finish
+    // check in config.ts runs.
+    assertStringIncludes(
+      error.message,
+      "has invalid structure: run_finish_seconds - Expected number, got string",
+    );
+  });
+});
+
+Deno.test("config - a run_finish_seconds that parses to Infinity is refused as not finite (Issue #4242)", async () => {
+  // JSON.stringify cannot write Infinity, so the file is written as raw text:
+  // `1e999` parses to Infinity, which validation.ts accepts as a number and
+  // the finite check in config.ts then refuses.
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const configPath = `${tempDir}/.config.json`;
+    await Deno.writeTextFile(
+      configPath,
+      '{"allowed_authors":["testuser"],"repos":["org/repo1"],' +
+        '"run_finish_seconds": 1e999}',
+    );
+    const error = await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+    );
+    assertStringIncludes(
+      error.message,
+      "run_finish_seconds must be a finite number",
+    );
+    assertStringIncludes(error.message, "got Infinity");
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});

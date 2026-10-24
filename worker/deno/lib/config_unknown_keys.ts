@@ -113,6 +113,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "claude_timeout",
   "claude_max_turns",
   "min_claim_runway_seconds",
+  // Run finish deadline (Issue #4242).
+  "run_finish_seconds",
   // Issue #425: `claim_require_full_execute_budget` removed — the #47 rule it
   // switched on was retired with the deadline truncation that justified it.
   // Adaptive claim floor (Issue #245)

@@ -2,7 +2,7 @@
  * Tests for the claim-runway floor as a `.config.json` setting (Issue #289).
  *
  * `MIN_CLAIM_RUNWAY_SECONDS` was read with `Deno.env.get` inside the worker
- * container, but `container_launch.ts` forwards only the five variables it
+ * container, but `container_launch.ts` forwards only the variables it
  * sets itself — so the override never crossed the boundary and the floor
  * stayed at its 300 s default while the docs presented the variable as the
  * supported interface. Live consequence: `VibeCoder#207` was claimed with

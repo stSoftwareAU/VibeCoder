@@ -78,6 +78,7 @@ function inputs(
     // The build stamp the launch plan resolves from the checkout (Issue #1572).
     buildCommit: "0123456789abcdef0123456789abcdef01234567",
     watchdogSeconds: 11_400,
+    planEpochSeconds: 1_700_000_000,
     hostPaths: {
       homeDir: "/home/operator",
       baseDir: "/opt/VibeCoder",
@@ -1244,6 +1245,46 @@ Deno.test("buildContainerLaunchPlan - passes the supervisor run cap into the con
   assertEquals(
     bare.runArgs.some((arg) => arg.startsWith("VIBE_RUN_")),
     false,
+  );
+});
+
+Deno.test("buildContainerLaunchPlan - hands the launcher watchdog's kill instant to the worker", () => {
+  // The plan's epoch plus the watchdog seconds (11400 in inputs()) is the
+  // instant the launcher reaps the container; the worker's run timeline reads
+  // it as the hard-kill deadline. The value follows the plan epoch.
+  for (
+    const [planEpochSeconds, killInstant] of [
+      [1_700_000_000, "1700011400"],
+      [1_800_000_000, "1800011400"],
+    ] as const
+  ) {
+    const plan = buildContainerLaunchPlan(inputs({ planEpochSeconds }));
+    const index = plan.runArgs.indexOf(
+      `VIBE_HARD_KILL_AT_EPOCH=${killInstant}`,
+    );
+    assertEquals(index > 0 && plan.runArgs[index - 1] === "--env", true);
+  }
+});
+
+Deno.test("buildContainerLaunchPlan - refuses a plan with no usable plan epoch (planEpochSeconds)", () => {
+  const refusals: [number, string][] = [
+    [Number.NaN, "planEpochSeconds NaN is not a positive number"],
+    [0, "planEpochSeconds 0 is not a positive number"],
+  ];
+  for (const [planEpochSeconds, message] of refusals) {
+    const error = assertThrows(
+      () => buildContainerLaunchPlan(inputs({ planEpochSeconds })),
+      Error,
+    );
+    assertStringIncludes(error.message, message);
+  }
+  // A legal epoch is accepted, and the launch carries the hard-kill instant.
+  const plan = buildContainerLaunchPlan(
+    inputs({ planEpochSeconds: 1_700_000_000 }),
+  );
+  assertEquals(
+    plan.runArgs.includes("VIBE_HARD_KILL_AT_EPOCH=1700011400"),
+    true,
   );
 });
 
