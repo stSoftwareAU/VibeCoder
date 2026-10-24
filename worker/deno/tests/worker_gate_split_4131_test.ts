@@ -75,6 +75,13 @@ function harness(body: string, author: string): DepthHarness {
     if (args[0] === "issue" && args[1] === "create") {
       return Promise.resolve("https://github.com/org/repo/issues/201\n");
     }
+    if (args[0] === "search") return Promise.resolve("[]");
+    if (args[0] === "repo" && args[1] === "view") {
+      return Promise.resolve('{"viewerPermission":"WRITE"}');
+    }
+    if (args[0] === "issue" && args[1] === "list") {
+      return Promise.resolve("[]");
+    }
     if (args[0] === "pr" && args[1] === "list") {
       return Promise.resolve(JSON.stringify([
         { number: 7, headRefName: "issue-42-gate" },

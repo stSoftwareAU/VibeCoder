@@ -13,7 +13,7 @@
 import type { FailureCategory } from "./failure_diagnosis.ts";
 import { getFailureCategoryDisplay } from "./failure_diagnosis.ts";
 import { selectFleetAuthoredMatches } from "./alert_dedup_authors.ts";
-import { guardedLabelArgs } from "./guarded_issue_labels.ts";
+import { fileRoutedIssue } from "./issue_routing_filing.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
 /** How many parts a planner may publish for one blocked issue. */
@@ -444,33 +444,43 @@ async function publishSubIssues(
   parts: readonly WorkerGatePlanPart[],
   gh: GhCommand,
 ): Promise<FiledSubIssue[]> {
-  const labelArgs = guardedLabelArgs(
-    ["enhancement"],
-    "worker/deno/lib/worker_gate_split.ts",
-  );
   const filed: FiledSubIssue[] = [];
   const limited = parts.slice(0, MAX_SPLIT_PARTS);
   for (const part of limited) {
     const title = cleanTitle(part.title, seed.parentIssueNumber);
     const body = buildWorkerGateSubIssueBody(seed, part.scope);
-    const output = await gh([
-      "issue",
-      "create",
-      "--repo",
-      seed.repo,
-      "--title",
-      title,
-      "--body",
-      body,
-      ...labelArgs,
-    ]);
-    const parsed = parseCreatedIssue(output, seed.repo);
-    if (parsed === null) {
+    // The parent repository owns the sub-issue. The decision is explicit so
+    // classification cannot file it somewhere else; the context is unused.
+    const filedIssue = await fileRoutedIssue(
+      { title, body, labels: ["enhancement"] },
+      {
+        targetRepo: seed.repo,
+        context: { vibeCoderRepo: seed.repo, productRepos: [] },
+        decision: {
+          owner_repository: seed.repo,
+          subject_repository: seed.repo,
+          issue_kind: "implementation",
+          reason:
+            `worker-gate split of #${seed.parentIssueNumber} stays in the parent repository`,
+        },
+        ghCommandFn: gh,
+      },
+    );
+    if (
+      filedIssue.repository !== seed.repo ||
+      filedIssue.number === null ||
+      (filedIssue.action !== "created" && filedIssue.action !== "reused")
+    ) {
       throw new Error(
-        `issue create for #${seed.parentIssueNumber} did not return an issue URL`,
+        `issue filing for #${seed.parentIssueNumber} (${title}) published nothing in ${seed.repo} (${filedIssue.action})`,
       );
     }
-    filed.push({ ...parsed, title });
+    filed.push({
+      number: filedIssue.number,
+      url:
+        `https://github.com/${filedIssue.repository}/issues/${filedIssue.number}`,
+      title,
+    });
   }
   return filed;
 }
@@ -743,17 +753,6 @@ function refBelongsToIssue(ref: string, issueNumber: number): boolean {
     name.startsWith(`issue-${issueNumber}-`);
 }
 
-function parseCreatedIssue(
-  output: string,
-  repo: string,
-): { number: number; url: string } | null {
-  const match = output.match(
-    new RegExp(`https://github\\.com/${escapeRegExp(repo)}/issues/(\\d+)`),
-  );
-  if (!match) return null;
-  return { number: Number(match[1]), url: match[0] };
-}
-
 function cleanTitle(title: string, parentIssueNumber: number): string {
   const cleaned = stripSplitDepthMarkers(redactSecrets(title))
     .replace(/\s+/g, " ")
@@ -814,8 +813,4 @@ function logReadFailure(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
