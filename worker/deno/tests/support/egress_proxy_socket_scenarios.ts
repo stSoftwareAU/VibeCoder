@@ -846,7 +846,10 @@ async function redactsTokenInHostname(): Promise<void> {
     const denial = await readDenial(wire);
     expectEqual(denial.status, "HTTP/1.1 403 Forbidden", "status");
     expectEqual(h.lines.length, 1, "denial line count");
-    const [line] = h.lines;
+    const line = h.lines[0];
+    if (line === undefined) {
+      throw new Error("expected one denial line, got none");
+    }
     expectIncludes(line, "reason=not-allowlisted", "denial line");
     expect(!line.includes(token), "token leaked into the denial line");
 
