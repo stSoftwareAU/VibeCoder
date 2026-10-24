@@ -44,6 +44,17 @@ to complete that issue; nothing more from a person is needed or wanted.
 - **A crash is not an answer.** A run that failed, made no model turn, or
   stopped early is retried on the normal ladder. It is never read as "nothing
   to do".
+- **Every PR is armed for auto-merge.** A PR is armed when it is raised and
+  stays armed (owner, 25 October 2026). It merges once it has an approving
+  review and CI is green; nothing else holds it. The worker never disarms a PR
+  or skips arming it because of a finding or a label. A PR left unarmed does
+  not merge even after it is approved, and every late merge causes more
+  conflicts (Issue #4291).
+- **Requirements come from the owner.** A new gate, check, evidence
+  obligation or rule that can fail or hold back a run that delivered its issue
+  works against this principle. Fleet tooling (review learning, idle-task
+  audits) never invents one from its own findings. It proposes removing or
+  rewording guidance that causes mistakes, or files a worker defect.
 - **A failure is recorded, never parked.** Every failed run writes its
   evidence on the issue and keeps `failed-once`, so the failure is visible and
   countable. It is never relabelled as a hand-off, an analysis, or a partial
