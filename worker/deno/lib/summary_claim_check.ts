@@ -738,15 +738,14 @@ export interface SummaryClaimCheckInput {
  * Run the first-run PR-summary claim check (Issue #3257).
  *
  * Called by the completion phase before the PR is raised. Never throws for
- * an expected failure — every degradation is logged and recorded in
- * `notChecked` rather than blocking the run. A deterministic case — tracked
- * files could not be listed, the base ref is unresolvable, or the prompt
- * could not be built — logs at error level: the check itself failed. A
- * model-dependent case — the question could not be launched, or its reply
- * carried no readable verdict — logs at warn level instead, the same as
- * `runPrFeedbackDriftCheck`'s model pass (pr_feedback_drift_check.ts): an
- * unavailable or unreadable model answer is the model's or the host's
- * problem, not this check's.
+ * an expected failure — every degradation is recorded in `notChecked` rather
+ * than blocking the run. Because the run continues in every such case, each
+ * logs at warn level: ERROR is reserved for a failure that cannot continue,
+ * and this check never is one. Doc-prose cap overflow is aggregated into one
+ * warning per claim check (the count plus the first few names), not one line
+ * per range. Model-dependent cases — the question could not be launched, or
+ * its reply carried no readable verdict — also log at warn, the same as
+ * `runPrFeedbackDriftCheck`'s model pass (pr_feedback_drift_check.ts).
  */
 export async function runSummaryClaimCheck(
   input: SummaryClaimCheckInput,
@@ -762,7 +761,7 @@ export async function runSummaryClaimCheck(
     const msg = "tracked files could not be listed; the Test Plan backstop " +
       "was skipped";
     notChecked.push(msg);
-    deps.logger.error(`Summary claim check: ${msg}`, { repo, issueNumber });
+    deps.logger.warn(`Summary claim check: ${msg}`, { repo, issueNumber });
   } else {
     trackedFiles = lsFiles.stdout
       .split("\n")
@@ -787,7 +786,7 @@ export async function runSummaryClaimCheck(
     testPlanProblems = check.problems;
     for (const reason of check.notChecked) {
       notChecked.push(reason);
-      deps.logger.error(`Summary claim check: ${reason}`, {
+      deps.logger.warn(`Summary claim check: ${reason}`, {
         repo,
         issueNumber,
       });
@@ -802,7 +801,7 @@ export async function runSummaryClaimCheck(
     const msg = "the PR's base ref could not be resolved; the model claim " +
       "check was skipped";
     notChecked.push(msg);
-    deps.logger.error(`Summary claim check: ${msg}`, { repo, issueNumber });
+    deps.logger.warn(`Summary claim check: ${msg}`, { repo, issueNumber });
   } else {
     const docContents = new Map<string, string>();
     let proseRanges: ProseRange[] = [];
@@ -810,7 +809,7 @@ export async function runSummaryClaimCheck(
       const msg = "the branch's changed files could not be listed; changed " +
         "manual and prompt prose was not checked";
       notChecked.push(msg);
-      deps.logger.error(`Summary claim check: ${msg}`, { repo, issueNumber });
+      deps.logger.warn(`Summary claim check: ${msg}`, { repo, issueNumber });
     } else {
       const diff = await deps.runGit([
         "diff",
@@ -833,7 +832,7 @@ export async function runSummaryClaimCheck(
               const message =
                 `${file} could not be read; its prose was not checked`;
               notChecked.push(message);
-              deps.logger.error(`Summary claim check: ${message}`, {
+              deps.logger.warn(`Summary claim check: ${message}`, {
                 repo,
                 issueNumber,
               });
@@ -848,10 +847,27 @@ export async function runSummaryClaimCheck(
       proseRanges = scope.ranges;
       for (const message of scope.notChecked) {
         notChecked.push(message);
-        deps.logger.error(`Summary claim check: ${message}`, {
+      }
+      // Cap overflow is aggregated; every other reason is logged on its own so
+      // an operator still sees why a range was not checked.
+      const overflow = new Set(scope.capOverflow);
+      for (const message of scope.notChecked) {
+        if (overflow.has(message)) continue;
+        deps.logger.warn(`Summary claim check: ${message}`, {
           repo,
           issueNumber,
         });
+      }
+      if (scope.capOverflow.length > 0) {
+        const n = scope.capOverflow.length;
+        const shown = scope.capOverflow.slice(0, 3);
+        const more = n > shown.length ? `; and ${n - shown.length} more` : "";
+        deps.logger.warn(
+          `Summary claim check: ${n} doc-prose range(s) over a cap, not checked (first ${shown.length}): ${
+            shown.join("; ")
+          }${more}`,
+          { repo, issueNumber, notCheckedCount: n },
+        );
       }
     }
 
@@ -868,7 +884,7 @@ export async function runSummaryClaimCheck(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       notChecked.push(msg);
-      deps.logger.error(`Summary claim check: ${msg}`, { repo, issueNumber });
+      deps.logger.warn(`Summary claim check: ${msg}`, { repo, issueNumber });
     }
 
     if (prompt !== undefined) {
@@ -878,8 +894,8 @@ export async function runSummaryClaimCheck(
         notChecked.push(msg);
         // Mirrors `runPrFeedbackDriftCheck` (pr_feedback_drift_check.ts),
         // which logs an unavailable model pass at warn: a model that could
-        // not be launched is the host's or the model's problem, not a
-        // deterministic check failing, and never blocks on its own.
+        // not be launched is the host's or the model's problem, and never
+        // blocks on its own.
         deps.logger.warn(
           `Summary claim check: model question failed: ${msg}`,
           { repo, issueNumber },
@@ -889,8 +905,8 @@ export async function runSummaryClaimCheck(
         if (!parsed.ok) {
           const msg = parsed.error.message;
           notChecked.push(msg);
-          // As above: an unreadable verdict is the model's problem, not a
-          // deterministic check failing, so it logs at warn (Issue #3257).
+          // As above: an unreadable verdict is the model's problem, so it
+          // logs at warn (Issue #3257).
           deps.logger.warn(`Summary claim check: ${msg}`, {
             repo,
             issueNumber,
