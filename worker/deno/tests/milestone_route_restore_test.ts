@@ -284,7 +284,6 @@ Deno.test("a not-ahead child is merged onto its milestone and a rollup is opened
     !calls.some((args) => args.includes("--disable-auto")),
     "the pass does not hold the child",
   );
-
 });
 
 Deno.test("a not-ahead child whose rollup cannot be opened does not leave its issue closed (Issue #4175)", async () => {
