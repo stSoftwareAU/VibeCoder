@@ -578,10 +578,11 @@ Six checks run, each only when it applies:
    file, several counts that do not each follow the test file they count, or
    different counts for one test file. Each unchecked figure is drift, not a
    log line: it goes to the recovery turn below.
-3. **Docs sweep re-check** — when the push changes a code file and a summary
-   exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
-   files. That gate also requires the Docs sweep line's `siblings:` part
-   (Issue #3371), so a feedback push's summary needs it too.
+3. **Docs sweep re-check** — when the push changes a code file and the PR's
+   own summary exists, the Issue #3073 docs-sweep gate is re-run against the
+   PR's changed files. Another issue's archived summary is not part of that
+   check (Issue #4155). That gate also requires the Docs sweep line's
+   `siblings:` part (Issue #3371), so a feedback push's summary needs it too.
 4. **Deterministic quoted-sentence check (Issue #3244)** — on every
    non-skipped push, the change request this push answers is parsed for its
    findings in the review-fleet-prs shape (`**\`<file>[:<line>]\`**:
@@ -595,12 +596,15 @@ Six checks run, each only when it applies:
    checked rather than given a recovery turn on its own — the same as a
    model pass that returns no verdict.
 5. **Deterministic line-citation check (Issue #3341)** — on every
-   non-skipped push, for each `docs/archive/pr-summaries/pr-summary-*.md`
-   the PR diff carries that also existed at the before-run head, the
+   non-skipped push, for the PR's own
+   `docs/archive/pr-summaries/pr-summary-<issue>.md` when it also existed
+   at the before-run head (Issue #4155), the
    summary as it stood at the before-run head is read with `git show`, and
    its `Branch outcomes:` list entries — plus the header's own inline body,
    not a table under the header — are parsed for `path:N` / `path:N-M`
-   citations. Where the facts file
+   citations. Another issue's archived summary is left out. When the head
+   branch names no issue, a summary a base merge left identical to the base
+   is left out, and one this branch changed is still checked. Where the facts file
    `docs/archive/pr-summaries/pr-summary-<N>.facts.json` exists at a ref
    (the before-run head, read with `git ls-tree` / `git show`, or the head
    working tree), its structured entries' `path`, `line` and `endLine` are

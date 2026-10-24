@@ -37,8 +37,8 @@
  * list, leaving a citation pointing at the previous head's line numbers
  * (PR #3160, #3312 review evidence: a cited check had moved from line 398
  * to 434 and the entry still named 398). This is also deterministic and
- * no-model-needed (`branch_outcome_citations.ts`): for each PR summary
- * readable at both the previous head and now, it maps that summary's
+ * no-model-needed (`branch_outcome_citations.ts`): for the PR's own summary
+ * readable at both the previous head and now (Issue #4155), it maps that summary's
  * previous citations of a file this push changed through `git diff -U0
  * <beforeSha>`, and flags a citation still at the old line number for a
  * line that moved, or an entry left unchanged apart from whitespace
@@ -120,6 +120,7 @@ import {
   findStaleCitations,
   parseDiffHunks,
 } from "./branch_outcome_citations.ts";
+import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { loadPrSummaryFacts, prSummaryFactsPath } from "./pr_summary_facts.ts";
 import { parseSummaryFacts, type SummaryFacts } from "./summary_facts.ts";
 import { CLOSURE_VERDICT_DISALLOWED_TOOLS } from "./closure_verdict_recovery.ts";
@@ -926,6 +927,13 @@ export interface DriftCheckInput {
    * recovery turn.
    */
   changeRequest?: string;
+  /**
+   * The PR's own issue (Issue #4155). Summaries for any other issue are left
+   * out of the check. When omitted, the head branch name is read with
+   * {@link issueNumberFromBranch}. A branch that names no issue keeps every
+   * summary except one a base merge left identical to the base.
+   */
+  issueNumber?: number;
 }
 
 /** What the drift check did. */
@@ -974,18 +982,111 @@ interface LoadedSummary {
   content: string;
 }
 
-/** The PR-summary files among `prFiles` that exist at `repoPath`. */
+/** `pr-summary-<N>.md` or its facts file. Other paths are not archived summaries. */
+const ARCHIVED_SUMMARY_PATH =
+  /^docs\/archive\/pr-summaries\/pr-summary-(\d+)\.(?:md|facts\.json)$/;
+
+function archivedSummaryIssue(path: string): number | null {
+  const match = ARCHIVED_SUMMARY_PATH.exec(path);
+  if (!match) return null;
+  const issue = Number(match[1]);
+  return Number.isSafeInteger(issue) && issue > 0 ? issue : null;
+}
+
+/**
+ * Whether an archived summary belongs in this check (Issue #4155).
+ * A non-summary path always belongs. With an issue number, only that issue's
+ * summary and facts file belong. Without one, a summary whose bytes match
+ * the base is a base merge and does not belong.
+ */
+async function summaryInScope(
+  repoPath: string,
+  deps: DriftCheckDeps,
+  path: string,
+  issueNumber: number | null,
+  baseRef: string | undefined,
+): Promise<boolean> {
+  const summaryIssue = archivedSummaryIssue(path);
+  if (summaryIssue === null) return true;
+  if (issueNumber !== null) return summaryIssue === issueNumber;
+  if (!baseRef) return true;
+  const atBase = await deps.runGit(["show", `origin/${baseRef}:${path}`]);
+  if (!atBase || atBase.code !== 0) return true;
+  const head = await readIfExists(repoPath, path);
+  return head === undefined || head !== atBase.stdout;
+}
+
+/** The PR-summary files among `prFiles` that exist at `repoPath` and belong to this check. */
 async function loadSummaries(
   repoPath: string,
+  deps: DriftCheckDeps,
   prFiles: readonly string[],
+  issueNumber: number | null,
+  baseRef: string | undefined,
 ): Promise<LoadedSummary[]> {
   const out: LoadedSummary[] = [];
   for (const path of prFiles) {
     if (!isPrSummaryPath(path)) continue;
+    if (!await summaryInScope(repoPath, deps, path, issueNumber, baseRef)) {
+      continue;
+    }
     const content = await readIfExists(repoPath, path);
     if (content !== undefined) out.push({ path, content });
   }
   return out;
+}
+
+/**
+ * Put another issue's archived summary back to the before-run head when this
+ * turn changed it (Issue #4155). A file a base merge left identical to the
+ * base is left as the merge wrote it.
+ */
+async function restoreForeignSummaries(
+  repoPath: string,
+  deps: DriftCheckDeps,
+  beforeSha: string,
+  baseRef: string | undefined,
+  issueNumber: number,
+  logger: DriftCheckDeps["logger"],
+  repo: string,
+  prNumber: number,
+): Promise<void> {
+  const names = await runGitLines(deps, [
+    "diff",
+    "--name-only",
+    beforeSha,
+    "--",
+    "docs/archive/pr-summaries",
+  ]);
+  if (!names) return;
+  for (const path of names) {
+    const summaryIssue = archivedSummaryIssue(path);
+    if (summaryIssue === null || summaryIssue === issueNumber) continue;
+    if (
+      baseRef &&
+      !await summaryInScope(repoPath, deps, path, null, baseRef)
+    ) {
+      continue;
+    }
+    const shown = await deps.runGit(["show", `${beforeSha}:${path}`]);
+    const full = `${repoPath}/${path}`;
+    if (shown && shown.code === 0) {
+      await Deno.mkdir(full.slice(0, full.lastIndexOf("/")), {
+        recursive: true,
+      });
+      await Deno.writeTextFile(full, shown.stdout);
+    } else {
+      try {
+        await Deno.remove(full);
+      } catch (err) {
+        if (!(err instanceof Deno.errors.NotFound)) throw err;
+      }
+    }
+    logger.warn(
+      `Drift check: restored ${path} from the before-run head; another issue's archived summary is not part of this check`,
+      { repo, prNumber },
+    );
+  }
 }
 
 /** Test-declaration counts at the head, for the PR's countable test files. */
@@ -1428,7 +1529,37 @@ export async function runPrFeedbackDriftCheck(
     }
   }
 
-  const summaries = await loadSummaries(repoPath, prFiles);
+  let issueNumber: number | null = null;
+  if (
+    input.issueNumber !== undefined && Number.isInteger(input.issueNumber) &&
+    input.issueNumber > 0
+  ) {
+    issueNumber = input.issueNumber;
+  } else {
+    const head = await deps.runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
+    const branch = head && head.code === 0 ? head.stdout.trim() : "";
+    issueNumber = branch ? issueNumberFromBranch(branch) : null;
+  }
+  if (issueNumber !== null) {
+    await restoreForeignSummaries(
+      repoPath,
+      deps,
+      beforeSha,
+      baseRef,
+      issueNumber,
+      logger,
+      repo,
+      prNumber,
+    );
+  }
+
+  const summaries = await loadSummaries(
+    repoPath,
+    deps,
+    prFiles,
+    issueNumber,
+    baseRef,
+  );
   const codeFiles = codeChangingFiles(pushFiles);
   const changesBehaviour = codeFiles.length > 0;
   const headCounts = await computeHeadCounts(repoPath, prFiles);
@@ -1529,9 +1660,14 @@ export async function runPrFeedbackDriftCheck(
     for (const message of scope.notChecked) {
       logger.warn(`Drift check: ${message}`, { repo, prNumber });
     }
-    const docFiles = prFiles.filter(
-      (p) => isDocsSweepExemptPath(p) && !isTestFilePath(p),
-    );
+    const docFiles: string[] = [];
+    for (const path of prFiles) {
+      if (!isDocsSweepExemptPath(path) || isTestFilePath(path)) continue;
+      if (
+        !await summaryInScope(repoPath, deps, path, issueNumber, baseRef)
+      ) continue;
+      docFiles.push(path);
+    }
     // Manuals this push edited come before the other docs so the cap can
     // never silently drop one (Issue #3347).
     const candidates = uniq([
@@ -1705,7 +1841,25 @@ export async function runPrFeedbackDriftCheck(
     if (stillPresent) remainingFindings.push(finding);
   }
 
-  const freshSummaries = await loadSummaries(repoPath, prFiles);
+  if (issueNumber !== null) {
+    await restoreForeignSummaries(
+      repoPath,
+      deps,
+      beforeSha,
+      baseRef,
+      issueNumber,
+      logger,
+      repo,
+      prNumber,
+    );
+  }
+  const freshSummaries = await loadSummaries(
+    repoPath,
+    deps,
+    prFiles,
+    issueNumber,
+    baseRef,
+  );
   const freshHeadCounts = await computeHeadCounts(repoPath, prFiles);
   const freshChecks = collect(
     freshSummaries,
