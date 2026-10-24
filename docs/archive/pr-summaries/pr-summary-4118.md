@@ -23,7 +23,8 @@ logged as its own warning with `{ repo, issueNumber }`. The `notChecked` list re
   pushed rather than matched by text).
 - `docs/workflows/issue-processing.md` — the claim-check section now says all
   of these log at warning level and that cap overflow is one warning.
-- `worker/deno/tests/summary_claim_check_test.ts` — see the Test Plan.
+- `worker/deno/tests/summary_claim_check_test.ts` and
+  `worker/deno/tests/doc_prose_claims_test.ts` — see the Test Plan.
 
 ## Acceptance Criteria
 
@@ -41,7 +42,9 @@ logged as its own warning with `{ repo, issueNumber }`. The `notChecked` list re
 
 ## Test Plan
 
-Run from `worker/deno`: `deno test -A tests/summary_claim_check_test.ts` — 77 passed, 0 failed.
+Run from `worker/deno`: `deno test -A tests/summary_claim_check_test.ts tests/doc_prose_claims_test.ts` — 90 passed, 0 failed.
+
+- `worker/deno/tests/doc_prose_claims_test.ts::prose scope follows named sections and source basenames into untouched manuals` (added in the mutation-survivor push) pins `capOverflow` in `collectDocProseScope` itself: a section-cap overflow and a file-cap overflow each appear in `capOverflow`, every `capOverflow` entry is also in `notChecked`, and an uncapped scope has an empty `capOverflow`. Without it, dropping either `capOverflow.push` left the log tests green.
 
 - Removed from `worker/deno/tests/summary_claim_check_test.ts`: `assert(logger.errors.some((e) => e.includes("well-formed base ref")));`
   Required by: "It no longer logs one ERROR per range"
@@ -64,6 +67,8 @@ are asserted at WARNING instead.
 - `worker/deno/lib/summary_claim_check.ts:864` — more than three cap overflows (`; and N more` suffix) — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - cap overflow warning carries repo, issue, the count and 'and N more' (#4118)` — flipped to never-more, test went red
 - `worker/deno/lib/summary_claim_check.ts:864` — three or fewer cap overflows (no suffix) — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - a small overflow warning lists every name with no 'and N more' (#4118)` — flipped to always-more, test went red
 - `worker/deno/lib/summary_claim_check.ts:855` — a cap-overflow entry is skipped by the per-reason loop — `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - a non-cap reason after >3 cap overflows gets its own warning and is not aggregated (PR #4228 review)` — removed the `continue`, test went red
+- `worker/deno/lib/doc_prose_scope.ts:138` — file-cap overflow is recorded in `capOverflow` as well as `notChecked` — `worker/deno/tests/doc_prose_claims_test.ts::prose scope follows named sections and source basenames into untouched manuals` (the `fileCap: 1` case) — removed the `capOverflow.push`, test went red (5 failed across the two touched test files)
+- `worker/deno/lib/doc_prose_scope.ts:310` — section-cap overflow is recorded in `capOverflow` as well as `notChecked` — same test (the section-cap case) — removed the `capOverflow.push`, test went red (1 failed)
 - `worker/deno/lib/summary_claim_check.ts:855` — a non-cap entry is logged on its own — same test — inverted the condition, test went red; aggregating `scope.notChecked` instead of `scope.capOverflow` also went red
 
 ## Mutation check
