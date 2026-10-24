@@ -5,8 +5,10 @@
  * configured; the ANTHROPIC_BASE_URL host and operator `egress_allow_hosts`
  * extras are appended last.
  *
- * #4046 (CONNECT egress proxy) will enforce this list. Today `loadConfig`
- * validates `egress_allow_hosts` and nothing else reads the list yet.
+ * The CONNECT egress proxy (#4046, `egress-proxy`) takes its allowlist from
+ * `--allow` or `VIBE_EGRESS_ALLOW_HOSTS`, not from this list. Not yet: #4047
+ * will feed the resolved list to the proxy and route the container through
+ * it. Until then `loadConfig` only validates `egress_allow_hosts`.
  *
  * Australian English spelling throughout (normalised, behaviour).
  */

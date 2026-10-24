@@ -1,0 +1,201 @@
+{
+  "branchOutcomes": {
+    "entries": [
+      {
+        "flipWentRed": "disabling the allowlist check turned this test, the one-denial-line test and the trailing-dot test red",
+        "line": 368,
+        "outcome": "a host outside the allowlist is refused before any resolve or dial",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy refuses a non-allowlisted host with 403 and opens no upstream connection"
+      },
+      {
+        "flipWentRed": "disabling the private-address check turned it red",
+        "line": 412,
+        "outcome": "a name resolving to any private address is refused before the dial",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy refuses allowlisted names resolving to private addresses"
+      },
+      {
+        "flipWentRed": "dialling the hostname instead of the checked address turned it red on the dialled-addresses assertion",
+        "line": 421,
+        "outcome": "the dial uses exactly the checked address, not the hostname",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy tunnels an allowlisted CONNECT byte-for-byte"
+      },
+      {
+        "flipWentRed": "disabling the connection-cap check turned it red",
+        "line": 270,
+        "outcome": "a connection past the concurrent-connection cap is refused",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy refuses at the connection cap"
+      },
+      {
+        "flipWentRed": "disabling the too-large header check turned it red",
+        "line": 352,
+        "outcome": "an over-long request header is cut off",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy cuts off an over-long request header"
+      },
+      {
+        "flipWentRed": "forcing the method check false turned it red",
+        "line": 473,
+        "outcome": "a non-CONNECT method is refused with reason method",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy refuses a non-CONNECT request"
+      },
+      {
+        "flipWentRed": "forcing the port check false turned it red",
+        "line": 486,
+        "outcome": "a port other than 443 is refused with reason bad-port",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy refuses a non-443 port"
+      },
+      {
+        "flipWentRed": "forcing the IP-literal check false turned it red",
+        "line": 487,
+        "outcome": "an IP-literal target is refused with reason ip-literal",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy refuses an IP-literal target"
+      },
+      {
+        "flipWentRed": "returning the raw text instead of the stripped text turned it and the lone-CR, formatEgressDenial and sanitiseEgressHost tests red",
+        "line": 152,
+        "outcome": "control and format characters are stripped from the logged host",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy refuses and sanitises a hostname carrying control characters"
+      },
+      {
+        "flipWentRed": "returning the unredacted line turned this test and the formatEgressDenial detail test red",
+        "line": 184,
+        "outcome": "the denial line is passed through redactSecrets before it is logged",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy redacts a token carried in the hostname from the denial line"
+      },
+      {
+        "flipWentRed": "never arming the idle timer turned it and the idle-timer race test red",
+        "line": 332,
+        "outcome": "an idle client before the dial is cut off with one idle-timeout line",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy cuts off an idle client"
+      },
+      {
+        "flipWentRed": "returning early from the idle callback in the tunnel phase turned only this test red; the head-phase idle test stayed green",
+        "line": 442,
+        "outcome": "an idle established tunnel is closed on both ends with no log line",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy cuts off an idle established tunnel"
+      },
+      {
+        "flipWentRed": "deleting the cutOff guard turned it red: dialled addresses were not empty",
+        "line": 417,
+        "outcome": "a connection cut off while the resolver was pending is never dialled",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy writes one line when the idle timer races a delayed resolver"
+      },
+      {
+        "flipWentRed": "skipping the route branch turned it red",
+        "line": 371,
+        "outcome": "an allowlisted host with a route is handed to the route, not dialled",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy hands an allowlisted host with a route to the route, not upstream"
+      },
+      {
+        "flipWentRed": "skipping the no-address branch turned it red: the client got 200 instead of 403",
+        "line": 402,
+        "outcome": "a name that does not resolve is refused with reason resolve-failed",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy logs the resolver error as detail and keeps it out of the 403 body"
+      },
+      {
+        "flipWentRed": "rethrowing in the catch instead of refusing turned it red: the connection closed before the response head ended",
+        "line": 423,
+        "outcome": "an upstream dial failure is refused with reason connect-failed",
+        "path": "worker/deno/lib/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_test.ts",
+        "testName": "egress proxy logs the connector error as detail and keeps it out of the 403 body"
+      },
+      {
+        "flipWentRed": "changing exitCode 2 to 1 turned it red",
+        "line": 149,
+        "outcome": "a missing allowlist exits 2 and never starts the proxy",
+        "path": "worker/deno/commands/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_command_test.ts",
+        "testName": "egress-proxy - execute with no allowlist fails with exit 2 and never starts the proxy"
+      },
+      {
+        "flipWentRed": "checking the environment before --allow turned it red",
+        "line": 71,
+        "outcome": "--allow takes precedence over VIBE_EGRESS_ALLOW_HOSTS",
+        "path": "worker/deno/commands/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_command_test.ts",
+        "testName": "egress-proxy - --allow beats VIBE_EGRESS_ALLOW_HOSTS"
+      },
+      {
+        "flipWentRed": "forcing the environment value to undefined turned it and the execute-from-env test red",
+        "line": 83,
+        "outcome": "VIBE_EGRESS_ALLOW_HOSTS is used when --allow is absent",
+        "path": "worker/deno/commands/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_command_test.ts",
+        "testName": "egress-proxy - reads VIBE_EGRESS_ALLOW_HOSTS when --allow is absent"
+      },
+      {
+        "flipWentRed": "relaxing port < 1 to port < 0 turned it red",
+        "line": 111,
+        "outcome": "a listen port outside 1-65535 is rejected",
+        "path": "worker/deno/commands/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_command_test.ts",
+        "testName": "egress-proxy - a port outside 1-65535 is an error"
+      },
+      {
+        "flipWentRed": "narrowing the empty-host check turned it red",
+        "line": 104,
+        "outcome": "a --listen value without a host is rejected",
+        "path": "worker/deno/commands/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_command_test.ts",
+        "testName": "egress-proxy - a --listen without a host is an error"
+      },
+      {
+        "flipWentRed": "changing exitCode 1 to 2 turned it red; dropping the cause from the message turned it red",
+        "line": 167,
+        "outcome": "a proxy that fails to start exits 1 and names the cause",
+        "path": "worker/deno/commands/egress_proxy.ts",
+        "test": "worker/deno/tests/egress_proxy_command_test.ts",
+        "testName": "egress-proxy - a proxy that fails to start returns exit 1 and names the cause"
+      },
+      {
+        "flipWentRed": "deleting the entry from the catch-path list turned the no-config test and the malformed-config test red",
+        "line": 775,
+        "outcome": "egress-proxy runs when the config fails to load or validate",
+        "path": "worker/deno/mod.ts",
+        "test": "worker/deno/tests/mod_test.ts",
+        "testName": "egress-proxy runs with no config file and refuses on its missing allowlist"
+      },
+      {
+        "exempt": {
+          "kind": "untestable",
+          "reason": "the command ignores its config argument, so the try-path list has no observable effect; the worker/deno/tests/mod_test.ts main() subprocess tests only reach the catch-path list because a missing or malformed config always throws"
+        },
+        "line": 641,
+        "outcome": "egress-proxy is also skipped by the try-path validation list",
+        "path": "worker/deno/mod.ts"
+      }
+    ],
+    "noneAdded": false
+  },
+  "version": 1
+}

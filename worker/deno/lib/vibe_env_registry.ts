@@ -373,6 +373,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "the launcher-generated run identifier",
   },
+  VIBE_EGRESS_ALLOW_HOSTS: {
+    role: "launch_plumbing",
+    note:
+      "the host allowlist the `egress-proxy` command reads when `--allow` is absent (Issue #4046); the launcher does not set it yet — #4047 routes the container through the proxy",
+  },
   VIBE_RUN_MODE: {
     role: "launch_plumbing",
     note: "host or container, decided by the launcher",

@@ -49,6 +49,14 @@ import {
   IMGBB_EGRESS_RULES,
   PROVIDER_EGRESS_RULES,
 } from "../lib/egress_allowlist.ts";
+import { EGRESS_ALLOW_HOSTS_ENV } from "../commands/egress_proxy.ts";
+import { formatEgressDenial } from "../lib/egress_proxy.ts";
+import {
+  assertPins,
+  flat,
+  readRepoDoc,
+  section as docSection,
+} from "./support/markdown_docs.ts";
 
 // tests/ → worker/deno/ → worker/ → repo root
 function repoPath(relative: string): URL {
@@ -278,16 +286,143 @@ Deno.test("CONTAINMENT.md's egress allowlist lists exactly the module's hosts", 
   );
 });
 
-Deno.test("CONTAINMENT.md says the egress allowlist is not enforced until #4046", () => {
+Deno.test("CONTAINMENT.md says the egress allowlist is not enforced for the container until #4047", () => {
   const body = section(read("docs/CONTAINMENT.md"), "Egress allowlist");
   assert(
     body.includes("nothing enforces it yet"),
     "the egress-allowlist section must say nothing enforces the list yet",
   );
   assert(
-    body.includes("#4046"),
-    "the egress-allowlist section must name #4046 as the issue that enforces the list",
+    body.includes("#4047"),
+    "the egress-allowlist section must name #4047 as the issue that routes the container through the proxy",
   );
+});
+
+// ---------------------------------------------------------------------------
+// docs/CONTAINMENT.md — the egress proxy (Issue #4046)
+// ---------------------------------------------------------------------------
+
+/** The egress proxy module the section names, as a repo-relative path. */
+const EGRESS_PROXY_DOC_PATH = "worker/deno/lib/egress_proxy.ts";
+
+/**
+ * The denial marker the docs quote, taken from the module: everything before
+ * the host in a denial line, which is `[EGRESS_DENIED] host=`.
+ */
+const EGRESS_DENIAL_MARKER = (() => {
+  const sample = formatEgressDenial("docs.example", 443, "method");
+  return sample.slice(0, sample.indexOf("docs.example"));
+})();
+
+Deno.test("CONTAINMENT.md documents the egress proxy as the one outbound proxy #3699 will extend", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  for (
+    const phrase of [
+      "#3699",
+      "no second outbound proxy",
+      EGRESS_DENIAL_MARKER,
+      EGRESS_ALLOW_HOSTS_ENV,
+      EGRESS_PROXY_DOC_PATH,
+    ]
+  ) {
+    assert(
+      body.includes(phrase),
+      `the egress-proxy section must include "${phrase}"`,
+    );
+  }
+});
+
+Deno.test("CONTAINMENT.md's egress proxy section does not claim the container is routed through it yet", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  for (
+    const phrase of ["#4047", "The container is not routed through it yet"]
+  ) {
+    assert(
+      body.includes(phrase),
+      `the egress-proxy section must say the container is not routed through the proxy until #4047 (missing "${phrase}")`,
+    );
+  }
+});
+
+Deno.test("CONTAINMENT.md's egress proxy section states the proxy opens no files, keeps no cache and needs --allow-read --allow-env --allow-net", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  for (
+    const phrase of [
+      "opens no files and keeps no cache",
+      "--allow-read --allow-env --allow-net",
+    ]
+  ) {
+    assert(
+      body.includes(phrase),
+      `the egress-proxy section must state "${phrase}" (missing from the section)`,
+    );
+  }
+});
+
+Deno.test("CONTAINMENT.md's egress proxy section names a module that exists", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  assert(
+    body.includes(EGRESS_PROXY_DOC_PATH),
+    `the egress-proxy section must name "${EGRESS_PROXY_DOC_PATH}"`,
+  );
+  const info = await Deno.stat(repoPath(EGRESS_PROXY_DOC_PATH));
+  assert(info.isFile, `"${EGRESS_PROXY_DOC_PATH}" must be a file`);
+});
+
+Deno.test("CONTAINMENT.md describes #3699 as planned, not delivered", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  assertPins(body, [
+    "#3699 will extend this proxy through this seam",
+    "not yet delivered",
+    "no second outbound proxy",
+    "seam #3699's credential broker will attach to",
+  ]);
+  assert(
+    !flat(body).includes("#3699 extends this proxy"),
+    "the egress-proxy section must not present #3699 as having extended the proxy",
+  );
+});
+
+Deno.test("CONTAINMENT.md's egress proxy section says which refusals get a 403 and how idle connections close", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress proxy",
+  );
+  assertPins(body, [
+    "Every refusal except `idle-timeout` is also answered with HTTP `403`",
+    "An `idle-timeout` refusal closes the socket without a 403",
+    "Idle before the upstream is dialled gets the `idle-timeout` line and no 403",
+    "An idle established tunnel is closed on both ends with no log line",
+    "A route that takes a client after `200` owns that connection, so this idle guard does not bound it",
+    "the proxy dials nothing for a route",
+  ]);
+  const rows = tableRows(body).filter((cells) => cells[0] !== "Reason class");
+  assert(rows.length > 0, "the egress-proxy section must carry a reason table");
+  for (const cells of rows) {
+    const expected = cells[0] === "`idle-timeout`"
+      ? "no, the socket is closed"
+      : "yes";
+    assertEquals(
+      cells[2],
+      expected,
+      `the 403 column for ${cells[0]} must read "${expected}"`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
