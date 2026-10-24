@@ -1284,7 +1284,7 @@ async function executeClaudePhaseBody(
         options.externalOrchestrationSettings ?? {},
         repoConfigs?.[repo]?.externalOrchestrationSettings,
       ),
-      selectAgentProvider(invocationAgentProvider).id,
+      selectAgentProvider(invocationAgentProvider, { env: deps.env }).id,
       isAutomaticProviderRoutingActive(),
     );
   const requestedExecutorSplit = !externalOrchestration &&

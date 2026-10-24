@@ -64,7 +64,7 @@ relative to the repository root.
 | Reviewer definitions | `worker/deno/lib/issue_executor_agents.ts:208`, `:296` | Read-only tools `Read`, `Grep`, `Glob`; `buildIssueReviewerAgents`. |
 | Explorer definition | `worker/deno/lib/issue_executor_agents.ts:337`, `:374` | Haiku, read-only. Built only on the haiku tier (see assembly below). |
 | Assembly | `worker/deno/lib/issue_executor_agents.ts:420-434` | `buildIssueRunAgents` returns `undefined` when the split is off, reviewers are off and the tier is not haiku (`:424-426`). The explorer is added only on the haiku tier (`:434`). |
-| Phase wiring | `worker/deno/lib/execute_claude_phase.ts:1270-1306` | Resolves the split (`:1282-1286`), then the tier (the `"sonnet"` fallback at `:1291` applies only when no option is passed), then calls `buildIssueRunAgents` at `:1300`. |
+| Phase wiring | `worker/deno/lib/execute_claude_phase.ts:1275-1325` | Resolves the split (`:1290-1295`), then the tier (`:1296-1301`; the `"sonnet"` fallback at `:1297` applies only when no option is passed), then settles the provider with `planIssueRunProvider` (`:1307`), then calls `buildIssueRunAgents` at `:1321` with the planner's switches. The planner is skipped when external orchestration is on. |
 | Edit guard | `worker/deno/lib/issue_executor_enforcement.ts:47`, `:58`, `:124`, `:138` | Guarded tools are `Edit` and `Write`. A call with `agent_id` present (an executor) is allowed. A call without it (the advisor) is denied, unless its `file_path` is one of the advisor's own run-record files (`isAdvisorRunRecordPath`, `:98`, `:142-145`): the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` or the PR-feedback reply file `.pr_response_message`. |
 | Hook settings | `worker/deno/lib/issue_executor_enforcement.ts:205`, `:240` | `buildIssueExecutorHookSettings` and `resolveIssueExecutorHookSettings` build the `--settings` payload. |
 | Guard CLI | `worker/deno/lib/issue_edit_guard_cli.ts:46` | `runIssueEditGuard` is the hook entry point. |
@@ -232,7 +232,7 @@ from the claim through the advisor and its sub-agents to the result.
 
 ```mermaid
 flowchart LR
-  A["Claim the issue<br/>claim_issue.ts:1240"] --> B["Phase options<br/>execute_claude_phase.ts:1270-1306"]
+  A["Claim the issue<br/>claim_issue.ts:1240"] --> B["Phase options<br/>execute_claude_phase.ts:1275-1325"]
   B --> C["buildIssueRunAgents<br/>issue_executor_agents.ts:420"]
   C --> D["buildClaudeCliArgs<br/>agent_provider.ts:595"]
   D --> E["claude CLI<br/>--agents and --settings"]
@@ -381,10 +381,10 @@ strip path.** `isIssueExecutorSplitEnabled` takes the phase, repo and host
 config only (`worker/deno/lib/issue_executor_split.ts:42-60`), so it does not
 gate on the provider. Both phase paths call it with no provider argument
 (`worker/deno/lib/execute_claude_phase.ts:1290-1295`,
-`worker/deno/lib/phases/execute_phase.ts:816-821`). What reaches `buildPrompt`
+`worker/deno/lib/phases/execute_phase.ts:817-822`). What reaches `buildPrompt`
 is the planner's `executorSplit` (`execute_claude_phase.ts:1317-1319`,
-`phases/execute_phase.ts:850-852`, passed at `execute_claude_phase.ts:1447` and
-`phases/execute_phase.ts:905`). On the strip path the planner sets it to `false`
+`phases/execute_phase.ts:851-853`, passed at `execute_claude_phase.ts:1447` and
+`phases/execute_phase.ts:906`). On the strip path the planner sets it to `false`
 (`worker/deno/lib/issue_run_provider_agents.ts:115-121`), so no advisor/executor
 block renders there. The block renders on the unchanged and rerouted-to-Claude
 outcomes. `prompt_builder.ts:832-834` splices the block whenever it is true.
@@ -401,8 +401,8 @@ settles the run first, so the advisor is not silently told to dispatch
 
 **Two paths now.** The table above is the native split path, which runs only
 when external orchestration is off
-(`worker/deno/lib/execute_claude_phase.ts:1279-1290`,
-`worker/deno/lib/phases/execute_phase.ts:800-816`). The opt-in external
+(`worker/deno/lib/execute_claude_phase.ts:1279-1289`,
+`worker/deno/lib/phases/execute_phase.ts:800-815`). The opt-in external
 orchestration path never sets `--agents`
 (`worker/deno/lib/orchestration/issue_run_gate.ts:112`) and refuses a provider
 that cannot carry a role before any paid work: `assertRoleSupported`
@@ -428,8 +428,8 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   - `external_orchestration` (default `false`): opts a host or repository into
     the independent provider-neutral path. When it is on, the native split and
     `--agents` are not resolved
-    (`worker/deno/lib/execute_claude_phase.ts:1279-1290`,
-    `worker/deno/lib/phases/execute_phase.ts:800-816`). See
+    (`worker/deno/lib/execute_claude_phase.ts:1279-1289`,
+    `worker/deno/lib/phases/execute_phase.ts:800-815`). See
     [Role configuration](ROLE-CONFIGURATION.md).
 
   See [Configuration Reference](CONFIGURATION.md), rows for these keys.
@@ -443,8 +443,8 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   (`worker/deno/lib/orchestration/issue_run_gate.ts:112`).
 - **Native split, current state.** The native `issue_executor_split` path runs
   only when external orchestration is off
-  (`worker/deno/lib/execute_claude_phase.ts:1279-1290`,
-  `worker/deno/lib/phases/execute_phase.ts:800-816`). The fail-loud
+  (`worker/deno/lib/execute_claude_phase.ts:1279-1289`,
+  `worker/deno/lib/phases/execute_phase.ts:800-815`). The fail-loud
   invariant is now delivered on this path too: the issue-run planner
   (`worker/deno/lib/issue_run_provider_agents.ts:72-122`) reroutes or strips
   such a run before spawn (Issue #4109), and `runClaudeWithTimeoutBody`
@@ -462,10 +462,15 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   `issue_sub_agent_tier` stays `"haiku"` and `issue_reviewer_agents` stays
   `true`. `external_orchestration` stays `false` until a host opts in. Nothing
   in the rollout changes them. The defaults keep `--agents` on every native
-  `issue` run, so with them a host whose `issue` phase runs on `codex`,
-  `gemini` or `deepseek` has each such run rerouted to Claude when Claude is
-  enabled, or stripped with a warning otherwise (Issue #4109), unless it applies
-  the full rollback below or opts into external orchestration.
+  `issue` run, so with them a host whose `issue` phase runs on `gemini` or
+  `deepseek` has each such run rerouted to Claude when Claude is enabled and
+  installed, or stripped with a warning otherwise (Issue #4109), unless it
+  applies the full rollback below or opts into external orchestration. A `codex`
+  run under automatic provider routing is forced onto external orchestration
+  (`worker/deno/lib/orchestration/role_config.ts:370`) and is never planned, so
+  it is neither rerouted nor stripped; a `codex` run that is not on automatic
+  routing and has external orchestration off is rerouted or stripped like the
+  others.
 - **Rollback.** Native: setting `issue_executor_split: false` and
   `issue_reviewer_agents: false` alone does not remove `--agents` on the default
   `haiku` tier. `buildIssueRunAgents` (`worker/deno/lib/issue_executor_agents.ts:420-434`)

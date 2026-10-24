@@ -806,6 +806,7 @@ async function executeClaudeBody(
     ),
     selectAgentProvider(
       resolveInvocationAgentProvider(undefined, config.repoConfig?.[repo]),
+      { env: deps.claude.env },
     ).id,
     isAutomaticProviderRoutingActive(),
   );
