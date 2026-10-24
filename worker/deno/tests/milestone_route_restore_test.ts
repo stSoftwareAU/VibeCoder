@@ -22,19 +22,12 @@ import { restoreClosedMilestoneRoute } from "../lib/milestone_route_restore.ts";
 import {
   _resetBaseProtectionMemo,
   AutoMergeResult,
-  enableAutoMerge as enableAutoMergeReal,
+  enableAutoMerge,
 } from "../lib/pr_auto_merge.ts";
-import { armWithNoReviewRecord } from "./support/arm_with_no_review_record.ts";
 
 const REPO = "owner/repo";
 const BRANCH = "milestone/clean-up";
 const DEFAULT = "Develop";
-
-function enableAutoMerge(
-  options: Parameters<typeof enableAutoMergeReal>[0],
-): ReturnType<typeof enableAutoMergeReal> {
-  return armWithNoReviewRecord(enableAutoMergeReal, options);
-}
 
 Deno.test("decideMilestoneBaseMerge - an open rollup restores the route even when an older rollup merged (Issue #4175)", async () => {
   const decision = await decideMilestoneBaseMerge({
@@ -181,7 +174,9 @@ Deno.test("a closed-route milestone with an open child gets a restored route and
   });
 
   assertEquals(result.result, AutoMergeResult.Enabled);
-  const created = calls.find((args) => args[0] === "pr" && args[1] === "create");
+  const created = calls.find((args) =>
+    args[0] === "pr" && args[1] === "create"
+  );
   assert(created, "a fresh rollup PR is opened from the milestone branch");
   assertEquals(created[created.indexOf("--head") + 1], BRANCH);
   assertEquals(created[created.indexOf("--base") + 1], DEFAULT);

@@ -28,8 +28,7 @@ import { getRepoDefaultBranch } from "./shell_helpers.ts";
 export type GhCommandFn = (args: string[]) => Promise<string>;
 
 /** Marker in every fresh-rollup body. Posted in the target repository. */
-export const RESTORED_ROLLUP_MARKER =
-  "<!-- vibe-coder:restored-milestone-rollup -->";
+export const RESTORED_ROLLUP_MARKER = "<!-- vibe-restored-milestone-rollup -->";
 
 const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const BRANCH_PATTERN = /^[A-Za-z0-9._/-]+$/;
@@ -326,8 +325,7 @@ export async function restoreClosedMilestoneRoute(
     return {
       action: "left-closed",
       milestoneBranch,
-      detail:
-        `rollup PR #${merged.number} has merged and ${why}`,
+      detail: `rollup PR #${merged.number} has merged and ${why}`,
     };
   }
 
