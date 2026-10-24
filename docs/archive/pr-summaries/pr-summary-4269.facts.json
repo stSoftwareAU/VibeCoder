@@ -1,7 +1,49 @@
-{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
-{"path":"worker/deno/lib/caller_checks.ts","line":586,"outcome":"a verdict carrying the raw symbol and caller covers its entry","test":"worker/deno/tests/caller_checks_3779_test.ts","testName":"callerGapFindings: a verdict for each caller leaves no finding","flipWentRed":"replacing the raw-key early return with `if (false)` turned 12 tests red across the caller and echo test files"},
-{"path":"worker/deno/lib/caller_checks.ts","line":588,"outcome":"operand `unambiguous`: a scrubbed form shared by two different callers matches neither","test":"worker/deno/tests/caller_checks_3779_test.ts","testName":"callerGapFindings: two callers whose symbols scrub to the same placeholder do not match each other's copy","flipWentRed":"forcing `unambiguous` to true turned it and the secret-row echo test red: the placeholder copy cleared both callers"},
-{"path":"worker/deno/lib/caller_checks.ts","line":588,"outcome":"operand `reported.has(scrubbed)`: a verdict that copies the fenced text covers the entry, and no verdict still reports a gap","test":"worker/deno/tests/caller_checks_3779_test.ts","testName":"callerGapFindings: a copy of the once-scrubbed symbol matches its entry, and so does the raw copy","flipWentRed":"forcing `reported.has(scrubbed)` to true turned two tests red: a missing verdict was no longer reported"},
-{"path":"worker/deno/lib/caller_checks.ts","line":564,"outcome":"scrubbed key is read back from the whole-body scrub when the line count is unchanged","test":"worker/deno/tests/caller_checks_3779_test.ts","testName":"callerGapFindings: a copy of a caller whose scrub depends on the rest of the fenced list matches","flipWentRed":"forcing `sameLineCount` to false (per-field key only) turned it red: the fenced copy was reported as having no verdict"},
-{"path":"worker/deno/lib/caller_checks.ts","line":572,"outcome":"a line the whole-body scrub changed in shape or count falls back to scrubbing the two fields","exempt":{"kind":"untestable","reason":"no input found whose scrub changes a listed line's shape or count; the tests that call callerGapFindings (worker/deno/tests/caller_checks_3779_test.ts, worker/deno/tests/echo_round_trip_test.ts, worker/deno/tests/pre_pr_verifier_3395_test.ts) only change characters inside a field. The fallback only adds a second acceptable key."}}
-]}}
+{
+  "branchOutcomes": {
+    "entries": [
+      {
+        "flipWentRed": "replacing the raw-key early return with `if (false)` turned 12 tests red across the caller and echo test files",
+        "line": 586,
+        "outcome": "a verdict carrying the raw symbol and caller covers its entry",
+        "path": "worker/deno/lib/caller_checks.ts",
+        "test": "worker/deno/tests/caller_checks_3779_test.ts",
+        "testName": "callerGapFindings: a verdict for each caller leaves no finding"
+      },
+      {
+        "flipWentRed": "forcing `unambiguous` to true turned it and the secret-row echo test red: the placeholder copy cleared both callers",
+        "line": 588,
+        "outcome": "operand `unambiguous`: a scrubbed form shared by two different callers matches neither",
+        "path": "worker/deno/lib/caller_checks.ts",
+        "test": "worker/deno/tests/caller_checks_3779_test.ts",
+        "testName": "callerGapFindings: two callers whose symbols scrub to the same placeholder do not match each other's copy"
+      },
+      {
+        "flipWentRed": "forcing `reported.has(scrubbed)` to true turned two tests red: a missing verdict was no longer reported",
+        "line": 588,
+        "outcome": "operand `reported.has(scrubbed)`: a verdict that copies the fenced text covers the entry, and no verdict still reports a gap",
+        "path": "worker/deno/lib/caller_checks.ts",
+        "test": "worker/deno/tests/caller_checks_3779_test.ts",
+        "testName": "callerGapFindings: a copy of the once-scrubbed symbol matches its entry, and so does the raw copy"
+      },
+      {
+        "flipWentRed": "forcing `sameLineCount` to false (per-field key only) turned it red: the fenced copy was reported as having no verdict",
+        "line": 564,
+        "outcome": "scrubbed key is read back from the whole-body scrub when the line count is unchanged",
+        "path": "worker/deno/lib/caller_checks.ts",
+        "test": "worker/deno/tests/caller_checks_3779_test.ts",
+        "testName": "callerGapFindings: a copy of a caller whose scrub depends on the rest of the fenced list matches"
+      },
+      {
+        "exempt": {
+          "kind": "untestable",
+          "reason": "no input found whose scrub changes a listed line's shape or count; the tests that call callerGapFindings (worker/deno/tests/caller_checks_3779_test.ts, worker/deno/tests/echo_round_trip_test.ts, worker/deno/tests/pre_pr_verifier_3395_test.ts) only change characters inside a field. The fallback only adds a second acceptable key."
+        },
+        "line": 572,
+        "outcome": "a line the whole-body scrub changed in shape or count falls back to scrubbing the two fields",
+        "path": "worker/deno/lib/caller_checks.ts"
+      }
+    ],
+    "noneAdded": false
+  },
+  "version": 1
+}
