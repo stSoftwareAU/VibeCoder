@@ -34,8 +34,19 @@ None.
 - Updated issue-query, all-state cache, milestone cache, health, progress and
   completion suites: 320 passed, 0 failed.
 - Changed-file Deno lint and formatting passed.
-- Full quality gate and manifest checks: running; results will be recorded
-  before this PR is marked ready.
+- Manifest checks: 810 passed, 0 failed, 1 ignored.
+- Eight isolated mutations replacing each rejection with an empty return all
+  failed the relevant regression tests.
+- Full quality gate: type-check, lint, formatting and completeness passed.
+  Unit parallel pass: 29,715 passed, 4 failed, 9 ignored; the serial pass did
+  not run after the failure. All four failures reproduced on unchanged
+  `main` (`ffdc31c9`): process cleanup in `claude_runner_killed_test.ts` and
+  `process_tree_test.ts`, CLI stdout in `log_dir_default_test.ts`, and the
+  missing PowerShell check in `pwsh_suites_in_the_gate_test.ts`.
+- Config integration, markdownlint, Semgrep and Checkov were skipped locally.
+  CI verification remains required; the full local gate is not green.
+- PR-summary check: no blocked gates; four model/issue-context gates were not
+  checked locally.
 - Backend-only change; no visual evidence applies.
 
 Docs sweep: grep: `parseIssueListJson`, `fetchAllIssues`,

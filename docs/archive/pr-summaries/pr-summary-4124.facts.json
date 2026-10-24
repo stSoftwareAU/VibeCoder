@@ -9,7 +9,7 @@
         "outcome": "non-array root rejects",
         "test": "worker/deno/tests/issue_query_test.ts",
         "testName": "parseIssueListJson rejects invalid list \"{}\"",
-        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+        "flipWentRed": "Changed this rejection to return []; the named regression failed in an isolated worktree mutation run."
       },
       {
         "path": "worker/deno/lib/issue_query.ts",
@@ -17,7 +17,7 @@
         "outcome": "non-object row rejects",
         "test": "worker/deno/tests/issue_query_test.ts",
         "testName": "parseIssueListJson rejects non-object rows",
-        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+        "flipWentRed": "Changed this rejection to return []; the named regression failed in an isolated worktree mutation run."
       },
       {
         "path": "worker/deno/lib/issue_query.ts",
@@ -25,7 +25,7 @@
         "outcome": "malformed number rejects",
         "test": "worker/deno/tests/issue_query_test.ts",
         "testName": "parseIssueListJson rejects malformed number: \"2\"",
-        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+        "flipWentRed": "Changed this rejection to return []; the named regression failed in an isolated worktree mutation run."
       },
       {
         "path": "worker/deno/lib/issue_query.ts",
@@ -33,7 +33,7 @@
         "outcome": "malformed title rejects",
         "test": "worker/deno/tests/issue_query_test.ts",
         "testName": "parseIssueListJson rejects malformed title: null",
-        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+        "flipWentRed": "Changed this rejection to return []; the named regression failed in an isolated worktree mutation run."
       },
       {
         "path": "worker/deno/lib/issue_query.ts",
@@ -41,7 +41,7 @@
         "outcome": "malformed author rejects",
         "test": "worker/deno/tests/issue_query_test.ts",
         "testName": "parseIssueListJson rejects malformed author: \"alice\"",
-        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+        "flipWentRed": "Changed this rejection to return []; the named regression failed in an isolated worktree mutation run."
       },
       {
         "path": "worker/deno/lib/issue_query.ts",
@@ -49,7 +49,7 @@
         "outcome": "malformed assignees reject",
         "test": "worker/deno/tests/issue_query_test.ts",
         "testName": "parseIssueListJson rejects malformed assignees: [null]",
-        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+        "flipWentRed": "Changed this rejection to return []; the named regression failed in an isolated worktree mutation run."
       },
       {
         "path": "worker/deno/lib/issue_query.ts",
@@ -57,7 +57,7 @@
         "outcome": "malformed labels reject",
         "test": "worker/deno/tests/issue_query_test.ts",
         "testName": "parseIssueListJson rejects malformed labels: \"bug\"",
-        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+        "flipWentRed": "Changed this rejection to return []; the named regression failed in an isolated worktree mutation run."
       },
       {
         "path": "worker/deno/lib/issue_query.ts",
@@ -65,7 +65,7 @@
         "outcome": "malformed milestone rejects",
         "test": "worker/deno/tests/issue_query_test.ts",
         "testName": "parseIssueListJson rejects malformed milestone: \"v1\"",
-        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+        "flipWentRed": "Changed this rejection to return []; the named regression failed in an isolated worktree mutation run."
       }
     ]
   }
