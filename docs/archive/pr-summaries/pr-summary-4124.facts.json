@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 311,
+        "outcome": "non-array root rejects",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "parseIssueListJson rejects invalid list \"{}\"",
+        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 322,
+        "outcome": "non-object row rejects",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "parseIssueListJson rejects non-object rows",
+        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 323,
+        "outcome": "malformed number rejects",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "parseIssueListJson rejects malformed number: \"2\"",
+        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 324,
+        "outcome": "malformed title rejects",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "parseIssueListJson rejects malformed title: null",
+        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 326,
+        "outcome": "malformed author rejects",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "parseIssueListJson rejects malformed author: \"alice\"",
+        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 330,
+        "outcome": "malformed assignees reject",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "parseIssueListJson rejects malformed assignees: [null]",
+        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 334,
+        "outcome": "malformed labels reject",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "parseIssueListJson rejects malformed labels: \"bug\"",
+        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+      },
+      {
+        "path": "worker/deno/lib/issue_query.ts",
+        "line": 338,
+        "outcome": "malformed milestone rejects",
+        "test": "worker/deno/tests/issue_query_test.ts",
+        "testName": "parseIssueListJson rejects malformed milestone: \"v1\"",
+        "flipWentRed": "Restoring the previous skip/empty-return behaviour made this regression fail in the red-on-base run (18 failed)."
+      }
+    ]
+  }
+}
