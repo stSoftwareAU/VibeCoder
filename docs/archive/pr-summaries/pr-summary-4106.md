@@ -54,9 +54,7 @@ mistaken for a clean one.
 
 Backend and CLI only; there is no UI change.
 
-Docs sweep:
-
-Docs sweep: grep: `No active milestones`, `milestone-health`, `Continue with empty list`, `swallows gh`; section: `docs/INTERNALS.md#-milestone-health-diagnostics` (the heading is "### 🏥 Milestone health diagnostics"); siblings: `milestones`, `repo`; updated: `docs/INTERNALS.md`.
+**Docs sweep** — grep: `No active milestones`, `milestone-health`, `Continue with empty list`, `swallows gh`; section: `docs/INTERNALS.md#-milestone-health-diagnostics` (the heading is "### 🏥 Milestone health diagnostics"); siblings: `milestones`, `repo`; updated: `docs/INTERNALS.md`.
 
 Greps were run from the repo root over `*.md`, `*.ts` and `*.json`. Hits in
 `docs/archive/` are excluded. Remaining hits:
@@ -65,8 +63,8 @@ Greps were run from the repo root over `*.md`, `*.ts` and `*.json`. Hits in
   - `worker/deno/lib/milestone_health.ts:679`: still true, it is the healthy empty-repo branch with no `error`.
   - `worker/deno/lib/milestone_health.ts:592` and `:658`: doc comments stating the new rule, still true.
   - `worker/deno/tests/milestone_health_test.ts:463`: still true, the "no milestones" formatter case.
-  - `worker/deno/tests/milestone_health_test.ts:938`, `:957`, `:975`, `:1013`: assert the phrase is absent for failed repos, still true.
-  - `worker/deno/tests/milestone_health_command_test.ts:33`: still true, the clean report.
+  - `worker/deno/tests/milestone_health_test.ts:947`, `:966`, `:984`, `:1022`: assert the phrase is absent for failed repos, still true.
+  - `worker/deno/tests/milestone_health_command_test.ts:39` and `:102`: assert the phrase for a clean report and a healthy empty repo, still true.
 - `milestone-health`: still true, it names the command, the GraphQL source label, a comment or a temp prefix:
   - `worker/deno/commands/milestone_health.ts:10`, `:54`; `worker/deno/mod.ts:622`, `:754`.
   - `worker/deno/lib/milestone_health.ts:264`, `:265`; `worker/deno/lib/gh_call_metrics.ts:235`, `:708`.
@@ -75,7 +73,7 @@ Greps were run from the repo root over `*.md`, `*.ts` and `*.json`. Hits in
   - `worker/deno/tests/milestone_health_cache_test.ts:40`, `:52`; `worker/deno/tests/milestone_health_test.ts:35`; `worker/deno/tests/milestone_health_command_test.ts:2`.
   - `docs/INTERNALS.md:3980`: still true, the command description. `docs/INTERNALS.md:3986` was updated for this change.
 - `Continue with empty list`: no hits outside `docs/archive/`.
-- `swallows gh`: no hits outside `docs/archive/`.
+- `swallows gh`: one hit outside `docs/archive/`, `worker/deno/tests/crash_notification_test.ts:462`, a crash-notification test name unrelated to milestone health, still true.
 
 Test run, with `VIBE_IMAGE_AGENT_PROVIDERS` unset:
 
