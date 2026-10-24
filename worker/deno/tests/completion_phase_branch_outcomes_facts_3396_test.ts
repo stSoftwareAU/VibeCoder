@@ -619,3 +619,37 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "completion facts - a render ownership problem wins over a stale anchor, which is not the reason (Issue #4125)",
+  async () => {
+    const outcome = await runCompletion({
+      // Two renderer markers make ownership ambiguous, so the render fails.
+      summary: summaryWith(
+        `${BRANCH_OUTCOMES_MARKER}\n${BRANCH_OUTCOMES_MARKER}`,
+      ),
+      facts: JSON.stringify(factsFor(EXISTING_TEST, ANCHOR_TEXT)),
+      changedFiles: CHANGED,
+      existingTestsAtHead: [EXISTING_TEST],
+      // The anchor moved to line 43, so it is also stale at HEAD.
+      headFiles: { [CHANGED]: changedAt(43) },
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertStringIncludes(
+      outcome.reason ?? "",
+      "Branch outcomes ownership is ambiguous: duplicate or unmatched renderer markers",
+    );
+    assertEquals(
+      (outcome.reason ?? "").includes("no longer holds its anchor"),
+      false,
+    );
+    const gateComment = outcome.comments.find((c) =>
+      c.includes("Branch outcomes not recorded")
+    );
+    assert(gateComment, "expected the branch-outcomes gate comment");
+    assertStringIncludes(gateComment, "ownership is ambiguous");
+    assertEquals(gateComment.includes("no longer holds its anchor"), false);
+  },
+);
