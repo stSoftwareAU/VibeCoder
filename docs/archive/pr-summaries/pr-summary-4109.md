@@ -18,20 +18,104 @@ through a new planner, `planIssueRunProvider`
   `bindGraftRun`, `rtkProviderId(undefined, logger)`) pass no planned provider
   and still follow the active provider;
 - **agents-stripped** — Claude is not usable: the run starts on its own provider
-  with the split, reviewers and tier switches off, and a warning says so;
+  with the split and reviewers off and the sub-agent tier set to `sonnet`, and a
+  warning says so;
 - **unchanged** — no sub-agents wanted, or the provider carries them.
 
 Both issue-run call sites use it (`lib/phases/execute_phase.ts`,
-`lib/execute_claude_phase.ts`); external orchestration is never planned. The #4010
-refusal stays as a backstop: it still fires for a caller that bypasses the
-planner and when the retry ladder switches to `agent_provider_fallback` with
-`agents` kept (Issue #4034). Docs that said
-such a run "is refused before spawn" now say it is rerouted or stripped.
+`lib/execute_claude_phase.ts`). External orchestration is decided first, by
+`resolveIssueOrchestration`, and the planner is not called when it is on
+(`externalOrchestration ? undefined : planIssueRunProvider(…)`). So the external
+path (Issue #3642, no native split and no `--agents`) and this planner never both
+apply to one run; automatic Codex routing forces external orchestration, so a
+Codex run on automatic routing never reaches the planner. The #4010 refusal stays
+as a backstop: it still fires for a caller that bypasses the planner and when the
+retry ladder switches to `agent_provider_fallback` with `agents` kept (Issue
+#4034). Docs that said such a run "is refused before spawn" now say it is
+rerouted or stripped.
+
+Closes #4109.
+
+Version bump: `VERSION` untouched by this change; the merged commit records the final version.
+
+## Spec
+
+### Intent and Rationale
+
+- The failure that filed this issue was the #4010 refusal on Codex: the run was
+  charged after 701 seconds in the `execute` phase and released its claim with
+  no PR. Deciding the provider before spawn lets the run proceed on Claude, or
+  without sub-agents, instead of failing after the claim.
+- Carriage is read from the provider's own argv, so a provider that gains
+  `--agents` later is picked up without a table change.
+
+### Essential Design Decisions
+
+- Carriage is decided by probing the descriptor's argv quietly
+  (`probeDescriptorInvocationCapabilities`), not by a provider-id table.
+- Reroute to Claude only when Claude is both enabled and installed in the image.
+  The image stamp is checked first, so an enabled set that names an uninstalled
+  provider strips the run instead of throwing (`lib/issue_run_provider_agents.ts`).
+- External orchestration is decided first (`resolveIssueOrchestration`) and is
+  never planned; automatic Codex routing forces it.
+- The #4010 guard in `runClaudeWithTimeoutBody` stays as a backstop and is not
+  removed.
+
+### Undiscoverable Facts
+
+- The issue's owner comment suggested Codex native agent roles (`multi_agent`,
+  `[agents.<role>]`) as a better long-term fix. That was deliberately not done
+  here: this change reroutes or strips, and the #4010 guard remains as the
+  backstop.
+- PR #4142's Codex role mapping (the sub-agent role models per tier) is
+  unaffected by this change.
+
+## Evidence
+
+Bug / CLI evidence is the tests named in the Test Plan and the reproduction
+below. The regression test is `worker/deno/tests/issue_4109_callsite_test.ts`;
+the planner's own cases are in `worker/deno/tests/issue_run_provider_agents_test.ts`,
+the uninstalled-provider case in `worker/deno/tests/agent_provider_test.ts`, and the
+external-orchestration no-`--agents` case in
+`worker/deno/tests/external_orchestration_3642_phase_test.ts`.
+
+**Docs sweep** — grep: `refused before spawn`, `refuses loudly before spawn`, `Issue #4010`, `planIssueRunProvider`, `plannedActiveAgentProvider`, `externalOrchestration`; section: `docs/MANAGER-WORKER-CONTRACT.md` (provider table, "Two paths now", rollback), `docs/MODEL-AND-CACHING.md` (advisor/executor split, reviewer sub-agents, Haiku tier, pilot counters), `docs/PROVIDER-FEASIBILITY.md` (`--agents` carried row, fail-loud refusal), `docs/CONFIGURATION.md` (`agent_provider`, `issue_executor_split`, `issue_sub_agent_tier`, `issue_reviewer_agents`); siblings: `Gemini CLI`, `DeepSeek`, `issue_reviewer_agents`, `issue_sub_agent_tier` (the Codex, Gemini and DeepSeek rows of each provider table, all three updated together, and the three sub-agent feature rows, split, reviewers and tier, each re-read); updated: `docs/MANAGER-WORKER-CONTRACT.md`, `docs/MODEL-AND-CACHING.md`, `docs/PROVIDER-FEASIBILITY.md`, `docs/CONFIGURATION.md`; remaining `#4010` hits re-read and kept (they describe the runner refusal as the backstop, for a caller that bypasses the planner and for the retry ladder's fallback provider); also corrected the `file:line` cites in `docs/MANAGER-WORKER-CONTRACT.md` for the external-orchestration test (`execute_claude_phase.ts:1279-1290`, `execute_phase.ts:800-816`), the `isIssueExecutorSplitEnabled` calls (`execute_claude_phase.ts:1290-1295`, `execute_phase.ts:816-821`) and the planner's `executorSplit` and `buildPrompt` inputs (`execute_claude_phase.ts:1317-1319`, `:1447`; `execute_phase.ts:850-852`, `:905`), which the branch moved
+
+The planner outcomes, for the native split path only:
+
+```mermaid
+flowchart TD
+    A["issue run, external orchestration off"] --> B{"sub-agents wanted, and does the provider's argv carry --agents?"}
+    B -- "carries, or none wanted" --> U["unchanged"]
+    B -- "does not carry" --> C{"Claude enabled and installed in the image?"}
+    C -- yes --> R["rerouted-to-claude"]
+    C -- no --> S["agents-stripped"]
+```
+
+Provenance: the issue numbers this diff cites.
+
+- #4109: fix(worker): worker-crash — runs releasing with no PR
+- #4010: Finish #3933: Finish #3641: Document provider-neutral manager–worker contract and migration safeguards
+- #4034: Fall back to agent_provider_fallback when a phase run's model is refused
+- #3642: Implement external provider-neutral orchestration behind an opt-in feature flag
+- #3603: Issue-run cost estimate omits sub-agent (executor/reviewer) spend, so the Haiku vs Sonnet trial compares only the Opus manager
+- #3473: Make Haiku the default issue_sub_agent_tier if the Haiku vs Sonnet trial meets #3385's decision rule
+- #3404: Per-tier PR outcomes and cost per merged PR in fleet telemetry
+- #3403: Per-tier issue-run telemetry and PR-body sub-agent tier marker
+- #3402: Tier-aware issue-run sub-agents: Haiku executors/standards reviewer and read-only explorer
+- #2812: Sonnet 5.5: Opus plans, Sonnet executors implement; refresh cost estimates
+- #2575: Run the Spec/Standards review sub-agents as defined cheaper agents, not on the advisor's Opus-high, and cap sub-agent spawning
+- #2346: Run-stats comment: split on/off, executor counts and executor Sonnet spend in the run cost
+- #2344: Keep every Edit/Write in a split run inside an executor, with advisor edit calls denied or counted
+- #2343: Advisor/executor instructions in the `issue` prompt, gated by the split key
+- #2048: Per-repo agent_provider pin in repo_config
+- #1032: config: three modules resolve config-versus-environment and two contradict the stated rule — reconcile in 2.0.0
+- #880: quality gate: the deno test stage runs sequentially, putting the suite at 42+ min against a 45-min phase budget
 
 ## Reproduction
 
 - **symptom** — an `issue` run on `codex` (also `gemini`, `deepseek`) with sub-agents on is refused before spawn with "Refused to start the agent: Codex CLI cannot carry the issue run's sub-agent definitions (--agents)…" and releases its claim with no PR
-- **status** — `verified` — `issue_4109_callsite_test.ts` was run against the branch with `lib/phases/execute_phase.ts` and `lib/execute_claude_phase.ts` restored to the merge-base: 8 of 10 tests failed (the execute_phase reroute, assignment and strip tests and all five execute_claude_phase tests, including `claude not enabled strips agents and disables the split`; the execute_phase non-external-allocation and external-orchestration tests pass either way); on the branch all 10 pass
+- **status** — `verified` — at HEAD `c8e7954c`, with `lib/phases/execute_phase.ts` and `lib/execute_claude_phase.ts` replaced by their `origin/main` versions, `tests/issue_4109_callsite_test.ts` gave `FAILED | 2 passed | 8 failed`: the 8 failing were the execute_phase reroute, assignment and strip tests and the five execute_claude_phase tests, including the regression test and `execute_claude_phase - claude not enabled strips agents and disables the split (Issue #4109)`; the 2 passing were `execute_phase - a non-external allocation plans the claude provider (Issue #4109)` and `execute_phase - an external-orchestration run is not planned, so nothing is rerouted (Issue #4109)`. That file does not type-check against `origin/main` (`TS2353`: `env` is not a member of `ExecuteClaudePhaseDeps`), so this observation used `deno test --no-check`. On the branch the same file gives `ok | 10 passed | 0 failed`
 - **regression test** — `worker/deno/tests/issue_4109_callsite_test.ts::execute_phase - a run asked for sub-agents on codex is rerouted to claude at the runner (Issue #4109)`
 
 ## Test Plan
@@ -43,25 +127,54 @@ comment re-worded in `worker/deno/tests/manager_worker_contract_3641_test.ts`
 `worker/deno/tests/issue_4109_callsite_test.ts` and
 `worker/deno/tests/issue_run_provider_agents_test.ts` are new files.
 
-## Docs sweep
+Red check (HEAD `c8e7954c`): `lib/phases/execute_phase.ts` and
+`lib/execute_claude_phase.ts` were overwritten with `git show origin/main:<path>`
+and `tests/issue_4109_callsite_test.ts` was run with
+`env -u VIBE_IMAGE_AGENT_PROVIDERS deno test -A --no-check`: `FAILED | 2 passed | 8 failed`
+(the failing and passing names are in Reproduction). Both files were then restored
+with `git checkout HEAD --` and the file re-run with type-checking on:
+`ok | 10 passed | 0 failed (69ms)`.
 
-**Docs sweep** — grep: `refused before spawn`, `refuses loudly before spawn`, `Issue #4010`, `planIssueRunProvider`, `plannedActiveAgentProvider`, `externalOrchestration`; section: `docs/MANAGER-WORKER-CONTRACT.md` (provider table, "Two paths now", rollback), `docs/MODEL-AND-CACHING.md` (advisor/executor split, reviewer sub-agents, Haiku tier, pilot counters), `docs/PROVIDER-FEASIBILITY.md` (`--agents` carried row, fail-loud refusal), `docs/CONFIGURATION.md` (`agent_provider`, `issue_executor_split`, `issue_sub_agent_tier`, `issue_reviewer_agents`); siblings: `Gemini CLI`, `DeepSeek`, `issue_reviewer_agents`, `issue_sub_agent_tier` (the Codex, Gemini and DeepSeek rows of each provider table, all three updated together, and the three sub-agent feature rows, split, reviewers and tier, each re-read); updated: `docs/MANAGER-WORKER-CONTRACT.md`, `docs/MODEL-AND-CACHING.md`, `docs/PROVIDER-FEASIBILITY.md`, `docs/CONFIGURATION.md`; remaining `#4010` hits re-read and kept (they describe the runner refusal as the backstop, for a caller that bypasses the planner and for the retry ladder's fallback provider); also corrected the `file:line` cites in `docs/MANAGER-WORKER-CONTRACT.md` for the external-orchestration test (`execute_claude_phase.ts:1255-1258`, `execute_phase.ts:796-804`), the `isIssueExecutorSplitEnabled` calls and the `buildPrompt` calls, which the branch moved
+Tests added on this branch, all passing at the head:
 
-## Branch outcomes
+- `worker/deno/tests/issue_4109_callsite_test.ts` (10 tests):
+  - `execute_phase - a run asked for sub-agents on codex is rerouted to claude at the runner (Issue #4109)`
+  - `execute_phase - the rerouted provider is recorded on the run assignment (Issue #4109)`
+  - `execute_phase - a non-external allocation plans the claude provider (Issue #4109)`
+  - `execute_phase - with claude not enabled the run starts on codex without sub-agents (Issue #4109)`
+  - `execute_phase - an external-orchestration run is not planned, so nothing is rerouted (Issue #4109)`
+  - `execute_claude_phase - the rtk sink receives the rerouted provider (Issue #4109)`
+  - `execute_claude_phase - the codegraph sink receives the rerouted provider (Issue #4109)`
+  - `execute_claude_phase - the graft sink receives the rerouted provider (Issue #4109)`
+  - `execute_claude_phase - the runner receives the rerouted provider (Issue #4109)`
+  - `execute_claude_phase - claude not enabled strips agents and disables the split (Issue #4109)`
+- `worker/deno/tests/issue_run_provider_agents_test.ts` (12 tests):
+  - `issue run provider - Claude with sub-agents is left unchanged (Issue #4109)`
+  - `issue run provider - a non-Claude provider with Claude enabled is rerouted to Claude (Issue #4109)`
+  - `issue run provider - a non-Claude provider with Claude not enabled has its sub-agents stripped (Issue #4109)`
+  - `issue run provider - a stripped codex run carries no --agents, so the #4010 guard has nothing to refuse (Issue #4109)`
+  - `issue run provider - a run asking for no sub-agent switches is left unchanged (Issue #4109)`
+  - `issue run provider - a provider whose argv carries --agents is left unchanged even without Claude (Issue #4109)`
+  - `issue run provider - Claude not enabled strips sub-agents with no image stamp (Issue #4109)`
+  - `issue run provider - Claude enabled with no image stamp reroutes the run (Issue #4109)`
+  - `issue run provider - Claude enabled but the image stamp lacks Claude strips the run (Issue #4109)`
+  - `issue run provider - the same run reroutes to Claude when the image stamp lists Claude (Issue #4109)`
+  - `issue run provider - Claude installed but not enabled strips the run; enabled operand decides (Issue #4109)`
+  - `issue run provider - planning probes the argv without printing the provider's own warning (Issue #4109)`
+- `worker/deno/tests/agent_provider_test.ts` (1 new test):
+  - `agent provider - pre-spawn planning reads an uninstalled provider without the install assert (Issue #4109)`
 
-**Branch outcomes:**
-- `worker/deno/lib/issue_run_provider_agents.ts:88` — absent (no sub-agents wanted) — `worker/deno/tests/issue_run_provider_agents_test.ts::issue run provider - a run asking for no sub-agent switches is left unchanged (Issue #4109)` — flipped guard off, test went red
-- `worker/deno/lib/issue_run_provider_agents.ts:91` — success (provider carries `--agents`) — `worker/deno/tests/issue_run_provider_agents_test.ts::issue run provider - a provider whose argv carries --agents is left unchanged even without Claude (Issue #4109)` — forced to not-carrying, test went red
-- `worker/deno/lib/issue_run_provider_agents.ts:98` — reroute (Claude usable) and strip (Claude not usable) — `worker/deno/tests/issue_run_provider_agents_test.ts::issue run provider - a non-Claude provider with Claude enabled is rerouted to Claude (Issue #4109)` and `…::issue run provider - a non-Claude provider with Claude not enabled has its sub-agents stripped (Issue #4109)` — inverted condition, 8 tests went red
-- `worker/deno/lib/issue_run_provider_agents.ts:65` — fail-closed (image stamp lacks Claude) — `worker/deno/tests/issue_run_provider_agents_test.ts::issue run provider - Claude enabled but the image stamp lacks Claude strips the run (Issue #4109)` — removed the stamp check, test went red
-- `worker/deno/lib/issue_run_provider_agents.ts:68` — error/absent (Claude not in the enabled set) — `worker/deno/tests/issue_run_provider_agents_test.ts::issue run provider - Claude not enabled strips sub-agents with no image stamp (Issue #4109)` — forced to true, test went red
-- `worker/deno/lib/provider_feasibility.ts:226` — success (quiet probe prints nothing) — `worker/deno/tests/issue_run_provider_agents_test.ts::issue run provider - planning probes the argv without printing the provider's own warning (Issue #4109)` — ignored `quiet`, test went red
-- `worker/deno/lib/provider_feasibility.ts:246` — success (console.warn restored) — `worker/deno/tests/issue_run_provider_agents_test.ts::issue run provider - planning probes the argv without printing the provider's own warning (Issue #4109)` — removed the restore, test went red
-- `worker/deno/lib/agent_provider.ts:1543` — success (uninstalled provider is not thrown at during planning) — `worker/deno/tests/agent_provider_test.ts::agent provider - pre-spawn planning reads an uninstalled provider without the install assert (Issue #4109)` — swapped to the asserting resolver, test went red
-- `worker/deno/lib/phases/execute_phase.ts:823` — absent (external orchestration is not planned) — `worker/deno/tests/issue_4109_callsite_test.ts::execute_phase - an external-orchestration run is not planned, so nothing is rerouted (Issue #4109)` — always planned, test went red
-- `worker/deno/lib/phases/execute_phase.ts:828` — success (non-external allocation plans Claude) — `worker/deno/tests/issue_4109_callsite_test.ts::execute_phase - a non-external allocation plans the claude provider (Issue #4109)` — planned the active provider instead, test went red
-- `worker/deno/lib/phases/execute_phase.ts:1229` — reroute reaches the runner — `worker/deno/tests/issue_4109_callsite_test.ts::execute_phase - a run asked for sub-agents on codex is rerouted to claude at the runner (Issue #4109)` — dropped the override, test went red
-- `worker/deno/lib/phases/execute_phase.ts:564` and `:1297` — reroute reaches the recorded assignment — `worker/deno/tests/issue_4109_callsite_test.ts::execute_phase - the rerouted provider is recorded on the run assignment (Issue #4109)` — dropped the planned provider, test went red
-- `worker/deno/lib/phases/execute_phase.ts:838` — strip reaches the runner (no `agents`) — `worker/deno/tests/issue_4109_callsite_test.ts::execute_phase - with claude not enabled the run starts on codex without sub-agents (Issue #4109)` — built agents from the requested switches, test went red
-- `worker/deno/lib/execute_claude_phase.ts:1272` — absent (external orchestration is not planned) — `worker/deno/tests/external_orchestration_3642_phase_test.ts::external orchestration - the switch on builds no --agents even with the split and reviewers on (Issue #3642)` — always planned, test went red
-- `worker/deno/lib/execute_claude_phase.ts:1294` — reroute reaches the CodeGraph, RTK, graft sinks and the runner — `worker/deno/tests/issue_4109_callsite_test.ts::execute_claude_phase - the rtk sink receives the rerouted provider (Issue #4109)`, `…::the codegraph sink…`, `…::the graft sink…`, `…::the runner receives the rerouted provider (Issue #4109)` — fell back to the invocation provider, all four went red
+Head run, with the five named files (`env -u VIBE_IMAGE_AGENT_PROVIDERS deno test -A`
+from `worker/deno`, `< /dev/null`):
+`tests/issue_4109_callsite_test.ts tests/issue_run_provider_agents_test.ts tests/agent_provider_test.ts tests/external_orchestration_3642_phase_test.ts tests/manager_worker_contract_3641_test.ts`
+gives `ok | 76 passed | 0 failed (496ms)`.
+
+The full `./quality.sh` deno-tests stage fails in this container for reasons
+not from this change, as reported by the container run (not re-run for this
+summary): 23 failures happen only because the container sets
+`VIBE_IMAGE_AGENT_PROVIDERS=claude`, and they all pass with it unset, including
+this issue's tests; 2 are in `tests/completion_phase_repo_formatters_test.ts`,
+which fail because `cargo fmt` errors here (rustup has no default toolchain) and
+the test asserts that the formatter should commit the Rust fix.
+
+<!-- vibe-branch-outcomes -->
