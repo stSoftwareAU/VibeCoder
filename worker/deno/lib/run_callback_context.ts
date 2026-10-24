@@ -40,6 +40,7 @@ import {
 import type { UpdateMode } from "../types.ts";
 import { UPDATE_MODES } from "./config_defaults.ts";
 import { pinValueErrors } from "./config_validator.ts";
+import { runGitReadSync } from "./git_timeout.ts";
 
 /** Host-side facts the loop cannot supply on its own. */
 export interface CallbackIdentity {
@@ -220,13 +221,9 @@ export function defaultWorkerCheckoutDir(): string {
 
 function gitText(dir: string, args: string[]): string | undefined {
   try {
-    const out = new Deno.Command("git", {
-      args: ["-C", dir, ...args],
-      stdout: "piped",
-      stderr: "piped",
-    }).outputSync();
-    if (!out.success) return undefined;
-    const text = new TextDecoder().decode(out.stdout).trim();
+    const out = runGitReadSync(["-C", dir, ...args]);
+    if (out.code !== 0) return undefined;
+    const text = out.stdout.trim();
     return text.length > 0 ? text : undefined;
   } catch (error) {
     if (error instanceof Deno.errors.NotCapable) return undefined;
