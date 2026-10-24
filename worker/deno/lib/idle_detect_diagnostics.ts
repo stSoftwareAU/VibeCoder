@@ -176,7 +176,10 @@ export type ClaimableSkipReason =
   | "no_open"
   | "label_filter"
   | "assignee_filter"
-  /** Every candidate's priority label was added by an untrusted author (Issue #4212). */
+  /**
+   * At least one candidate's priority label was added by an untrusted author,
+   * and no earlier-ranked reason applies (Issue #4212).
+   */
   | "label_author_not_allowed"
   | "blocking_label"
   /** Every candidate is a milestone-tracking issue (Issue #1050). */
