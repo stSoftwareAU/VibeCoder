@@ -101,7 +101,7 @@
       },
       {
         "path": "worker/deno/lib/acceptance_criteria_gate.ts",
-        "line": 214,
+        "line": 253,
         "outcome": "Leading assessment statuses parse; status words inside ordinary criterion prose do not.",
         "test": "worker/deno/tests/acceptance_criteria_gate_test.ts",
         "testName": "parseClosureEntries - status words inside criterion prose are not assessments",
@@ -114,6 +114,14 @@
         "test": "worker/deno/tests/execute_phase_failed_agent_no_changes_test.ts",
         "testName": "execute_phase #4116 - a clean run still hands its session on to the stream",
         "flipWentRed": "Forcing stream publication on fails the structured-failure cases; forcing it off fails the clean-session case."
+      },
+      {
+        "path": "worker/deno/lib/phases/clarity_assessment_phase.ts",
+        "line": 184,
+        "outcome": "Clear and scope-only results proceed without mutations; vague instructions still request human clarification.",
+        "test": "worker/deno/tests/issue_worker_test.ts",
+        "testName": "clarityPhase - six clear requirements without code paths keep their labels (Issue #4147)",
+        "flipWentRed": "Without the too_complex operand the six-requirement case failed; forcing the condition true failed the vague-instruction case."
       }
     ]
   }

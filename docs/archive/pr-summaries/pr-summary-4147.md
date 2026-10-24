@@ -1,4 +1,4 @@
-# Preserve queued work after incomplete runs and merges
+# Prevent false human holds on approved work
 
 ## Summary
 
@@ -18,6 +18,11 @@ duplicate work.
 
 Acceptance statuses must lead their assessment entry. Ordinary test prose
 mentioning a "missing or unreadable value" no longer marks a criterion missing.
+
+The fleet also continues when the clarity heuristic only reports `too_complex`.
+Six explicit requirements without code paths no longer generate a question
+asking a human to choose a breakdown. Genuine vague instructions still request
+clarification, and the implementing agent can request planning when needed.
 
 ## Spec
 
@@ -55,8 +60,8 @@ issues whose discovery labels had already been restored.
   preserved labels, no hand-off comment and continued eligibility.
 - The prose-status regression failed in both the parser and a real closer
   before the fix. Related parser, PR-body and closure tests passed 105 cases.
-- The integrated execution, stream, closure, parser and provider-routing run
-  passed 135 tests.
+- The final integrated clarity, execution, stream, closure, parser and
+  provider-routing run passed 368 tests.
   Thirteen earlier deliberate guard/operand mutations each produced assertion
   failures in an isolated checkout.
 - Full validation exposed existing fixture problems: a missing-file watcher
@@ -69,19 +74,29 @@ issues whose discovery labels had already been restored.
   subjects and file changes, and configures clone identities at clone time.
   All 30 existing tests pass within the unchanged one-second limit. The tested
   merge, rebase, push and recovery operations still use real Git.
+- The six-requirement clarity regression failed before the fix and passes
+  afterwards. Forcing the condition true fails the vague-instruction case;
+  scope alone causes no comment, label mutation or claim release.
 - No UI changed; screenshots are not applicable.
 
 **Docs sweep** — grep: `holdIssueOpenForMissingCriteria`,
 `buildMissingCriteriaHoldComment`, `missing_criterion_close_guard`,
-`A crashed run is never analysis-only`, `statusOf`; section:
+`A crashed run is never analysis-only`, `statusOf`, `too_complex`; section:
 `docs/workflows/issue-processing.md#-acceptance-criteria-closure-before-the-pr`;
 siblings: `runExecuteClaudePhase`, `workOnIssueExecuteClaude`,
-`ensureIssueClosedIfPrMerged`, `closeIssuesForMergedPrs`; updated:
-`docs/workflows/issue-processing.md`, `docs/INTERNALS.md` and affected module
-comments. The integration preserves #4226's compaction fix and #4227's general
+`ensureIssueClosedIfPrMerged`, `closeIssuesForMergedPrs`,
+`workOnIssueClarityPhase`, `runClarityPhase`; updated:
+`docs/workflows/issue-processing.md`, `docs/workflows/planning-and-questions.md`,
+`docs/INTERNALS.md` and affected module comments. The standalone clarity
+command retains its separate planning pre-check. The integration preserves #4226's compaction fix and #4227's general
 no-PR retry behaviour.
 
 ## Test Plan
+
+- Clarity tests drive the real fleet phase with six plain-language requirements
+  and assert no GitHub mutations. A vague six-item issue still posts questions,
+  adds `needs-human` and releases its claim. Existing clear-issue, label-routing
+  and maximum-round tests remain.
 
 - Execution tests drive both real phases, the bounded retry, clean results,
   stream persistence and recovery of uncommitted, local, remote and PR work.
@@ -109,9 +124,11 @@ no-PR retry behaviour.
 
 ## Merge verification
 
-The complete local quality gate passed with one test worker and sequential
-checks: both unit passes, timing limits, lint, type checking, formatting,
+The earlier execution and closure changes passed the complete local quality
+gate with one test worker and sequential checks: both unit passes, timing limits, lint, type checking, formatting,
 Markdown, Semgrep and repository policy checks. Config integration and Checkov
 were skipped because their local prerequisites are absent. Required CI and the
 repository's approving review must pass before merge; local skips do not
 replace required CI checks.
+
+Final clarity and main-integration validation is pending.
