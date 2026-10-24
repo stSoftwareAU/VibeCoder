@@ -101,7 +101,7 @@
       },
       {
         "path": "worker/deno/lib/acceptance_criteria_gate.ts",
-        "line": 215,
+        "line": 214,
         "outcome": "Leading assessment statuses parse; status words inside ordinary criterion prose do not.",
         "test": "worker/deno/tests/acceptance_criteria_gate_test.ts",
         "testName": "parseClosureEntries - status words inside criterion prose are not assessments",

@@ -63,6 +63,11 @@ issues whose discovery labels had already been restored.
   and `deno eval` fixtures supplied unsupported permission flags. The watcher
   now yields and stops in `finally`; startup disables updates; eval uses its
   implicit permissions. Existing behavioural assertions are retained.
+- Seven Git fixture suites still exceeded the per-file timing gate with one
+  worker. Their setup now uses `fast-import` to build the same commit graphs,
+  subjects and file changes, and configures clone identities at clone time.
+  All 30 existing tests pass within the unchanged one-second limit. The tested
+  merge, rebase, push and recovery operations still use real Git.
 - No UI changed; screenshots are not applicable.
 
 **Docs sweep** — grep: `holdIssueOpenForMissingCriteria`,
@@ -94,6 +99,10 @@ no-PR retry behaviour.
   missing-criterion details are now asserted in logs and the lifecycle reason.
 - Existing terminal-reconciliation tests are preserved from current main,
   including its crash retry counts and infrastructure-failure accounting.
+- Git fixture changes retain every test and assertion. The shared helper
+  prepares only history and clones; the sibling-sync fixture also clones its
+  two independent checkouts concurrently and stages its tracked resolution
+  with `commit -am`. No timing budget, exemption or test membership changes.
 
 <!-- vibe-branch-outcomes -->
 
