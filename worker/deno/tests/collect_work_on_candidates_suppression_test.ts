@@ -304,43 +304,6 @@ Deno.test(
   },
 );
 
-Deno.test(
-  "collect_work_on_candidates - a failed work-on issue does not suppress",
-  async () => {
-    const config = makeConfig();
-    const mockGh = createMockGh({
-      issues: [
-        {
-          number: 50,
-          title: "Permanently failed",
-          url: "https://github.com/owner/repo/issues/50",
-          assignees: [],
-          labels: [{ name: "work-on" }, { name: "failed" }],
-          createdAt: "2024-06-01T00:00:00Z",
-          author: { login: "alice" },
-          milestone: null,
-        },
-      ],
-      // No "reopened" event, so cleanStaleLabels keeps the failed label and
-      // filterAndSort drops the issue.
-      timeline: [
-        {
-          event: "labeled",
-          label: { name: "work-on" },
-          actor: { login: "alice" },
-          created_at: "2024-06-01T00:00:00Z",
-        },
-      ],
-    });
-
-    const result = await collect(mockGh, config);
-
-    assertEquals(result.hasOpenIssues, true);
-    assertEquals(result.hasSuppressingWorkOn, false);
-    assertEquals(result.candidates, []);
-  },
-);
-
 // ---------------------------------------------------------------------------
 // Criterion 4: a permanently merged-PR-blocked work-on issue does not
 // suppress (Issue #499)

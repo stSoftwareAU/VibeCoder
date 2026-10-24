@@ -217,7 +217,8 @@ export function probeDescriptorInvocationCapabilities(
     agents: {
       feasibility_probe: { description: "probe", prompt: "probe" },
     },
-    settingsJson: "{}",
+    // Probe with a valid empty hook set; Codex rejects malformed settings.
+    settingsJson: JSON.stringify({ hooks: { PreToolUse: [] } }),
     env: () => undefined,
   };
   const args = options.quiet

@@ -34,15 +34,19 @@ import type { Logger, Result } from "../types.ts";
 function makeLogger(): Pick<Logger, "info" | "warn" | "error"> & {
   errors: string[];
   warns: string[];
+  warnMeta: Array<{ message: string; meta: unknown }>;
 } {
   const errors: string[] = [];
   const warns: string[] = [];
+  const warnMeta: Array<{ message: string; meta: unknown }> = [];
   return {
     errors,
     warns,
+    warnMeta,
     info: () => {},
-    warn: (message: string) => {
+    warn: (message: string, meta?: unknown) => {
       warns.push(message);
+      warnMeta.push({ message, meta });
     },
     error: (message: string) => {
       errors.push(message);
@@ -1122,10 +1126,11 @@ Deno.test("runSummaryClaimCheck - a base ref that fails validation is notChecked
       JSON.stringify(result.notChecked)
     }`,
   );
-  assert(logger.errors.some((e) => e.includes("well-formed base ref")));
+  assert(logger.warns.some((e) => e.includes("well-formed base ref")));
 });
 
 Deno.test("runSummaryClaimCheck - an ambiguous test-file reference reaches result.notChecked", async () => {
+  const logger = makeLogger();
   const result = await runSummaryClaimCheck(
     {
       repo: "acme/widgets",
@@ -1144,7 +1149,7 @@ Deno.test("runSummaryClaimCheck - an ambiguous test-file reference reaches resul
         "worker/deno/tests/foo_test.ts\nworker/other/foo_test.ts\n",
       ),
       askQuestion: async () => okResult("no findings worth noting"),
-      logger: makeLogger(),
+      logger,
     },
   );
   assertEquals(result.testPlanProblems, []);
@@ -1154,6 +1159,7 @@ Deno.test("runSummaryClaimCheck - an ambiguous test-file reference reaches resul
       JSON.stringify(result.notChecked)
     }`,
   );
+  assertWarnedWithContext(logger, "more than one tracked file");
 });
 
 Deno.test("runSummaryClaimCheck - an unreadable tracked test file reaches result.notChecked", async () => {
@@ -1521,7 +1527,7 @@ Deno.test("runSummaryClaimCheck - null changedFiles is notChecked and the doc in
     ),
   );
   assert(
-    logger.errors.some((e) => e.includes("changed files could not be listed")),
+    logger.warns.some((e) => e.includes("changed files could not be listed")),
   );
 });
 
@@ -1546,6 +1552,36 @@ Deno.test("runSummaryClaimCheck - manual files over the cap are reported and lef
     assertStringIncludes(note, "docs/m20.md");
     assertStringIncludes(captured, "docs/m19.md");
     assertFalse(captured.includes("docs/m20.md"));
+  });
+});
+
+Deno.test("runSummaryClaimCheck - a 20-file-cap overflow logs one warning, not one error per file (#4118)", async () => {
+  const names = Array.from({ length: 40 }, (_, i) => `docs/m${i}.md`);
+  const files: Record<string, string> = {};
+  for (const n of names) files[n] = "# Doc\n";
+  await withDocRepo(files, async (dir) => {
+    const logger = makeLogger();
+    const result = await runSummaryClaimCheck(docInput(dir, names), {
+      runGit: okGit(""),
+      askQuestion: async () =>
+        okResult(
+          `${DRIFT_VERDICT_OPEN}\n${
+            JSON.stringify({ findings: [] })
+          }\n<!-- /vibe-drift-verdict -->`,
+        ),
+      logger,
+    });
+    const overCap = result.notChecked.filter((n) =>
+      n.includes("over the 20-file cap")
+    );
+    assertEquals(overCap.length, 20);
+    assertEquals(logger.errors, []);
+    assertEquals(logger.warns.length, 1);
+    const capWarns = logger.warns.filter((w) => w.includes("20-file cap"));
+    assertEquals(capWarns.length, 1);
+    assertStringIncludes(capWarns[0]!, "20");
+    assertStringIncludes(capWarns[0]!, "docs/m20.md");
+    assertFalse(capWarns[0]!.includes("docs/m39.md"));
   });
 });
 
@@ -1695,5 +1731,178 @@ Deno.test("runSummaryClaimCheck - source comments and unchanged related manual s
         f.sentence === "Every failure is refused."
       ),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Every degradation logs one WARNING carrying the repo and issue (#4118)
+// ---------------------------------------------------------------------------
+
+function assertWarnedWithContext(
+  logger: ReturnType<typeof makeLogger>,
+  fragment: string,
+): void {
+  assertEquals(logger.errors, []);
+  const hits = logger.warnMeta.filter((w) => w.message.includes(fragment));
+  assertEquals(hits.length, 1, `expected one warning for "${fragment}"`);
+  const meta = hits[0]!.meta as Record<string, unknown>;
+  assertEquals(meta.repo, "acme/widgets");
+  assertEquals(meta.issueNumber, 7);
+}
+
+Deno.test("runSummaryClaimCheck - an ls-files failure logs one warning with repo and issue, no error (#4118)", async () => {
+  const logger = makeLogger();
+  await runSummaryClaimCheck(docInput("/does/not/matter", []), {
+    runGit: async () => null,
+    askQuestion: async () => okResult("no findings"),
+    logger,
+  });
+  assertWarnedWithContext(logger, "tracked files could not be listed");
+});
+
+Deno.test("runSummaryClaimCheck - an unresolvable base ref logs one warning with repo and issue, no error (#4118)", async () => {
+  const logger = makeLogger();
+  const result = await runSummaryClaimCheck(
+    { ...docInput("/does/not/matter", []), baseRef: null },
+    {
+      runGit: okGit(""),
+      askQuestion: async () => okResult("no findings"),
+      logger,
+    },
+  );
+  assert(result.notChecked.some((n) => n.includes("base ref could not")));
+  assertWarnedWithContext(logger, "base ref could not be resolved");
+});
+
+Deno.test("runSummaryClaimCheck - null changedFiles logs one warning with repo and issue (#4118)", async () => {
+  const logger = makeLogger();
+  await runSummaryClaimCheck(docInput("/does/not/matter", null), {
+    runGit: okGit(""),
+    askQuestion: async () => okResult("no findings"),
+    logger,
+  });
+  assertWarnedWithContext(logger, "changed files could not be listed");
+});
+
+Deno.test("runSummaryClaimCheck - an unreadable changed manual logs one warning with repo and issue (#4118)", async () => {
+  await withDocRepo({ "docs/dir.md/keep": "x" }, async (dir) => {
+    const logger = makeLogger();
+    await runSummaryClaimCheck(docInput(dir, ["docs/dir.md"]), {
+      runGit: okGit(""),
+      askQuestion: async () => okResult("no findings"),
+      logger,
+    });
+    assertWarnedWithContext(logger, "docs/dir.md could not be read");
+  });
+});
+
+Deno.test("runSummaryClaimCheck - a prompt-build failure logs one warning with repo and issue (#4118)", async () => {
+  const logger = makeLogger();
+  await runSummaryClaimCheck(
+    { ...docInput("/does/not/matter", []), baseRef: "origin/rel+1" },
+    {
+      runGit: okGit(""),
+      askQuestion: async () => okResult("no findings"),
+      logger,
+    },
+  );
+  assertWarnedWithContext(logger, "well-formed base ref");
+});
+
+Deno.test("runSummaryClaimCheck - cap overflow warning carries repo, issue, the count and 'and N more' (#4118)", async () => {
+  const names = Array.from({ length: 40 }, (_, i) => `docs/m${i}.md`);
+  const files: Record<string, string> = {};
+  for (const n of names) files[n] = "# Doc\n";
+  await withDocRepo(files, async (dir) => {
+    const logger = makeLogger();
+    await runSummaryClaimCheck(docInput(dir, names), {
+      runGit: okGit(""),
+      askQuestion: async () => okResult("no findings"),
+      logger,
+    });
+    assertWarnedWithContext(logger, "doc-prose range(s) over a cap");
+    const hit = logger.warnMeta[0]!;
+    assertStringIncludes(hit.message, "and 17 more");
+    assertStringIncludes(hit.message, "(first 3)");
+    assertEquals((hit.meta as Record<string, unknown>).notCheckedCount, 20);
+  });
+});
+
+Deno.test("runSummaryClaimCheck - a small overflow warning lists every name with no 'and N more' (#4118)", async () => {
+  const names = Array.from({ length: 21 }, (_, i) => `docs/m${i}.md`);
+  const files: Record<string, string> = {};
+  for (const n of names) files[n] = "# Doc\n";
+  await withDocRepo(files, async (dir) => {
+    const logger = makeLogger();
+    await runSummaryClaimCheck(docInput(dir, names), {
+      runGit: okGit(""),
+      askQuestion: async () => okResult("no findings"),
+      logger,
+    });
+    const capWarns = logger.warns.filter((w) => w.includes("range(s)"));
+    assertEquals(capWarns.length, 1);
+    assertStringIncludes(capWarns[0]!, "1 doc-prose range(s) over a cap");
+    assertStringIncludes(capWarns[0]!, "docs/m20.md");
+    assertFalse(capWarns[0]!.includes("; and "));
+  });
+});
+
+Deno.test("runSummaryClaimCheck - a non-cap reason after >3 cap overflows gets its own warning and is not aggregated (PR #4228 review)", async () => {
+  const names = Array.from({ length: 24 }, (_, i) => `docs/m${i}.md`);
+  const files: Record<string, string> = {};
+  for (const n of names) files[n] = "# Doc\n";
+  await withDocRepo(files, async (dir) => {
+    const logger = makeLogger();
+    // The tracked manual is missing on disk, so its reason follows the 4 cap entries.
+    const result = await runSummaryClaimCheck(
+      docInput(dir, [...names, "docs/gone.md"]),
+      {
+        runGit: okGit("docs/gone.md\n"),
+        askQuestion: async () => okResult("no findings"),
+        logger,
+      },
+    );
+    assertEquals(logger.errors, []);
+    const agg = logger.warnMeta.filter((w) =>
+      w.message.includes("range(s) over a cap")
+    );
+    assertEquals(agg.length, 1);
+    assertStringIncludes(agg[0]!.message, "4 doc-prose range(s) over a cap");
+    assertEquals(
+      (agg[0]!.meta as Record<string, unknown>).notCheckedCount,
+      4,
+    );
+    assertFalse(agg[0]!.message.includes("docs/gone.md"));
+    // m23 is past the first three shown, so only a per-range line could name it.
+    assertEquals(
+      logger.warnMeta.filter((w) => w.message.includes("docs/m23.md")).length,
+      0,
+    );
+    const own = logger.warnMeta.filter((w) =>
+      w.message.includes("docs/gone.md: tracked prose could not be read")
+    );
+    assertEquals(own.length, 1);
+    const meta = own[0]!.meta as Record<string, unknown>;
+    assertEquals(meta.repo, "acme/widgets");
+    assertEquals(meta.issueNumber, 7);
+    assert(
+      result.notChecked.some((n) => n.includes("docs/gone.md")),
+    );
+  });
+});
+
+Deno.test("runSummaryClaimCheck - no overflow logs no cap warning at all (#4118)", async () => {
+  const names = Array.from({ length: 3 }, (_, i) => `docs/m${i}.md`);
+  const files: Record<string, string> = {};
+  for (const n of names) files[n] = "# Doc\n";
+  await withDocRepo(files, async (dir) => {
+    const logger = makeLogger();
+    await runSummaryClaimCheck(docInput(dir, names), {
+      runGit: okGit(""),
+      askQuestion: async () => okResult("no findings"),
+      logger,
+    });
+    assertEquals(logger.warns.filter((w) => w.includes("range(s)")), []);
+    assertEquals(logger.errors, []);
   });
 });

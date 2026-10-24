@@ -11,7 +11,6 @@
 import { assertEquals } from "@std/assert";
 import {
   applyCodingFailureLadder,
-  buildRepeatedFailureEscalation,
   classifyCodingFailure,
   isSetupFault,
   planCodingFailure,
@@ -428,28 +427,6 @@ Deno.test("isSetupFault - an ordinary execute failure is not a setup fault", () 
       reason: "No code changes and no useful output from Claude",
     }),
     false,
-  );
-});
-
-// ---------------------------------------------------------------------------
-// buildRepeatedFailureEscalation
-// ---------------------------------------------------------------------------
-
-Deno.test("buildRepeatedFailureEscalation - a timeout keeps the Issue #4304 wording", () => {
-  const escalation = buildRepeatedFailureEscalation("timeout", 3);
-  assertEquals(escalation.heading, "Repeated execute timeouts");
-  assertEquals(escalation.reason.includes("3 times in a row"), true);
-  assertEquals(escalation.nextStep.includes("timeout budget"), true);
-});
-
-Deno.test("buildRepeatedFailureEscalation - a non-transient failure points at the failure comments", () => {
-  const escalation = buildRepeatedFailureEscalation("non_transient", 4);
-  assertEquals(escalation.heading, "Repeated run failures");
-  assertEquals(escalation.reason.includes("4 times in a row"), true);
-  assertEquals(escalation.reason.includes("timing out"), false);
-  assertEquals(
-    escalation.nextStep.includes("per-attempt failure comments"),
-    true,
   );
 });
 

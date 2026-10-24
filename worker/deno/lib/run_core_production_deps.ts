@@ -62,6 +62,7 @@ import {
   setPhaseModelConfigOverrides,
 } from "./claude_executor.ts";
 import {
+  clearRefusedCodexModels,
   setCodexPhaseEffortConfigOverrides,
   setCodexPhaseModelConfigOverrides,
 } from "./codex_executor.ts";
@@ -290,7 +291,6 @@ import { workflowScopeState } from "./workflow_scope.ts";
 // `failed-once` -> `failed` ladder the planning and question routes use.
 import {
   applyCodingFailureLadder,
-  buildRepeatedFailureEscalation,
   isSetupFault,
   planCodingFailure,
 } from "./coding_failure_ladder.ts";
@@ -496,9 +496,7 @@ import { fileRunFailureIssue } from "./run_failure_issue.ts";
 import { setMarkerReleaseHook } from "./claim_release.ts";
 import { readMarkerState } from "./heartbeat_storage.ts";
 import { probeHostMemoryPressure } from "./memory_pressure.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
 import { runFailureDetectionResumePass } from "./failure_detection_resume.ts";
-import { ensureLabelExists as ensureLabelExistsFn } from "./label_operations.ts";
 import {
   createFeatureRegistry,
   registerBuiltinFeatures,
@@ -811,6 +809,8 @@ export async function createProductionRunCoreDeps(
   setPhaseEffortConfigOverrides(config.phaseEffortOverrides);
   // Apply the Codex phase model/effort config overrides (Issue #363)
   setCodexPhaseModelConfigOverrides(config.codexPhaseModelOverrides);
+  // a fresh run starts with no refused Codex models (Issue #4221)
+  clearRefusedCodexModels();
   setCodexPhaseEffortConfigOverrides(config.codexPhaseEffortOverrides);
   // Apply the Gemini phase model config overrides (Issue #364)
   setGeminiPhaseModelConfigOverrides(config.geminiPhaseModelOverrides);
@@ -1777,7 +1777,7 @@ export async function createProductionRunCoreDeps(
     // never took it and must keep their behaviour.
     const runLocalHold = gateNewWork ? await loadRunLocalHolds() : undefined;
 
-    const result = await findIssuesByLabel(config, label, false, {
+    const result = await findIssuesByLabel(config, label, {
       githubUser,
       ghCommandFn: runGhCommand,
       cache: issueCache,
@@ -2179,19 +2179,20 @@ export async function createProductionRunCoreDeps(
     // explicit-model health check; the first healthy one adapts this run's
     // routing. Operator pins always win (the resolver substitutes only the
     // designed defaults), and providers without the seam return
-    // { adapted: false }.
+    // { adapted: false }. (Issue #4221) Codex's alternative is the CLI default
+    // (no --model) when a ChatGPT login refuses a built-in default.
     // (Issue #2637) Rotate to a Claude credential with budget before any
     // fallback provider, and find the way back once one reopens.
     selectPreferredCredential: ({ excludeHeld }) =>
       selectPreferredClaudeCredential(excludeHeld),
     async tryModelAdaptation() {
-      const provider = activeAgentProvider();
-      const failedModel = provider.resolveModel("health");
+      const provider = activeAgentProvider({ env });
+      const failedModel = provider.resolveModel("health", env);
       const alternatives = failedModel
-        ? (provider.alternativeModels?.(failedModel) ?? [])
+        ? (provider.alternativeModels?.(failedModel, "health", env) ?? [])
         : [];
       for (const alternative of alternatives) {
-        const probe = await claudeHealthCheck(
+        const probe = await agentHealthCheck(
           30,
           logger,
           provider,
@@ -2199,7 +2200,7 @@ export async function createProductionRunCoreDeps(
           alternative,
         );
         if (probe.healthy) {
-          provider.applyModelAdaptation?.(failedModel!, alternative);
+          provider.applyModelAdaptation?.(failedModel!, alternative, "health");
           return {
             adapted: true,
             detail: `${failedModel} → ${alternative}`,
@@ -4888,7 +4889,6 @@ export async function createProductionRunCoreDeps(
             failureClass: ladderOutcome.decision.failureClass,
             markedAsFailedOnce: ladderOutcome.ladder?.markedAsFailedOnce ??
               false,
-            markedAsFailed: ladderOutcome.ladder?.markedAsFailed ?? false,
           });
         }
       }
@@ -4973,55 +4973,16 @@ export async function createProductionRunCoreDeps(
       issueNumber: number,
       failureKind?: CooldownFailureKind,
     ) {
-      const recorded = await cooldownRecordFn(
+      // Issue #4158: the cooldown is the whole response to a repeated
+      // failure. It escalates 2 h → 6 h → 24 h, so a failing issue is
+      // retried at most daily, and never handed to a human: an assigned
+      // issue is completed, never parked.
+      await cooldownRecordFn(
         cooldownConfig,
         repo,
         issueNumber,
         failureKind,
       );
-      // Third consecutive ladder failure inside the escalation window
-      // (Issue #4304, broadened by Issue #1949): retrying stops being
-      // credible — hand the issue to a human with the attempt evidence
-      // instead of burning a fourth cycle. Best-effort: the cooldown
-      // itself already blocks re-claims for 24 h even if the escalation
-      // cannot be posted.
-      if (
-        failureKind && recorded.ok && recorded.value.consecutiveFailures >= 3
-      ) {
-        const escalation = buildRepeatedFailureEscalation(
-          failureKind,
-          recorded.value.consecutiveFailures,
-        );
-        try {
-          const ghClient = createGitHubClient(logger);
-          await escalateToHuman({
-            ghClient,
-            repo,
-            target: { kind: "issue", number: issueNumber },
-            needsHumanLabel: config.needsHumanLabel,
-            heading: escalation.heading,
-            reason: escalation.reason,
-            nextStep: escalation.nextStep,
-            // The key keeps its historical name on purpose: one hand-off per
-            // issue is the behaviour wanted, and renaming it would post a
-            // second comment on an issue a timeout escalation already
-            // covered (Issue #1949).
-            dedupKey: `timeout-escalation-${issueNumber}`,
-            githubUser,
-            deps: { github: { ensureLabelExists: ensureLabelExistsFn } },
-            logger,
-          });
-        } catch (err) {
-          logger.warn(
-            "Repeated-failure escalation handoff failed (non-fatal)",
-            {
-              repo,
-              issueNumber,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
-      }
     },
 
     // -- Circuit breaker --

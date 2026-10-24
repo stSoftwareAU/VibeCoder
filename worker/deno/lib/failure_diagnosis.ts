@@ -351,8 +351,8 @@ export const PRE_PUSH_LOOKUP_FAILED_MARKER =
 
 /**
  * The worker-written head of a posted failure record: the `## …` heading line
- * followed by the `**Category:** \`…\`` line `markIssueAsFailedOnce` and
- * `markIssueAsFailed` write straight after it. Anchored to the start of the
+ * followed by the `**Category:** \`…\`` line `markIssueAsFailedOnce` writes
+ * straight after it. Anchored to the start of the
  * comment, ahead of the quoted agent text, so a quoted category line further
  * down cannot forge it. `[^\n]*` and `\s*` are separated by a literal `\n`,
  * and the captured category is a bounded `[a-z-]+` run, so the pattern stays

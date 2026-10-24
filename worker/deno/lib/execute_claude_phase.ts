@@ -1,3 +1,4 @@
+import { isAutomaticProviderRoutingActive } from "./provider_auto_state.ts";
 import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 /**
  * Claude execution phase orchestration (Issue #1227).
@@ -70,12 +71,16 @@ import { setActiveRepoCodexModelEffortOverrides } from "./codex_executor.ts";
 import { setActiveRepoGeminiModelOverrides } from "./gemini_executor.ts";
 import { setActiveRepoDeepSeekModelOverrides } from "./deepseek_executor.ts";
 import type { AgentProviderSelector } from "./agent_provider.ts";
-import { resolveOrchestrationSettings } from "./orchestration/role_config.ts";
+import {
+  resolveIssueOrchestration,
+  resolveOrchestrationSettings,
+} from "./orchestration/role_config.ts";
 import { runOrchestratedIssueRun } from "./orchestration/issue_run_gate.ts";
 import {
   plannedActiveAgentProvider,
   resolveAgentProvider,
   resolveInvocationAgentProvider,
+  selectAgentProvider,
 } from "./agent_provider.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import {
@@ -632,6 +637,25 @@ export function detectScreenshotRequired(
   }
 
   return true;
+}
+
+/**
+ * Why a run without recoverable work cannot be an analysis-only answer.
+ * Shared by the standalone and fleet execute phases (Issue #4147). Process
+ * success alone does not prove the agent completed: the decoded result may
+ * report an error, an unfinished stream, or zero model turns. Providers that
+ * do not expose structured completion metadata retain their exit-code rule.
+ */
+export function emptyRunFailureReason(
+  run: ClaudeRunResult,
+): string | undefined {
+  if (run.exitCode !== 0) return `exited ${run.exitCode}`;
+  if (run.agentOutput?.status === "failed") return "reported a failed result";
+  if (run.agentOutput?.status === "incomplete") {
+    return "stopped before its final result";
+  }
+  if (run.runStats?.numTurns === 0) return "completed zero model turns";
+  return undefined;
 }
 
 // =============================================================================
@@ -1252,8 +1276,17 @@ async function executeClaudePhaseBody(
   // The repository's `repo_config` layers over the host-wide sub-agent tier.
   const repoConfig = repoConfigs?.[repo];
   // Issue #3642: with external orchestration on, no native split or `--agents` is built.
-  const externalOrchestration = (repoConfig?.externalOrchestration ??
-    options.externalOrchestration) === true;
+  const { externalOrchestration, effectiveOrchestrationSettings } =
+    resolveIssueOrchestration(
+      (repoConfigs?.[repo]?.externalOrchestration ??
+        options.externalOrchestration) === true,
+      resolveOrchestrationSettings(
+        options.externalOrchestrationSettings ?? {},
+        repoConfigs?.[repo]?.externalOrchestrationSettings,
+      ),
+      selectAgentProvider(invocationAgentProvider).id,
+      isAutomaticProviderRoutingActive(),
+    );
   const requestedExecutorSplit = !externalOrchestration &&
     isIssueExecutorSplitEnabled(
       "issue",
@@ -1374,10 +1407,6 @@ async function executeClaudePhaseBody(
     ? new PromptCache({ cacheDir: promptCacheDir })
     : undefined;
 
-  const effectiveOrchestrationSettings = resolveOrchestrationSettings(
-    options.externalOrchestrationSettings ?? {},
-    repoConfigs?.[repo]?.externalOrchestrationSettings,
-  );
   if (issueExecutorSplit) {
     const executorModel = issueSubAgentTier === "haiku"
       ? HAIKU_ISSUE_EXECUTOR_MODEL
@@ -2040,18 +2069,20 @@ async function executeClaudePhaseBody(
       }
     }
 
-    // An agent that failed (non-zero exit) and changed nothing crashed; it did
+    // An agent that failed or never completed and changed nothing crashed; it did
     // not conclude there was nothing to do. `no_changes` would hand a real
     // implementation issue to a human as analysis-only — 46 on 2026-10-22,
     // every one a run in which no model turn happened (Issue #4147). A
-    // failure keeps the issue on the retry ladder instead.
-    if (exitCode !== 0) {
+    // failure keeps the issue on the retry ladder instead. Keep the live
+    // phases/execute_phase.ts guard in sync; both entry points need this check.
+    const emptyFailure = emptyRunFailureReason(claudeResult.value);
+    if (emptyFailure) {
       const failureOutput = buildFailureOutputTail(claudeOutput);
       return {
         action: "failure",
         failureType: "execution_error",
         failureMessage:
-          `Claude execution failed: the agent exited ${exitCode} without ` +
+          `Claude execution failed: the agent ${emptyFailure} without ` +
           `making any change. This is a run failure, not an analysis-only ` +
           `answer; the issue stays queued for a retry.` +
           (failureOutput

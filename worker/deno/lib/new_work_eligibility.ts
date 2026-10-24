@@ -257,7 +257,6 @@ export async function filterNewWorkEligible(
   );
 
   const survived = filterAndSort(cleaned, {
-    failedLabel: config.failedLabel,
     refineIssueLabel: config.refineIssueLabel,
     planningLabel: config.planningLabel,
     questionLabel: config.questionLabel,

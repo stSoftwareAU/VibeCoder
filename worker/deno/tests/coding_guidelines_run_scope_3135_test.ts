@@ -76,7 +76,7 @@ Deno.test("docs/EXTENDING.md Phase-scoped coding-guidelines layers points at the
   }
 });
 
-Deno.test("Escape Hatch rendered for a PR-feedback run scopes the claim-release sentence to issue runs (Issue #3154)", async () => {
+Deno.test("Escape Hatch rendered for a PR-feedback run is the PR route only and names no issue-run hand-off (Issues #3154, #4227)", async () => {
   const template = await readRepoDoc("prompts/coding_guidelines/prompt.md");
   const selected = selectCodingGuidelinesLayer(
     template,
@@ -94,30 +94,18 @@ Deno.test("Escape Hatch rendered for a PR-feedback run scopes the claim-release 
   );
 
   assert(
-    escapeHatch.includes(
-      "A PR-feedback or CI-fix run keeps using the `.pr_response_message` escape hatch",
-    ),
-    `Escape Hatch dropped the PR-feedback/CI-fix exception: ${escapeHatch}`,
+    escapeHatch.includes("PR-feedback and CI-fix runs only") &&
+      escapeHatch.includes("`.pr_response_message`"),
+    `Escape Hatch dropped the PR-feedback/CI-fix route: ${escapeHatch}`,
   );
-
-  const sentences = escapeHatch.split(/(?<=\.)\s+/);
-  let matched = 0;
-  for (const sentence of sentences) {
+  // An issue run is never handed back (Issue #4227), so no claim-release
+  // sentence for it survives in the hatch.
+  for (const sentence of escapeHatch.split(/(?<=\.)\s+/)) {
     const lower = sentence.toLowerCase();
-    if (
-      !lower.includes("releases its claim") &&
-      !lower.includes("once work is committed")
-    ) {
-      continue;
-    }
-    matched++;
     assert(
-      sentence.includes("In an issue run"),
-      `Sentence about claim release or hand-off is not scoped to issue runs: "${sentence}"`,
+      !lower.includes("releases its claim") &&
+        !lower.includes("once work is committed"),
+      `Escape Hatch still describes an issue-run hand-off: ${sentence}`,
     );
   }
-  assert(
-    matched > 0,
-    `no sentence matched the claim-release filter: ${escapeHatch}`,
-  );
 });

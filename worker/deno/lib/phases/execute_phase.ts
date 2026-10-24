@@ -1,9 +1,11 @@
+import { isAutomaticProviderRoutingActive } from "../provider_auto_state.ts";
 import {
   AllocationAdmissionError,
   type IssueAllocationSelection,
 } from "../subscription_allocation_runtime.ts";
 import {
   effectiveRoleSelections,
+  resolveIssueOrchestration,
   resolveOrchestrationSettings,
 } from "../orchestration/role_config.ts";
 import { classifyRunFailure } from "../run_outcome_classifier.ts";
@@ -40,7 +42,10 @@ import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { getPromptsCommit } from "../prompt_manager.ts";
 import { promptOverrideMappings } from "../custom_label_prompts_config.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
-import { detectScreenshotRequired } from "../execute_claude_phase.ts";
+import {
+  detectScreenshotRequired,
+  emptyRunFailureReason,
+} from "../execute_claude_phase.ts";
 import {
   describeGraftContext,
   graftContextFacts,
@@ -85,6 +90,7 @@ import {
   agentProviderById,
   type AgentProviderDescriptor,
   plannedActiveAgentProvider,
+  resolveInvocationAgentProvider,
   selectAgentProvider,
 } from "../agent_provider.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
@@ -521,9 +527,6 @@ async function executeWithFreshSessionFallback(
     logger: deps.logger,
     reason: "agent CLI refused it as Prompt is too long (Issue #2682)",
   });
-  // The window was sized for the discarded transcript; the fresh one starts
-  // at the CLI default.
-  delete state.autocompactTokens;
   state.claudeOutput = "";
   return await executeWithFreshSessionFallback(ctx, state, deps);
 }
@@ -794,14 +797,22 @@ async function executeClaudeBody(
       `Subscription allocation ${allocation.cohort} selected for ${repo}#${issueNumber}`,
     );
   }
-  const externalOrchestration = allocation?.external ??
-    ((config.repoConfig?.[repo]?.externalOrchestration ??
-      config.externalOrchestration) === true);
-  const effectiveOrchestrationSettings = allocation?.settings ??
+  const routing = resolveIssueOrchestration(
+    (config.repoConfig?.[repo]?.externalOrchestration ??
+      config.externalOrchestration) === true,
     resolveOrchestrationSettings(
       config.externalOrchestrationSettings ?? {},
       config.repoConfig?.[repo]?.externalOrchestrationSettings,
-    );
+    ),
+    selectAgentProvider(
+      resolveInvocationAgentProvider(undefined, config.repoConfig?.[repo]),
+    ).id,
+    isAutomaticProviderRoutingActive(),
+  );
+  const externalOrchestration = allocation?.external ??
+    routing.externalOrchestration;
+  const effectiveOrchestrationSettings = allocation?.settings ??
+    routing.effectiveOrchestrationSettings;
   const requestedExecutorSplit = !externalOrchestration &&
     isIssueExecutorSplitEnabled(
       "issue",
@@ -1254,12 +1265,6 @@ async function executeClaudeBody(
           ...settingsJsonOption(undefined, rtk.hookSettings()),
           logger,
           sessionResumeState: state.sessionResumeState,
-          // The stream conversation could not be verifiably compacted before
-          // this issue started (Issue #2337), so every agent run of the issue
-          // asks the CLI to compact at the earliest window it accepts.
-          ...(state.autocompactTokens
-            ? { autocompactTokens: state.autocompactTokens }
-            : {}),
           // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
           issueNumber,
           // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
@@ -1993,10 +1998,14 @@ async function executeClaudeBody(
     });
     // Hand the conversation on to the stream's next issue (Issue #2333). A
     // no-op unless setup joined a stream, so an excluded run kind — or one
-    // resuming its own checkpoint — writes no stream record.
+    // resuming its own checkpoint — writes no stream record. A run whose agent
+    // failed hands nothing on (Issue #4116): its conversation is the one that
+    // just broke, and the stream's next issue would resume straight into it.
     await handOnStreamSession({
       workDir: config.workDir,
-      joined: state.streamSession,
+      joined: !emptyRunFailureReason(claudeResult.value)
+        ? state.streamSession
+        : undefined,
       state: state.sessionResumeState,
       ...(claudeResult.value.provider
         ? { runProviderId: claudeResult.value.provider }
@@ -2108,6 +2117,38 @@ async function executeClaudeBody(
     if (existingPr.ok && existingPr.value) {
       logger.info("PR already exists despite no local changes");
       return { status: "continue" };
+    }
+
+    // A failed or unfinished agent with no recoverable work is interrupted,
+    // even when its process exits zero. Both execution entry points share
+    // this completion check (Issues #4116, #4147).
+    const emptyFailure = emptyRunFailureReason(claudeResult.value);
+    if (emptyFailure) {
+      logger.warn(
+        "Agent did not complete and changed nothing — a failed run, " +
+          "retried, not analysis-only (Issue #4116)",
+        { exitCode: claudeResult.value.exitCode, reason: emptyFailure },
+      );
+      // The session that failed is not resumed by the retry.
+      if (state.sessionResumeState) {
+        state.sessionResumeState = createSessionResumeState();
+      }
+      return {
+        category: "interrupted",
+        status: "failure",
+        reason: formatDetailedFailureMessage(
+          `Run interrupted before completing — the agent ${emptyFailure} without making any change`,
+          {
+            elapsedSeconds: Math.round(
+              (Date.now() - state.executeStartTime) / 1000,
+            ),
+            clarityStatus: state.clarityStatus,
+            outputSize: state.claudeOutput.length,
+            lastOutputSnippet: redactedTail(state.claudeOutput, 500) ||
+              undefined,
+          },
+        ),
+      };
     }
 
     // Issue #106: if the range comparison itself errored and nothing else

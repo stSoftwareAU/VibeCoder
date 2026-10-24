@@ -8,7 +8,6 @@
  *   - ensure-label: Create a label if it does not exist
  *   - check-failed-once: Check if an issue has the failed-once label
  *   - mark-failed-once: Mark an issue as having failed once
- *   - mark-failed: Mark an issue as permanently failed
  *   - handle-failure: Unified failure handler
  *   - handle-question-failure: Handle question answering failure
  *   - count-clarification-rounds: Count the fleet-authored clarification rounds
@@ -28,7 +27,6 @@ import { ensureLabelExists } from "../lib/label_operations.ts";
 import {
   checkIssueHasFailedOnce,
   handleIssueFailure,
-  markIssueAsFailed,
   markIssueAsFailedOnce,
 } from "../lib/label_failure.ts";
 import { handleQuestionFailure } from "../lib/label_question_failure.ts";
@@ -161,48 +159,12 @@ export const labelManagerCommand: Command = {
         return { success: true, message: "OK" };
       }
 
-      case "mark-failed": {
-        const repo = String(args["repo"] ?? "");
-        const issueNumber = toNumber(args["issue-number"], 0);
-        const failureMessage = String(args["failure-message"] ?? "");
-        const clarityStatus = String(args["clarity-status"] ?? "not_assessed");
-        const diagnosticContext = String(args["diagnostic-context"] ?? "");
-
-        if (!repo || !issueNumber || !githubUser) {
-          return {
-            success: false,
-            message:
-              "Missing required arguments: --repo, --issue-number, --github-user",
-          };
-        }
-
-        const result = await markIssueAsFailed({
-          repo,
-          issueNumber,
-          githubUser,
-          failureMessage,
-          clarityStatus: clarityStatus as
-            | "assessed_clear"
-            | "skipped"
-            | "not_assessed",
-          diagnosticContext,
-          labels,
-          workerFooter,
-        });
-
-        if (!result.ok) {
-          return { success: false, message: result.error.message };
-        }
-        return { success: true, message: "OK" };
-      }
-
       case "handle-failure": {
         const repo = String(args["repo"] ?? "");
         const issueNumber = toNumber(args["issue-number"], 0);
         const failureMessage = String(args["failure-message"] ?? "");
         const clarityStatus = String(args["clarity-status"] ?? "not_assessed");
         const diagnosticContext = String(args["diagnostic-context"] ?? "");
-        const maxInfraRetries = toNumber(args["max-infra-retries"], 5);
 
         if (!repo || !issueNumber || !githubUser) {
           return {
@@ -224,7 +186,6 @@ export const labelManagerCommand: Command = {
           diagnosticContext,
           labels,
           workerFooter,
-          maxInfraRetries,
         });
 
         if (!result.ok) {
@@ -234,7 +195,7 @@ export const labelManagerCommand: Command = {
         const data = result.value;
         return {
           success: true,
-          message: data.markedAsFailed ? "FAILED" : "FAILED_ONCE",
+          message: "FAILED_ONCE",
           data,
         };
       }

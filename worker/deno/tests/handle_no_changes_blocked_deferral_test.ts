@@ -16,7 +16,12 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { workOnIssueHandleNoChanges } from "../lib/phases/handle_no_changes_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
+import type {
+  IssueContext,
+  PhaseResult,
+  PhaseState,
+} from "../lib/issue_worker_types.ts";
+import { UNFINISHED_RETRY_HEADING } from "../lib/unfinished_issue_retry.ts";
 import type { GitHubClient, GitHubComment, GitHubIssue } from "../types.ts";
 import { extractDependencyReferencesDetailed } from "../lib/issue_dependencies.ts";
 import {
@@ -61,6 +66,31 @@ function makeCalls(): StubCalls {
     closeIssue: 0,
     unassignIssue: 0,
   };
+}
+
+/**
+ * The approved-issue invariant (Issue #4227): a run that ends with no PR is a
+ * `no_changes` failure to retry, never `needs-human`, with exactly one
+ * not-finished comment for the next run.
+ */
+function assertRetried(result: PhaseResult, calls: StubCalls): void {
+  assertEquals(result.status, "failure");
+  assertEquals((result as { category: string }).category, "no_changes");
+  assert(
+    !calls.addLabel.includes("needs-human"),
+    "an approved issue must never get needs-human",
+  );
+  assert(
+    !calls.removeLabel.includes("work-on") &&
+      !calls.removeLabel.includes("top-priority"),
+    "the approval and its tier stay on the issue",
+  );
+  assertEquals(
+    calls.postComment.filter((c) => c.startsWith(UNFINISHED_RETRY_HEADING))
+      .length,
+    1,
+    "exactly one not-finished comment",
+  );
 }
 
 /** A minimal `GitHubComment`, for feeding `getIssueComments` stubs. */
@@ -265,11 +295,12 @@ Depends on ${DEP}
 );
 
 Deno.test(
-  "handle_no_changes_phase - a second deferral on the same dependency hands off instead of looping",
+  "handle_no_changes_phase - a second deferral on the same dependency retries instead of deferring again (Issue #4227)",
   async () => {
     // The gate did not hold (the dependency closed and the run still reports
     // itself blocked), so deferring again would spin a fresh agent run every
-    // scan. The repeat escalates to a human — and is still never closed.
+    // scan. The repeat is retried on the failure ladder, whose cooldown is
+    // the loop guard (Issue #4227) — and is still never closed.
     const calls = makeCalls();
     const priorComment = `## Deferred — blocked on ${DEP}\n\n…\n\n${
       buildDeferralMarker(DEP)
@@ -289,10 +320,7 @@ Deno.test(
       deps,
     );
 
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
+    assertRetried(result, calls);
     assertEquals(calls.closeIssue, 0);
     // No second dependency line, and no second deferral comment.
     assertEquals(calls.editIssue.length, 0);
@@ -345,10 +373,7 @@ Deno.test(
       deps,
     );
 
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
+    assertRetried(result, calls);
     assertEquals(calls.editIssue.length, 0);
     assert(
       !calls.postComment.some((c) => c.includes("## Deferred")),
@@ -384,10 +409,7 @@ Deno.test(
       makeState(BLOCKED_OUTPUT),
       deps,
     );
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
+    assertRetried(result, calls);
   },
 );
 
@@ -421,9 +443,9 @@ Deno.test(
 );
 
 Deno.test(
-  "handle_no_changes_phase - non-blocked analysis-only output still hands off",
+  "handle_no_changes_phase - non-blocked no-change output still retries (Issue #4227)",
   async () => {
-    // The deferral must not swallow the existing analysis-only behaviour.
+    // The deferral must not swallow the ordinary approved-issue outcome.
     const calls = makeCalls();
     const deps = createMockDeps({
       github: { createClient: () => makeClient(calls) },
@@ -437,19 +459,16 @@ Deno.test(
       deps,
     );
 
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
+    assertRetried(result, calls);
     assertEquals(calls.editIssue.length, 0);
   },
 );
 
 // Issue #3146: a no-changes run that names a dependency this run's own fleet
-// filed must not defer — that would park a human-only decision on an issue
-// nothing picks up. It falls through to the existing analysis-only hand-off.
+// filed must not defer — that would park the issue on a dependency nothing
+// picks up. The approved issue is retried instead (Issue #4227).
 Deno.test(
-  "handle_no_changes_phase - a self-filed dependency hands off instead of deferring (Issue #3146)",
+  "handle_no_changes_phase - a self-filed dependency retries instead of deferring (Issue #3146, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -471,12 +490,7 @@ Deno.test(
       deps,
     );
 
-    assertEquals(result.status, "early_exit");
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
-    assert(calls.addLabel.includes("needs-human"));
+    assertRetried(result, calls);
     assertEquals(calls.closeIssue, 0);
     assert(
       !calls.editIssue.some((e) => (e.body ?? "").includes("Depends on")),
@@ -614,20 +628,18 @@ Depends on ${DEP}
       deps,
     );
 
-    assertEquals(result.status, "early_exit");
+    assertRetried(result, calls);
     assertEquals(calls.closeIssue, 0);
   },
 );
 
 // Issue #3146 (review of PR #3159): a self-filed blocked run whose output
-// also names a file to change must still hand off on this run, not retry
-// through `detectDescribedCodeChange`'s normal failed-once → failed ladder
-// — a retry drops the self-filed signal, since the next run's `createdAt`
-// no longer satisfies `runStartTime`, and the issue defers onto a
-// follow-up nothing picks up.
+// also names a file to change must still take the self-filed path on this
+// run, never defer onto the follow-up. Issue #4227: that path retries the
+// approved issue rather than handing it to a human.
 Deno.test(
-  "handle_no_changes_phase - a self-filed dependency hands off even when the " +
-    "output also describes a code change (Issue #3146)",
+  "handle_no_changes_phase - a self-filed dependency retries even when the " +
+    "output also describes a code change (Issue #3146, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -656,12 +668,7 @@ Depends on ${DEP}
       deps,
     );
 
-    assertEquals(result.status, "early_exit");
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
-    assert(calls.addLabel.includes("needs-human"));
+    assertRetried(result, calls);
     assertEquals(calls.closeIssue, 0);
     assert(
       !calls.editIssue.some((e) => (e.body ?? "").includes("Depends on")),
@@ -672,11 +679,11 @@ Depends on ${DEP}
 
 // Issue #3146 (review of PR #3159): detectRunInterrupted matches ordinary
 // blocked wording such as "not finished". That check used to run before the
-// self-filed hand-off and return a plain failure, so the next run deferred
-// onto the follow-up.
+// self-filed path and return a plain failure, so the next run deferred onto
+// the follow-up. The self-filed path still wins (Issue #4227: as a retry).
 Deno.test(
-  "handle_no_changes_phase - a self-filed dependency hands off even when " +
-    "the blocked text reads as interrupted (Issue #3146)",
+  "handle_no_changes_phase - a self-filed dependency retries even when " +
+    "the blocked text reads as interrupted (Issue #3146, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -704,12 +711,7 @@ Depends on ${DEP}
       deps,
     );
 
-    assertEquals(result.status, "early_exit");
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
-    assert(calls.addLabel.includes("needs-human"));
+    assertRetried(result, calls);
     assertEquals(calls.closeIssue, 0);
     assert(
       !calls.editIssue.some((e) => (e.body ?? "").includes("Depends on")),

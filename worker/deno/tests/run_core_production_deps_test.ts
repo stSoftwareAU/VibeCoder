@@ -877,11 +877,16 @@ Deno.test("production coding dispatch defers actual heartbeat publication throug
       const result = observation[0]!.value;
       assertEquals(result.ok, true);
       if (!result.ok) throw result.error;
-      assertEquals(executions, 1);
+      // A non-zero exit that committed nothing is a crashed run, retried once
+      // in-process on a fresh session (Issue #4116). Change detection reads
+      // tracked changes and commits, so an untracked file does not count.
+      assertEquals(executions, 2);
       assertEquals(result.value.success, false);
       assertEquals(result.value.skipped, !dirty);
       assertEquals(result.value.outcome?.kind === "claim_stale", !dirty);
-      assertEquals(charges, dirty ? 1 : 0);
+      // A crashed run is an infrastructure failure: released for a retry,
+      // never charged to the issue's failure ladder (Issue #4116).
+      assertEquals(charges, 0);
       assertEquals(
         clears,
         0,

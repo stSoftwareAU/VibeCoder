@@ -27,6 +27,8 @@ import { findImageReferences } from "../lib/untrusted_image_signal.ts";
 import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 import { GRQ_4871_OUTPUT } from "./support/grq_4871_output.ts";
+import { UNFINISHED_RETRY_HEADING } from "../lib/unfinished_issue_retry.ts";
+import type { PhaseResult } from "../lib/issue_worker_types.ts";
 
 // Side-effect import: register the security-scan template so its
 // title and body fingerprint are visible to the suppression check.
@@ -118,6 +120,46 @@ function makeState(overrides?: Partial<PhaseState>): PhaseState {
   };
 }
 
+/**
+ * The approved-issue invariant (Issue #4227): a run that ends with no PR is a
+ * `no_changes` failure to retry, never `needs-human`, and it leaves exactly
+ * one not-finished comment. Returns that comment's body.
+ */
+function assertRetried(
+  result: PhaseResult,
+  calls: StubGhCalls,
+  ctx: IssueContext,
+): string {
+  assertEquals(result.status, "failure");
+  assertEquals((result as { category: string }).category, "no_changes");
+  assertEquals(
+    detectFailureCategory((result as { reason: string }).reason),
+    "no_changes",
+  );
+  assert(
+    !calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+    "an approved issue must never get needs-human",
+  );
+  assert(
+    !calls.removeLabel.some((c) =>
+      c.label === "work-on" || c.label === "top-priority"
+    ),
+    "the approval and its tier stay on the issue",
+  );
+  const retry = calls.postComment.filter((c) =>
+    c.body.startsWith(UNFINISHED_RETRY_HEADING)
+  );
+  assertEquals(retry.length, 1, "exactly one not-finished comment");
+  assert(
+    calls.postComment.every((c) =>
+      !c.body.includes("Analysis-only issue") &&
+      !c.body.includes("Partial Answer")
+    ),
+    "no Partial Answer or analysis-only hand-off comment",
+  );
+  return retry[0]!.body;
+}
+
 // Long narrative output (> 100 chars after trim) — would normally
 // trigger the Partial Answer branch.
 const NARRATIVE = "A".repeat(200) + " Here is my analysis of the issue...";
@@ -127,15 +169,11 @@ const NARRATIVE = "A".repeat(200) + " Here is my analysis of the issue...";
 // -------------------------------------------------------------------------
 
 Deno.test(
-  "handle_no_changes_phase - regular issue posts Partial Answer and hands off to needs-human (Issue #2849)",
+  "handle_no_changes_phase - regular issue retries, never hands off to needs-human (Issue #2849, #4227)",
   async () => {
-    // Behaviour change (Issue #2849): a no-code-change run on a regular
-    // `work-on` issue is the analysis-only / no-PR signal. The phase now
-    // posts the partial answer AND hands the issue off to `needs-human`
-    // (clean hand-off via the escalation chokepoint) so it stops looping,
-    // rather than just unassigning and leaving it for re-pickup. The
-    // previous test asserted reason `partial_answer_posted` with a single
-    // comment; it now asserts the hand-off.
+    // Issue #4227 supersedes #2849: a no-code-change run on an approved
+    // `work-on` issue is not finished, so it is retried on the failure
+    // ladder instead of being handed to a human as analysis-only.
     const calls = makeStubGhCalls();
     const ctx = makeContext();
     const state = makeState({ claudeOutput: NARRATIVE });
@@ -147,26 +185,11 @@ Deno.test(
 
     const result = await workOnIssueHandleNoChanges(ctx, state, deps);
 
-    assertEquals(result.status, "early_exit");
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
-    // Two comments: the partial answer, then the needs-human explanation.
-    assertEquals(calls.postComment.length, 2);
-    assert(calls.postComment[0]!.body.includes("Partial Answer"));
-    assert(
-      calls.postComment[1]!.body.includes("Analysis-only issue"),
-      "second comment is the needs-human hand-off explanation",
-    );
-    // needs-human label applied via the escalation chokepoint.
-    assert(
-      calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
-      "needs-human label applied",
-    );
-    // Worker claim released exactly once.
-    assertEquals(calls.unassignIssue.length, 1);
-    assertEquals(calls.unassignIssue[0]!.assignees, ["testbot"]);
+    const comment = assertRetried(result, calls, ctx);
+    // The next run sees what this one said.
+    assertStringIncludes(comment, "Here is my analysis of the issue");
+    // The claim is not released as a hand-off.
+    assertEquals(calls.unassignIssue.length, 0);
   },
 );
 
@@ -334,12 +357,12 @@ Deno.test(
 // -------------------------------------------------------------------------
 
 Deno.test(
-  "handle_no_changes_phase - issue mentioning the fingerprint in prose still gets Partial Answer + hand-off (Issue #2098, #2849)",
+  "handle_no_changes_phase - issue mentioning the fingerprint in prose still retries (Issue #2098, #4227)",
   async () => {
     // The fingerprint is anchored to a Markdown heading at the start
     // of a line (Issue #2118). A prose mention must NOT trigger the
-    // skip path — the issue still gets the partial answer, and (Issue
-    // #2849) the analysis-only hand-off to needs-human.
+    // skip path — the issue still gets the ordinary approved-issue
+    // outcome, which (Issue #4227) is a retry with a not-finished comment.
     const calls = makeStubGhCalls();
     const ctx = makeContext({
       issueTitle: "Document the security scan workflow",
@@ -355,17 +378,8 @@ Deno.test(
 
     const result = await workOnIssueHandleNoChanges(ctx, state, deps);
 
-    assertEquals(result.status, "early_exit");
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
-    assertEquals(calls.postComment.length, 2);
-    assert(calls.postComment[0]!.body.includes("Partial Answer"));
-    assert(
-      calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
-      "needs-human label applied",
-    );
+    assertRetried(result, calls, ctx);
+    assertEquals(calls.postComment.length, 1);
   },
 );
 
@@ -477,7 +491,7 @@ Deno.test(
 );
 
 Deno.test(
-  "handle_no_changes_phase - an unevidenced already-fixed claim hands off instead of closing (Issue #241)",
+  "handle_no_changes_phase - an unevidenced already-fixed claim retries instead of closing (Issue #241, #4227)",
   async () => {
     // Deliberately tighter than the #519 keyword path: a claim with no commit
     // or PR behind it is not enough to close a live issue.
@@ -493,15 +507,8 @@ Deno.test(
 
     const result = await workOnIssueHandleNoChanges(ctx, state, deps);
 
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
     assertEquals(calls.closeIssue.length, 0);
-    assert(
-      calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
-      "an unevidenced claim is handed to a human",
-    );
+    assertRetried(result, calls, ctx);
   },
 );
 
@@ -601,7 +608,7 @@ Deno.test(
 );
 
 Deno.test(
-  "handle_no_changes_phase - Partial Answer comment redacts secrets (Issue #3636)",
+  "handle_no_changes_phase - not-finished comment redacts secrets (Issue #3636, #4227)",
   async () => {
     const calls = makeStubGhCalls();
     const ctx = makeContext();
@@ -612,13 +619,8 @@ Deno.test(
 
     const result = await workOnIssueHandleNoChanges(ctx, state, deps);
 
-    assertEquals(
-      (result as { reason: string }).reason,
-      "analysis_only_handed_off",
-    );
-    const body = calls.postComment[0]!.body;
-    assert(body.includes("Partial Answer"));
-    assertRedacted(body, "partial answer comment");
+    const body = assertRetried(result, calls, ctx);
+    assertRedacted(body, "not-finished comment");
   },
 );
 
@@ -1089,12 +1091,13 @@ Deno.test(
 // Issue #1385 — an untrusted image withholds the already-resolved close
 // -------------------------------------------------------------------------
 
-Deno.test("handle_no_changes_phase - an untrusted image withholds the already-resolved close (Issue #1385)", async () => {
+Deno.test("handle_no_changes_phase - an untrusted image withholds the already-resolved close (Issue #1385, #4227)", async () => {
   // The exploit this closes: an image tells the agent to report the issue as
   // already fixed AND to withhold its own suspicious-image marker, so the
   // only detector is the party under attack. The image reference cannot be
   // suppressed that way — the worker parsed it before the agent saw
-  // anything — so the close is refused and the issue goes to a human.
+  // anything — so the close is refused. The approved issue is then retried
+  // (Issue #4227), never closed on that unverifiable claim.
   const calls = makeStubGhCalls();
   const body = "Broken login — see ![repro](https://example.test/shot.png)";
   const ctx = makeContext({
@@ -1114,14 +1117,7 @@ Deno.test("handle_no_changes_phase - an untrusted image withholds the already-re
   const result = await workOnIssueHandleNoChanges(ctx, state, deps);
 
   assertEquals(calls.closeIssue.length, 0, "must NOT close the issue");
-  assertEquals(
-    (result as { reason: string }).reason,
-    "analysis_only_handed_off",
-  );
-  assert(
-    calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
-    "must hand the issue to a human instead of closing it",
-  );
+  assertRetried(result, calls, ctx);
 });
 
 Deno.test("handle_no_changes_phase - a trusted author's issue still closes on the same evidence (Issue #1385)", async () => {

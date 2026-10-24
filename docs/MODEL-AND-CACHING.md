@@ -1100,7 +1100,7 @@ both providers supply their own names, tables and override state to it:
    (model only; effort has no per-repo base, exactly as Claude's has none)
 4. **Global config phase overrides** — `codex_phase_model_overrides` /
    `codex_phase_effort_overrides` in `.config.json`
-5. **Phase-specific hardcoded defaults** — the tables above
+5. **Phase-specific hardcoded defaults** — the tables above; on a ChatGPT login a built-in default the login refuses is skipped for the rest of the run (see **Refused built-in defaults (ChatGPT login)** below)
 6. **Global environment variable** — `CODEX_MODEL` / `CODEX_EFFORT`
 
 An explicit `model`/`effort` on the invocation request still beats all six, and
@@ -1115,6 +1115,36 @@ is missing an entry, exactly as `buildClaudeModelArgs` does — a typo or a new
 phase whose author forgot a default is caught rather than shipping silently. A
 phase-less invocation is deliberate and stays quiet.
 
+**Refused built-in defaults (ChatGPT login).** On a ChatGPT login — an explicit
+`CODEX_HOME` whose `auth.json` is a ChatGPT login — a model taken from the
+built-in step-5 defaults may be one the login refuses. Today that is
+`gpt-6-luna`, the cheap tier: Codex returns HTTP 400 "The '<model>' model is not
+supported when using Codex with a ChatGPT account". The worker then marks that id
+refused for the rest of the run and omits `--model`, so the Codex CLI picks its
+own model. It warns **once** per refused id per run, naming the id, the phase
+and the re-pin knob (`codex_phase_model_overrides` or
+`provider_model_tiers.codex`).
+
+A ChatGPT login is detected only from an explicit `CODEX_HOME`: a login in the
+CLI's default `$HOME/.codex` is not detected, as for the billing probe. The
+in-run retry applies only when the model came from phase routing; an explicit
+request `model` is never dropped.
+
+Two triggers reach this path:
+
+- **The health gate.** `tryModelAdaptation` re-probes Codex with no `--model`
+  before credential rotation or the provider fallback. If the re-probe is
+  healthy, no provider switch happens.
+- **An in-run `model-unavailable` refusal.** The invocation retries once on Codex
+  with no `--model` before the `agent_provider_fallback` switch (Issue #4034). A
+  second refusal falls through to that switch.
+
+Explicit pins are never skipped: `CODEX_MODEL_<PHASE>`,
+`codex_phase_model_overrides` (repo or global), repo `codex_model` and
+`CODEX_MODEL` keep their `--model`, even when refused. API-key mode is unchanged,
+because the refused set is never consulted. This mirrors DeepSeek's tier
+adaptation (Issue #2059); see [DeepSeek per-phase routing](#-deepseek-per-phase-routing).
+
 ```mermaid
 flowchart LR
     R["buildInvocation({ phase })"] --> S["resolveInvocationRouting()"]
@@ -1122,6 +1152,7 @@ flowchart LR
     S -->|otherwise| C["resolveCodexModel / resolveCodexEffort"]
     C --> P["phase_routing.ts<br/>six-step chain"]
     P -->|resolved| A["--model / -c model_reasoning_effort"]
+    P -->|built-in default refused by ChatGPT login| O["omit --model, warn once per id"]
     P -->|nothing, phase set| W["⚠️ warn once, CLI default stands"]
 ```
 
@@ -1335,8 +1366,13 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
   cheapest rung, the same invocation is retried on the next provider in
   `agent_provider_fallback`. A ChatGPT login that does not offer a model is
   the usual case: Codex returns HTTP 400 "not supported when using Codex with
-  a ChatGPT account" (Issue #4019). The fallback resolves its own model for
-  the phase and starts a fresh session. It is capped at one switch per
+  a ChatGPT account" (Issue #4019). Where the refused model is a built-in
+  default on a Codex ChatGPT login, the invocation is first retried once on
+  Codex with no `--model` (Issue #4221, see the
+  [Codex per-phase routing](#-codex-per-phase-routing) section's "Refused
+  built-in defaults"); the provider switch applies only if that retry is refused
+  too. The fallback resolves its own model for the phase and starts a fresh
+  session. It is capped at one switch per
   invocation and logged as `[provider-fallback] <from> refused model … retrying
   on <to>`. With the list empty (pinned, the default) the run still gives up
   with `no cheaper fallback available`, as before.
@@ -2397,8 +2433,8 @@ costs depends on the provider:
 
 | Provider | Behaviour | Logged as |
 |----------|-----------|-----------|
-| `claude`, `deepseek` | One CLI, so one pair of levers: `/compact` is sent as the prompt of a `--resume` print run, and the session transcript under `CLAUDE_CONFIG_DIR` is then **measured**. Smaller means it worked. | `compaction: /compact` |
-| `claude`, `deepseek` (unproven) | Anything short of that proof — an unchanged or larger transcript, a non-zero `/compact` run, a transcript that cannot be measured, a spawn that failed — is treated as uncompacted, and every agent run of the issue instead carries `--autocompact 100000`, the smallest window the CLI accepts, so its own compaction happens earliest. | `compaction: autocompact 100000` |
+| `claude`, `deepseek` | One CLI, so one lever: `/compact` is sent as the prompt of a `--resume` print run, and the session transcript under `CLAUDE_CONFIG_DIR` is then **checked** for a new `compact_boundary` record. The transcript is append-only, so the file grows when it works (Issue #4116). | `compaction: /compact` |
+| `claude`, `deepseek` (unproven) | Anything short of that proof — no new boundary, a non-zero `/compact` run, a transcript that cannot be read, a spawn that failed — starts the issue on a new session instead of resuming the uncompacted one. No `--autocompact` window is ever passed: `100000` put the trigger below the issue prompt's own size and the CLI aborted with "Autocompact is thrashing". | `compaction: fresh session` |
 | `codex`, `gemini` | No compaction control is exposed, so the full transcript is carried. | `compaction unavailable` (naming the provider) |
 
 A `new` or `reset` stream session has no conversation to compact and logs

@@ -515,6 +515,86 @@ Deno.test("manual correction - rejects malformed index sets and oversized replie
   );
 });
 
+// Issue #4115: models wrap the JSON reply in a markdown code fence.
+const FENCE_FINDINGS = [{
+  file: "docs/manual.md",
+  sentence: "Wrong claim.",
+  reason: "code differs",
+}];
+const FENCE_CONTENTS = new Map([[
+  "docs/manual.md",
+  "Keep. Wrong claim. Keep.",
+]]);
+const FENCE_BODY = JSON.stringify({
+  replacements: [{ index: 1, text: "Accurate claim." }],
+});
+
+Deno.test("manual correction - a json-fenced reply applies the same replacements as the bare reply", () => {
+  const bare = applyFlaggedSentenceReplacements(
+    FENCE_BODY,
+    FENCE_FINDINGS,
+    FENCE_CONTENTS,
+  );
+  const fenced = applyFlaggedSentenceReplacements(
+    "```json\n" + FENCE_BODY + "\n```",
+    FENCE_FINDINGS,
+    FENCE_CONTENTS,
+  );
+  assertEquals(fenced, bare);
+  assertEquals(
+    fenced.get("docs/manual.md"),
+    "Keep. Accurate claim. Keep.",
+  );
+});
+
+Deno.test("manual correction - a plain code fence with CRLF around the reply is accepted", () => {
+  const result = applyFlaggedSentenceReplacements(
+    "```\r\n" + FENCE_BODY + "\r\n```\r\n",
+    FENCE_FINDINGS,
+    FENCE_CONTENTS,
+  );
+  assertEquals(
+    result.get("docs/manual.md"),
+    "Keep. Accurate claim. Keep.",
+  );
+});
+
+Deno.test("manual correction - malformed JSON inside a fence still throws", () => {
+  assertThrows(() =>
+    applyFlaggedSentenceReplacements(
+      '```json\n{"replacements": [\n```',
+      FENCE_FINDINGS,
+      FENCE_CONTENTS,
+    )
+  );
+});
+
+Deno.test("manual correction - prose around a fenced reply still throws", () => {
+  assertThrows(() =>
+    applyFlaggedSentenceReplacements(
+      "Here you go:\n```json\n" + FENCE_BODY + "\n```\nThanks.",
+      FENCE_FINDINGS,
+      FENCE_CONTENTS,
+    )
+  );
+});
+
+Deno.test("manual correction - a fenced reply with the wrong replacement count still throws", () => {
+  const tooMany = JSON.stringify({
+    replacements: [{ index: 1, text: "a" }, { index: 2, text: "b" }],
+  });
+  assertThrows(
+    () =>
+      applyFlaggedSentenceReplacements(
+        "```json\n" + tooMany + "\n```",
+        FENCE_FINDINGS,
+        FENCE_CONTENTS,
+      ),
+    Error,
+    "One replacement per flagged sentence is required",
+  );
+});
+
 Deno.test("manual correction - refuses new scrub artefacts in manual and summary spans", () => {
   for (const file of ["manual.md", SUMMARY_PATH]) {
     for (

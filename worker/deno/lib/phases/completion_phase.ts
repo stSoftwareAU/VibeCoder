@@ -105,6 +105,7 @@ import {
   buildDocsSweepHitsComment,
   checkDocsSweepTerms,
   describeDocsSweepHits,
+  MAX_REMOVED_PHRASES,
 } from "../docs_sweep_hits.ts";
 import {
   buildResultPlaceholderGateComment,
@@ -258,7 +259,10 @@ import {
   SCREENSHOT_EVIDENCE_MISSING_REASON,
 } from "../screenshot_gate_retry.ts";
 import type { DegradedShortfall } from "../degraded_delivery.ts";
-import { convertToDraftContinuation } from "../draft_continuation_pr.ts";
+import {
+  convertToDraftContinuation,
+  markReadyAndAwaitCi,
+} from "../draft_continuation_pr.ts";
 import {
   assessUnmetCriteria,
   buildUnmetCriteriaGateComment,
@@ -1170,21 +1174,25 @@ export async function recoverAndFinaliseExistingPr(
       // Issue #4146: a timed-out run's draft continuation, now that every
       // criterion is met (the unmet-criteria gate never lets a partial run
       // reach here). Its body already says `Closes #N`; mark it ready so it
-      // takes the normal review and auto-merge path.
+      // takes the normal review and auto-merge path. Auto-merge waits for
+      // the ready-for-review CI to start: the draft's checks were skipped,
+      // and a skipped required check counts as passing (Issue #4160).
+      let ciStarted = true;
       if (prLookup?.isDraft === true) {
-        await deps.github.runGhCommand([
-          "pr",
-          "ready",
-          String(prNumber),
-          "--repo",
+        ciStarted = await markReadyAndAwaitCi({
           repo,
-        ]);
+          prNumber,
+          gh: deps.github.runGhCommand,
+          sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+          log: (message) => logger.warn(message, { repo, prNumber }),
+        });
         logger.info("Marked the draft continuation PR ready (Issue #4146)", {
           repo,
           prNumber,
+          ciStarted,
         });
       }
-      await armAutoMergeAtCreation(ctx, state, prNumber, deps);
+      if (ciStarted) await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
 
     // Issue #3237: advisory docs-sweep stale-hits comment, posted once.
@@ -2966,7 +2974,8 @@ async function completionBody(
 
   // Issue #3172: once the line itself passes, re-run the grep and sibling
   // terms it quotes (Issue #3371) over the head's docs, and over the comment
-  // lines of its source files (Issue #3219). A hit outside every line the diff changed,
+  // lines of its source files (Issue #3219), and the wording the branch's diff
+  // removed from the docs (Issue #4105). A hit outside every line the diff changed,
   // and not named in the line as `file:line`, is a sentence the sweep found
   // and left — Issue #3237 made this advisory only: it is named in a PR
   // comment, not blocked, and costs no recovery turn. A grep or diff that
@@ -3005,6 +3014,13 @@ async function completionBody(
         "Docs sweep terms too broad to check line by line outside the " +
           "files the diff touched — not checked there (Issue #3172)",
         { terms: termCheck.broadTerms },
+      );
+    }
+    if (termCheck.status === "checked" && termCheck.removedPhrasesOverCap > 0) {
+      logger.warn(
+        `Removed-wording phrases beyond the cap of ${MAX_REMOVED_PHRASES} were ` +
+          "not re-run at the head (Issue #4105)",
+        { dropped: termCheck.removedPhrasesOverCap },
       );
     }
     if (termCheck.status === "checked" && termCheck.staleHits.length > 0) {

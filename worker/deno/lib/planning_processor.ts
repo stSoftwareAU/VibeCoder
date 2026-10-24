@@ -1624,12 +1624,6 @@ async function _processPlanningWithHeartbeat(
   // nothing forks this conversation into it.
   let streamSession: JoinedStream | undefined;
   let sessionState = createSessionResumeState();
-  /**
-   * The `--autocompact` window every planning turn carries (Issue #2337),
-   * set when the stream's conversation could not be verifiably compacted
-   * before this planning run started.
-   */
-  let autocompactOption: { autocompactTokens?: number } = {};
   if (config.enableSessionResume) {
     const providerId = anticipatedProviderId({
       ...(config.repoConfig?.[repo]
@@ -1658,8 +1652,9 @@ async function _processPlanningWithHeartbeat(
       sessionState = adoption.state;
       streamSession = { stream: adoption.stream, providerId };
       // Compact the conversation this planning stream has been having before
-      // the first turn starts (Issue #2337).
-      const autocompactTokens = await deps.claude.primeStreamCompaction({
+      // the first turn starts (Issue #2337). Not proved compacted, the run
+      // opens a new conversation instead (Issue #4116).
+      const freshSession = await deps.claude.primeStreamCompaction({
         outcome: adoption.outcome,
         providerId,
         ...(adoption.state.providerId !== undefined
@@ -1671,7 +1666,7 @@ async function _processPlanningWithHeartbeat(
         logger,
         logFields: { repo, issueNumber },
       });
-      if (autocompactTokens) autocompactOption = { autocompactTokens };
+      if (freshSession) sessionState = createSessionResumeState();
     }
   }
 
@@ -1760,7 +1755,6 @@ async function _processPlanningWithHeartbeat(
       cwd: config.workDir,
       logger,
       sessionResumeState: sessionState,
-      ...autocompactOption,
       ...codegraphMcpOption,
       ...rtkSettingsOption,
     },
@@ -1925,7 +1919,6 @@ async function _processPlanningWithHeartbeat(
       cwd: config.workDir,
       logger,
       sessionResumeState: publishSessionState,
-      ...autocompactOption,
       ...codegraphMcpOption,
       ...rtkSettingsOption,
     },

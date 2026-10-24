@@ -106,7 +106,6 @@ export const REAL_WORK_LABELS: readonly string[] = [
  */
 export const BLOCKED_LABELS: readonly string[] = [
   LABEL_DEFAULTS.needsHumanLabel,
-  LABEL_DEFAULTS.failedLabel,
   LABEL_DEFAULTS.failedOnceLabel,
   LABEL_DEFAULTS.planningLabel,
 ] as const;

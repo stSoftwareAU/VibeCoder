@@ -211,7 +211,12 @@ a fault must never be masked as success.
   with context — an empty `catch {}` that hides the error is forbidden.
 - **Absence of a success marker is not success.** Do not treat "no explicit
   failure" as "passed", and do not treat an unhandled non-zero exit as benign. A
-  result is only successful when success is positively confirmed.
+  result is only successful when success is positively confirmed. A parsed
+  response is no exception: when the format guarantees a key is present (GraphQL
+  selects it, a brief or schema requires it) and its documented empty state is
+  `null` or `[]`, treat only that explicit value as empty. A missing key is a
+  malformed response: reject it with the field name, and test the omitted-key
+  case as a rejection, never as the empty state.
 - **No silent fallback that masks a fault.** A missing `source` target, a
   skipped stage, an empty result standing in for real data, or a default value
   papering over a failed fetch must not be reported as a clean outcome.
@@ -919,6 +924,14 @@ deferral: fix the root cause, or use the escape hatch below.
 
 ## Human Escalation
 
+**Never in an issue run.** An issue you were given to implement is approved,
+and an approved issue is completed, never handed back (owner, 23–24 October
+2026). An issue run does not apply `needs-human`, does not ask a person to take
+over, and does not file a follow-up issue for the remainder. A run that stops
+short is retried with its output, and an issue too large for one PR goes to
+planning through the issue prompt's planning marker. This section, and the
+escape hatch below, apply only to the PR-feedback and CI-fix routes.
+
 Any time you apply the `needs-human` label — for any reason — you must on the
 same run post a comment that (a) explains why you applied the label and (b)
 tells the human exactly what to do next. The label and the comment must always
@@ -998,8 +1011,9 @@ from _bumping_ deps to _fixing their root causes_.
   treat it as external for this decision; deferring via the escape hatch below
   is then legitimate.
 
-Deferral via a follow-up issue + `needs-human` (the escape hatch below) is
-acceptable **only** for:
+In a PR-feedback or CI-fix run, deferral via a follow-up issue + `needs-human`
+(the escape hatch below) is acceptable **only** for (an issue run never defers
+this way — see **Human Escalation**):
 
 1. **external** (non-`stSoftwareAU/*`) dependencies,
 2. genuine **human-only decisions**, or
@@ -1062,6 +1076,9 @@ two boundaries must hold before that fix reaches the **consuming** repo:
 
 ## Escape Hatch — Hand Off When Genuinely Out of Scope
 
+**PR-feedback and CI-fix runs only** — an issue run has no escape hatch (see
+**Human Escalation** above).
+
 Use this when the task is genuinely too large or out of scope to complete in
 this run — a PR review comment requesting a multi-day change, a CI failure
 caused by missing infrastructure, or an issue whose scope exploded after
@@ -1114,28 +1131,9 @@ this **instead of looping**:
      nothing; the label belongs on an issue that already exists, which is the
      escalation the message is asking a human to make.
 
-   For PR feedback or CI fix work, write the message to `.pr_response_message`
-   in the working directory — the worker posts it as the PR reply. For issue
-   work, post the message as a comment on the current issue — and stop there.
-   In an issue run, this free-text hand-off is honoured only when the run
-   leaves no commit and no uncommitted change. Decide before you edit any
-   file, because the worker commits and pushes the working tree periodically
-   and again at the end of the run. Once a file has changed, a free-text
-   hand-off is not read. In an issue run, if no open issue already blocks
-   the work, this is not a deferral. Do not file a follow-up and name it on
-   a `Depends on` line: that hands the issue to a human instead of deferring,
-   whether or not the branch has commits. A
-   bare `## Blocked:` heading does not defer, and the worker raises a PR
-   that closes the issue. A PR-feedback or CI-fix run
-   keeps using the `.pr_response_message` escape hatch above, including on a
-   branch that already has commits.
-   **Do not close the issue yourself**: the `gh` guard refuses
-   `gh issue close|reopen|delete|transfer|lock` on the issue you are working.
-   In an issue run, the worker releases its claim and hands the issue to a
-   human (`needs-human`) only while the branch has no commits and no
-   uncommitted changes against the base; once work is committed, an
-   issue-comment hand-off is not read. A human decides whether to close the
-   issue.
+   Write the message to `.pr_response_message` in the working directory —
+   the worker posts it as the PR reply, including on a branch that already
+   has commits.
 4. Exit cleanly. Do not retry the original change.
 
 **Do not invoke this lightly.** Make a serious attempt first. Use the escape
@@ -1765,35 +1763,45 @@ the PR summary with a source link to the callee's code or docs.
 
 **A fake mirrors the production implementation it stands in for.** The stub
 rule above covers another repository's binary; this covers the repository's
-own ports. When a test double replaces one of the repository's own ports (a
-trait or interface with a production implementation) and the change relies
-on a property of that port, read the production implementation first and
-confirm it has that property. Examples of such properties: which rows a read
-returns, a filter, ordering or paging, which value types a write accepts, or
-whether a conditional write can lose. If the fake behaves differently, fix
-whichever side is wrong. Then pin the two together with one contract test
-that runs against both, or against the production adapter's parsing of a
-recorded response, or test the behaviour at the production adapter itself. A
-fix to the fake is still held to **A red run counts only against the base
-branch**. In the PR summary, name the production implementation each
-load-bearing fake stands in for and the property the change relies on. A
-change whose only proof is a fake more permissive than its production
-implementation is a blocking self-review finding.
+own producers. It applies when a test double replaces one of the repository's
+own ports (a trait or interface with a production implementation), and
+equally when a test fakes a response from the repository's own server or
+service by hand: an HTTP body, status or header, a queue message, or a file
+the other side writes. It applies across processes and languages, not only
+to in-process traits or interfaces. When the change relies on a property of
+that port or response, read the production implementation first and confirm
+it has that property. Examples of such properties: which rows a read returns,
+a filter, ordering or paging, which value types a write accepts, or whether a
+conditional write can lose. If the fake behaves differently, fix whichever side
+is wrong. Then pin the two together with one contract test that runs against
+both, or against the production adapter's parsing of a recorded response,
+or test the behaviour at the production adapter itself. For a faked response,
+take the fixture from the producer's real output: a golden the server's tests
+produce or verify, or a contract test that runs the server's serialiser for
+that response kind. When the repository has no golden for that response kind
+yet, the PR adds one. Check a header the client depends on against what the
+deployed configuration lets the client read (for example a CORS exposed-headers
+list), and name in the PR summary where that is set. A fix to the fake is
+still held to **A red run counts only against the base branch**. In the PR
+summary, name the production implementation each load-bearing fake stands in
+for and the property the change relies on. A change whose only proof is a fake
+more permissive than its production implementation is a blocking self-review
+finding, and so is one whose only proof is a fixture the producer never emits.
 
 **A test of a third-party tool's input uses that tool's semantics.** The
-fake rule above covers the repository's own ports; this covers a pattern or
-config that an external tool reads — Renovate `matchStrings` or
-`managerFilePatterns`, Actions `branches` or `paths` filters, linter or
-scanner configs. When the tool's own validator or engine can run in the
-repository's CI (for example `renovate-config-validator`, or RE2 for a
-Renovate regex), run the test through it. When it cannot, test the in-repo
-stand-in against cases taken from the tool's documentation: the exact case
-the change relies on, and at least one input the tool rejects or does not
-match. For example, GitHub's `*/*` branch filter matches `milestone/foo`,
-and RE2 rejects a negative look-ahead that JavaScript's `RegExp` accepts.
-Name that documentation in the PR summary. A stand-in more permissive or
-more restrictive than the tool, so a test passes on input the tool rejects
-or fails on input it accepts, is a blocking self-review finding.
+fake rule above covers the repository's own ports and server responses;
+this covers a pattern or config that an external tool reads — Renovate
+`matchStrings` or `managerFilePatterns`, Actions `branches` or `paths`
+filters, linter or scanner configs. When the tool's own validator or engine
+can run in the repository's CI (for example `renovate-config-validator`,
+or RE2 for a Renovate regex), run the test through it. When it cannot, test
+the in-repo stand-in against cases taken from the tool's documentation: the
+exact case the change relies on, and at least one input the tool rejects
+or does not match. For example, GitHub's `*/*` branch filter matches
+`milestone/foo`, and RE2 rejects a negative look-ahead that JavaScript's
+`RegExp` accepts. Name that documentation in the PR summary. A stand-in more
+permissive or more restrictive than the tool, so a test passes on input the
+tool rejects or fails on input it accepts, is a blocking self-review finding.
 
 **Observe the real tool before you rely on it.** When a decision depends on
 how git, `gh`, the GitHub API or another external tool behaves in a

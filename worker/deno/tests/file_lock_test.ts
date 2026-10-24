@@ -270,6 +270,10 @@ Deno.test("withFileLock - the lock file is never seen without its record", async
     // record will not parse is what "ownerless" actually means.
     const watcher = (async () => {
       while (watching) {
+        // A missing-file read can reject without yielding to pending I/O.
+        // Let the holders publish their records instead of starving them in
+        // an endless promise-rejection loop on runtimes with that fast path.
+        await new Promise((resolve) => setTimeout(resolve, 0));
         let raw: string;
         try {
           raw = await Deno.readTextFile(lock);
@@ -286,14 +290,17 @@ Deno.test("withFileLock - the lock file is never seen without its record", async
       }
     })();
 
-    await Promise.all(
-      Array.from(
-        { length: 40 },
-        () => withFileLock(lock, () => Promise.resolve(true), { pollMs: 1 }),
-      ),
-    );
-    watching = false;
-    await watcher;
+    try {
+      await Promise.all(
+        Array.from(
+          { length: 40 },
+          () => withFileLock(lock, () => Promise.resolve(true), { pollMs: 1 }),
+        ),
+      );
+    } finally {
+      watching = false;
+      await watcher;
+    }
 
     assertEquals(ownerless, 0, "a lock file was visible without its record");
     assert(sightings > 0, "the watcher never saw the lock file at all");

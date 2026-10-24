@@ -187,7 +187,7 @@ Deno.test(
       issueLabels: { 7: [CUSTOM_LABEL] },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
@@ -219,7 +219,7 @@ Deno.test(
       timelines: { 7: trustedLabelAdd() },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
@@ -263,7 +263,7 @@ Deno.test(
       issueLabels: { 7: [CUSTOM_LABEL, "ignore-open-prs"] },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
@@ -296,7 +296,7 @@ Deno.test(
       issueLabels: { 7: [CUSTOM_LABEL] },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
@@ -326,7 +326,7 @@ Deno.test(
       issueLabels: { 7: [CUSTOM_LABEL] },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
@@ -355,7 +355,7 @@ Deno.test(
       issueLabels: { 7: [CUSTOM_LABEL] },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
@@ -393,7 +393,7 @@ Deno.test(
       issueLabels: { 7: [CUSTOM_LABEL] },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
@@ -410,7 +410,7 @@ Deno.test(
 // =============================================================================
 
 Deno.test(
-  "find_issues_by_label - a gated scan does not dispatch an issue carrying the failed label (Issue #937)",
+  "find_issues_by_label - a gated scan dispatches an issue carrying a leftover failed label (Issues #937, #4158)",
   async () => {
     const gh = createGh({
       issues: [
@@ -421,15 +421,16 @@ Deno.test(
       timelines: { 7: trustedLabelAdd() },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
       gateNewWork: true,
     });
 
-    assertEquals(result.found, false);
-    assertEquals(result.blockedDetails?.[0]?.reason, "filtered-out");
+    // Issue #4158: `failed` no longer parks an issue; the stale cleanup
+    // strips it and the issue is dispatched.
+    assertEquals(result.found, true);
   },
 );
 
@@ -441,7 +442,7 @@ Deno.test(
       timelines: { 7: trustedLabelAdd() },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
@@ -479,7 +480,7 @@ Deno.test(
       issueLabels: { 7: [CUSTOM_LABEL] },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
@@ -514,7 +515,7 @@ Deno.test(
       bodies: { 7: "Depends on #9" },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
@@ -539,7 +540,7 @@ Deno.test(
       issueLabels: { 7: [CUSTOM_LABEL] },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),
@@ -571,7 +572,7 @@ Deno.test(
       },
     });
 
-    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, false, {
+    const result = await findIssuesByLabel(makeConfig(), CUSTOM_LABEL, {
       githubUser: "bot",
       ghCommandFn: gh,
       cache: createTestCache(),

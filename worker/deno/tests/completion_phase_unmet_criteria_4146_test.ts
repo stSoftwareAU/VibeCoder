@@ -214,8 +214,15 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(JSON.stringify({
             state: "OPEN",
+            headRefOid: SHA,
             ...(scenario.prIsDraft ? { isDraft: true } : {}),
           }));
+        }
+        // Issue #4160: the ready-for-review CI run appears once it is ready.
+        if (args[0] === "api" && args[1]?.includes("/check-runs")) {
+          return Promise.resolve(
+            prReadyArgs.length > 0 ? '[{"id":9,"conclusion":null}]' : "[]",
+          );
         }
         return Promise.resolve(PR_URL);
       },

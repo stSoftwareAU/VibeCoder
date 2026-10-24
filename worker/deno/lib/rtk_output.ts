@@ -3,7 +3,7 @@
  *
  * `rtk_output_config.ts` owns the single host switch, `rtk_output.enabled`
  * (Issue #2380). This module is the one place that turns that switch into the
- * four things a run needs: the `PreToolUse` hook settings Claude Code is
+ * four things a run needs: the `PreToolUse` hook settings the provider is
  * spawned with, the prompt line telling the agent its Bash output is condensed,
  * the status the run stats report, and the saved-token figure the trial page
  * quotes. It is shaped after `codegraph_context.ts` plus `codegraph_run.ts`,
@@ -61,8 +61,8 @@
 
 import { runWithTimeout, type SubprocessResult } from "./subprocess_timeout.ts";
 import {
+  agentProviderById,
   type AgentProviderSelector,
-  CLAUDE_PROVIDER_ID,
   selectAgentProvider,
 } from "./agent_provider.ts";
 import type { Result } from "../types.ts";
@@ -120,7 +120,7 @@ export interface RtkOutputResult {
    * The provider that could not take the hook.
    *
    * Set only on `unsupported`, and only when the run named a provider, so the
-   * stats line reads `unsupported (codex)` rather than `unsupported ()`.
+   * stats line reads `unsupported (gemini)` rather than `unsupported ()`.
    */
   provider?: string;
 }
@@ -160,7 +160,7 @@ export interface RtkOutputLogger {
 export interface PrepareRtkRunOptions {
   /** The host switch, from `config.rtkOutput.enabled`. */
   enabled: boolean;
-  /** The provider id this run will use; only Claude Code takes the hook. */
+  /** The provider id this run will use; its descriptor declares hook support. */
   providerId: string;
   /** Sink for the one status line and any `[RTK_UNAVAILABLE]` line. */
   logger: RtkOutputLogger;
@@ -232,10 +232,9 @@ export async function prepareRtkRun(
 
   if (!enabled) {
     result = RTK_OFF;
-  } else if (providerId !== CLAUDE_PROVIDER_ID) {
-    // Only Claude Code takes per-spawn `PreToolUse` settings. Every other
-    // provider gets an unchanged prompt and no hook, and the run says so
-    // rather than reporting a filtering that never happened.
+  } else if (!agentProviderById(providerId)?.supportsPreToolUseHooks) {
+    // Ask the provider seam rather than tying RTK to one vendor. A provider
+    // without hook support gets an unchanged prompt and an honest status.
     result = {
       enabled: true,
       status: "unsupported",

@@ -40,6 +40,7 @@
 
 import { resolve } from "node:path";
 import { escapeRegExp } from "./regexp_escape.ts";
+import { unwrapJsonFence } from "./fenced_json.ts";
 import { isManualProsePath } from "./doc_prose_claims.ts";
 import type {
   IssueContext,
@@ -365,7 +366,7 @@ export function applyFlaggedSentenceReplacements(
   if (reply.length > MAX_CORRECTED_SUMMARY_CHARS) {
     throw new Error("Correction reply exceeds cap");
   }
-  const parsed = JSON.parse(reply);
+  const parsed = JSON.parse(unwrapJsonFence(reply));
   if (
     !Array.isArray(parsed.replacements) ||
     parsed.replacements.length !== findings.length

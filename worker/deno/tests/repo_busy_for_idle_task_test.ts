@@ -132,22 +132,20 @@ Deno.test(
 );
 
 Deno.test(
-  "isRepoBusyForIdleTask - low-priority + failed is not busy (blocked)",
+  "isRepoBusyForIdleTask - low-priority + a leftover failed is busy (Issue #4158)",
   async () => {
-    // The only approved-work issue also carries `failed`, so the worker
-    // cannot pick it up — repo must NOT register as busy (Issue #2440).
+    // `failed` no longer parks an issue, so an approved-work issue that
+    // still carries one is pickable and the repo registers as busy.
     const recorder = makeRecorder((label) =>
       label === "low-priority"
         ? '[{"number":11,"labels":[{"name":"low-priority"},{"name":"failed"}]}]'
         : "[]"
     );
     const busy = await isRepoBusyForIdleTask({
-      repo: "org/blocked",
+      repo: "org/leftover",
       ghCommandFn: recorder.fn,
     });
-    assertEquals(busy, false);
-    // Every label probed since none yielded an unblocked issue.
-    assertEquals(recorder.calls.length, APPROVED_WORK_LABELS.length);
+    assertEquals(busy, true);
   },
 );
 
@@ -267,7 +265,7 @@ Deno.test(
     const logs: string[] = [];
     const recorder = makeRecorder((label) =>
       label === "low-priority"
-        ? '[{"number":11,"labels":[{"name":"low-priority"},{"name":"failed"}]},' +
+        ? '[{"number":11,"labels":[{"name":"low-priority"},{"name":"needs-human"}]},' +
           '{"number":13,"labels":[{"name":"low-priority"}]}]'
         : "[]"
     );
@@ -336,7 +334,6 @@ Deno.test(
     assertEquals(
       [...BLOCKED_LABELS].sort(),
       [
-        "failed",
         "failed-once",
         "needs-human",
         "planning",
@@ -476,12 +473,12 @@ Deno.test(
 Deno.test(
   "anyRepoHasUnblockedRealWork - a blocked work-on issue does not count",
   async () => {
-    // The only work-on issue also carries `failed`, so the worker cannot
-    // pick it up — it must NOT register as fleet work (Issue #2440 filter
-    // reused).
+    // The only work-on issue also carries `needs-human`, so the worker
+    // cannot pick it up — it must NOT register as fleet work (Issue #2440
+    // filter reused).
     const recorder = makeRepoRecorder((repo, _label) =>
       repo === "org/blocked"
-        ? '[{"number":5,"labels":[{"name":"work-on"},{"name":"failed"}],' +
+        ? '[{"number":5,"labels":[{"name":"work-on"},{"name":"needs-human"}],' +
           '"assignees":[]}]'
         : "[]"
     );

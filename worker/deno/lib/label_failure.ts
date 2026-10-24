@@ -1,11 +1,15 @@
 /**
  * Issue failure marking and handling for the Vibe Coder worker.
  *
- * Handles the failed-once → failed progression when worker attempts fail:
+ * Records worker failures on the issue with the `failed-once` label:
  *   - `checkIssueHasFailedOnce` — detect prior failure
- *   - `markIssueAsFailedOnce` — first-failure path
- *   - `markIssueAsFailed` — second-failure (permanent) path
- *   - `handleIssueFailure` — unified handler with infrastructure self-healing
+ *   - `markIssueAsFailedOnce` — writes the failure record and the label
+ *   - `handleIssueFailure` — unified handler
+ *
+ * Issue #4158: a failure is never terminal. An assigned issue is completed,
+ * never parked (DESIGN-PRINCIPLES.md), so a repeat failure keeps
+ * `failed-once`, writes its record and stays claimable once the escalating
+ * cooldown ends. The worker never applies `failed`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -81,37 +85,6 @@ export async function checkIssueHasFailedOnce(
 }
 
 /**
- * Count how many infrastructure failure comments exist on an issue.
- *
- * Counts comments containing "Automated Processing Failed" to determine how many
- * times the worker has already attempted this issue.
- *
- * Issue #387 — Self-healing for transient infrastructure failures.
- */
-async function countInfraRetries(
-  repo: string,
-  issueNumber: number,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<number> {
-  try {
-    const output = await ghCommandFn([
-      "issue",
-      "view",
-      String(issueNumber),
-      "--repo",
-      repo,
-      "--json",
-      "comments",
-      "--jq",
-      '[.comments[] | select(.body | test("Automated Processing Failed"))] | length',
-    ]);
-    return parseInt(output.trim(), 10) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-/**
  * Build the error section for a failure comment.
  *
  * Issue #733: Extract key error lines for prominent display.
@@ -183,11 +156,16 @@ export async function markIssueAsFailedOnce(
   const hostFault = hostFaultFor(options);
   const hostFaultLine = hostFault ? `\n\n${buildHostFaultNote(hostFault)}` : "";
 
-  let commentBody = `## Automated Processing Failed (First Attempt)
+  const attempt = options.repeat ? "Repeat Attempt" : "First Attempt";
+  const opening = options.repeat
+    ? "The automated worker failed to complete this issue again."
+    : "The automated worker was unable to complete this issue on the first attempt.";
+
+  let commentBody = `## Automated Processing Failed (${attempt})
 
 **Category:** \`${categoryDisplay}\`${hostFaultLine}${qualityGateLine(options)}
 
-The automated worker was unable to complete this issue on the first attempt.
+${opening}
 
 ${errorSection}
 
@@ -195,9 +173,9 @@ ${errorSection}
 ${diagnosisOneliner}${diagSection}
 
 ### What happens next?
-- This issue has been marked with the \`${labels.failedOnceLabel}\` label
-- The worker will **automatically retry** this issue on the next scan
-- If it fails again, the issue will be marked as \`${labels.failedLabel}\` and require manual intervention
+- This issue carries the \`${labels.failedOnceLabel}\` label as the record of its failures
+- The worker will **automatically retry** this issue once its cooldown ends (2 h, rising to 24 h after repeated failures)
+- The issue is never parked: an assigned issue is completed, and a failure to finish it is the Vibe Coder's to fix (Issue #4158)
 
 ### To prevent automatic retry
 If you want to work on this manually, remove the \`${labels.failedOnceLabel}\` label and assign yourself.`;
@@ -338,143 +316,11 @@ ${diagnosisText}
 }
 
 /**
- * Mark an issue as permanently failed (second failure).
- */
-export async function markIssueAsFailed(
-  options: FailureOptions,
-  deps: LabelManagerDeps = {},
-): Promise<Result<void>> {
-  const ghCommandFn = deps.ghCommandFn ?? runGhCommand;
-  const labels = options.labels ?? DEFAULT_LABEL_CONFIG;
-  const clarityStatus: ClarityStatus = options.clarityStatus ?? "not_assessed";
-  const diagnosticContext = options.diagnosticContext ?? "";
-
-  // Context-aware failure diagnosis (Issue #398, #400)
-  const failureCategory = options.category ??
-    detectFailureCategory(options.failureMessage);
-  const categoryDisplay = getFailureCategoryDisplay(failureCategory);
-  const diagnosisText = getFailureDiagnosis(
-    failureCategory,
-    clarityStatus,
-    diagnosticContext,
-  );
-
-  const errorSection = buildErrorSection(options.failureMessage);
-
-  // Issue #2890: see the matching note in markIssueAsFailedOnce.
-  const hostFault = hostFaultFor(options);
-  const hostFaultLine = hostFault ? `\n\n${buildHostFaultNote(hostFault)}` : "";
-
-  let commentBody =
-    `## Automated Processing Failed (Second Attempt - Permanently Failed)
-
-**Category:** \`${categoryDisplay}\`${hostFaultLine}${qualityGateLine(options)}
-
-The automated worker has failed to complete this issue twice and will not retry automatically.
-
-${errorSection}
-
-### What happened?
-- This issue failed on the first attempt and was marked with \`${labels.failedOnceLabel}\`
-- The worker retried and failed again on the second attempt
-- The issue has been marked with the \`${labels.failedLabel}\` label to prevent repeated attempts
-- Manual intervention is required
-
-### Why this likely failed
-${diagnosisText}
-
-### To retry this issue
-1. Investigate and address the underlying problem (check the error output above)
-2. Consider simplifying or breaking down the issue into smaller tasks
-3. Remove the \`${labels.failedLabel}\` label from this issue
-4. The worker will pick it up again on the next scan`;
-
-  // Append worker identity footer (Issue #436)
-  if (options.workerFooter) {
-    commentBody += options.workerFooter;
-  }
-
-  // Issue #2890: see the matching note in markIssueAsFailedOnce.
-  if (hostFault) {
-    commentBody += `\n\n${buildHostFaultMarker(hostFault)}`;
-  }
-
-  try {
-    await ghCommandFn([
-      "issue",
-      "comment",
-      String(options.issueNumber),
-      "--repo",
-      options.repo,
-      "--body",
-      commentBody,
-    ]);
-  } catch {
-    // Best-effort
-  }
-
-  // Remove the failed-once label if present
-  try {
-    await ghCommandFn([
-      "issue",
-      "edit",
-      String(options.issueNumber),
-      "--repo",
-      options.repo,
-      "--remove-label",
-      labels.failedOnceLabel,
-    ]);
-  } catch {
-    // Best-effort
-  }
-
-  // Ensure the failed label exists (Issue #44)
-  // Issue #368: colour + description come from the canonical label table.
-  await ensureLabelExists(
-    options.repo,
-    labels.failedLabel,
-    undefined,
-    undefined,
-    deps,
-  );
-
-  // Issue #976: Use REST API with CLI fallback for label operations
-  // Issue #978: Label-add is non-fatal — the comment is the primary signal
-  const failedLabelResult = await addLabelToIssue(
-    options.repo,
-    options.issueNumber,
-    labels.failedLabel,
-    deps,
-  );
-  if (!failedLabelResult.ok) {
-    console.warn(
-      `[label_manager] Warning: Failed to add '${labels.failedLabel}' label to issue #${options.issueNumber} in ${options.repo} — continuing workflow (Issue #978)`,
-    );
-  }
-
-  // Remove the assignee
-  try {
-    await ghCommandFn([
-      "issue",
-      "edit",
-      String(options.issueNumber),
-      "--repo",
-      options.repo,
-      "--remove-assignee",
-      options.githubUser,
-    ]);
-  } catch {
-    // Best-effort
-  }
-
-  return { ok: true, value: undefined };
-}
-
-/**
  * Unified failure handler for push/PR/Claude failures.
  *
- * Checks if this is the first or second failure and calls the appropriate
- * marking function. Handles infrastructure self-healing logic.
+ * Records the failure on the issue with `failed-once`, as a repeat when the
+ * label is already there. Never terminal (Issue #4158): the issue stays
+ * claimable, and the cooldown alone paces the next attempt.
  *
  * NOTE: This does NOT handle git branch cleanup — the caller is responsible
  * for that (git checkout, branch deletion, etc.).
@@ -485,7 +331,6 @@ export async function handleIssueFailure(
 ): Promise<Result<HandleFailureResult>> {
   const ghCommandFn = deps.ghCommandFn ?? runGhCommand;
   const labels = options.labels ?? DEFAULT_LABEL_CONFIG;
-  const maxInfraRetries = options.maxInfraRetries ?? 5;
 
   const failureCategory = options.category ??
     detectFailureCategory(options.failureMessage);
@@ -508,7 +353,6 @@ export async function handleIssueFailure(
     return {
       ok: true,
       value: {
-        markedAsFailed: false,
         markedAsFailedOnce: false,
         failureCategory,
         isInfrastructure: false,
@@ -528,7 +372,6 @@ export async function handleIssueFailure(
     return {
       ok: true,
       value: {
-        markedAsFailed: false,
         markedAsFailedOnce: false,
         failureCategory,
         isInfrastructure: false,
@@ -549,7 +392,6 @@ export async function handleIssueFailure(
     return {
       ok: true,
       value: {
-        markedAsFailed: false,
         markedAsFailedOnce: false,
         failureCategory,
         isInfrastructure: false,
@@ -559,80 +401,20 @@ export async function handleIssueFailure(
 
   const isInfra = isInfrastructureFailure(failureCategory);
 
-  const hasFailedOnce = await checkIssueHasFailedOnce(
+  // Issue #4158: a repeat failure is recorded as one and nothing more. It
+  // keeps `failed-once` and stays claimable once the escalating cooldown
+  // ends; parking it behind `failed` would hand an assigned issue back.
+  const repeat = await checkIssueHasFailedOnce(
     options.repo,
     options.issueNumber,
     labels.failedOnceLabel,
     ghCommandFn,
   );
 
-  if (hasFailedOnce) {
-    // Issue #387: Self-healing for infrastructure failures
-    if (isInfra) {
-      const infraRetryCount = await countInfraRetries(
-        options.repo,
-        options.issueNumber,
-        ghCommandFn,
-      );
-
-      // Enrich diagnostic context with retry count
-      let enrichedContext = options.diagnosticContext ?? "";
-      if (enrichedContext) {
-        enrichedContext =
-          `${enrichedContext};retry_count=${infraRetryCount};max_retries=${maxInfraRetries}`;
-      }
-
-      if (infraRetryCount >= maxInfraRetries) {
-        await markIssueAsFailed(
-          { ...options, diagnosticContext: enrichedContext },
-          deps,
-        );
-        return {
-          ok: true,
-          value: {
-            markedAsFailed: true,
-            markedAsFailedOnce: false,
-            failureCategory,
-            isInfrastructure: true,
-          },
-        };
-      }
-
-      // Keep as failed-once for retry
-      await markIssueAsFailedOnce(
-        { ...options, diagnosticContext: enrichedContext },
-        deps,
-      );
-      return {
-        ok: true,
-        value: {
-          markedAsFailed: false,
-          markedAsFailedOnce: true,
-          failureCategory,
-          isInfrastructure: true,
-        },
-      };
-    }
-
-    // Second failure — permanent
-    await markIssueAsFailed(options, deps);
-    return {
-      ok: true,
-      value: {
-        markedAsFailed: true,
-        markedAsFailedOnce: false,
-        failureCategory,
-        isInfrastructure: false,
-      },
-    };
-  }
-
-  // First failure
-  await markIssueAsFailedOnce(options, deps);
+  await markIssueAsFailedOnce({ ...options, repeat }, deps);
   return {
     ok: true,
     value: {
-      markedAsFailed: false,
       markedAsFailedOnce: true,
       failureCategory,
       isInfrastructure: isInfra,

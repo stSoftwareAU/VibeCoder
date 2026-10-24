@@ -390,9 +390,9 @@ bash `worker/run_core.sh` conductor. It sequences:
    #3177, [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)).
    A PR into a milestone branch merges unreviewed on green CI, so a PR whose
    `## Acceptance Criteria` block marks any criterion `missing` used to close
-   its issue as completed. Now the issue stays open: the closer labels it
-   `needs-human` and comments naming each missing criterion, and an issue that
-   already carries `needs-human` is left alone so the comment is not repeated.
+   its issue as completed. The issue stays open with its existing labels so the worker can finish
+   it. Both closers record the missing criteria in their diagnostic output;
+   they neither apply `needs-human` nor post repeated hand-off comments.
    The PR itself is raised as `Part of #N` rather than `Closes #N` in that case
    (`assemblePrBody`), but a fleet PR's title still names its issue, so the
    closer check is what actually holds it open.
@@ -421,7 +421,7 @@ flowchart TD
     R -->|No| F{"Merge landed on the<br/>default branch? (#4396)"}
     F -->|No| Z
     F -->|Yes| M{"PR's closure block marks<br/>a criterion missing? (#3177)"}
-    M -->|Yes| H["Left open, labelled needs-human,<br/>comment names the missing criteria"]
+    M -->|Yes| H["Left open and queued<br/>to finish the missing criteria"]
     M -->|No| G["Closed, naming the PR<br/>and the merge commit"]
     style G fill:#2d6a4f,stroke:#1b4332,color:#fff
     style H fill:#e9c46a,stroke:#b08900,color:#000
@@ -1838,8 +1838,9 @@ produces no work. The `work-on` content-integrity (TOCTOU) check stays with
 `work-on`: it verifies an issue against an approval snapshot only the `work-on`
 approval flow captures.
 
-Issues are **excluded** from selection if they carry any of: `failed`,
-`refine-issue`, `planning`, `question`, `needs-human`. retired the standalone
+Issues are **excluded** from selection if they carry any of:
+`refine-issue`, `planning`, `question`, `needs-human`. A leftover `failed` is
+stripped instead (Issue #4158). retired the standalone
 `needs-clarification` label and folded the clarification handoff onto
 `needs-human`.
 
@@ -1861,14 +1862,14 @@ Each candidate issue is checked by functions in
 | Filter                           | Function                                        | Module             | Behaviour                                                                                               |
 | -------------------------------- | ----------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------- |
 | **Assignee**                     | `filter_issues_by_assignee()`                   | issue_filter       | Must be unassigned or assigned to the current worker (multi-worker safe)                                |
-| **Blocking labels**              | `build_issue_filter_jq`                         | issue_filter       | Exclude `failed`, `refine-issue`, `planning`, `question`, `needs-human` (retired `needs-clarification`) |
+| **Blocking labels**              | `build_issue_filter_jq`                         | issue_filter       | Exclude `refine-issue`, `planning`, `question`, `needs-human` (never `failed`, Issue #4158)              |
 | **Open PR blocking**             | `get_blocking_pr_for_issue()`                   | issue_query        | Milestone-aware: only blocked by PRs targeting the same milestone branch                                |
 | **Ignore-open-prs bypass**       | `has_ignore_open_prs_label_by_allowed_author()` | issue_query        | Bypass open PR blocking when label added by allowed author                                              |
 | **One issue per repo/milestone** | `is_milestone_occupied`                         | issue_filter       | Only one issue per repo/milestone can be in-progress at a time                                          |
 | **Milestone behind default**     | `milestonePacedUntil()`                         | milestone_presync  | Skips every issue of a milestone whose branch ledger is pacing the next merge attempt — an open attempt, a wedged resolution gate (Issue #2388) or a spent conflict budget (Issue #1780) |
 | **Forward dependencies**         | `has_unmet_dependencies()`                      | dependency_checker | Blocked if any `Depends on` / `Blocked by` issue is open, or is closed in another still-open milestone (Issue #2173) |
 | **Parent blocking**              | `has_open_sub_issues()`                         | dependency_checker | Blocked if parent has open child issues (task list items); a failed native sub-issues lookup also counts as blocked rather than as "no children" (Issue #3321) |
-| **Stale label cleanup**          | `clean_stale_labels_for_reopened_issues`        | issue_filter       | Removes `failed`, `failed-once` from reopened issues (retired the `needs-clarification` cleanup)        |
+| **Stale label cleanup**          | `clean_stale_labels_for_reopened_issues`        | issue_filter       | Removes `failed-once` from reopened issues and a leftover `failed` always (Issue #4158)                 |
 
 #### 🔗 Dependency-chain promotion
 
@@ -2245,6 +2246,16 @@ block keeps the review outstanding, charges a failed attempt, labels the PR
 fresh verdict before its retry push. Ordinary inline and issue comments retain
 their existing flow. The fleet reviewer applies the same verdict check before
 posting its review.
+
+The verifier judges the rebuilt description from the branch's archived summary
+and facts, using the same ownership/adoption checks and body builder as
+publication (Issue #3982). It does not edit GitHub or resolve evidence images.
+An ineligible body stays live and its reason is logged; a build error blocks
+verification. If a hold remains and the branch has exactly zero unpushed
+commits, the worker still refreshes the description before recording the hold.
+A failed measurement or outstanding local commit skips that refresh. The sync's
+remote-head guard remains in force, as do the failed attempt, outstanding
+review, `standing-violation` label and disabled auto-merge.
 
 ### 📏 How "did we push?" is answered (Issue #211)
 
@@ -5205,7 +5216,7 @@ returns a `ladder` decision with cooldown `non_transient` for it,
 quotes the marker later keeps its own category. A retry that could not be
 launched at all (a rate limit, a failed spawn) is deliberately not marked: that
 is a real launch fault and its own error text must still be classified. The
-posted issue comment is unchanged. The host-fault and milestone-refusal label-release sweeps also skip the separate failure record that `markIssueAsFailedOnce` or `markIssueAsFailed` posts for the marked reason, because its head `**Category:** \`security-fix-gate\`` line names a registered gate category (`isWorkerGateFailureRecord`), so a quoted test declaration cannot strip `failed-once` or `failed`.
+posted issue comment is unchanged. The host-fault and milestone-refusal label-release sweeps also skip the separate failure record that `markIssueAsFailedOnce` posts for the marked reason, because its head `**Category:** \`security-fix-gate\`` line names a registered gate category (`isWorkerGateFailureRecord`), so a quoted test declaration cannot strip `failed-once` or `failed`.
 
 #### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
 
@@ -5632,6 +5643,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts)                                       | Post-agent drift check on review-fix runs: model pass, Test Plan recount and docs-sweep re-check, one recovery turn (Issue #3143), which also takes each Test Plan figure the recount could not check (Issue #3740); given the change request, flags quoted summary sentences still present (Issue #3244); maps Branch-outcomes `path:line` citations through the push's diff and flags stale ones (Issue #3341); also runs the model pass on a push that edits manual or prompt Markdown, asking the shared doc-prose question (Issue #3347); uses the shared changed-comment/affected-manual scope and question (Issues #3715, #3731); runs a mutation check over the lines a review-fix push adds, reporting surviving mutants under its own residual heading (Issue #3750); reads the citations from `pr-summary-<N>.facts.json` when present at either ref, reporting a malformed one as not checked (Issue #3536) |
 |                             | [summary_claim_check.ts](../worker/deno/lib/summary_claim_check.ts)                                               | First-run PR-summary claim check: model pass and Test Plan backstop, one recovery turn (Issue #3257); also questions changed source comments, attached headers, and affected manual sections (Issues #3715, #3731)                                                |
 |                             | [summary_claim_correction.ts](../worker/deno/lib/summary_claim_correction.ts)                                     | Narrow correction when claim checks alone block a later attempt; worker-owned indexed sentence replacements for manual/prompt findings, file-writing tools and Bash denied, unchanged findings carried forward (Issues #3324, #3865)                                       |
+|                             | [fenced_json.ts](../worker/deno/lib/fenced_json.ts)                              | Fence-tolerant reply unwrapping (`unwrapJsonFence`), shared by claim correction and revision parsing so one json or plain code fence around a JSON reply is tolerated (Issue #4115) |
 |                             | [doc_prose_claims.ts](../worker/deno/lib/doc_prose_claims.ts)                                                     | Safe manual/source path selection and the shared prose-against-code question (Issues #3347, #3715, #3731)                                                                               |
 |                             | [doc_prose_scope.ts](../worker/deno/lib/doc_prose_scope.ts) | Shared bounded scope of changed comments, attached headers and affected manual sections for first-run and review-fix claim checks (Issues #3715, #3731) |
 |                             | [summary_scrub_gate.ts](../worker/deno/lib/summary_scrub_gate.ts) | Refuses prompt-scrubbed HTML-comment/Mermaid markers in PR summaries at completion and in the local checker (Issue #3710) |
@@ -5757,7 +5769,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file)                                                                                                                           |
 |                             | [merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts)                                           | Housekeeping sweep closing issues whose fix already merged and landed (Issue #504)                                                                                                                                              |
 |                             | [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)                                   | The fleet-authored milestone roll-back marker both merged-PR closers honour, so a reverted child stays reopened (Issue #1770)                                                                                                   |
-|                             | [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)                           | A PR whose closure block marks a criterion `missing` is raised as `Part of #N`, and the merged-PR closers leave its issue open for a human (Issue #3177)                                                                        |
+|                             | [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)                           | A PR whose closure block marks a criterion `missing` is raised as `Part of #N`, and the merged-PR closers keep its issue queued for completion (Issue #3177)                                                                        |
 |                             | [milestone_rollback_requeue.ts](../worker/deno/lib/milestone_rollback_requeue.ts)                                 | After a successful roll-back, reopen and re-queue each reverted child and close its PRs; after a failed one, escalate once on an issue that already exists (Issue #1781)                                                        |
 |                             | [quality_gate.ts](../worker/deno/lib/quality_gate.ts)                                                             | Quality gate entry point                                                                                                                                                                                                        |
 |                             | [quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)                                                       | Quality check runner utilities                                                                                                                                                                                                  |

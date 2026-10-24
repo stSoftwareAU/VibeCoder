@@ -28,6 +28,7 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { GitHubClient, GitHubComment } from "../types.ts";
 import { buildDeferralMarker } from "../lib/blocked_deferral.ts";
 import { buildPlanningHandoffMarker } from "../lib/planning_handoff.ts";
+import { UNFINISHED_RETRY_HEADING } from "../lib/unfinished_issue_retry.ts";
 import { isWipCommitSubject } from "../lib/wip_commit_marker.ts";
 
 const REPO = "stSoftwareAU/Example";
@@ -242,10 +243,10 @@ Deno.test(
   },
 );
 
-// (c) A planning marker WITHOUT the anchor label must hand off to a human,
-// not apply `planning` itself.
+// (c) A planning marker WITHOUT the anchor label must not apply `planning`
+// itself; the approved issue is retried (Issue #4227).
 Deno.test(
-  "declared_handoff_phase - planning marker without anchor hands off to a human (Issue #3088)",
+  "declared_handoff_phase - planning marker without anchor retries, never a human (Issue #3088, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -258,15 +259,11 @@ Deno.test(
       deps,
     );
 
-    assertEquals(result.status, "early_exit");
-    if (result.status !== "early_exit") return;
-    assertEquals(result.reason, "analysis_only_handed_off");
+    const retry = assertRetried(result, calls);
     assert(!calls.addLabel.includes("planning"));
-    assert(calls.addLabel.includes("needs-human"));
-    assert(calls.postComment.some((c) => c.includes("committed code changes")));
-    assert(
-      !calls.postComment.some((c) => c.includes("produced no code changes")),
-    );
+    // The committed run's own reason, not the no-changes wording.
+    assert(retry.includes("committed work"));
+    assert(!retry.includes("made no code change"));
   },
 );
 
@@ -296,10 +293,10 @@ Deno.test(
 );
 
 // (e) A blocked output repeated on a thread that already carries a prior
-// deferral for the same dependency must hand off to a human, not defer
-// again.
+// deferral for the same dependency must not defer again; it is retried
+// (Issue #4227).
 Deno.test(
-  "declared_handoff_phase - a repeat blocked deferral hands off to a human (Issue #3088)",
+  "declared_handoff_phase - a repeat blocked deferral retries, never a human (Issue #3088, #4227)",
   async () => {
     const calls = makeCalls();
     const priorComment = comment(
@@ -317,15 +314,9 @@ Deno.test(
       deps,
     );
 
-    assertEquals(result.status, "early_exit");
-    if (result.status !== "early_exit") return;
-    assertEquals(result.reason, "analysis_only_handed_off");
-    assertEquals(calls.closeIssue, 0);
-    assert(calls.addLabel.includes("needs-human"));
-    assert(calls.postComment.some((c) => c.includes("committed code changes")));
-    assert(
-      !calls.postComment.some((c) => c.includes("produced no code changes")),
-    );
+    const retry = assertRetried(result, calls);
+    assert(retry.includes("committed work"));
+    assert(!retry.includes("made no code change"));
   },
 );
 
@@ -379,9 +370,9 @@ Deno.test(
 
 // Depending on an issue this run filed is not a deferral, even when the
 // output names the current issue before the follow-up. The committed run
-// hands off to a human and raises no PR.
+// is retried (Issue #4227) and raises no PR.
 Deno.test(
-  "declared_handoff_phase - a dependency this run filed hands off and raises no PR (Issue #3088)",
+  "declared_handoff_phase - a dependency this run filed retries and raises no PR (Issue #3088, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -411,13 +402,13 @@ Deno.test(
       deps,
     );
 
-    assertHumanHandoff(result, calls);
+    assertRetried(result, calls);
     assertEquals(calls.editIssue, 0);
   },
 );
 
 // Follow-up wording around a dependency that already existed does not turn
-// a real open block into a human hand-off.
+// a real open block into a retry.
 Deno.test(
   "declared_handoff_phase - an older open dependency still defers when the output says it is tracked separately (Issue #3088)",
   async () => {
@@ -454,7 +445,7 @@ Deno.test(
 // A sibling fleet login that filed the dependency during this run is the
 // same case as this host filing it.
 Deno.test(
-  "declared_handoff_phase - a dependency a fleet author filed during this run hands off (Issue #3088)",
+  "declared_handoff_phase - a dependency a fleet author filed during this run retries (Issue #3088, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -479,7 +470,7 @@ Deno.test(
       deps,
     );
 
-    assertHumanHandoff(result, calls);
+    assertRetried(result, calls);
     assertEquals(calls.editIssue, 0);
   },
 );
@@ -521,7 +512,7 @@ Deno.test(
 // A later execute attempt must not move the start used for "filed during
 // this run". A follow-up filed on attempt 1 is still this run's.
 Deno.test(
-  "declared_handoff_phase - a dependency filed before a later execute attempt still hands off (Issue #3088)",
+  "declared_handoff_phase - a dependency filed before a later execute attempt still retries (Issue #3088, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -547,15 +538,15 @@ Deno.test(
       deps,
     );
 
-    assertHumanHandoff(result, calls);
+    assertRetried(result, calls);
     assertEquals(calls.editIssue, 0);
   },
 );
 
 // A documented block whose dependency has already closed does not defer.
-// The committed run still hands off to a human and raises no PR.
+// The committed run is retried (Issue #4227) and raises no PR.
 Deno.test(
-  "declared_handoff_phase - a closed dependency hands off and raises no PR (Issue #3088)",
+  "declared_handoff_phase - a closed dependency retries and raises no PR (Issue #3088, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -568,9 +559,9 @@ Deno.test(
       deps,
     );
 
-    assertHumanHandoff(result, calls);
+    const retry = assertRetried(result, calls);
     assertEquals(calls.editIssue, 0);
-    assert(calls.postComment.some((c) => c.includes("committed code changes")));
+    assert(retry.includes("committed work"));
   },
 );
 
@@ -603,10 +594,10 @@ Deno.test(
   },
 );
 
-// An exhausted time deferral on a committed run uses the declared_handoff
-// reason, not the no-changes "produced no code changes" text.
+// An exhausted time deferral on a committed run states its own reason, not
+// the no-changes wording, and is retried (Issue #4227).
 Deno.test(
-  "declared_handoff_phase - an exhausted time deferral names the committed hand-off (Issue #3088)",
+  "declared_handoff_phase - an exhausted time deferral retries with its own reason (Issue #3088, #4227)",
   async () => {
     const calls = makeCalls();
     const prior = [1, 2, 3].map((id) =>
@@ -628,21 +619,17 @@ Deno.test(
       deps,
     );
 
-    assertEquals(result.status, "early_exit");
-    if (result.status !== "early_exit") return;
-    assertEquals(result.reason, "analysis_only_handed_off");
-    assert(calls.addLabel.includes("needs-human"));
-    assert(calls.postComment.some((c) => c.includes("committed code changes")));
-    assert(
-      !calls.postComment.some((c) => c.includes("produced no code changes")),
-    );
+    const retry = assertRetried(result, calls);
+    // The exhausted deferral's own reason, not the no-changes wording.
+    assert(retry.includes("deferrals"));
+    assert(!retry.includes("made no code change"));
   },
 );
 
 // A state that cannot be read, or that the payload omits, does not defer.
-// The committed run still hands off to a human and raises no PR.
+// The committed run is retried (Issue #4227) and raises no PR.
 Deno.test(
-  "declared_handoff_phase - a dependency lookup that fails hands off and raises no PR (Issue #3088)",
+  "declared_handoff_phase - a dependency lookup that fails retries and raises no PR (Issue #3088, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -655,13 +642,13 @@ Deno.test(
       deps,
     );
 
-    assertHumanHandoff(result, calls);
+    assertRetried(result, calls);
     assertEquals(calls.editIssue, 0);
   },
 );
 
 Deno.test(
-  "declared_handoff_phase - a dependency with no state hands off and raises no PR (Issue #3088)",
+  "declared_handoff_phase - a dependency with no state retries and raises no PR (Issue #3088, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -676,7 +663,7 @@ Deno.test(
       deps,
     );
 
-    assertHumanHandoff(result, calls);
+    assertRetried(result, calls);
     assertEquals(calls.editIssue, 0);
   },
 );
@@ -716,19 +703,38 @@ const OVER_HORIZON_UNTIL = new Date(Date.now() + 31 * 86_400_000)
   .toISOString()
   .replace(/\.\d{3}Z$/, "Z");
 
-function assertHumanHandoff(
+/**
+ * The approved-issue invariant (Issue #4227): a declared hand-off the worker
+ * cannot honour raises no PR and closes nothing, and the issue is retried —
+ * never `needs-human`, and the approval stays. Returns the one not-finished
+ * comment.
+ */
+function assertRetried(
   result: Awaited<ReturnType<typeof workOnIssueDeclaredHandoff>>,
   calls: StubCalls,
-): void {
-  assertEquals(result.status, "early_exit");
-  if (result.status !== "early_exit") return;
-  assertEquals(result.reason, "analysis_only_handed_off");
-  assert(calls.addLabel.includes("needs-human"));
+): string {
+  assertEquals(result.status, "failure");
+  if (result.status !== "failure") return "";
+  assertEquals(result.category, "no_changes");
+  assert(
+    !calls.addLabel.includes("needs-human"),
+    "an approved issue must never get needs-human",
+  );
+  assert(
+    !calls.removeLabel.includes("work-on") &&
+      !calls.removeLabel.includes("top-priority"),
+    "the approval and its tier stay on the issue",
+  );
   assertEquals(calls.closeIssue, 0);
+  const retry = calls.postComment.filter((c) =>
+    c.startsWith(UNFINISHED_RETRY_HEADING)
+  );
+  assertEquals(retry.length, 1, "exactly one not-finished comment");
+  return retry[0]!;
 }
 
 Deno.test(
-  "declared_handoff_phase - an over-horizon defer marker hands off, no PR (Issue #3088)",
+  "declared_handoff_phase - an over-horizon defer marker retries, no PR (Issue #3088, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -743,12 +749,12 @@ Deno.test(
       deps,
     );
 
-    assertHumanHandoff(result, calls);
+    assertRetried(result, calls);
   },
 );
 
 Deno.test(
-  "declared_handoff_phase - a reasonless planning marker hands off, no PR (Issue #3088)",
+  "declared_handoff_phase - a reasonless planning marker retries, no PR (Issue #3088, #4227)",
   async () => {
     const calls = makeCalls();
     const deps = createMockDeps({
@@ -761,7 +767,7 @@ Deno.test(
       deps,
     );
 
-    assertHumanHandoff(result, calls);
+    assertRetried(result, calls);
   },
 );
 

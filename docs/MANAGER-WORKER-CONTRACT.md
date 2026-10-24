@@ -76,9 +76,9 @@ Per-provider behaviour, from the same file:
 - **Claude:** `promptTransport` is `"stdin"` (`agent_provider.ts:720`). Its
   `buildInvocation` is at `:748` and `buildChildEnv` at `:761-762`, which calls
   `buildClaudeChildEnv` (`worker/deno/lib/claude_env.ts:228`).
-- **Codex:** `promptTransport` is `"stdin"` (`:853`). `buildInvocation` (`:870`)
-  calls `buildCodexArgs` (`:893`, defined at `worker/deno/lib/codex_executor.ts:343`)
-  and carries no `agents` or `settingsJson`. `buildChildEnv` (`:916`) calls
+- **Codex:** `promptTransport` is `"stdin"` (`:853`). `buildInvocation` (`:878`)
+  calls `buildCodexArgs` (`:901`, defined at `worker/deno/lib/codex_executor.ts:384`),
+  which carries no `agents` but does pass `settingsJson` through (`:904`) and turns it into per-spawn `hooks.PreToolUse` `-c` arguments (`codex_executor.ts:414-415`). `buildChildEnv` (`:916`) calls
   `buildIsolatedCodexChildEnv` (`worker/deno/lib/codex_env.ts:116`), which calls
   `buildCodexChildEnv` (`worker/deno/lib/codex_env.ts:90`).
 - **Gemini:** `promptTransport` is `"argv"` (`:973`). `buildInvocation` (`:988`)
@@ -316,8 +316,11 @@ stateDiagram-v2
   `agent_id` is absent (`worker/deno/lib/issue_executor_enforcement.ts:124`,
   `:138`), except on the advisor's own run-record files: the PR summary and
   the PR-feedback reply file are allowed without `agent_id` (`:142-145`). The
-  hook is delivered through `--settings`, which only the Claude provider
-  carries.
+  hook is delivered through `--settings`, and the runner supplies the edit
+  guard in that payload for the Claude provider only
+  (`worker/deno/lib/claude_runner.ts`). Codex also consumes a `settingsJson`
+  payload (`worker/deno/lib/codex_executor.ts:414`), but only for the RTK
+  `PreToolUse` hook (Issue #4121), never the edit guard.
 - **Executors cannot dispatch.** `["Agent"]` is disallowed for executors
   (`worker/deno/lib/issue_executor_agents.ts:114`). The reviewers and explorer
   are read-only.
@@ -345,15 +348,17 @@ stateDiagram-v2
     (`worker/deno/lib/deepseek_env.ts:172-173`).
   - Gemini: `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`) delegates to
     `buildAgentChildEnv` with a Gemini denylist and secret allowlist.
-- **The gap today.** The edit guard exists only for Claude. Codex and Gemini
-  drop `agents` and `settingsJson` silently, and DeepSeek drops `settingsJson`
-  silently, at the descriptor's `buildInvocation` layer. On the native split
-  path that `--agents` drop is no longer reachable for an `issue` run: the
-  issue-run planner reroutes or strips such a run before spawn (Issue #4109),
-  and `runClaudeWithTimeoutBody` (`worker/deno/lib/claude_runner.ts`) refuses
-  loudly as a backstop for a caller that bypasses the planner and for a run the
-  retry ladder moves to `agent_provider_fallback` (Issue #4010, #4034). The target still
-  closes the descriptor-layer drop with a refusal (section 8).
+- **The gap today.** The edit guard exists only for Claude. Gemini drops
+  `agents` and `settingsJson` silently, Codex drops `agents` silently but
+  forwards `settingsJson` as per-spawn hook arguments (throwing on a malformed
+  payload), and DeepSeek drops `settingsJson` silently, at the descriptor's
+  `buildInvocation` layer. On the native split path that `--agents` drop is no
+  longer reachable for an `issue` run: the issue-run planner reroutes or strips
+  such a run before spawn (Issue #4109), and `runClaudeWithTimeoutBody`
+  (`worker/deno/lib/claude_runner.ts`) refuses loudly as a backstop for a caller
+  that bypasses the planner and for a run the retry ladder moves to
+  `agent_provider_fallback` (Issue #4010, #4034). The target still closes the
+  descriptor-layer drop with a refusal (section 8).
 
 ## 7. Compatibility matrix
 
@@ -367,7 +372,7 @@ refuses, as a backstop (Issue #4010).
 | Provider | Prompt transport | `--agents` | `--settings` (edit guard) | `supportsCompaction` | Behaviour with split on |
 | --- | --- | --- | --- | --- | --- |
 | `claude` | stdin (`agent_provider.ts:720`) | Emitted (`:617-618`) | Emitted (`:622-623`) | Yes (`stream_compaction.ts:67-70`) | Prompt block renders; executors defined; edit guard active. |
-| `codex` | stdin (`:853`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); no edit guard. |
+| `codex` | stdin (`:853`) | Not carried, silent at `buildInvocation` | Translated to per-spawn `hooks.PreToolUse` `-c` arguments when present (`agent_provider.ts:904`, `codex_executor.ts:414`); carries the RTK hook only, never the edit guard | No | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); no edit guard (the Codex `--settings` column carries only the RTK hook). |
 | `gemini` | argv (`:973`) | Not carried, silent at `buildInvocation` | Not carried, silent | No | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); no edit guard. |
 | `deepseek` | stdin (`:1067`) | Stripped, warned (`:1120-1121`) | Stripped, silent (`:1120`, `:1132`) | Yes | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); the descriptor warns for `agents` only. No edit guard. |
 

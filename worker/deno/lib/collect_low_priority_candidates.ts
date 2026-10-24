@@ -133,7 +133,6 @@ export async function collectLowPriorityCandidates(
 
   // Issue #2031: needs-clarification retired — needs-human is the only handoff label.
   const filterLabels = {
-    failedLabel: config.failedLabel,
     refineIssueLabel: config.refineIssueLabel,
     planningLabel: config.planningLabel,
     questionLabel: config.questionLabel,

@@ -1330,6 +1330,15 @@ Multiple limits prevent context window exhaustion:
 
 ### 4. Delimiter Hardening
 
+The [prompt fence coverage suite](docs/EXTENDING.md#prompt-fence-coverage-milestone-130)
+renders every exported prompt builder with distinct untrusted-input canaries.
+It requires matched boundary ids and checks every occurrence, including copies
+outside the main fenced block. The completeness check prevents a new exported
+builder from silently missing coverage. Existing leaks are tracked explicitly
+by `knownLeakRow` and open bug references; a passing baseline is not a claim
+that all production prompt paths are fenced. Those rows must become normal
+assertions when their linked repairs land.
+
 Prompt boundary markers are hardened against spoofing:
 - **Randomised boundaries**: Per-invocation randomised delimiter strings replace predictable markers
 - **Per-comment delimiters**: Each comment is individually wrapped with author and trust-level metadata
@@ -1356,9 +1365,9 @@ Operational labels that affect worker behaviour (`planning`, `question`, `needs-
 - Ignored in processing decisions
 - Logged with a `[SECURITY] [UNTRUSTED_LABEL_CHANGE]` audit event
 
- extended the verified set to the three **blocking-only** labels — `refine-issue`, `failed`, `failed-once`. These block pickup in every discovery tier but were never trust-verified, so an untrusted triage actor could park an issue indefinitely: exactly the starvation this check exists to prevent. Two carve-outs keep the extension safe:
+ extended the verified set to the three **blocking-only** labels — `refine-issue`, `failed`, `failed-once`. These block pickup in every discovery tier but were never trust-verified, so an untrusted triage actor could park an issue indefinitely: exactly the starvation this check exists to prevent. Since [#4158](https://github.com/stSoftwareAU/VibeCoder/issues/4158) `failed` no longer blocks pickup at all — the worker never applies it and strips a leftover one — so the starvation risk it carried is gone; `failed-once` records a failure but does not park the issue either, and its escalating cooldown is per host. Two carve-outs keep the extension safe:
 
-- **Worker-owned failure marks.** `failed` / `failed-once` applied by a fleet worker stay trusted — they drive the consecutive-failure circuit breaker, and stripping them would re-pick a persistently failing issue forever.
+- **Worker-owned failure marks.** `failed-once` applied by a fleet worker stays trusted — it is the record behind the escalating 2 h → 6 h → 24 h cooldown, which is what bounds a persistently failing issue to one attempt a day (#4158).
 - **Unverifiable authorship keeps the label.** For blocking-only labels, *stripping* is the fail-open direction (it hands a known-failing issue back for another billed run). A missing `labeled` event, a null actor, or an unreadable timeline therefore leaves the label in place; only a named untrusted adder strips it. The permissive labels keep their original fail-closed behaviour.
 
 [#1521](https://github.com/stSoftwareAU/VibeCoder/issues/1521) closed a drift between this list and `operationalDispatchLabels()` in [`operational_dispatch_labels.ts`](worker/deno/lib/operational_dispatch_labels.ts), which resolves the privileged dispatch set the phase gate uses. `grill-me` sat in that set but not in `OPERATIONAL_LABEL_NAMES`, so the discovery collectors never authorship-checked it: the phase gate still refused an untrusted dispatch, but the label survived on the in-memory issue record and no `[SECURITY]` audit event recorded the attempt. `grill-me` is now verified like `planning` — permissive, so an unverifiable adder fails closed — and a drift test asserts every label `operationalDispatchLabels()` returns under the default config is trust-verified here, so a future dispatch label cannot be added to one list alone.

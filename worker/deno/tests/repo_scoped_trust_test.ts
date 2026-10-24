@@ -180,7 +180,6 @@ Deno.test("repo-scoped trust - findIssuesByLabel honours each repo's own label a
     const result = await findIssuesByLabel(
       { ...twoOrgConfig(), repos: [repo] },
       "work-on",
-      false,
       {
         githubUser: "bot",
         ghCommandFn: gh,

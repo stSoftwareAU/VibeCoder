@@ -1,5 +1,5 @@
 /**
- * Compacting a stream's conversation before a new issue (Issue #2337).
+ * Compacting a stream's conversation before a new issue (Issues #2337, #4116).
  *
  * A stream owns one conversation across every issue that runs on it
  * (`stream_session.ts`, #2333), so that conversation only grows. Left alone it
@@ -7,24 +7,24 @@
  * that dies of it. This module compacts it once, at the join, before the
  * issue's first phase starts.
  *
- * ## Two levers, and a verified outcome
+ * ## One lever, a verified outcome, and a safe fallback
  *
- * Claude and DeepSeek run the same CLI, so the same two levers apply:
+ * Claude and DeepSeek run the same CLI, so the same lever applies: `/compact`
+ * sent as the prompt of a `--resume <sessionId>` print run. Whether that
+ * compacted the durable transcript is **verified**, not assumed. The CLI's
+ * transcript is append-only, so a working `/compact` makes the file *larger*;
+ * what it adds is a `compact_boundary` system record. A new boundary after the
+ * run is the proof (Issue #4116). Comparing file sizes, as #2337 first did,
+ * read every real compaction as a failure.
  *
- * 1. `/compact` sent as the prompt of a `--resume <sessionId>` print run.
- *    Whether that actually compacts the durable transcript is not something
- *    the worker can assume, so it is **measured**: the transcript file's size
- *    is recorded before and after, and only a genuinely smaller file counts as
- *    a compaction.
- * 2. `--autocompact 100000` — the smallest window the CLI accepts, so
- *    compaction happens as early as the CLI will do it — passed to every phase
- *    run of the issue when the first lever did not demonstrably work.
- *
- * The fallback fires on anything short of proof: an unchanged or larger
- * transcript, a non-zero `/compact` run, a transcript that cannot be measured,
- * or a spawn that failed outright. Absence of a failure is never read as
- * success. None of it can fail the issue — compaction is an optimisation, and
- * the worst outcome is the conversation the run would have carried anyway.
+ * Anything short of that proof starts the issue on a **fresh session**: a
+ * non-zero `/compact` run, no new boundary, a transcript that cannot be read,
+ * or a spawn that failed outright. The stream then carries on from the new
+ * conversation. The old fallback, `--autocompact 100000`, put Claude's
+ * compaction trigger near 68k tokens, under the ~67k-token issue prompt itself,
+ * so every turn compacted and the CLI aborted with "Autocompact is thrashing"
+ * (Issue #4116). None of it can fail the issue — compaction is an
+ * optimisation, and a fresh session always fits.
  *
  * Codex and Gemini expose no compaction control to the worker at all, so their
  * runs carry the stream's full transcript and say so.
@@ -45,14 +45,6 @@ import type {
   StreamSessionOutcome,
 } from "./stream_session.ts";
 
-/**
- * The `--autocompact` window the fallback asks for.
- *
- * 100,000 tokens is the smallest value the CLI accepts, which is the point:
- * the smaller the window, the earlier the CLI compacts of its own accord.
- */
-export const AUTOCOMPACT_WINDOW_TOKENS = 100_000;
-
 /** The prompt that asks the CLI to compact the resumed conversation. */
 export const COMPACT_PROMPT = "/compact";
 
@@ -71,10 +63,10 @@ const COMPACTABLE_PROVIDER_IDS: readonly string[] = [
 
 /** Which of the four paths a run took. */
 export type StreamCompactionAction =
-  /** `/compact` ran and the transcript is measurably smaller. */
+  /** `/compact` ran and appended a new compact boundary to the transcript. */
   | "compacted"
-  /** Uncompacted — every phase run of this issue carries `--autocompact`. */
-  | "autocompact"
+  /** Not proved compacted — the issue starts a new conversation instead. */
+  | "fresh"
   /**
    * Nothing of this provider's to compact: the stream session opened this
    * run, or another provider created it (Issue #2638).
@@ -87,10 +79,10 @@ export type StreamCompactionAction =
 export interface StreamCompactionResult {
   action: StreamCompactionAction;
   /**
-   * The `--autocompact` window every phase run of this issue must carry.
-   * Present only for the `autocompact` action.
+   * The issue must not resume the stream's session and starts a new one.
+   * Present only for the `fresh` action.
    */
-  autocompactTokens?: number;
+  freshSession?: true;
   /** The single compaction line — see the four `compaction…` phrasings. */
   message: string;
   /** Context for that line: sizes, exit codes, and why a fallback fired. */
@@ -161,29 +153,36 @@ export function supportsCompaction(providerId: string): boolean {
   return COMPACTABLE_PROVIDER_IDS.includes(providerId);
 }
 
-/** The fallback outcome — every phase run of the issue carries the flag. */
-function autocompactResult(
+/** The fallback outcome — the issue starts a new conversation. */
+function freshResult(
   fields: Record<string, unknown>,
 ): StreamCompactionResult {
   return {
-    action: "autocompact",
-    autocompactTokens: AUTOCOMPACT_WINDOW_TOKENS,
-    message: `compaction: autocompact ${AUTOCOMPACT_WINDOW_TOKENS}`,
+    action: "fresh",
+    freshSession: true,
+    message: "compaction: fresh session",
     fields,
   };
 }
 
 /**
- * Total bytes of the session's transcript, or `undefined` when there is
- * nothing to measure.
+ * The record Claude Code appends to a transcript when a compaction lands.
+ * Inside a JSON string (a tool result quoting one) the quotes are escaped, so
+ * only a real record matches.
+ */
+const COMPACT_BOUNDARY_RECORD = '"subtype":"compact_boundary"';
+
+/**
+ * How many compact boundaries the session's transcript holds, or `undefined`
+ * when there is nothing to read.
  *
  * The CLI files transcripts one directory per project under `projects/`, and
  * the worker does not own that naming, so the tree is walked for the session's
  * own `<sessionId>.jsonl` rather than a path being predicted. `undefined` is
- * deliberately distinct from `0`: "cannot be measured" must never be read as a
- * shrink.
+ * deliberately distinct from `0`: "cannot be read" must never be read as
+ * proof of a compaction.
  */
-async function transcriptBytes(
+async function compactBoundaries(
   transcriptRoot: string,
   sessionId: string,
 ): Promise<number | undefined> {
@@ -203,15 +202,15 @@ async function transcriptBytes(
         }
         if (entry.name !== wanted) continue;
         try {
-          const stat = await Deno.stat(path);
-          total = (total ?? 0) + stat.size;
+          const text = await Deno.readTextFile(path);
+          total = (total ?? 0) + text.split(COMPACT_BOUNDARY_RECORD).length - 1;
         } catch {
-          // Vanished between readDir and stat — it measures nothing.
+          // Vanished between readDir and read — it proves nothing.
         }
       }
     } catch {
-      // Missing or unreadable: nothing to measure here. The caller reads an
-      // unmeasured transcript as "not proved compacted", never as a shrink.
+      // Missing or unreadable: nothing to read here. The caller treats an
+      // unread transcript as "not proved compacted", never as a compaction.
     }
   };
   await walk(`${transcriptRoot}/projects`);
@@ -264,7 +263,7 @@ async function defaultCompactionRunner(
  * Compact this stream's conversation, and say what actually happened.
  *
  * Never throws and never fails an issue: every fault resolves to the
- * `autocompact` fallback with the reason recorded in {@link
+ * `fresh` fallback with the reason recorded in {@link
  * StreamCompactionResult.fields}.
  */
 export async function compactStreamSession(
@@ -305,20 +304,20 @@ export async function compactStreamSession(
     transcriptRoot = options.transcriptRoot ??
       resolveTranscriptRoot(providerId, options.parentEnv);
   } catch (error) {
-    return autocompactResult({
+    return freshResult({
       providerId,
       compactError: describe(error),
       reason: "the provider's transcript directory could not be resolved",
     });
   }
   if (!transcriptRoot) {
-    return autocompactResult({
+    return freshResult({
       providerId,
       reason: "no transcript directory to measure the compaction against",
     });
   }
 
-  const before = await transcriptBytes(transcriptRoot, sessionId);
+  const before = await compactBoundaries(transcriptRoot, sessionId);
 
   const runner = options.runner ?? defaultCompactionRunner;
   let run: CompactionRunOutcome;
@@ -332,7 +331,7 @@ export async function compactStreamSession(
       ...(options.workDir ? { workDir: options.workDir } : {}),
     });
   } catch (error) {
-    return autocompactResult({
+    return freshResult({
       providerId,
       compactError: describe(error),
       reason: "the /compact run could not be spawned",
@@ -346,26 +345,26 @@ export async function compactStreamSession(
   };
 
   if (!run.ok || run.exitCode !== 0) {
-    return autocompactResult({
+    return freshResult({
       ...exitFields,
       reason: "the /compact run did not exit cleanly",
     });
   }
 
-  const after = await transcriptBytes(transcriptRoot, sessionId);
+  const after = await compactBoundaries(transcriptRoot, sessionId);
   if (before === undefined || after === undefined) {
-    return autocompactResult({
+    return freshResult({
       ...exitFields,
       reason:
-        "the transcript could not be measured, so nothing proved it shrank",
+        "the transcript could not be read, so nothing proved a compaction",
     });
   }
-  if (after >= before) {
-    return autocompactResult({
+  if (after <= before) {
+    return freshResult({
       ...exitFields,
-      transcriptBytesBefore: before,
-      transcriptBytesAfter: after,
-      reason: "the transcript did not shrink",
+      compactBoundariesBefore: before,
+      compactBoundariesAfter: after,
+      reason: "the transcript gained no compact boundary",
     });
   }
 
@@ -374,16 +373,16 @@ export async function compactStreamSession(
     message: "compaction: /compact",
     fields: {
       ...exitFields,
-      transcriptBytesBefore: before,
-      transcriptBytesAfter: after,
+      compactBoundariesBefore: before,
+      compactBoundariesAfter: after,
     },
   };
 }
 
 /**
  * {@link compactStreamSession} for a run: logs the one compaction line and
- * returns the `--autocompact` window the issue's phase runs must carry
- * (`undefined` when they must not).
+ * says whether the issue must start a new session instead of resuming the
+ * stream's.
  */
 export async function primeStreamCompaction(
   options: StreamCompactionOptions & {
@@ -391,7 +390,7 @@ export async function primeStreamCompaction(
     /** Extra fields for the log line — the repo and issue, typically. */
     logFields?: Record<string, unknown>;
   },
-): Promise<number | undefined> {
+): Promise<boolean> {
   const { logger, logFields, ...rest } = options;
   let result: StreamCompactionResult;
   try {
@@ -400,7 +399,7 @@ export async function primeStreamCompaction(
     // `compactStreamSession` handles its own faults; this is the backstop
     // that keeps a compaction from ever reaching the issue as a failure.
     result = supportsCompaction(rest.providerId)
-      ? autocompactResult({
+      ? freshResult({
         providerId: rest.providerId,
         compactError: describe(error),
         reason: "the compaction itself faulted",
@@ -412,13 +411,13 @@ export async function primeStreamCompaction(
       };
   }
   // One line, at the level that says what the reader must do: the fallback is
-  // a degraded run that continues — the conversation was not compacted and the
-  // CLI's own window is now the only defence — so it is a warning, while a
+  // a degraded run that continues — the conversation was not compacted, so the
+  // stream's history is dropped for this issue — so it is a warning, while a
   // verified compaction, a new session and a provider without the lever are
   // all expected outcomes.
-  const record = result.action === "autocompact" ? logger.warn : logger.info;
+  const record = result.action === "fresh" ? logger.warn : logger.info;
   record.call(logger, result.message, { ...logFields, ...result.fields });
-  return result.autocompactTokens;
+  return result.freshSession === true;
 }
 
 /** An error's message, whatever was thrown. */

@@ -394,6 +394,9 @@ const CODE_PHASE_HEADINGS_BEFORE_2574 = [
   "## Don't regress Deno repos to Node.js",
   "## Error Recovery",
   "## Escape Hatch",
+  // Issue #4227: the issue prompt's "## Escape Hatch" became this section — an
+  // approved issue has no hand-back route. (The PR routes keep theirs.)
+  "## No hand-back, no follow-up",
   "## Escape Hatch — Hand Off When Genuinely Out of Scope",
   "## Execution Environment — Sandboxed Container, No Host Browser",
   "## Fixing the Failure",

@@ -115,7 +115,6 @@ Deno.test("handleIssueFailure - a missing workflow scope adds no failed-once, fa
     assert(result.ok);
     assertEquals(result.value.failureCategory, "token_scope");
     assertEquals(result.value.markedAsFailedOnce, false);
-    assertEquals(result.value.markedAsFailed, false);
     assertEquals(result.value.isInfrastructure, false);
     assertEquals(addedLabels(gh.calls), [], "no label may be added");
   }
@@ -130,7 +129,7 @@ Deno.test("handleIssueFailure - an ordinary quality failure still enters the lad
     failureMessage: "Changes were made but quality checks failed",
   }, { ghCommandFn: gh.fn });
   assert(result.ok);
-  assertEquals(result.value.markedAsFailed, true);
+  assertEquals(result.value.markedAsFailedOnce, true);
 });
 
 Deno.test("createMissingScopeWarner - names the missing scope once per process (Issue #2689)", () => {

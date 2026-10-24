@@ -214,5 +214,6 @@ The repository-wide coding standards follow, delimited by `<coding_guidelines>` 
 
 - Use Australian English (colour, behaviour, organisation).
 - Prefer concrete, testable phrasing in the Understanding section — replace vague qualifiers ("appropriate", "as needed") with specific criteria. The Step 3b classes are the named form of this rule; apply them, do not re-derive them.
+- **Accepted scope is what the Vibe Coder can complete.** Once approved, an issue is completed by the worker and never handed back, so a scope item that waits on a person or on time (a production deploy, a measurement days later, a sign-off) cannot be met by any run. Phrase the accepted scope as the repository deliverable — the change, its tests, the verifier or runbook — and record the person's step as an assumption ("the owner deploys after merge"), not as scope. Work too large for one PR is the planning option's job, so recommend planning for it.
 - The rubric judges the requirements text only. Never turn it into a review of the implementation, and never open a source file to satisfy it.
 - Name each assumption explicitly so the user can challenge it by replying, and give each related open issue a one-line note on the relationship (overlap, constraint, or conflict).

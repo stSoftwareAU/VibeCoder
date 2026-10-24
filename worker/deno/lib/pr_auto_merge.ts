@@ -280,12 +280,13 @@ async function postBehindSyncReason(
   // The outcome is settled before the comment is written, so the PR is never
   // told it was armed by a run that then held it (fail loud, never falsely
   // green).
+  // Posted into the target repo, so the VibeCoder issue numbers (#2460, #2005)
+  // live here, not in the text.
   const outcome = willArm
-    ? "Auto-merge is armed anyway (Issue #2460) — the base ruleset holds the " +
+    ? "Auto-merge is armed anyway — the base ruleset holds the " +
       "merge until the branch is level."
     : "Auto-merge is not armed: the base enforces no required status checks, " +
-      "so nothing would hold the merge back until the branch is level " +
-      "(Issue #2460).";
+      "so nothing would hold the merge back until the branch is level.";
   // Issue #2824: a count that git could not run at all is not a "still
   // behind" — the reason is quoted verbatim, collapsed to one line and with
   // backticks stripped so it cannot break out of the code span.
@@ -302,7 +303,7 @@ async function postBehindSyncReason(
     secondLine,
     "",
     `${outcome} The periodic milestone sync will retry; a conflicting sync ` +
-    `is never side-picked (Issue #2005).`,
+    `is never side-picked.`,
   ].join("\n");
   try {
     await commentFn(repo, prNumber, body);
@@ -419,7 +420,14 @@ async function postOpenChildrenLookupReason(
   // secret the transport error carried, then neutralise marker-shaped content
   // so neither can forge a fleet marker in this body (Issues #1249, #2479).
   const safeTitle = scrubUntrustedText(milestoneTitle);
-  const safeDetail = scrubUntrustedText(redactSecrets(detail));
+  // Posted into the target repo, which autolinks a bare `#N`: the milestone is
+  // named by an inert code span and an explicit link, not `#<number>`.
+  const codeTitle = safeTitle.replace(/`/g, "'");
+  // The gate names the milestone as `milestone #N`, which autolinks in the target repo.
+  const unlinkedDetail = detail.split(`milestone #${milestoneNumber}`).join(
+    "this milestone",
+  );
+  const safeDetail = scrubUntrustedText(redactSecrets(unlinkedDetail));
   const subject = stage === "open-children"
     ? "the open-children count"
     : "the declared dependencies";
@@ -431,9 +439,11 @@ async function postOpenChildrenLookupReason(
   const body = [
     OPEN_CHILDREN_LOOKUP_MARKER,
     `Auto-merge is not armed: ${subject} for milestone ` +
-    `#${milestoneNumber} '${safeTitle}' could not be read — ${safeDetail}`,
+    `\`${codeTitle}\` (https://github.com/${repo}/milestone/${milestoneNumber}) ` +
+    `could not be read — ${safeDetail}`,
     "",
-    `${risk}, so the gate refuses (Issue #3909). The Auto-Merge sweep ` +
+    // Provenance: the gate refusal this comment explains is Issue #3909.
+    `${risk}, so the gate refuses. The Auto-Merge sweep ` +
     "retries every cycle and arms the PR once the failed read succeeds.",
   ].join("\n");
   try {

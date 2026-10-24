@@ -72,8 +72,11 @@ import {
   type SessionResumeState,
 } from "./session_resume.ts";
 import {
+  adaptCodexAfterModelRefusal,
+  applyCodexModelAdaptation,
   buildCodexArgs,
   buildCodexMcpConfigArgs,
+  codexAlternativeModels,
   composeCodexPrompt,
   resolveCodexEffort,
   resolveCodexModel,
@@ -392,17 +395,6 @@ export interface AgentInvocationRequest {
   /** Session continuity state, when session resume is enabled. */
   sessionResumeState?: SessionResumeState;
   /**
-   * Context window (in tokens) at which the CLI compacts the conversation of
-   * its own accord (Issue #2337).
-   *
-   * Set only when the stream's conversation could **not** be verifiably
-   * compacted before the issue started, so the CLI's own autocompaction is the
-   * remaining lever. Absent — the usual case — no flag is emitted and the
-   * CLI's default window stands. Only the Claude Code CLI carries it; Codex
-   * and Gemini expose no such control and ignore the field.
-   */
-  autocompactTokens?: number;
-  /**
    * MCP server configuration for this run (Issue #4355) — the Playwright
    * headless browser. Claude takes the path as `--mcp-config`. Codex has
    * no such flag: the descriptor turns the same JSON into `-c mcp_servers.*`
@@ -423,9 +415,9 @@ export interface AgentInvocationRequest {
    * run with neither the split guard nor RTK's hook (the split is on by
    * default for `issue` runs; `issue_executor_split: false` turns it off) —
    * emits no argument, and the argv is the one every host spawned before.
-   * Claude-only: DeepSeek shares
-   * the CLI but its endpoint implements no hooks, so that descriptor strips
-   * the field, and no other provider takes the flag.
+   * Codex translates the command hooks into per-spawn TOML overrides.
+   * DeepSeek shares the Claude CLI but its endpoint implements no hooks,
+   * so that descriptor strips the field; Gemini does not consume it.
    */
   settingsJson?: string;
   /**
@@ -462,6 +454,8 @@ export interface AgentProviderDescriptor {
   install: AgentProviderInstall;
   /** How the prompt reaches the CLI (Issue #4385). */
   promptTransport: PromptTransport;
+  /** Whether worker-authored PreToolUse command hooks can be installed per spawn. */
+  supportsPreToolUseHooks?: boolean;
   /**
    * The model this provider routes `phase` to (Issue #362).
    *
@@ -511,17 +505,33 @@ export interface AgentProviderDescriptor {
   servedModelSatisfies?(served: string, expected: string): boolean;
   /**
    * Same-provider tiers to try when `model` probes unavailable (Issue #2059).
-   * Absent → no tier adaptation for this provider; the health gate's
-   * provider-level verdicts (fallback, skip) own the response.
+   * `phase` and `env` let a provider answer for one phase's built-in default
+   * (Issue #4221). Absent → no tier adaptation for this provider; the health
+   * gate's provider-level verdicts (fallback, skip) own the response.
    */
-  alternativeModels?(model: string): string[];
+  alternativeModels?(model: string, phase?: string, env?: EnvLookup): string[];
   /**
    * Apply a tier adaptation for this run (Issue #2059): routes phases whose
    * designed default is `unavailable` onto `alternative` — never overriding
-   * an explicit operator/repo/env pin. Absent → no adaptation for this
-   * provider.
+   * an explicit operator/repo/env pin. `phase` names the phase the probe ran
+   * for (Issue #4221). Absent → no adaptation for this provider.
    */
-  applyModelAdaptation?(unavailable: string, alternative: string): void;
+  applyModelAdaptation?(
+    unavailable: string,
+    alternative: string,
+    phase?: string,
+  ): void;
+  /**
+   * In-run counterpart of alternativeModels (Issue #4221): called when an
+   * invocation was refused `model`; returns true when the provider adapted its
+   * routing so one retry on the same provider will omit/replace the refused id.
+   * Absent → no in-run adaptation.
+   */
+  adaptAfterModelRefusal?(
+    model: string,
+    phase: string | undefined,
+    env?: EnvLookup,
+  ): boolean;
   /** Build the CLI argument list for one invocation. */
   buildInvocation(request: AgentInvocationRequest): string[];
   /**
@@ -663,14 +673,6 @@ function buildClaudeCliArgs(
     args.push("--system-prompt", request.systemPrompt);
   }
 
-  // The CLI's own autocompaction, pulled forward (Issue #2337): passed only
-  // when this run's stream conversation could not be verifiably compacted
-  // before the issue started, so the window the CLI compacts at is the
-  // remaining defence against filling it.
-  if (request.autocompactTokens) {
-    args.push("--autocompact", String(request.autocompactTokens));
-  }
-
   // Session continuity across phases of one issue (Issue #1324).
   if (request.sessionResumeState) {
     args.push(
@@ -694,6 +696,7 @@ function buildClaudeCliArgs(
  * the descriptor is a description of Claude rather than a second copy of it.
  */
 const CLAUDE_PROVIDER: AgentProviderDescriptor = {
+  supportsPreToolUseHooks: true,
   id: CLAUDE_PROVIDER_ID,
   displayName: "Claude Code",
   binary: "claude",
@@ -800,6 +803,7 @@ const CLAUDE_PROVIDER: AgentProviderDescriptor = {
  * `codex_env.ts`, `codex_auth.ts`), so no Codex CLI knowledge lives here.
  */
 const CODEX_PROVIDER: AgentProviderDescriptor = {
+  supportsPreToolUseHooks: true,
   id: CODEX_PROVIDER_ID,
   displayName: "Codex CLI",
   binary: "codex",
@@ -872,6 +876,28 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     return resolveCodexModel(phase, env);
   },
 
+  // A ChatGPT login may refuse a built-in default (Issue #4221): the alternative
+  // is the CLI's own default, i.e. no --model.
+  alternativeModels(model: string, phase?: string, env?: EnvLookup): string[] {
+    return codexAlternativeModels(model, phase, env);
+  },
+
+  applyModelAdaptation(
+    unavailable: string,
+    alternative: string,
+    phase?: string,
+  ): void {
+    applyCodexModelAdaptation(unavailable, alternative, phase);
+  },
+
+  adaptAfterModelRefusal(
+    model: string,
+    phase: string | undefined,
+    env?: EnvLookup,
+  ): boolean {
+    return adaptCodexAfterModelRefusal(model, phase, env);
+  },
+
   resolveEffort(phase?: string, env?: EnvLookup): string | undefined {
     return resolveCodexEffort(phase, env);
   },
@@ -902,6 +928,7 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
     return buildCodexArgs({
       prompt: request.prompt,
       orchestrationRole: request.orchestrationRole,
+      settingsJson: request.settingsJson,
       systemPrompt: request.systemPrompt,
       disallowedTools: request.disallowedTools,
       model: routing.model,

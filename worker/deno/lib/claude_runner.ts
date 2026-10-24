@@ -649,16 +649,6 @@ export interface RunClaudeOptions {
   /** Session resume state for multi-phase continuity (Issue #1324). */
   sessionResumeState?: SessionResumeState;
   /**
-   * Context window (in tokens) at which the CLI compacts on its own
-   * (Issue #2337) — `--autocompact`.
-   *
-   * Set by a run whose stream conversation could not be verifiably compacted
-   * before the issue started (`stream_compaction.ts`), so every phase run of
-   * that issue carries it. Omitted, no flag is emitted and the CLI's default
-   * window stands.
-   */
-  autocompactTokens?: number;
-  /**
    * Claude Code settings for this one spawn, already serialised (Issue #2383).
    *
    * Forwarded unchanged as `--settings`, which is how a run installs its hooks
@@ -1235,18 +1225,11 @@ async function runClaudeWithTimeoutBody(
     // absent value emits no `--agents` argument.
     ...(options.agents ? { agents: options.agents } : {}),
     sessionResumeState: options.sessionResumeState,
-    // The pulled-forward autocompaction window (Issue #2337), when the
-    // stream's conversation could not be compacted before the issue started.
-    ...(options.autocompactTokens
-      ? { autocompactTokens: options.autocompactTokens }
-      : {}),
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
     // Issue #2344's advisor edit guard, merged with this spawn's own hooks
     // (Issue #2383's RTK settings) rather than one silently replacing the
-    // other when a run has both on. Claude only — DeepSeek drops the
-    // executor definitions, so a guard there would deny the advisor's edits
-    // with no executor to make them, and the other providers take no such
-    // flag.
+    // other when a run has both on. The advisor guard remains Claude-only;
+    // Codex translates RTK settings to its own per-spawn hook configuration.
     ...settingsJsonOption(
       options.issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID
         ? resolveIssueExecutorHookSettings()
@@ -3427,18 +3410,43 @@ async function runRetryLadder(
           continue;
         }
 
-        // No cheaper model on this provider. A refusal is terminal for the
-        // provider — a ChatGPT login that does not offer a model never will
-        // (Issue #4019) — so the configured `agent_provider_fallback` is the
-        // remaining remedy (Issue #4034). Only the health gate consulted it
-        // before, and a phase whose model the provider refused gave up every
-        // cycle while a healthy alternative stood idle. The fallback resolves
-        // its own model: the refused id names the old provider's catalogue,
-        // and a session id belongs to the CLI that recorded it.
-        const refusingProvider = selectAgentProvider(
+        // No cheaper model on this provider. A Codex built-in default that a
+        // ChatGPT login refused is first retried once without --model
+        // (Issue #4221). Otherwise a refusal is terminal for the provider — a
+        // ChatGPT login that does not offer a model never will (Issue #4019) —
+        // so the configured `agent_provider_fallback` is the remedy (Issue
+        // #4034). Only the health gate consulted it before, and a phase whose
+        // model the provider refused gave up every cycle while a healthy
+        // alternative stood idle. The fallback resolves its own model: the
+        // refused id names the old provider's catalogue, and a session id
+        // belongs to the CLI that recorded it.
+        const refusingDescriptor = selectAgentProvider(
           currentOptions.agentProvider,
           currentOptions.env ? { env: currentOptions.env } : {},
-        ).id;
+        );
+        // (Issue #4221) A ChatGPT login refused a built-in default: retry once
+        // on the same provider with the CLI's own default, before any switch.
+        // A second refusal falls through to the switch: the refused default now
+        // resolves to no model, so adaptAfterModelRefusal returns false.
+        // An explicit request model is never dropped: only a routed default.
+        if (
+          !currentOptions.model &&
+          refusingDescriptor.adaptAfterModelRefusal?.(
+            currentModel,
+            currentOptions.phase,
+            currentOptions.env,
+          )
+        ) {
+          currentOptions.logger?.info(
+            `[model-adaptation] ${refusingDescriptor.id} refused built-in default model "${currentModel}" — retrying once with the CLI default model (Issue #4221).`,
+          );
+          currentOptions = { ...currentOptions, model: undefined };
+          retryCount = 0;
+          totalWaitTime = 0;
+          waitInterval = initialWaitInterval;
+          continue;
+        }
+        const refusingProvider = refusingDescriptor.id;
         const nextProvider = providerAfterModelRefusal(
           configuredProviderFallbackPolicy(),
           refusingProvider,

@@ -248,7 +248,6 @@ export async function collectSelfDiagnosticCandidates(
       !issue.labels.some((l) => humanScheduled.has(l))
     ),
     {
-      failedLabel: config.failedLabel,
       refineIssueLabel: config.refineIssueLabel,
       planningLabel: config.planningLabel,
       questionLabel: config.questionLabel,

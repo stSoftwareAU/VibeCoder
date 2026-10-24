@@ -23,7 +23,6 @@ import {
   labelCacheFilePath,
   labelCacheInvalidate,
   labelCacheIsValid,
-  markIssueAsFailed,
   markIssueAsFailedOnce,
   PLANNING_ESCALATION_HEADINGS,
   postClarifyingQuestions,
@@ -345,63 +344,6 @@ Deno.test("label manager - markIssueAsFailedOnce redacts secrets in the failure 
   }
 });
 
-Deno.test("label manager - markIssueAsFailed redacts secrets in the failure tail (Issue #3425)", async () => {
-  const dir = await makeTempDir();
-  try {
-    const { ghCommandFn, calls } = createMockGh({
-      "label list": "failed\nfailed-once\n",
-    });
-
-    const token = "ghp_" + "C".repeat(36);
-    const failureMessage = `remote error using GH_TOKEN=${token}`;
-
-    await markIssueAsFailed({
-      repo: "org/repo",
-      issueNumber: 7,
-      githubUser: "worker-user",
-      failureMessage,
-    }, { ghCommandFn, cacheDir: dir });
-
-    const body = extractCommentBody(calls);
-    assertEquals(body.length > 0, true);
-    assertEquals(body.includes(token), false);
-    assertEquals(body.includes(REDACTION_PLACEHOLDER), true);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// markIssueAsFailed
-// ---------------------------------------------------------------------------
-
-Deno.test("label manager - markIssueAsFailed adds failed label and removes failed-once", async () => {
-  const dir = await makeTempDir();
-  try {
-    const { ghCommandFn, calls } = createMockGh({
-      "label list": "bug\nfailed\nfailed-once\n",
-    });
-
-    const result = await markIssueAsFailed({
-      repo: "org/repo",
-      issueNumber: 42,
-      githubUser: "worker-user",
-      failureMessage: "Failed again",
-    }, { ghCommandFn, cacheDir: dir });
-
-    assertEquals(result.ok, true);
-    // Issue #976: label is now added via REST API
-    assertEquals(
-      wasCalledWith(calls, "api -X POST repos/org/repo/issues/42/labels"),
-      true,
-    );
-    assertEquals(wasCalledWith(calls, "--remove-label failed-once"), true);
-    assertEquals(wasCalledWith(calls, "--remove-assignee worker-user"), true);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
 // ---------------------------------------------------------------------------
 // handleIssueFailure
 // ---------------------------------------------------------------------------
@@ -425,48 +367,12 @@ Deno.test("label manager - handleIssueFailure marks as failed-once on first fail
     assertEquals(result.ok, true);
     if (result.ok) {
       assertEquals(result.value.markedAsFailedOnce, true);
-      assertEquals(result.value.markedAsFailed, false);
     }
     // Issue #976: label is now added via REST API
     assertEquals(
       wasCalledWith(calls, "api -X POST repos/org/repo/issues/42/labels"),
       true,
     );
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("label manager - handleIssueFailure marks as permanently failed on second failure", async () => {
-  const dir = await makeTempDir();
-  try {
-    const calls: string[][] = [];
-    const mockGh = async (args: string[]): Promise<string> => {
-      calls.push(args);
-      const joined = args.join(" ");
-      // checkIssueHasFailedOnce — return failed-once label
-      if (joined.includes("issue view") && joined.includes("labels")) {
-        return "bug,failed-once";
-      }
-      if (joined.includes("label list")) return "failed\nfailed-once\n";
-      // countInfraRetries — no failure comments
-      if (joined.includes("Automated Processing Failed")) return "0";
-      return "";
-    };
-
-    const result = await handleIssueFailure({
-      repo: "org/repo",
-      issueNumber: 42,
-      githubUser: "worker-user",
-      failureMessage: "Quality checks failed",
-    }, { ghCommandFn: mockGh, cacheDir: dir });
-
-    assertEquals(result.ok, true);
-    if (result.ok) {
-      assertEquals(result.value.markedAsFailed, true);
-      assertEquals(result.value.markedAsFailedOnce, false);
-      assertEquals(result.value.failureCategory, "quality_check");
-    }
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -494,13 +400,11 @@ Deno.test("label manager - handleIssueFailure self-heals infrastructure failures
       issueNumber: 42,
       githubUser: "worker-user",
       failureMessage: "Claude rate limit exceeded",
-      maxInfraRetries: 5,
     }, { ghCommandFn: mockGh, cacheDir: dir });
 
     assertEquals(result.ok, true);
     if (result.ok) {
       // Should NOT be marked as permanently failed
-      assertEquals(result.value.markedAsFailed, false);
       assertEquals(result.value.markedAsFailedOnce, true);
       assertEquals(result.value.isInfrastructure, true);
       assertEquals(result.value.failureCategory, "rate_limit");
@@ -530,7 +434,6 @@ Deno.test("label manager - handleIssueFailure never labels a scheduled release (
 
     assertEquals(result.ok, true);
     if (result.ok) {
-      assertEquals(result.value.markedAsFailed, false);
       assertEquals(result.value.markedAsFailedOnce, false);
       assertEquals(result.value.failureCategory, "scheduled_release");
       assertEquals(result.value.isInfrastructure, false);
@@ -563,7 +466,6 @@ Deno.test("label manager - handleIssueFailure never labels a damaged shared clon
 
     assertEquals(result.ok, true);
     if (result.ok) {
-      assertEquals(result.value.markedAsFailed, false);
       assertEquals(result.value.markedAsFailedOnce, false);
       assertEquals(result.value.failureCategory, "clone_corrupt");
       assertEquals(result.value.isInfrastructure, false);
@@ -615,8 +517,10 @@ Deno.test("label manager - buildQuestionFailureComment adds second failure notic
     true,
     "question",
   );
-  assertEquals(comment.includes("Second Attempt"), true);
-  assertEquals(comment.includes("failed twice"), true);
+  assertEquals(comment.includes("Repeat Attempt"), true);
+  // Issue #4158: a repeat failure is retried, never parked behind `failed`.
+  assertEquals(comment.includes("never parks"), true);
+  assertEquals(comment.includes("`failed` label"), false);
 });
 
 Deno.test("label manager - handleQuestionFailure adds failed-once on first failure", async () => {
@@ -648,42 +552,6 @@ Deno.test("label manager - handleQuestionFailure adds failed-once on first failu
       true,
     );
     assertEquals(wasCalledWith(calls, "--remove-assignee worker-user"), true);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("label manager - handleQuestionFailure adds failed on second failure", async () => {
-  const dir = await makeTempDir();
-  try {
-    const calls: string[][] = [];
-    const mockGh = async (args: string[]): Promise<string> => {
-      calls.push(args);
-      const joined = args.join(" ");
-      // Has failed-once label
-      if (joined.includes("issue view") && joined.includes("labels")) {
-        return "question,failed-once";
-      }
-      if (joined.includes("label list")) {
-        return "question\nfailed\nfailed-once\n";
-      }
-      return "";
-    };
-
-    const result = await handleQuestionFailure({
-      repo: "org/repo",
-      issueNumber: 42,
-      githubUser: "worker-user",
-      failureMessage: "Timeout again",
-    }, { ghCommandFn: mockGh, cacheDir: dir });
-
-    assertEquals(result.ok, true);
-    // Issue #976: label is now added via REST API
-    assertEquals(
-      wasCalledWith(calls, "api -X POST repos/org/repo/issues/42/labels"),
-      true,
-    );
-    assertEquals(wasCalledWith(calls, "--remove-label failed-once"), true);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -1257,12 +1125,10 @@ Deno.test("label manager - DEFAULT_LABEL_CONFIG has expected values", () => {
 // ---------------------------------------------------------------------------
 
 Deno.test("label manager - PLANNING_ESCALATION_HEADINGS contains expected patterns", () => {
-  assertEquals(PLANNING_ESCALATION_HEADINGS.length, 2);
-  assertEquals(
-    PLANNING_ESCALATION_HEADINGS[0],
+  // Issue #4158: claim churn no longer asks for planning.
+  assertEquals(PLANNING_ESCALATION_HEADINGS, [
     "## Automatic Escalation to Planning Mode",
-  );
-  assertEquals(PLANNING_ESCALATION_HEADINGS[1], "## Claim Churn Detected");
+  ]);
 });
 
 Deno.test("label manager - detectPlanningEscalationInComments returns false for empty input", () => {
@@ -1275,10 +1141,11 @@ Deno.test("label manager - detectPlanningEscalationInComments detects escalation
   assertEquals(detectPlanningEscalationInComments(comments), true);
 });
 
-Deno.test("label manager - detectPlanningEscalationInComments detects claim churn heading", () => {
+Deno.test("label manager - detectPlanningEscalationInComments ignores the claim churn heading (Issue #4158)", () => {
+  // Claim churn cools down; it no longer asks for planning.
   const comments =
     `## Claim Churn Detected\n\nThis issue has been claimed and released multiple times.`;
-  assertEquals(detectPlanningEscalationInComments(comments), true);
+  assertEquals(detectPlanningEscalationInComments(comments), false);
 });
 
 Deno.test("label manager - detectPlanningEscalationInComments returns false for unrelated comments", () => {
@@ -1502,42 +1369,6 @@ Deno.test("label manager - markIssueAsFailedOnce succeeds even when label-add fa
   }
 });
 
-Deno.test("label manager - markIssueAsFailed succeeds even when label-add fails", async () => {
-  const dir = await makeTempDir();
-  try {
-    const calls: string[][] = [];
-    const mockGh = async (args: string[]): Promise<string> => {
-      calls.push(args);
-      const joined = args.join(" ");
-      if (joined.includes("label list")) return "failed\nfailed-once\n";
-      // Both REST API and CLI label-add fail
-      if (joined.includes("api -X POST") && joined.includes("labels")) {
-        throw new Error("REST API 403");
-      }
-      if (joined.includes("--add-label")) {
-        throw new Error("CLI permission denied");
-      }
-      return "";
-    };
-
-    const result = await markIssueAsFailed({
-      repo: "org/repo",
-      issueNumber: 42,
-      githubUser: "worker-user",
-      failureMessage: "Failed again",
-    }, { ghCommandFn: mockGh, cacheDir: dir });
-
-    // Must still succeed — label failure is non-fatal
-    assertEquals(result.ok, true);
-    // Comment should still have been posted
-    assertEquals(wasCalledWith(calls, "issue comment"), true);
-    // Unassign should still have happened
-    assertEquals(wasCalledWith(calls, "--remove-assignee worker-user"), true);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
 // ---------------------------------------------------------------------------
 // Issue #1476: checkAndHealPlanningEscalation never adds or creates the
 // planning label. The Issue #1215 regression test has been removed because
@@ -1551,7 +1382,7 @@ Deno.test("label manager - checkAndHealPlanningEscalation never calls label-add 
     calls.push(args);
     const joined = args.join(" ");
     if (joined.includes("comments") && joined.includes("--jq")) {
-      return "## Claim Churn Detected\n\nMultiple claim/release cycles.";
+      return "## Automatic Escalation to Planning Mode\n\nToo complex.";
     }
     return "";
   };

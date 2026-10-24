@@ -900,7 +900,7 @@ Deno.test("createDefaultDeps wires the real pre-PR verifier (an absolute summary
 
 // ---- review checklists (Issue #3594) ---------------------------------------
 
-Deno.test("parseReviewReply parses a checklist array, defaults to [] and rejects a bad verdict", () => {
+Deno.test("parseReviewReply parses a checklist array, defaults to [] and drops a bad verdict", () => {
   const base = { summary: "ok", findings: [], testChanges: "none" };
   const withList = parseReviewReply(JSON.stringify({
     ...base,
@@ -915,20 +915,23 @@ Deno.test("parseReviewReply parses a checklist array, defaults to [] and rejects
   ]);
   assertEquals(withList.checklist[1]!.note, "");
   assertEquals(parseReviewReply(JSON.stringify(base)).checklist, []);
-  assertThrows(
-    () =>
-      parseReviewReply(JSON.stringify({
-        ...base,
-        checklist: [{ checklist: "M", item: "i", verdict: "probably" }],
-      })),
-    Error,
-    "verdict",
+  const dropped = parseReviewReply(JSON.stringify({
+    ...base,
+    checklist: [
+      { checklist: "M", item: "i", verdict: "met" },
+      { checklist: "M", item: "j", verdict: "probably" },
+    ],
+  }));
+  assertEquals(dropped.checklist.map((c) => c.item), ["i"]);
+  assertEquals(
+    parseReviewReply(JSON.stringify({ ...base, checklist: "nope" })).checklist,
+    [],
   );
-  assertThrows(
-    () => parseReviewReply(JSON.stringify({ ...base, checklist: "nope" })),
-    Error,
-    "checklist",
-  );
+  const trimmed = parseReviewReply(JSON.stringify({
+    ...base,
+    checklist: [{ checklist: "M", item: "i", verdict: " Met " }],
+  }));
+  assertEquals(trimmed.checklist.map((c) => c.verdict), ["met"]);
 });
 
 const MONEY_CHECKLISTS = JSON.stringify({
@@ -1180,6 +1183,89 @@ Deno.test("met and not-applicable checklist verdicts alone do not block", () => 
     prePrVerifierBlockReason(review),
     "Pre-PR verifier found 0 blocking finding(s)",
   );
+});
+
+Deno.test("runPrePrVerifier: a partial verdict keeps the model's finding and adds a gap finding naming the item", async () => {
+  const f = await makeChecklistRepo(MONEY_CHECKLISTS, {
+    "src/money/fees.ts": "export const fee = 1;\n",
+  });
+  try {
+    const reply = JSON.stringify({
+      summary: "one problem",
+      findings: [{ file: "a.ts", line: 1, problem: "wrong", fix: "right" }],
+      testChanges: "none",
+      checklist: [
+        {
+          checklist: "Money handling",
+          item: "Every money figure uses the Decimal type",
+          verdict: "met",
+        },
+        {
+          checklist: "Money handling",
+          item: "Rounding is tested",
+          verdict: "partial",
+          note: "half done",
+        },
+      ],
+    });
+    const result = await runPrePrVerifier(
+      inputFor(f, { changedFiles: ["src/money/fees.ts"] }),
+      makeDeps(() => Promise.resolve(okRun({ output: reply })), []),
+    );
+    assertEquals(result.status, "checked");
+    assert(prePrVerifierBlocked(result));
+    if (result.status !== "checked") throw new Error("not checked");
+    const findings = result.review.findings;
+    assert(findings.some((x) => x.problem === "wrong"));
+    const gap = findings.find((x) =>
+      x.problem.includes("no verdict was reported")
+    );
+    assert(gap !== undefined, "a gap finding is raised for the partial item");
+    assertStringIncludes(gap.problem, "Rounding is tested");
+    assert(!gap.problem.includes("Every money figure uses the Decimal type"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runPrePrVerifier: only a partial verdict and no findings still blocks, naming the item", async () => {
+  const f = await makeChecklistRepo(MONEY_CHECKLISTS, {
+    "src/money/fees.ts": "export const fee = 1;\n",
+  });
+  try {
+    const reply = JSON.stringify({
+      summary: "partly done",
+      findings: [],
+      testChanges: "none",
+      checklist: [
+        {
+          checklist: "Money handling",
+          item: "Rounding is tested",
+          verdict: "partial",
+          note: "half done",
+        },
+        {
+          checklist: "Money handling",
+          item: "Every money figure uses the Decimal type",
+          verdict: "met",
+        },
+      ],
+    });
+    const result = await runPrePrVerifier(
+      inputFor(f, { changedFiles: ["src/money/fees.ts"] }),
+      makeDeps(() => Promise.resolve(okRun({ output: reply })), []),
+    );
+    assertEquals(result.status, "checked");
+    assert(prePrVerifierBlocked(result));
+    if (result.status !== "checked") throw new Error("not checked");
+    const gap = result.review.findings.find((x) =>
+      x.problem.includes("no verdict was reported")
+    );
+    assert(gap !== undefined, "a gap finding is raised for the partial item");
+    assertStringIncludes(gap.problem, "Rounding is tested");
+  } finally {
+    await f.cleanup();
+  }
 });
 
 Deno.test("runPrePrVerifier: a failed run that also changed the issue checkout reports a review with an empty checklist", async () => {

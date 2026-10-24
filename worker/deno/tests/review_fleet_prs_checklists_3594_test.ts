@@ -17,6 +17,7 @@ import {
   type FableReview,
   parseFableReview,
   reviewBody,
+  withChecklistGaps,
 } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 
 const CHECKLISTS = JSON.stringify({
@@ -453,6 +454,45 @@ Deno.test("a reply with a verdict for every expected item is approved; numbering
   assertEquals(full.parsed.findings, []);
 });
 
+Deno.test("a reply with an out-of-vocabulary verdict for an expected item is sent back naming that item; a met verdict for it is approved", () => {
+  const judge = (verdict: string) => {
+    const gapped = withChecklistGaps(
+      parseFableReview(JSON.stringify({
+        ...CLEAN_REPLY,
+        checklist: [
+          {
+            checklist: "money",
+            item: "Rounding is tested",
+            verdict: "met",
+            note: "fees_test",
+          },
+          {
+            checklist: "money",
+            item: "Fees are idempotent",
+            verdict,
+            note: "retry guarded",
+          },
+        ],
+      })),
+      MONEY_STATE,
+    );
+    return { outcome: decideOutcome(gapped, []), gapped };
+  };
+  const bad = judge("partial");
+  assertEquals(bad.outcome, "changes_requested");
+  const gap = bad.gapped.findings.find((f) =>
+    f.problem.includes("no verdict was reported")
+  );
+  assert(gap, JSON.stringify(bad.gapped.findings));
+  assertStringIncludes(gap.problem, "Fees are idempotent");
+  assert(!gap.problem.includes("Rounding is tested"), gap.problem);
+  // Control: the same reply with "met" for that item covers every expected
+  // item, so nothing is sent back.
+  const good = judge("met");
+  assertEquals(good.outcome, "approved");
+  assertEquals(good.gapped.findings, []);
+});
+
 Deno.test("reviewForPost fails loudly on a gate entry without a valid checklistState, and on a malformed reply", () => {
   for (
     const bad of [undefined, null, "x", { expected: [] }, { problem: null }]
@@ -486,7 +526,7 @@ Deno.test("a hostile reason or item cannot inject markup or a mention into the p
     expected: [{ checklist: "n@me", item: "<script>alert(1)</script>" }],
   } as never);
   assert(!r.body.includes("<img"), r.body);
-  assert(!r.body.includes("<script>"), r.body);
+  assert(!r.body.includes("<script>"), r.body); // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
   assert(!r.body.includes("@octocat"), r.body);
 });
 
