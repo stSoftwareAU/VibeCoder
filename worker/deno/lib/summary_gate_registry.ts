@@ -3,9 +3,10 @@
  *
  * `pr_summary_check.ts` takes each gate's report name and issue reference from
  * here, so the local check and the worker agree on what a gate is called. The
- * drift test (`tests/pr_summary_gate_registry_test.ts`) reads
- * `lib/phases/completion_phase.ts` and fails when the two sets of gate
- * functions part ways.
+ * drift test (`worker/deno/tests/pr_summary_gate_registry_test.ts`) runs the
+ * completion phase over a summary that blocks every gate at once, and fails
+ * when the gate ids the completion phase records differ from the entries marked
+ * `completionFold: true` here.
  *
  * Entries are listed in the order the completion phase applies them.
  *
@@ -22,18 +23,29 @@
  */
 export type SummaryGateLocalCheck = "deterministic" | "model" | "worker-only";
 
-/** One PR-summary gate. */
-export interface SummaryGate {
+/** The fields every PR-summary gate carries. */
+interface SummaryGateCommon {
   /** Stable key, used to look the gate up. */
   id: string;
   /** Report name, as printed by the local check. */
   name: string;
   /** Issue reference the gate was introduced under. */
   issueRef: string;
-  /** Name of the function the completion phase calls for this gate. */
-  validator: string;
   localCheck: SummaryGateLocalCheck;
 }
+
+/**
+ * One PR-summary gate. `completionFold` says whether the completion phase folds
+ * the gate's verdict into the summary-rule block it records (its
+ * `summaryRuleBlocks[].gates`). `false` is an exception, and must say why: the
+ * drift test expects exactly the `true` entries to be recorded.
+ */
+export type SummaryGate =
+  & SummaryGateCommon
+  & (
+    | { completionFold: true }
+    | { completionFold: false; reason: string }
+  );
 
 /** Every PR-summary gate the completion phase applies, in its order. */
 export const PR_SUMMARY_GATES: readonly SummaryGate[] = [
@@ -41,92 +53,92 @@ export const PR_SUMMARY_GATES: readonly SummaryGate[] = [
     id: "prompt-scrub",
     name: "Prompt-scrubbed Markdown",
     issueRef: "#3710",
-    validator: "summaryScrubProblem",
     localCheck: "deterministic",
+    completionFold: true,
   },
   {
     id: "acceptance-closure",
     name: "Acceptance-criteria closure",
     issueRef: "#518",
-    validator: "validateAcceptanceClosure",
     localCheck: "deterministic",
+    completionFold: true,
   },
   {
     id: "independent-review",
     name: "Independent two-axis review",
     issueRef: "#663",
-    validator: "validateIndependentReview",
     localCheck: "deterministic",
+    completionFold: true,
   },
   {
     id: "reproduction-status",
     name: "Reproduction status",
     issueRef: "#521",
-    validator: "validateReproductionStatus",
     localCheck: "deterministic",
+    completionFold: true,
   },
   {
     id: "docs-sweep",
     name: "Docs sweep",
     issueRef: "#3073",
-    validator: "validateDocsSweep",
     localCheck: "deterministic",
+    completionFold: true,
   },
   {
     id: "removed-assertions",
     name: "Removed test assertions",
     issueRef: "#3131",
-    validator: "validateRemovedAssertions",
     localCheck: "deterministic",
+    completionFold: true,
   },
   {
     id: "result-placeholders",
     name: "Result placeholders",
     issueRef: "#3124",
-    validator: "findResultPlaceholders",
     localCheck: "deterministic",
+    completionFold: true,
   },
   {
     id: "branch-outcomes",
     name: "Branch outcomes",
     issueRef: "#3147",
-    validator: "validateBranchOutcomes",
     localCheck: "deterministic",
+    completionFold: true,
   },
   {
     id: "unmet-criteria",
     name: "Unmet acceptance criteria",
     issueRef: "#4146",
-    validator: "assessUnmetCriteria",
     localCheck: "deterministic",
+    completionFold: true,
   },
   {
     id: "claim-check",
     name: "Summary claim check",
     issueRef: "#3257",
-    validator: "runSummaryClaimCheck",
     localCheck: "model",
+    completionFold: true,
   },
   {
     id: "pre-pr-verifier",
     name: "Pre-PR verifier",
     issueRef: "#3395",
-    validator: "runPrePrVerifier",
     localCheck: "model",
+    completionFold: true,
   },
   {
     id: "mutation-check",
     name: "Mutation check",
     issueRef: "#3393",
-    validator: "evaluateMutationGate",
     localCheck: "worker-only",
+    completionFold: true,
   },
   {
     id: "coverage-carry-over",
     name: "Coverage carry-over",
     issueRef: "#3795",
-    validator: "evaluateCoverageCarryOverGate",
     localCheck: "worker-only",
+    completionFold: true,
   },
 ];
 

@@ -1,20 +1,15 @@
 /**
  * Tests for the PR-summary gate registry and its drift check (Issue #4234).
  *
- * The drift half (the `drift - ...` tests) is the source-drift test the issue
- * asks for. It reads `lib/phases/completion_phase.ts` as text, because the
- * completion phase is the one place the full gate sequence is wired, and no
- * unit test can otherwise see a gate being added there. It parses only the
- * `import { ... } from "..."` blocks, with one regex, and it checks two things:
+ * The drift test runs the live completion phase (`runCompletion`, the shared
+ * harness) over one summary that blocks every gate at once, and checks that the
+ * gate ids the first recorded summary-rule verdict carries are exactly the
+ * registry entries marked `completionFold: true`. A gate the completion phase
+ * records but the registry does not fold, or a folded registry entry the
+ * completion phase never records, fails the test and names the id.
  *
- *   1. every gate function completion_phase imports from a gate module is
- *      listed as a `validator` in PR_SUMMARY_GATES; and
- *   2. every `validator` in PR_SUMMARY_GATES is imported by completion_phase
- *      (or, for a model gate, called as `deps.claude.<name>(`).
- *
- * If one fails, the message names the side to change. Either add or fix the
- * entry in `lib/summary_gate_registry.ts`, or, if the imported function is not
- * a PR-summary gate, narrow `GATE_MODULE` / `GATE_FUNCTION` below and say why.
+ * An exception is a registry entry with `completionFold: false` and a reason,
+ * never a silent skip. The drift test does not read source text.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -30,98 +25,137 @@ import {
 import type { PrePrVerifierResult } from "../lib/pre_pr_verifier.ts";
 import { PR_SUMMARY_GATES } from "../lib/summary_gate_registry.ts";
 import type { SummaryClaimCheckResult } from "../lib/summary_claim_check.ts";
+import {
+  runCompletion,
+  type Scenario,
+} from "./support/completion_summary_harness.ts";
 
-const COMPLETION_PHASE = new URL(
-  "../lib/phases/completion_phase.ts",
-  import.meta.url,
-);
+// --- Drift against the live completion phase (behavioural) ------------------
 
-/** Gate modules: the `_gate.ts` family plus the two model-backed gate modules. */
-const GATE_MODULE =
-  /(?:_gate\.ts|(?:^|\/)(?:summary_claim_check|pre_pr_verifier)\.ts)$/;
+/** The file the maximal run changes as a test (its removed assertion). */
+const MAXIMAL_TEST_FILE = "worker/deno/tests/maximal_block_fixture_test.ts";
 
-/** Gate functions the drift check holds the registry to. */
-const GATE_FUNCTION =
-  /^(?:validate[A-Z]\w*|find\w*Placeholders|assess[A-Z]\w*|run\w*(?:Check|Verifier))$/;
+/** A library file the run changes; the mutation and coverage runners name it. */
+const MAXIMAL_LIB_FILE = "worker/deno/lib/summary_rule_gate_retry.ts";
 
-interface ImportedName {
-  name: string;
-  module: string;
-}
+/** The claim sentence the summary carries, which the scripted model names. */
+const MAXIMAL_CLAIM = "The recovery turn writes the closure block.";
 
 /**
- * Every name in a non-type-only or type-only `import { ... } from "..."` block,
- * with its module. Aliases resolve to the imported name. Line comments inside a
- * block are dropped before the names are split.
+ * A summary no gate accepts: it carries a prompt-scrubbed marker (U+2024) and a
+ * result placeholder, and omits the closure, review, reproduction, docs sweep,
+ * branch outcomes and unmet-criteria blocks. Its Test Plan does not account for
+ * the removed assertion.
  */
-function importedNames(source: string): ImportedName[] {
-  const out: ImportedName[] = [];
-  const block = /import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*"([^"]+)";/g;
-  for (const match of source.matchAll(block)) {
-    const body = match[1]!.replace(/\/\/[^\n]*/g, "");
-    for (const raw of body.split(",")) {
-      const name = raw.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0]!
-        .trim();
-      if (/^\w+$/.test(name)) out.push({ name, module: match[2]! });
-    }
-  }
-  return out;
-}
+const MAXIMAL_SUMMARY = [
+  "## Summary",
+  "",
+  "Recovers in-run.",
+  "",
+  MAXIMAL_CLAIM,
+  "",
+  "<․!-- prompt-scrubbed notice -->",
+  "",
+  "QUALITY_RESULT_PLACEHOLDER",
+  "",
+  "## Test Plan",
+  "",
+  "- Ran the suite.",
+  "",
+].join("\n");
 
-/** Throws with the drift message, one line per problem. */
-function driftFailure(problems: string[]): never {
-  throw new Error(
-    [
-      "PR-summary gate registry drift (lib/summary_gate_registry.ts vs lib/phases/completion_phase.ts):",
-      ...problems.map((p) => `  - ${p}`),
-    ].join("\n"),
-  );
-}
+/** A test patch that drops one assertion the Test Plan does not name. */
+const MAXIMAL_TEST_PATCH = [
+  `diff --git a/${MAXIMAL_TEST_FILE} b/${MAXIMAL_TEST_FILE}`,
+  `--- a/${MAXIMAL_TEST_FILE}`,
+  `+++ b/${MAXIMAL_TEST_FILE}`,
+  "@@ -2,3 +2,2 @@",
+  "   const result = run();",
+  "-  assertEquals(result.code, 0);",
+  "   assertEquals(result.other, 1);",
+  "",
+].join("\n");
 
-// --- Drift against completion_phase.ts (sanctioned source-drift test) -------
+/**
+ * The scenario that blocks every gate the completion phase folds. The bug label
+ * engages the reproduction gate; the scripted runners supply the mutation and
+ * coverage verdicts, the claim sentence and the verifier finding.
+ */
+const MAXIMAL_SCENARIO: Scenario = {
+  summary: MAXIMAL_SUMMARY,
+  labels: ["bug", "enhancement", "work-on"],
+  claimSentences: [[MAXIMAL_CLAIM]],
+  verifier: [{
+    status: "checked",
+    review: {
+      summary: "problems found",
+      findings: [{
+        file: MAXIMAL_LIB_FILE,
+        line: 3,
+        problem: "the guard is missing",
+      }],
+      testChanges: "none",
+      testChangeNotes: [],
+      unrelatedIssues: [],
+      checklist: [],
+      closure: [],
+    },
+  }],
+  mutationSurvivors: [{
+    file: MAXIMAL_LIB_FILE,
+    line: 3,
+    description: "flip the guard",
+  }],
+  uncoveredLines: [{ file: MAXIMAL_TEST_FILE, line: 2 }],
+  testFileChange: { file: MAXIMAL_TEST_FILE, patch: MAXIMAL_TEST_PATCH },
+};
 
-Deno.test("drift - every gate function completion_phase imports from a gate module is in PR_SUMMARY_GATES", async () => {
-  const source = await Deno.readTextFile(COMPLETION_PHASE);
-  const gateFunctions = importedNames(source)
-    .filter((i) => GATE_MODULE.test(i.module) && GATE_FUNCTION.test(i.name))
-    .map((i) => i.name);
-  // A parser that matched nothing would pass vacuously; pin a known gate.
+Deno.test("drift - a maximal-blocking completion run records exactly the gates the registry folds", async () => {
+  const outcome = await runCompletion(MAXIMAL_SCENARIO);
+  const first = outcome.summaryRuleBlocks[0];
   assert(
-    gateFunctions.includes("validateDocsSweep"),
-    "drift check parsed no gate functions from completion_phase.ts — the import regex or GATE_MODULE is wrong",
+    first !== undefined,
+    "the maximal-blocking run recorded no summary-rule verdict",
   );
-  const validators = new Set(PR_SUMMARY_GATES.map((g) => g.validator));
-  const missing = [...new Set(gateFunctions)].filter((name) =>
-    !validators.has(name)
+  assert(
+    first.gates !== undefined,
+    "the first summary-rule verdict carries no gate ids",
   );
-  if (missing.length > 0) {
-    driftFailure(
-      missing.map((name) =>
-        `completion_phase.ts imports the gate function ${name}, but no PR_SUMMARY_GATES entry names it as validator: add an entry for it to lib/summary_gate_registry.ts (or, if it is not a PR-summary gate, narrow GATE_MODULE / GATE_FUNCTION in tests/pr_summary_gate_registry_test.ts and say why)`
-      ),
+  const recorded = [...first.gates];
+  const folded = PR_SUMMARY_GATES.filter((g) => g.completionFold).map((g) =>
+    g.id
+  );
+  const problems: string[] = [];
+  for (const id of new Set(recorded)) {
+    if (recorded.filter((r) => r === id).length > 1) {
+      problems.push(`completion phase recorded gate "${id}" more than once`);
+    }
+  }
+  for (const id of folded) {
+    if (!recorded.includes(id)) {
+      problems.push(
+        `registry gate "${id}" is marked completionFold: true, but the completion phase did not record it: wire it into the late-verdict fold in lib/phases/completion_phase.ts, or mark it completionFold: false with a reason in lib/summary_gate_registry.ts`,
+      );
+    }
+  }
+  for (const id of recorded) {
+    if (!folded.includes(id)) {
+      problems.push(
+        `completion phase recorded gate "${id}", which the registry does not mark completionFold: true: add or fix its entry in lib/summary_gate_registry.ts`,
+      );
+    }
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      [
+        "PR-summary gate registry drift (lib/summary_gate_registry.ts vs the completion phase's recorded gates):",
+        ...problems.map((p) => `  - ${p}`),
+      ].join("\n"),
     );
   }
 });
 
-Deno.test("drift - every PR_SUMMARY_GATES validator is imported by completion_phase", async () => {
-  const source = await Deno.readTextFile(COMPLETION_PHASE);
-  const imported = new Set(importedNames(source).map((i) => i.name));
-  const problems: string[] = [];
-  for (const gate of PR_SUMMARY_GATES) {
-    if (imported.has(gate.validator)) continue;
-    // A model gate runs through the injected `deps.claude` seam, not an import.
-    if (
-      gate.localCheck === "model" &&
-      source.includes(`deps.claude.${gate.validator}(`)
-    ) {
-      continue;
-    }
-    problems.push(
-      `PR_SUMMARY_GATES entry "${gate.id}" names the validator ${gate.validator}, which completion_phase.ts neither imports nor calls as deps.claude.${gate.validator}(: point the entry at the function the completion phase actually calls (or fix the entry's validator) in lib/summary_gate_registry.ts`,
-    );
-  }
-  if (problems.length > 0) driftFailure(problems);
-});
+// --- Registry shape ----------------------------------------------------------
 
 Deno.test("registry - ids and names are unique and every gate carries an issue reference", () => {
   const ids = PR_SUMMARY_GATES.map((g) => g.id);
@@ -130,6 +164,16 @@ Deno.test("registry - ids and names are unique and every gate carries an issue r
   assertEquals(new Set(names).size, names.length);
   for (const gate of PR_SUMMARY_GATES) {
     assert(/^#\d+$/.test(gate.issueRef), `${gate.id} has no issue reference`);
+  }
+});
+
+Deno.test("registry - every completionFold: false exception names a reason", () => {
+  for (const gate of PR_SUMMARY_GATES) {
+    if (gate.completionFold) continue;
+    assert(
+      gate.reason.trim().length > 0,
+      `${gate.id} is completionFold: false with no reason`,
+    );
   }
 });
 

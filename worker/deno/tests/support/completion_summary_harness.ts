@@ -13,6 +13,12 @@ import type {
   PrePrVerifierInput,
   PrePrVerifierResult,
 } from "../../lib/pre_pr_verifier.ts";
+import type {
+  CarriedLine,
+  CoverageCarryOverResult,
+} from "../../lib/coverage_carryover_gate.ts";
+import type { Mutant, MutationCheckResult } from "../../lib/mutation_gate.ts";
+import type { SummaryRuleRunVerdict } from "../../lib/summary_rule_gate_retry.ts";
 import { AutoMergeResult } from "../../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../../types.ts";
 import { buildDefaultWorkerConfig } from "../../lib/config_defaults.ts";
@@ -211,6 +217,24 @@ export interface Scenario {
    * #4234). Other comments post normally, so only that one post is refused.
    */
   failCommentContaining?: string;
+  /**
+   * Survivors the scripted mutation-check runner reports on changed lines
+   * (Issue #4234). Omitted, the runner is not wired and the check is not
+   * applicable.
+   */
+  mutationSurvivors?: readonly Mutant[];
+  /**
+   * Lines an edited or removed test used to reach that no test covers now,
+   * as the scripted coverage carry-over runner reports them (Issue #4234).
+   * Omitted, the runner is not wired and the check is not applicable.
+   */
+  uncoveredLines?: readonly CarriedLine[];
+  /**
+   * A test file the PR changes (Issue #4234): it joins the changed files, and
+   * `patch` is its diff against the base, which the removed-assertion gate
+   * reads. Omitted, the PR changes no test file.
+   */
+  testFileChange?: { file: string; patch: string };
 }
 
 export interface Outcome {
@@ -234,6 +258,8 @@ export interface Outcome {
   finalisedBeforeTurn: number[];
   /** Every logger call the run made, in order (Issue #4234). */
   logs: { level: "info" | "warn" | "error"; message: string }[];
+  /** The summary-rule verdicts the run recorded, in order (Issue #4234). */
+  summaryRuleBlocks: readonly SummaryRuleRunVerdict[];
 }
 
 /**
@@ -374,7 +400,24 @@ async function runCompletionWithoutHostCap(
           });
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
-          return ok("worker/deno/lib/summary_rule_gate_retry.ts");
+          return ok(
+            [
+              "worker/deno/lib/summary_rule_gate_retry.ts",
+              ...(scenario.testFileChange === undefined
+                ? []
+                : [scenario.testFileChange.file]),
+            ].join("\n"),
+          );
+        }
+        if (cmdArgs[0] === "diff" && cmdArgs.includes("--name-status")) {
+          return ok(
+            scenario.testFileChange === undefined
+              ? ""
+              : `M\0${scenario.testFileChange.file}\0`,
+          );
+        }
+        if (cmdArgs.includes("--diff-filter=AMRD")) {
+          return ok(scenario.testFileChange?.patch ?? "");
         }
         if (cmdArgs.includes("diff") && cmdArgs.includes("--unified=0")) {
           return ok(scenario.diffUnified0 ?? "");
@@ -449,6 +492,31 @@ async function runCompletionWithoutHostCap(
           },
         });
       },
+      ...(scenario.mutationSurvivors === undefined ? {} : {
+        runMutationCheck: (): Promise<MutationCheckResult> => {
+          const survivors = [...scenario.mutationSurvivors!];
+          return Promise.resolve({
+            kind: "completed",
+            language: "deno",
+            survivors,
+            killed: 0,
+            total: survivors.length,
+          });
+        },
+      }),
+      ...(scenario.uncoveredLines === undefined ? {} : {
+        runCoverageCarryOverCheck: (): Promise<CoverageCarryOverResult> => {
+          const uncovered = [...scenario.uncoveredLines!];
+          return Promise.resolve({
+            kind: "completed",
+            changedTests: scenario.testFileChange === undefined
+              ? []
+              : [scenario.testFileChange.file],
+            carried: uncovered.length,
+            uncovered,
+          });
+        },
+      }),
     },
     pr: {
       findExistingPrForIssue: () =>
@@ -499,5 +567,6 @@ async function runCompletionWithoutHostCap(
     finalisePrCalls,
     finalisedBeforeTurn,
     logs,
+    summaryRuleBlocks: state.summaryRuleBlocks ?? [],
   };
 }
