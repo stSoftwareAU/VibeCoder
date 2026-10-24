@@ -205,6 +205,25 @@ Deno.test("prose scope follows named sections and source basenames into untouche
       s.includes("not checked, never passed")
     ),
   );
+  // Section-cap overflow is also recorded in capOverflow, not only notChecked.
+  assert(capped.capOverflow.length > 0);
+  assert(capped.capOverflow.every((s) => s.includes("-section cap")));
+  assert(capped.capOverflow.every((s) => capped.notChecked.includes(s)));
+  assertFalse(scope.capOverflow.length > 0);
+  const fileCapped = await collectDocProseScope({
+    changedFiles: ["src/gate.ts"],
+    trackedFiles: [...files.keys()],
+    summaryContent: "",
+    diff: "+++ b/src/gate.ts\n@@ -2,0 +3,1 @@\n+third();\n",
+    readFile: async (p) => files.get(p),
+    fileCap: 1,
+  });
+  assertEquals(fileCapped.contents.size, 1);
+  assert(fileCapped.capOverflow.length > 0);
+  assert(fileCapped.capOverflow.every((s) => s.includes("1-file cap")));
+  assert(
+    fileCapped.capOverflow.every((s) => fileCapped.notChecked.includes(s)),
+  );
 });
 
 Deno.test("prose scope bounds the issue's Configuration section and recognises multiline declaration parameters", async () => {

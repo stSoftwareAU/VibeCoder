@@ -354,6 +354,197 @@ function extractBumpSkipNote(body: string): string {
     : "";
 }
 
+/** Metadata shared by candidate verification and publication. */
+export type PrBodyCandidateView = Pick<
+  PrViewJson,
+  "body" | "files" | "headRefName"
+>;
+
+export type SyncedPrBodyCandidate =
+  | { kind: "candidate"; body: string; issueNumber: number; adopting: boolean }
+  | { kind: "ineligible"; reason: string };
+
+/**
+ * Build the description for the checkout without publishing or uploading images.
+ * Verification always rebuilds; publication retains its existing staleness checks.
+ * Both paths share ownership, adoption, facts rendering and body assembly (#3982).
+ */
+export async function buildSyncedPrBodyCandidate(
+  input: SyncPrBodyInput,
+  deps: Pick<SyncPrBodyDeps, "logger" | "runGitCommand">,
+  view: PrBodyCandidateView,
+  skipUnchanged = false,
+): Promise<Result<SyncedPrBodyCandidate>> {
+  const { logger } = deps;
+  let issueNumber = issueNumberFromMarker(view.body ?? "");
+  if (issueNumber !== undefined && input.adoptOnly) {
+    return {
+      ok: true,
+      value: { kind: "ineligible", reason: "worker marker present" },
+    };
+  }
+
+  // Issue #3804: an agent that raised its own PR with `gh pr create` wrote a
+  // marker-less body. Adopt it when its head is this run's own worker branch.
+  let adopting = false;
+  if (issueNumber === undefined) {
+    const branchIssue = view.headRefName === input.branchName
+      ? issueNumberFromBranch(input.branchName)
+      : null;
+    if (branchIssue === null) {
+      return {
+        ok: true,
+        value: { kind: "ineligible", reason: "no worker marker" },
+      };
+    }
+    issueNumber = branchIssue;
+    adopting = true;
+    logger.info(
+      "Adopting an agent-raised PR body on the run's own branch (Issue #3804)",
+      {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        branch: input.branchName,
+        issueNumber,
+      },
+    );
+  }
+
+  // The draft was never built from the summary, so an adopted body has no
+  // digest to compare and no before-push SHA to diff against: always rebuild.
+  const recordedDigest = adopting
+    ? undefined
+    : summaryDigestFromBody(view.body ?? "");
+
+  if (skipUnchanged && recordedDigest === undefined && !adopting) {
+    // Legacy body, built before the summary-digest marker existed (Issue
+    // #3315): fall back to the original before-push-SHA diff.
+    if (!input.beforeSha) {
+      logger.warn(
+        "No before-push SHA available — skipping PR body sync (Issue #3089)",
+      );
+      return {
+        ok: true,
+        value: { kind: "ineligible", reason: "no before-push sha" },
+      };
+    }
+
+    // Issue #3535: the facts file is a second pathspec so a facts-only change
+    // is not skipped.
+    const summaryRelPath = prSummaryPath(issueNumber);
+    const factsRelPath = prSummaryFactsPath(issueNumber);
+    const diffResult = await deps.runGitCommand(
+      [
+        "diff",
+        "--name-only",
+        input.beforeSha,
+        "HEAD",
+        "--",
+        summaryRelPath,
+        factsRelPath,
+      ],
+      { cwd: input.repoPath },
+    );
+    if (!diffResult.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to diff ${summaryRelPath} and ${factsRelPath}: ${diffResult.error.message}`,
+        ),
+      };
+    }
+    if (diffResult.value.stdout.trim().length === 0) {
+      return {
+        ok: true,
+        value: { kind: "ineligible", reason: "summary unchanged" },
+      };
+    }
+  }
+
+  const summaryResult = await loadPrSummary(input.repoPath, issueNumber);
+  if (!summaryResult.ok) {
+    return { ok: false, error: summaryResult.error };
+  }
+  if (summaryResult.value.source === "not_found") {
+    return {
+      ok: true,
+      value: { kind: "ineligible", reason: "summary file deleted" },
+    };
+  }
+
+  const changedFiles = (view.files ?? []).map((f) => f.path);
+  const rawSummary = summaryResult.value.content;
+  // Issue #3535: fail loud on an invalid facts file; never rebuild without it.
+  const factsOutcome = await resolveBranchOutcomesFacts(
+    input.repoPath,
+    issueNumber,
+  );
+  if (factsOutcome.kind === "error") {
+    return { ok: false, error: new Error(factsOutcome.reason) };
+  }
+  // Must equal the digest completion_phase records at PR creation.
+  const currentDigest = await prSummaryDigest(
+    prSummaryDigestInput(
+      rawSummary,
+      factsOutcome.kind === "valid" ? factsOutcome.content : null,
+    ),
+  );
+  let summaryContent = rawSummary;
+  if (factsOutcome.kind === "valid") {
+    const rendered = applyBranchOutcomesFacts(
+      rawSummary,
+      factsOutcome.rendered,
+    );
+    if (!rendered.ok) return rendered;
+    summaryContent = rendered.value;
+  }
+
+  if (
+    skipUnchanged && recordedDigest !== undefined &&
+    recordedDigest === currentDigest
+  ) {
+    return {
+      ok: true,
+      value: { kind: "ineligible", reason: "summary unchanged" },
+    };
+  }
+
+  let extraSections = "";
+  const branchEvidence = findBranchEvidenceImages(changedFiles);
+  if (
+    branchEvidence.length > 0 &&
+    findScreenshotReferences(summaryContent).length === 0
+  ) {
+    extraSections += formatBranchEvidenceSection(branchEvidence);
+  }
+  extraSections += extractMilestoneSection(view.body ?? "");
+  extraSections += extractBumpSkipNote(view.body ?? "");
+
+  const footer = buildWorkerFooter({
+    workerName: input.workerName,
+    githubUser: input.githubUser,
+    runId: input.runId,
+  });
+
+  // Issue #3403: carry over the tier marker the PR was created with, so a
+  // review-fix refresh never drops the attribution a later outcome needs.
+  // A legacy body with no marker (never carried a tier) gets none added.
+  const body = assemblePrBody({
+    summaryContent,
+    issueNumber,
+    extraSections,
+    footer,
+    summaryDigest: currentDigest,
+    subAgentTier: subAgentTierFromBody(view.body ?? ""),
+    assignmentId: assignmentIdFromBody(view.body ?? ""),
+  });
+
+  return {
+    ok: true,
+    value: { kind: "candidate", body, issueNumber, adopting },
+  };
+}
+
 /**
  * Refresh a PR's body from its (possibly rewritten) summary file.
  *
@@ -439,135 +630,16 @@ export async function syncPrBodyFromSummary(
     };
   }
 
-  let issueNumber = issueNumberFromMarker(view.body ?? "");
-  if (issueNumber !== undefined && input.adoptOnly) {
+  const candidate = await buildSyncedPrBodyCandidate(input, deps, view, true);
+  if (!candidate.ok) return candidate;
+  if (candidate.value.kind === "ineligible") {
     return {
       ok: true,
-      value: { status: "skipped", reason: "worker marker present" },
+      value: { status: "skipped", reason: candidate.value.reason },
     };
   }
-
-  // Issue #3804: an agent that raised its own PR with `gh pr create` wrote a
-  // marker-less body. Adopt it when its head is this run's own worker branch.
-  let adopting = false;
-  if (issueNumber === undefined) {
-    const branchIssue = view.headRefName === input.branchName
-      ? issueNumberFromBranch(input.branchName)
-      : null;
-    if (branchIssue === null) {
-      return {
-        ok: true,
-        value: { status: "skipped", reason: "no worker marker" },
-      };
-    }
-    issueNumber = branchIssue;
-    adopting = true;
-    logger.info(
-      "Adopting an agent-raised PR body on the run's own branch (Issue #3804)",
-      {
-        repo: input.repo,
-        prNumber: input.prNumber,
-        branch: input.branchName,
-        issueNumber,
-      },
-    );
-  }
-
-  // The draft was never built from the summary, so an adopted body has no
-  // digest to compare and no before-push SHA to diff against: always rebuild.
-  const recordedDigest = adopting
-    ? undefined
-    : summaryDigestFromBody(view.body ?? "");
-
-  if (recordedDigest === undefined && !adopting) {
-    // Legacy body, built before the summary-digest marker existed (Issue
-    // #3315): fall back to the original before-push-SHA diff.
-    if (!input.beforeSha) {
-      logger.warn(
-        "No before-push SHA available — skipping PR body sync (Issue #3089)",
-      );
-      return {
-        ok: true,
-        value: { status: "skipped", reason: "no before-push sha" },
-      };
-    }
-
-    // Issue #3535: the facts file is a second pathspec so a facts-only change
-    // is not skipped.
-    const summaryRelPath = prSummaryPath(issueNumber);
-    const factsRelPath = prSummaryFactsPath(issueNumber);
-    const diffResult = await deps.runGitCommand(
-      [
-        "diff",
-        "--name-only",
-        input.beforeSha,
-        "HEAD",
-        "--",
-        summaryRelPath,
-        factsRelPath,
-      ],
-      { cwd: input.repoPath },
-    );
-    if (!diffResult.ok) {
-      return {
-        ok: false,
-        error: new Error(
-          `Failed to diff ${summaryRelPath} and ${factsRelPath}: ${diffResult.error.message}`,
-        ),
-      };
-    }
-    if (diffResult.value.stdout.trim().length === 0) {
-      return {
-        ok: true,
-        value: { status: "skipped", reason: "summary unchanged" },
-      };
-    }
-  }
-
-  const summaryResult = await loadPrSummary(input.repoPath, issueNumber);
-  if (!summaryResult.ok) {
-    return { ok: false, error: summaryResult.error };
-  }
-  if (summaryResult.value.source === "not_found") {
-    return {
-      ok: true,
-      value: { status: "skipped", reason: "summary file deleted" },
-    };
-  }
-
-  const changedFiles = (view.files ?? []).map((f) => f.path);
-  const rawSummary = summaryResult.value.content;
-  // Issue #3535: fail loud on an invalid facts file; never rebuild without it.
-  const factsOutcome = await resolveBranchOutcomesFacts(
-    input.repoPath,
-    issueNumber,
-  );
-  if (factsOutcome.kind === "error") {
-    return { ok: false, error: new Error(factsOutcome.reason) };
-  }
-  // Must equal the digest completion_phase records at PR creation.
-  const currentDigest = await prSummaryDigest(
-    prSummaryDigestInput(
-      rawSummary,
-      factsOutcome.kind === "valid" ? factsOutcome.content : null,
-    ),
-  );
-  let summaryContent = rawSummary;
-  if (factsOutcome.kind === "valid") {
-    const rendered = applyBranchOutcomesFacts(
-      rawSummary,
-      factsOutcome.rendered,
-    );
-    if (!rendered.ok) return rendered;
-    summaryContent = rendered.value;
-  }
-
-  if (recordedDigest !== undefined && recordedDigest === currentDigest) {
-    return {
-      ok: true,
-      value: { status: "skipped", reason: "summary unchanged" },
-    };
-  }
+  const { issueNumber, adopting } = candidate.value;
+  let body = candidate.value.body;
 
   // PR #3353 review: a caller that measured "nothing left unpushed" has only
   // shown this checkout is not AHEAD of the remote — it can still be
@@ -630,36 +702,6 @@ export async function syncPrBodyFromSummary(
       },
     );
   }
-
-  let extraSections = "";
-  const branchEvidence = findBranchEvidenceImages(changedFiles);
-  if (
-    branchEvidence.length > 0 &&
-    findScreenshotReferences(summaryContent).length === 0
-  ) {
-    extraSections += formatBranchEvidenceSection(branchEvidence);
-  }
-  extraSections += extractMilestoneSection(view.body ?? "");
-  extraSections += extractBumpSkipNote(view.body ?? "");
-
-  const footer = buildWorkerFooter({
-    workerName: input.workerName,
-    githubUser: input.githubUser,
-    runId: input.runId,
-  });
-
-  // Issue #3403: carry over the tier marker the PR was created with, so a
-  // review-fix refresh never drops the attribution a later outcome needs.
-  // A legacy body with no marker (never carried a tier) gets none added.
-  let body = assemblePrBody({
-    summaryContent,
-    issueNumber,
-    extraSections,
-    footer,
-    summaryDigest: currentDigest,
-    subAgentTier: subAgentTierFromBody(view.body ?? ""),
-    assignmentId: assignmentIdFromBody(view.body ?? ""),
-  });
 
   body = await finalisePrBodyImages(
     body,

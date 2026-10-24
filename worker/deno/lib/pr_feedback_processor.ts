@@ -110,6 +110,7 @@ import { verifyFollowUpIssueExists } from "./escape_hatch_verify.ts";
 import { loadTrustedFollowUpAuthors } from "./escape_hatch_trusted_authors.ts";
 import { fetchTrustedBotReviewComments } from "./pr_review_context.ts";
 import { noteAgentRunWorkItem } from "./handler_watchdog.ts";
+import { describeUnpushedCommits } from "./git_remote_head.ts";
 import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
 import { getRunId } from "./run_id.ts";
 import {
@@ -335,6 +336,8 @@ export interface PrFeedbackProcessorDeps {
    */
   driftCheckFn?: typeof runPrFeedbackDriftCheck;
   feedbackVerifierFn?: typeof verifyFeedbackFix;
+  /** Measure this branch before syncing a held review whose push may not have run. */
+  describeUnpushedFn?: typeof describeUnpushedCommits;
   /**
    * Lease renewal interval for a claimed `pr_review` (Issue #3383). Defaults
    * to {@link PR_REVIEW_CLAIM_RENEW_MS}. A test seam — production never
@@ -1577,10 +1580,16 @@ async function _processFeedbackWithHeartbeat(
           prNumber,
           repoPath: processorDeps.workDir,
           commentBody,
+          branchName: input.branchName,
+          workerName: processorDeps.workerName ?? "",
+          githubUser: processorDeps.githubUser ?? Deno.env.get("GITHUB_USER") ??
+            "",
+          runId: getRunId(),
           timeoutSeconds: claudeTimeout,
           logger,
         }, {
           runGh: (args) => deps.github.runGhCommand(args),
+          runGitCommand: deps.git.runGitCommand,
           ask: runAgentTracked,
         });
       if (turnLimit.failure) {
@@ -1626,7 +1635,56 @@ async function _processFeedbackWithHeartbeat(
       if (turnLimit.failure) return await failTurnLimit(turnLimit.failure);
     }
   }
+  const syncBody = async () => {
+    await runPrBodySync(
+      {
+        repo,
+        prNumber,
+        repoPath: processorDeps.workDir,
+        beforeSha,
+        workerName: processorDeps.workerName ?? "",
+        githubUser: processorDeps.githubUser ??
+          Deno.env.get("GITHUB_USER") ?? "",
+        runId: getRunId(),
+        branchName: input.branchName,
+      },
+      {
+        runGhCommand: (args: string[]) => deps.github.runGhCommand(args),
+        runGitCommand: deps.git.runGitCommand,
+        logger,
+      },
+      processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary,
+    );
+  };
   const holdUnverifiedReview = async (failure: Error) => {
+    // An agent may already have pushed the corrected summary. Refresh that
+    // visible head even when another finding still blocks this review (#3982).
+    // Never publish a description of commits that remain local or unmeasured.
+    if (fixBranch === undefined) {
+      try {
+        const unpushed =
+          await (processorDeps.describeUnpushedFn ?? describeUnpushedCommits)(
+            pushBranch,
+            { cwd: processorDeps.workDir },
+          );
+        if (unpushed.ok && unpushed.value.count === 0) {
+          await syncBody();
+        } else {
+          logger.warn("Held review body sync skipped", {
+            prNumber,
+            reason: unpushed.ok
+              ? `${unpushed.value.count} commits remain unpushed`
+              : unpushed.error.message,
+          });
+        }
+      } catch (error) {
+        // A failed measurement or sync must not suppress the merge hold.
+        logger.warn("Held review body sync failed", {
+          prNumber,
+          error: String(error),
+        });
+      }
+    }
     const message =
       `Review-fix verification did not clear. The review remains outstanding.\n\n${failure.message}`;
     await chargeReviewFailure(message);
@@ -1837,26 +1895,7 @@ async function _processFeedbackWithHeartbeat(
     fixBranch === undefined &&
     ((pushSucceeded && hasChanges) || nothingLeftToPush)
   ) {
-    const syncFn = processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary;
-    await runPrBodySync(
-      {
-        repo,
-        prNumber,
-        repoPath: processorDeps.workDir,
-        beforeSha,
-        workerName: processorDeps.workerName ?? "",
-        githubUser: processorDeps.githubUser ??
-          Deno.env.get("GITHUB_USER") ?? "",
-        runId: getRunId(),
-        branchName: input.branchName,
-      },
-      {
-        runGhCommand: (args: string[]) => deps.github.runGhCommand(args),
-        runGitCommand: deps.git.runGitCommand,
-        logger,
-      },
-      syncFn,
-    );
+    await syncBody();
   }
 
   // Read .pr_response_message if Claude created one (Issue #1458).

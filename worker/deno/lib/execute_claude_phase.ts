@@ -1,3 +1,4 @@
+import { isAutomaticProviderRoutingActive } from "./provider_auto_state.ts";
 import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 /**
  * Claude execution phase orchestration (Issue #1227).
@@ -69,9 +70,15 @@ import { setActiveRepoCodexModelEffortOverrides } from "./codex_executor.ts";
 import { setActiveRepoGeminiModelOverrides } from "./gemini_executor.ts";
 import { setActiveRepoDeepSeekModelOverrides } from "./deepseek_executor.ts";
 import type { AgentProviderSelector } from "./agent_provider.ts";
-import { resolveOrchestrationSettings } from "./orchestration/role_config.ts";
+import {
+  resolveIssueOrchestration,
+  resolveOrchestrationSettings,
+} from "./orchestration/role_config.ts";
 import { runOrchestratedIssueRun } from "./orchestration/issue_run_gate.ts";
-import { resolveInvocationAgentProvider } from "./agent_provider.ts";
+import {
+  resolveInvocationAgentProvider,
+  selectAgentProvider,
+} from "./agent_provider.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import {
   type PrepareCodegraphContextFn,
@@ -1329,12 +1336,17 @@ async function executeClaudePhaseBody(
   // before the prompt is built so the prompt and the argv cannot disagree.
   // Issue #3642: with external orchestration on, the native split is never
   // resolved, so no executor definition reaches the prompt or the argv.
-  const externalOrchestration = (repoConfigs?.[repo]?.externalOrchestration ??
-    options.externalOrchestration) === true;
-  const effectiveOrchestrationSettings = resolveOrchestrationSettings(
-    options.externalOrchestrationSettings ?? {},
-    repoConfigs?.[repo]?.externalOrchestrationSettings,
-  );
+  const { externalOrchestration, effectiveOrchestrationSettings } =
+    resolveIssueOrchestration(
+      (repoConfigs?.[repo]?.externalOrchestration ??
+        options.externalOrchestration) === true,
+      resolveOrchestrationSettings(
+        options.externalOrchestrationSettings ?? {},
+        repoConfigs?.[repo]?.externalOrchestrationSettings,
+      ),
+      selectAgentProvider(invocationAgentProvider).id,
+      isAutomaticProviderRoutingActive(),
+    );
   const issueExecutorSplit = !externalOrchestration &&
     isIssueExecutorSplitEnabled(
       "issue",
