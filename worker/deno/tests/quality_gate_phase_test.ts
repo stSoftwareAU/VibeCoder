@@ -16,15 +16,22 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   buildFinalFailureMessage,
   buildRetryPrompt,
   carryEnvThroughSudo,
+  createDefaultDeps,
   isDockerInfraFailure,
   isMissingCommandFailure,
   type QualityGateDeps,
   type QualityGateParams,
+  runCommandAsWorker,
   runDockerQualityCheck,
   runNativeQualityCheck,
   runQualityGateCheck,
@@ -896,4 +903,15 @@ Deno.test("carryEnvThroughSudo - a value it cannot vouch for is refused, not quo
     assertStringIncludes(String(err), "refusing to carry");
   }
   assertEquals(threw, true);
+});
+
+Deno.test("quality gate phase - a command timeout is not a pass (Issue #4249)", async () => {
+  const result = await runCommandAsWorker(["sleep", "30"], { timeoutMs: 0 });
+  assertNotEquals(result.exitCode, 0);
+  assertStringIncludes(result.output, "timed out");
+});
+
+Deno.test("quality gate phase - a probe timeout is not a fallback user id (Issue #4249)", async () => {
+  const deps = createDefaultDeps({}, 0);
+  await assertRejects(() => deps.getUserId(), Error, "timed out");
 });

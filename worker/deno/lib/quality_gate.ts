@@ -43,6 +43,7 @@ import {
   SPAWN_TIMEOUT_BASELINE,
   SPAWN_TIMEOUT_SCAN_DIRS,
 } from "./spawn_timeout_check.ts";
+import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
 import { scanDirectoriesForRedactInversion } from "./redact_truncate_order_check.ts";
 import { scanDirectoriesForSharedTmpPath } from "./tmp_state_dir_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
@@ -193,21 +194,40 @@ export interface QualityGateConfig {
  * mid-flight and reported `gh command failed (exit 143)` as a code failure.
  * `clearEnv` makes the omission mean what the caller wrote.
  *
- * Returns the exit code and combined stdout/stderr.
+ * Returns the exit code and combined stdout/stderr. A timeout is exit 124,
+ * never a zero exit.
  */
+export const QUALITY_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
+
 export async function runCommand(
   cmd: string[],
-  options?: { cwd?: string; env?: Record<string, string> },
+  options?: {
+    cwd?: string;
+    env?: Record<string, string>;
+    timeoutMs?: number;
+  },
 ): Promise<{ exitCode: number; output: string }> {
-  const command = new Deno.Command(cmd[0]!, {
-    args: cmd.slice(1),
-    cwd: options?.cwd,
-    ...(options?.env === undefined ? {} : { env: options.env, clearEnv: true }),
-    stdout: "piped",
-    stderr: "piped",
-  });
+  const timeoutMs = options?.timeoutMs ?? QUALITY_COMMAND_TIMEOUT_MS;
+  const executable = cmd[0] ?? "";
+  let result: Deno.CommandOutput;
+  try {
+    result = await commandOutputWithTimeout(executable, {
+      args: cmd.slice(1),
+      cwd: options?.cwd,
+      ...(options?.env === undefined
+        ? {}
+        : { env: options.env, clearEnv: true }),
+      stdout: "piped",
+      stderr: "piped",
+      timeoutMs,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("timed out after")) {
+      return { exitCode: 124, output: error.message };
+    }
+    throw error;
+  }
 
-  const result = await command.output();
   const stdout = new TextDecoder().decode(result.stdout);
   const stderr = new TextDecoder().decode(result.stderr);
   const output = stdout + (stderr ? "\n" + stderr : "");

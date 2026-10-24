@@ -72,6 +72,19 @@ export async function runWithTimeout(
 ): Promise<Result<SubprocessResult>> {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_SUBPROCESS_TIMEOUT_MS;
 
+  if (!(timeoutMs > 0)) {
+    return {
+      ok: true,
+      value: {
+        success: false,
+        code: 124,
+        stdout: "",
+        stderr: `Timed out after ${timeoutMs}ms`,
+        timedOut: true,
+      },
+    };
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -183,6 +196,53 @@ export async function runWithTimeout(
     };
   } finally {
     controller.signal.removeEventListener("abort", onAbort);
+  }
+}
+
+/** True when `error` is a timeout raised by {@link commandOutputWithTimeout}. */
+export function isCommandTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("timed out after");
+}
+
+/**
+ * Run `Deno.Command` and reject when it exceeds `timeoutMs`.
+ *
+ * A timeout of zero or less fails immediately and does not spawn. The thrown
+ * error names the executable. Callers report that error as a timeout or a
+ * failure; they do not turn it into a successful result.
+ */
+export async function commandOutputWithTimeout(
+  executable: string,
+  options: Deno.CommandOptions & { timeoutMs: number },
+): Promise<Deno.CommandOutput> {
+  const { timeoutMs, ...commandOptions } = options;
+  if (!(timeoutMs > 0)) {
+    throw new Error(`${executable} timed out after ${timeoutMs}ms`);
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const command = new Deno.Command(executable, {
+      ...commandOptions,
+      signal: controller.signal,
+    });
+    const output = await command.output();
+    if (controller.signal.aborted) {
+      throw new Error(`${executable} timed out after ${timeoutMs}ms`);
+    }
+    return output;
+  } catch (error) {
+    if (
+      controller.signal.aborted ||
+      (error instanceof DOMException && error.name === "AbortError") ||
+      isCommandTimeoutError(error)
+    ) {
+      throw new Error(`${executable} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

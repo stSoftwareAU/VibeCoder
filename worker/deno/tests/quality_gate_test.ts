@@ -26,6 +26,7 @@ import {
   type QualityGateConfig,
   runChecksParallel,
   runChecksSequential,
+  runCommand,
   runDenoCheck,
   runDenoFmtCheck,
   runDenoTests,
@@ -1222,4 +1223,11 @@ Deno.test("denoCheckDigest - null when no cache dir is set, a tree+sources key w
     await Deno.remove(root, { recursive: true });
     await Deno.remove(cacheDir, { recursive: true });
   }
+});
+
+Deno.test("runCommand - a timeout is exit 124, not a pass (Issue #4249)", async () => {
+  const result = await runCommand(["sleep", "30"], { timeoutMs: 0 });
+  assertNotEquals(result.exitCode, 0);
+  assertEquals(result.exitCode, 124);
+  assertStringIncludes(result.output, "timed out");
 });

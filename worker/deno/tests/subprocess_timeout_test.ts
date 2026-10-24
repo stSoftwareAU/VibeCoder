@@ -6,8 +6,14 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
+import {
+  commandOutputWithTimeout,
   DEFAULT_SUBPROCESS_TIMEOUT_MS,
   EXTENDED_SUBPROCESS_TIMEOUT_MS,
   fetchWithTimeout,
@@ -248,4 +254,22 @@ Deno.test({
     assert(result.ok && result.value.stderr.includes("Timed out after 300ms"));
     assert(result.ok && result.value.stderr.includes("diagnostic"));
   },
+});
+
+Deno.test("runWithTimeout - a non-positive timeout is a timeout, not success", async () => {
+  const result = await runWithTimeout("echo", ["hi"], { timeoutMs: 0 });
+  assert(result.ok);
+  if (result.ok) {
+    assertEquals(result.value.success, false);
+    assertEquals(result.value.timedOut, true);
+    assertEquals(result.value.code, 124);
+  }
+});
+
+Deno.test("commandOutputWithTimeout - a non-positive timeout names the command and does not spawn", async () => {
+  await assertRejects(
+    () => commandOutputWithTimeout("sleep", { args: ["30"], timeoutMs: 0 }),
+    Error,
+    "sleep timed out after 0ms",
+  );
 });

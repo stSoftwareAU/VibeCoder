@@ -554,3 +554,11 @@ Deno.test("formatBaselineCarryoverNote - plural grammar for count > 1", () => {
   assertStringIncludes(note, "3 pre-existing");
   assertStringIncludes(note, "findings were");
 });
+
+Deno.test("detectTool - a which timeout is a failure, not a found tool (Issue #4249)", async () => {
+  const result = await detectTool("zz-not-deno", undefined, 0);
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "timed out");
+  }
+});
