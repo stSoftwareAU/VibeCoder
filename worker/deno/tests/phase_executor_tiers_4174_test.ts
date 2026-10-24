@@ -128,23 +128,25 @@ function executorPhases(): string[] {
       }
     }
     if (!called) continue;
-    // A phase that rides on a prompt object, or on a call argument, in a
-    // function that does invoke the executor. Covers quorum's spec array
-    // and clarification's pass-through without listing the names.
+    // Prompt specifications may be nested in a function or array. Inspect
+    // each object's own fields; a phase in an outcome or callback is not
+    // an executor phase merely because its enclosing function has a prompt.
     for (let i = 0; i < text.length; i++) {
       if (text[i] !== "{") continue;
       const end = matchBrace(text, i);
-      if (end === undefined) break;
-      const object = text.slice(i, end + 1);
-      if (!object.includes("phase")) {
-        i = end;
-        continue;
+      if (end === undefined) continue;
+      let ownFields = "";
+      for (let j = i + 1; j < end; j++) {
+        if (text[j] === "{") {
+          const nestedEnd = matchBrace(text, j);
+          if (nestedEnd !== undefined) {
+            j = nestedEnd;
+            continue;
+          }
+        }
+        ownFields += text[j];
       }
-      let before = i - 1;
-      while (before >= 0 && /\s/.test(text[before]!)) before--;
-      const callArg = before >= 0 && text[before] === "(";
-      if (callArg || /\bprompt\s*:/.test(object)) addFromObject(object);
-      i = end;
+      if (/\bprompt\s*:/.test(ownFields)) addFromObject(ownFields);
     }
   }
   return [...phases].sort();
@@ -154,6 +156,11 @@ Deno.test("every phase passed to the work executor resolves under the default co
   const phases = executorPhases();
   assert(phases.includes("merge_conflict"), phases.join(", "));
   assert(phases.includes("compaction"), phases.join(", "));
+  assertEquals(
+    phases.includes("completion"),
+    false,
+    "outcome metadata is not a model invocation",
+  );
   const missing = phases.filter((phase) => !PHASE_MODEL_DEFAULTS[phase]);
   assertEquals(
     missing,
