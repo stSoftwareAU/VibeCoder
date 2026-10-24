@@ -73,10 +73,12 @@ function assertCoverage(
   if (rows.length === 0) problems.push("Row scan found nothing");
   // A Set is useful for lookup, but must not hide duplicate coverage rows.
   // Duplicate registrations can disguise stale fixtures or conflicting tests.
-  for (const [entries, description] of [
-    [rows, "coverage row"],
-    [allowlist.map((entry) => entry.name), "NO_UNTRUSTED_INPUT entry"],
-  ] as const) {
+  for (
+    const [entries, description] of [
+      [rows, "coverage row"],
+      [allowlist.map((entry) => entry.name), "NO_UNTRUSTED_INPUT entry"],
+    ] as const
+  ) {
     const seen = new Set<string>();
     for (const name of entries) {
       if (seen.has(name)) problems.push(`Duplicate ${description}: ${name}`);
