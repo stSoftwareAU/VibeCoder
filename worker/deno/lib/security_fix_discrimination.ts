@@ -512,8 +512,11 @@ async function discriminate(
  * `cargo test` arguments for one function. A file directly under `tests/` is its
  * own integration-test target, so `--test <stem>` skips building every other
  * target; any other layout runs the name as a filter across the package.
+ *
+ * The facts flip verifier (Issue #4187) reuses this so a Rust entry runs only
+ * the named test.
  */
-function rustTestArgs(relTest: string, name: string): string[] {
+export function rustTestArgs(relTest: string, name: string): string[] {
   const target = /^tests\/([A-Za-z0-9_-]+)\.rs$/.exec(relTest)?.[1];
   return [
     "test",
