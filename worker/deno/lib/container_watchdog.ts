@@ -56,27 +56,22 @@ import {
   type ContainerRuntimeDialect,
 } from "./container_runtime.ts";
 import { emitSelfHealEvent, type SelfHealEvent } from "./self_heal_events.ts";
-import {
-  commandOutputSyncWithTimeout,
-  isCommandTimeoutError,
-} from "./subprocess_timeout.ts";
 
-/** `kill -0` liveness probe. Seconds. A timeout is not "already dead". */
-const KILL_PROBE_TIMEOUT_MS = 10_000;
-
-/** True when `kill -0` exits zero. A non-positive timeout throws. */
-export function probePidAlive(
-  pid: number,
-  timeoutMs: number = KILL_PROBE_TIMEOUT_MS,
-): boolean {
-  const output = commandOutputSyncWithTimeout("kill", {
-    args: ["-0", String(pid)],
-    stdin: "null",
-    stdout: "null",
-    stderr: "null",
-    timeoutMs,
-  });
-  return output.code === 0;
+/**
+ * True when `pid` still holds a process.
+ *
+ * `Deno.kill(pid, 0)` asks the kernel and returns immediately. A `kill -0`
+ * subprocess cannot be timed out while `outputSync` blocks the event loop,
+ * so a hung `kill` would stall the reap (Issue #4251).
+ */
+export function probePidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    Deno.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1011,12 +1006,7 @@ export function createReapDeps(options: ReapDepsOptions): ReapDeps {
         // SIGKILL, which is harmless against a process that already exited.
         return true;
       }
-      try {
-        return probePidAlive(pid);
-      } catch (error) {
-        if (isCommandTimeoutError(error)) throw error;
-        return false;
-      }
+      return probePidAlive(pid);
     },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => Date.now(),

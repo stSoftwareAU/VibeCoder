@@ -1792,8 +1792,8 @@ export async function runQualityGate(
   // unavoidable.
   note(await runGitSpawnChokepointCheck(config));
 
-  // spawn timeout (Issue #4248) — a subprocess with no explicit timeout, and
-  // a baseline entry that no longer offends, both fail the gate.
+  // spawn timeout (Issue #4248) — any subprocess with no explicit timeout
+  // fails the gate.
   note(await runSpawnTimeoutCheck(config));
 
   // redact before truncate (Issue #1257) — a size cap may not run inside a

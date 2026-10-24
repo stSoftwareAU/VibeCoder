@@ -288,3 +288,24 @@ Deno.test("commandOutputWithTimeout - a non-positive timeout names the command a
     "sleep timed out after 0ms",
   );
 });
+
+Deno.test("commandOutputWithTimeout - a child that outlives the timeout is a timeout, not success", async () => {
+  const started = Date.now();
+  await assertRejects(
+    () =>
+      commandOutputWithTimeout("sleep", {
+        args: ["3"],
+        stdout: "null",
+        stderr: "null",
+        stdin: "null",
+        timeoutMs: 200,
+      }),
+    Error,
+    "sleep timed out after 200ms",
+  );
+  const elapsed = Date.now() - started;
+  assert(
+    elapsed < 1_500,
+    `sleep 3 was still running after ${elapsed}ms, so the timeout did not fire`,
+  );
+});

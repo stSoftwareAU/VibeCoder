@@ -10,26 +10,6 @@
  */
 
 import { buildRunIdFooterLine } from "./run_id.ts";
-import {
-  commandOutputSyncWithTimeout,
-  isCommandTimeoutError,
-} from "./subprocess_timeout.ts";
-
-/** `hostname` fallback. Seconds. A timeout is not "unknown-host". */
-const HOSTNAME_TIMEOUT_MS = 10_000;
-
-/** The `hostname` command. A non-positive timeout throws and does not spawn. */
-export function readHostnameCommand(
-  timeoutMs: number = HOSTNAME_TIMEOUT_MS,
-): string {
-  const output = commandOutputSyncWithTimeout("hostname", {
-    stdout: "piped",
-    stderr: "null",
-    timeoutMs,
-  });
-  if (!output.success) return "";
-  return new TextDecoder().decode(output.stdout).trim();
-}
 
 /** Options for resolving worker identity. */
 export interface WorkerIdentityOptions {
@@ -90,8 +70,11 @@ export function getWorkerUniqueId(workerName: string): string {
  * Tries in order (Issue #1058):
  *   1. Deno.hostname() — requires --allow-sys=hostname
  *   2. Environment variables: HOSTNAME (Linux), COMPUTERNAME (Windows), NAME
- *   3. Running `hostname` command — requires --allow-run
- *   4. Falls back to "unknown-host" only as a last resort
+ *   3. Falls back to "unknown-host" only as a last resort
+ *
+ * The `hostname` command is not spawned. A synchronous spawn cannot be
+ * interrupted, so a hung command would stall every caller of this function
+ * (Issue #4251). `Deno.hostname()` is the bounded check.
  *
  * Must work on both macOS and Ubuntu.
  */
@@ -112,15 +95,6 @@ export function getHostname(): string {
     }
   } catch {
     // Permission denied — try next fallback
-  }
-
-  // Strategy 3: Run hostname command (requires --allow-run)
-  try {
-    const h = readHostnameCommand();
-    if (h.length > 0) return h;
-  } catch (error) {
-    if (isCommandTimeoutError(error)) throw error;
-    // Command not found or permission denied
   }
 
   return "unknown-host";

@@ -45,11 +45,8 @@ import {
 import { runDirectCommand as runPurgeCommand } from "../lib/purge_stale_workflow_issues.ts";
 import { runCredentialCommand } from "../lib/repo_credentials.ts";
 import { probe } from "../lib/semgrep_check.ts";
-import {
-  commandOutputSyncWithTimeout,
-  spawnCommandWithTimeout,
-} from "../lib/subprocess_timeout.ts";
-import { readHostnameCommand } from "../lib/worker_identity.ts";
+import { spawnCommandWithTimeout } from "../lib/subprocess_timeout.ts";
+import { getHostname } from "../lib/worker_identity.ts";
 import { listLivePids } from "../lib/worker_log_gzip.ts";
 
 async function timedOut(run: () => Promise<unknown>): Promise<void> {
@@ -97,8 +94,9 @@ Deno.test("codex quota timeout is not a known budget (Issue #4251)", async () =>
   assertEquals(budget.known, false);
 });
 
-Deno.test("container liveness timeout is not 'already dead' (Issue #4251)", () => {
-  assertThrows(() => probePidAlive(1, 0), Error, "timed out");
+Deno.test("reap liveness is a kernel check, not a spawn (Issue #4251)", () => {
+  assertEquals(probePidAlive(Deno.pid), true);
+  assertEquals(probePidAlive(0), false);
 });
 
 Deno.test("lock-holder probe timeout is not 'holder gone' (Issue #4251)", () =>
@@ -161,16 +159,8 @@ Deno.test("credential mint timeout is not exit 0 (Issue #4251)", () =>
 Deno.test("semgrep probe timeout is not 'semgrep absent' (Issue #4251)", () =>
   timedOut(() => probe("semgrep", ["--version"], 0)));
 
-Deno.test("hostname command timeout is not unknown-host (Issue #4251)", () => {
-  assertThrows(() => readHostnameCommand(0), Error, "timed out");
-});
-
-Deno.test("sync command timeout does not spawn (Issue #4251)", () => {
-  assertThrows(
-    () => commandOutputSyncWithTimeout("hostname", { timeoutMs: 0 }),
-    Error,
-    "timed out",
-  );
+Deno.test("hostname comes from Deno.hostname, not a spawn (Issue #4251)", () => {
+  assertEquals(getHostname(), Deno.hostname());
 });
 
 Deno.test("live-pid snapshot timeout is not 'nothing is running' (Issue #4251)", () =>
