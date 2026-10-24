@@ -80,7 +80,12 @@ the fault immediately rather than swallowing it into a green result.
   non-zero exit code. If you catch, handle it meaningfully or re-raise with
   context.
 - **Absence of a success marker is not success** — a result is successful only
-  when success is positively confirmed.
+  when success is positively confirmed. A parsed response is no exception: when
+  the format guarantees a key is present (GraphQL selects it, a brief or schema
+  requires it) and its documented empty state is `null` or `[]`, treat only that
+  explicit value as empty. A missing key is a malformed response: reject it with
+  the field name, and test the omitted-key case as a rejection, never as the
+  empty state.
 - **Prefer loud, early failure** over continuing in a degraded or partial state
   that hides the problem downstream.
 - **A failure reason names the cause, not just the failure** — when a recorded
