@@ -2040,7 +2040,8 @@ commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
 commit changing that summary or its facts file. Rewrite the summary for the head
 in that push, whoever makes it. The step then runs the `pr-summary-check` gates
 and fails on a blocked one. The step has no issue body, labels, claim check or
-verifier, so the gates that need them are reported as not checked. A PR carrying no summary passes with a log line. On a head
+verifier, so the gates that need them are reported as not checked. A PR
+carrying no summary passes with a log line. On a head
 branch that is not an `issue-<N>` branch (milestone roll-ups, sync PRs) the
 summary is reported as not checked.
 

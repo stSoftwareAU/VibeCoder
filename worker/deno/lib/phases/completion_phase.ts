@@ -135,10 +135,6 @@ import {
 } from "../branch_outcomes_gate.ts";
 import {
   buildRemovedAssertionGateComment,
-  MAX_DIFF_CHARS as REMOVED_ASSERTION_MAX_DIFF_CHARS,
-  pathsFromRenameStatus,
-  removedAssertionDiffArgs,
-  removedAssertionRenameStatusArgs,
   validateRemovedAssertions,
 } from "../removed_assertion_gate.ts";
 import {
@@ -742,7 +738,7 @@ function blockingFindingCounts(
  *
  * - **the run's first block, no PR yet** — the verdict is recorded on the
  *   phase state and the gate blocks `failure`, which `workOnIssueCompletion`
- *   recovers from once inside the run (Issue #2189) before the failure
+ *   recovers from inside the run (Issues #2189, #4234) before the failure
  *   stands;
  * - **the run's first block, a PR already exists** — the agent raised that
  *   PR itself from inside the execute phase, often enough that finalising it
@@ -936,7 +932,7 @@ async function reportSummaryRuleBlock(
     // (Issues #3136/#3139).
     logger.warn(
       "PR-summary rule broken on a run whose agent already raised its PR " +
-        "— giving the agent its one in-run recovery turn before that PR is " +
+        "— giving the agent its first in-run recovery turn before that PR is " +
         "finalised (Issue #3163)",
       { repo, issueNumber, prUrl, reason },
     );
@@ -3045,17 +3041,14 @@ async function completionBody(
   // ---------------------------------------------------------------------
   // Docs-sweep verdict, computed early (Issue #3085 review).
   //
-  // `recoverFromSummaryRuleBlock` only re-invokes the agent on a run's FIRST
-  // summary-rule block; a second block in the same run just fails. The
-  // docs-sweep gate itself runs after the closure, independent-review and
-  // reproduction-status gates (and before the unmet-criteria gate), so a
-  // summary that also fails an earlier gate used to consume that one
-  // recovery turn on the earlier gate alone — the agent was never told about
-  // the sweep, fixed only what it was asked, and failed on the second,
-  // never-recovered block. `validateDocsSweep` is pure (no side effects), so
-  // computing it here and folding its comment into whichever gate blocks
-  // first costs nothing and lets the single recovery turn ask for everything
-  // that is actually missing.
+  // The docs-sweep gate itself runs after the closure, independent-review and
+  // reproduction-status gates (and before the unmet-criteria gate). Were it
+  // computed only there, a summary that also fails an earlier gate would
+  // spend its recovery turn on that earlier gate alone, and the agent would
+  // never be told about the sweep. `validateDocsSweep` is pure (no side
+  // effects), so computing it here and folding its comment into whichever
+  // gate blocks first costs nothing and lets the recovery turns ask for
+  // everything that is actually missing.
   // ---------------------------------------------------------------------
   const docsSweep = validateDocsSweep({
     changedFiles: changedFilesKnown ? changedFiles : null,
@@ -3127,10 +3120,10 @@ async function completionBody(
   // ---------------------------------------------------------------------
   // Removed-assertion verdict, computed early alongside the docs-sweep one
   // (Issue #3131), for the same reason: `recoverFromSummaryRuleBlock` only
-  // gets one recovery turn per run, so a summary that both fails an earlier
-  // gate AND leaves a removed test assertion unaccounted for must be told
-  // about both in that one turn — `validateRemovedAssertions` is pure, so
-  // computing it here and folding it in costs nothing.
+  // gets a recovery turn while its findings keep falling, so a summary that
+  // both fails an earlier gate AND leaves a removed test assertion unaccounted
+  // for must be told about both in the same turn — `validateRemovedAssertions`
+  // is pure, so computing it here and folding it in costs nothing.
   // ---------------------------------------------------------------------
   const removedAssertions = validateRemovedAssertions({
     changedFiles: changedFilesKnown
@@ -3151,10 +3144,10 @@ async function completionBody(
   // ---------------------------------------------------------------------
   // Result-placeholder verdict, computed early alongside the docs-sweep and
   // removed-assertion ones (Issue #3124), for the same reason:
-  // `recoverFromSummaryRuleBlock` only gets one recovery turn per run, so a
-  // summary that both fails an earlier gate AND still carries a
+  // a later block gets a recovery turn only while its findings keep falling,
+  // so a summary that both fails an earlier gate AND still carries a
   // fill-in-later token (e.g. `QUALITY_RESULT_PLACEHOLDER`) where a
-  // command's result belongs must be told about both in that one turn —
+  // command's result belongs must be told about both in the same turn —
   // `findResultPlaceholders` is pure, so computing it here and folding it
   // in costs nothing.
   // ---------------------------------------------------------------------
@@ -3170,8 +3163,7 @@ async function completionBody(
   // same reason: a summary that fails an earlier gate AND leaves the "every
   // outcome of a branch you add needs a test that reaches it" list (rule
   // #3069) missing, empty, or naming a test that does not exist must be told
-  // about all of it in the one recovery turn `recoverFromSummaryRuleBlock`
-  // grants. The HEAD lookup runs unconditionally for whatever test paths the
+  // about all of it in the same recovery turn. The HEAD lookup runs unconditionally for whatever test paths the
   // summary names — it is not gated on `branchOutcomes.applicable` or
   // `changedFilesKnown`, so it also runs for a docs-only diff if the summary
   // happens to name a test. It only skips calling git when there are zero
@@ -3225,9 +3217,8 @@ async function completionBody(
   // has repeatedly described named code wrongly (VibeCoder#3252, #3132). This
   // runs the first-run counterpart here, before the summary is raised, for
   // the same reason the other late verdicts are computed early: so it folds
-  // into whichever summary gate blocks first and shares the one recovery
-  // turn `recoverFromSummaryRuleBlock` grants, rather than costing a second,
-  // never-recovered block of its own. A model pass or file read that cannot
+  // into whichever summary gate blocks first and shares that gate's recovery
+  // turns, rather than costing a block of its own. A model pass or file read that cannot
   // run is logged as not checked (by `runSummaryClaimCheck` itself), never
   // read as clean, and does not block.
   //
@@ -3306,7 +3297,7 @@ async function completionBody(
   // Runs the fleet reviewer's own brief, with execution rights, in a
   // disposable checkout once the summary exists. Computed here, with the
   // other late verdicts, so it folds into whichever summary gate blocks
-  // first and shares the one recovery turn. It runs whether or not the issue
+  // first and shares its recovery turns. It runs whether or not the issue
   // carries acceptance criteria. A pass that cannot run is "not checked": it
   // is logged, never read as clean, and does not block.
   // ---------------------------------------------------------------------
@@ -3559,7 +3550,7 @@ async function completionBody(
   // Coverage carry-over verdict (Issue #3795), computed once alongside the
   // mutation verdict so a summary that fails an earlier gate AND leaves a
   // line that an edited or removed test used to reach untested is told
-  // about both in the one recovery turn. The runner names each such line no
+  // about both in the same recovery turn. The runner names each such line no
   // test covers any more; it blocks unless the summary exempts it. A diff or
   // runner that cannot answer fails closed (`error`); a runner that is not
   // wired, or a repo that opts out, never blocks.
@@ -3773,6 +3764,63 @@ async function completionBody(
   }
   const standingViolations = standing.violations;
 
+  // ---------------------------------------------------------------------
+  // Pre-filled draft (Issue #4234): when the docs sweep, branch outcomes or
+  // removed assertions block, the gap sections are drafted once from the diff
+  // so every recovery turn is given the draft. It is advisory: any failure
+  // leaves it empty rather than blocking the run.
+  // ---------------------------------------------------------------------
+  let prefill = "";
+  if (docsSweepBlocked || branchOutcomesBlocked || removedAssertionsBlocked) {
+    try {
+      prefill = await buildSummaryPrefill({
+        issueNumber,
+        changedFiles: changedFilesKnown ? changedFiles : [],
+        unifiedDiff: await readUnifiedDiff(),
+        removedUnaccounted: removedAssertions.unaccounted,
+        want: {
+          docsSweep: docsSweepBlocked,
+          branchOutcomes: branchOutcomesBlocked,
+          removedAssertions: removedAssertionsBlocked,
+        },
+        docsMentioning: async (term) => {
+          // The term goes in argv as data, never as a shell string.
+          const grep = await deps.git.runGitCommand(
+            [
+              "grep",
+              "-l",
+              "-w",
+              "-F",
+              "-e",
+              term,
+              "--",
+              "*.md",
+              ":(exclude)docs/archive",
+            ],
+            { cwd: state.repoPath },
+          );
+          if (grep.ok && grep.value.code === 1) return [];
+          if (grep.ok && grep.value.code === 0) {
+            return grep.value.stdout.split("\n").filter((line) => line !== "");
+          }
+          logger.warn(
+            "Could not search the docs for a pre-filled draft term — none listed (Issue #4234)",
+            { term, error: grep.ok ? `exit ${grep.value.code}` : grep.error.message },
+          );
+          return [];
+        },
+      });
+    } catch (error) {
+      logger.warn(
+        `pre-filled draft not generated: ${
+          error instanceof Error ? error.message : String(error)
+        } (Issue #4234)`,
+        { repo, issueNumber },
+      );
+      prefill = "";
+    }
+  }
+
   /**
    * Fold every blocked late verdict (docs sweep, removed assertions, result
    * placeholder, branch outcomes, mutation check, coverage carry-over, summary
@@ -3816,12 +3864,21 @@ async function completionBody(
       const verdictComment = verdict.comment();
       foldedComment = `${foldedComment}\n\n---\n\n${verdictComment}`;
       sections.push(verdictComment);
+      gates.push(verdict.gate);
+      sectionFindings.push({ gate: verdict.gate, findings: verdict.findings });
     }
     return {
       categories: [...categories],
       reason: foldedReason,
       comment: foldedComment,
       sections,
+      gates,
+      findingCount: countBlockingFindings({
+        sections: sectionFindings,
+        unmetCriteria: unmetCriteria.length,
+        standingViolations: standingViolations.length,
+      }),
+      prefill,
       standingViolations,
       docHoldComment: (claimCheck?.docFindings.length ?? 0) > 0
         ? claimCheckVerdict.comment()
@@ -3857,6 +3914,7 @@ async function completionBody(
         closure.problems[0] ?? "closure block missing"
       }`,
       buildClosureGateComment(closure),
+      "acceptance-closure",
     );
     return await reportSummaryRuleBlock(
       folded,
@@ -3896,6 +3954,7 @@ async function completionBody(
         review.problems[0] ?? "review blocks missing"
       }`,
       buildIndependentReviewComment(review),
+      "independent-review",
     );
     return await reportSummaryRuleBlock(
       folded,
@@ -3933,6 +3992,7 @@ async function completionBody(
         reproduction.problems[0] ?? "`## Reproduction` block missing"
       }`,
       buildReproductionGateComment(reproduction),
+      "reproduction-status",
     );
     return await reportSummaryRuleBlock(
       folded,
@@ -3968,7 +4028,7 @@ async function completionBody(
   // PR, and unmet criteria fold into every block (Issue #4146), so none of
   // these gates needs to short-circuit around another. Each gate folds every later-named gate still blocked
   // into its own comment, so a summary failing more than one of them is
-  // told about all of them in the one recovery turn it gets.
+  // told about all of them in the recovery turns it gets.
   // ---------------------------------------------------------------------
   if (docsSweepBlocked) {
     logger.warn("Docs-sweep gate blocked PR creation", {
@@ -3982,6 +4042,7 @@ async function completionBody(
     const folded = foldInLateSummaryVerdicts(
       docsSweepReason,
       docsSweepComment,
+      "docs-sweep",
       [docsSweepVerdict],
     );
     return await reportSummaryRuleBlock(
@@ -4016,6 +4077,7 @@ async function completionBody(
     const folded = foldInLateSummaryVerdicts(
       removedAssertionsReason,
       buildRemovedAssertionGateComment(removedAssertions),
+      "removed-assertions",
       [docsSweepVerdict, removedAssertionsVerdict],
     );
     return await reportSummaryRuleBlock(
@@ -4039,9 +4101,12 @@ async function completionBody(
   // ---------------------------------------------------------------------
   if (scrubVerdict.blocked) {
     return await reportSummaryRuleBlock(
-      foldInLateSummaryVerdicts(scrubVerdict.reason, scrubVerdict.comment(), [
-        scrubVerdict,
-      ]),
+      foldInLateSummaryVerdicts(
+        scrubVerdict.reason,
+        scrubVerdict.comment(),
+        "prompt-scrub",
+        [scrubVerdict],
+      ),
       ctx,
       state,
       prBody,
@@ -4057,6 +4122,7 @@ async function completionBody(
     const folded = foldInLateSummaryVerdicts(
       placeholderReason,
       buildResultPlaceholderGateComment(placeholderTokens),
+      "result-placeholders",
       [docsSweepVerdict, removedAssertionsVerdict, placeholderVerdict],
     );
     return await reportSummaryRuleBlock(
@@ -4090,6 +4156,7 @@ async function completionBody(
     const folded = foldInLateSummaryVerdicts(
       branchOutcomesReason,
       branchOutcomesVerdict.comment(),
+      "branch-outcomes",
       [
         docsSweepVerdict,
         removedAssertionsVerdict,
@@ -4112,7 +4179,7 @@ async function completionBody(
   //
   // A changed line whose mutant survives the repository's own tests is a
   // change nothing checks. Blocked like the other summary-rule gates so the
-  // single recovery turn is told the `file:line` and the mutation and either
+  // recovery turn is told the `file:line` and the mutation and either
   // adds a test that kills it or records an exemption in the summary. Folds
   // in the coverage carry-over check (Issue #3795), the summary claim check
   // and the pre-PR verifier (Issue #3395), the late verdicts still named
@@ -4125,6 +4192,7 @@ async function completionBody(
     const folded = foldInLateSummaryVerdicts(
       mutationVerdict.reason,
       mutationVerdict.comment(),
+      "mutation-check",
       [
         docsSweepVerdict,
         removedAssertionsVerdict,
@@ -4148,7 +4216,7 @@ async function completionBody(
   //
   // A test the PR edits or removes may have been the only thing reaching a
   // line; if the PR leaves that line uncovered, nothing checks it any more.
-  // Blocked like the mutation gate so the single recovery turn is told the
+  // Blocked like the mutation gate so the recovery turns are told the
   // `file:line` and either adds a test that reaches it or records an
   // exemption in the summary. Folds in the summary claim check and the
   // pre-PR verifier (Issue #3395), the late verdicts still named below it.
@@ -4160,6 +4228,7 @@ async function completionBody(
     const folded = foldInLateSummaryVerdicts(
       coverageCarryOverVerdict.reason,
       coverageCarryOverVerdict.comment(),
+      "coverage-carry-over",
       [
         docsSweepVerdict,
         removedAssertionsVerdict,
@@ -4198,7 +4267,7 @@ async function completionBody(
     // This gate is reached only when every earlier summary-rule gate has
     // passed, so the claim check and (Issue #3395) the pre-PR verifier are
     // the only verdicts that can block here; the verifier folds into this
-    // gate's block below. A later block of this same gate (the recovery turn
+    // gate's block below. A later block of this same gate (the recovery turns
     // already spent) gets one narrow claim correction turn
     // (`summary_claim_correction.ts`, Issue #3324) instead of failing the run
     // immediately: the state is recorded as `pending` and no comment is
@@ -4236,6 +4305,7 @@ async function completionBody(
       foldInLateSummaryVerdicts(
         claimCheckVerdict.reason,
         claimCheckVerdict.comment(),
+        "claim-check",
         [
           docsSweepVerdict,
           removedAssertionsVerdict,
@@ -4260,7 +4330,7 @@ async function completionBody(
   // that passes for the wrong reason or a regex that backtracks on hostile
   // input used to surface only once the fleet reviewer saw the raised PR.
   // This runs the fleet reviewer's own brief with execution rights after the
-  // summary is written. Its findings reach the single recovery turn and, if
+  // summary is written. Its findings reach the recovery turns and, if
   // still present on the re-run, are reported like any other summary-rule
   // block. Last in the late-summary chain, so nothing further folds in.
   // ---------------------------------------------------------------------
@@ -4275,6 +4345,16 @@ async function completionBody(
         reason: prePrVerifierVerdict.reason,
         comment,
         sections: [comment],
+        gates: ["pre-pr-verifier"],
+        findingCount: countBlockingFindings({
+          sections: [{
+            gate: "pre-pr-verifier",
+            findings: prePrVerifierVerdict.findings,
+          }],
+          unmetCriteria: unmetCriteria.length,
+          standingViolations: standingViolations.length,
+        }),
+        prefill,
         standingViolations,
         verifierHoldComment: comment,
         docHoldComment: "",
@@ -4308,6 +4388,7 @@ async function completionBody(
       foldInLateSummaryVerdicts(
         unmetCriteriaVerdict.reason,
         unmetCriteriaVerdict.comment(),
+        "unmet-criteria",
         [unmetCriteriaVerdict],
       ),
       ctx,
