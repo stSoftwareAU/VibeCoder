@@ -422,6 +422,27 @@ const LISTED_SYMBOL_CHARS = 200;
 /** Longest `path:line` the caller list shows; the match in callerGapFindings uses the same cap. */
 const LISTED_LOCATION_CHARS = 300;
 
+/** One listed caller line, as `callerBodyLines` writes it: symbol, definition and caller. */
+const CALLER_ENTRY_LINE =
+  /^- `([^`]*)` \(defined at `[^`]*`\): caller `([^`]*)`$/;
+
+/**
+ * The lines of the caller list before the fence scrubs them: one per expected
+ * caller, then one per note. The fields are capped by the LISTED_* limits.
+ * `renderCallerCheckSection` fences these lines and `callerGapFindings` scrubs
+ * the same lines, so both see the one text the model copies from.
+ */
+function callerBodyLines(state: CallerCheckState): string[] {
+  return [
+    ...state.expected.map((e) =>
+      `- \`${inlineSafe(e.symbol, LISTED_SYMBOL_CHARS)}\` (defined at \`${
+        inlineSafe(e.definedAt, LISTED_LOCATION_CHARS)
+      }\`): caller \`${inlineSafe(e.caller, LISTED_LOCATION_CHARS)}\``
+    ),
+    ...state.notes.map((n) => `- Note: ${inlineSafe(n, 300)}`),
+  ];
+}
+
 /**
  * The section the verifier brief carries: empty when there is no caller to
  * check and nothing was capped. The list is fenced as untrusted text.
@@ -436,18 +457,10 @@ export function renderCallerCheckSection(
     "",
     'The worker listed each function or method whose body the change touches, and searched the head\'s tracked source files (tests, docs and comment lines excluded) by word for other places naming it, outside the lines the diff changes. The search is over-inclusive, so a line that only mentions the name still needs a verdict. Add a `callers` key to the reply JSON the brief asks for (beside `checklist`), holding one entry per caller below: {...}. For EVERY caller listed, decide whether its behaviour changes under the function\'s new result, and report it in the reply `callers` array as {"symbol": "<name>", "caller": "<file>:<line>", "verdict": "unchanged" | "changed and tested" | "regressed", "note": "<why>"}, copying symbol and caller exactly. An `unchanged` note says why the change does not reach that caller. A `changed and tested` note names the test that exercises this caller under the new result. A `regressed` verdict is also a BLOCKING finding. The worker checks that every caller got a verdict: one with none, or one marked `regressed`, sends the change back.',
   ];
-  const body = [
-    ...state.expected.map((e) =>
-      `- \`${inlineSafe(e.symbol, LISTED_SYMBOL_CHARS)}\` (defined at \`${
-        inlineSafe(e.definedAt, LISTED_LOCATION_CHARS)
-      }\`): caller \`${inlineSafe(e.caller, LISTED_LOCATION_CHARS)}\``
-    ),
-    ...state.notes.map((n) => `- Note: ${inlineSafe(n, 300)}`),
-  ];
   lines.push(
     "",
     ...fenceUntrustedIssueText(
-      body.join("\n"),
+      callerBodyLines(state).join("\n"),
       "Existing callers to report:",
       boundaryId,
     ),
@@ -499,26 +512,15 @@ export function parseCallerVerdicts(value: unknown): CallerVerdict[] {
 /**
  * Same symbol and caller, ignoring backticks, spacing, case and a leading "./".
  * Applied to a verdict exactly as the reply wrote it, and to an entry either raw
- * or as its once-scrubbed copy (see `listedKey`). Never apply
- * `scrubUntrustedText` to a verdict: the scrub is not idempotent, so a second
- * pass changes a copy that is already scrubbed.
+ * or as its copy out of the fenced list, where the whole list is scrubbed once
+ * (see `callerGapFindings`). Never apply `scrubUntrustedText` to a verdict: the
+ * scrub is not idempotent, so a second pass changes a copy that is already
+ * scrubbed.
  */
 function callerKey(symbol: string, caller: string): string {
   const flat = (t: string) =>
     t.replace(/`/g, "").replace(/\s+/g, " ").trim().toLowerCase();
   return `${flat(symbol)}\u0000${flat(caller).replace(/^(?:\.\/)+/, "")}`;
-}
-
-/**
- * The key of an entry as the fence shows it: the symbol and caller capped by
- * `inlineSafe` and scrubbed once, which is the text the model copies. The caps
- * are the ones `renderCallerCheckSection` uses.
- */
-function listedKey(e: CallerExpectation): string {
-  return callerKey(
-    scrubUntrustedText(inlineSafe(e.symbol, LISTED_SYMBOL_CHARS)),
-    scrubUntrustedText(inlineSafe(e.caller, LISTED_LOCATION_CHARS)),
-  );
 }
 
 /** `path:line` split; line 0 when there is no usable line number. */
@@ -538,11 +540,16 @@ const MAX_GAPS_NAMED = 5;
  * caller the reply left without a verdict, and one for each `regressed` verdict.
  * "No verdict" is never read as a pass.
  *
- * The reply copies the symbol and caller from the fence, where each is scrubbed
- * once. So an entry also matches a verdict carrying its once-scrubbed copy, but
- * only when no other expected entry scrubs to the same key. Distinct secrets
- * both become the redaction placeholder, and a copy of one must not be read as
- * the other. The raw copy always matches.
+ * The reply copies the symbol and caller from the fence, where the whole list
+ * body is scrubbed once (`callerBodyLines`). So an entry also matches a verdict
+ * carrying the key its line takes from that whole-body scrub, but only when no
+ * other expected entry has the same key. Distinct secrets both become the
+ * redaction placeholder, and a copy of one must not be read as the other. The
+ * raw copy always matches. The scrub can cross a field or a line boundary, so
+ * the key is read back from the scrubbed line. An entry whose line cannot be read
+ * back (the scrub changed the line count, or the line's shape) falls back to
+ * scrubbing its own two fields. That fallback only adds a second key; it never
+ * accepts a verdict that matches neither.
  */
 export function callerGapFindings(
   state: CallerCheckState,
@@ -552,11 +559,22 @@ export function callerGapFindings(
   const reported = new Set(
     verdicts.map((v) => callerKey(v.symbol, v.caller)),
   );
+  const bodyLines = callerBodyLines(state);
+  const scrubbedLines = scrubUntrustedText(bodyLines.join("\n")).split("\n");
+  const sameLineCount = scrubbedLines.length === bodyLines.length;
   // One raw key and one scrubbed key per entry, each computed once.
-  const keys = state.expected.map((e) => ({
-    raw: callerKey(e.symbol, e.caller),
-    scrubbed: listedKey(e),
-  }));
+  const keys = state.expected.map((e, i) => {
+    const copied = sameLineCount
+      ? CALLER_ENTRY_LINE.exec(scrubbedLines[i]!)
+      : null;
+    return {
+      raw: callerKey(e.symbol, e.caller),
+      scrubbed: copied ? callerKey(copied[1]!, copied[2]!) : callerKey(
+        scrubUntrustedText(inlineSafe(e.symbol, LISTED_SYMBOL_CHARS)),
+        scrubUntrustedText(inlineSafe(e.caller, LISTED_LOCATION_CHARS)),
+      ),
+    };
+  });
   const rawKeysByScrubbed = new Map<string, Set<string>>();
   for (const { raw, scrubbed } of keys) {
     const raws = rawKeysByScrubbed.get(scrubbed) ?? new Set<string>();

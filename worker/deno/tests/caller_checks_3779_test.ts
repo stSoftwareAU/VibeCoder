@@ -20,7 +20,10 @@ import {
   parseDiffChangedLines,
   renderCallerCheckSection,
 } from "../lib/caller_checks.ts";
-import { scrubUntrustedText } from "../lib/prompt_delimiter.ts";
+import {
+  createPromptDelimiters,
+  scrubUntrustedText,
+} from "../lib/prompt_delimiter.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 import { git, gitOk, setupGitRepoFixture } from "./support/git_repo_fixture.ts";
@@ -675,4 +678,74 @@ Deno.test("callerGapFindings: two callers whose symbols scrub to the same placeh
     ]),
     [],
   );
+});
+
+const CALLER_LINE = /^- `([^`]*)` \(defined at `[^`]*`\): caller `([^`]*)`$/;
+const FENCE_BOUNDARY = "0123456789ab";
+
+/** The `[symbol, caller]` copies a model reads out of the rendered caller fence. */
+function fencedCopies(
+  state: CallerCheckState,
+): Array<{ symbol: string; caller: string }> {
+  const rendered = renderCallerCheckSection(state, FENCE_BOUNDARY);
+  const delimiters = createPromptDelimiters(FENCE_BOUNDARY);
+  const start = rendered.indexOf(delimiters.untrustedStart);
+  const end = rendered.indexOf(delimiters.untrustedEnd);
+  assert(start >= 0 && end > start, "the caller fence is rendered");
+  const copies: Array<{ symbol: string; caller: string }> = [];
+  for (
+    const line of rendered.slice(start + 1, end).join("\n").split("\n")
+  ) {
+    const match = CALLER_LINE.exec(line);
+    if (match) copies.push({ symbol: match[1]!, caller: match[2]! });
+  }
+  return copies;
+}
+
+Deno.test("callerGapFindings: a copy of a caller whose scrub depends on the rest of the fenced list matches", () => {
+  const cases: CallerCheckState[] = [
+    // A `<<` in the definition's path and a `>>` in the caller's path share one
+    // line, so the fence scrubs the caller differently from the caller alone.
+    {
+      expected: [{
+        symbol: "sharedHelper",
+        definedAt: "lib/<<h.ts:1",
+        caller: "lib/x>>.ts:2",
+      }],
+      notes: [],
+    },
+    // A `<<` ends one entry's caller and a `>>` ends the next entry's caller,
+    // so the newline-spanning pass pairs them across the two lines.
+    {
+      expected: [
+        {
+          symbol: "sharedHelper",
+          definedAt: "lib/helper.ts:1",
+          caller: "lib/a<<.ts:2",
+        },
+        {
+          symbol: "sharedHelper",
+          definedAt: "lib/helper.ts:1",
+          caller: "lib/b>>.ts:3",
+        },
+      ],
+      notes: [],
+    },
+  ];
+  for (const state of cases) {
+    const copies = fencedCopies(state);
+    assertEquals(copies.length, state.expected.length);
+    assert(
+      copies.some((c, i) => c.caller !== state.expected[i]!.caller),
+      "the fence must scrub a caller for this case to mean anything",
+    );
+    const fenced = copies.map((c) => ({ ...VERDICT, ...c }));
+    assertEquals(callerGapFindings(state, fenced), []);
+    const raw = state.expected.map((e) => ({
+      ...VERDICT,
+      symbol: e.symbol,
+      caller: e.caller,
+    }));
+    assertEquals(callerGapFindings(state, raw), []);
+  }
 });
