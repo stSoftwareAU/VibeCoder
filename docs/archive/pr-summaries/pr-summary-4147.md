@@ -55,7 +55,8 @@ issues whose discovery labels had already been restored.
   preserved labels, no hand-off comment and continued eligibility.
 - The prose-status regression failed in both the parser and a real closer
   before the fix. Related parser, PR-body and closure tests passed 105 cases.
-- The integrated execution, stream, closure and parser run passed 114 tests.
+- The integrated execution, stream, closure, parser and provider-routing run
+  passed 135 tests.
   Thirteen earlier deliberate guard/operand mutations each produced assertion
   failures in an isolated checkout.
 - Full validation exposed existing fixture problems: a missing-file watcher

@@ -438,6 +438,21 @@ because the fix stopped at the named locations (VibeCoder#3066, #3068, #3065,
 GRQ-AutoTrader#2210, #2220); another instance of the class left in the
 head is now a blocking self-review finding.
 
+#### Verify the description that will be published (Issue #3982)
+
+Before pushing, the review-fix verifier rebuilds the description from the
+archived summary and structured facts at the checkout. It shares the publisher's
+worker-marker and own-branch adoption checks, so a corrected summary can clear a
+stale-description finding before the live body is updated. Foreign bodies remain
+unchanged and the ineligible reason is logged. A build error holds the review.
+Candidate construction neither edits GitHub nor resolves evidence images.
+
+When verification still blocks, a measured zero unpushed commits lets the worker
+refresh the already-pushed description before recording the hold. Unpushed or
+unmeasurable work is never described early. The publisher also retains its
+remote-head guard; refreshing a description does not dismiss a review, remove
+`standing-violation`, or enable auto-merge.
+
 #### Recount the Test Plan after a review fix (Issue #3117)
 
 A review fix that adds, removes or renames a test changes the archived PR

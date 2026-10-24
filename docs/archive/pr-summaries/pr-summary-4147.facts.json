@@ -5,7 +5,7 @@
     "entries": [
       {
         "path": "worker/deno/lib/execute_claude_phase.ts",
-        "line": 636,
+        "line": 643,
         "outcome": "Non-zero exits fail; zero exits continue to structured checks.",
         "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
         "testName": "#4147 fleet execute: failed empty run is retried: The agent process crashed before produci",
@@ -13,7 +13,7 @@
       },
       {
         "path": "worker/deno/lib/execute_claude_phase.ts",
-        "line": 637,
+        "line": 644,
         "outcome": "Rejects a failed run with exit zero; clean one-turn and legacy raw output remain eligible.",
         "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
         "testName": "#4147 fleet execute: exit-zero incomplete run is retried: {\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"num_turns\":1}",
@@ -21,7 +21,7 @@
       },
       {
         "path": "worker/deno/lib/execute_claude_phase.ts",
-        "line": 638,
+        "line": 645,
         "outcome": "Rejects an incomplete run with exit zero; clean one-turn and legacy raw output remain eligible.",
         "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
         "testName": "#4147 fleet execute: exit-zero incomplete run is retried: {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Starting work\"}]}}",
@@ -29,7 +29,7 @@
       },
       {
         "path": "worker/deno/lib/execute_claude_phase.ts",
-        "line": 641,
+        "line": 648,
         "outcome": "Rejects a zero-turn run with exit zero; clean one-turn and legacy raw output remain eligible.",
         "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
         "testName": "#4147 fleet execute: exit-zero incomplete run is retried: {\"type\":\"result\",\"is_error\":false,\"num_turns\":0}",
@@ -37,7 +37,7 @@
       },
       {
         "path": "worker/deno/lib/execute_claude_phase.ts",
-        "line": 642,
+        "line": 649,
         "outcome": "A completed one-turn result produces no failure reason.",
         "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
         "testName": "#4147 fleet execute: completed one-turn result can reach no_changes",
@@ -45,7 +45,7 @@
       },
       {
         "path": "worker/deno/lib/execute_claude_phase.ts",
-        "line": 2053,
+        "line": 2065,
         "outcome": "A reason returns execution_error; clean empty runs reach no_changes.",
         "test": "worker/deno/tests/execute_claude_phase_test.ts",
         "testName": "runExecuteClaudePhase - an agent that failed with no changes is a failure, never no_changes (Issue #4147)",
@@ -53,7 +53,7 @@
       },
       {
         "path": "worker/deno/lib/phases/execute_phase.ts",
-        "line": 2083,
+        "line": 2097,
         "outcome": "A failure reason returns interrupted and retries on a fresh session; clean empty runs reach no_changes.",
         "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
         "testName": "#4147 fleet execute: failed empty run is retried: The agent process crashed before produci",
@@ -109,7 +109,7 @@
       },
       {
         "path": "worker/deno/lib/phases/execute_phase.ts",
-        "line": 1963,
+        "line": 1977,
         "outcome": "Failed, unfinished and zero-turn structured results do not hand a session to the next issue even with exit zero; a clean run still does.",
         "test": "worker/deno/tests/execute_phase_failed_agent_no_changes_test.ts",
         "testName": "execute_phase #4116 - a clean run still hands its session on to the stream",
