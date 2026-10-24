@@ -902,14 +902,24 @@ export async function enableAutoMerge(
           `PR #${prNumber} left on ${options.baseRefName}: fresh rollup was not opened (${restored.reason}) — retrying next scan (Issue #4175)`,
       };
     }
+    // No open rollup and the branch is not ahead. Arming would merge the
+    // child and close its issue on a branch with no route (Issue #4175).
+    // Leave it unarmed. The next auto-merge scan calls this again.
+    if (restored.action === "waiting") {
+      return {
+        result: AutoMergeResult.Deferred,
+        message:
+          `PR #${prNumber} left on ${options.baseRefName}: ${restored.detail} — not armed, retried on the next scan (Issue #4175)`,
+      };
+    }
   }
 
   // Issue #4396: the mirror image — never merge INTO a milestone branch
   // whose route to the default branch has closed (rollup PR merged, or
   // milestone closed). Seven fixes were lost that way with their issues
   // reading COMPLETED. Refuse loud and hold the PR where it is: the fleet never
-  // moves it to the default branch (Issue #3433). An open milestone with
-  // open work is armed instead, onto the milestone branch (Issue #4175).
+  // moves it to the default branch (Issue #3433). An open milestone is
+  // armed onto its branch only once a rollup is open (Issue #4175).
   // Issue #1779: `requireSyncedBase` adds the second half — it reports a
   // milestone tip that is behind the default branch, which drives the
   // in-cycle sync below. Issue #2460: being behind no longer withholds
@@ -1014,6 +1024,14 @@ export async function enableAutoMerge(
     routeGate.decision === "defer" && routeGate.reason === "milestone-behind"
   ) {
     behindDeferral = "milestone-behind";
+  } else if (
+    routeGate.decision === "defer" && routeGate.reason === "route-waiting"
+  ) {
+    return {
+      result: AutoMergeResult.Deferred,
+      message:
+        `PR #${prNumber} left on ${routeGate.milestoneBranch}: ${routeGate.detail} — not armed, retried on the next scan (Issue #4175)`,
+    };
   } else if (routeGate.decision === "defer") {
     return {
       result: AutoMergeResult.Deferred,

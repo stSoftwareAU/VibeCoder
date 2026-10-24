@@ -843,6 +843,19 @@ export type MilestoneBaseMergeDecision =
     behindBy: number;
   }
   | {
+    /**
+     * A rollup has merged and no open rollup has replaced it, but the
+     * milestone still has open work (Issue #4175). The child stays unarmed
+     * — merging it would close the issue on a branch with no route. Not a
+     * hold: nothing is disarmed or retargeted, and the next scan reads the
+     * route again.
+     */
+    decision: "defer";
+    reason: "route-waiting";
+    milestoneBranch: string;
+    detail: string;
+  }
+  | {
     decision: "block";
     reason: "rollup-merged" | "milestone-closed";
     milestoneBranch: string;
@@ -1255,9 +1268,9 @@ export async function decideMilestoneBaseMerge(
     typeof pr.state === "string" && pr.state.toUpperCase() === "MERGED"
   );
   // An open rollup is the route, even after an older one merged (Issue
-  // #4175). A merged rollup with no open successor still closes the route,
-  // unless the milestone is open and still has work — that work is armed
-  // onto the branch and a fresh rollup carries it.
+  // #4175). A merged rollup with no open successor still closes the route.
+  // Open work does not make it safe to merge: the child stays unarmed until
+  // a rollup is open, so the issue cannot close on a branch with no route.
   if (
     !rollups.some(isOpenRouteRollup) && merged &&
     typeof merged.number === "number"
@@ -1284,7 +1297,13 @@ export async function decideMilestoneBaseMerge(
         }`,
       };
     }
-    return await routeOpenDecision(options, base);
+    return {
+      decision: "defer",
+      reason: "route-waiting",
+      milestoneBranch: base,
+      detail:
+        `rollup PR #${merged.number} has merged and ${base} has no open rollup, so the child stays unarmed until a rollup is open`,
+    };
   }
 
   // 2. Is the milestone itself closed? (A closed milestone has no route

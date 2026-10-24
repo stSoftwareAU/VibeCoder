@@ -34,6 +34,85 @@ export const RESTORED_ROLLUP_MARKER =
 const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const BRANCH_PATTERN = /^[A-Za-z0-9._/-]+$/;
 
+/** How far `milestoneBranch` is ahead of `defaultBranch`, and whether the diff has files. */
+export interface BranchCompare {
+  /** Commits on the milestone branch that are not on the default branch. */
+  aheadBy: number;
+  /**
+   * Changed files in that range. `null` when the payload omitted `files`
+   * (not proof the diff is empty).
+   */
+  fileCount: number | null;
+}
+
+/**
+ * Read `compare/{default}...{milestone}`.
+ *
+ * Fails loud: a thrown `gh` call or a payload without a numeric `ahead_by`
+ * is an error, never a quiet zero.
+ */
+export async function readBranchCompare(
+  repo: string,
+  defaultBranch: string,
+  milestoneBranch: string,
+  ghCommandFn: GhCommandFn,
+): Promise<Result<BranchCompare>> {
+  let raw: string;
+  try {
+    raw = await ghCommandFn([
+      "api",
+      `repos/${repo}/compare/${defaultBranch}...${milestoneBranch}`,
+      "--jq",
+      "{ahead_by, files}",
+    ]);
+  } catch (err) {
+    return {
+      ok: false,
+      error: new Error(
+        `could not compare ${defaultBranch}...${milestoneBranch}: ${
+          errorText(err)
+        }`,
+      ),
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      ok: false,
+      error: new Error(
+        `compare ${defaultBranch}...${milestoneBranch} returned no ahead_by`,
+      ),
+    };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      error: new Error(
+        `compare ${defaultBranch}...${milestoneBranch} returned no ahead_by`,
+      ),
+    };
+  }
+  const aheadBy = (parsed as { ahead_by?: unknown }).ahead_by;
+  if (typeof aheadBy !== "number" || !Number.isFinite(aheadBy)) {
+    return {
+      ok: false,
+      error: new Error(
+        `compare ${defaultBranch}...${milestoneBranch} returned no ahead_by`,
+      ),
+    };
+  }
+  const files = (parsed as { files?: unknown }).files;
+  return {
+    ok: true,
+    value: {
+      aheadBy,
+      fileCount: Array.isArray(files) ? files.length : null,
+    },
+  };
+}
+
 /** What {@link restoreClosedMilestoneRoute} did. */
 export type RouteRestoreOutcome =
   /** A fresh rollup pull request was opened. */
@@ -264,15 +343,6 @@ export async function restoreClosedMilestoneRoute(
       reason: children.error.message,
     };
   }
-  if (children.value.length === 0) {
-    return {
-      action: "left-closed",
-      milestoneBranch,
-      detail:
-        `rollup PR #${merged.number} has merged and milestone "${milestone.title}" has no open work`,
-    };
-  }
-
   let defaultBranch = options.defaultBranch?.trim();
   if (!defaultBranch) {
     const resolved = await (options.getDefaultBranchFn ??
@@ -292,37 +362,34 @@ export async function restoreClosedMilestoneRoute(
     };
   }
 
-  let aheadBy: number;
-  try {
-    const raw = await ghCommandFn([
-      "api",
-      `repos/${repo}/compare/${defaultBranch}...${milestoneBranch}`,
-      "--jq",
-      ".ahead_by",
-    ]);
-    const text = raw.trim();
-    aheadBy = text.length > 0 ? Number(text) : Number.NaN;
-    if (!Number.isFinite(aheadBy)) {
+  const compare = await readBranchCompare(
+    repo,
+    defaultBranch,
+    milestoneBranch,
+    ghCommandFn,
+  );
+  if (!compare.ok) {
+    return { action: "failed", reason: compare.error.message };
+  }
+  const { aheadBy, fileCount } = compare.value;
+  // No commits to carry. Open work waits; a milestone with nothing open
+  // stays closed. An empty file list with commits still ahead is a squash
+  // of work the default branch already has — not a new rollup.
+  if (aheadBy <= 0 || (children.value.length === 0 && fileCount === 0)) {
+    if (children.value.length === 0) {
       return {
-        action: "failed",
-        reason:
-          `compare ${defaultBranch}...${milestoneBranch} returned no ahead_by`,
+        action: "left-closed",
+        milestoneBranch,
+        detail: aheadBy <= 0
+          ? `rollup PR #${merged.number} has merged and milestone "${milestone.title}" has no open work`
+          : `rollup PR #${merged.number} has merged and ${milestoneBranch} has no file changes ${defaultBranch} does not already have`,
       };
     }
-  } catch (err) {
-    return {
-      action: "failed",
-      reason: `could not compare ${defaultBranch}...${milestoneBranch}: ${
-        errorText(err)
-      }`,
-    };
-  }
-  if (aheadBy <= 0) {
     return {
       action: "waiting",
       milestoneBranch,
       detail:
-        `${milestoneBranch} is not ahead of ${defaultBranch}, so a fresh rollup waits until the branch has commits to carry`,
+        `${milestoneBranch} is not ahead of ${defaultBranch}, so no rollup is open and the child stays unarmed`,
     };
   }
 
@@ -346,10 +413,13 @@ export async function restoreClosedMilestoneRoute(
       "--base",
       defaultBranch,
     ])).trim();
+    const carried = children.value.length > 0
+      ? "while the milestone still has open work"
+      : "while the branch still has changes the default branch does not";
     logAt(
       log,
       "info",
-      `opened a fresh rollup for ${milestoneBranch} in ${repo} after rollup PR #${merged.number} merged while the milestone still has open work (Issue #4175): ${prUrl}`,
+      `opened a fresh rollup for ${milestoneBranch} in ${repo} after rollup PR #${merged.number} merged ${carried} (Issue #4175): ${prUrl}`,
     );
     return { action: "created", prUrl, milestoneBranch };
   } catch (err) {

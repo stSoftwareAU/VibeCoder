@@ -17,6 +17,8 @@ import {
 } from "../lib/milestone_children_gate.ts";
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
+import { hasExistingMilestoneSummaryPr } from "../lib/milestone_completion.ts";
+import { restoreClosedMilestoneRoute } from "../lib/milestone_route_restore.ts";
 import {
   _resetBaseProtectionMemo,
   AutoMergeResult,
@@ -66,7 +68,7 @@ Deno.test("decideMilestoneBaseMerge - an open rollup restores the route even whe
   }
 });
 
-Deno.test("decideMilestoneBaseMerge - an open milestone with an open child is not blocked by a merged rollup (Issue #4175)", async () => {
+Deno.test("decideMilestoneBaseMerge - an open child is not merged while no rollup is open (Issue #4175)", async () => {
   const decision = await decideMilestoneBaseMerge({
     repo: REPO,
     prNumber: 4109,
@@ -101,7 +103,10 @@ Deno.test("decideMilestoneBaseMerge - an open milestone with an open child is no
       return Promise.resolve("[]");
     },
   });
-  assertEquals(decision.decision, "allow");
+  assertEquals(decision.decision, "defer");
+  if (decision.decision === "defer") {
+    assertEquals(decision.reason, "route-waiting");
+  }
 });
 
 Deno.test("a closed-route milestone with an open child gets a restored route and its held PR is armed (Issue #4175)", async () => {
@@ -153,8 +158,11 @@ Deno.test("a closed-route milestone with an open child gets a restored route and
           { number: 3905, title: "Ship the widget" },
         ]));
       }
-      if (key.includes("/compare/") && key.includes(".ahead_by")) {
-        return Promise.resolve("2\n");
+      if (key.includes("/compare/") && key.includes("ahead_by")) {
+        return Promise.resolve(JSON.stringify({
+          ahead_by: 2,
+          files: [{ filename: "widget.txt" }],
+        }));
       }
       if (key.includes("/compare/") && key.includes(".behind_by")) {
         return Promise.resolve("0\n");
@@ -200,6 +208,171 @@ Deno.test("a closed-route milestone with an open child gets a restored route and
   );
 });
 
+Deno.test("a not-ahead child stays unarmed, and landed work still reaches a rollup (Issue #4175)", async () => {
+  _resetMilestoneBehindMemo();
+  _resetBaseProtectionMemo();
+  const calls: string[][] = [];
+  const waiting = await enableAutoMerge({
+    repo: REPO,
+    prNumber: 4109,
+    headRefName: "issue-3905-widget",
+    baseRefName: BRANCH,
+    getDefaultBranchFn: () => Promise.resolve({ ok: true, value: DEFAULT }),
+    isBaseProtectedFn: () => Promise.resolve(true),
+    ghCommandFn: (args) => {
+      calls.push(args);
+      const key = args.join(" ");
+      if (key.includes("pr list") && key.includes("--head")) {
+        return Promise.resolve(JSON.stringify([
+          {
+            number: 4077,
+            state: "MERGED",
+            baseRefName: DEFAULT,
+            mergedAt: "2026-10-13T13:58:25Z",
+          },
+        ]));
+      }
+      if (key.includes("pr list") && key.includes("--base")) {
+        return Promise.resolve(JSON.stringify([
+          { number: 4109, title: "Ship the widget" },
+        ]));
+      }
+      if (key.includes("/milestones?state=all")) {
+        return Promise.resolve(JSON.stringify([
+          { number: 7, title: "Clean up", state: "open" },
+        ]));
+      }
+      if (key.includes("/issues?milestone=")) {
+        return Promise.resolve(JSON.stringify([
+          { number: 3905, title: "Ship the widget" },
+        ]));
+      }
+      if (key.includes("/compare/") && key.includes("ahead_by")) {
+        return Promise.resolve(JSON.stringify({ ahead_by: 0, files: [] }));
+      }
+      if (args[0] === "pr" && args[1] === "create") {
+        return Promise.resolve("https://github.com/owner/repo/pull/4200\n");
+      }
+      if (args[0] === "pr" && args[1] === "merge") {
+        return Promise.resolve("Enabled auto-merge\n");
+      }
+      return Promise.resolve("");
+    },
+  });
+  assertEquals(waiting.result, AutoMergeResult.Deferred);
+  assert(
+    !calls.some((args) => args[0] === "pr" && args[1] === "merge"),
+    "the child is not armed while the branch is not ahead",
+  );
+  assert(
+    !calls.some((args) => args[0] === "pr" && args[1] === "create"),
+    "no rollup is opened when the branch is not ahead",
+  );
+  assert(
+    !calls.some((args) => args.includes("--disable-auto")),
+    "a waiting route is not held",
+  );
+  assert(
+    !calls.some((args) => args[0] === "pr" && args[1] === "edit"),
+    "the child is not retargeted onto the default branch",
+  );
+
+  // The child's commit has landed on the milestone branch. No open child
+  // remains. The rollup must still carry widget.txt to the default branch.
+  const root = await Deno.makeTempDir({ prefix: "issue-4175-landed-" });
+  const clone = `${root}/clone`;
+  try {
+    await gitOk(["init", "-b", "main", clone], root);
+    await gitOk(["config", "user.email", "t@example.com"], clone);
+    await gitOk(["config", "user.name", "Test"], clone);
+    await gitOk(["config", "commit.gpgsign", "false"], clone);
+    await Deno.writeTextFile(`${clone}/README.md`, "seed\n");
+    await gitOk(["add", "README.md"], clone);
+    await gitOk(["commit", "-m", "seed"], clone);
+    await gitOk(["checkout", "-b", "milestone/clean-up"], clone);
+    await Deno.writeTextFile(`${clone}/widget.txt`, "the widget\n");
+    await gitOk(["add", "widget.txt"], clone);
+    await gitOk(["commit", "-m", "Ship the widget"], clone);
+
+    const diffNames = (await gitOk(
+      ["diff", "--name-only", "main...milestone/clean-up"],
+      clone,
+    )).trim().split("\n");
+    assert(diffNames.includes("widget.txt"));
+
+    const created: string[][] = [];
+    const restored = await restoreClosedMilestoneRoute({
+      repo: REPO,
+      milestoneBranch: BRANCH,
+      defaultBranch: "main",
+      ghCommandFn: (args) => {
+        const key = args.join(" ");
+        if (key.includes("pr list") && key.includes("--head")) {
+          return Promise.resolve(JSON.stringify([
+            {
+              number: 4077,
+              state: "MERGED",
+              baseRefName: "main",
+              mergedAt: "2026-10-13T13:58:25Z",
+            },
+          ]));
+        }
+        if (key.includes("/milestones?state=all")) {
+          return Promise.resolve(JSON.stringify([
+            { number: 7, title: "Clean up", state: "open" },
+          ]));
+        }
+        if (key.includes("/compare/") && key.includes("ahead_by")) {
+          return Promise.resolve(JSON.stringify({
+            ahead_by: 1,
+            files: diffNames.map((filename) => ({ filename })),
+          }));
+        }
+        if (args[0] === "pr" && args[1] === "create") {
+          created.push(args);
+          return Promise.resolve("https://github.com/owner/repo/pull/4200\n");
+        }
+        return Promise.resolve("[]");
+      },
+    });
+    assertEquals(restored.action, "created");
+    assertEquals(created.length, 1);
+    assertEquals(created[0]![created[0]!.indexOf("--head") + 1], BRANCH);
+    assertEquals(created[0]![created[0]!.indexOf("--base") + 1], "main");
+
+    const existing = await hasExistingMilestoneSummaryPr(
+      REPO,
+      "Clean up",
+      BRANCH,
+      (args) => {
+        const key = args.join(" ");
+        if (key.includes("pr list")) {
+          return Promise.resolve(JSON.stringify([{
+            number: 4077,
+            title: "Milestone rollup",
+            headRefName: BRANCH,
+            state: "MERGED",
+            isCrossRepository: false,
+          }]));
+        }
+        if (key.includes("/compare/") && key.includes("ahead_by")) {
+          return Promise.resolve(JSON.stringify({
+            ahead_by: 1,
+            files: [{ filename: "widget.txt" }],
+          }));
+        }
+        return Promise.resolve("[]");
+      },
+      undefined,
+      [],
+      "main",
+    );
+    assertEquals(existing, { ok: true, value: null });
+  } finally {
+    await Deno.remove(root, { recursive: true }).catch(() => {});
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Sync must not open a pull request into a route that stays closed
 // ---------------------------------------------------------------------------
@@ -234,7 +407,9 @@ async function gitOk(args: string[], cwd: string): Promise<string> {
 const passingGate: MergeGateFn = () =>
   Promise.resolve({ status: "passed", detail: "checked", output: "" });
 
-Deno.test("no sync PR is opened into a closed route (Issue #4175)", async () => {
+async function withGatedMilestoneClone(
+  body: (clone: string) => Promise<void>,
+): Promise<void> {
   const root = await Deno.makeTempDir({ prefix: "issue-4175-sync-" });
   const remote = `${root}/remote.git`;
   const clone = `${root}/clone`;
@@ -276,7 +451,15 @@ Deno.test("no sync PR is opened into a closed route (Issue #4175)", async () => 
       ].join("\n") + "\n",
     );
     await Deno.chmod(hook, 0o755);
+    await body(clone);
+  } finally {
+    _resetGhSpawnRunner();
+    await Deno.remove(root, { recursive: true }).catch(() => {});
+  }
+}
 
+Deno.test("no sync PR is opened into a closed route (Issue #4175)", async () => {
+  await withGatedMilestoneClone(async (clone) => {
     const ghCalls: string[][] = [];
     _setGhSpawnRunner((args) => {
       ghCalls.push([...args]);
@@ -350,8 +533,101 @@ Deno.test("no sync PR is opened into a closed route (Issue #4175)", async () => 
       }`,
     );
     assertStringIncludes(result.value.message, "sync PR not opened");
-  } finally {
-    _resetGhSpawnRunner();
-    await Deno.remove(root, { recursive: true }).catch(() => {});
-  }
+  });
+});
+
+Deno.test("no sync PR is opened into a not-ahead route with an open child (Issue #4175)", async () => {
+  await withGatedMilestoneClone(async (clone) => {
+    const openCalls: string[][] = [];
+    _setGhSpawnRunner((args) => {
+      openCalls.push([...args]);
+      const state = args[args.indexOf("--state") + 1];
+      const key = args.join(" ");
+      if (args[1] === "list" && state === "all") {
+        return Promise.resolve({
+          code: 0,
+          success: true,
+          stdout: JSON.stringify([
+            {
+              number: 4077,
+              state: "MERGED",
+              baseRefName: "main",
+              mergedAt: "2026-10-13T13:58:25Z",
+            },
+          ]),
+          stderr: "",
+        });
+      }
+      if (args[1] === "list") {
+        return Promise.resolve({
+          code: 0,
+          success: true,
+          stdout: "[]",
+          stderr: "",
+        });
+      }
+      if (key.includes("/milestones")) {
+        return Promise.resolve({
+          code: 0,
+          success: true,
+          stdout: JSON.stringify([
+            { number: 3, title: "1048", state: "open" },
+          ]),
+          stderr: "",
+        });
+      }
+      if (key.includes("/issues?milestone=")) {
+        return Promise.resolve({
+          code: 0,
+          success: true,
+          stdout: JSON.stringify([
+            { number: 3905, title: "Ship the widget" },
+          ]),
+          stderr: "",
+        });
+      }
+      if (key.includes("/compare/") && key.includes("ahead_by")) {
+        return Promise.resolve({
+          code: 0,
+          success: true,
+          stdout: JSON.stringify({ ahead_by: 0, files: [] }),
+          stderr: "",
+        });
+      }
+      if (args[1] === "create") {
+        return Promise.resolve({
+          code: 0,
+          success: true,
+          stdout: "https://github.com/owner/repo/pull/4100\n",
+          stderr: "",
+        });
+      }
+      return Promise.resolve({
+        code: 0,
+        success: true,
+        stdout: "",
+        stderr: "",
+      });
+    });
+    const openRoute = await syncMilestoneBranchWithDefault(
+      "milestone/1048",
+      "main",
+      { cwd: clone },
+      "owner/repo",
+      passingGate,
+    );
+    assert(
+      openRoute.ok,
+      `sync should report the refusal, not throw: ${
+        !openRoute.ok && openRoute.error.message
+      }`,
+    );
+    assert(
+      !openCalls.some((args) => args[1] === "create"),
+      `a sync PR was opened into a route with no rollup: ${
+        openCalls.map((args) => args.join(" ")).join("\n")
+      }`,
+    );
+    assertStringIncludes(openRoute.value.message, "sync PR not opened");
+  });
 });
