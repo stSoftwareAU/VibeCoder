@@ -163,6 +163,7 @@ import {
 } from "./primary_quota_latch.ts";
 import { waitUntilRateLimitReset } from "./rate_limit_wait.ts";
 import {
+  handlerLandingStep,
   newAgentRunOwner,
   runAsAgentRunOwner,
   runWithWatchdog,
@@ -3308,6 +3309,7 @@ async function executePriorityHandler(
         const decision = decideHandlerExtension({
           nowMs,
           activity: deps.agentRunActivity(owner.id),
+          landing: handlerLandingStep(owner.id),
           ceilingMs,
         }, policy);
         if (decision.action === "kill") {
@@ -3340,9 +3342,14 @@ async function executePriorityHandler(
             // can be diagnosed without piecing the log together.
             const workItem = owner.workItem ? ` on ${owner.workItem}` : "";
             const why = abandonReason ? ` (${abandonReason})` : "";
+            // The deadline that expired is the base plus every extension
+            // already granted (Issue #4173), not the base alone.
+            const expiredSeconds = Math.round(
+              (deps.now() - dispatchNowMs) / 1000,
+            );
             deps.logError(
               `${logPrefix}[watchdog] Priority ${handler.priority} (${handler.name}) ` +
-                `exceeded hard timeout ${Math.round(hardTimeoutMs / 1000)}s` +
+                `exceeded hard timeout ${expiredSeconds}s` +
                 `${workItem}${why} ` +
                 `— abandoning handler and continuing to next priority`,
             );

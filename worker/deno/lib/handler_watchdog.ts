@@ -66,6 +66,44 @@ export function noteAgentRunWorkItem(workItem: string): void {
   if (owner) owner.workItem = workItem;
 }
 
+/**
+ * Post-agent work still in progress for an owner (Issue #4173).
+ *
+ * The agent has exited, but commit, the pre-commit safety gate and push are
+ * still landing its result. Keyed by owner id so a sibling handler is not
+ * credited with this one's landing.
+ */
+const landingSteps = new Map<string, string>();
+
+/**
+ * Mark the current owner's post-agent landing step as running.
+ *
+ * A no-op outside an owner. An empty name is a caller bug and fails loud.
+ */
+export function beginHandlerLandingStep(step: string): void {
+  if (step.trim().length === 0) {
+    throw new Error("a handler landing step needs a name");
+  }
+  const owner = ownerStorage.getStore();
+  if (!owner) return;
+  landingSteps.set(owner.id, step);
+}
+
+/** The current owner's landing step has finished. A no-op outside an owner. */
+export function endHandlerLandingStep(): void {
+  const owner = ownerStorage.getStore();
+  if (!owner) return;
+  landingSteps.delete(owner.id);
+}
+
+/** The landing step `ownerId` still has in progress, if any. */
+export function handlerLandingStep(
+  ownerId: string,
+): { step: string } | undefined {
+  const step = landingSteps.get(ownerId);
+  return step === undefined ? undefined : { step };
+}
+
 /** Outcome of running a task under the watchdog. */
 export type WatchdogOutcome = "completed" | "timedout";
 
