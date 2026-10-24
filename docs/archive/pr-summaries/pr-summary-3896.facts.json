@@ -1,0 +1,240 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 33,
+        "outcome": "Empty canary is rejected before searching",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - rejects empty canaries and rows without canaries",
+        "flipWentRed": "disabled the empty-canary guard; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 33,
+        "outcome": "Non-empty canary proceeds to presence validation",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - accepts the production fence and repeated fenced occurrences",
+        "flipWentRed": "forced the empty-canary refusal for populated input; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 34,
+        "outcome": "Missing canary is rejected rather than passing vacuously",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - rejects missing canary",
+        "flipWentRed": "disabled the missing-canary guard; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 34,
+        "outcome": "Present canary proceeds to fence parsing",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - accepts the production fence and repeated fenced occurrences",
+        "flipWentRed": "forced missing-canary refusal for present input; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 45,
+        "outcome": "Malformed boundary id is rejected",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - rejects invalid boundary id",
+        "flipWentRed": "disabled boundary-id validation; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 45,
+        "outcome": "Well-formed boundary id is accepted",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - accepts the production fence and repeated fenced occurrences",
+        "flipWentRed": "forced invalid-id refusal for valid production markers; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 53,
+        "outcome": "BEGIN opens a range",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - accepts the production fence and repeated fenced occurrences",
+        "flipWentRed": "treated BEGIN as END; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 53,
+        "outcome": "END closes an existing range",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - accepts the production fence and repeated fenced occurrences",
+        "flipWentRed": "treated END as BEGIN; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 62,
+        "outcome": "Stray END is rejected with its own diagnostic",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - rejects stray END",
+        "flipWentRed": "disabled the stray-END guard; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 62,
+        "outcome": "END with an open BEGIN proceeds to id matching",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - accepts the production fence and repeated fenced occurrences",
+        "flipWentRed": "forced stray-END refusal for a matched opening; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 63,
+        "outcome": "Different BEGIN and END ids are rejected",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - rejects mismatched ids",
+        "flipWentRed": "disabled the matching-id check; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 63,
+        "outcome": "Same-id END completes the range",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - accepts the production fence and repeated fenced occurrences",
+        "flipWentRed": "forced mismatch refusal for equal ids; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 74,
+        "outcome": "An unclosed BEGIN is rejected",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - rejects unclosed BEGIN",
+        "flipWentRed": "disabled the unclosed-BEGIN guard; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 74,
+        "outcome": "Fully closed ranges return successfully",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - accepts the production fence and repeated fenced occurrences",
+        "flipWentRed": "forced the unclosed-BEGIN branch for complete fences; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 89,
+        "outcome": "Every found occurrence is inspected, including a later unfenced copy",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - rejects unfenced duplicate",
+        "flipWentRed": "skipped the occurrence loop; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 89,
+        "outcome": "Occurrence scanning stops after the final match",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - accepts the production fence and repeated fenced occurrences",
+        "flipWentRed": "continued scanning when indexOf returned minus one; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 93,
+        "outcome": "An occurrence outside all matched ranges is rejected",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - rejects unfenced duplicate",
+        "flipWentRed": "accepted occurrences outside every range; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 93,
+        "outcome": "An occurrence wholly within a range is accepted",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - accepts the production fence and repeated fenced occurrences",
+        "flipWentRed": "rejected every occurrence including fenced ones; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 94,
+        "outcome": "Lower-bound operand rejects a canary before the fence even when it ends before END",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - rejects canary before the fence",
+        "flipWentRed": "removed only index >= start; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 94,
+        "outcome": "Upper-bound operand rejects a later canary after END despite starting after BEGIN",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - rejects unfenced duplicate",
+        "flipWentRed": "removed only index + canary.length <= end; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 114,
+        "outcome": "Known-leak rows reject zero and negative issue numbers",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - a known leak must name a real follow-up issue number",
+        "flipWentRed": "accepted invalid follow-up issue numbers; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 114,
+        "outcome": "Known-leak rows accept a positive follow-up issue number",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - runner registers and executes normal and tracked rows",
+        "flipWentRed": "rejected valid follow-up issue numbers; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 124,
+        "outcome": "Rows without canaries are rejected",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - rejects empty canaries and rows without canaries",
+        "flipWentRed": "disabled the non-empty row guard; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 124,
+        "outcome": "Rows with canaries render and check normally",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - runner registers and executes normal and tracked rows",
+        "flipWentRed": "rejected populated rows; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 131,
+        "outcome": "Known-leak rows require the strict helper to throw and reject a repaired prompt",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - clean known-leak rows must be promoted",
+        "flipWentRed": "treated a known leak as a normal row; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 131,
+        "outcome": "Ordinary rows require the strict helper to pass",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - runner registers and executes normal and tracked rows",
+        "flipWentRed": "treated ordinary rows as expected failures; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 134,
+        "outcome": "Known-leak checking still rejects dropped input before expecting a fence failure",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - a known leak cannot hide dropped input or renderer errors",
+        "flipWentRed": "removed the independent known-leak presence check; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 152,
+        "outcome": "Known-leak registrations identify their follow-up issue",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - runner registers and executes normal and tracked rows",
+        "flipWentRed": "omitted the known-leak name suffix; the named test went red"
+      },
+      {
+        "path": "worker/deno/tests/support/untrusted_fence.ts",
+        "line": 152,
+        "outcome": "Ordinary registrations have no known-leak suffix",
+        "test": "worker/deno/tests/untrusted_fence_helper_test.ts",
+        "testName": "untrusted fence helper - runner registers and executes normal and tracked rows",
+        "flipWentRed": "added a known-leak suffix to ordinary rows; the named test went red"
+      }
+    ]
+  }
+}

@@ -1330,6 +1330,15 @@ Multiple limits prevent context window exhaustion:
 
 ### 4. Delimiter Hardening
 
+The [prompt fence coverage suite](docs/EXTENDING.md#prompt-fence-coverage-milestone-130)
+renders every exported prompt builder with distinct untrusted-input canaries.
+It requires matched boundary ids and checks every occurrence, including copies
+outside the main fenced block. The completeness check prevents a new exported
+builder from silently missing coverage. Existing leaks are tracked explicitly
+by `knownLeakRow` and open bug references; a passing baseline is not a claim
+that all production prompt paths are fenced. Those rows must become normal
+assertions when their linked repairs land.
+
 Prompt boundary markers are hardened against spoofing:
 - **Randomised boundaries**: Per-invocation randomised delimiter strings replace predictable markers
 - **Per-comment delimiters**: Each comment is individually wrapped with author and trust-level metadata

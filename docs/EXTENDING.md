@@ -729,6 +729,35 @@ Deno.test("module - behaviour description", async () => {
 });
 ```
 
+### Prompt fence coverage (Milestone #130)
+
+Every exported `build*Prompt` function under `worker/deno/lib` needs a row in
+the matching `tests/fence_coverage_*_test.ts` suite: verifier, prompt builder,
+processors or repair. These suites run through the existing `deno task test`.
+The completeness test also runs through `deno task check:manifests`; it rejects
+missing builders, stale entries, empty scans and row/allowlist overlap.
+
+Use `makeCanary(field)` from `tests/support/untrusted_fence.ts` to put a distinct,
+scrub-safe value in each reachable untrusted input. Render the real builder and
+register its literal exported name with `runFenceCoverageRows`. The shared
+assertion requires every canary to occur and every occurrence to sit inside
+matched whole-line untrusted markers with the same valid boundary id. It rejects
+unclosed, stray and mismatched markers too. This catches both duplicated text
+outside an otherwise valid fence and inputs silently dropped during rendering.
+
+If a builder already leaks, first find or file an open bug for that root cause,
+then use `knownLeakRow` with its issue number. This records existing behaviour;
+it does not repair the production prompt. A known-leak row must retain every
+canary and fail the strict assertion; after the repair it fails until promoted
+to a normal row. Assert currently protected canaries separately inside `render`
+so an existing leak cannot conceal a regression in those fields. A builder
+with no untrusted inputs instead needs a reasoned `NO_UNTRUSTED_INPUT` entry in
+the completeness test.
+
+Prove a new row by temporarily moving an input outside its fence, observing the
+row fail, then restoring the production code before commit. Keep marker-parser
+negative controls in `tests/untrusted_fence_helper_test.ts`.
+
 ### Stubbing the environment (Issue #378)
 
 The suite runs both on a developer host and inside the worker container, and
