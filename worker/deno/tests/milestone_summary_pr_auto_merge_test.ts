@@ -144,6 +144,9 @@ function deps(
       logs.push({ message: msg, level: level ?? "info" });
     },
     authorOptions: { fleetAuthors: ["bot"] },
+    // Issue #4236: arming without this set is refused. These tests are
+    // about the summary PR, and its thread has no review record.
+    fleetAuthors: ["bot"],
     ...overrides,
   };
 }

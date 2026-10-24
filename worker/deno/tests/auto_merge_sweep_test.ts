@@ -24,6 +24,10 @@ import { checkPrBaseIntegrity } from "../lib/pr_base_integrity.ts";
 import type { PrLiveStateReading } from "../lib/pr_live_state.ts";
 import { STANDING_VIOLATION_LABEL } from "../lib/standing_violation_routing.ts";
 import type { Logger, Result } from "../types.ts";
+import {
+  renderPreprReviewRequest,
+  renderPreprReviewResolved,
+} from "../lib/prepr_review_record.ts";
 
 const REPOS = [
   "stSoftwareAU/VibeCoder",
@@ -86,6 +90,10 @@ function harness(
       | { action: "hold"; outcome: EnableAutoMergeResult }
       | { action: "proceed"; disarmed: boolean }
     >;
+    prCommentBodies?: (
+      repo: string,
+      prNumber: number,
+    ) => Promise<Result<readonly string[]>>;
   } = {},
 ) {
   const state: Harness = {
@@ -156,6 +164,10 @@ function harness(
       return Promise.resolve();
     },
     logger,
+    prCommentBodies: (repo: string, prNumber: number) =>
+      overrides.prCommentBodies
+        ? overrides.prCommentBodies(repo, prNumber)
+        : Promise.resolve({ ok: true as const, value: [] }),
   };
 
   return { state, options };
@@ -1089,4 +1101,75 @@ Deno.test("Issue #3517: the hold line says it is disarming only for an armed PR"
   assertEquals(lineFor(100).includes("disarming auto-merge"), true);
   assertEquals(lineFor(101).includes("disarming auto-merge"), false);
   resetAnnouncedDraftsForTest();
+});
+
+const REVIEW_FINDING = {
+  file: "src/balance.ts",
+  line: 42,
+  problem: "rounding drops the final cent",
+};
+
+Deno.test("Issue #4236: an unresolved pre-PR review record is not armed", async () => {
+  const { state, options } = harness({
+    [VC]: [{ number: 77, baseRefName: "main" }],
+  }, {
+    prCommentBodies: () =>
+      Promise.resolve({
+        ok: true,
+        value: [renderPreprReviewRequest([REVIEW_FINDING])],
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.attempted, []);
+  assertEquals(state.updated, []);
+});
+
+Deno.test("Issue #4236: a resolved pre-PR review record can be armed", async () => {
+  const { state, options } = harness({
+    [VC]: [{ number: 78, baseRefName: "main" }],
+  }, {
+    prCommentBodies: () =>
+      Promise.resolve({
+        ok: true,
+        value: [
+          renderPreprReviewRequest([REVIEW_FINDING]),
+          renderPreprReviewResolved(),
+        ],
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.attempted, [{ repo: VC, prNumber: 78 }]);
+});
+
+Deno.test("Issue #4236: an armed PR with an unresolved pre-PR review record is disarmed", async () => {
+  const { state, options } = harness({
+    [VC]: [{ number: 79, baseRefName: "main" }],
+  }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: false,
+        labels: [],
+      }),
+    prCommentBodies: () =>
+      Promise.resolve({
+        ok: true,
+        value: [renderPreprReviewRequest([REVIEW_FINDING])],
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.attempted, []);
+  assertEquals(state.updated, []);
+  assertEquals(state.disarmed, [{ repo: VC, prNumber: 79 }]);
 });

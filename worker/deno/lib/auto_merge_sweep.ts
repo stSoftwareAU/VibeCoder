@@ -32,6 +32,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import { runGhCommand } from "./github.ts";
+import {
+  fetchIssueCommentBodies,
+  fleetMarkerBodies,
+  preprReviewBlocksArm,
+} from "./prepr_review_record.ts";
 import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
 import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
 import { STANDING_VIOLATION_LABEL } from "./standing_violation_routing.ts";
@@ -145,6 +151,15 @@ export interface SweepAutoMergeOptions {
   invalidateOpenPrCache: (repo: string) => Promise<void>;
   /** Logger. */
   logger: Pick<Logger, "info" | "warn">;
+  /**
+   * Issue-comment bodies for the pre-PR review record (Issue #4236).
+   * Defaults to a live `gh` read. A failed read does not arm. Tests inject
+   * the bodies so the sweep never calls `gh` for them.
+   */
+  prCommentBodies?: (
+    repo: string,
+    prNumber: number,
+  ) => Promise<Result<readonly string[]>>;
 }
 
 /** What one sweep did. */
@@ -191,6 +206,7 @@ export async function sweepAutoMerge(
     recordOutcome,
     invalidateOpenPrCache,
     logger,
+    prCommentBodies,
   } = options;
 
   const summary: SweepAutoMergeSummary = {
@@ -296,6 +312,46 @@ export async function sweepAutoMerge(
               { repo, prNumber: pr.number },
             );
           }
+          if (armedHold && await disarmAutoMerge(repo, pr.number)) {
+            mutated = true;
+          }
+          continue;
+        }
+
+        // Issue #4236: an unresolved pre-PR review record is the worker's
+        // own change request. Do not arm, and do not move the branch, until
+        // a later comment resolves it. One that is already armed is
+        // disarmed, the same way a standing violation is. A comment list
+        // that cannot be read is the same hold — arming would guess.
+        const readBodies = prCommentBodies ??
+          (async (repoName, prNumber) => {
+            const comments = await fetchIssueCommentBodies(
+              repoName,
+              prNumber,
+              runGhCommand,
+            );
+            if (!comments.ok) return comments;
+            return {
+              ok: true as const,
+              value: fleetMarkerBodies(comments.value, fleetAuthors),
+            };
+          });
+        const bodies = await readBodies(repo, pr.number);
+        if (!bodies.ok) {
+          logger.info(
+            "Auto-merge sweep: could not read the pre-PR review record — not arming",
+            { repo, prNumber: pr.number, detail: bodies.error.message },
+          );
+          continue;
+        }
+        if (preprReviewBlocksArm(bodies.value)) {
+          const armedHold = reading.armed === true;
+          logger.info(
+            "Auto-merge sweep: pre-PR review requested changes — not arming" +
+              (armedHold ? ", disarming auto-merge" : "") +
+              " until the record is resolved (Issue #4236)",
+            { repo, prNumber: pr.number },
+          );
           if (armedHold && await disarmAutoMerge(repo, pr.number)) {
             mutated = true;
           }

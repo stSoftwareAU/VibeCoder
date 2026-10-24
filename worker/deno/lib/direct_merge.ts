@@ -29,10 +29,14 @@ import {
 } from "./milestone_fix_pr.ts";
 import {
   type ApprovedDefaultBranchPolicy,
+  defaultBranchMergeAllowed,
   fetchPrReviews,
-  hasNonFleetApproval,
   type PrReview,
 } from "./default_branch_approval.ts";
+import {
+  fetchIssueCommentBodies,
+  fleetMarkerBodies,
+} from "./prepr_review_record.ts";
 
 export type { ApprovedDefaultBranchPolicy, PrReview };
 
@@ -939,7 +943,30 @@ export async function directMergePr(
       };
     }
 
-    if (!hasNonFleetApproval(reviews, policy.fleetAuthors)) {
+    // Issue #4236: an unresolved pre-PR review record is a change request
+    // the worker posted on its own PR. It blocks the merge the same way a
+    // missing human approval does, and a resolved record does not.
+    const comments = await fetchIssueCommentBodies(
+      repo,
+      prNumber,
+      ghCommandFn,
+    );
+    if (!comments.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Refusing to direct-merge PR #${prNumber} in ${repo}: its comments could not be read (${comments.error.message}), so an unresolved pre-PR review record cannot be ruled out. Failing closed; will retry on the next maintenance scan (Issue #4236).`,
+        ),
+      };
+    }
+
+    if (
+      !defaultBranchMergeAllowed(
+        reviews,
+        policy.fleetAuthors,
+        fleetMarkerBodies(comments.value, policy.fleetAuthors),
+      )
+    ) {
       // A deliberate hold, not a fault — leave the PR open and say why.
       return {
         ok: true,

@@ -18,6 +18,7 @@
  */
 
 import { runGhCommand } from "./github.ts";
+import { preprReviewBlocksArm } from "./prepr_review_record.ts";
 
 /** Injectable gh command runner. */
 type GhCommandFn = (args: string[]) => Promise<string>;
@@ -143,4 +144,20 @@ export function hasNonFleetApproval(
   }
 
   return [...latestByReviewer.values()].some((v) => v.state === "APPROVED");
+}
+
+/**
+ * Whether a default-branch merge may proceed (Issue #4236).
+ *
+ * An unresolved pre-PR review record blocks the merge even when a human
+ * has approved. A resolved record, or no record, leaves the approval rule
+ * as it was.
+ */
+export function defaultBranchMergeAllowed(
+  reviews: readonly PrReview[],
+  fleetAuthors: readonly string[],
+  commentBodies: readonly string[],
+): boolean {
+  if (preprReviewBlocksArm(commentBodies)) return false;
+  return hasNonFleetApproval(reviews, fleetAuthors);
 }

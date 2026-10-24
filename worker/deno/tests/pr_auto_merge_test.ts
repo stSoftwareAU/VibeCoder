@@ -11,7 +11,7 @@ import {
   AutoMergeResult,
   buildArmingReasonComment,
   classifyAutoMergeFailure,
-  enableAutoMerge,
+  enableAutoMerge as enableAutoMergeReal,
   type EnableAutoMergeResult,
   finalisePr,
   isBasePolicyRefusal,
@@ -29,6 +29,13 @@ import {
 } from "../lib/milestone_children_gate.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import type { LogContext, Logger } from "../types.ts";
+import { armWithNoReviewRecord } from "./support/arm_with_no_review_record.ts";
+
+function enableAutoMerge(
+  options: Parameters<typeof enableAutoMergeReal>[0],
+): ReturnType<typeof enableAutoMergeReal> {
+  return armWithNoReviewRecord(enableAutoMergeReal, options);
+}
 
 // --- classifyAutoMergeFailure ---
 
@@ -1864,6 +1871,27 @@ Deno.test("pr_auto_merge - a failed in-cycle sync comments once per PR per cycle
   assertEquals(comments.length, 2, "a sibling PR still gets the reason");
 });
 
+Deno.test("pr_auto_merge - enableAutoMerge does not arm when the fleet set is missing (Issue #4236)", async () => {
+  const issued: string[][] = [];
+  const outcome = await enableAutoMergeReal({
+    repo: "owner/repo",
+    prNumber: 7,
+    ghCommandFn: async (args) => {
+      issued.push(args);
+      return "Enabled auto-merge";
+    },
+  });
+  assertEquals(outcome.result, AutoMergeResult.Deferred);
+  assertStringIncludes(outcome.message, "fleet logins were not supplied");
+  assertEquals(outcome.message.includes("WARNING:"), false);
+  assertEquals(outcome.message.includes("ERROR:"), false);
+  assertEquals(
+    issued.some((args) => args.includes("--auto")),
+    false,
+    "a missing fleet set must not arm",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // finalisePr returns the real arming outcome, and latch refusals never retry
 // (Issue #2457)
@@ -1875,7 +1903,9 @@ Deno.test("pr_auto_merge - finalisePr returns the real outcome, not a constant o
     prNumber: 1,
     maxRetries: 1,
     retryDelay: 0,
-    ghCommandFn: async () => {
+    fleetAuthors: ["vibe-bot"],
+    ghCommandFn: async (args) => {
+      if (args.some((arg) => arg.endsWith("/comments"))) return "[]";
       throw new Error("HTTP 500 Internal Server Error");
     },
   });
@@ -1900,7 +1930,11 @@ Deno.test("pr_auto_merge - finalisePr reports Enabled on success (Issue #2457)",
     repo: "owner/repo",
     prNumber: 1,
     isBaseProtectedFn: async () => true,
-    ghCommandFn: async () => "Enabled",
+    fleetAuthors: ["vibe-bot"],
+    ghCommandFn: async (args) => {
+      if (args.some((arg) => arg.endsWith("/comments"))) return "[]";
+      return "Enabled";
+    },
   });
   assert(result.ok);
   assertEquals(result.value.result, AutoMergeResult.Enabled);
