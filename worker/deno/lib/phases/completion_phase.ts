@@ -239,6 +239,7 @@ import {
   type SecurityFixDiscrimination,
 } from "../security_fix_discrimination.ts";
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
+import { runPrePushGateRecoveryTurn } from "../pre_push_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
   findOwnLineStandingViolations,
@@ -2065,7 +2066,10 @@ async function completionBody(
   // Pre-push gate (Issue #3689) — the agent's own pre-push hook never sees
   // this push, so run the changed-file checks here. The repo's pre-flight
   // commands (when configured) run too; with none, the changed-file checks
-  // still run. A block fails closed and never enters push recovery.
+  // still run. A verdict block gets one in-run agent turn (Issue #4128), then
+  // the gate re-runs. If it still blocks, or the turn errors, the run fails
+  // closed with category pre_push_gate and never enters push recovery. The
+  // cap is once per run, across the first and retry gate calls.
   //
   // The gate covers every non-merge commit the branch has ahead of the PR
   // base, not only commits on no remote: the execute phase's WIP checkpoints
@@ -2082,22 +2086,42 @@ async function completionBody(
   const prePushSpec = resolvePreFlightSpec(config.repoConfig, repo) ??
     { commands: [] };
   const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
-    // The repo's own formatters first (part of #2932): a formatting-only miss
-    // is fixed and committed here rather than failing the gate, or shipping
-    // to review and CI. Same files as the gate, never Markdown; a formatter
-    // that fails or throws is logged and the gate below still reports it.
-    await formatBeforeGate(
-      deps,
-      state.repoPath,
-      comparableBase.ok ? comparableBase.value : undefined,
-    );
-    const gate = await deps.git.gateUnpushedCommits(
-      state.branchName,
-      { cwd: state.repoPath },
-      prePushSpec,
-      false,
-      comparableBase.ok ? comparableBase.value : undefined,
-    );
+    const runGateOnce = async () => {
+      // The repo's own formatters first (part of #2932): a formatting-only
+      // miss is fixed and committed here rather than failing the gate, or
+      // shipping to review and CI. Same files as the gate, never Markdown; a
+      // formatter that fails or throws is logged and the gate below still
+      // reports it.
+      await formatBeforeGate(
+        deps,
+        state.repoPath,
+        comparableBase.ok ? comparableBase.value : undefined,
+      );
+      return await deps.git.gateUnpushedCommits(
+        state.branchName,
+        { cwd: state.repoPath },
+        prePushSpec,
+        false,
+        comparableBase.ok ? comparableBase.value : undefined,
+      );
+    };
+    let gate = await runGateOnce();
+    // Issue #4128: a verdict block gets one in-run agent turn, once per run.
+    // Infrastructure failures (a git or remote lookup that failed) get none.
+    // When the turn ran, the formatters and the same gate run again, so the
+    // reason below quotes the latest output and the re-run is the decision.
+    if (
+      !gate.ok && gate.error.kind === "verdict" &&
+      !state.prePushRetryAttempted
+    ) {
+      const turn = await runPrePushGateRecoveryTurn(
+        ctx,
+        state,
+        deps,
+        gate.error.message,
+      );
+      if (turn.ran) gate = await runGateOnce();
+    }
     if (gate.ok) {
       // Issue #3770: log every gate outcome so the checks a live run reached
       // are observable in the worker log — a pass names the checks, a no-op

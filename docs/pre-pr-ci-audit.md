@@ -364,11 +364,15 @@ Findings:
   hosts recorded at least one gate block (22, 25, 17 and 3 blocks), and the
   blocks stop real failures before the PR exists. This confirms the replay
   above on live runs.
-- A block ends the run: only 1 of the 20 VibeCoder issues has a later success.
-  The gate "fails closed and never enters push recovery" (a comment above
-  `gateBeforePush()` in `lib/phases/completion_phase.ts`), so the agent gets
-  no turn to fix what the gate found. This gap is tracked in #4128 (open);
-  no new issue is filed.
+- A block ended the run in the audited period: only 1 of the 20 VibeCoder
+  issues has a later success. At the time of the audit the comment above
+  `gateBeforePush()` in `lib/phases/completion_phase.ts` said the gate "fails
+  closed and never enters push recovery", so the agent got no turn to fix what
+  the gate found. #4128 has since added one in-run recovery turn
+  (`worker/deno/lib/pre_push_gate_retry.ts`): the first verdict block of a run
+  gets one agent turn and the gate re-runs. If it still blocks, or the turn
+  fails, the run fails closed with category `pre_push_gate` and never enters
+  push recovery. No new issue is filed.
 - The sweptAt block recurred on 2026-10-20 to 2026-10-22
   ([#3970](https://github.com/stSoftwareAU/VibeCoder/issues/3970),
   [#4045](https://github.com/stSoftwareAU/VibeCoder/issues/4045),

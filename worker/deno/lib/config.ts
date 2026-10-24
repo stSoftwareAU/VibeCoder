@@ -720,6 +720,20 @@ export async function loadConfig(
         `got ${JSON.stringify(file.screenshot_retry_timeout_seconds)}`,
     );
   }
+  // Issue #4128: timeout for the pre-push gate's one extra in-run agent turn.
+  // Rejected loudly rather than silently hanging or firing instantly.
+  const prePushRetryTimeoutSeconds = file.pre_push_retry_timeout_seconds ??
+    OPERATIONAL_DEFAULTS.prePushRetryTimeoutSeconds;
+  if (
+    typeof prePushRetryTimeoutSeconds !== "number" ||
+    !Number.isFinite(prePushRetryTimeoutSeconds) ||
+    prePushRetryTimeoutSeconds <= 0
+  ) {
+    throw new Error(
+      `pre_push_retry_timeout_seconds must be a positive finite number, ` +
+        `got ${JSON.stringify(file.pre_push_retry_timeout_seconds)}`,
+    );
+  }
   if (progressExtensionStallSeconds < progressExtensionCheckSeconds) {
     // The deadline decision reads tree evidence up to one check interval old,
     // so a shorter activity window kills runs that demonstrably progressed
@@ -1263,6 +1277,7 @@ export async function loadConfig(
     progressExtensionStallSeconds,
     progressExtensionCheckSeconds,
     screenshotRetryTimeoutSeconds,
+    prePushRetryTimeoutSeconds,
     callStormEnabled,
     callStormCalls,
     callStormWindowSeconds,

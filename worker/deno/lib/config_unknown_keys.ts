@@ -125,6 +125,8 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "progress_extension_check_seconds",
   // Screenshot gate's one extra in-run agent turn (Issue #2960)
   "screenshot_retry_timeout_seconds",
+  // Pre-push gate's one extra in-run agent turn (Issue #4128)
+  "pre_push_retry_timeout_seconds",
   // Call-storm stall guard (Issue #2230)
   "call_storm_enabled",
   "call_storm_calls",

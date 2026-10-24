@@ -1942,6 +1942,103 @@ Deno.test("config - a stall window equal to the check interval is accepted (Issu
   });
 });
 
+// ── Issue #4128: pre_push_retry_timeout_seconds ──────────────────────────
+
+Deno.test("config - the pre-push retry timeout defaults to 600s (Issue #4128)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.prePushRetryTimeoutSeconds, 600);
+  });
+});
+
+Deno.test("config - the pre-push retry timeout is read from the file (Issue #4128)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    pre_push_retry_timeout_seconds: 900,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    assertEquals(config.prePushRetryTimeoutSeconds, 900);
+  });
+});
+
+Deno.test("config - a zero pre-push retry timeout is rejected (Issue #4128)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    pre_push_retry_timeout_seconds: 0,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+      "pre_push_retry_timeout_seconds must be a positive finite number, got 0",
+    );
+  });
+});
+
+Deno.test("config - a negative pre-push retry timeout is rejected (Issue #4128)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    pre_push_retry_timeout_seconds: -30,
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+      "pre_push_retry_timeout_seconds must be a positive finite number, got -30",
+    );
+  });
+});
+
+Deno.test("config - a non-number pre-push retry timeout is rejected (Issue #4128)", async () => {
+  const testConfig = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo1"],
+    pre_push_retry_timeout_seconds: "600",
+  } as unknown as ConfigFile;
+
+  await withTempConfig(testConfig, async (configPath) => {
+    await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+      `pre_push_retry_timeout_seconds must be a positive finite number, got "600"`,
+    );
+  });
+});
+
+Deno.test("config - an infinite pre-push retry timeout is rejected (Issue #4128)", async () => {
+  // JSON.stringify writes Infinity as null, so the file is written as text:
+  // the literal `1e999` parses to Infinity, which the finiteness check must
+  // reject. The message renders the value with JSON.stringify, hence `null`.
+  const tempDir = await Deno.makeTempDir();
+  const configPath = `${tempDir}/.config.json`;
+  await Deno.writeTextFile(
+    configPath,
+    '{"allowed_authors":["testuser"],"repos":["org/repo1"],' +
+      '"pre_push_retry_timeout_seconds":1e999}',
+  );
+  try {
+    await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+      "pre_push_retry_timeout_seconds must be a positive finite number, got null",
+    );
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
 // ── Issue #1453: trusted_authors_cache_hours ─────────────────────────────
 
 Deno.test("config - trusted_authors_cache_hours defaults to one hour (Issue #1453)", async () => {
@@ -2215,4 +2312,14 @@ Deno.test("config - a non-boolean rtk_output.enabled fails the load (Issue #2380
     );
     assertStringIncludes(error.message, "rtk_output.enabled");
   });
+});
+
+Deno.test("config - the pre-push retry timeout key is a known config key, not flagged as unknown (Issue #4128)", async () => {
+  const { detectUnknownConfigKeys } = await import(
+    "../lib/config_unknown_keys.ts"
+  );
+  assertEquals(
+    detectUnknownConfigKeys({ pre_push_retry_timeout_seconds: 600 }),
+    [],
+  );
 });

@@ -5230,6 +5230,14 @@ is reported without the marker (see "Two limits" below).
 a `ladder` decision with cooldown `non_transient`, `classifyRunFailure` answers
 it before the free-text rules and `detectHostFault` returns `null`, so a block
 always gets one normal attempt and a failure comment carrying the gate output.
+Before that classification applies, a verdict block on the first block of a run
+gets one in-run recovery turn (Issue #4128): the agent session resumes once with
+the gate output in the prompt (`worker/deno/lib/pre_push_gate_retry.ts`, timeout
+`pre_push_retry_timeout_seconds`), the formatters and the same gate re-run, and
+the push happens only if the gate passes. A second block in the same run,
+including one after push recovery, gets no further turn and fails with this
+category quoting the latest gate output; an invocation error or timeout of the
+turn fails the run with the original gate output. The gate is never bypassed.
 The label-release sweeps skip that comment too (`isWorkerGateFailureRecord`).
 A message that merely quotes the marker later keeps its own category. The final
 mile of `commitAndPushPending` (Step 1b) returns the same unmarked
