@@ -24,7 +24,7 @@ Version bump: not applicable; no `VERSION` file is touched by this change.
 
 Backend-only change; no UI files. Targeted run on the final head: `deno test -A tests/idle_detect_label_author_3964_test.ts tests/idle_detect_diagnostics_test.ts` passed (78 passed, 0 failed).
 
-Full `./quality.sh` run before the comment/docs-only fixes: every stage passed except `deno tests`, with 5 failures in suites this change does not touch, all environmental: `claude_runner_provider_fallback_4034_test.ts` (2) and `external_orchestration_3642_config_test.ts` (1) fail with "The running container image did not install the \"codex\" coding-agent provider", and `completion_phase_repo_formatters_test.ts` (2) fail with "formatter should commit the Rust fix". They were not re-run on the base branch. CI runs the gate on the PR.
+Full `./quality.sh` run on the final head: every stage passed except `deno tests` (29626 passed, 3 failed), the 3 failures being the `codex` provider-not-installed ones below; an earlier run also showed 2 more failures in suites this change does not touch, all environmental: `claude_runner_provider_fallback_4034_test.ts` (2) and `external_orchestration_3642_config_test.ts` (1) fail with "The running container image did not install the \"codex\" coding-agent provider", and `completion_phase_repo_formatters_test.ts` (2) fail with "formatter should commit the Rust fix". They were not re-run on the base branch. CI runs the gate on the PR.
 
 #3964: Idle-detect audit counts an issue whose priority label an untrusted author added as claimable, so mis_classification fires every cycle (parent). #4213: Wire the untrusted-label set into the production idle-detect audit and document the gate.
 
