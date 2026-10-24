@@ -1994,9 +1994,13 @@ for every PR summary — containing:
 4. **Test Plan** — Tests added or modified.
 
 In this repository, `deno task pr-summary-check --base <base-branch>
-<summary-file>` from `worker/deno` runs most of the PR-summary gates against a
-summary at either stage: a draft before the PR is raised, or the archived
-summary once it is open. A gate it reports as not checked is not a pass. For a
+<summary-file>` from `worker/deno` runs the PR-summary gates against a summary
+at either stage: a draft before the PR is raised, or the archived summary once
+it is open. It runs the removed-assertion gate when given `--issue-body-file`,
+and the summary claim check (a model call) unless `--no-claim-check`; the
+pre-PR verifier runs only with `--verifier` (a model call of up to 30 minutes).
+The mutation check and coverage carry-over check need the test runner, so only
+the worker runs them. A gate it reports as not checked is not a pass. For a
 summary named `pr-summary-<N>.md` it also reads
 `docs/archive/pr-summaries/pr-summary-<N>.facts.json` under the repository
 root, as the worker does (it takes only `<N>` from the summary's file name):
@@ -2035,8 +2039,8 @@ freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
 commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
 commit changing that summary or its facts file. Rewrite the summary for the head
 in that push, whoever makes it. The step then runs the `pr-summary-check` gates
-and fails on a blocked one; gates needing the issue body or labels are reported
-as not checked. A PR carrying no summary passes with a log line. On a head
+and fails on a blocked one. The step has no issue body, labels, claim check or
+verifier, so the gates that need them are reported as not checked. A PR carrying no summary passes with a log line. On a head
 branch that is not an `issue-<N>` branch (milestone roll-ups, sync PRs) the
 summary is reported as not checked.
 
@@ -2158,8 +2162,9 @@ past a cap is logged as not checked, never passed. For unchanged prose the
 question is whether this change makes it false, and sets without one code list
 require a grep of the whole head tree for other members. A confirmed
 contradiction is a summary-rule block: on the run's first summary-rule block
-the run gets one recovery turn to rewrite the sentence, and a block that
-survives it fails the run or, when a PR already exists, finalises it as
+the run gets the in-run recovery loop (up to three turns, each taken only while
+the blocking-finding count falls) to rewrite the sentence, and a block that
+survives the loop fails the run or, when a PR already exists, finalises it as
 `summary_incomplete`. On a review-fix push the drift check builds the same
 prose scope and gives one recovery turn before reporting what remains. This
 enforces the rule above; it does not replace it.

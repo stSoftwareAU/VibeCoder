@@ -22,7 +22,7 @@ red. A survivor is concrete evidence that no test pins that behaviour.
 At PR raise, the gate runs in the issue-run completion phase, after the PR
 summary is final and before the PR is raised. It joins the other late summary gates (docs
 sweep, removed assertions, placeholders, branch outcomes, [coverage carry-over](coverage-carryover-check.md), claim check, pre-PR verifier) and
-feeds the same single recovery turn.
+feeds the same bounded in-run recovery loop (up to three turns, Issue #4234).
 
 ```mermaid
 flowchart TD

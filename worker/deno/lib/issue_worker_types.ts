@@ -359,20 +359,21 @@ export interface PhaseState {
    * PR-summary rule verdicts observed during THIS run (Issue #2189), oldest
    * first — closure, independent review and reproduction alike.
    *
-   * The completion phase appends the run's first entry whether or not a PR
-   * already exists for this run's branch — an agent-raised PR gets the same
-   * in-run recovery turn a no-PR run gets, rather than being finalised
-   * straight off that first block (Issue #3163). A second (or later) entry is
-   * appended only when there is still no PR; when a PR exists a later block
-   * finalises it instead. The first entry triggers the in-run recovery — one
-   * agent invocation carrying the gate's own remediation comment, then the
-   * quality gate and the completion gates again — so a documentation
-   * shortfall no longer costs a whole run. A second entry whose block came
-   * from the claim check alone first gets the one summary-only correction
-   * turn (`summary_claim_correction.ts`, Issue #3324) rather than ending the
-   * run immediately — see `summaryClaimCorrection` below. Any other second
-   * entry on a no-PR run ends the run in `failure`, with the comment already
-   * on the thread.
+   * The completion phase appends one entry per block, whether or not a PR
+   * already exists for this run's branch (Issues #3163, #4234), so every
+   * block's findings are on record. The first entry triggers the in-run
+   * recovery: one agent invocation carrying the gates' remediation comments,
+   * then the quality gate and the completion gates again — so a documentation
+   * shortfall no longer costs a whole run. Each later block earns a further
+   * turn while its blocking-finding count is strictly below the one before
+   * it, up to `OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns` (Issue #4234). A
+   * block whose count did not fall ends the in-run recovery: on a no-PR run
+   * the run fails with the comment already on the thread; over an existing PR
+   * the PR is finalised as `summary_incomplete`. A block from the claim check
+   * alone, once a verdict is on record, whose findings are all manual prose
+   * gets the one summary-only correction turn (`summary_claim_correction.ts`,
+   * Issue #3324) rather than being recorded — see `summaryClaimCorrection`
+   * below.
    */
   summaryRuleBlocks?: SummaryRuleRunVerdict[];
   /**
@@ -390,6 +391,23 @@ export interface PhaseState {
    * confirmed wrong.
    */
   summaryClaimCorrection?: SummaryClaimCorrection;
+  /**
+   * The blocking findings of the latest pre-PR verifier pass in THIS run
+   * (Issue #4234), each as its problem/fix text. The next pass receives them as
+   * `previousFindings` so it answers each one. Absent or empty means the last
+   * pass blocked nothing.
+   */
+  prePrVerifierFindings?: string[];
+  /**
+   * The advisory-findings comment body this run last posted (Issue #4234), so a
+   * retry that repeats the same advisory notes does not post them again.
+   */
+  prePrVerifierAdvisoryPosted?: string;
+  /**
+   * True once this run's gate-recovery outcome has been recorded in the fleet
+   * telemetry (Issue #4234), so a run is counted once however it ended.
+   */
+  gateRecoveryRecorded?: boolean;
   /**
    * The screenshot gate's verdict for THIS run (Issue #2960), when it has
    * blocked. Set by the completion phase on the first block; the in-run

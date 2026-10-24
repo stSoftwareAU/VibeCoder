@@ -30,7 +30,22 @@ import {
   recordClaudeRunStats,
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
-import { LABEL_DEFAULTS } from "../config_defaults.ts";
+import { LABEL_DEFAULTS, OPERATIONAL_DEFAULTS } from "../config_defaults.ts";
+import {
+  countBlockingFindings,
+  describeRecoveryEnd,
+  shouldRunRecoveryTurn,
+} from "../gate_recovery_loop.ts";
+import { parseDiffChangedLines } from "../caller_checks.ts";
+import { buildSummaryPrefill } from "../summary_gate_prefill.ts";
+import { readRemovedAssertionInput } from "../removed_assertion_input.ts";
+import {
+  applyConvergence,
+  buildAdvisoryFindingsComment,
+  findingToEarlierText,
+  previousFindingsFromGateComment,
+  splitFindingsForRetry,
+} from "../verifier_convergence.ts";
 import { buildWorkerFooter } from "../worker_identity.ts";
 import { getRunId } from "../run_id.ts";
 import { buildMilestonePrSection } from "../pr_body.ts";
@@ -59,6 +74,7 @@ import { DRIFT_CHECK_DISALLOWED_TOOLS } from "../pr_feedback_drift_check.ts";
 import { isManualProsePath } from "../doc_prose_claims.ts";
 import {
   buildPrePrVerifierGateComment,
+  PRE_PR_VERIFIER_COMMENT_HEADING,
   prePrVerifierBlocked,
   prePrVerifierBlockReason,
   type PrePrVerifierResult,
@@ -163,7 +179,11 @@ import {
   measureIssuePhaseRun,
   postIssueRunStatsComment,
 } from "../issue_run_stats_comment.ts";
-import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
+import {
+  formatGateFailureRateLine,
+  recordGateRecoveryRun,
+  recordIssuePhaseRun,
+} from "../fleet_telemetry.ts";
 import {
   reportIssueSubAgentDegradation,
 } from "../issue_sub_agent_degradation.ts";
@@ -239,7 +259,10 @@ import {
   type SecurityFixDiscrimination,
 } from "../security_fix_discrimination.ts";
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
-import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
+import {
+  recoverFromSummaryRuleBlock,
+  type SummaryRuleRunVerdict,
+} from "../summary_rule_gate_retry.ts";
 import {
   findOwnLineStandingViolations,
   PRE_PR_VERIFIER_HOLD_MARKER,
@@ -265,7 +288,6 @@ import {
 import {
   assessUnmetCriteria,
   buildUnmetCriteriaGateComment,
-  MAX_UNMET_CRITERIA_ROUNDS,
   unmetCriteriaReason,
 } from "../unmet_criteria_gate.ts";
 
@@ -612,6 +634,25 @@ async function lookupBlockedGatePr(
 }
 
 /**
+ * The id of a PR-summary gate, as `PR_SUMMARY_GATES` names it
+ * (`summary_gate_registry.ts`). Spelled out here so a typo fails to compile.
+ */
+type SummaryGateId =
+  | "prompt-scrub"
+  | "acceptance-closure"
+  | "independent-review"
+  | "reproduction-status"
+  | "docs-sweep"
+  | "removed-assertions"
+  | "result-placeholders"
+  | "branch-outcomes"
+  | "unmet-criteria"
+  | "claim-check"
+  | "pre-pr-verifier"
+  | "mutation-check"
+  | "coverage-carry-over";
+
+/**
  * One summary-rule gate's block, as passed to {@link reportSummaryRuleBlock}
  * (Issue #3324).
  */
@@ -652,6 +693,31 @@ interface SummaryRuleBlock {
    * them, and a later block fails the run as `criteria_unmet`.
    */
   unmetCriteria?: readonly DegradedShortfall[];
+  /**
+   * The gate id of each entry in `sections`, aligned index-for-index (Issue
+   * #4234), recorded on the verdict for the fleet telemetry.
+   */
+  gates: readonly string[];
+  /**
+   * The blocking findings this gate pass reported in total (Issue #4234): the
+   * figure the bounded recovery loop compares from one turn to the next.
+   */
+  findingCount: number;
+  /**
+   * The worker's pre-filled draft of the gap sections, or "" when none applies
+   * (Issue #4234). Recorded on the verdict so each recovery turn is given it.
+   */
+  prefill: string;
+}
+
+/**
+ * The blocking-finding count of each recorded gate pass, oldest first
+ * (Issue #4234). A verdict without a count is one finding.
+ */
+function blockingFindingCounts(
+  verdicts: readonly SummaryRuleRunVerdict[],
+): number[] {
+  return verdicts.map((v) => v.findingCount ?? 1);
 }
 
 /**
@@ -685,13 +751,14 @@ interface SummaryRuleBlock {
  *   the no-PR case (carrying the PR's URL), and this also blocks `failure`
  *   for `workOnIssueCompletion` to recover from in-run — the PR is *not*
  *   finalised on this first block;
- * - **a second (or later) block in the same run, with a PR** — the in-run
- *   recovery already had its turn and failed to clear the gate, so this is
- *   where the existing-PR path finalises the PR the way the recovery path
- *   finalises it (body, labels, link, auto-merge — except that auto-merge is withheld
- *   and the PR labelled `standing-violation` when a Standards violation on
- *   the branch's own lines survived the recovery turn, Issue #3382), and the
- *   run reports
+ * - **a later block in the same run, with a PR** — while the blocking-finding
+ *   count keeps falling and the turns are not spent (Issue #4234) another
+ *   in-run turn is due, so the PR is left alone and this returns `failure`.
+ *   Once the count stops falling or the turns are spent, the existing-PR path
+ *   finalises the PR the way the recovery path finalises it (body, labels,
+ *   link, auto-merge — except that auto-merge is withheld and the PR labelled
+ *   `standing-violation` when a Standards violation on the branch's own lines
+ *   survived the recovery turn, Issue #3382), and the run reports
  *   `summary_incomplete`: the work is done, the summary is short, and the
  *   issue stays attached to its PR instead of going back in the queue. An
  *   existing PR whose URL cannot be numbered fails the run instead — before
@@ -722,11 +789,14 @@ interface SummaryRuleBlock {
  *   per gate, in fold order — used to give the in-run recovery turn a
  *   numbered "REQUIRED ITEM" per gate rather than one undifferentiated
  *   notice.
+ * Every block is recorded (Issue #4234), so the recovery loop in
+ * `workOnIssueCompletion` reads the findings of each gate pass.
+ *
  * @returns `failure` on the run's first block (PR or no PR, both recovered
- *   in-run by `workOnIssueCompletion`), on any block with unmet criteria, or
- *   on a later block whose PR URL cannot be numbered; `early_exit`
- *   carrying the `summary_incomplete` outcome on a later block that reached
- *   and finalised an existing PR.
+ *   in-run by `workOnIssueCompletion`), on any block while another in-run turn
+ *   is due, on a block with unmet criteria, or on a later block whose PR URL
+ *   cannot be numbered; `early_exit` carrying the `summary_incomplete` outcome
+ *   on a later block that reached and finalised an existing PR.
  */
 async function reportSummaryRuleBlock(
   block: SummaryRuleBlock,
@@ -774,23 +844,34 @@ async function reportSummaryRuleBlock(
   const verdicts = state.summaryRuleBlocks ?? [];
   const alreadyOnThread = verdicts.some((v) => v.comment === comment);
   const isFirstBlock = verdicts.length === 0;
-  // An unmet-criteria block is always recorded (Issue #4146): further
-  // recovery rounds read their progress off these verdicts.
-  if (!existingPr.ok || isFirstBlock || criteriaUnmet) {
-    state.summaryRuleBlocks = [
-      ...verdicts,
-      {
-        categories: block.categories,
-        reason,
-        comment,
-        sections,
-        ...(standingViolations.length > 0 ? { standingViolations } : {}),
-        ...(allowsTestChanges ? { allowsTestChanges } : {}),
-        ...(criteriaUnmet ? { unmetCriteria } : {}),
-        ...(existingPr.ok ? { existingPrUrl: existingPr.value } : {}),
-      },
-    ];
-  }
+  // Every block is recorded (Issue #4234): the recovery loop reads each gate
+  // pass's findings off these verdicts, and the latest one is what the next
+  // turn is told about.
+  state.summaryRuleBlocks = [
+    ...verdicts,
+    {
+      categories: block.categories,
+      reason,
+      comment,
+      sections,
+      gates: block.gates,
+      findingCount: block.findingCount,
+      prefill: block.prefill,
+      ...(standingViolations.length > 0 ? { standingViolations } : {}),
+      ...(allowsTestChanges ? { allowsTestChanges } : {}),
+      ...(criteriaUnmet ? { unmetCriteria } : {}),
+      ...(existingPr.ok ? { existingPrUrl: existingPr.value } : {}),
+    },
+  ];
+  const recordedCounts = blockingFindingCounts(state.summaryRuleBlocks);
+  // Why the in-run recovery stopped, once it has spent a turn (Issue #4234).
+  const recoveryEnd = describeRecoveryEnd(
+    recordedCounts,
+    OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns,
+  );
+  const failureReasonWithEnd = recoveryEnd === undefined
+    ? failureReason
+    : `${failureReason}; ${recoveryEnd}`;
   if (alreadyOnThread) {
     logger.info(
       "Summary-rule verdict already posted in this run — not repeating the " +
@@ -820,7 +901,7 @@ async function reportSummaryRuleBlock(
       category,
       categories: block.categories,
       status: "failure",
-      reason: failureReason,
+      reason: failureReasonWithEnd,
     };
   }
 
@@ -879,18 +960,38 @@ async function reportSummaryRuleBlock(
     };
   }
 
-  if (criteriaUnmet) {
-    // Issue #4146: another in-run round is coming, so the agent's PR is left
-    // alone — unfinalised, auto-merge unarmed — for that round to finish.
-    if (shouldContinueUnmetCriteria(state)) {
-      return {
-        category,
-        categories: block.categories,
-        status: "failure",
-        reason: failureReason,
-      };
+  // Issue #4234: while the blocking-finding count keeps falling and turns
+  // remain, another in-run turn is coming, so the agent's PR is left alone —
+  // unfinalised, auto-merge unarmed — for that turn to finish. Issue #4146
+  // applies the same rule to unmet criteria.
+  if (
+    shouldRunRecoveryTurn(
+      recordedCounts,
+      OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns,
+    )
+  ) {
+    logger.warn(
+      "PR-summary rule broken on a run that had already raised its PR — " +
+        "leaving the PR for the in-run recovery turn (Issue #4234)",
+      { repo, issueNumber, prUrl, reason },
+    );
+    // Named here, as the first block names it, so a later failure can still
+    // name the live PR (Issue #2044).
+    if (prNumber > 0) {
+      state.prUrl = prUrl;
+      state.prNumber = prNumber;
     }
-    // The rounds are spent. A PR is never left standing for partial work —
+    return {
+      category,
+      categories: block.categories,
+      status: "failure",
+      reason: failureReason,
+    };
+  }
+
+  if (criteriaUnmet) {
+    // The turns are spent or the count stopped falling. A PR is never left
+    // standing for partial work —
     // the auto-merge sweep would arm it and the merge would close the issue.
     // The agent raised this one itself, so close it; its branch stays pushed
     // and the next run resumes it and raises the PR once every criterion is
@@ -953,7 +1054,9 @@ async function reportSummaryRuleBlock(
       phase: "completion",
       prUrl,
       prNumber,
-      problem: reason,
+      problem: recoveryEnd === undefined
+        ? reason
+        : `${reason}; ${recoveryEnd}`,
     }),
   };
 }
@@ -1276,30 +1379,28 @@ export async function workOnIssueCompletion(
     );
   }
 
-  // In-run recovery from the first PR-summary rule block (Issue #2189): a
-  // documentation shortfall on a pushed, quality-gated branch used to cost the
-  // whole run. Entered once per run — a block on the re-run is the second. A
-  // second block the standalone claim-check gate alone raised instead defers
-  // to the one narrow claim correction turn below (Issue #3324); any other
-  // second block fails as before.
-  if (
-    result.status === "failure" && (state.summaryRuleBlocks?.length ?? 0) === 1
-  ) {
-    result = await recoverFromSummaryRuleBlock(
-      ctx,
-      state,
-      deps,
-      result,
-      () => runCompletionAttempt(ctx, state, deps),
-    );
-  }
-
-  // Issue #4146: unmet criteria keep the run working rather than ending it on
-  // the second block — another round while the last one met more criteria
-  // than the one before, up to MAX_UNMET_CRITERIA_ROUNDS.
+  // In-run recovery from the PR-summary rule blocks (Issues #2189, #4146,
+  // #4234): one bounded loop for every summary gate. The first block gets a
+  // turn (a documentation shortfall on a pushed, quality-gated branch used to
+  // cost the whole run); each later block gets another while its
+  // blocking-finding count keeps strictly falling, up to
+  // `OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns` turns. The loop stops when
+  // a turn records no new verdict, so a turn that never reached the gates (not
+  // launched, skipped for want of runway, or cut short by the quality gate)
+  // cannot spin it. A block the claim check alone raised instead defers to the
+  // one narrow claim correction turn below (Issue #3324).
+  let recoveryTurns = 0;
+  let verdictsAtTurnStart = 0;
   while (
-    result.status === "failure" && shouldContinueUnmetCriteria(state)
+    result.status === "failure" &&
+    (state.summaryRuleBlocks?.length ?? 0) > verdictsAtTurnStart &&
+    shouldRunRecoveryTurn(
+      blockingFindingCounts(state.summaryRuleBlocks ?? []),
+      OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns,
+    )
   ) {
+    verdictsAtTurnStart = state.summaryRuleBlocks?.length ?? 0;
+    recoveryTurns++;
     result = await recoverFromSummaryRuleBlock(
       ctx,
       state,
@@ -1353,29 +1454,67 @@ export async function workOnIssueCompletion(
     },
   );
 
+  // Issue #4234: count the run's summary-gate outcome once, however it ended,
+  // so the fleet's gate-failure rate covers every run a summary gate blocked.
+  const verdicts = state.summaryRuleBlocks ?? [];
+  const first = verdicts[0];
+  const last = verdicts[verdicts.length - 1];
+  if (first !== undefined && last !== undefined && !state.gateRecoveryRecorded) {
+    state.gateRecoveryRecorded = true;
+    // A `summary_incomplete` early exit finalised the PR with a gate still
+    // unsatisfied, so it is not a recovered run.
+    const recovered = result.status !== "failure" &&
+      !(result.status === "early_exit" &&
+        result.outcome?.kind === "summary_incomplete");
+    recordGateRecoveryRun({
+      firstPassGates: first.gates ?? [],
+      finalGates: recovered ? [] : (last.gates ?? []),
+      turns: recoveryTurns,
+      recovered,
+    });
+    deps.logger.info(formatGateFailureRateLine());
+  }
+
   return result;
 }
 
 /**
- * Whether an unmet-criteria block earns another in-run round (Issue #4146).
- *
- * Only when the latest recorded verdict still has unmet criteria, the rounds
- * spent so far (one per recorded unmet verdict after the first) are below
- * {@link MAX_UNMET_CRITERIA_ROUNDS}, and the latest round made progress: fewer
- * unmet criteria than the verdict before it. A round that moves nothing ends
- * the run — repeating it would only spend the same turn again.
+ * The findings the pre-PR verifier's next pass must answer (Issue #4234): the
+ * blocking findings of this run's latest pass, else those on the last
+ * verifier gate comment this worker posted on the issue. [] when neither
+ * exists, so the pass is a first pass.
  */
-function shouldContinueUnmetCriteria(state: PhaseState): boolean {
-  const unmetCounts = (state.summaryRuleBlocks ?? [])
-    .map((v) => v.unmetCriteria?.length ?? 0);
-  const latest = unmetCounts.at(-1) ?? 0;
-  if (latest === 0 || unmetCounts.length < 2) return false;
-  const roundsSpent = unmetCounts.length - 1;
-  if (roundsSpent >= MAX_UNMET_CRITERIA_ROUNDS) return false;
-  const previous = unmetCounts.at(-2)!;
-  // A first block from another gate carried no unmet criteria; the round that
-  // surfaced them is progress towards finishing, not a regression.
-  return previous === 0 || latest < previous;
+function previousPrePrVerifierFindings(
+  ctx: IssueContext,
+  state: PhaseState,
+): string[] {
+  if (state.prePrVerifierFindings && state.prePrVerifierFindings.length > 0) {
+    return state.prePrVerifierFindings;
+  }
+  const author = ctx.githubUser.toLowerCase();
+  const ownComment = (ctx.issueCommentRows ?? []).findLast((comment) =>
+    comment.author.toLowerCase() === author &&
+    comment.body.includes(PRE_PR_VERIFIER_COMMENT_HEADING)
+  );
+  if (ownComment === undefined) return [];
+  const body = ownComment.body;
+  return previousFindingsFromGateComment(
+    body.slice(body.indexOf(PRE_PR_VERIFIER_COMMENT_HEADING)),
+  );
+}
+
+/**
+ * The blocking items a pre-PR verifier review reports: its findings plus the
+ * repo checklist items it reports `missing` (Issue #3594), at least one
+ * (Issue #4234). The gate counts these when it compares one turn to the next.
+ */
+function verifierBlockingCount(review: {
+  findings: readonly unknown[];
+  checklist: readonly { verdict: string }[];
+}): number {
+  const missing = review.checklist.filter((c) => c.verdict === "missing")
+    .length;
+  return Math.max(1, review.findings.length + missing);
 }
 
 /**
@@ -2892,56 +3031,16 @@ async function completionBody(
   // enforces the `## Test Plan` heading rule even though the per-assertion
   // rule cannot run.
   // ---------------------------------------------------------------------
-  let removedAssertionTestFiles: string[] = [];
-  let removedAssertionPathspec: string[] = [];
-  let removedAssertionSidesKnown = !changedFilesKnown;
-  if (comparableBase.ok && changedFilesKnown) {
-    const sidesResult = await deps.git.runGitCommand(
-      removedAssertionRenameStatusArgs(comparableBase.value),
-      { cwd: state.repoPath },
-    );
-    if (sidesResult.ok && sidesResult.value.code === 0) {
-      const parsed = pathsFromRenameStatus(sidesResult.value.stdout);
-      removedAssertionTestFiles = parsed.testFiles;
-      removedAssertionPathspec = parsed.pathspec;
-      removedAssertionSidesKnown = true;
-    } else {
-      logger.warn(
-        "Could not list both sides of renamed test files for the removed-assertion gate — only the Test Plan heading rule applies",
-      );
-    }
-  }
-  const removedAssertionGateCouldApply = !changedFilesKnown ||
-    removedAssertionTestFiles.length > 0 ||
-    changedFiles.some((file) => isTestFilePath(file));
-  let testDiff: string | null = null;
-  if (
-    comparableBase.ok && removedAssertionGateCouldApply &&
-    removedAssertionSidesKnown
-  ) {
-    const testDiffResult = await deps.git.runGitCommand(
-      removedAssertionDiffArgs(
-        comparableBase.value,
-        removedAssertionPathspec,
-      ),
-      { cwd: state.repoPath },
-    );
-    if (testDiffResult.ok && testDiffResult.value.code === 0) {
-      if (
-        testDiffResult.value.stdout.length >= REMOVED_ASSERTION_MAX_DIFF_CHARS
-      ) {
-        logger.warn(
-          "The test-file diff for the removed-assertion gate reached the read cap — treating it as unreadable rather than scanning a silently truncated patch",
-        );
-      } else {
-        testDiff = testDiffResult.value.stdout;
-      }
-    } else {
-      logger.warn(
-        "Could not read the test-file diff for the removed-assertion gate — only the Test Plan heading rule applies",
-      );
-    }
-  }
+  const {
+    testDiff,
+    testFiles: removedAssertionTestFiles,
+  } = await readRemovedAssertionInput({
+    runGit: (args) => deps.git.runGitCommand(args, { cwd: state.repoPath }),
+    base: comparableBase.ok ? comparableBase.value : null,
+    changedFiles,
+    changedFilesKnown,
+    logger,
+  });
 
   // ---------------------------------------------------------------------
   // Docs-sweep verdict, computed early (Issue #3085 review).
@@ -3211,6 +3310,41 @@ async function completionBody(
   // carries acceptance criteria. A pass that cannot run is "not checked": it
   // is logged, never read as clean, and does not block.
   // ---------------------------------------------------------------------
+  // Issue #4234: the run's diff against the comparable base, read at most once.
+  // The pre-PR verifier's convergence split and the pre-filled draft both use
+  // it. A diff that cannot be read is null: the split then blocks everything,
+  // and the draft is left out.
+  let unifiedDiffRead: Promise<string | null> | undefined;
+  const readUnifiedDiff = (): Promise<string | null> => {
+    unifiedDiffRead ??= (async (): Promise<string | null> => {
+      try {
+        if (!comparableBase.ok) {
+          logger.warn(
+            "Could not read the PR diff — no comparable base ref (Issue #4234)",
+            { baseBranch, error: comparableBase.error.message },
+          );
+          return null;
+        }
+        const diff = await deps.git.runGitCommand(
+          ["diff", "--unified=0", `${comparableBase.value}...HEAD`],
+          { cwd: state.repoPath },
+        );
+        if (diff.ok && diff.value.code === 0) return diff.value.stdout;
+        logger.warn(
+          "Could not read the PR diff against the base (Issue #4234)",
+          { base: comparableBase.value },
+        );
+        return null;
+      } catch (error) {
+        logger.warn("Could not read the PR diff (Issue #4234)", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+    })();
+    return unifiedDiffRead;
+  };
+
   let prePrVerifier: PrePrVerifierResult | null = null;
   if (summarySource === null) {
     logger.info(
@@ -3222,7 +3356,12 @@ async function completionBody(
       { baseBranch, error: comparableBase.error.message },
     );
   } else {
-    prePrVerifier = await deps.claude.runPrePrVerifier({
+    // Issue #4234: a pass after a block is a retry, and its findings are
+    // answered one by one (see `splitFindingsForRetry` below).
+    const previousFindings = previousPrePrVerifierFindings(ctx, state);
+    const isRetry = previousFindings.length > 0;
+    const verifierRun = await deps.claude.runPrePrVerifier({
+      previousFindings,
       repo,
       issueNumber,
       issueTitle: ctx.issueTitle,
@@ -3238,12 +3377,43 @@ async function completionBody(
       maxRetries: config.maxRateLimitRetries,
       logger,
     });
-    if (prePrVerifier.run) recordClaudeRunStats(state, prePrVerifier.run);
-    if (prePrVerifier.status === "not_checked") {
+    if (verifierRun.run) recordClaudeRunStats(state, verifierRun.run);
+    if (verifierRun.status === "not_checked") {
       logger.warn(
         "Pre-PR verifier not checked — not read as clean, does not block (Issue #3395)",
-        { reason: prePrVerifier.reason },
+        { reason: verifierRun.reason },
       );
+      prePrVerifier = verifierRun;
+    } else {
+      // Issue #4234: on a retry, a finding the diff does not touch is advisory
+      // rather than blocking unless it is critical or high. The diff is only
+      // read for a retry, since a first pass blocks everything either way.
+      const diff = isRetry ? await readUnifiedDiff() : null;
+      const split = splitFindingsForRetry({
+        findings: verifierRun.review.findings,
+        isRetry,
+        changed: diff === null ? null : parseDiffChangedLines(diff),
+      });
+      if (split.advisory.length > 0) {
+        logger.warn(
+          "Pre-PR verifier advisory findings on unchanged lines — not blocking this retry (Issue #4234)",
+          {
+            advisory: split.advisory.length,
+            findings: split.advisory.map(findingToEarlierText),
+          },
+        );
+        const advisoryComment = buildAdvisoryFindingsComment(split.advisory);
+        if (advisoryComment !== state.prePrVerifierAdvisoryPosted) {
+          await deps.github.createClient(logger).postComment(
+            repo,
+            issueNumber,
+            advisoryComment,
+          );
+          state.prePrVerifierAdvisoryPosted = advisoryComment;
+        }
+      }
+      state.prePrVerifierFindings = split.blocking.map(findingToEarlierText);
+      prePrVerifier = applyConvergence(verifierRun, split);
     }
   }
 
@@ -3259,6 +3429,8 @@ async function completionBody(
    * standalone blocks further down.
    */
   interface LateSummaryVerdict {
+    /** The gate this verdict is reported under (Issue #4234). */
+    gate: SummaryGateId;
     categories?: readonly FailureCategory[];
     blocked: boolean;
     reason: string;
@@ -3268,8 +3440,14 @@ async function completionBody(
      * #3393, and the coverage carry-over gate, Issue #3795).
      */
     needsTestChanges?: boolean;
+    /**
+     * The blocking findings this verdict reports, when it counts more than one
+     * (the pre-PR verifier, Issue #4234). Absent means one.
+     */
+    findings?: number;
   }
   const docsSweepVerdict: LateSummaryVerdict = {
+    gate: "docs-sweep",
     blocked: docsSweepBlocked,
     reason: docsSweepReason,
     // Issue #3237: stale term hits no longer override `docsSweepComment` —
@@ -3278,16 +3456,19 @@ async function completionBody(
     comment: () => docsSweepComment,
   };
   const removedAssertionsVerdict: LateSummaryVerdict = {
+    gate: "removed-assertions",
     blocked: removedAssertionsBlocked,
     reason: removedAssertionsReason,
     comment: () => buildRemovedAssertionGateComment(removedAssertions),
   };
   const placeholderVerdict: LateSummaryVerdict = {
+    gate: "result-placeholders",
     blocked: placeholderBlocked,
     reason: placeholderReason,
     comment: () => buildResultPlaceholderGateComment(placeholderTokens),
   };
   const branchOutcomesVerdict: LateSummaryVerdict = {
+    gate: "branch-outcomes",
     blocked: branchOutcomesBlocked,
     reason: branchOutcomesReason,
     comment: () =>
@@ -3364,6 +3545,7 @@ async function completionBody(
       });
     }
     mutationVerdict = {
+      gate: "mutation-check",
       categories: [
         mutationResult.kind === "error" ? "internal_error" : "quality_check",
       ],
@@ -3488,6 +3670,7 @@ async function completionBody(
       );
     }
     coverageCarryOverVerdict = {
+      gate: "coverage-carry-over",
       blocked: gate.blocked,
       reason: gate.reason,
       comment: () => buildCoverageCarryOverGateComment(gate),
@@ -3495,12 +3678,17 @@ async function completionBody(
     };
   }
   const claimCheckVerdict: LateSummaryVerdict = {
+    gate: "claim-check",
     blocked: claimCheck !== null && summaryClaimCheckBlocked(claimCheck),
     reason: claimCheck !== null ? summaryClaimBlockReason(claimCheck) : "",
     comment: () =>
       claimCheck !== null ? buildSummaryClaimGateComment(claimCheck) : "",
   };
   const prePrVerifierVerdict: LateSummaryVerdict = {
+    gate: "pre-pr-verifier",
+    findings: prePrVerifier?.status === "checked"
+      ? verifierBlockingCount(prePrVerifier.review)
+      : undefined,
     categories: prePrVerifier?.status === "checked" &&
         prePrVerifier.review.findings.length > 0
       ? [
@@ -3520,6 +3708,7 @@ async function completionBody(
   };
   const scrubProblem = summaryScrubProblem(prBody);
   const scrubVerdict: LateSummaryVerdict = {
+    gate: "prompt-scrub",
     blocked: scrubProblem !== undefined,
     reason: scrubProblem ?? "",
     comment: () => scrubProblem ?? "",
@@ -3528,6 +3717,7 @@ async function completionBody(
   // folds into every other gate's block so a recovery turn always sees it.
   const unmetCriteria = assessUnmetCriteria(ctx.issueBody, prBody);
   const unmetCriteriaVerdict: LateSummaryVerdict = {
+    gate: "unmet-criteria",
     categories: ["criteria_unmet"],
     blocked: unmetCriteria.length > 0,
     reason: unmetCriteria.length > 0 ? unmetCriteriaReason(unmetCriteria) : "",
@@ -3590,16 +3780,23 @@ async function completionBody(
    * into an earlier gate's block.
    * `allowsTestChanges` is set on the result when the block, or any verdict
    * folded in, is one that only a test change satisfies (the mutation check
-   * or the coverage carry-over check).
+   * or the coverage carry-over check). `baseGate` names the gate whose
+   * `reason` and `comment` the block starts from (Issue #4234); `gates` and
+   * `findingCount` cover that gate and every verdict folded in.
    */
   function foldInLateSummaryVerdicts(
     reason: string,
     comment: string,
+    baseGate: SummaryGateId,
     skip: readonly LateSummaryVerdict[] = [],
   ): SummaryRuleBlock {
     let foldedReason = reason;
     let foldedComment = comment;
     const sections = [comment];
+    const gates: SummaryGateId[] = [baseGate];
+    const sectionFindings: { gate: string; findings?: number }[] = [
+      { gate: baseGate },
+    ];
     const categories = new Set<FailureCategory>(
       skip.length > 0
         ? skip.flatMap((v) => v.categories ?? ["summary_incomplete"])

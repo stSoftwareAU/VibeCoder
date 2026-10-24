@@ -923,7 +923,7 @@ Once the summary is written and committed, the worker itself runs a **pre-PR
 verifier** in a disposable checkout with the fleet reviewer's brief, on each
 completion attempt that has a PR summary to read, whether or not the issue
 carries acceptance criteria. You dispatch nothing for it. Its blocking findings
-come back as a REQUIRED ITEM in the one recovery turn and, unlike the other
+come back as a REQUIRED ITEM in the recovery turns and, unlike the other
 items, may need a code change: fix the code and its tests, then make the
 summary match. It is also handed every closure entry you marked `met` and
 judges each against the head: an entry it rates `partial` or `missing`, or
@@ -1305,10 +1305,16 @@ changes, write the summary, then run
 from `worker/deno` (save the issue body with
 `gh issue view {{ISSUE_NUMBER}} --json body -q .body`, and pass the labels
 comma-separated), and fix everything it reports as blocked before you finish.
-It runs the closure, two-axis review, reproduction, docs-sweep, placeholder and
-branch-outcomes gates the worker applies when it raises the PR. A gate it
-reports as not checked is not a pass. It does not run the removed-assertion
-gate or the claim check, which run only when the worker raises the PR.
+It runs the closure, two-axis review, reproduction, docs-sweep, placeholder,
+branch-outcomes, removed-assertion and unmet-criteria gates the worker applies
+when it raises the PR, and the summary claim check, which is a model call that
+`--no-claim-check` skips. A gate it reports as not checked is not a pass. Add
+`--verifier` to run the pre-PR verifier too (a model call of up to 30 minutes).
+The mutation check and the coverage carry-over check need the test runner, so
+only the worker runs them. If the gates still block when you finish, the worker
+resumes your session with every blocking finding listed as a numbered REQUIRED
+ITEM, up to three times. Fixing everything in one go is therefore cheaper than
+fixing it one finding at a time.
 `deno task pr-summary-check` (`worker/deno/lib/pr_summary_check.ts`) is the twin
 of the completion phase's PR-summary gates
 (`worker/deno/lib/phases/completion_phase.ts`): a change to how the completion

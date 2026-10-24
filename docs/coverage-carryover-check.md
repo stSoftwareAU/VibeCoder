@@ -18,7 +18,8 @@ pattern is `rewritten-test-drops-live-branch`.
 
 The gate runs in the issue-run completion phase, beside the mutation check:
 after the PR summary is final and before the PR is raised. It joins the late
-summary gates and feeds the same single recovery turn, which may change tests.
+summary gates and feeds the same bounded in-run recovery loop, which may change
+tests.
 
 Unless `skip_coverage_carryover_check` is set (or the runner is not wired), the
 worker first collects the PR diff with `git diff --unified=0 --no-renames
