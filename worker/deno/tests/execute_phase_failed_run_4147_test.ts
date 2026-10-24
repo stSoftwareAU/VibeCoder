@@ -108,7 +108,7 @@ for (
     const { result, invocations } = await run(1, output);
     assertEquals(result.status, "failure");
     if (result.status !== "failure") return;
-    assertEquals(result.category, "internal_error");
+    assertEquals(result.category, "interrupted");
     assertStringIncludes(result.reason, "exited 1");
     assertStringIncludes(result.reason, output);
     assertEquals(invocations, 2, "one bounded infrastructure retry");

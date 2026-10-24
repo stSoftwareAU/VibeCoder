@@ -22,7 +22,7 @@
       {
         "path": "worker/deno/lib/execute_claude_phase.ts",
         "line": 638,
-        "outcome": "Rejects a incomplete run with exit zero; clean one-turn and legacy raw output remain eligible.",
+        "outcome": "Rejects an incomplete run with exit zero; clean one-turn and legacy raw output remain eligible.",
         "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
         "testName": "#4147 fleet execute: exit-zero incomplete run is retried: {\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Starting work\"}]}}",
         "flipWentRed": "Forced unfinished-result condition false: the corresponding fleet and standalone failure assertions failed."
@@ -53,8 +53,8 @@
       },
       {
         "path": "worker/deno/lib/phases/execute_phase.ts",
-        "line": 2103,
-        "outcome": "A reason returns internal_error and retries; clean empty runs reach no_changes.",
+        "line": 2083,
+        "outcome": "A failure reason returns interrupted and retries on a fresh session; clean empty runs reach no_changes.",
         "test": "worker/deno/tests/execute_phase_failed_run_4147_test.ts",
         "testName": "#4147 fleet execute: failed empty run is retried: The agent process crashed before produci",
         "flipWentRed": "Forced the condition false: fleet failure and bounded-retry assertions failed."
@@ -106,6 +106,14 @@
         "test": "worker/deno/tests/acceptance_criteria_gate_test.ts",
         "testName": "parseClosureEntries - status words inside criterion prose are not assessments",
         "flipWentRed": "The unanchored original parser failed this assertion and the real closer regression; the anchored parser passed both."
+      },
+      {
+        "path": "worker/deno/lib/phases/execute_phase.ts",
+        "line": 1963,
+        "outcome": "Failed, unfinished and zero-turn structured results do not hand a session to the next issue even with exit zero; a clean run still does.",
+        "test": "worker/deno/tests/execute_phase_failed_agent_no_changes_test.ts",
+        "testName": "execute_phase #4116 - a clean run still hands its session on to the stream",
+        "flipWentRed": "Forcing stream publication on fails the structured-failure cases; forcing it off fails the clean-session case."
       }
     ]
   }

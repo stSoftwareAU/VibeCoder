@@ -518,9 +518,6 @@ async function executeWithFreshSessionFallback(
     logger: deps.logger,
     reason: "agent CLI refused it as Prompt is too long (Issue #2682)",
   });
-  // The window was sized for the discarded transcript; the fresh one starts
-  // at the CLI default.
-  delete state.autocompactTokens;
   state.claudeOutput = "";
   return await executeWithFreshSessionFallback(ctx, state, deps);
 }
@@ -1226,12 +1223,6 @@ async function executeClaudeBody(
           ...settingsJsonOption(undefined, rtk.hookSettings()),
           logger,
           sessionResumeState: state.sessionResumeState,
-          // The stream conversation could not be verifiably compacted before
-          // this issue started (Issue #2337), so every agent run of the issue
-          // asks the CLI to compact at the earliest window it accepts.
-          ...(state.autocompactTokens
-            ? { autocompactTokens: state.autocompactTokens }
-            : {}),
           // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
           issueNumber,
           // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
@@ -1964,10 +1955,14 @@ async function executeClaudeBody(
     });
     // Hand the conversation on to the stream's next issue (Issue #2333). A
     // no-op unless setup joined a stream, so an excluded run kind — or one
-    // resuming its own checkpoint — writes no stream record.
+    // resuming its own checkpoint — writes no stream record. A run whose agent
+    // failed hands nothing on (Issue #4116): its conversation is the one that
+    // just broke, and the stream's next issue would resume straight into it.
     await handOnStreamSession({
       workDir: config.workDir,
-      joined: state.streamSession,
+      joined: !emptyRunFailureReason(claudeResult.value)
+        ? state.streamSession
+        : undefined,
       state: state.sessionResumeState,
       ...(claudeResult.value.provider
         ? { runProviderId: claudeResult.value.provider }
@@ -2081,6 +2076,38 @@ async function executeClaudeBody(
       return { status: "continue" };
     }
 
+    // A failed or unfinished agent with no recoverable work is interrupted,
+    // even when its process exits zero. Both execution entry points share
+    // this completion check (Issues #4116, #4147).
+    const emptyFailure = emptyRunFailureReason(claudeResult.value);
+    if (emptyFailure) {
+      logger.warn(
+        "Agent did not complete and changed nothing — a failed run, " +
+          "retried, not analysis-only (Issue #4116)",
+        { exitCode: claudeResult.value.exitCode, reason: emptyFailure },
+      );
+      // The session that failed is not resumed by the retry.
+      if (state.sessionResumeState) {
+        state.sessionResumeState = createSessionResumeState();
+      }
+      return {
+        category: "interrupted",
+        status: "failure",
+        reason: formatDetailedFailureMessage(
+          `Run interrupted before completing — the agent ${emptyFailure} without making any change`,
+          {
+            elapsedSeconds: Math.round(
+              (Date.now() - state.executeStartTime) / 1000,
+            ),
+            clarityStatus: state.clarityStatus,
+            outputSize: state.claudeOutput.length,
+            lastOutputSnippet: redactedTail(state.claudeOutput, 500) ||
+              undefined,
+          },
+        ),
+      };
+    }
+
     // Issue #106: if the range comparison itself errored and nothing else
     // found work, the state is undetermined — surface it, never silently
     // conclude no_changes (which escalates to analysis-only).
@@ -2093,32 +2120,6 @@ async function executeClaudeBody(
           (logResult.ok
             ? `exited ${logResult.value.code}: ${logResult.value.stderr.trim()}`
             : `could not run: ${logResult.error.message}`),
-      };
-    }
-
-    // Keep the standalone runExecuteClaudePhase guard in sync (Issue #4147).
-    // A failed agent with no recoverable work must enter the retry ladder;
-    // no_changes would hand the implementation issue to a human as analysis.
-    const emptyFailure = emptyRunFailureReason(claudeResult.value);
-    if (emptyFailure) {
-      return {
-        category: "internal_error",
-        status: "failure",
-        reason: formatDetailedFailureMessage(
-          `Claude execution failed: the agent ${emptyFailure} ` +
-            "without making any change. The issue stays queued for a retry.",
-          {
-            elapsedSeconds: Math.round(
-              (Date.now() - state.executeStartTime) / 1000,
-            ),
-            rawExitCode: claudeResult.value.rawExitCode ??
-              claudeResult.value.exitCode,
-            lastOutputSnippet: joinRedacted([
-              redactedTail(state.claudeOutput, 350),
-              redactedTail(claudeResult.value.stderr ?? "", 100),
-            ], "\n--- stderr ---\n"),
-          },
-        ),
       };
     }
 

@@ -1,12 +1,14 @@
-# Keep crashed runs and incomplete assignments in the worker queue
+# Preserve queued work after incomplete runs and merges
 
 ## Summary
 
-Closes #4147. The fleet execute phase now rejects failed empty runs before the
-analysis-only hand-off. It shares the standalone phase's completion check,
-including structured failures, unfinished streams and zero model turns even when
-the process exit code is zero. Recoverable local changes, commits and PRs still
-proceed to completion.
+Refs #4147 and #4227. An agent can exit zero while reporting a structured
+failure, an unfinished stream or zero model turns. Both execution paths now
+check that metadata through `emptyRunFailureReason`. The fleet treats these
+as interrupted runs, retries on a fresh session and does not hand the failed
+conversation to the next issue. Recoverable changes, commits and PRs still
+proceed to completion. Providers without structured metadata retain their
+exit-code behaviour.
 
 Merged PRs that explicitly mark acceptance criteria missing leave the original
 issue queued with its existing labels. Both closers stop applying `needs-human`,
@@ -14,76 +16,53 @@ and cached and uncached PR lookup stop treating an incomplete merge as finished
 work. Open PRs and the cooldown for closed, unmerged attempts still prevent
 duplicate work.
 
-Acceptance statuses must lead their assessment entry. A test description that
-mentions a "missing or unreadable value" no longer marks the whole criterion
-missing and prevents closure.
-
-## Acceptance Criteria
-
-- **met** — Stale session IDs retry without resume and clear the stored ID.
-  Already landed in #4148; reverified by `dead_session_resume_4147_test.ts`.
-- **met** — Failed and zero-turn empty runs are failures in both execution
-  paths, covered by `execute_phase_failed_run_4147_test.ts` and
-  `execute_claude_phase_test.ts`.
-- **met** — Resumed autocompact thrash retries with a fresh session. Already
-  landed in #4148 and reverified by `dead_session_resume_4147_test.ts`.
-- **met** — A successful, completed one-turn result can still yield
-  `no_changes`; structured errors, unfinished streams and zero-turn results
-  cannot. Providers without structured metadata retain their exit-code rule.
+Acceptance statuses must lead their assessment entry. Ordinary test prose
+mentioning a "missing or unreadable value" no longer marks a criterion missing.
 
 ## Spec
 
 ### Intent and Rationale
 
-- A failed invocation is a retryable run failure, not evidence that an
-  implementation issue needs a human.
-- The operator asked to correct false hand-offs and finish assigned work; a
-  partial merge must not suppress the remainder of that assignment.
+A failed invocation does not show that an issue needs a human. A partial merge
+also does not finish the original approved assignment. These remaining paths
+must follow the assigned-issue completion rule in `DESIGN-PRINCIPLES.md`.
 
 ### Essential Design Decisions
 
-- Both execution entry points call `emptyRunFailureReason` after recovery
-  checks. Providers without structured completion metadata retain their
-  exit-code behaviour.
-- Read matched merged PR bodies live on the cached path. The existing persisted
-  title-search cache shape and keys do not change.
+- Extend #4226's interrupted-run and fresh-session behaviour to structured
+  failures with exit zero, using the same check as the standalone command.
+- Read matched merged PR bodies live on the cached lookup path. The existing
+  persisted cache shape and keys do not change.
 - Keep the missing-criterion close guard, but remove its label/comment mutation.
   Missing criteria remain visible in logs and the lifecycle result.
 
 ### Undiscoverable Facts
 
-- The earlier #4148 fix guarded the standalone command, while the fleet calls
-  `workOnIssueExecuteClaude`; this explains repeated hand-offs after that merge.
-- A private fleet repository's label events showed worker-created hand-offs
-  immediately followed by removal of the operator's discovery labels.
+A private fleet repository's comments and label events showed a prose-only
+criterion being read as missing, and incomplete merges repeatedly parking
+issues whose discovery labels had already been restored.
 
 ## Evidence
 
-- RED/GREEN: the active fleet phase originally failed the three crashed-run
-  cases. Both entry points then failed the structured error, zero-turn and
-  unfinished-stream cases with exit zero. All now pass.
-- RED/GREEN: both merged-PR closers originally added `needs-human`; both PR
-  lookup paths originally suppressed incomplete work. The regression tests now
-  assert preserved labels, no hand-off comment and continued eligibility.
-- Final focused run: 207 passed, 0 failed, including
-  `dead_session_resume_4147_test.ts` for the already-landed fresh-session retry.
-- Thirteen deliberate guard/operand mutations each produced assertion failures
-  in an isolated checkout; the unmodified focused suite passed.
-- The prose-status regression failed in both the parser and the real merged-PR
-  closer before the fix. Its related parser, PR-body and closure suite then
-  passed 105 tests.
-- Full-suite investigation reproduced an existing file-lock test hang: its
-  missing-file watcher starved pending lock I/O. Yielding between observations
-  and stopping the watcher in `finally` preserves its atomicity assertions. The
-  startup fixture also disables real host package updates. Both fixture suites
-  passed all 29 tests afterwards.
-- The completed full-suite run exposed six subprocess-fixture failures from
-  permission flags that `deno eval` rejects. Those fixtures now use eval's
-  implicit permissions; environment-isolation assertions are unchanged. Two
-  terminal-reconciliation integration tests now assert the bounded retry and
-  preserved heartbeat outcomes. The production-dispatch test also asserts that
-  this infrastructure failure consumes no issue-failure attempt; the separate
-  genuine-quality-failure test retains its existing charge check.
+- Both execution paths failed the structured error, zero-turn and unfinished
+  stream regressions with exit zero before the shared check.
+- After integration with #4226, three stream regressions still failed: those
+  exit-zero results handed a usable session to the next issue. All now pass.
+  Forcing stream publication on and off each makes the corresponding negative
+  or positive regression fail.
+- Both real merged-PR closers originally applied `needs-human`; cached and
+  uncached PR lookup suppressed incomplete work. Their regressions now assert
+  preserved labels, no hand-off comment and continued eligibility.
+- The prose-status regression failed in both the parser and a real closer
+  before the fix. Related parser, PR-body and closure tests passed 105 cases.
+- The integrated execution, stream, closure and parser run passed 114 tests.
+  Thirteen earlier deliberate guard/operand mutations each produced assertion
+  failures in an isolated checkout.
+- Full validation exposed existing fixture problems: a missing-file watcher
+  starved pending lock I/O, a startup fixture invoked host package updates,
+  and `deno eval` fixtures supplied unsupported permission flags. The watcher
+  now yields and stops in `finally`; startup disables updates; eval uses its
+  implicit permissions. Existing behavioural assertions are retained.
 - No UI changed; screenshots are not applicable.
 
 **Docs sweep** — grep: `holdIssueOpenForMissingCriteria`,
@@ -92,45 +71,35 @@ missing and prevents closure.
 `docs/workflows/issue-processing.md#-acceptance-criteria-closure-before-the-pr`;
 siblings: `runExecuteClaudePhase`, `workOnIssueExecuteClaude`,
 `ensureIssueClosedIfPrMerged`, `closeIssuesForMergedPrs`; updated:
-`docs/workflows/issue-processing.md`, `docs/INTERNALS.md` and the affected
-module comments. Historical summaries remain historical; the missing-criterion
-guard still prevents false closure.
+`docs/workflows/issue-processing.md`, `docs/INTERNALS.md` and affected module
+comments. The integration preserves #4226's compaction fix and #4227's general
+no-PR retry behaviour.
 
 ## Test Plan
 
-- `execute_phase_failed_run_4147_test.ts` exercises the real fleet phase,
-  bounded retry, clean results and recovery of uncommitted, local, remote and PR
-  work. `execute_claude_phase_test.ts` exercises its standalone sibling.
-- `missing_criterion_close_guard_3177_test.ts` exercises both real closers,
-  repeated sweeps, preserved existing human holds, cached and uncached lookup,
-  the merged-PR precheck and the superseding-PR classifier. It keeps positive
-  all-met closure and open/recently-closed duplicate-prevention coverage.
-- Callers checked: the precheck, execute recovery and completion recovery use
-  `findExistingPrForIssue`; `classifyExistingPrForIssue` feeds both execute and
-  completion supersession checks. Incomplete merges now yield no completed PR;
-  their existing no-PR paths continue the assignment. Both closer callers of the
-  removed mutation helper now retain labels and emit diagnostics.
-- `acceptance_criteria_gate_test.ts` and the missing-criterion closer test
-  reject prose-only statuses while preserving explicit leading statuses. Parser
-  callers also include claim freshness, unmet criteria, closure-met checks and
-  degraded delivery; their explicit-status fixtures retain the same meaning.
-- Execution fixtures use the production `CLAUDE_OUTPUT_ADAPTER.decode` and
-  `buildRunStats`, matching the metadata produced by the real runner. Git and PR
-  ports separately model absent work and each recovery path. The closure
-  fixtures preserve GitHub's distinction between merged PRs and closed, unmerged
-  PRs, including `mergedAt` in closed-list responses.
-- Removed assertions expecting `needs-human` and one hand-off comment are
-  replaced by no-label/no-comment assertions, as required by the operator's
-  request to restore incorrectly parked assignments. The removed
-  `buildMissingCriteriaHoldComment` test described a deleted hand-off API;
-  missing-criterion text is now asserted in closer logs and the lifecycle
-  reason, while all-met closure tests remain.
+- Execution tests drive both real phases, the bounded retry, clean results,
+  stream persistence and recovery of uncommitted, local, remote and PR work.
+  Fixtures use production `CLAUDE_OUTPUT_ADAPTER.decode` and `buildRunStats`,
+  matching metadata produced by the real runner.
+- Closure tests drive both real closers, repeated sweeps, existing human holds,
+  cached and uncached lookup, precheck and superseding-PR classification.
+  All-met closure and open/recently-closed duplicate prevention remain covered.
+  GitHub fixtures preserve `mergedAt` on merged rows in closed-list responses.
+- Parser callers also include claim freshness, unmet criteria, closure-met
+  checks and degraded delivery. Their explicit leading-status fixtures retain
+  their meaning.
+- Assertions expecting an automatic human hold are replaced by no-label and
+  no-comment assertions, as required by the operator's request. The removed
+  `buildMissingCriteriaHoldComment` test described the deleted hand-off API;
+  missing-criterion details are now asserted in logs and the lifecycle reason.
+- Existing terminal-reconciliation tests are preserved from current main,
+  including its crash retry counts and infrastructure-failure accounting.
 
 <!-- vibe-branch-outcomes -->
 
 ## Merge verification
 
 Run the complete `./quality.sh < /dev/null` gate before publishing this PR.
-Required CI and the repository's approving review must pass before merge. Config
-integration requires a local configuration; Checkov requires its scanner or a
-container runtime. Their local skips do not replace the required CI checks.
+Required CI and the repository's approving review must pass before merge.
+Config integration requires a local configuration; Checkov requires its scanner
+or a container runtime. Their local skips do not replace required CI checks.

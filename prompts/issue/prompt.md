@@ -51,7 +51,7 @@ in the close comment, instead of escalating it to a human.
   commit and/or PR that actually landed the fix, and say how you confirmed it —
   "ran `deno test tests/foo_test.ts`, passes", not "looks right".
 - **No evidence, no close.** Without a commit or PR the worker treats the claim
-  as unverified and hands the issue to a human instead. A merged PR that merely
+  as unverified, and the issue is retried as not finished. A merged PR that merely
   *references* the issue is not evidence either — verify the code yourself.
 - If the work is genuinely blocked on another issue, that is a deferral, not a
   resolution: use the guidelines' `## Blocked:` shape, not this marker.
@@ -81,10 +81,10 @@ The worker parks the issue: it posts one comment, keeps the discovery label
   history, knows why the wait was needed.
 - This is a **time** wait only; there is no "wait N runs" variant.
 - **Deferral has a budget.** After three time-deferrals on the same issue, the
-  next `vibe-defer-until` marker is not honoured — the worker instead applies
-  the usual analysis-only `needs-human` hand-off, with the deferral history in
-  the comment. Do not keep emitting the marker hoping the data will appear;
-  once the budget is spent, say what you found and let a human decide.
+  next `vibe-defer-until` marker is not honoured: the issue is retried as not
+  finished, with the deferral history in the comment. Do not keep emitting the
+  marker hoping the data will appear. Once the budget is spent, answer from the
+  data that exists and state its window.
 - If the real blocker is another issue rather than the calendar, use the
   guidelines' `## Blocked:` shape instead — that is a dependency deferral, not
   a time-gated one.
@@ -101,7 +101,7 @@ When there is no `<fleet_data_source>` block, the verdict is
 **single-host**: say so explicitly, name the host and window your local data
 covers and the hosts or data it lacks, and never present it as fleet-wide. If
 the missing fleet data is the whole answer, say what is missing rather than
-guessing — the analysis-only hand-off then routes it to a human.
+guessing.
 
 ## Instructions
 
@@ -124,16 +124,25 @@ guessing — the analysis-only hand-off then routes it to a human.
      green while the feature stays broken for every other input.
    - **A gate over text catches the variants and never passes what it
      skipped.** When the change adds or changes a deterministic gate or
-     matcher over text — a PR summary, Markdown, a diff, closure entries,
-     source code it counts — follow **Writing a gate over text** in
-     `CODING-STANDARDS.md`: an evasion test per realistic variant of each
-     target, run both ways (variants it must still block, look-alikes it
-     must not fire on); a corpus run with false-positive and false-negative
-     counts in the Test Plan where a corpus exists
-     (`docs/archive/pr-summaries/`, the PR's own test files); input it
-     truncates, filters out, cannot parse or skips with `continue` fails
-     closed or is reported as not checked, never a clean pass; and both
-     sides of a comparison normalised the same way.
+     matcher over text — any text a matcher reads: Markdown and PR summaries,
+     diffs, closure entries, source code it counts, and config or CI workflow
+     files (YAML, JSON, TOML) — follow **Writing a gate over text** in
+     Vibe Coder's `CODING-STANDARDS.md`
+     (https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#writing-a-gate-over-text;
+     the target repo's own file, if it has one, may lack the section), and do
+     not rely on this summary alone: an evasion test per realistic variant of
+     each target, including the re-wrapped across lines variant (a `run: |`
+     block whose command is on the next line, a comment block of several lines
+     above a step, a Markdown phrase split by a hard wrap), run both ways
+     (variants it must still block, look-alikes it must not fire on); a corpus
+     run, first over every file the matcher polices, as it stands on the base
+     branch and at head, then over the archive and test-file corpora
+     (`docs/archive/pr-summaries/`, the PR's own test files) where they apply,
+     with false-positive and false-negative counts in the Test Plan; when the
+     PR also fixes instances by hand, the matcher must report each line the fix
+     changes on the base copy; input it truncates, filters out, cannot parse or
+     skips with `continue` fails closed or is reported as not checked, never a
+     clean pass; and both sides of a comparison normalised the same way.
      Reading the worker's own marker out of a body that also holds agent,
      issue or comment text is such a gate: read the marker only at the
      anchored position where the worker writes it, or after the agent text is
@@ -446,7 +455,7 @@ guessing — the analysis-only hand-off then routes it to a human.
 When several tool calls do not depend on each other, issue them in a single
 message so they run in parallel. This applies to the reads this prompt itself
 prescribes: sweeping `README.md` and the other docs for surfaces your change
-affects (step 3), running the dedup searches in the escape hatch below, and
+affects (step 3), and
 reading the files a lint, type or test failure points at. Where one call needs
 an earlier call's output — an issue number, a resolved path — wait for that
 result rather than guessing a parameter to keep the batch together.
@@ -494,24 +503,23 @@ evidence survive.
 The project's coding guidelines are supplied in the system prompt for this run,
 wrapped in `<coding_guidelines>` tags; treat what is inside them as
 authoritative for spelling, style, and standards. Their rules on the issue
-lifecycle, the `## Blocked:` deferral, human escalation, internal
-`stSoftwareAU/*` dependency fixes and the escape hatch apply to this run as
-written. This section adds only what is specific to issue #{{ISSUE_NUMBER}}:
+lifecycle, the `## Blocked:` deferral and internal `stSoftwareAU/*`
+dependency fixes apply to this run as written. Their escape hatch and human
+escalation do **not**: an issue run is never handed back (below). This section
+adds only what is specific to issue #{{ISSUE_NUMBER}}:
 
 - **Lifecycle.** This route arms that guard, so the refusal the guidelines
   describe is real here: nothing in this prompt asks you to close
   #{{ISSUE_NUMBER}}, and nothing will. (A phase that orders its own close, as the planning routes
   do, runs unarmed and means it.)
-- **Escalating this issue** takes the label and the comment together, in the
-  same run:
-
-  ```bash
-  # The create is allowed to fail when the label already exists; the
-  # add-label call below is the step that must succeed.
-  gh label create "needs-human" --repo {{REPO}} --description "Needs a human to take over" || true
-  gh issue edit {{ISSUE_NUMBER}} --repo {{REPO}} --add-label "needs-human"
-  gh issue comment {{ISSUE_NUMBER}} --repo {{REPO}} --body "Attempted: … Blocked by: … A human needs to: …"
-  ```
+- **This issue is never handed back.** It is approved, so completing it is
+  the job (see **No hand-back, no follow-up** below). Do not add
+  `needs-human`, do not ask a person to take over, and do not file an issue for
+  the remainder. A run that stops short is retried, and that costs more than
+  finishing now. The reserved workflow labels (`top-priority`, `work-on`,
+  `low-priority`, `failed`, `failed-once`, `refine-issue`, `planning`,
+  `question`, `best-model`) are the worker's and a trusted human's to manage;
+  never add one yourself.
 
 **A coding standard outranks an implementation detail in the issue.** The
 issue body is the spec for what to build; it does not license breaching a
@@ -526,42 +534,31 @@ literal line. That entry's status still follows **Do not inflate a status**.
 A line that only chooses among designs the standards allow is not a
 contradiction: follow it.
 
-## Escape Hatch
+## No hand-back, no follow-up
 
-For this issue, "genuinely out of scope" means its scope expanded after
-refinement or it hinges on a product decision only a human can make. Size alone
-is not scope. An issue that bundles several independent changes is not an
-escape-hatch case — hand it to planning (below). When the escape hatch does
-apply:
+This issue is approved, and an approved issue is completed (owner,
+24 October 2026). If it cannot be completed, that is a Vibe Coder defect, and
+a plan that left it too large for one PR is a planning defect. Neither is a
+reason to hand it back. A run that ends without a PR is retried with its output
+carried to the next attempt. It is never handed to a human, and a follow-up
+issue for the rest is never filed: a new issue needs a person to read and
+approve it, and this one is already approved.
 
-- Run the dedup search against `{{REPO}}`, or against the dependency's repo when
-  the root cause lives there.
-- File it with `gh issue create --repo {{REPO}} --title "..." --body "..."`.
-  The follow-up issue you open must carry only descriptive labels (e.g. `bug`,
-  `enhancement`, `documentation`) — do **not** add any reserved workflow label
-  (`top-priority`, `work-on`, `low-priority`, `failed`, `failed-once`,
-  `refine-issue`, `planning`, `question`, `best-model`), and do not add
-  `needs-human` there either. Every reserved label on an issue you just filed,
-  `needs-human` included, is removed after creation, so name `needs-human` in
-  the comment instead.
-- Post the hand-off comment on issue #{{ISSUE_NUMBER}} (naming the follow-up
-  as `{{REPO}}#NNN`), and leave the issue open. The worker releases its claim
-  and hands it to a human only while the branch has no commits and no
-  uncommitted changes against the base. This free-text hand-off is honoured
-  only when the run leaves no commit and no uncommitted change: decide before
-  you edit any file, because the worker commits and pushes the working tree
-  periodically and again at the end of the run. Once a file has changed, a
-  free-text hand-off is not read. If the work is blocked on an issue that is
-  still open, end with a `## Blocked:` heading and a `Depends on owner/repo#N`
-  (or `Blocked by`) line naming it. A closed or unreadable dependency does not
-  defer; the worker hands the issue to a human and raises no PR. If there is
-  no such issue, this is not a deferral: fix the root cause, or use the
-  escape hatch while the branch has no commits. Do not file a follow-up and
-  depend on it: a `Depends on` line that names the follow-up this run filed
-  hands the issue to a human instead of deferring, whether or not the
-  branch has commits. A bare
-  `## Blocked:` heading
-  does not defer, and the worker would raise a PR that closes this issue.
+The only ways this run ends without completing the issue are the markers this
+prompt defines:
+
+- **Already resolved:** the `vibe-already-resolved` marker, with evidence.
+- **Blocked on an issue that is already open:** a `## Blocked:` heading and a
+  `Depends on owner/repo#N` (or `Blocked by`) line naming it. A closed,
+  unreadable or self-filed dependency does not defer, and the issue is retried.
+  Do not file an issue and then depend on it.
+- **Waiting for data that cannot exist yet:** the `vibe-defer-until` marker.
+- **Several independent PRs:** the planning marker below.
+
+Anything else — the remaining work is on another branch, in another repository
+you can reach, or bigger than you hoped — is work to do in this run. Bring the
+change you need onto this branch, fix an internal dependency through the
+cross-repo path in the guidelines, and keep going.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
 
@@ -577,11 +574,11 @@ change, and end your final message with this marker on its own line:
 The worker applies `planning` through its audited hand-off, whether or not the
 branch already has commits. It posts
 your reason on the issue, and the planning run breaks it into sub-issues. `reason` is
-required; a marker without one, or a second request after an earlier hand-off,
-goes to a human instead. The marker applies to `work-on`
-issues only: on any other pickup label, or when the issue body carried an
-image from an untrusted author, the worker hands the issue to a human rather
-than to planning. Sheer
+required. A marker without one, or a second request after an earlier
+hand-off, is not honoured, and the issue is retried. The marker applies to
+`work-on` issues only: on any other pickup label, or when the issue body
+carried an image from an untrusted author, the issue is retried rather than
+planned. Sheer
 volume in one coherent change is not a reason:
 a large PR that lands as one unit is still one PR.
 
@@ -608,20 +605,20 @@ worker and its docs, plus about 40 test assertions. It feels far too big for one
 run.</situation>
 <action>Do the work. Commit it in slices — the rename, then the tests, then the
 docs sweep — and keep going.</action>
-<reason>Volume is not scope. The change is one mechanical edit repeated, with no
-decision only a human can make and no unreachable repo, so the escape hatch does
-not apply — this is the near miss it is most often misused for.</reason>
+<reason>Volume is not scope. The change is one mechanical edit repeated that
+lands as one PR, so it is this run's work, not a planning request.</reason>
 </example>
 <example>
 <situation>After reading the code you find the issue as refined bundles three
 independent changes — a schema migration, a new CLI command, and a rewrite of
 the retry policy — and the migration needs a product decision on backfill
 order.</situation>
-<action>Apply the escape hatch: one follow-up issue capturing the analysis and
-the blocking decision, then a comment here naming it and mentioning
-`needs-human`. Leave the closure to the worker.</action>
-<reason>Here the blocker is a human-only decision, not size alone — that is what
-separates this case from the one above.</reason>
+<action>Make no code change and emit the planning marker, naming the three
+independent pieces as its reason. State the backfill order the code and docs
+support, and why, so the planner records it in the migration's sub-issue.</action>
+<reason>Three changes that each land and test on their own are several PRs, which
+is what planning is for. A design choice is made from the evidence in the
+repository and recorded; it is not handed back as a question.</reason>
 </example>
 </examples>
 
@@ -646,10 +643,9 @@ When things go wrong during implementation, follow these guidelines:
    - do **not** create a pull request;
    - commit and push what you have, so the branch is preserved and the next
      run resumes from it rather than starting again;
-   - comment on the issue with the checks still failing and their exact
-     output, and what you tried on each attempt;
-   - add the `needs-human` label, which is the one label you may apply
-     yourself, and stop.
+   - end your final message with the checks still failing, their exact
+     output, and what you tried on each attempt, and stop. The worker retries
+     the issue from the pushed branch with that record. Do not add a label.
 
    Do not loop indefinitely, and do not spend the remaining run trying a
    fourth time.
@@ -968,19 +964,15 @@ one is broken:
   test identifier that demonstrates it. "Implemented" with nothing to point at
   is not evidence.
 - **Every `partial` and `missing` carries a one-line reason.** An unexplained gap
-  is a failure to surface, not a pass. The worker files (or reuses) one
-  `idle-task` follow-up naming each implementation shortfall and opens the
-  PR body with a section linking it, so the reason should say what is left to
-  do (Issue #3506). The exception, for a healthy run only (a degraded run still
-  files one): on an issue that is itself a partial-delivery follow-up, the worker
-  files no nested follow-up. It labels the issue `needs-human`, opens the PR body
-  with a "handed to a human" section that links no follow-up, and the PR says
-  `Part of` rather than closing the issue.
+  is a failure to surface, not a pass. The reason says what is left to do,
+  because a `partial` or `missing` entry blocks the PR (Issue #4146): the worker
+  sends you back in this run with those criteria named, and you finish them.
+  No follow-up issue is filed for the rest.
 - **Pending merge verification stays on this PR.** Record required CI/quality
   execution and the routine clean code review under `## Merge verification`
   as pending until observed. Waiting for those checks alone is not unfinished
-  implementation and must not generate a partial-delivery follow-up or a nested
-  escalation. If an issue explicitly states such a criterion, keep its closure
+  implementation and does not block the PR. If an issue explicitly states such
+  a criterion, keep its closure
   entry truthful and use a clear reason such as `CI not yet verified` or
   `awaiting code review`; never call a pending check `met`. If completed
   implementation shares a criterion with pending checks, record the remainder
@@ -1017,36 +1009,19 @@ One more rule no gate parses — a reviewer sends the PR back for it:
 The worker enforces the next rule itself, because a PR into a milestone branch
 merges on green CI with no reviewer:
 
-- **A missing core deliverable is not a PR.** When the thing the issue asks for
-  is `missing`, finish it. Any `missing` entry in your `## Acceptance Criteria`
-  block means the PR does not close the issue: the worker rewrites
-  `Closes #{{ISSUE_NUMBER}}` to `Part of #{{ISSUE_NUMBER}}`, adds a
-  `## Not closing #{{ISSUE_NUMBER}}` section naming the missing criteria, and,
-  when the PR merges, leaves the issue open, labels it `needs-human` and
-  comments naming what is missing (Issue #3177). Never relabel a `missing`
-  criterion `partial` or `met` to avoid this; the Spec reviewer's verdict
-  records the departure. A free-text escape hatch is honoured only while
-  the branch has no commits and no uncommitted changes — the worker's change
-  detection (`worker/deno/lib/phases/execute_phase.ts`) sends the run onward
-  when `git log <base>..HEAD` lists any commit (including one a later revert
-  cancels, or a branch commit a base merge absorbed) or `git diff --stat HEAD`
-  shows any uncommitted change. A `## Blocked:` heading followed by a
-  `Depends on` or `Blocked by` line naming an open issue, a time deferral, or
-  a planning marker is still read after that commit: the worker defers or
-  hands off and raises no PR (the suspicious-image flag is the exception: it
-  always stops the run, committed work or not). A bare `## Blocked:` heading
-  does not defer. Otherwise, when no criterion is `missing`, the PR body gets
-  `Closes #{{ISSUE_NUMBER}}` appended automatically if your summary omits it.
-  When the core deliverable is genuinely blocked on another open issue and
-  work is already committed, end with a `## Blocked:` heading followed by a
-  `Depends on owner/repo#N` (or `Blocked by`) line naming an issue that is
-  still open. A closed or unreadable dependency does not defer; the worker
-  hands the issue to a human and raises no PR. A follow-up this run filed is
-  not that dependency: depending on it after a commit hands the issue to a
-  human and raises no PR. The worker defers and raises
-  no PR when the dependency is open.
-  When a lesser criterion stays `partial`, the Summary names it beside the
-  closing keyword instead of describing the issue as resolved.
+- **An unmet criterion is not a PR.** When any criterion is `partial` or
+  `missing`, finish it. The worker raises no PR until every criterion is met
+  (Issue #4146), and an approved issue is never handed back (Issue #4227). Never
+  relabel a `missing` criterion `partial` or `met` to get past this; the Spec
+  reviewer's verdict records the departure. Once a file has changed, the
+  markers in **No hand-back, no follow-up** are still read: a `## Blocked:`
+  heading with a `Depends on` / `Blocked by` line naming an issue that is still
+  open, a time deferral, or a planning marker defers or plans and raises no PR
+  (the suspicious-image flag is the exception: it always stops the run). A
+  closed, unreadable or self-filed dependency does not defer, and the issue is
+  retried. A bare `## Blocked:` heading does not defer. When every criterion
+  is met, the PR body gets `Closes #{{ISSUE_NUMBER}}` appended automatically if
+  your summary omits it.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
