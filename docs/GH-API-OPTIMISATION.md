@@ -83,7 +83,10 @@ client-side. This is implemented in
 `worker/deno/lib/issue_query.ts`:
 
 - `fetchAllIssues(repo, cache, …)` reads/writes the `issues_all` cache
-  key.
+  key. Invalid JSON, non-array roots and malformed issue rows throw before
+  any cache write; an incomplete snapshot must never look like an empty repo.
+  The closed-issue batch (`fetchAllClosedIssues`, `issues_closed_all`) shares
+  this validation and also propagates command failures (Issue #4124).
 - `fetchIssuesByLabel(repo, label, cache, …)` calls `fetchAllIssues`
   and applies the label filter in memory — it never issues a per-label
   GitHub call.

@@ -297,56 +297,46 @@ function assertListOutput(output: string, context: string): void {
 /**
  * Parse raw gh issue list JSON into FilterableIssue array.
  *
- * A row with a malformed field is skipped and reported through `log`, so
- * one bad row cannot blank the whole list (Issue #4110). Invalid JSON and a
- * non-array root give `[]`; `fetchAllIssues` treats a non-array root as a
- * failed call before anything is cached.
+ * Reject malformed lists and rows with field context before callers can
+ * cache an incomplete snapshot (Issue #4124). Optional absent fields retain
+ * their existing defaults; malformed supplied values are never skipped.
  *
  * @param jsonStr - Raw JSON string from gh CLI
- * @param log - Sink for skipped-row messages (default: stderr)
  * @returns Parsed issues
+ * @throws When the output is invalid JSON, not an array, or has a malformed row.
  */
-export function parseIssueListJson(
-  jsonStr: string,
-  log: (message: string) => void = console.error,
-): FilterableIssue[] {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(jsonStr);
-  } catch {
-    return [];
+export function parseIssueListJson(jsonStr: string): FilterableIssue[] {
+  assertListOutput(jsonStr, "parseIssueListJson");
+  const raw: unknown = JSON.parse(jsonStr);
+  if (!Array.isArray(raw)) {
+    throw new Error("parseIssueListJson: expected a JSON array");
   }
-  if (!Array.isArray(raw)) return [];
   // Inline runtime shape guard — gh CLI output at trust boundary (Issue #1532).
   const issues: FilterableIssue[] = [];
-  for (const item of raw) {
-    if (!isRecord(item)) continue;
-    if (typeof item.number !== "number") continue;
-    if (typeof item.title !== "string") continue;
-    const skip = (field: string): void => {
-      log(
-        `parseIssueListJson: skipping issue #${item.number} — malformed ${field} (Issue #4110)`,
+  for (const [index, item] of raw.entries()) {
+    const reject: (field: string) => never = (field) => {
+      throw new Error(
+        `parseIssueListJson: row ${index} — malformed ${field} (Issue #4124)`,
       );
     };
+    if (!isRecord(item)) reject("row");
+    if (typeof item.number !== "number") reject("number");
+    if (typeof item.title !== "string") reject("title");
     const author = singleStringField(item.author, "login");
     if (author === null) {
-      skip("author");
-      continue;
+      reject("author");
     }
     const assignees = stringListField(item.assignees, "login");
     if (assignees === null) {
-      skip("assignees");
-      continue;
+      reject("assignees");
     }
     const labels = stringListField(item.labels, "name");
     if (labels === null) {
-      skip("labels");
-      continue;
+      reject("labels");
     }
     const milestone = singleStringField(item.milestone, "title");
     if (milestone === null) {
-      skip("milestone");
-      continue;
+      reject("milestone");
     }
     const issue: FilterableIssue = {
       number: item.number,
@@ -466,7 +456,7 @@ interface AllIssuesCacheEntry {
   /** The issues returned by that listing. */
   issues: FilterableIssue[];
   /**
-   * Rows GitHub returned, before parsing dropped any malformed ones.
+   * Rows GitHub returned. Older cache entries may have dropped malformed rows.
    *
    * Exhaustion is judged on this, not on `issues.length`: a listing that hit
    * its limit but lost one unparseable row would otherwise look short - and
@@ -764,6 +754,7 @@ const CLOSED_ALL_DEFAULT_LIMIT = 500;
  * milestone scan. The cache key is repo-scoped (no milestone
  * namespacing) so concurrent milestone scans within a single iteration
  * share one round-trip.
+ * Command and validation failures propagate without writing to the cache.
  */
 export async function fetchAllClosedIssues(
   repo: string,
@@ -778,52 +769,27 @@ export async function fetchAllClosedIssues(
     if (cached) return cached;
   }
 
-  let output: string;
-  try {
-    output = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "closed",
-      "--json",
-      "number,title,milestone,updatedAt",
-      "--limit",
-      String(limit),
-    ]);
-  } catch {
-    return [];
-  }
+  const output = await ghCommandFn([
+    "issue",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "closed",
+    "--json",
+    "number,title,milestone,updatedAt",
+    "--limit",
+    String(limit),
+  ]);
 
-  // Never cache a failure (Issue #4257). This fetcher's contract swallows
-  // gh failures into an uncached [], so an empty or unparseable payload
-  // takes that same path instead of being cached as "no closed issues".
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(output.trim());
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-
-  const issues: ClosedIssueAll[] = [];
-  for (const item of parsed) {
-    if (!isRecord(item)) continue;
-    if (typeof item.number !== "number") continue;
-    let milestone: string | null = null;
-    if (isRecord(item.milestone) && typeof item.milestone.title === "string") {
-      milestone = item.milestone.title;
-    }
-    issues.push({
-      number: item.number,
-      title: typeof item.title === "string" ? item.title : "",
-      milestone,
-      ...(typeof item.updatedAt === "string" && item.updatedAt !== ""
-        ? { updatedAt: item.updatedAt }
-        : {}),
-    });
-  }
+  // Share the open-list validator: neither failures nor partial lists are
+  // evidence of an empty repository (Issue #4124).
+  const issues: ClosedIssueAll[] = parseIssueListJson(output).map((item) => ({
+    number: item.number,
+    title: item.title,
+    milestone: item.milestone || null,
+    ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
+  }));
   if (cache) await cache.write(repo, cacheKey, issues);
   return issues;
 }
