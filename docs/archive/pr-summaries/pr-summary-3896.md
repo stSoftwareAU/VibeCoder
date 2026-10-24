@@ -101,3 +101,31 @@ required CI and code review. This draft must remain unmerged until every
 known-leak row has its dedicated open bug reference. The summary check reports
 zero gates blocked and four not checked; model-based and issue-aware checks are
 not claimed as passes.
+
+## Maintenance Test Plan — 24 October 2026
+
+The duplicate-registration review fix on head `94825cc7` retains the coverage
+row and no-input-allowlist arrays until duplicate names are diagnosed; the
+two new negative fixture cases require their respective duplicate diagnostics.
+Those cases and every existing assertion remain intact. The later formatter
+push `86daee62` changes only wrapping of that loop header in
+`worker/deno/tests/fence_coverage_completeness_test.ts`. Every non-whitespace
+character is identical before and after that push; it adds no branch outcome,
+changes no prompt or runtime source, and touches no signal-cleanup or malformed
+comparison fail-safe. Existing branch-outcome entries and line citations name
+the unchanged `tests/support/untrusted_fence.ts` helper and remain unchanged.
+
+Validation for the formatter push: Deno formatting, format check and lint of
+the exact changed file pass locally. Hosted final-head test shards 1–4,
+container, no-runtime, integration, dependency review and security scans pass (the full-history scan was declared skipped);
+the aggregate gate remains closed because its summary-freshness stage requires
+this canonical refresh. These are hosted results, not a new local full quality
+or real-provider/Codex/RTK end-to-end claim. The previous local 65-test report
+and mutation ledger remain their original author's evidence. This documentation
+refresh must get its own normal final-head CI and independent review.
+
+The PR was marked ready by another actor. The documented requirement for
+14 dedicated open bug references is still unresolved; temporary parent issue
+references remain scaffolding. No authorisation to retry the previously
+rejected issue creation, readiness waiver, self-approval or merge is inferred
+from green tests or this summary update.
