@@ -1,12 +1,88 @@
-{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
-{"path":"worker/deno/lib/container_watchdog.ts","line":613,"outcome":"no evidenceDir means no capture","test":"worker/deno/tests/container_watchdog_test.ts","testName":"reapWedgedContainer - without an evidence directory no evidence seam is touched","flipWentRed":"removing the guard turned it and the pre-launch test red"},
-{"path":"worker/deno/lib/container_watchdog.ts","line":623,"outcome":"capture success logs and returns the file","test":"worker/deno/tests/container_watchdog_test.ts","testName":"reapWedgedContainer - writes one evidence file with every field, before the kill","flipWentRed":"moving the capture after the kill turned it red"},
-{"path":"worker/deno/lib/container_watchdog.ts","line":635,"outcome":"failed or thrown capture is logged and the kill still happens","test":"worker/deno/tests/container_watchdog_test.ts","testName":"reapWedgedContainer - a capture that throws outright is logged and the kill still happens","flipWentRed":"rethrowing from the failure branches turned it red"},
-{"path":"worker/deno/commands/container_reap.ts","line":155,"outcome":"evidence-dir is passed to the watchdog reap","test":"worker/deno/tests/container_reap_command_test.ts","testName":"container-reap - --evidence-dir writes exactly one hard-kill file, even when every runtime step fails","flipWentRed":"not passing evidenceDir turned it red"},
-{"path":"worker/deno/lib/hard_kill_evidence.ts","line":527,"outcome":"failed exec probe marks the guest unavailable and execs nothing","test":"worker/deno/tests/hard_kill_evidence_test.ts","testName":"captureHardKillEvidence - a hung container exec leaves the guest unavailable and still writes the file","flipWentRed":"ignoring the failed probe turned four tests red"},
-{"path":"worker/deno/lib/hard_kill_evidence.ts","line":620,"outcome":"total cap leaves unread fields not collected","test":"worker/deno/tests/hard_kill_evidence_test.ts","testName":"captureHardKillEvidence - a hung runtime at the total cap leaves its fields not collected but writes the rest","flipWentRed":"removing the cap race turned it red"},
-{"path":"worker/deno/lib/hard_kill_evidence.ts","line":591,"outcome":"a throwing branch names the failure in its unfilled fields","test":"worker/deno/tests/hard_kill_evidence_test.ts","testName":"captureHardKillEvidence - a branch that throws names the failure in each field it had not filled","flipWentRed":"reverting to the swallowed rejection turned it red"},
-{"path":"worker/deno/lib/hard_kill_evidence.ts","line":431,"outcome":"worker log text is redacted before it is cut","test":"worker/deno/tests/hard_kill_evidence_test.ts","testName":"captureHardKillEvidence - a token straddling the line cap leaves no fragment in the file","flipWentRed":"dropping the raw redaction turned the line-cap and field-cap tests red"},
-{"path":"worker/deno/lib/hard_kill_evidence.ts","line":329,"outcome":"the final pass redacts every string","test":"worker/deno/tests/hard_kill_evidence_test.ts","testName":"captureHardKillEvidence - a token in the reason is redacted by the final pass","flipWentRed":"dropping redactDeep turned it red"},
-{"path":"worker/deno/lib/hard_kill_evidence.ts","line":623,"outcome":"a write failure is returned, not thrown","test":"worker/deno/tests/hard_kill_evidence_test.ts","testName":"captureHardKillEvidence - a write failure is returned, never thrown","flipWentRed":"returning ok:true on failure turned three tests red"}
-]}}
+{
+  "branchOutcomes": {
+    "entries": [
+      {
+        "flipWentRed": "removing the guard turned it and the pre-launch test red",
+        "line": 613,
+        "outcome": "no evidenceDir means no capture",
+        "path": "worker/deno/lib/container_watchdog.ts",
+        "test": "worker/deno/tests/container_watchdog_test.ts",
+        "testName": "reapWedgedContainer - without an evidence directory no evidence seam is touched"
+      },
+      {
+        "flipWentRed": "moving the capture after the kill turned it red",
+        "line": 623,
+        "outcome": "capture success logs and returns the file",
+        "path": "worker/deno/lib/container_watchdog.ts",
+        "test": "worker/deno/tests/container_watchdog_test.ts",
+        "testName": "reapWedgedContainer - writes one evidence file with every field, before the kill"
+      },
+      {
+        "flipWentRed": "rethrowing from the failure branches turned it red",
+        "line": 635,
+        "outcome": "failed or thrown capture is logged and the kill still happens",
+        "path": "worker/deno/lib/container_watchdog.ts",
+        "test": "worker/deno/tests/container_watchdog_test.ts",
+        "testName": "reapWedgedContainer - a capture that throws outright is logged and the kill still happens"
+      },
+      {
+        "flipWentRed": "not passing evidenceDir turned it red",
+        "line": 155,
+        "outcome": "evidence-dir is passed to the watchdog reap",
+        "path": "worker/deno/commands/container_reap.ts",
+        "test": "worker/deno/tests/container_reap_command_test.ts",
+        "testName": "container-reap - --evidence-dir writes exactly one hard-kill file, even when every runtime step fails"
+      },
+      {
+        "flipWentRed": "ignoring the failed probe turned four tests red",
+        "line": 527,
+        "outcome": "failed exec probe marks the guest unavailable and execs nothing",
+        "path": "worker/deno/lib/hard_kill_evidence.ts",
+        "test": "worker/deno/tests/hard_kill_evidence_test.ts",
+        "testName": "captureHardKillEvidence - a hung container exec leaves the guest unavailable and still writes the file"
+      },
+      {
+        "flipWentRed": "removing the cap race turned it red",
+        "line": 620,
+        "outcome": "total cap leaves unread fields not collected",
+        "path": "worker/deno/lib/hard_kill_evidence.ts",
+        "test": "worker/deno/tests/hard_kill_evidence_test.ts",
+        "testName": "captureHardKillEvidence - a hung runtime at the total cap leaves its fields not collected but writes the rest"
+      },
+      {
+        "flipWentRed": "reverting to the swallowed rejection turned it red",
+        "line": 591,
+        "outcome": "a throwing branch names the failure in its unfilled fields",
+        "path": "worker/deno/lib/hard_kill_evidence.ts",
+        "test": "worker/deno/tests/hard_kill_evidence_test.ts",
+        "testName": "captureHardKillEvidence - a branch that throws names the failure in each field it had not filled"
+      },
+      {
+        "flipWentRed": "dropping the raw redaction turned the line-cap and field-cap tests red",
+        "line": 431,
+        "outcome": "worker log text is redacted before it is cut",
+        "path": "worker/deno/lib/hard_kill_evidence.ts",
+        "test": "worker/deno/tests/hard_kill_evidence_test.ts",
+        "testName": "captureHardKillEvidence - a token straddling the line cap leaves no fragment in the file"
+      },
+      {
+        "flipWentRed": "dropping redactDeep turned it red",
+        "line": 329,
+        "outcome": "the final pass redacts every string",
+        "path": "worker/deno/lib/hard_kill_evidence.ts",
+        "test": "worker/deno/tests/hard_kill_evidence_test.ts",
+        "testName": "captureHardKillEvidence - a token in the reason is redacted by the final pass"
+      },
+      {
+        "flipWentRed": "returning ok:true on failure turned three tests red",
+        "line": 623,
+        "outcome": "a write failure is returned, not thrown",
+        "path": "worker/deno/lib/hard_kill_evidence.ts",
+        "test": "worker/deno/tests/hard_kill_evidence_test.ts",
+        "testName": "captureHardKillEvidence - a write failure is returned, never thrown"
+      }
+    ],
+    "noneAdded": false
+  },
+  "version": 1
+}
