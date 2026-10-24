@@ -211,7 +211,12 @@ a fault must never be masked as success.
   with context — an empty `catch {}` that hides the error is forbidden.
 - **Absence of a success marker is not success.** Do not treat "no explicit
   failure" as "passed", and do not treat an unhandled non-zero exit as benign. A
-  result is only successful when success is positively confirmed.
+  result is only successful when success is positively confirmed. A parsed
+  response is no exception: when the format guarantees a key is present (GraphQL
+  selects it, a brief or schema requires it) and its documented empty state is
+  `null` or `[]`, treat only that explicit value as empty. A missing key is a
+  malformed response: reject it with the field name, and test the omitted-key
+  case as a rejection, never as the empty state.
 - **No silent fallback that masks a fault.** A missing `source` target, a
   skipped stage, an empty result standing in for real data, or a default value
   papering over a failed fetch must not be reported as a clean outcome.
