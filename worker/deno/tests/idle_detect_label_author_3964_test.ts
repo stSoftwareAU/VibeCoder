@@ -235,3 +235,69 @@ Deno.test("auditClaimableState - a rejecting untrustedLabelIssuesFn warns and fa
     `the over-count must surface as an alert; got:\n${logs.join("\n")}`,
   );
 });
+
+Deno.test("auditClaimableState - the lookup warning carries the bare Error message, or the string form of a non-Error (Issue #4212)", async () => {
+  const warnFor = async (reason: unknown): Promise<string> => {
+    const logs: string[] = [];
+    await auditClaimableState({
+      repos: ["org/alpha"],
+      workerUser: "vibebot",
+      tick: 1,
+      scanFoundClaimable: false,
+      ghCommandFn: () =>
+        Promise.resolve(JSON.stringify([
+          {
+            number: 42,
+            labels: [{ name: "top-priority" }],
+            assignees: [],
+            milestone: null,
+          },
+        ])),
+      untrustedLabelIssuesFn: () => Promise.reject(reason),
+      log: (line) => logs.push(line),
+      hostnameFn: () => "host",
+      pidFn: () => 1,
+    });
+    const warn = logs.find((l) =>
+      l.includes("reason=untrusted_label_lookup_failed")
+    );
+    assert(warn !== undefined, `expected a lookup warning; got:\n${logs}`);
+    return warn;
+  };
+
+  // An Error contributes its message alone, not the "Error: " prefix.
+  assert(
+    (await warnFor(new Error("boom"))).endsWith("message=boom"),
+    "an Error must log its bare message",
+  );
+  // A non-Error has no `.message`, so it is stringified.
+  assert(
+    (await warnFor("plain failure")).endsWith("message=plain failure"),
+    "a non-Error must log its string form",
+  );
+});
+
+Deno.test("classifyIssues - a label-author verdict carries the issue number and milestone (Issue #4212)", () => {
+  const verdicts = classifyIssues(
+    [
+      { number: 7, labels: ["top-priority"], assignees: [], milestone: "M-a" },
+      { number: 8, labels: ["top-priority"], assignees: [], milestone: "M-b" },
+    ],
+    { workerUser: "vibebot", untrustedLabelIssues: new Set([7, 8]) },
+  );
+
+  assertEquals(verdicts, [
+    {
+      number: 7,
+      claimable: false,
+      excludedBy: "label_author_not_allowed",
+      milestone: "M-a",
+    },
+    {
+      number: 8,
+      claimable: false,
+      excludedBy: "label_author_not_allowed",
+      milestone: "M-b",
+    },
+  ]);
+});
