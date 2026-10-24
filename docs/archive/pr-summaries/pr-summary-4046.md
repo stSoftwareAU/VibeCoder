@@ -183,10 +183,12 @@ through the proxy, which is #4047.
   reviewer: unrequested — reason: an operator needs the bound address, and the
   command logs it so a started proxy is observable
 - **unrequested** — references to #4047 in `docs/CONTAINMENT.md`,
-  `docs/CONFIGURATION.md`, two source comments and the renamed docs test —
-  reviewer: unrequested — reason: the existing docs said #4046 would enforce the
-  allowlist; this PR adds the proxy but not the routing, so those sentences had
-  to stop being true-by-promise
+  `docs/CONFIGURATION.md`, three source comments (`worker/deno/lib/config.ts`,
+  `worker/deno/lib/egress_allowlist.ts`, `worker/deno/lib/egress_proxy.ts`), the
+  note string in `worker/deno/lib/vibe_env_registry.ts` and the renamed docs
+  test — reviewer: unrequested — reason: the existing docs said #4046 would
+  enforce the allowlist; this PR adds the proxy but not the routing, so those
+  sentences had to stop being true-by-promise
 - **unrequested** — `docs/audits/lib-sweep-coverage/top-up-4046.json` —
   reviewer: unrequested — reason: the lib-sweep ledger needs an entry for a new
   `lib/` module
@@ -237,26 +239,54 @@ through the proxy, which is #4047.
 
 ## Test Plan
 
-- Added: `worker/deno/tests/egress_proxy_test.ts` (27 tests, real sockets with
-  an injected resolver and connector via
+- Added: `worker/deno/tests/egress_proxy_test.ts` (30 tests, 22 of them real
+  sockets with an injected resolver and connector via
   `worker/deno/tests/support/egress_proxy_socket_scenarios.ts`),
-  `worker/deno/tests/egress_proxy_command_test.ts` (14 tests), three
-  egress-proxy tests in `worker/deno/tests/containment_docs_test.ts` plus a
-  path-exists test, and two `main()` subprocess tests in
-  `worker/deno/tests/mod_test.ts`.
+  `worker/deno/tests/egress_proxy_command_test.ts` (22 tests), two `main()`
+  subprocess tests in `worker/deno/tests/mod_test.ts`, and six egress-proxy docs
+  tests in `worker/deno/tests/containment_docs_test.ts`:
+  - `CONTAINMENT.md documents the egress proxy as the one outbound proxy #3699 will extend`
+  - `CONTAINMENT.md's egress proxy section does not claim the container is routed through it yet`
+  - `CONTAINMENT.md's egress proxy section states the proxy opens no files, keeps no cache and needs --allow-read --allow-env --allow-net`
+  - `CONTAINMENT.md's egress proxy section names a module that exists`
+  - `CONTAINMENT.md describes #3699 as planned, not delivered`
+  - `CONTAINMENT.md's egress proxy section says which refusals get a 403 and how idle connections close`
+- Added to close the pre-PR verifier and mutation findings, in
+  `egress_proxy_test.ts`:
+  - `egress proxy cuts off a request header whose blank line arrives past the cap in a later read`
+    (a head split across two writes: 403 `header-too-large`, one denial line, no
+    dial)
+  - `egress proxy forwards bytes pipelined after the CONNECT head to the upstream`
+    (head and payload in one write; the echo returns exactly the payload)
+  - `egress proxy refuses bytes pipelined after the CONNECT head of a routed host`
+    (403 `bad-request`, one denial line, route not called)
+- Added to close the mutation findings, in `egress_proxy_command_test.ts`: the
+  `--allow` type check, the plain-digits port check, the registered command
+  name, the bare message for an `Error` and for a non-`Error` throw on both the
+  argument path and the start path, and the default signal wait (stops on
+  `SIGTERM` and on `SIGINT`, and removes both listeners it registered).
+  `parseListen` no longer tests `Number.isInteger(port)`: the preceding
+  `/^\d+$/` check already guarantees an integer, so it was dead.
 - Edited: `worker/deno/tests/mod_test.ts` command count 156 to 157 (still red
   without the registration: the count and the `includes("egress-proxy")` check
-  both fail); `worker/deno/tests/containment_docs_test.ts` renamed test.
+  both fail); `worker/deno/tests/containment_docs_test.ts` renamed the existing
+  test `CONTAINMENT.md says the egress allowlist is not enforced until #4046` to
+  `CONTAINMENT.md says the egress allowlist is not enforced for the container until #4047`.
+- Removed from `worker/deno/tests/mod_test.ts`:
+  `assertEquals(commands.length, 156);`
+  - Required by: "a `mod.ts` command (working name `egress-proxy`)" —
+    registering the command makes the count 157
+  - Replaced by: `assertEquals(commands.length, 157);`
 - Removed from `worker/deno/tests/containment_docs_test.ts`:
-  `body.includes("#4046")` with message "the egress-allowlist section must name
-  #4046 as the issue that enforces the list"
+  `assert( body.includes("#4046"), "the egress-allowlist section must name #4046 as the issue that enforces the list", );`
   - Required by: "Enforce at the network layer through one proxy interface" —
     this PR adds the proxy only, so enforcement for the container is #4047 and
     the section must name #4047
-  - Replaced by: `body.includes("#4047")`
+  - Replaced by:
+    `assert( body.includes("#4047"), "the egress-allowlist section must name #4047 as the issue that routes the container through the proxy", );`
 - Results on the final head: `deno test --allow-all` on `egress_proxy_test.ts`,
   `egress_proxy_command_test.ts`, `containment_docs_test.ts`, `mod_test.ts` and
-  `vibe_env_registry_test.ts`: 82 passed, 0 failed; fmt, lint and type check
+  `vibe_env_registry_test.ts`: 93 passed, 0 failed; fmt, lint and type check
   pass. `./quality.sh`: every stage passed except `deno tests`, which reports 5
   failures in `claude_runner_provider_fallback_4034_test.ts`,
   `completion_phase_repo_formatters_test.ts` and

@@ -107,10 +107,7 @@ function parseListen(value: unknown): { hostname: string; port: number } {
     );
   }
   const port = Number(portText);
-  if (
-    !/^\d+$/.test(portText) || !Number.isInteger(port) || port < 1 ||
-    port > 65535
-  ) {
+  if (!/^\d+$/.test(portText) || port < 1 || port > 65535) {
     throw new Error(
       `egress-proxy: --listen "${listen}" has an invalid port "${portText}" (expected an integer from 1 to 65535)`,
     );

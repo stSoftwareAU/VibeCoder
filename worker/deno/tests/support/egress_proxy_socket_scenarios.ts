@@ -559,6 +559,111 @@ async function cutsOffOverLongHeader(): Promise<void> {
   }
 }
 
+/**
+ * Yield to the event loop `turns` times, so bytes already written by the
+ * client are read by the proxy before the scenario writes again. This orders
+ * two writes; it is not a wait for a duration, and the scenario's assertions
+ * hold whether or not the proxy has read the first write by then.
+ */
+async function yieldTurns(turns: number): Promise<void> {
+  for (let turn = 0; turn < turns; turn++) {
+    await new Promise<void>((next) => setTimeout(next, 0));
+  }
+}
+
+async function cutsOffHeadSplitAcrossReads(): Promise<void> {
+  const h = await startHarness({
+    allowlist: ["allowed.example"],
+    maxHeaderBytes: 256,
+  });
+  try {
+    const wire = await h.open();
+    // The first write is under the cap and carries no blank line, so the proxy
+    // keeps reading. The second write ends the head after byte 256: the blank
+    // line arrives only past the cap.
+    const first = "CONNECT allowed.example:443 HTTP/1.1\r\nX-Pad: " +
+      "a".repeat(180);
+    await wire.write(first);
+    await yieldTurns(25);
+    await wire.write("a".repeat(100) + "\r\n\r\n");
+    const denial = await readDenial(wire);
+
+    expectEqual(denial.status, "HTTP/1.1 403 Forbidden", "status");
+    expectEqual(
+      denial.body,
+      "[EGRESS_DENIED] host=- reason=header-too-large\n",
+      "denial body",
+    );
+    expectEqual(h.lines, [
+      "[EGRESS_DENIED] host=- port=0 reason=header-too-large",
+    ], "denial lines");
+    expectEqual(h.dialled, [], "dialled addresses");
+  } finally {
+    await h.close();
+  }
+}
+
+async function tunnelsBytesPipelinedAfterTheHead(): Promise<void> {
+  const h = await startHarness({ allowlist: ["allowed.example"] });
+  try {
+    const wire = await h.open();
+    // The client does not wait for the 200: the payload follows the blank line
+    // in the same write, so the proxy reads it together with the head.
+    const payload = new Uint8Array([22, 3, 1, 0, 13, 10, 255, 7]);
+    await wire.write(concatBytes(
+      encoder.encode(
+        "CONNECT allowed.example:443 HTTP/1.1\r\nHost: allowed.example:443\r\n\r\n",
+      ),
+      payload,
+    ));
+    expectEqual(
+      await wire.readHead(),
+      "HTTP/1.1 200 Connection Established",
+      "tunnel status",
+    );
+    expectEqual(
+      Array.from(await wire.readExact(payload.length)),
+      Array.from(payload),
+      "pipelined bytes echoed by the upstream",
+    );
+    expectEqual(h.dialled, [PUBLIC_ADDRESS], "dialled addresses");
+    expectEqual(h.lines, [], "denial lines");
+  } finally {
+    await h.close();
+  }
+}
+
+async function refusesBytesPipelinedToARoute(): Promise<void> {
+  const targets: Array<{ host: string; port: number }> = [];
+  const route: EgressRoute = (_client, target) => {
+    targets.push(target);
+    return Promise.resolve();
+  };
+  const h = await startHarness({
+    allowlist: ["routed.example"],
+    routes: new Map([["routed.example", route]]),
+  });
+  try {
+    const wire = await h.open();
+    await wire.write("CONNECT routed.example:443 HTTP/1.1\r\n\r\nEXTRA");
+    const denial = await readDenial(wire);
+
+    expectEqual(denial.status, "HTTP/1.1 403 Forbidden", "status");
+    expectEqual(
+      denial.body,
+      "[EGRESS_DENIED] host=routed.example reason=bad-request\n",
+      "denial body",
+    );
+    expectEqual(h.lines, [
+      "[EGRESS_DENIED] host=routed.example port=443 reason=bad-request",
+    ], "denial lines");
+    expectEqual(targets, [], "route targets");
+    expectEqual(h.dialled, [], "dialled addresses");
+  } finally {
+    await h.close();
+  }
+}
+
 async function cutsOffIdleClient(): Promise<void> {
   const h = await startHarness({
     allowlist: ["allowed.example"],
@@ -880,6 +985,9 @@ const SCENARIOS: Readonly<Record<string, () => Promise<void>>> = {
   "one-denial-line-per-refusal": oneDenialLinePerRefusal,
   "sanitise-control-characters": sanitisesControlCharacters,
   "cut-off-over-long-header": cutsOffOverLongHeader,
+  "cut-off-head-split-across-reads": cutsOffHeadSplitAcrossReads,
+  "tunnel-bytes-pipelined-after-head": tunnelsBytesPipelinedAfterTheHead,
+  "refuse-bytes-pipelined-to-route": refusesBytesPipelinedToARoute,
   "cut-off-idle-client": cutsOffIdleClient,
   "cut-off-idle-tunnel": cutsOffIdleTunnel,
   "refuse-non-443-port": refusesNon443Port,

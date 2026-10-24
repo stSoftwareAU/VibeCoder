@@ -126,6 +126,18 @@ Deno.test("egress proxy cuts off an over-long request header", async () => {
   await runScenario("cut-off-over-long-header");
 });
 
+Deno.test("egress proxy cuts off a request header whose blank line arrives past the cap in a later read", async () => {
+  await runScenario("cut-off-head-split-across-reads");
+});
+
+Deno.test("egress proxy forwards bytes pipelined after the CONNECT head to the upstream", async () => {
+  await runScenario("tunnel-bytes-pipelined-after-head");
+});
+
+Deno.test("egress proxy refuses bytes pipelined after the CONNECT head of a routed host", async () => {
+  await runScenario("refuse-bytes-pipelined-to-route");
+});
+
 Deno.test("egress proxy cuts off an idle client", async () => {
   await runScenario("cut-off-idle-client");
 });

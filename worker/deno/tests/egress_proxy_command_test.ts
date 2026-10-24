@@ -254,3 +254,158 @@ Deno.test("egress-proxy - a proxy that fails to start returns exit 1 and names t
   assertStringIncludes(result.message, "address already in use");
   assertEquals(logged.filter((line) => line.includes("listening")), []);
 });
+
+Deno.test("egress-proxy - is registered under the name egress-proxy", () => {
+  assertEquals(egressProxyCommand.name, "egress-proxy");
+});
+
+Deno.test("egress-proxy - an --allow that is neither a string nor a string array is an error", () => {
+  for (const allow of [5, true, { host: "crates.io" }, ["crates.io", 7]]) {
+    assertThrows(
+      () => parseEgressProxyArgs({ allow }, NO_ENV),
+      Error,
+      "--allow needs a comma-separated host list",
+    );
+  }
+});
+
+Deno.test("egress-proxy - a port that is not plain digits is an error even when it reads as a number", () => {
+  // Number("+80"), Number("0x50") and Number("1e3") are all valid integers.
+  for (const portText of ["+80", "0x50", "1e3", "-1"]) {
+    assertThrows(
+      () =>
+        parseEgressProxyArgs(
+          { allow: "crates.io", listen: `127.0.0.1:${portText}` },
+          NO_ENV,
+        ),
+      Error,
+      `has an invalid port "${portText}"`,
+    );
+  }
+});
+
+/** A start seam that reports the requested address and closes cleanly. */
+const START_OK: NonNullable<
+  Parameters<typeof egressProxyCommand.execute>[2]
+>["start"] = (opts) =>
+  Promise.resolve({
+    addr: { transport: "tcp", hostname: opts.hostname ?? "", port: opts.port },
+    close: () => Promise.resolve(),
+  });
+
+Deno.test("egress-proxy - a non-Error thrown while reading the arguments is reported as its text with exit 2", async () => {
+  const args = {
+    get allow(): string {
+      throw "plain string failure";
+    },
+  };
+  const result = await egressProxyCommand.execute(args, CONFIG, {
+    start: START_OK,
+    waitForStop: () => Promise.resolve(),
+  });
+  assertEquals(result, {
+    success: false,
+    exitCode: 2,
+    message: "plain string failure",
+  });
+});
+
+Deno.test("egress-proxy - an Error from the argument parser is reported as its bare message", async () => {
+  const result = await egressProxyCommand.execute({}, CONFIG, {
+    env: {},
+    start: START_OK,
+    waitForStop: () => Promise.resolve(),
+  });
+  assertEquals(
+    result.message,
+    `egress-proxy: no allowlist — pass --allow <hosts> or set ${EGRESS_ALLOW_HOSTS_ENV} (the allowlist is never read from a file)`,
+  );
+});
+
+Deno.test("egress-proxy - a start failure reports the Error message or a plain rejection's text", async () => {
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    for (
+      const [rejection, cause] of [
+        [new Error("address already in use"), "address already in use"],
+        ["socket gone", "socket gone"],
+      ] as const
+    ) {
+      const result = await egressProxyCommand.execute(
+        { allow: "crates.io", listen: "127.0.0.1:4003" },
+        CONFIG,
+        {
+          start: () => Promise.reject(rejection),
+          waitForStop: () => Promise.resolve(),
+        },
+      );
+      assertEquals(
+        result.message,
+        `egress-proxy: could not start on 127.0.0.1:4003 — ${cause}`,
+      );
+    }
+  } finally {
+    console.error = originalError;
+  }
+});
+
+type SignalHandler = () => void;
+
+/**
+ * Run the command with the default signal wait while `Deno.addSignalListener`
+ * and `Deno.removeSignalListener` are replaced by recorders, then deliver
+ * `deliver` by calling the handler the command registered for it. The delivery
+ * happens in a microtask queued from the listening log line, which the command
+ * writes immediately before it waits for the signal.
+ */
+async function runWithRecordedSignals(deliver: "SIGTERM" | "SIGINT"): Promise<{
+  result: CommandResult;
+  added: Array<[string, SignalHandler]>;
+  removed: Array<[string, SignalHandler]>;
+}> {
+  const added: Array<[string, SignalHandler]> = [];
+  const removed: Array<[string, SignalHandler]> = [];
+  const denoAny = Deno as unknown as Record<string, unknown>;
+  const originalAdd = denoAny["addSignalListener"];
+  const originalRemove = denoAny["removeSignalListener"];
+  const originalError = console.error;
+  denoAny["addSignalListener"] = (signal: string, handler: SignalHandler) => {
+    added.push([signal, handler]);
+  };
+  denoAny["removeSignalListener"] = (
+    signal: string,
+    handler: SignalHandler,
+  ) => {
+    removed.push([signal, handler]);
+  };
+  console.error = () => {
+    queueMicrotask(() => {
+      const target = added.find(([signal]) => signal === deliver) ?? added[0];
+      target?.[1]();
+    });
+  };
+  try {
+    const result = await egressProxyCommand.execute(
+      { allow: "crates.io", listen: "127.0.0.1:4004" },
+      CONFIG,
+      { start: START_OK },
+    );
+    return { result, added, removed };
+  } finally {
+    denoAny["addSignalListener"] = originalAdd;
+    denoAny["removeSignalListener"] = originalRemove;
+    console.error = originalError;
+  }
+}
+
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  Deno.test(`egress-proxy - the default wait stops on ${signal} and removes both signal listeners`, async () => {
+    const { result, added, removed } = await runWithRecordedSignals(signal);
+    assertEquals(added.map(([name]) => name), ["SIGTERM", "SIGINT"]);
+    assertEquals(result.success, true);
+    assertEquals(removed.map(([name]) => name), ["SIGTERM", "SIGINT"]);
+    assertEquals(removed[0]![1], added[0]![1]);
+    assertEquals(removed[1]![1], added[1]![1]);
+  });
+}
