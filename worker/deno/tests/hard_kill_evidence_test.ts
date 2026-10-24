@@ -771,3 +771,18 @@ Deno.test("captureHardKillEvidence - a token straddling the 500-character tool c
   );
   assertStringIncludes(recordOf(h).lastToolCall, "***REDACTED***");
 });
+
+Deno.test("captureHardKillEvidence - a token in the reason is redacted by the final pass", async () => {
+  // The reason is never read from a log, so no raw-text pass sees it; only the
+  // final pass over the whole record keeps a secret in it out of the file.
+  const h = harness({ files: HAPPY_FILES });
+
+  await captureHardKillEvidence(h.seams, {
+    ...BASE,
+    reason: `reap requested for ${TOKEN}`,
+  });
+
+  const text = h.writes[0]!.text;
+  assert(!text.includes(TOKEN), "the raw token must not reach the file");
+  assertStringIncludes(text, "***REDACTED***");
+});
