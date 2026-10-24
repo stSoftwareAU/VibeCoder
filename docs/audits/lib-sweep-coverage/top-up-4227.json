@@ -1,0 +1,12 @@
+{
+  "issue": 4227,
+  "chunk": "top-up-4227",
+  "title": "top-up: approved issues are retried, never handed back",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4227",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/unfinished_issue_retry.ts (a no-PR run on an approved issue posts a not-finished comment and fails onto the retry ladder instead of a needs-human hand-off) (#4227)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/unfinished_issue_retry.ts"
+  ],
+  "sweptAt": "1964023a89508411107fe5fc4fbb3c8ee5a3768f"
+}
