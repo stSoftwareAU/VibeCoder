@@ -50,6 +50,38 @@ export function buildMilestoneHealthCommandResult(
   };
 }
 
+/** Test seams for `execute`; production passes nothing (Issue #4106). */
+export interface MilestoneHealthCommandDeps {
+  ghCommandFn?: (args: string[]) => Promise<string>;
+  defaultBranchCachePath?: string;
+}
+
+export async function runMilestoneHealth(
+  config: WorkerConfig,
+  deps: MilestoneHealthCommandDeps = {},
+): Promise<CommandResult<MilestoneHealthReport>> {
+  const repos = config.repos ?? [];
+  if (repos.length === 0) {
+    return {
+      success: true,
+      message: "No repositories configured",
+      data: { repos: [] },
+    };
+  }
+
+  const result = await getMilestoneHealth({
+    repos,
+    ghCommandFn: deps.ghCommandFn ?? runGhCommand,
+    defaultBranchCachePath: deps.defaultBranchCachePath,
+  });
+
+  if (!result.ok) {
+    return { success: false, message: result.error.message };
+  }
+
+  return buildMilestoneHealthCommandResult(result.value);
+}
+
 export const milestoneHealthCommand: Command = {
   name: "milestone-health",
   description:
@@ -59,24 +91,6 @@ export const milestoneHealthCommand: Command = {
     _args: Record<string, unknown>,
     config: WorkerConfig,
   ): Promise<CommandResult<MilestoneHealthReport>> {
-    const repos = config.repos ?? [];
-    if (repos.length === 0) {
-      return {
-        success: true,
-        message: "No repositories configured",
-        data: { repos: [] },
-      };
-    }
-
-    const result = await getMilestoneHealth({
-      repos,
-      ghCommandFn: runGhCommand,
-    });
-
-    if (!result.ok) {
-      return { success: false, message: result.error.message };
-    }
-
-    return buildMilestoneHealthCommandResult(result.value);
+    return await runMilestoneHealth(config);
   },
 };

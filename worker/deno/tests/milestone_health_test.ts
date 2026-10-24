@@ -893,11 +893,15 @@ Deno.test("getMilestoneHealth - failed milestone list transport marks the repo a
  */
 function buildListGhFn(opts: {
   milestones: string;
-  openList: string | Error;
-  closedList: string | Error;
+  openList: string | Error | Thrown;
+  closedList: string | Error | Thrown;
 }): (args: string[]) => Promise<string> {
-  const settle = (value: string | Error): Promise<string> =>
-    value instanceof Error ? Promise.reject(value) : Promise.resolve(value);
+  const settle = (value: string | Error | Thrown): Promise<string> =>
+    value instanceof Thrown
+      ? Promise.reject(value.value)
+      : value instanceof Error
+      ? Promise.reject(value)
+      : Promise.resolve(value);
   return (args: string[]): Promise<string> => {
     const key = args.join(" ");
     if (key.includes("repos/org/repo/milestones")) {
@@ -915,6 +919,11 @@ function buildListGhFn(opts: {
     }
     return Promise.resolve("[]");
   };
+}
+
+/** A list result that throws `value` as is, even when it is not an Error. */
+class Thrown {
+  constructor(readonly value: unknown) {}
 }
 
 const ONE_MILESTONE_JSON = JSON.stringify([{ title: "OIDC", number: 1 }]);
@@ -1069,4 +1078,89 @@ Deno.test("getMilestoneHealth - a failing repo is reported with error while a he
     assertStringIncludes(output, "Repository: org/good");
     assertStringIncludes(output, "Milestone: M2 (0/1 issues complete)");
   });
+});
+
+// ============================================================================
+// Exact failure text, repo name and report layout (Issue #4106)
+// ============================================================================
+
+Deno.test("getMilestoneHealth - a failed milestone list names the repo and keeps the thrown text (Issue #4106)", async () => {
+  for (
+    const [thrown, text] of [
+      [new Error("HTTP 500"), "HTTP 500"],
+      ["plain string failure", "plain string failure"],
+    ] as const
+  ) {
+    const result = await healthWithGh((args) => {
+      const key = args.join(" ");
+      if (key.includes("repos/org/repo/milestones")) {
+        return Promise.reject(thrown);
+      }
+      if (key.includes(".default_branch")) return Promise.resolve("main");
+      return Promise.resolve("[]");
+    });
+    if (!result.ok) throw new Error("unreachable");
+    const repo = result.value.repos[0]!;
+    assertEquals(repo.repo, "org/repo");
+    assertEquals(
+      repo.error,
+      `gh api repos/org/repo/milestones failed: ${text}`,
+    );
+  }
+});
+
+Deno.test("getMilestoneHealth - a failed closed list names the repo and keeps the thrown text (Issue #4106)", async () => {
+  for (
+    const [thrown, text] of [
+      [new Error("HTTP 503"), "HTTP 503"],
+      ["plain string failure", "plain string failure"],
+    ] as const
+  ) {
+    const result = await healthWithGh(buildListGhFn({
+      milestones: ONE_MILESTONE_JSON,
+      openList: "[]",
+      closedList: new Thrown(thrown),
+    }));
+    if (!result.ok) throw new Error("unreachable");
+    const repo = result.value.repos[0]!;
+    assertEquals(repo.repo, "org/repo");
+    assertStringIncludes(repo.error ?? "", "closed issues for org/repo");
+    assertStringIncludes(repo.error ?? "", text);
+    assertEquals(repo.error?.includes("Error: Error"), false);
+    assertEquals(repo.error?.includes("undefined"), false);
+  }
+});
+
+Deno.test("getMilestoneHealth - a failed open list names the repo and keeps the thrown text (Issue #4106)", async () => {
+  for (
+    const [thrown, text] of [
+      [new Error("HTTP 502"), "HTTP 502"],
+      ["plain string failure", "plain string failure"],
+    ] as const
+  ) {
+    const result = await healthWithGh(buildListGhFn({
+      milestones: ONE_MILESTONE_JSON,
+      openList: new Thrown(thrown),
+      closedList: "[]",
+    }));
+    if (!result.ok) throw new Error("unreachable");
+    const repo = result.value.repos[0]!;
+    assertEquals(repo.repo, "org/repo");
+    assertStringIncludes(repo.error ?? "", "open issues for org/repo");
+    assertStringIncludes(repo.error ?? "", text);
+    assertEquals(repo.error?.includes("undefined"), false);
+  }
+});
+
+Deno.test("formatMilestoneHealthReport - a failed repo is followed by a blank line before the next repo (Issue #4106)", () => {
+  const output = formatMilestoneHealthReport({
+    repos: [
+      { repo: "owner/bad", milestones: [], error: "boom" },
+      { repo: "owner/good", milestones: [] },
+    ],
+  });
+  assertStringIncludes(
+    output,
+    "Repository: owner/bad\n  Failed to read milestones: boom\n\nRepository: owner/good",
+  );
 });

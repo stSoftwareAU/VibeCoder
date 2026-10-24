@@ -81,7 +81,7 @@ Test run, with `VIBE_IMAGE_AGENT_PROVIDERS` unset:
 
 ```text
 $ deno test --allow-all tests/milestone_health_test.ts tests/milestone_health_command_test.ts < /dev/null
-ok | 35 passed | 0 failed (116ms)
+ok | 41 passed | 0 failed (123ms)
 ```
 
 ## Test Plan
@@ -96,25 +96,31 @@ Tests added or modified in `worker/deno/tests/milestone_health_test.ts`:
 - `formatMilestoneHealthReport - a repo with an error prints the failure, not no milestones (Issue #4106)`: added.
 - `getMilestoneHealth - a failing repo is reported with error while a healthy repo is reported normally (Issue #4106)`: added.
 
+Also added in `worker/deno/tests/milestone_health_test.ts`, to pin the exact error text, the repo name and the report layout:
+
+- `getMilestoneHealth - a failed milestone list names the repo and keeps the thrown text (Issue #4106)`
+- `getMilestoneHealth - a failed closed list names the repo and keeps the thrown text (Issue #4106)`
+- `getMilestoneHealth - a failed open list names the repo and keeps the thrown text (Issue #4106)`
+- `formatMilestoneHealthReport - a failed repo is followed by a blank line before the next repo (Issue #4106)`
+
 Tests added in `worker/deno/tests/milestone_health_command_test.ts` (new file):
 
 - `buildMilestoneHealthCommandResult - clean report succeeds with the formatted text (Issue #4106)`
 - `buildMilestoneHealthCommandResult - a repo with an error fails and names the failure (Issue #4106)`
 - `buildMilestoneHealthCommandResult - a mixed report with one errored repo fails (Issue #4106)`
+- `runMilestoneHealth - a failed milestone list fails the command (Issue #4106)`
+- `runMilestoneHealth - an empty healthy repo succeeds with the report (Issue #4106)`
 
-Removed from worker/deno/tests/milestone_health_test.ts (from `git diff origin/main`):
+`runMilestoneHealth(config, deps)` is a new exported function in `worker/deno/commands/milestone_health.ts`. `execute` delegates to it, so a test can inject a fake gh and a throwaway default-branch cache path.
 
-```text
--Deno.test("getMilestoneHealth - failed milestone list transport still gives an empty repo (Issue #3856)", async () => {
--  if (result.ok) {
--    assertEquals(result.value.repos.length, 1);
--    assertEquals(result.value.repos[0]!.milestones.length, 0);
--  }
-```
+- Removed from `worker/deno/tests/milestone_health_test.ts`: `assertEquals(result.value.repos.length, 1);`
+  Required by: "Update the test 'failed milestone list transport still gives an empty repo (Issue #3856)'"
+  Replaced by: `assertEquals(result.value.repos.length, 1);`
+- Removed from `worker/deno/tests/milestone_health_test.ts`: `assertEquals(result.value.repos[0]!.milestones.length, 0);`
+  Required by: "Update the test 'failed milestone list transport still gives an empty repo (Issue #3856)'"
+  Replaced by: `assertEquals(repo.milestones.length, 0);`, `assertStringIncludes(repo.error ?? "", "HTTP 500");`
 
-Required by: "Update the test 'failed milestone list transport still gives an empty repo (Issue #3856)' in `worker/deno/tests/milestone_health_test.ts`, which pins the current milestone-list behaviour"
-
-Replaced by, all in `worker/deno/tests/milestone_health_test.ts`: `if (!result.ok) throw new Error("unreachable");`, `assertEquals(repo.milestones.length, 0);`, `assertStringIncludes(repo.error ?? "", "repos/org/repo/milestones");`, `assertStringIncludes(repo.error ?? "", "HTTP 500");`.
+The two assertions are kept, now unconditional after `if (!result.ok) throw new Error("unreachable");` instead of inside `if (result.ok) {`, and the test also asserts the repo `error`.
 
 Red checks, one flip at a time on the head. Each flip was restored with `git checkout` and `git diff --stat` was checked empty. Baseline was `ok | 35 passed | 0 failed`.
 
@@ -124,6 +130,14 @@ Red checks, one flip at a time on the head. Each flip was restored with `git che
 - Formatter error branch (`:672`) deleted: red is seven tests: `buildMilestoneHealthCommandResult - a repo with an error fails and names the failure (Issue #4106)`, `buildMilestoneHealthCommandResult - a mixed report with one errored repo fails (Issue #4106)`, `formatMilestoneHealthReport - a repo with an error prints the failure, not no milestones (Issue #4106)`, `getMilestoneHealth - a failing repo is reported with error while a healthy repo is reported normally (Issue #4106)`, `getMilestoneHealth - failed open issue list marks the repo as failed, not complete (Issue #4106)`, `getMilestoneHealth - failed closed issue list marks the repo as failed, not complete (Issue #4106)`, `getMilestoneHealth - non-JSON closed issue list marks the repo as failed, not complete (Issue #4106)`.
 - Command `failed.length > 0` (`worker/deno/commands/milestone_health.ts:37`) forced to the success path: red is `buildMilestoneHealthCommandResult - a repo with an error fails and names the failure (Issue #4106)` (`milestone_health_command_test.ts:37`) and `buildMilestoneHealthCommandResult - a mixed report with one errored repo fails (Issue #4106)` (`:45`).
 - Command failure branch forced on a clean report (`failed.length >= 0`): red is `buildMilestoneHealthCommandResult - clean report succeeds with the formatted text (Issue #4106)` (`milestone_health_command_test.ts:29`).
+
+Mutation survivors from the gate, each now red (run with `--no-check` so a type error does not count):
+
+- `commands/milestone_health.ts:49` (`data: report` deleted on success): red is the clean-report command test, which now asserts `result.data`.
+- `commands/milestone_health.ts:80` (`return buildMilestoneHealthCommandResult(...)` replaced): red is the two `runMilestoneHealth` tests.
+- `lib/milestone_health.ts:463`, `:506`, `:528` (`repo` deleted from the milestone, closed and open error returns): red is the three "names the repo and keeps the thrown text" tests.
+- `lib/milestone_health.ts:466`, `:509`, `:530` (negated `e instanceof Error` ternary): red is the same three tests, which compare the exact text for an `Error` and for a thrown string.
+- `lib/milestone_health.ts:674` (`lines.push("")` deleted in the formatter error branch): red is the blank-line formatter test.
 
 Quality gate: `./quality.sh` ran on the head. All stages passed except `deno tests`, whose parallel pass failed 14 tests, none touching milestone code. Six are `claude_runner_provider_fallback_4034`/`codex_model_adaptation` tests, and six more fail with 'running container image did not install the "codex" coding-agent provider' because this sandbox exports `VIBE_IMAGE_AGENT_PROVIDERS=claude`. Two Rust-fmt tests in `completion_phase_repo_formatters_test.ts` fail on base too. The serial pass was NOT RUN. Config integration and checkov were SKIPPED. The touched milestone and issue_query tests (169) pass with the env var unset.
 
