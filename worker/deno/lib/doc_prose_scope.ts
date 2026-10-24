@@ -141,6 +141,135 @@ function enclosingDeclaration(
   return undefined;
 }
 
+/** Added and removed line text per file, from a unified diff. */
+function diffLineSides(
+  diff: string,
+): Map<string, { added: string[]; removed: string[] }> {
+  const sides = new Map<string, { added: string[]; removed: string[] }>();
+  let file = "";
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++ b/")) {
+      file = line.slice(6);
+      if (!sides.has(file)) sides.set(file, { added: [], removed: [] });
+      continue;
+    }
+    if (!file) continue;
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      sides.get(file)!.added.push(line.slice(1));
+    } else if (line.startsWith("-") && !line.startsWith("---")) {
+      sides.get(file)!.removed.push(line.slice(1));
+    }
+  }
+  return sides;
+}
+
+/** `name(` calls and `<Name` elements on these diff lines. */
+function calledNames(lines: readonly string[]): Set<string> {
+  const names = new Set<string>();
+  for (const line of lines) {
+    for (const match of line.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
+      names.add(match[1]!);
+    }
+    for (const match of line.matchAll(/<([A-Z][\w$]*)\b/g)) {
+      names.add(match[1]!);
+    }
+  }
+  return names;
+}
+
+function topLevelDeclarationIndex(
+  source: string,
+  name: string,
+): number | undefined {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(
+    `^(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:function\\*?|class|const|let|var)\\s+${escaped}\\b`,
+  );
+  const lines = source.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (line.search(/\S/) !== 0) continue;
+    if (re.test(line.trim())) return i;
+  }
+  return undefined;
+}
+
+function relativeImportSpecifier(
+  source: string,
+  name: string,
+): string | undefined {
+  for (
+    const match of source.matchAll(
+      /import\s+(?:type\s+)?([^;"']+?)\s+from\s+["'](\.[^"']+)["']/g,
+    )
+  ) {
+    const clause = match[1]!.trim();
+    const spec = match[2]!;
+    if (clause === name) return spec;
+    const brace = /\{([^}]*)\}/.exec(clause);
+    if (!brace) continue;
+    for (const part of brace[1]!.split(",")) {
+      const bits = part.trim().split(/\s+as\s+/);
+      const local = (bits.length === 2 ? bits[1] : bits[0])?.trim();
+      if (local === name) return spec;
+    }
+  }
+  return undefined;
+}
+
+function joinRelative(fromFile: string, spec: string): string | undefined {
+  const base = fromFile.includes("/")
+    ? fromFile.slice(0, fromFile.lastIndexOf("/") + 1)
+    : "";
+  const out: string[] = [];
+  for (const part of `${base}${spec}`.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (out.length === 0) return undefined;
+      out.pop();
+      continue;
+    }
+    out.push(part);
+  }
+  const joined = out.join("/");
+  return joined === "" ? undefined : joined;
+}
+
+// SIMPLE-ON-PURPOSE: same file or one relative import hop — upgrade when a missed label is traced to a barrel or package re-export
+async function resolveCalledDeclaration(
+  callerFile: string,
+  callerSource: string,
+  name: string,
+  read: (file: string) => Promise<string | undefined>,
+): Promise<{ file: string; content: string } | undefined> {
+  if (topLevelDeclarationIndex(callerSource, name) !== undefined) {
+    return { file: callerFile, content: callerSource };
+  }
+  const spec = relativeImportSpecifier(callerSource, name);
+  if (spec === undefined) return undefined;
+  const joined = joinRelative(callerFile, spec);
+  if (joined === undefined) return undefined;
+  const hasExt = /\.[A-Za-z]+$/.test(joined);
+  const candidates = hasExt ? [joined] : [
+    `${joined}.ts`,
+    `${joined}.tsx`,
+    `${joined}.js`,
+    `${joined}.jsx`,
+    joined,
+  ];
+  for (const candidate of candidates) {
+    if (!isProseSourcePath(candidate)) continue;
+    const content = await read(candidate);
+    if (
+      content !== undefined &&
+      topLevelDeclarationIndex(content, name) !== undefined
+    ) {
+      return { file: candidate, content };
+    }
+  }
+  return undefined;
+}
+
 // SIMPLE-ON-PURPOSE: two-word heuristic — upgrade when a single-word user-visible label is missed in a real PR
 function isUserVisibleLiteral(text: string): boolean {
   const trimmed = text.trim();
@@ -178,8 +307,16 @@ export async function collectDocProseScope(input: {
     capOverflow: [],
   };
   const changed = changedLines(input.diff ?? "");
+  const lineSides = diffLineSides(input.diff ?? "");
   const stringCandidates: Array<{ file: string; line: number; text: string }> =
     [];
+  const seenStrings = new Set<string>();
+  const pushString = (file: string, line: number, text: string) => {
+    const key = `${file}:${line}:${text}`;
+    if (seenStrings.has(key)) return;
+    seenStrings.add(key);
+    stringCandidates.push({ file, line, text });
+  };
   if (input.diff === null) {
     scope.notChecked.push(
       "the prose diff could not be read; changed lines not checked, never passed",
@@ -321,7 +458,44 @@ export async function collectDocProseScope(input: {
         const key = `${literal.line}:${literal.text}`;
         if (seenInFile.has(key)) continue;
         seenInFile.add(key);
-        stringCandidates.push({ file, line: literal.line, text: literal.text });
+        pushString(file, literal.line, literal.text);
+      }
+    }
+    const sides = lineSides.get(file);
+    if (sides) {
+      const addedNames = calledNames(sides.added);
+      const removedNames = calledNames(sides.removed);
+      for (const name of addedNames) {
+        if (removedNames.has(name)) continue;
+        const resolved = await resolveCalledDeclaration(
+          file,
+          content,
+          name,
+          read,
+        );
+        if (!resolved) continue;
+        const lexedDef = sourceProseLines(resolved.content, resolved.file);
+        if (lexedDef.unterminatedFrom >= 0) {
+          scope.notChecked.push(
+            `${resolved.file}:${
+              lexedDef.unterminatedFrom + 1
+            }: unterminated source literal/comment; not checked, never passed`,
+          );
+          continue;
+        }
+        const start = topLevelDeclarationIndex(resolved.content, name);
+        if (start === undefined) continue;
+        const defCode = lexedDef.lines.map((line) => line.code);
+        const end = declarationEnd(defCode, start);
+        const changedInDef = changed.get(resolved.file) ?? new Set<number>();
+        for (
+          const literal of sourceStringLiterals(resolved.content, resolved.file)
+        ) {
+          if (!isUserVisibleLiteral(literal.text)) continue;
+          if (literal.line < start + 1 || literal.line > end + 1) continue;
+          if (changedInDef.has(literal.line)) continue;
+          pushString(resolved.file, literal.line, literal.text);
+        }
       }
     }
   }

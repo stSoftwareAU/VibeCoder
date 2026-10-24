@@ -1957,3 +1957,61 @@ Deno.test("runSummaryClaimCheck - a yes on an unchanged reason string is a docFi
     assertEquals(no.findings, []);
   });
 });
+
+const BADGE_LABEL = "Archived items stay hidden";
+const BADGE_SOURCE = `export function StatusBadge(_props: { state: string }) {
+  const label = "${BADGE_LABEL}";
+  return label;
+}
+`;
+const PAGE_SOURCE = `import { StatusBadge } from "./StatusBadge.tsx";
+
+export function Page() {
+  return <StatusBadge state="archived" />;
+}
+`;
+const PAGE_DIFF = `+++ b/src/page.tsx
+@@ -3 +3 @@
+-  return null;
++  return <StatusBadge state="archived" />;
+`;
+
+Deno.test("runSummaryClaimCheck - a yes on a newly called component's label is a docFinding; a no is not (Issue #4197)", async () => {
+  await withDocRepo({
+    "src/page.tsx": PAGE_SOURCE,
+    "src/StatusBadge.tsx": BADGE_SOURCE,
+  }, async (dir) => {
+    const runGit = async (args: string[]) => {
+      if (args[0] === "diff") return { code: 0, stdout: PAGE_DIFF, stderr: "" };
+      if (args[0] === "ls-files") {
+        return {
+          code: 0,
+          stdout: "src/page.tsx\nsrc/StatusBadge.tsx\n",
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const yes = await runSummaryClaimCheck(docInput(dir, ["src/page.tsx"]), {
+      runGit,
+      askQuestion: async () =>
+        okResult(docVerdict("src/StatusBadge.tsx", BADGE_LABEL)),
+      logger: makeLogger(),
+    });
+    assertEquals(yes.docFindings.map((f) => f.sentence), [BADGE_LABEL]);
+    assertEquals(yes.unconfirmedFindings, []);
+
+    const no = await runSummaryClaimCheck(docInput(dir, ["src/page.tsx"]), {
+      runGit,
+      askQuestion: async () =>
+        okResult(
+          `${DRIFT_VERDICT_OPEN}\n${
+            JSON.stringify({ findings: [] })
+          }\n<!-- /vibe-drift-verdict -->`,
+        ),
+      logger: makeLogger(),
+    });
+    assertEquals(no.docFindings, []);
+    assertEquals(no.findings, []);
+  });
+});

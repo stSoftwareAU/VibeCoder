@@ -188,3 +188,131 @@ ${body.join("\n")}
     assertStringIncludes(note, "not checked, never passed");
   }
 });
+
+const BADGE_LABEL = "Archived items stay hidden";
+const BADGE = `export function StatusBadge(_props: { state: string }) {
+  const label = "${BADGE_LABEL}";
+  return label;
+}
+`;
+const PAGE = `import { StatusBadge } from "./StatusBadge.tsx";
+
+export function Page() {
+  return <StatusBadge state="archived" />;
+}
+`;
+const PAGE_DIFF = `+++ b/src/page.tsx
+@@ -3 +3 @@
+-  return null;
++  return <StatusBadge state="archived" />;
+`;
+
+Deno.test("a newly rendered component's fixed label is selected and its file is loaded (Issue #4197)", async () => {
+  const scope = await collectDocProseScope({
+    ...filesOf({ "src/page.tsx": PAGE, "src/StatusBadge.tsx": BADGE }),
+    changedFiles: ["src/page.tsx"],
+    summaryContent: "",
+    diff: PAGE_DIFF,
+  });
+  const visible = scope.ranges.filter((r) => r.kind === "user-visible string");
+  assert(
+    visible.some((r) =>
+      r.file === "src/StatusBadge.tsx" && r.start === 2 &&
+      r.text === BADGE_LABEL
+    ),
+    `expected the badge label, got ${JSON.stringify(visible)}`,
+  );
+  assertStringIncludes(scope.contents.get("src/StatusBadge.tsx")!, BADGE_LABEL);
+});
+
+Deno.test("a moved call selects no label (Issue #4197)", async () => {
+  const scope = await collectDocProseScope({
+    ...filesOf({ "src/page.tsx": PAGE, "src/StatusBadge.tsx": BADGE }),
+    changedFiles: ["src/page.tsx"],
+    summaryContent: "",
+    diff: `+++ b/src/page.tsx
+@@ -3 +3 @@
+-  return <StatusBadge state="open" />;
++  return <StatusBadge state="archived" />;
+`,
+  });
+  assertEquals(
+    scope.ranges.filter((r) => r.kind === "user-visible string"),
+    [],
+  );
+  assertFalse(scope.contents.has("src/StatusBadge.tsx"));
+});
+
+Deno.test("an unresolvable package import selects nothing and does not throw (Issue #4197)", async () => {
+  const page = `import { Widget } from "widget-kit";
+
+export function Page() {
+  return <Widget />;
+}
+`;
+  const scope = await collectDocProseScope({
+    changedFiles: ["src/page.tsx"],
+    trackedFiles: ["src/page.tsx"],
+    summaryContent: "",
+    diff: `+++ b/src/page.tsx
+@@ -3 +3 @@
+-  return null;
++  return <Widget />;
+`,
+    readFile: (path) => {
+      if (path !== "src/page.tsx") {
+        throw new Error(`unexpected read of ${path}`);
+      }
+      return Promise.resolve(page);
+    },
+  });
+  assertEquals(
+    scope.ranges.filter((r) => r.kind === "user-visible string"),
+    [],
+  );
+});
+
+Deno.test("a definition file over fileCap and a literal over the string cap are not checked (Issue #4197)", async () => {
+  const capped = await collectDocProseScope({
+    ...filesOf({ "src/page.tsx": PAGE, "src/StatusBadge.tsx": BADGE }),
+    changedFiles: ["src/page.tsx"],
+    summaryContent: "",
+    diff: PAGE_DIFF,
+    fileCap: 0,
+  });
+  assertFalse(capped.contents.has("src/StatusBadge.tsx"));
+  assert(
+    capped.notChecked.some((note) =>
+      note.includes("src/StatusBadge.tsx") &&
+      note.includes("not checked, never passed")
+    ),
+  );
+
+  const labels = Array.from(
+    { length: 41 },
+    (_, i) => `  const label${i} = "badge label ${i} stays visible";`,
+  );
+  const many = `export function StatusBadge(_props: { state: string }) {
+${labels.join("\n")}
+  return label0;
+}
+`;
+  const overflow = await collectDocProseScope({
+    ...filesOf({ "src/page.tsx": PAGE, "src/StatusBadge.tsx": many }),
+    changedFiles: ["src/page.tsx"],
+    summaryContent: "",
+    diff: PAGE_DIFF,
+  });
+  assertEquals(
+    overflow.ranges.filter((r) => r.kind === "user-visible string").length,
+    40,
+  );
+  assert(
+    overflow.notChecked.some((note) =>
+      note.includes("src/StatusBadge.tsx") &&
+      note.includes("user-visible string over the 40-string cap") &&
+      note.includes("not checked, never passed")
+    ),
+  );
+  assert(overflow.contents.has("src/StatusBadge.tsx"));
+});
