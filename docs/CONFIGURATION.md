@@ -2673,11 +2673,14 @@ sync starts no further repository or milestone (one `Milestone sync stopped
 before ... the run target has passed...` line, and the sync cursor resumes
 there next cycle), and the Auto-Merge sweep's in-cycle milestone sync is
 deferred (one `In-cycle milestone sync deferred for <repo>#<n>: the run target
-has passed...` line; the PR is still armed). The issue scan takes no new claim,
+has passed...` line; the PR is still armed). An issue run that completes a PR it
+has already claimed still syncs its milestone past the target, because that
+claim is already active. The issue scan takes no new claim,
 on its first pass as on later ones, and the Priority 2 slot pool and the
 maintenance lane refuse a new claim or pass past the target too. The idle-task
-filer is refused as well, logging one `reason=past_run_target` line, with no
-permit spent and no transcript, audit or census call made. A handler already
+filer is refused as well, logging one line for each refused observation (each
+slot plus the outer-cycle observer), with no permit spent and no transcript,
+audit or census call made. A handler already
 running is not interrupted; it keeps its own budget.
 
 #### The agent is told to wind down before the cap (Issue #508)

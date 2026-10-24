@@ -240,8 +240,9 @@ export interface EnableAutoMergeOptions {
    * in-cycle sync and re-ask the gate if it lands (Issue #2005). Absent — or
    * when the sync conflicts — the child is armed anyway (Issue #2460); only
    * the sync-reason comment is skipped when no hook was supplied. Once the
-   * run target has passed the hook is not called at all (Issue #4243): the
-   * attempt is deferred, and the periodic sync clears "behind" next cycle.
+   * run target has passed the hook is not called at all when
+   * {@link deferSyncPastRunTarget} is set (Issue #4243): the attempt is
+   * deferred, and the periodic sync clears "behind" next cycle.
    */
   syncBehindMilestone?: (info: {
     milestoneBranch: string;
@@ -255,6 +256,16 @@ export interface EnableAutoMergeOptions {
      */
     unmeasured?: string;
   }>;
+  /**
+   * Set only by callers whose in-cycle sync would be a NEW unit of work — the
+   * Priority 1.65 Auto-Merge sweep (Issue #4243). Once the run target has
+   * passed, `true` defers that sync instead of calling
+   * {@link syncBehindMilestone}, so nothing new starts after the 1 h target.
+   * Absent or `false` leaves the hook called as before: the issue-run
+   * completion phase leaves it off because its claim is already active, so
+   * finishing that PR still syncs past the target.
+   */
+  deferSyncPastRunTarget?: boolean;
 }
 
 /** Marker on a PR comment that an in-cycle sync could not clear "behind". */
@@ -866,10 +877,14 @@ export async function enableAutoMerge(
       detail: string;
       unmeasured?: string;
     };
-    // Issue #4243: no new sync attempt starts once the run target has passed.
-    // The hook is not called; the attempt is deferred as a non-landing sync,
-    // so the arming path below runs unchanged and the PR is still armed.
-    if (pastRunTarget((options.now ?? Date.now)())) {
+    // Issue #4243: when the sweep (a new unit of work) asks for it, no new sync
+    // attempt starts once the run target has passed. The hook is not called;
+    // the attempt is deferred as a non-landing sync, so the arming path below
+    // runs unchanged and the PR is still armed.
+    if (
+      options.deferSyncPastRunTarget === true &&
+      pastRunTarget((options.now ?? Date.now)())
+    ) {
       log(
         `In-cycle milestone sync deferred for ${repo}#${prNumber}: the run ` +
           `target has passed; no new sync attempt starts, the periodic sync ` +

@@ -619,7 +619,7 @@ Deno.test("run_core dispatch - Planning Mode declares an agent floor of planning
   );
 });
 
-Deno.test("run_core watchdog - a wedged Planning Mode past the cycle deadline is abandoned at the planning floor, not the flat 600 s, and its agent is still terminated (Issue #62)", async () => {
+Deno.test("run_core watchdog - a wedged Planning Mode at the cycle deadline is abandoned at the planning floor, not the flat 600 s, and its agent is still terminated (Issue #62)", async () => {
   const errors: string[] = [];
   const terminations: string[] = [];
   let now = 0;

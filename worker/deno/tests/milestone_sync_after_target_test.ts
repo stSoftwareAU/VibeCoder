@@ -341,7 +341,7 @@ const BEHIND_ONCE = {
   detail: "milestone/1730-sync is 1 commit behind Develop",
 };
 
-Deno.test("enableAutoMerge - past the run target the in-cycle sync is not called, one line is logged, and the child is still armed (Issue #4243)", async () => {
+Deno.test("enableAutoMerge - past the run target the sweep's in-cycle sync is not called when deferred, one line is logged, and the child is still armed (Issue #4243)", async () => {
   resetBehindSyncComments();
   _resetBaseProtectionMemo();
   const logs: string[] = [];
@@ -355,6 +355,7 @@ Deno.test("enableAutoMerge - past the run target the in-cycle sync is not called
       headRefName: "issue-61-child",
       baseRefName: "milestone/1730-sync",
       now: () => TARGET_MS + 1,
+      deferSyncPastRunTarget: true,
       isBaseProtectedFn: async () => true,
       decideMilestoneBaseFn: () => Promise.resolve(BEHIND_ONCE),
       syncBehindMilestone: () => {
@@ -396,6 +397,49 @@ Deno.test("enableAutoMerge - past the run target the in-cycle sync is not called
     ),
     comments[0],
   );
+});
+
+Deno.test("enableAutoMerge - past the run target without the defer flag (the issue-run completion case) the in-cycle sync is still called once and no target line is logged (Issue #4243)", async () => {
+  resetBehindSyncComments();
+  _resetBaseProtectionMemo();
+  const logs: string[] = [];
+  const comments: string[] = [];
+  let hookCalls = 0;
+  let autoCalls = 0;
+  const result = await withRunTarget(() =>
+    enableAutoMerge({
+      repo: "owner/repo",
+      prNumber: 63,
+      headRefName: "issue-63-child",
+      baseRefName: "milestone/1730-sync",
+      now: () => TARGET_MS + 1,
+      isBaseProtectedFn: async () => true,
+      decideMilestoneBaseFn: () => Promise.resolve(BEHIND_ONCE),
+      syncBehindMilestone: () => {
+        hookCalls++;
+        return Promise.resolve({
+          status: "deferred" as const,
+          detail: "unresolved conflict on src/bar.ts",
+        });
+      },
+      commentFn: async (_r, _n, body) => {
+        comments.push(body);
+      },
+      log: (m) => logs.push(m),
+      ghCommandFn: async (args) => {
+        if (args.includes("--auto")) autoCalls++;
+        return "";
+      },
+    })
+  );
+
+  // An issue run completing its already-claimed PR syncs past the target.
+  assertEquals(hookCalls, 1, "the completion sync is not gated by the target");
+  assertEquals(targetLines(logs).length, 0, logs.join("\n"));
+  assertEquals(result.result, AutoMergeResult.Enabled);
+  assertEquals(autoCalls, 1);
+  assertEquals(comments.length, 1);
+  assert(comments[0]!.includes("unresolved conflict on src/bar.ts"));
 });
 
 Deno.test("enableAutoMerge - before the run target the in-cycle sync is called once and no target line is logged (Issue #4243 control)", async () => {

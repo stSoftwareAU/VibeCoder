@@ -3596,6 +3596,10 @@ export async function createProductionRunCoreDeps(
                 ghCommandFn: runGhCommand,
               });
             },
+            // Issue #4243: this sweep sync is a new unit of work, so it is
+            // deferred once the run target has passed. The issue-run
+            // completion phase does not set this flag (its claim is active).
+            deferSyncPastRunTarget: true,
           }),
         // Issue #470: this outcome used to be discarded. A gate that
         // refused every merge in the fleet was therefore invisible —
