@@ -287,6 +287,25 @@ function isNoneBody(body: string): boolean {
 }
 
 /**
+ * A header that only points at the facts file (`recorded in
+ * …pr-summary-N.facts.json`). It is not itself an outcome list.
+ */
+const FACTS_POINTER_RE = /\.facts\.json\b/;
+function isFactsPointer(text: string): boolean {
+  return FACTS_POINTER_RE.test(text);
+}
+
+/**
+ * The same `path:line —` shape `applyBranchOutcomesFacts` accepts as a
+ * replaceable legacy entry. A bullet that does not match is prose, not an
+ * outcome (Issue #4178).
+ */
+const OUTCOME_ENTRY_RE = /^[A-Za-z0-9_.\/-]+:\d+(?:-\d+)?\s+[—-]/;
+function isOutcomeShapedEntry(entry: string): boolean {
+  return OUTCOME_ENTRY_RE.test(entry);
+}
+
+/**
  * Parse every `Branch outcomes` header in a PR summary. The first mention
  * does not decide alone: a later header's list is still collected, and the
  * lines an inline header wraps onto stay part of its body so a path on the
@@ -317,7 +336,6 @@ export function parseBranchOutcomes(
       continue;
     }
 
-    present = true;
     // For a heading-form header, the boundary is the header's OWN level: a
     // sibling heading at that same level is a new section and must end the
     // scan, even when it is only one level deeper than the enclosing
@@ -335,6 +353,7 @@ export function parseBranchOutcomes(
       ? stripped.slice(inlineMatch[0].length).trim()
       : "";
     if (isNoneBody(body)) {
+      present = true;
       if (body) {
         bodyParts.push(body);
         bodyLineIndexGroups.push([i]);
@@ -354,11 +373,23 @@ export function parseBranchOutcomes(
       continue;
     }
 
-    onlyNone = false;
     const headerIndent = inlineMatch && LIST_MARKER_RE.test(rawLine)
       ? leadingIndent(rawLine)
       : -1;
     const collected = collectEntries(lines, i + 1, headerIndent, boundaryLevel);
+    // A facts-file pointer followed only by ordinary prose and bullet lists
+    // (the Red checks under a Test Plan) is not a second Branch outcomes
+    // block. A list that actually uses the path:line shape still is
+    // (Issue #4178).
+    const pointer = isFactsPointer(body) ||
+      isFactsPointer(collected.bodyExtra);
+    if (pointer && !collected.entries.some(isOutcomeShapedEntry)) {
+      i = collected.nextIndex - 1;
+      continue;
+    }
+
+    present = true;
+    onlyNone = false;
     const capturedLines = new Set<number>();
     for (let k = 0; k < collected.entries.length; k++) {
       if (entries.length >= MAX_ENTRIES) break;
