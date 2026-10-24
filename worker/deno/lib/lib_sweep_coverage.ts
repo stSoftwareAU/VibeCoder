@@ -231,6 +231,320 @@ export function topUpChunkId(issue: number): string {
 }
 
 /**
+ * `git merge-base origin/main HEAD`. A failure is an error: callers must not
+ * keep a branch commit in its place (Issue #4235).
+ */
+export async function originMainMergeBase(
+  runGit: SweepGitRunner,
+): Promise<string> {
+  const out = await runGit(["merge-base", "origin/main", "HEAD"]);
+  const sha = out.stdout.trim();
+  if (out.code !== 0 || !SWEPT_AT_RE.test(sha)) {
+    throw new SweepLedgerError(
+      `git merge-base origin/main HEAD failed: ${
+        out.stderr.trim() || sha || `exit ${out.code}`
+      }`,
+    );
+  }
+  return sha;
+}
+
+/** Ledger file that holds `chunk`, preferring its top-up file when one exists. */
+export async function sweepSliceFile(
+  repoRoot: string,
+  chunk: string,
+): Promise<string> {
+  const topUp = `${LIB_SWEEP_TOP_UP_DIR}/${chunk}.json`;
+  try {
+    const stat = await Deno.lstat(`${repoRoot}/${topUp}`);
+    if (stat.isSymlink) {
+      throw new SweepLedgerError(`${topUp} must not be a symlink`);
+    }
+    if (stat.isFile) return topUp;
+  } catch (error) {
+    if (error instanceof SweepLedgerError) throw error;
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return LIB_SWEEP_LEDGER_PATH;
+}
+
+function sliceObjectBounds(
+  json: string,
+  chunk: string,
+): { start: number; end: number } {
+  const marker = `"chunk": ${JSON.stringify(chunk)}`;
+  const at = json.indexOf(marker);
+  if (at < 0) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: slice ${chunk} is not in the ledger text`,
+    );
+  }
+  const start = json.lastIndexOf("{", at);
+  if (start < 0) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: slice ${chunk} has no object start`,
+    );
+  }
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < json.length; i++) {
+    const ch = json[i]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) return { start, end: i + 1 };
+    }
+  }
+  throw new SweepLedgerError(
+    `${LIB_SWEEP_LEDGER_PATH}: slice ${chunk} object does not close`,
+  );
+}
+
+/**
+ * Replace fields on one slice object inside ledger JSON, leaving every other
+ * byte of the file as it was.
+ */
+export function patchLedgerSlice(
+  json: string,
+  chunk: string,
+  patch: {
+    status?: SweepSliceStatus;
+    paths?: readonly string[];
+    sweptAt?: string;
+  },
+): string {
+  const { start, end } = sliceObjectBounds(json, chunk);
+  const obj = JSON.parse(json.slice(start, end)) as Record<string, unknown>;
+  if (patch.status !== undefined) obj.status = patch.status;
+  if (patch.paths !== undefined) obj.paths = [...patch.paths];
+  if (patch.sweptAt !== undefined) obj.sweptAt = patch.sweptAt;
+  const lineStart = json.lastIndexOf("\n", start) + 1;
+  const baseIndent = json.slice(lineStart, start);
+  const indented = JSON.stringify(obj, null, 2).split("\n").map((
+    line,
+    index,
+  ) => index === 0 ? line : baseIndent + line).join("\n");
+  return json.slice(0, start) + indented + json.slice(end);
+}
+
+function assertPathsInRoots(
+  paths: readonly string[],
+  roots: readonly string[],
+): void {
+  for (const path of paths) {
+    if (
+      path.startsWith("/") ||
+      path.split("/").some((part) =>
+        part === ".." || part === "." || part === ""
+      ) ||
+      !roots.some((root) => path === root || path.startsWith(`${root}/`))
+    ) {
+      throw new SweepLedgerError(
+        `sweep path is outside the ledger roots: ${path}`,
+      );
+    }
+  }
+  if (new Set(paths).size !== paths.length) {
+    throw new SweepLedgerError("sweep paths must be unique");
+  }
+}
+
+async function writeLedgerText(
+  repoRoot: string,
+  relative: string,
+  content: string,
+): Promise<void> {
+  const target = await confinePath(repoRoot, relative, {
+    realPath: Deno.realPath,
+  });
+  if (target === null) {
+    throw new SweepLedgerError("sweep ledger output escapes the repository");
+  }
+  await Deno.mkdir(target.slice(0, target.lastIndexOf("/")), {
+    recursive: true,
+  });
+  const written = await atomicWrite({ targetFile: target, content });
+  if (!written.ok) throw written.error;
+}
+
+/** Fields a caller may supply. `sweptAt` is never one of them (Issue #4235). */
+export interface LibSweepRecordRequest {
+  slice: string;
+  status: SweepSliceStatus;
+  paths: readonly string[];
+  issue?: number;
+  title?: string;
+  ledger?: string;
+  definition?: string;
+}
+
+/**
+ * Write or update one ledger slice, setting `sweptAt` to
+ * `git merge-base origin/main HEAD`. Never a branch commit.
+ */
+export async function recordLibSweepSlice(
+  repoRoot: string,
+  request: LibSweepRecordRequest,
+  runGit: SweepGitRunner,
+): Promise<Result<SweepSlice>> {
+  try {
+    if (request.slice.trim() === "") {
+      throw new SweepLedgerError("lib-sweep-record requires --slice");
+    }
+    if (request.status !== "swept" && request.status !== "claimed") {
+      throw new SweepLedgerError(
+        'lib-sweep-record status must be "swept" or "claimed"',
+      );
+    }
+    if (request.paths.length === 0) {
+      throw new SweepLedgerError("lib-sweep-record requires at least one path");
+    }
+    const mergeBase = await originMainMergeBase(runGit);
+    const ledger = await readCoverageLedger(repoRoot);
+    assertPathsInRoots(request.paths, ledger.roots);
+    const existing = ledger.slices.find((slice) =>
+      slice.chunk === request.slice
+    );
+    if (existing) {
+      const relative = await sweepSliceFile(repoRoot, existing.chunk);
+      const candidate = parseSlice({
+        ...existing,
+        status: request.status,
+        paths: [...request.paths],
+        sweptAt: mergeBase,
+      }, 0);
+      const text = await Deno.readTextFile(`${repoRoot}/${relative}`);
+      await writeLedgerText(
+        repoRoot,
+        relative,
+        patchLedgerSlice(text, existing.chunk, {
+          status: candidate.status,
+          paths: candidate.paths,
+          sweptAt: candidate.sweptAt,
+        }),
+      );
+      await verifySweptAtsOnDefaultBranch(
+        { ...ledger, slices: [candidate] },
+        "origin/main",
+        runGit,
+      );
+      return { ok: true, value: candidate };
+    }
+    if (
+      request.issue === undefined || !request.title || !request.ledger ||
+      !request.definition
+    ) {
+      throw new SweepLedgerError(
+        `slice ${request.slice} is not in the ledger; creating it requires --issue, --title, --ledger and --definition`,
+      );
+    }
+    if (ledger.slices.some((slice) => slice.issue === request.issue)) {
+      throw new SweepLedgerError(
+        `issue ${request.issue} already owns a slice`,
+      );
+    }
+    const candidate = parseSlice({
+      issue: request.issue,
+      chunk: request.slice,
+      title: request.title,
+      ledger: request.ledger,
+      definition: request.definition,
+      status: request.status,
+      paths: [...request.paths],
+      sweptAt: mergeBase,
+    }, 0);
+    let relative: string;
+    let content: string;
+    if (candidate.issue > LEDGER_FILE_LAST_TOP_UP_ISSUE) {
+      if (candidate.chunk !== topUpChunkId(candidate.issue)) {
+        throw new SweepLedgerError(
+          `new top-up slice must use chunk ${topUpChunkId(candidate.issue)}`,
+        );
+      }
+      relative = `${LIB_SWEEP_TOP_UP_DIR}/${candidate.chunk}.json`;
+      content = JSON.stringify(candidate, null, 2) + "\n";
+    } else {
+      relative = LIB_SWEEP_LEDGER_PATH;
+      content = appendLedgerSlice(
+        await Deno.readTextFile(`${repoRoot}/${relative}`),
+        candidate,
+      );
+    }
+    await writeLedgerText(repoRoot, relative, content);
+    await verifySweptAtsOnDefaultBranch(
+      { ...ledger, slices: [candidate] },
+      "origin/main",
+      runGit,
+    );
+    return { ok: true, value: candidate };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof SweepLedgerError ? error : new SweepLedgerError(
+        error instanceof Error ? error.message : String(error),
+      ),
+    };
+  }
+}
+
+function appendLedgerSlice(json: string, slice: SweepSlice): string {
+  const slicesKey = json.indexOf('"slices"');
+  if (slicesKey < 0) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: ledger has no slices array`,
+    );
+  }
+  const open = json.indexOf("[", slicesKey);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let close = -1;
+  for (let i = open; i < json.length; i++) {
+    const ch = json[i]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "[") depth++;
+    else if (ch === "]") {
+      depth--;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close < 0) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: slices array does not close`,
+    );
+  }
+  const lines = JSON.stringify(slice, null, 2).split("\n").map((line) =>
+    `    ${line}`
+  );
+  const prefix = json.slice(0, close).trimEnd();
+  const comma = prefix.endsWith("[") ? "" : ",";
+  return `${prefix}${comma}\n${lines.join("\n")}\n  ${json.slice(close)}`;
+}
+
+/**
  * Create a top-up through the supported producer, owning its chunk and sweptAt.
  * Fetch the actual default branch before deriving the list-generation horizon.
  * Repeated generation preserves that horizon; only claimed → swept may change.

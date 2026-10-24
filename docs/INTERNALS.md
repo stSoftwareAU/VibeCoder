@@ -124,8 +124,10 @@ Before each gate attempt in an issue run, the quality-gate phase runs the
 repository's own formatters over the branch's changed code files and commits
 the result (`formatBeforeGate` in `worker/deno/lib/repo_formatters.ts`), so a
 formatting-only failure does not spend the agent's one remediation round. It
-never touches Markdown, and a formatter that fails is only logged: the gate
-still runs and reports. The completion phase does the same before its pre-push
+leaves agent-authored Markdown unformatted. The worker's own Markdown and JSON
+under `docs/archive/pr-summaries/` and `docs/archive/handover/` are formatted
+afterwards, and a formatter that fails is only logged: the gate still runs and
+reports. The completion phase does the same before its pre-push
 gate; see "Agent pre-push hook and the changed-files check" in
 [CONFIGURATION.md](CONFIGURATION.md).
 

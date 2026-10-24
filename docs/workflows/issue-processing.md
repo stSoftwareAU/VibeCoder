@@ -2458,23 +2458,30 @@ declaration. These extra sections can be in untouched manuals, but never
 under `docs/archive/`. A named parent heading includes its subsections; a
 source-reference match ends at the next heading. The model asks whether
 **this change** makes the sentence false, not whether it was always right.
-Sentences the head still agrees with are not findings.
+Sentences the head still agrees with are not findings, except a parity
+sentence ("as before", "exactly as X", "the same as", "unchanged", "no
+behaviour change"), which is also checked against the base side or the other
+path it names.
 
 The combined prose scope is capped at 20 files and the extra manual scope at
 40 sections. The prompt lists selected paths and line ranges inside its
 untrusted-data boundary. Files/sections past a cap, unreadable tracked files,
 unavailable diffs and unterminated source literals/comments are recorded as
-not checked, never passed. Both checks log these at warning level; the
-first-run check aggregates only cap overflow into one warning per claim check
-(the count and the first few names), not one line per range; every other
-not-checked reason is logged as its own warning. A deleted file has no
+not checked, never passed. Both checks log these at warning level. Both
+aggregate cap overflow into one warning per check (the count and the first
+few names), not one line per range; every other not-checked reason is logged
+as its own warning. A deleted file has no
 prose to check. If the changed-file list itself is unavailable, the summary is
 still questioned and its prose extension is recorded as not checked.
 
 `docProseClaimInstruction` retains the trigger classes: when behaviour
-happens, what it refuses, rejects, allows or skips, absolute words, and counted
-or closed lists. A reported contradiction quotes the sentence verbatim and
-names the contradicting head `file:line`. Confirmed findings go through the
+happens, what it refuses, rejects, allows or skips, absolute words, counted
+or closed lists, and a parity sentence ("as before", "exactly as X did",
+"the same as", "unchanged", "no behaviour change"). A parity sentence is a
+claim about both sides: the model opens the base with `git show <base>:<path>`,
+or the other path at the head, and names both `file:line`s. A reported
+contradiction quotes the sentence verbatim and names the contradicting head
+`file:line`. Confirmed findings go through the
 existing summary-rule recovery path. First-run `docFindings` carry the
 manual/comment findings separately from summary findings. Markdown findings
 can use the sentence correction below; source comments stay on the ordinary
