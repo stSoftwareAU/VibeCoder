@@ -13,11 +13,11 @@ unchanged behaviour for `id=secret` and `secret=…` are all kept. Closes #4103.
   (line 495) replaces both `\b` anchors with fixed-width lookarounds; the doc
   comment above the rule (lines 447-491) records the Issue #4103 change and the
   reason for the `_` and hex-guard shape.
-- `worker/deno/tests/secret_redaction_test.ts`: eight new tests (lines 209, 220,
-  230, 240, 250, 275, 286, 307) for a leading `/` after a comma, a trailing `+`
+- `worker/deno/tests/secret_redaction_test.ts`: nine new tests (lines 209, 220,
+  230, 240, 250, 275, 286, 310, 331) for a leading `/` after a comma, a trailing `+`
   at end of text, a trailing `/` before a comma, a leading `+` after a colon, an
   AWS-alphabet run glued to the secret, an equals separator after the key ID,
-  punctuation-only lines after the key ID, and a git SHA with a run character
+  a line starting with `=` that holds alphanumerics, punctuation-only lines after the key ID, and a git SHA with a run character
   after it.
 - `worker/deno/tests/secret_redaction_redos_test.ts`: one new test (line 141)
   that feeds a hostile run of comma-separated slash pads and asserts the rule
@@ -66,7 +66,7 @@ window is bounded, so the regex stays linear (the Issue #3942 rule).
   facts are updated too; no `VERSION` or manifest change.
 - Test run (stdin from `/dev/null`):
   `deno test -A tests/secret_redaction_test.ts tests/secret_redaction_redos_test.ts tests/secret_redaction_bounds_test.ts tests/secret_redaction_markdown_1727_test.ts tests/secret_redaction_boolean_setting_test.ts`
-  gave `119 passed | 0 failed`, exit 0 on the corrected head.
+  gave `120 passed | 0 failed`, exit 0 on the head after the PR #4184 review fix.
 - Red-checks, recorded in `pr-summary-4103.facts.json`: dropping the leading
   lookbehind turned red "masks the AWS secret beside its access key id", "a
   temporary (ASIA) key's secret is masked too" and the four #4103 leading and
@@ -77,9 +77,13 @@ window is bounded, so the regex stays linear (the Issue #3942 rule).
   the glued-run test and "a word glued to the secret with no backslash is not
   masked (Issue #3857)"; removing `_` or `/` from the trailing class turned the
   glued-run test red; the trailing-`+`-at-end-of-text test turned red when the
-  base `\b` rule was used. The new equals-separator test was run before adding
-  `(?!=)` and failed because a 40-character separator was redacted; the same
-  test passes with the guard, covering 40, 70 and 120 characters. The
+  base `\b` rule was used. The test "a line starting with equals after an AWS key stays
+  intact" (lines of `=` plus 39 alphanumerics, and 20 `=` plus 20 letters, each
+  passing the punctuation-only guard) failed with only `(?!=)` deleted and
+  `(?![/+=]{40})` kept, and passes with it; its positive control (`==` then a
+  real secret) is still masked. The all-`=` separator test no longer reaches
+  `(?!=)`, because the punctuation-only guard rejects those lines first; it
+  stays green with `(?!=)` deleted and is kept as a separator regression. The
   punctuation-only test (`+` then 40 `=`, `//` then 40 `=`, exactly 40 `/`,
   exactly 40 `+`) failed with `(?![/+=]{40})` removed (a candidate was redacted)
   and passes with it; it also holds a positive control, a 40-character candidate

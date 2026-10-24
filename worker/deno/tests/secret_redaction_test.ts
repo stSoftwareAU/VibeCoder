@@ -283,6 +283,30 @@ Deno.test("redactSecrets - equals separators after an AWS key stay intact (Issue
   }
 });
 
+Deno.test("redactSecrets - a line starting with equals after an AWS key stays intact (Issue #4103)", () => {
+  // Each line holds an alphanumeric, so the punctuation-only guard accepts it
+  // and only the leading `(?!=)` guard rejects it.
+  const id = "AKIAIOSFODNN7EXAMPLE";
+  for (
+    const line of [
+      `=${"a1B2".repeat(9)}c3D`,
+      `${"=".repeat(20)}${"a".repeat(20)}`,
+    ]
+  ) {
+    assertEquals(line.length, 40);
+    assertEquals(
+      redactSecrets(`${id}\n${line}`),
+      `${REDACTION_PLACEHOLDER}\n${line}`,
+    );
+  }
+  // Positive control: `==` followed by a real secret is still masked.
+  const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  assertEquals(
+    redactSecrets(`${id}==${secret}`),
+    `${REDACTION_PLACEHOLDER}==${REDACTION_PLACEHOLDER}`,
+  );
+});
+
 Deno.test("redactSecrets - punctuation-only lines after an AWS key stay intact (Issue #4103)", () => {
   const id = "AKIAIOSFODNN7EXAMPLE";
   const lines = [
