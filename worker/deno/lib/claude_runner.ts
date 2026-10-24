@@ -173,6 +173,12 @@ import {
   configuredProviderFallbackPolicy,
   providerAfterModelRefusal,
 } from "./provider_fallback_policy.ts";
+import {
+  finishDeadlinePromptLine,
+  MIN_AGENT_SESSION_SECONDS,
+  planAgentSessionBudget,
+} from "./agent_session_deadline.ts";
+import { getRunTimeline } from "./run_timeline.ts";
 
 // Re-export for convenience
 export {
@@ -330,6 +336,14 @@ export interface ClaudeRunResult {
    *   tool calls a minute with no working-tree change (Issue #2230).
    */
   timeoutReason?: "hard-timeout" | "no-output" | "call-storm";
+  /**
+   * The run's finish deadline cut this session short (Issue #4244). True when
+   * the session was not started because too little time was left before the
+   * finish (`timedOut` is false: nothing ran), or when its watchdog stopped it
+   * at a timeout clamped to that deadline. Absent when the session used up its
+   * own requested timeout, so the two can be told apart.
+   */
+  finishDeadline?: boolean;
   /**
    * The run was stopped on schedule, not because it failed (Issue #424,
    * parent #397).
@@ -1156,9 +1170,9 @@ async function runClaudeWithTimeoutBody(
   options: RunClaudeOptions,
 ): Promise<Result<ClaudeExecutionResult>> {
   const {
-    prompt,
+    prompt: requestedPrompt,
     systemPrompt,
-    timeoutSeconds = DEFAULT_CLAUDE_TIMEOUT_SECONDS,
+    timeoutSeconds: requestedTimeoutSeconds = DEFAULT_CLAUDE_TIMEOUT_SECONDS,
     killAfterSeconds = DEFAULT_CLAUDE_KILL_AFTER_SECONDS,
     noOutputTimeout = 0,
     model,
@@ -1173,6 +1187,46 @@ async function runClaudeWithTimeoutBody(
     // deadline, watchdog and snapshot below behaves exactly as before.
     clock = systemClock,
   } = options;
+
+  // The run's finish deadline (Issue #4244). No timeline means no clamp at
+  // all: the requested timeout, prompt and extension pass through unchanged.
+  // Otherwise the session is refused before anything is spawned when too
+  // little time is left, and a session that may run is clamped so it cannot
+  // outlive the finish (less the kill grace and the WIP checkpoint reserve),
+  // and told the deadline on the last line of its user prompt. The system
+  // prompt is never touched: the prompt cache keys on its bytes.
+  const timeline = getRunTimeline();
+  const budget = timeline
+    ? planAgentSessionBudget({
+      timeline,
+      nowMs: clock.now(),
+      requestedSeconds: requestedTimeoutSeconds,
+      killAfterSeconds,
+    })
+    : undefined;
+  if (budget?.kind === "refuse") {
+    const message =
+      `Refused to start the agent: only ${budget.availableSeconds}s ` +
+      `left before the run's finish deadline ${budget.finishIso} ` +
+      `(floor ${MIN_AGENT_SESSION_SECONDS}s)`;
+    logger?.warn(message);
+    return {
+      ok: true,
+      value: {
+        exitCode: TIMEOUT_EXIT_CODE,
+        output: "",
+        stderr: message,
+        timedOut: false,
+        finishDeadline: true,
+      },
+    };
+  }
+  const timeoutSeconds = budget?.kind === "run"
+    ? budget.timeoutSeconds
+    : requestedTimeoutSeconds;
+  const prompt = budget?.kind === "run"
+    ? requestedPrompt + finishDeadlinePromptLine(budget)
+    : requestedPrompt;
 
   // The provider seam (Issue #4067) owns the binary, the argument list and
   // the child environment, so a second provider is a new descriptor rather
@@ -1426,6 +1480,12 @@ async function runClaudeWithTimeoutBody(
           ? ` claude_timeout=${timeoutSeconds} claude_max_turns=${
             args[args.indexOf("--max-turns") + 1]
           }`
+          : budget?.kind === "run" && budget.clamped
+          ? ` claude_timeout=${timeoutSeconds}`
+          : "") +
+        // Issue #4244: say the timeout was cut short by the finish deadline.
+        (budget?.kind === "run" && budget.clamped
+          ? ` (clamped to finish deadline ${budget.finishIso})`
           : "") +
         (noOutputMs > 0 ? `, no-output watchdog ${noOutputTimeout}s` : "") +
         "...",
@@ -1676,7 +1736,19 @@ async function runClaudeWithTimeoutBody(
     let deadlineMs = startMs + timeoutMs;
     let extensionsGranted = 0;
     let extensionInFlight = false;
-    const extension = options.progressExtension;
+    // Issue #4244: a session clamped to the finish deadline must not be
+    // extended past it, so the ceiling is the nearer of the caller's own and
+    // the finish. A refusal at this ceiling reads as a "hard-cap" scheduled
+    // release, the same release the supervisor's cap produces.
+    const extension = options.progressExtension && budget?.kind === "run"
+      ? {
+        ...options.progressExtension,
+        ceilingMs: Math.min(
+          options.progressExtension.ceilingMs ?? Infinity,
+          budget.limitMs,
+        ),
+      }
+      : options.progressExtension;
     // The most recent interim working-tree sample (Issue #4295), carried
     // into the next deadline decision so a check landing moments before the
     // deadline cannot shrink the observed window to nothing.
@@ -2648,6 +2720,12 @@ async function runClaudeWithTimeoutBody(
         stderr,
         timedOut,
         timeoutReason,
+        // Issue #4244: the watchdog stopped a session clamped to the finish
+        // deadline, so this is not the session's own requested timeout.
+        ...(budget?.kind === "run" && budget.clamped && timedOut &&
+            timeoutReason === "hard-timeout"
+          ? { finishDeadline: true }
+          : {}),
         ...(scheduledRelease ? { scheduledRelease } : {}),
         ...(terminated ? { terminated: true } : {}),
         ...(externalSigterm ? { externalSigterm: true } : {}),
@@ -3112,6 +3190,27 @@ async function runRetryLadder(
       );
       return { ok: true, value: withPreflight(result.value) };
     }
+    if (result.value.finishDeadline && !result.value.timedOut) {
+      // Issue #4244: the run's finish deadline left too little time, so no
+      // agent was spawned. Nothing failed and nothing could finish in the time
+      // left, so it does not enter the rate-limit, retry or fallback paths.
+      currentOptions.logger?.warn(
+        "Agent not started: the run's finish deadline leaves too little " +
+          "time — no retry, no wait.",
+      );
+      return {
+        ok: true,
+        value: withPreflight({
+          exitCode: result.value.exitCode,
+          output: result.value.output,
+          stderr: result.value.stderr,
+          timedOut: false,
+          finishDeadline: true,
+          fallbackModel,
+          runStats: result.value.runStats,
+        }),
+      };
+    }
     if (result.value.externalSigterm) {
       // Issue #46: a SIGTERM the worker never requested — an external kill.
       // Surface it like the SIGKILL path (stderr tail, elapsed, kill
@@ -3243,6 +3342,8 @@ async function runRetryLadder(
           ...(result.value.scheduledRelease
             ? { scheduledRelease: result.value.scheduledRelease }
             : {}),
+          // A watchdog stop at the finish-deadline clamp (Issue #4244).
+          ...(result.value.finishDeadline ? { finishDeadline: true } : {}),
           // Carry the #4254 evidence: a late-firing watchdog and an
           // abandoned post-kill wait must survive into the diagnostics.
           ...(result.value.watchdogLateSeconds !== undefined

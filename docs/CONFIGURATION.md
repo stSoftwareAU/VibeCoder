@@ -1888,7 +1888,7 @@ unless explicitly overridden.
 | Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
 | Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway **to the supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`) a new implementation claim must have; `0` disables the floor. A claim taken below it would be killed by the supervisor before it could finish setup. Measured against the hard cap, not the cycle deadline: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken, so cycle runway no longer says anything about whether a claim can fit — see [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). On a run with no hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
-| Run finish deadline | `run_finish_seconds` | `7200` | Seconds from run start of the finish deadline (2 h by default; the run target is 1 h and the launcher watchdog's hard kill, about 3 h, logged at run start as `Run timeline:`). Must exceed the 3600 s target; the worker clamps a finish at or past the hard kill minus the kill grace and WIP-checkpoint reserve (with a warning). Validated at load and logged at run start; not yet applied to any claim or agent deadline. |
+| Run finish deadline | `run_finish_seconds` | `7200` | Seconds from run start of the finish deadline (2 h by default; the run target is 1 h and the launcher watchdog's hard kill, about 3 h, logged at run start as `Run timeline:`). Must exceed the 3600 s target; the worker clamps a finish at or past the hard kill minus the kill grace and WIP-checkpoint reserve (with a warning). Validated at load and logged at run start. Each agent session's timeout is clamped so the session ends before the finish less the kill grace and WIP-checkpoint reserve; a session with under 120 s left before that is not started. Not applied to claim deadlines. |
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
 | Fast-failure threshold (seconds) | `fast_failure_seconds` | `60` | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure or a setup fault (Issue #2954) counts however long it took. |
 | Fast failures before back-off | `repo_fast_failure_threshold` | `3` | Fast failures in one repository inside the window before that repository stops being claimed and one diagnostic issue is filed. |
@@ -2656,9 +2656,17 @@ hard-kill deadline, falling back to the `VIBE_RUN_MAX_SECONDS` /
 pair, and only when that pair is also unusable does the run-start `Run timeline:`
 log line say `hard-kill=none (<reason>)`. The same line gives the run's target
 (1 h, `runDurationSeconds`) and finish (2 h, `run_finish_seconds`) as instants.
-The finish and the hard kill are logged and published through
-`lib/run_timeline.ts`, but no claim or agent deadline reads them yet: the cycle
-deadline and the run hard cap above still govern.
+The finish is read by the agent sessions (`lib/agent_session_deadline.ts`).
+Each session's timeout is clamped so it ends before the finish, less the
+kill grace and the WIP-checkpoint reserve; a session with under 120 s left
+before that is not started, and its result is marked `finishDeadline`. A
+clamped session logs `claude_timeout=<s> (clamped to finish deadline <ISO>)`
+on its `claude_timeout=` line. The agent's user prompt ends with a worker line
+giving the finish deadline (ISO), the seconds remaining, and the instruction to
+commit and push before then. A progress-extension grant cannot carry a session
+past that clamp. The target is still read by nothing: no agent is asked to wrap
+up at it. Claim deadlines, the cycle deadline and the run hard cap above are
+unchanged.
 
 #### The agent is told to wind down before the cap (Issue #508)
 

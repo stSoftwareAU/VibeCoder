@@ -3,9 +3,11 @@
  * launcher's watchdog will kill it regardless (Issue #4242).
  *
  * The target is the run's one-hour mark and the finish its two-hour mark;
- * both are instants measured from the run's start, and nothing reads either
- * of them yet: no agent is asked to wrap up at the target, and the run's
- * claim deadline (`runDurationSeconds`) is separate. The hard kill is the
+ * both are instants measured from the run's start. The finish is read by
+ * `agent_session_deadline.ts`, which caps each agent session's timeout so the
+ * session ends before the finish. The target is read by nothing yet: no agent
+ * is asked to wrap up at the target, and the run's claim deadline
+ * (`runDurationSeconds`) is separate. The hard kill is the
  * epoch-ms at which the launcher's watchdog ends the run whatever the worker
  * is doing. The finish is held back so the WIP checkpoint (commit and push)
  * lands before that kill: if the configured finish would leave less than the

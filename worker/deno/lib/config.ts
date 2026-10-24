@@ -665,9 +665,10 @@ export async function loadConfig(
     readNonNegativeNumberEnv("MIN_CLAIM_RUNWAY_SECONDS", env) ??
     OPERATIONAL_DEFAULTS.minClaimRunwaySeconds;
   // Run finish deadline (Issue #4242): seconds from run start. Accepted,
-  // validated and logged at run start; not yet applied to any deadline. A
-  // finish at or before the one-hour run target leaves no time to finish, so
-  // it is refused loudly rather than logged as a live deadline.
+  // validated and logged at run start; it caps each agent session's timeout
+  // (`agent_session_deadline.ts`) but no claim deadline. A finish at or before
+  // the one-hour run target leaves no time to finish, so it is refused loudly
+  // rather than logged as a live deadline.
   const runFinishSeconds = file.run_finish_seconds ??
     OPERATIONAL_DEFAULTS.runFinishSeconds;
   if (!Number.isFinite(runFinishSeconds)) {

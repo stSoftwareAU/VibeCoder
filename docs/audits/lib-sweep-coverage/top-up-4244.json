@@ -1,0 +1,12 @@
+{
+  "issue": 4244,
+  "chunk": "top-up-4244",
+  "title": "top-up: agent session finish-deadline clamp",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4244",
+  "definition": "modules added to worker/deno/lib/ after the sweeps recorded their coverage: lib/agent_session_deadline.ts (#4244)",
+  "status": "claimed",
+  "sweptAt": "ffdc31c906ae2d3f9a0beedd0692dd843e306878",
+  "paths": [
+    "worker/deno/lib/agent_session_deadline.ts"
+  ]
+}

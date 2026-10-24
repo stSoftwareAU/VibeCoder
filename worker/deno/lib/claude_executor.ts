@@ -100,6 +100,14 @@ export interface ClaudeExecutionResult {
    */
   timeoutReason?: ClaudeTimeoutReason;
   /**
+   * The run's finish deadline cut this session short (Issue #4244). True when
+   * the session was not started because too little time was left before the
+   * finish (`timedOut` is false: nothing ran), or when its watchdog stopped it
+   * at a timeout clamped to that deadline. Absent when the session used up its
+   * own requested timeout, so the two can be told apart.
+   */
+  finishDeadline?: boolean;
+  /**
    * The run was stopped on schedule, not because it failed (Issue #424,
    * parent #397) — the supervisor's hard cap left no runway while the run
    * was still progressing. A hard-cap release fires the same watchdog and
