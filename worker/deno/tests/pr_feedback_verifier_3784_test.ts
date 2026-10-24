@@ -16,6 +16,9 @@ Deno.test("feedback verifier - full review and rebuttal reach the disposable ver
     const commentBody = "**`a.ts:1`**: problem\n\n**Fix:** every caller";
     let received: PrePrVerifierInput | undefined;
     const result = await verifyFeedbackFix({
+      branchName: "issue-42-fix-body",
+      workerName: "worker",
+      githubUser: "bot",
       repo: "a/b",
       prNumber: 42,
       repoPath: dir,
@@ -27,6 +30,7 @@ Deno.test("feedback verifier - full review and rebuttal reach the disposable ver
         Promise.resolve(
           JSON.stringify({
             baseRefName: "milestone/fix",
+            headRefName: "foreign-branch",
             title: "Review fix",
             body: "PR claims",
           }),
@@ -61,6 +65,9 @@ Deno.test("feedback verifier - full review and rebuttal reach the disposable ver
 Deno.test("feedback verifier - unavailable, malformed and blocking results fail closed", async () => {
   const dir = await Deno.makeTempDir();
   const input = {
+    branchName: "issue-42-fix-body",
+    workerName: "worker",
+    githubUser: "bot",
     repo: "a/b",
     prNumber: 42,
     repoPath: dir,
@@ -92,7 +99,7 @@ Deno.test("feedback verifier - unavailable, malformed and blocking results fail 
       const result = await verifyFeedbackFix(input, {
         runGh: () =>
           Promise.resolve(
-            '{"baseRefName":"main","title":"PR","body":"claims"}',
+            '{"baseRefName":"main","headRefName":"foreign-branch","title":"PR","body":"claims"}',
           ),
         ask: () => {
           throw new Error("unused");
@@ -121,5 +128,118 @@ Deno.test("feedback verifier - unavailable, malformed and blocking results fail 
     }
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+for (const owned of ["marker", "own-branch"] as const) {
+  Deno.test(`feedback verifier - ${owned} summary repair replaces stale live claims before publication`, async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${dir}/docs/archive/pr-summaries`, { recursive: true });
+      await Deno.writeTextFile(
+        `${dir}/docs/archive/pr-summaries/pr-summary-42.md`,
+        "## Summary\n\nCorrected claims from the current branch.\n",
+      );
+      let received: PrePrVerifierInput | undefined;
+      const input = {
+        repo: "a/b",
+        prNumber: 99,
+        repoPath: dir,
+        branchName: "issue-42-fix-body",
+        workerName: "worker",
+        githubUser: "bot",
+        commentBody: "Fix the outdated description",
+        timeoutSeconds: 12,
+        logger: makeRecordingLogger().logger,
+      };
+      const result = await verifyFeedbackFix(input, {
+        runGh: (args) => {
+          assertEquals(
+            args.slice(0, 2),
+            ["pr", "view"],
+            "verification must not edit GitHub",
+          );
+          return Promise.resolve(JSON.stringify({
+            baseRefName: "main",
+            headRefName: input.branchName,
+            title: "Review fix",
+            files: [],
+            body: "Stale live claims" +
+              (owned === "marker" ? "\n<!-- vibe-worker-issue-42 -->" : ""),
+          }));
+        },
+        ask: () => {
+          throw new Error("injected verifier should own the run");
+        },
+        verify: (actual) => {
+          received = actual;
+          return Promise.resolve({
+            status: "checked",
+            review: parseReviewReply(
+              '{"summary":"clean","findings":[],"testChanges":"none"}',
+            ),
+          });
+        },
+      });
+      assert(result.ok);
+      assertStringIncludes(
+        received!.summaryContent,
+        "Corrected claims from the current branch.",
+      );
+      assertStringIncludes(
+        received!.issueBody,
+        "Corrected claims from the current branch.",
+      );
+      assertEquals(
+        received!.summaryContent.includes("Stale live claims"),
+        false,
+      );
+      assertEquals(received!.issueBody.includes("Stale live claims"), false);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}
+
+Deno.test("feedback verifier - candidate errors name the PR and branch and never run verification", async () => {
+  for (const throws of [false, true]) {
+    let verified = false;
+    const result = await verifyFeedbackFix({
+      repo: "a/b",
+      prNumber: 99,
+      repoPath: "/unused",
+      branchName: "issue-42-fix-body",
+      workerName: "worker",
+      githubUser: "bot",
+      commentBody: "fix",
+      timeoutSeconds: 12,
+      logger: makeRecordingLogger().logger,
+    }, {
+      runGh: () =>
+        Promise.resolve(
+          '{"baseRefName":"main","headRefName":"issue-42-fix-body","title":"PR","body":"stale"}',
+        ),
+      buildCandidate: () => {
+        if (throws) throw new Error("summary unreadable");
+        return Promise.resolve({
+          ok: false,
+          error: new Error("facts malformed"),
+        });
+      },
+      ask: () => {
+        throw new Error("must not ask");
+      },
+      verify: () => {
+        verified = true;
+        throw new Error("must not verify");
+      },
+    });
+    assertEquals(verified, false);
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "PR #99 on issue-42-fix-body");
+    assertStringIncludes(
+      result.error.message,
+      throws ? "summary unreadable" : "facts malformed",
+    );
   }
 });

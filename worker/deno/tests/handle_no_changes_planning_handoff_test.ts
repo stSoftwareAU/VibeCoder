@@ -12,7 +12,12 @@ import { assert, assertEquals } from "@std/assert";
 import { workOnIssueHandleNoChanges } from "../lib/phases/handle_no_changes_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
+import type {
+  IssueContext,
+  PhaseResult,
+  PhaseState,
+} from "../lib/issue_worker_types.ts";
+import { UNFINISHED_RETRY_HEADING } from "../lib/unfinished_issue_retry.ts";
 import type { GitHubClient, GitHubComment } from "../types.ts";
 import { buildPlanningHandoffMarker } from "../lib/planning_handoff.ts";
 import { findImageReferences } from "../lib/untrusted_image_signal.ts";
@@ -48,6 +53,27 @@ interface StubCalls {
 
 function makeCalls(): StubCalls {
   return { addLabel: [], postComment: [], unassignIssue: 0, closeIssue: 0 };
+}
+
+/**
+ * The approved-issue invariant (Issue #4227): a planning request the worker
+ * cannot honour is retried, never `needs-human`, with one not-finished
+ * comment — and `planning` is still not applied.
+ */
+function assertRetried(result: PhaseResult, calls: StubCalls): void {
+  assertEquals(result.status, "failure");
+  assertEquals((result as { category: string }).category, "no_changes");
+  assert(!calls.addLabel.includes("planning"));
+  assert(
+    !calls.addLabel.includes("needs-human"),
+    "an approved issue must never get needs-human",
+  );
+  assertEquals(
+    calls.postComment.filter((c) => c.startsWith(UNFINISHED_RETRY_HEADING))
+      .length,
+    1,
+    "exactly one not-finished comment",
+  );
 }
 
 function makeClient(
@@ -142,7 +168,7 @@ Deno.test("handle_no_changes_phase - an oversized issue is handed off to plannin
   assertEquals(calls.closeIssue, 0);
 });
 
-Deno.test("handle_no_changes_phase - a repeat planning request goes to a human", async () => {
+Deno.test("handle_no_changes_phase - a repeat planning request retries, never a human (#4227)", async () => {
   const calls = makeCalls();
   const priorComment = comment(
     1,
@@ -159,11 +185,7 @@ Deno.test("handle_no_changes_phase - a repeat planning request goes to a human",
     deps,
   );
 
-  assertEquals(result.status, "early_exit");
-  if (result.status !== "early_exit") return;
-  assertEquals(result.reason, "analysis_only_handed_off");
-  assert(!calls.addLabel.includes("planning"));
-  assert(calls.addLabel.includes("needs-human"));
+  assertRetried(result, calls);
 });
 
 Deno.test(
@@ -200,11 +222,7 @@ Deno.test(
       deps,
     );
 
-    assertEquals(result.status, "early_exit");
-    if (result.status !== "early_exit") return;
-    assertEquals(result.reason, "analysis_only_handed_off");
-    assert(!calls.addLabel.includes("planning"));
-    assert(calls.addLabel.includes("needs-human"));
+    assertRetried(result, calls);
   },
 );
 
@@ -233,11 +251,7 @@ Deno.test(
       deps,
     );
 
-    assertEquals(result.status, "early_exit");
-    if (result.status !== "early_exit") return;
-    assertEquals(result.reason, "analysis_only_handed_off");
-    assert(!calls.addLabel.includes("planning"));
-    assert(calls.addLabel.includes("needs-human"));
+    assertRetried(result, calls);
   },
 );
 
@@ -292,7 +306,7 @@ Deno.test("handle_no_changes_phase - a blocked run defers rather than planning",
   assert(!calls.addLabel.includes("planning"));
 });
 
-Deno.test("handle_no_changes_phase - an untrusted image withholds the planning hand-off", async () => {
+Deno.test("handle_no_changes_phase - an untrusted image withholds the planning hand-off and retries (#4227)", async () => {
   const calls = makeCalls();
   const deps = createMockDeps({
     github: { createClient: () => makeClient(calls) },
@@ -306,14 +320,10 @@ Deno.test("handle_no_changes_phase - an untrusted image withholds the planning h
     deps,
   );
 
-  assertEquals(result.status, "early_exit");
-  if (result.status !== "early_exit") return;
-  assertEquals(result.reason, "analysis_only_handed_off");
-  assert(!calls.addLabel.includes("planning"));
-  assert(calls.addLabel.includes("needs-human"));
+  assertRetried(result, calls);
 });
 
-Deno.test("handle_no_changes_phase - a non-work-on pickup tier is not handed to planning", async () => {
+Deno.test("handle_no_changes_phase - a non-work-on pickup tier is not handed to planning, and retries (#4227)", async () => {
   const calls = makeCalls();
   const deps = createMockDeps({
     github: { createClient: () => makeClient(calls) },
@@ -325,9 +335,5 @@ Deno.test("handle_no_changes_phase - a non-work-on pickup tier is not handed to 
     deps,
   );
 
-  assertEquals(result.status, "early_exit");
-  if (result.status !== "early_exit") return;
-  assertEquals(result.reason, "analysis_only_handed_off");
-  assert(!calls.addLabel.includes("planning"));
-  assert(calls.addLabel.includes("needs-human"));
+  assertRetried(result, calls);
 });
