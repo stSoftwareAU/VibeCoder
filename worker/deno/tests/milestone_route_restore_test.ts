@@ -173,7 +173,9 @@ Deno.test("a closed-route milestone with an open child gets a restored route and
   });
 
   assertEquals(result.result, AutoMergeResult.Enabled);
-  const created = calls.find((args) => args[0] === "pr" && args[1] === "create");
+  const created = calls.find((args) =>
+    args[0] === "pr" && args[1] === "create"
+  );
   assert(created, "a fresh rollup PR is opened from the milestone branch");
   assertEquals(created[created.indexOf("--head") + 1], BRANCH);
   assertEquals(created[created.indexOf("--base") + 1], DEFAULT);

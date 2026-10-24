@@ -1203,9 +1203,7 @@ async function mergedRollupChildRoute(
   if (!children.ok) {
     return { kind: "unreadable", detail: children.error.message };
   }
-  return children.value.length > 0
-    ? { kind: "open-work" }
-    : { kind: "closed" };
+  return children.value.length > 0 ? { kind: "open-work" } : { kind: "closed" };
 }
 
 /** An open pull request from the milestone branch to a non-milestone base. */
