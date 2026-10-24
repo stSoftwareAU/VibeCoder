@@ -106,8 +106,12 @@ Deno.test("#4120 - a dynamic fixture checkout publishes version, commit and mode
     assertEquals(document.updateMode, "dynamic");
     assert(!("pinnedRef" in document));
 
-    const env = buildCallbackEnv(built, "success", "/tmp/context.json", () =>
-      undefined);
+    const env = buildCallbackEnv(
+      built,
+      "success",
+      "/tmp/context.json",
+      () => undefined,
+    );
     assertEquals(env.VIBECODER_WORKER_VERSION, "1.10.124");
     assertEquals(env.VIBECODER_WORKER_COMMIT, sha);
     assertEquals(env.VIBECODER_UPDATE_MODE, "dynamic");
