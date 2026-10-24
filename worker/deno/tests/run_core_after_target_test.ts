@@ -446,18 +446,39 @@ Deno.test(
   },
 );
 
-Deno.test(
-  "run_core after target - the idle-task filer neither fires nor claims an idle-task issue past the target (Issue #4243)",
-  async () => {
-    const clock: Clock = { now: START_MS };
-    let filerCalls = 0;
-    let claimCalls = 0;
-    await runLoop(clock, {
-      ...crossTargetBeforeLadder(clock),
-      // Nothing claimable, so the cycle reaches the idle hooks. A claim is
-      // counted whatever its labels: `DiscoveredIssue` carries none, so no
-      // narrower idle-task match is possible here.
-      findNextIssue: () => Promise.resolve({ ok: true, value: null }),
+/**
+ * Run a case where the scan finds nothing, so the idle hooks are reached,
+ * with the clock past the target. `crossing` picks where the target passes:
+ * before the ladder (the outer-cycle path) or while the scan looks for work
+ * and finds none (the slot path, which only a pool reaches).
+ *
+ * @param maxConcurrentIssues - 1 for the serial scan, 2 for the pool.
+ * @param crossing - Where the clock passes the target.
+ * @returns The filer and claim counts, and the refusal lines logged.
+ */
+async function runIdleFilerPastTarget(
+  maxConcurrentIssues: number,
+  crossing: "before-ladder" | "during-scan",
+): Promise<{ filerCalls: number; claimCalls: number; refusals: number }> {
+  const clock: Clock = { now: START_MS };
+  let filerCalls = 0;
+  let claimCalls = 0;
+  let crossed = false;
+  const crossingOverride: Partial<RunCoreDeps> = crossing === "before-ladder"
+    ? crossTargetBeforeLadder(clock)
+    : {
+      findNextIssue: () => {
+        if (!crossed) {
+          crossed = true;
+          clock.now = PAST_TARGET_MS;
+        }
+        return Promise.resolve({ ok: true, value: null });
+      },
+    };
+  const { logs } = await runLoop(
+    clock,
+    {
+      ...crossingOverride,
       processIssue: () => {
         claimCalls++;
         return Promise.resolve({ ok: true, value: { success: true } });
@@ -466,9 +487,41 @@ Deno.test(
         filerCalls++;
         return Promise.resolve();
       },
-    });
+    },
+    maxConcurrentIssues,
+  );
+  const refusals =
+    logs.filter((line) => line.includes("reason=past_run_target")).length;
+  return { filerCalls, claimCalls, refusals };
+}
+
+Deno.test(
+  "run_core after target - the idle-task filer neither fires nor claims past the target, outer-cycle path (Issue #4243)",
+  async () => {
+    const { filerCalls, claimCalls, refusals } = await runIdleFilerPastTarget(
+      1,
+      "before-ladder",
+    );
 
     assertEquals(claimCalls, 0);
     assertEquals(filerCalls, 0);
+    // The refusal is logged once, so the gate was reached and not vacuous.
+    assertEquals(refusals, 1);
+  },
+);
+
+Deno.test(
+  "run_core after target - the idle-task filer neither fires nor claims past the target, slot path (Issue #4243)",
+  async () => {
+    const { filerCalls, claimCalls, refusals } = await runIdleFilerPastTarget(
+      2,
+      "during-scan",
+    );
+
+    assertEquals(claimCalls, 0);
+    assertEquals(filerCalls, 0);
+    // A slot that finds nothing after the target is refused, so the slot
+    // path's gate was reached and not vacuous.
+    assertEquals(refusals >= 1, true);
   },
 );

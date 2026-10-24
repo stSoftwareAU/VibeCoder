@@ -309,7 +309,10 @@ export type ConflictSkipReason =
   }
   /** Pass-level: nothing else was due. */
   | { kind: "queue-empty" }
-  /** Pass-level: too little of the cycle remained for another attempt. */
+  /**
+   * Pass-level: too little of the cycle remained, or the run's target had
+   * passed, for another attempt (Issue #4243).
+   */
   | { kind: "deadline"; remainingMs: number }
   /** Pass-level: the per-cycle cap was reached. */
   | { kind: "cap"; maxPerCycle: number };

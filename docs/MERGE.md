@@ -1018,7 +1018,9 @@ What each pass does with a `milestone/**` head:
   counts zero attempts. The drain carries on to the next conflicting PR — only
   a withdrawal made because the **run** was ending (`runEnded`) stops the pass,
   so one gated PR cannot starve the cycle. Every other push failure — a race, a
-  network fault — is charged exactly as before.
+  network fault — is charged exactly as before. The run-target start gate
+  (Issue #4243) is a separate check: it ends the pass before the next
+  resolution starts.
 
 A claim that the fix was pushed is now made against the remote in all three
 passes: the spelling pass adopted `verifyPushLanded()`
