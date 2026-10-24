@@ -521,8 +521,10 @@ Deno.test({
       async (stub) => {
         // 119 s left: refused. A retry would wait on the fake clock, which
         // only moves when advanced, so a retry would hang rather than pass.
+        const logs: string[] = [];
         const result = await runClaudeWithRetry(
           {
+            logger: captureLogger(logs),
             clock: fakeClock(FAKE_CLOCK_EPOCH_MS + 6931_000),
             prompt: PROMPT,
             agentBinaryPath: stub.path,
@@ -543,6 +545,10 @@ Deno.test({
           result.value.invocationsBilled,
           1,
           "exactly one attempt: the refused session is not retried",
+        );
+        assert(
+          logs.some((m) => m.includes("Agent not started")),
+          "the ladder must take the finish-deadline exit, not the failure path",
         );
         assertEquals(
           await exists(`${stub.dir}/${SPAWNED_MARKER}`),
