@@ -22,6 +22,10 @@ import { recordLifecyclePrFromGithub } from "./lifecycle_pr_observation.ts";
 import type { PrRollup } from "./check_runs_batch.ts";
 import { recordPrRejection } from "./fleet_telemetry.ts";
 import { PRE_PR_VERIFIER_HOLD_MARKER } from "./standing_violation_routing.ts";
+import {
+  commentCarriesOpenPreprReview,
+  preprReviewBlocksArm,
+} from "./prepr_review_record.ts";
 import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { ensureIssueClosedIfPrMerged } from "./issue_lifecycle.ts";
@@ -1190,7 +1194,16 @@ async function findActionableComment(
     const isVerifierHold = commentType === "issue" &&
       isFleetAuthor(comment.login, [...fleetAuthors]) &&
       comment.body.split(/\r?\n/, 1)[0] === PRE_PR_VERIFIER_HOLD_MARKER;
-    if (comment.login === githubUser && !isVerifierHold) continue;
+    // Issue #4236: the worker's own change-request record is the one other
+    // own-comment the scan answers. A later resolved marker on the thread
+    // means it has already been answered, so it is not actionable.
+    const isPreprReview = commentType === "issue" &&
+      isFleetAuthor(comment.login, [...fleetAuthors]) &&
+      commentCarriesOpenPreprReview(comment.body) &&
+      preprReviewBlocksArm(comments.map((entry) => entry.body));
+    if (comment.login === githubUser && !isVerifierHold && !isPreprReview) {
+      continue;
+    }
 
     const isAuthorised = isAuthorisedCommenter(comment.login);
     const isTrustedReviewBot = commentType === "review" &&
@@ -1204,6 +1217,7 @@ async function findActionableComment(
     let hasAuthorisedThumbsUp = false;
     if (
       !isAuthorised && !isTrustedReviewBot && !isVerifierHold &&
+      !isPreprReview &&
       (comment.thumbs_up ?? 0) > 0
     ) {
       const reactors = await fetchCommentThumbsUpReactors(
@@ -1219,7 +1233,7 @@ async function findActionableComment(
 
     if (
       isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot ||
-      isVerifierHold
+      isVerifierHold || isPreprReview
     ) {
       // The comment is actionable — unless the fleet has already processed
       // it. The `eyes` marker is the worker's own, so a count is not the
@@ -1261,7 +1275,9 @@ async function findActionableComment(
         });
       }
 
-      const trustReason = isVerifierHold
+      const trustReason = isPreprReview
+        ? "worker-prepr-review"
+        : isVerifierHold
         ? "worker-verifier-hold"
         : isAuthorised
         ? "authorised"
@@ -1281,7 +1297,7 @@ async function findActionableComment(
       return {
         repo,
         prNumber,
-        commentType: commentType as CommentType,
+        commentType: (isPreprReview ? "pr_review" : commentType) as CommentType,
         commentId: String(comment.id),
         encodedBody,
         commentAuthor: comment.login,
