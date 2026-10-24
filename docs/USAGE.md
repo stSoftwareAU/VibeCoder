@@ -306,6 +306,22 @@ An assigned issue is completed, never parked (Issue #4158). A failure is
 recorded on the issue and the worker tries again after a cooldown; it never
 applies `failed` and never hands the issue to a human.
 
+A second run blocked by a worker gate (`summary-incomplete`,
+`quality-failure`, `pre-push-gate`, `security-fix-gate`, or another category
+in the worker gate registry) is split into sub-issues instead of being
+retried as the same blocked issue (Issue #4130). Each sub-issue is
+`Part of #N`, quotes the gate output, and states what the branch already
+did. The parent is closed, and the blocked run's remote branch and pull
+request are removed. The worker does not mark that pull request ready or
+arm auto-merge while the gate is still failing. If planning publishes
+nothing, the repeat `failed-once` record stands and the log says why. A
+first blocked run still adds `failed-once`. A second run that is a timeout,
+a provider error, or a merge conflict keeps the repeat record. Split depth
+is a fleet-authored marker. Depth 0 and 1 split, and the children are one
+level deeper. Depth 2 is not split: the worker comments with the gate
+output, applies `failed`, and deletes the branch and pull request
+(Issue #4131). A depth marker written outside the fleet is ignored.
+
 ```mermaid
 flowchart TD
     A["🔨 Issue attempt"] -->|success| D["✅ Issue resolved"]
