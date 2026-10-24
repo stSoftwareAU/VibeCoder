@@ -894,7 +894,8 @@ the summary says who judged it:
   prints it, in backticks, with no prose rewording (no spaces for underscores,
   no shortened directory): the worker places the breach against the diff by
   that path, and one it cannot match to a changed file or a file at HEAD is
-  treated as on the branch's own lines and holds auto-merge (Issue #3613).
+  treated as on the branch's own lines and routed back to you for a fix
+  (Issue #3613).
   A breach in a line this diff adds or changes may not be deferred: "stands",
   "left for a follow-up" and "out of scope" are not reasons, and the gate
   blocks PR creation on any reason that neither records a fix nor links an
@@ -907,7 +908,7 @@ the summary says who judged it:
 - **Issues with no acceptance criteria are unaffected** — no reviewers, neither
   block. A `## Standards Review` the summary carries anyway is still read: each
   `violation` in it is held to the reason rules above, so an own-line breach
-  left standing blocks the PR and holds auto-merge (Issue #3761).
+  left standing blocks the PR (Issue #3761).
 
 A gate reads both blocks before the PR is raised and blocks PR creation when one
 of these rules is broken, commenting on the issue with every rule it found

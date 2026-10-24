@@ -122,7 +122,7 @@ async function fetchHeadRefName(
   return head;
 }
 
-/** Fleet logins whose pre-PR review markers count when this command arms. */
+/** Fleet logins the gated direct merge needs to tell a genuine review (Issue #1082). */
 function fleetAuthorsForArming(
   config: WorkerConfig,
   args: Record<string, unknown>,
@@ -274,7 +274,7 @@ export const prManagerCommand: Command = {
           // arming here would squash one.
           headRefName: await fetchHeadRefName(repo, prNumber),
           ghCommandFn: runGhCommand,
-          // Issue #4236: arming without the fleet set is refused.
+          // Issue #1082: tells a genuine review from a sibling's approval.
           fleetAuthors: fleetAuthorsForArming(config, args),
         });
         return {
@@ -306,7 +306,7 @@ export const prManagerCommand: Command = {
           skipAutoMerge,
           headRefName,
           ghCommandFn: runGhCommand,
-          // Issue #4236: arming without the fleet set is refused.
+          // Issue #1082: tells a genuine review from a sibling's approval.
           fleetAuthors: fleetAuthorsForArming(config, args),
         });
         // If not allowed, fall back to the *gated* direct merge.

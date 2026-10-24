@@ -1026,7 +1026,7 @@ Deno.test(
   },
 );
 
-Deno.test("review-fix verifier - persistent findings hold without push or dismissal after one recovery", async () => {
+Deno.test("review-fix verifier - persistent findings stay outstanding without push or dismissal, and the PR stays armed (Issue #4291)", async () => {
   const events: string[] = [];
   let checks = 0;
   const { result, captured } = await runScenario({
@@ -1053,13 +1053,15 @@ Deno.test("review-fix verifier - persistent findings hold without push or dismis
     events.filter((e) => e.startsWith("handlePrCommentFailure:")).length,
     1,
   );
+  // Issue #4291: the review stays outstanding and GitHub holds the merge on
+  // it; auto-merge stays armed and no label is added.
   assertEquals(
     captured.calls.some((args) => args.includes("--disable-auto")),
-    true,
+    false,
   );
   assertEquals(
     captured.calls.some((args) => args.includes("standing-violation")),
-    true,
+    false,
   );
 });
 
@@ -1163,7 +1165,14 @@ for (const unpushedState of [0, 2, "error", "throw"] as const) {
     if (unpushedState === 0) {
       assert(events.indexOf("sync-body") < events.indexOf(failures[0]!));
     }
-    assert(captured.calls.some((args) => args.includes("standing-violation")));
-    assert(captured.calls.some((args) => args.includes("--disable-auto")));
+    // Issue #4291: never a label or a disarm.
+    assertEquals(
+      captured.calls.some((args) => args.includes("standing-violation")),
+      false,
+    );
+    assertEquals(
+      captured.calls.some((args) => args.includes("--disable-auto")),
+      false,
+    );
   });
 }
