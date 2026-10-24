@@ -74,6 +74,11 @@ Deno.test("prManagerCommand - finalise-pr refuses an ungated direct merge onto t
     if (joined.includes("--jq .default_branch")) {
       return Promise.resolve(ok("main\n"));
     }
+    // Issue #4236: the arming path reads the pre-PR review record before
+    // it tries `--auto`. This pull request has no record.
+    if (joined.includes("/comments")) {
+      return Promise.resolve(ok("[]"));
+    }
     // The auto-merge attempt is refused the way an unprotected base refuses
     // it, which is what drives the command into the NotAllowed arm.
     if (argv[0] === "pr" && argv[1] === "merge" && argv.includes("--auto")) {
@@ -92,6 +97,9 @@ Deno.test("prManagerCommand - finalise-pr refuses an ungated direct merge onto t
         operation: "finalise-pr",
         repo: "owner/repo",
         "pr-number": 42,
+        // Issue #4236: arming without a fleet set is refused. This is the
+        // login whose markers count; the thread above has none.
+        "github-user": "testuser",
       },
       testConfig(),
     );

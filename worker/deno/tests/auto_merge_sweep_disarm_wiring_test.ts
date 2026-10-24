@@ -14,6 +14,7 @@ import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts"
 import { createLogger } from "../lib/logger.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { resetAnnouncedDraftsForTest } from "../lib/auto_merge_sweep.ts";
+import { renderPreprReviewRequest } from "../lib/prepr_review_record.ts";
 
 const REPO = "org/repo-a";
 const WORKER_USER = "worker-bot";
@@ -26,6 +27,7 @@ const PR_NUMBER = 42;
  */
 async function sweepOnePr(
   live: { armed: boolean; labels: string[]; behind: boolean },
+  comments = "[]",
 ): Promise<string[][]> {
   resetAnnouncedDraftsForTest();
   const calls: string[][] = [];
@@ -68,6 +70,12 @@ async function sweepOnePr(
           },
         },
       }));
+    }
+    if (
+      args[0] === "api" &&
+      args.some((arg) => typeof arg === "string" && arg.endsWith("/comments"))
+    ) {
+      return Promise.resolve(comments);
     }
     // Branch update, disarm and anything else: succeed with no output.
     return Promise.resolve("");
@@ -121,6 +129,23 @@ Deno.test("Issue #3517: production ensureAutoMerge disarms an armed standing-vio
     c[0] === "pr" && c[1] === "merge" && !c.includes("--disable-auto")
   );
   assertEquals(arms, [], "a standing-violation PR must never be armed");
+});
+
+Deno.test("Issue #4236: production ensureAutoMerge disarms an armed PR with an open pre-PR review record", async () => {
+  const body = renderPreprReviewRequest([{
+    file: "src/balance.ts",
+    line: 42,
+    problem: "rounding drops the final cent",
+  }]);
+  const calls = await sweepOnePr(
+    { armed: true, labels: [], behind: false },
+    JSON.stringify([{ author: WORKER_USER, body }]),
+  );
+  assertEquals(calls.filter(isDisarm).length, 1, JSON.stringify(calls));
+  const arms = calls.filter((c) =>
+    c[0] === "pr" && c[1] === "merge" && !c.includes("--disable-auto")
+  );
+  assertEquals(arms, [], "an open pre-PR review record must not be armed");
 });
 
 Deno.test("Issue #3517: production ensureAutoMerge does not disarm a PR without the label", async () => {

@@ -21,6 +21,7 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
  */
 
 import { browserGranted } from "./browser_grant.ts";
+import { resolveAlertDedupAuthors } from "./alert_dedup_authors.ts";
 import type {
   CiProviderConfig,
   CustomLabelPromptMapping,
@@ -151,6 +152,7 @@ import {
 } from "./security_fix_gate_feedback.ts";
 import { buildFetchArgs } from "./git_ref_args.ts";
 import { runGitCommandChecked } from "./git_timeout.ts";
+import { bindLogger, logAt, type LogLevelName } from "./log_sink.ts";
 
 // =============================================================================
 // Types
@@ -513,7 +515,13 @@ export interface ExecuteClaudePhaseDeps {
   ) => Promise<Result<string, Error>>;
   /** Finalise a PR (auto-merge, etc.). */
   finalisePr: (
-    options: { repo: string; prNumber: number; skipAutoMerge?: boolean },
+    options: {
+      repo: string;
+      prNumber: number;
+      skipAutoMerge?: boolean;
+      /** Fleet logins whose pre-PR review markers count (Issue #4236). */
+      fleetAuthors?: readonly string[];
+    },
   ) => Promise<Result<string, Error>>;
   /** Ensure an issue is closed when its PR is merged. */
   ensureIssueClosedIfPrMerged: (
@@ -548,8 +556,11 @@ export interface ExecuteClaudePhaseDeps {
    * omitted, and it spawns nothing while the host switch is off.
    */
   collectGraftContext?: GraftContextCollector;
-  /** Log a message. */
-  log: (message: string) => void;
+  /**
+   * Log a message at the given level. A missing level is info. The level is
+   * the logger's own word, not text inside the message (Issue #4176).
+   */
+  log: (message: string, level?: LogLevelName) => void;
 }
 
 /** Arguments for the context-budget hand-off (Issue #3713). */
@@ -855,9 +866,20 @@ export async function attemptPrSelfHealing(
           "(skip_auto_merge, Issue #1650)",
       );
     }
-    await deps.finalisePr({ repo, prNumber, skipAutoMerge }).catch(() => {
-      deps.log("SELF-HEALING: finalise PR failed (non-fatal)");
-    });
+    // Issue #4236: arming without a fleet set is refused. This host's login
+    // is the identity the self-heal path already holds; a sibling set is
+    // read from the configured fleet when that read succeeds.
+    const configuredFleet = await resolveAlertDedupAuthors(
+      {},
+      (message) => deps.log(message),
+    );
+    const fleetAuthors = configuredFleet.length > 0
+      ? configuredFleet
+      : (githubUser.trim() !== "" ? [githubUser] : []);
+    await deps.finalisePr({ repo, prNumber, skipAutoMerge, fleetAuthors })
+      .catch(() => {
+        deps.log("SELF-HEALING: finalise PR failed (non-fatal)");
+      });
 
     // Issue #174: this PR came from `findExistingPrForBranch`, so its head is
     // this run's branch by construction — naming it makes the provenance
@@ -941,6 +963,9 @@ function readCiProviders(
  * Default production dependencies.
  */
 export function createDefaultDeps(): ExecuteClaudePhaseDeps {
+  // One logger so a warn or error keeps the level the phase asked for
+  // (Issue #4176). The marker is the logger's own level word.
+  const phaseLog = bindLogger(createLogger({ host: "" }));
   return {
     escalateContextBudget: defaultEscalateContextBudget,
     runClaudeWithRetry,
@@ -1005,7 +1030,9 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
       value: undefined,
     }),
     getPromptsCommit: async () => await getPromptsCommit(),
-    log: (message: string) => console.log(`[execute-claude-phase] ${message}`),
+    log: (message: string, level?: LogLevelName) => {
+      phaseLog(`[execute-claude-phase] ${message}`, level);
+    },
   };
 }
 
@@ -1239,8 +1266,10 @@ async function executeClaudePhaseBody(
         }... ${mapResult.value.cacheHit ? "(cached)" : "(generated)"}`,
       );
     } else {
-      deps.log(
-        `WARN: codebase map unavailable for ${repoDir} (non-fatal, Issue #4281): ${mapResult.error.message}`,
+      logAt(
+        deps.log,
+        "warn",
+        `codebase map unavailable for ${repoDir} (non-fatal, Issue #4281): ${mapResult.error.message}`,
       );
     }
   }
@@ -1495,10 +1524,10 @@ async function executeClaudePhaseBody(
     deps.log(formatBudgetBreakdown(budgetResult));
 
     if (budgetResult.warning) {
-      deps.log(`WARN: ${budgetResult.warning}`);
+      logAt(deps.log, "warn", `${budgetResult.warning}`);
     }
     if (budgetResult.error) {
-      deps.log(`ERROR: ${budgetResult.error}`);
+      logAt(deps.log, "error", `${budgetResult.error}`);
     }
 
     // Log budget entry for daily summary aggregation (fire-and-forget)
@@ -1548,8 +1577,10 @@ async function executeClaudePhaseBody(
   // rather than recorded as an unknown-but-fine revision.
   const promptsCommitResult = await deps.getPromptsCommit();
   if (!promptsCommitResult.ok) {
-    deps.log(
-      `WARNING: could not resolve the prompts commit — ${promptsCommitResult.error.message}`,
+    logAt(
+      deps.log,
+      "warn",
+      `could not resolve the prompts commit — ${promptsCommitResult.error.message}`,
     );
   } else {
     deps.log(`Using prompts from commit ${promptsCommitResult.value}`);
@@ -1602,13 +1633,15 @@ async function executeClaudePhaseBody(
     if (heartbeatStart.ok) {
       heartbeatHandle = heartbeatStart.value;
     } else {
-      deps.log(
-        `WARNING: Failed to start heartbeat (non-fatal): ${heartbeatStart.error.message}`,
+      logAt(
+        deps.log,
+        "warn",
+        `Failed to start heartbeat (non-fatal): ${heartbeatStart.error.message}`,
       );
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    deps.log(`WARNING: Failed to start heartbeat (non-fatal): ${msg}`);
+    logAt(deps.log, "warn", `Failed to start heartbeat (non-fatal): ${msg}`);
   }
 
   // --- Execute Claude ---
@@ -1713,7 +1746,7 @@ async function executeClaudePhaseBody(
     // Always stop heartbeat
     if (heartbeatHandle) {
       await stopHeartbeat(heartbeatHandle).catch(() => {
-        deps.log("WARNING: Failed to stop heartbeat (non-fatal)");
+        logAt(deps.log, "warn", "Failed to stop heartbeat (non-fatal)");
       });
     }
   }
@@ -2120,8 +2153,8 @@ function elapsedSince(startTime: number): number {
 function buildLoggerFromFn(logFn: (message: string) => void): Logger {
   return {
     info: (msg: string) => logFn(msg),
-    warn: (msg: string) => logFn(`WARN: ${msg}`),
-    error: (msg: string) => logFn(`ERROR: ${msg}`),
+    warn: (msg: string) => logAt(logFn, "warn", `${msg}`),
+    error: (msg: string) => logAt(logFn, "error", `${msg}`),
     debug: () => {},
     security: () => {},
     skipReason: () => {},

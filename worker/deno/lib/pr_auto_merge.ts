@@ -12,6 +12,11 @@ import type { Logger, Result } from "../types.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { directMergePr } from "./direct_merge.ts";
+import {
+  fetchIssueCommentBodies,
+  fleetMarkerBodies,
+  preprReviewBlocksArm,
+} from "./prepr_review_record.ts";
 import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { isMilestoneFixBranch } from "./milestone_branch_names.ts";
 import {
@@ -46,6 +51,7 @@ import {
 } from "./milestone_sync_pr_retirement.ts";
 import { scrubUntrustedText } from "./prompt_delimiter.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { logAt } from "./log_sink.ts";
 
 /** Auto-merge enablement result codes. */
 export enum AutoMergeResult {
@@ -309,8 +315,10 @@ async function postBehindSyncReason(
     await commentFn(repo, prNumber, body);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: could not post the in-cycle sync deferral on ${repo}#${prNumber}: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `could not post the in-cycle sync deferral on ${repo}#${prNumber}: ${message}`,
     );
   }
 }
@@ -475,8 +483,10 @@ async function postOpenChildrenLookupReason(
     return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: could not post the unreadable ${subject} on ${repo}#${prNumber}: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `could not post the unreadable ${subject} on ${repo}#${prNumber}: ${message}`,
     );
     return false;
   }
@@ -756,7 +766,7 @@ export function invisiblePolicyWarning(
   baseRefName: string,
   refusal: string,
 ): string {
-  return `WARNING: ${repo} '${baseRefName}' is policy-protected but the ` +
+  return `${repo} '${baseRefName}' is policy-protected but the ` +
     `effective-rules endpoint shows no rule the fleet token can read — ` +
     `an organisation ruleset (needs admin:org to list) or a repository ` +
     `setting; arming GitHub auto-merge instead of retrying the direct ` +
@@ -808,6 +818,37 @@ export async function enableAutoMerge(
     return {
       result: AutoMergeResult.Skipped,
       message: `Auto-merge disabled for ${repo} (skip_auto_merge=true)`,
+    };
+  }
+
+  // Issue #4236: a missing fleet set is not "no record". Without the
+  // logins the worker's marker cannot be told from a stranger's, so
+  // arming would guess. An unreadable comment list is the same refusal.
+  const fleet = options.fleetAuthors ?? [];
+  if (fleet.length === 0) {
+    return {
+      result: AutoMergeResult.Deferred,
+      message:
+        `PR #${prNumber} fleet logins were not supplied — not arming until a pre-PR review record can be ruled out (Issue #4236)`,
+    };
+  }
+  const review = await fetchIssueCommentBodies(
+    repo,
+    prNumber,
+    ghCommandFn,
+  );
+  if (!review.ok) {
+    return {
+      result: AutoMergeResult.Deferred,
+      message:
+        `PR #${prNumber} pre-PR review record could not be read (${review.error.message}) — not arming until it can be (Issue #4236)`,
+    };
+  }
+  if (preprReviewBlocksArm(fleetMarkerBodies(review.value, fleet))) {
+    return {
+      result: AutoMergeResult.Deferred,
+      message:
+        `PR #${prNumber} has an unresolved pre-PR review record — not arming until it is resolved (Issue #4236)`,
     };
   }
 
@@ -888,8 +929,10 @@ export async function enableAutoMerge(
       });
     } catch (err) {
       const thrown = err instanceof Error ? err.message : String(err);
-      log(
-        `WARNING: in-cycle milestone sync threw for ${repo}#${prNumber}: ${thrown}`,
+      logAt(
+        log,
+        "warn",
+        `in-cycle milestone sync threw for ${repo}#${prNumber}: ${thrown}`,
       );
       sync = { status: "deferred", detail: thrown };
     }
@@ -1291,7 +1334,7 @@ export async function enableAutoMerge(
             prNumber,
             errorMsg,
           );
-          log(`WARNING: ${refusal}`);
+          logAt(log, "warn", `${refusal}`);
           return {
             result: AutoMergeResult.Failed,
             message: `Auto-merge not armed on PR #${prNumber}: ${refusal}`,
@@ -1394,7 +1437,7 @@ async function refuseMilestoneMerge(
       ? "open-children count"
       : "declared dependencies";
     const message =
-      `WARNING: refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
+      `refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
       `for milestone #${gate.milestoneNumber} '${gate.milestoneTitle}' — its ` +
       `${subject} could not be read: ${gate.message} (Issue #3909)`;
     log(message);

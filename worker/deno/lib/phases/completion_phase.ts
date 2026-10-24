@@ -14,6 +14,13 @@ import { assertNever } from "../assert_never.ts";
  */
 
 import { summaryScrubProblem } from "../summary_scrub_gate.ts";
+import { recordPreprReviewChangesRequested } from "../fleet_telemetry.ts";
+import {
+  collectPreprReviewFindings,
+  type PreprReviewFinding,
+  renderPreprReviewHeadNote,
+  renderPreprReviewRequest,
+} from "../prepr_review_record.ts";
 
 import {
   CRITERIA_UNMET_GATE_MARKER,
@@ -499,6 +506,9 @@ async function armAutoMergeAtCreation(
     repo,
     prNumber,
     skipAutoMerge,
+    // Issue #4236: arming without the fleet set is refused. These are the
+    // logins whose pre-PR review markers count.
+    fleetAuthors: fleetAuthorsFor(ctx),
     commentFn,
     // Route the milestone gates' warnings into the worker log rather than
     // `console.warn`, which no operator reads.
@@ -729,6 +739,58 @@ interface SummaryRuleBlock {
  *   carrying the `summary_incomplete` outcome on a later block that reached
  *   and finalised an existing PR.
  */
+/**
+ * Remember review findings that survived the in-run recovery (Issue #4236).
+ *
+ * Only when a summary-rule block is already recorded (the recovery turn has
+ * been spent) and this branch has no open pull request. An existing pull
+ * request stays on the hold path. Returns true when the caller should raise
+ * the pull request instead of failing the run.
+ */
+async function rememberReviewRecord(
+  repo: string,
+  state: PhaseState,
+  deps: WorkerDeps,
+  findings: readonly PreprReviewFinding[],
+): Promise<boolean> {
+  if (findings.length === 0) return false;
+  if ((state.summaryRuleBlocks?.length ?? 0) < 1) return false;
+  const existing = await deps.pr.findExistingPrForBranch(
+    repo,
+    state.branchName,
+  );
+  if (existing.ok) return false;
+  state.preprReviewFindings = [
+    ...(state.preprReviewFindings ?? []),
+    ...findings,
+  ];
+  return true;
+}
+
+/**
+ * Post the change-request record and count it. Does not arm auto-merge.
+ * A failed post leaves the pull request open and unarmed; the caller already
+ * skipped arming.
+ */
+async function postPreprReviewRecord(
+  repo: string,
+  prNumber: number,
+  findings: readonly PreprReviewFinding[],
+  deps: WorkerDeps,
+): Promise<void> {
+  const logger = deps.logger;
+  logger.info(
+    "Pre-PR review requested changes — not arming auto-merge (Issue #4236)",
+    { repo, prNumber, findings: findings.length },
+  );
+  await deps.github.createClient(logger).postComment(
+    repo,
+    prNumber,
+    renderPreprReviewRequest(findings),
+  );
+  recordPreprReviewChangesRequested(findings.length);
+}
+
 async function reportSummaryRuleBlock(
   block: SummaryRuleBlock,
   ctx: IssueContext,
@@ -1192,7 +1254,12 @@ export async function recoverAndFinaliseExistingPr(
           ciStarted,
         });
       }
-      if (ciStarted) await armAutoMergeAtCreation(ctx, state, prNumber, deps);
+      const heldForReview = state.preprReviewFindings ?? [];
+      if (heldForReview.length > 0) {
+        await postPreprReviewRecord(repo, prNumber, heldForReview, deps);
+      } else if (ciStarted) {
+        await armAutoMergeAtCreation(ctx, state, prNumber, deps);
+      }
     }
 
     // Issue #3237: advisory docs-sweep stale-hits comment, posted once.
@@ -1778,6 +1845,11 @@ async function completionBody(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
+  // Issue #4236: a later round in the same run (the unmet-criteria loop,
+  // or the one infrastructure retry) must record only the findings that
+  // survive this attempt. Findings remembered and then not raised would
+  // otherwise be posted again, or posted after the verifier had cleared them.
+  state.preprReviewFindings = undefined;
   const alreadyLanded = await alreadyLandedPhaseResult(
     ctx,
     state,
@@ -4046,24 +4118,38 @@ async function completionBody(
         reason: claimCheckVerdict.reason,
       };
     }
-    return await reportSummaryRuleBlock(
-      foldInLateSummaryVerdicts(
-        claimCheckVerdict.reason,
-        claimCheckVerdict.comment(),
-        [
-          docsSweepVerdict,
-          removedAssertionsVerdict,
-          placeholderVerdict,
-          branchOutcomesVerdict,
-          claimCheckVerdict,
-        ],
-      ),
-      ctx,
-      state,
-      prBody,
-      deps,
-      docsSweepHitsComment,
-    );
+    const claimFindings = collectPreprReviewFindings({
+      claimFindings: claimCheck.findings,
+      docFindings: claimCheck.docFindings,
+      testPlanProblems: claimCheck.testPlanProblems,
+    });
+    if (
+      await rememberReviewRecord(repo, state, deps, claimFindings)
+    ) {
+      logger.info(
+        "Summary claim check is the only remaining block — the PR will be raised with a change-request record (Issue #4236)",
+        { repo, issueNumber, findings: claimFindings.length },
+      );
+    } else {
+      return await reportSummaryRuleBlock(
+        foldInLateSummaryVerdicts(
+          claimCheckVerdict.reason,
+          claimCheckVerdict.comment(),
+          [
+            docsSweepVerdict,
+            removedAssertionsVerdict,
+            placeholderVerdict,
+            branchOutcomesVerdict,
+            claimCheckVerdict,
+          ],
+        ),
+        ctx,
+        state,
+        prBody,
+        deps,
+        docsSweepHitsComment,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -4083,23 +4169,33 @@ async function completionBody(
       findings: prePrVerifier.review.findings.length,
     });
     const comment = prePrVerifierVerdict.comment();
-    return await reportSummaryRuleBlock(
-      {
-        categories: prePrVerifierVerdict.categories ?? ["quality_check"],
-        reason: prePrVerifierVerdict.reason,
-        comment,
-        sections: [comment],
-        standingViolations,
-        verifierHoldComment: comment,
-        docHoldComment: "",
-        ...(unmetCriteria.length > 0 ? { unmetCriteria } : {}),
-      },
-      ctx,
-      state,
-      prBody,
-      deps,
-      docsSweepHitsComment,
-    );
+    const verifierFindings = collectPreprReviewFindings({
+      verifierFindings: prePrVerifier.review.findings,
+    });
+    if (await rememberReviewRecord(repo, state, deps, verifierFindings)) {
+      logger.info(
+        "Pre-PR verifier is the only remaining block — the PR will be raised with a change-request record (Issue #4236)",
+        { repo, issueNumber, findings: verifierFindings.length },
+      );
+    } else {
+      return await reportSummaryRuleBlock(
+        {
+          categories: prePrVerifierVerdict.categories ?? ["quality_check"],
+          reason: prePrVerifierVerdict.reason,
+          comment,
+          sections: [comment],
+          standingViolations,
+          verifierHoldComment: comment,
+          docHoldComment: "",
+          ...(unmetCriteria.length > 0 ? { unmetCriteria } : {}),
+        },
+        ctx,
+        state,
+        prBody,
+        deps,
+        docsSweepHitsComment,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -4141,6 +4237,11 @@ async function completionBody(
   // closed the issue against #173 and released three unpublished commits.
   // A merged or closed PR is never the PR for commits this run just pushed,
   // so the branch is consulted first and the decision is made explicitly.
+  const reviewRecord = state.preprReviewFindings ?? [];
+  if (reviewRecord.length > 0) {
+    prBody = `${renderPreprReviewHeadNote(reviewRecord.length)}\n\n${prBody}`;
+  }
+
   const openPrForBranch = await deps.pr.findExistingPrForBranch(
     repo,
     state.branchName,
@@ -4421,7 +4522,10 @@ async function completionBody(
     // raises and `decideSummaryPrMerge` re-gates on open children at merge
     // time (Issue #3909). The sweep already merged these children, so the
     // skip only ever delayed them.
-    if (prNumber > 0) {
+    const heldForReview = state.preprReviewFindings ?? [];
+    if (prNumber > 0 && heldForReview.length > 0) {
+      await postPreprReviewRecord(repo, prNumber, heldForReview, deps);
+    } else if (prNumber > 0) {
       await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
 

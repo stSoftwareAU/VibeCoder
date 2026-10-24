@@ -72,6 +72,13 @@ function skipSpace(text: string, i: number): number {
   return i;
 }
 
+/** Object literal sitting in a function argument list. */
+function isCallArgument(text: string, open: number): boolean {
+  let before = open - 1;
+  while (before >= 0 && /\s/.test(text[before]!)) before--;
+  return before >= 0 && (text[before] === "(" || text[before] === ",");
+}
+
 /** Phase names the work executor is actually given. */
 function executorPhases(): string[] {
   const files: string[] = [];
@@ -131,6 +138,10 @@ function executorPhases(): string[] {
     // Prompt specifications may be nested in a function or array. Inspect
     // each object's own fields; a phase in an outcome or callback is not
     // an executor phase merely because its enclosing function has a prompt.
+    // A call argument that carries an executor option (timeoutSeconds)
+    // beside its phase is forwarded into the executor. Clarification passes
+    // runClaude an options object with no prompt of its own. An outcome
+    // builder names a phase and carries no executor option, so it stays out.
     for (let i = 0; i < text.length; i++) {
       if (text[i] !== "{") continue;
       const end = matchBrace(text, i);
@@ -147,6 +158,11 @@ function executorPhases(): string[] {
         ownFields += text[j];
       }
       if (/\bprompt\s*:/.test(ownFields)) addFromObject(ownFields);
+      else if (
+        isCallArgument(text, i) && /\btimeoutSeconds\b/.test(ownFields)
+      ) {
+        addFromObject(ownFields);
+      }
     }
   }
   return [...phases].sort();
@@ -156,6 +172,7 @@ Deno.test("every phase passed to the work executor resolves under the default co
   const phases = executorPhases();
   assert(phases.includes("merge_conflict"), phases.join(", "));
   assert(phases.includes("compaction"), phases.join(", "));
+  assert(phases.includes("clarification"), phases.join(", "));
   assertEquals(
     phases.includes("completion"),
     false,

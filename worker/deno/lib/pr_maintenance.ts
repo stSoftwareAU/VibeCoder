@@ -22,6 +22,10 @@ import { recordLifecyclePrFromGithub } from "./lifecycle_pr_observation.ts";
 import type { PrRollup } from "./check_runs_batch.ts";
 import { recordPrRejection } from "./fleet_telemetry.ts";
 import { PRE_PR_VERIFIER_HOLD_MARKER } from "./standing_violation_routing.ts";
+import {
+  commentCarriesOpenPreprReview,
+  preprReviewBlocksArm,
+} from "./prepr_review_record.ts";
 import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { ensureIssueClosedIfPrMerged } from "./issue_lifecycle.ts";
@@ -624,18 +628,45 @@ export async function fetchPrComments(
     : `repos/${repo}/issues/${prNumber}/comments`;
 
   try {
+    // `--paginate` is required. A busy pull request's change-request record
+    // sits past the first page of thirty, and the feedback pass must still
+    // see it (Issue #4236).
     const output = await ghCommandFn([
       "api",
+      "--paginate",
       apiPath,
       "--jq",
       '[.[] | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0), eyes: (.reactions.eyes // 0), created_at: .created_at}]',
     ]);
-    const parsed: unknown = JSON.parse(output);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as CommentEntry[];
+    const parsed = parseCommentPages(output);
+    return parsed ?? [];
   } catch {
     return [];
   }
+}
+
+/**
+ * Flatten what `gh api --paginate --jq` prints: one JSON array per line.
+ * A single page is one array. A page that is not JSON is unreadable, and
+ * the caller treats that as no comments for this scan.
+ */
+function parseCommentPages(output: string): CommentEntry[] | null {
+  const comments: CommentEntry[] = [];
+  const trimmed = output.trim();
+  if (trimmed === "") return [];
+  for (const line of trimmed.split("\n")) {
+    const piece = line.trim();
+    if (piece === "") continue;
+    let page: unknown;
+    try {
+      page = JSON.parse(piece);
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(page)) return null;
+    comments.push(...(page as CommentEntry[]));
+  }
+  return comments;
 }
 
 /**
@@ -1190,7 +1221,20 @@ async function findActionableComment(
     const isVerifierHold = commentType === "issue" &&
       isFleetAuthor(comment.login, [...fleetAuthors]) &&
       comment.body.split(/\r?\n/, 1)[0] === PRE_PR_VERIFIER_HOLD_MARKER;
-    if (comment.login === githubUser && !isVerifierHold) continue;
+    // Issue #4236: the worker's own change-request record is the one other
+    // own-comment the scan answers. A later resolved marker on the thread
+    // means it has already been answered, so it is not actionable.
+    const isPreprReview = commentType === "issue" &&
+      isFleetAuthor(comment.login, [...fleetAuthors]) &&
+      commentCarriesOpenPreprReview(comment.body) &&
+      preprReviewBlocksArm(
+        comments
+          .filter((entry) => isFleetAuthor(entry.login, [...fleetAuthors]))
+          .map((entry) => entry.body),
+      );
+    if (comment.login === githubUser && !isVerifierHold && !isPreprReview) {
+      continue;
+    }
 
     const isAuthorised = isAuthorisedCommenter(comment.login);
     const isTrustedReviewBot = commentType === "review" &&
@@ -1204,6 +1248,7 @@ async function findActionableComment(
     let hasAuthorisedThumbsUp = false;
     if (
       !isAuthorised && !isTrustedReviewBot && !isVerifierHold &&
+      !isPreprReview &&
       (comment.thumbs_up ?? 0) > 0
     ) {
       const reactors = await fetchCommentThumbsUpReactors(
@@ -1219,7 +1264,7 @@ async function findActionableComment(
 
     if (
       isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot ||
-      isVerifierHold
+      isVerifierHold || isPreprReview
     ) {
       // The comment is actionable — unless the fleet has already processed
       // it. The `eyes` marker is the worker's own, so a count is not the
@@ -1261,7 +1306,9 @@ async function findActionableComment(
         });
       }
 
-      const trustReason = isVerifierHold
+      const trustReason = isPreprReview
+        ? "worker-prepr-review"
+        : isVerifierHold
         ? "worker-verifier-hold"
         : isAuthorised
         ? "authorised"
@@ -1281,7 +1328,7 @@ async function findActionableComment(
       return {
         repo,
         prNumber,
-        commentType: commentType as CommentType,
+        commentType: (isPreprReview ? "pr_review" : commentType) as CommentType,
         commentId: String(comment.id),
         encodedBody,
         commentAuthor: comment.login,

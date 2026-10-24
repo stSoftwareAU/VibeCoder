@@ -848,6 +848,20 @@ export function getFailureCategoryDisplay(
 }
 
 /**
+ * Whether a second run blocked by `category` is split into sub-issues
+ * (Issue #4130).
+ *
+ * True for every registered worker gate ({@link isWorkerGateCategory}) and
+ * for `quality_check`, whose display name is `quality-failure`. A timeout,
+ * a provider error and a merge conflict are not in this set.
+ */
+export function isWorkerGateSplitCategory(
+  category: FailureCategory,
+): boolean {
+  return isWorkerGateCategory(category) || category === "quality_check";
+}
+
+/**
  * Check if clarity was assessed or skipped (i.e. not "not_assessed").
  *
  * Returns true if clarity was assessed as CLEAR or skipped (meaning the

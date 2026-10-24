@@ -1,3 +1,7 @@
+import {
+  fetchIssueCommentBodies,
+  fleetMarkerBodies,
+} from "./prepr_review_record.ts";
 import { agentTranscriptDir } from "./agent_transcript.ts";
 import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
 /**
@@ -47,6 +51,7 @@ import { reactivePhaseTimeout } from "./reactive_phase_timeout.ts";
 // Config & logging
 import { loadConfig } from "./config.ts";
 import { createLogger } from "./logger.ts";
+import { bindLogger } from "./log_sink.ts";
 import { LOG_FILE_PREFIX, LOG_FILE_SUFFIX } from "./credit_tracker.ts";
 import {
   buildDefaultWorkerConfig,
@@ -866,7 +871,7 @@ export async function createProductionRunCoreDeps(
   let claudePool = options.claudeCredentialPool;
   function claudeCredentialPool(): NonNullable<typeof claudePool> {
     claudePool ??= createClaudeCredentialPool({
-      log: (message) => logger.info(message),
+      log: bindLogger(logger),
       provider: resolveAgentProvider(CLAUDE_PROVIDER_ID),
       env,
     });
@@ -924,7 +929,7 @@ export async function createProductionRunCoreDeps(
       claudePool,
       config.workDir || workDir,
       {
-        log: (message) => logger.info(message),
+        log: bindLogger(logger),
       },
     );
     const held = heldProviderCredentialLabel(CLAUDE_PROVIDER_ID);
@@ -1003,13 +1008,13 @@ export async function createProductionRunCoreDeps(
   // cadence; transitions are logged with the reading.
   const slotCeiling = new SlotGovernor({
     probe: () => probeHostMemoryPressure(),
-    log: (message: string) => logger.info(message),
+    log: bindLogger(logger),
   });
   // Host free-disk monitor (Issue #226): the launcher's df baseline plus
   // the work volume's growth since launch; native mode reads df directly.
   const hostDisk = new HostDiskMonitor({
     workDir,
-    log: (message: string) => logger.info(message),
+    log: bindLogger(logger),
     // Issue #1550: the launcher's per-tick reading, written to the worker
     // log directory — mounted read-write at `${HOME}/logs` in the container.
     refreshFile: `${env("HOME") ?? "~"}/logs/${HOST_DISK_REFRESH_FILE}`,
@@ -1212,7 +1217,7 @@ export async function createProductionRunCoreDeps(
       machineId,
       policy: fastFailurePolicy,
       ghFn: runGhCommandRaw,
-      log: (message: string) => logger.info(message),
+      log: bindLogger(logger),
       warn: (message: string) => logger.warn(message),
     });
     if (decision.action === "suppressed") {
@@ -1927,7 +1932,7 @@ export async function createProductionRunCoreDeps(
       invitationAuthors,
       cache: issueCache,
       ghCommandFn: options.fleetPrefetchGhCommandFn ?? runGhCommand,
-      log: (message: string) => logger.info(message),
+      log: bindLogger(logger),
     });
     logger.info(
       `[fleet-pr-prefetch] owners=${outcome.ownersServed.length} ` +
@@ -1984,7 +1989,7 @@ export async function createProductionRunCoreDeps(
 
   const deps: RunCoreDeps = {
     // -- Logging --
-    log: (msg) => logger.info(msg),
+    log: bindLogger(logger),
     logError: (msg) => logger.error(msg),
     logWarn: (msg) => logger.warn(msg),
     logTiming: (op, dur) => logger.timing(op, dur),
@@ -3573,6 +3578,18 @@ export async function createProductionRunCoreDeps(
         // `mergeStateStatus`, so the sweep can see an armed PR whose head
         // has fallen behind its base.
         prLiveState: (repo, pr) => readPrLiveState(repo, pr.number, gh),
+        // Issue #4236: the sweep wants marker bodies, not the raw comment
+        // records. Filtering here is what the default reader does; returning
+        // the records makes the type fail and, if that were ignored, the
+        // marker check would see no record and arm the pull request.
+        prCommentBodies: async (repo, prNumber) => {
+          const comments = await fetchIssueCommentBodies(repo, prNumber, gh);
+          if (!comments.ok) return comments;
+          return {
+            ok: true as const,
+            value: fleetMarkerBodies(comments.value, maintenanceAuthors),
+          };
+        },
         // Issue #2462: the REST update-branch call the merge ladder already
         // uses — reused as-is, never re-implemented here.
         updateBranchFn: (repo, prNumber) =>
@@ -3839,7 +3856,7 @@ export async function createProductionRunCoreDeps(
           })`,
         );
         const outcomes = await sweepSharedClones(repos, sweepWorkDir, {
-          log: (message: string) => logger.info(message),
+          log: bindLogger(logger),
           logError: (message: string) => logger.error(message),
           logsDir,
         });
@@ -3893,7 +3910,7 @@ export async function createProductionRunCoreDeps(
         try {
           const outcome = await libSweepClosedMilestones(
             { repo, workDir },
-            { gh: runGhCommand, log: (message) => logger.info(message) },
+            { gh: runGhCommand, log: bindLogger(logger) },
           );
           for (const problem of [...outcome.errors, ...outcome.failures]) {
             logger.warn(
@@ -4276,7 +4293,7 @@ export async function createProductionRunCoreDeps(
       await refreshRepoFastFailureBackOffs({
         ...fastFailureOptions,
         isIssueClosed: isDiagnosticIssueClosed,
-        log: (message: string) => logger.info(message),
+        log: bindLogger(logger),
       });
       // Issue #2955: `backedOffRepos` returns this host's sidecar plus
       // any open, fleet-authored diagnostic for the repository, so a
@@ -4474,7 +4491,7 @@ export async function createProductionRunCoreDeps(
         monitoredRepos: config.repos,
         mode: "disk-low",
         bytesNeeded: stillNeeded,
-        log: (message: string) => logger.info(message),
+        log: bindLogger(logger),
       });
       const after = await hostDisk.check({ force: true });
       // Issue #384: on a containerised host the sweep above deleted files
@@ -5309,7 +5326,7 @@ export async function createProductionRunCoreDeps(
             },
             ghFn: runGhCommandRaw,
             workDir,
-            log: (message) => logger.info(message),
+            log: bindLogger(logger),
           });
           if (
             decision.action === "suppressed" && decision.reason === "gh_failed"
@@ -5337,7 +5354,7 @@ export async function createProductionRunCoreDeps(
             repeat: repeatCorruption,
             policy: fastFailurePolicy,
             ghFn: runGhCommandRaw,
-            log: (message) => logger.info(message),
+            log: bindLogger(logger),
             warn: (message) => logger.warn(message),
             error: (message) => logger.error(message),
           });
@@ -5452,7 +5469,7 @@ export async function createProductionRunCoreDeps(
           // Same fallback order the transcript writer itself uses.
           ...(homeDirectory(env) ? { home: homeDirectory(env)! } : {}),
         }),
-        log: (message) => logger.info(message),
+        log: bindLogger(logger),
         logError: (message) => logger.error(message),
       });
       // Issue #2297: the fleet summary says how many hook invocations failed
@@ -5476,7 +5493,7 @@ export async function createProductionRunCoreDeps(
         { repository: run.repo, issueNumber: run.issueNumber },
         {
           ...(hostLogDir === null ? {} : { hostLogDir }),
-          log: (message) => logger.info(message),
+          log: bindLogger(logger),
           logError: (message) => logger.error(message),
           // A streak copy that could not be read or written degrades the
           // record without stopping the run — a warning, not a fault.
@@ -5497,7 +5514,7 @@ export async function createProductionRunCoreDeps(
           host: Deno.hostname(),
           ...(config.workerName ? { workerName: config.workerName } : {}),
         }),
-        log: (message) => logger.info(message),
+        log: bindLogger(logger),
         logError: (message) => logger.error(message),
       });
     },
@@ -5671,7 +5688,7 @@ export async function createProductionRunCoreDeps(
         },
         {
           cycleId: `${trustRefreshScope}:${trustRefreshCycle}`,
-          log: (message: string) => logger.info(message),
+          log: bindLogger(logger),
           warn: (message: string) => logger.warn(message),
           // Issue #1453: reuse a successful resolve for the configured
           // window instead of re-listing every monitored repo each cycle.
@@ -6615,7 +6632,7 @@ async function syncMilestoneBranchesFn(
         return null;
       }
     },
-    log: (msg: string) => logger.info(msg),
+    log: bindLogger(logger),
   });
 
   await syncMilestoneBranches({
@@ -6777,7 +6794,7 @@ async function syncMilestoneBranchesFn(
         );
       }
     },
-    log: (msg: string) => logger.info(msg),
+    log: bindLogger(logger),
     // Issue #1776: the cadence signal — one `git rev-parse` per repo, so a
     // cycle in which the default tip did not move syncs nothing.
     defaultTipShaFn: (repo, defaultBranch) =>
@@ -6845,7 +6862,7 @@ async function checkAndHandleMilestoneCompletionsFn(
     // passes, so the summary PR's gated direct merge on an unprotected
     // default branch can read a genuine outside approval.
     fleetAuthors,
-    log: (msg: string) => logger.info(msg),
+    log: bindLogger(logger),
   });
   // Fail loud — never let an identity mismatch (ok: false) be silently
   // dropped by ignoring the returned Result (Issue #3528).
@@ -6926,7 +6943,7 @@ async function scanStaleWorkflowIssuesFn(
           repo,
         ]);
       },
-      log: (msg: string) => logger.info(msg),
+      log: bindLogger(logger),
       now: () => Date.now(),
       nowSeconds: () => Math.floor(Date.now() / 1000),
       shouldShutdown,

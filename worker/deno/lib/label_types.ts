@@ -11,6 +11,10 @@
 import type { ClarityStatus, FailureCategory } from "./failure_diagnosis.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import type { GitHubClient, Logger } from "../types.ts";
+import type {
+  PlanWorkerGateSplit,
+  ReadBranchProgress,
+} from "./worker_gate_split.ts";
 
 /** Injectable dependencies for testability. */
 export interface LabelManagerDeps {
@@ -35,6 +39,25 @@ export interface LabelManagerDeps {
    * see the new "labeled" event without stale cache hits.
    */
   timelineCache?: TimelineCache;
+  /**
+   * Plans the sub-issues for a second worker-gate failure (Issue #4130).
+   *
+   * Absent, the repeat failure keeps today's `failed-once` record. Tests
+   * pass a stub. Production passes a planner that does not run inside the
+   * unit tests.
+   */
+  planWorkerGateSplit?: PlanWorkerGateSplit;
+  /**
+   * Reads commits, the diff stat and the files touched on the issue's
+   * remote branches. When omitted, the split reads them with `ghCommandFn`.
+   */
+  readBranchProgress?: ReadBranchProgress;
+  /**
+   * Fleet logins trusted to stamp a split-depth marker (Issue #4131).
+   * When omitted, the configured fleet identity is read. An empty list
+   * cannot verify a marker, so the issue is treated as depth 0.
+   */
+  fleetAuthors?: readonly string[];
 }
 
 /** Label configuration. */
@@ -96,6 +119,13 @@ export interface HandleFailureResult {
   markedAsFailedOnce: boolean;
   failureCategory: FailureCategory;
   isInfrastructure: boolean;
+  /**
+   * Set when a second worker-gate failure took the split path (Issue #4130).
+   * `fallback` means planning published nothing and the repeat record stands.
+   * `terminal` means split depth 2: comment, `failed`, and no new issues
+   * (Issue #4131).
+   */
+  workerGateSplit?: "split" | "fallback" | "terminal";
 }
 
 /** Options for handling question failure. */

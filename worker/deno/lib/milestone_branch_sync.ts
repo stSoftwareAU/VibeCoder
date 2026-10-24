@@ -135,6 +135,7 @@ import {
   escalateRollbackFailure,
   requeueRolledBackChildren,
 } from "./milestone_rollback_requeue.ts";
+import { logAt } from "./log_sink.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -589,8 +590,10 @@ async function orderRepoMilestones(
     }
     /** Says what went wrong and that the order is the poorer for it. */
     const unmeasured = (reason: string): void =>
-      log(
-        `WARNING: Could not measure how far '${milestone.milestoneBranch}' ` +
+      logAt(
+        log,
+        "warn",
+        `Could not measure how far '${milestone.milestoneBranch}' ` +
           `in ${repo} is behind '${milestone.defaultBranch}': ${reason} — it ` +
           `sorts as level in this cycle's order and is still synced ` +
           `(Issue #2309)`,
@@ -954,8 +957,10 @@ function defaultRollbackFn(
 ): MilestoneRollbackFn {
   return async (request) => {
     if (gitFn === undefined) {
-      log(
-        `WARNING: Milestone branch '${request.milestoneBranch}' in ` +
+      logAt(
+        log,
+        "warn",
+        `Milestone branch '${request.milestoneBranch}' in ` +
           `${request.repo}: budget exhausted: roll-back not yet available — ` +
           `${request.attempts} concluded conflict failure(s), last: ` +
           `${request.reason} (Issue #1778)`,
@@ -1241,8 +1246,10 @@ async function readDefaultTip(
   } catch (err) {
     reason = err instanceof Error ? err.message : String(err);
   }
-  log(
-    `WARNING: Could not read the tip of '${defaultBranch}' in ${repo} ` +
+  logAt(
+    log,
+    "warn",
+    `Could not read the tip of '${defaultBranch}' in ${repo} ` +
       `(${reason}) — every milestone branch is synced this cycle ` +
       `(Issue #1776)`,
   );
@@ -1379,8 +1386,10 @@ async function takeoverOwnsHead(
     try {
       if (await deps.prUpdateLockHeldFn(repo, headPr.number)) return true;
     } catch (error) {
-      log(
-        `WARNING: Could not read the PR lock for #${headPr.number} in ` +
+      logAt(
+        log,
+        "warn",
+        `Could not read the PR lock for #${headPr.number} in ` +
           `${repo} — skipping the sync this cycle (Issue #2965): ${
             error instanceof Error ? error.message : String(error)
           }`,
@@ -1401,8 +1410,10 @@ async function takeoverOwnsHead(
     "takeover-",
   );
   if (!openFix.ok) {
-    log(
-      `WARNING: Could not list takeover fix PRs for #${headPr.number} in ` +
+    logAt(
+      log,
+      "warn",
+      `Could not list takeover fix PRs for #${headPr.number} in ` +
         `${repo} — skipping the sync this cycle (Issue #2965): ${openFix.error.message}`,
     );
     return true;
@@ -1448,8 +1459,10 @@ export async function syncMilestoneBranches(
       // over a write — but the failure is said out loud rather than
       // swallowed: an open attempt marker that never reached disk is an
       // attempt the next cycle charges as a failure nobody judged.
-      log(
-        `WARNING: Could not persist the milestone sync ledger to ` +
+      logAt(
+        log,
+        "warn",
+        `Could not persist the milestone sync ledger to ` +
           `${streakPath}: ${
             err instanceof Error ? err.message : String(err)
           } — this cycle's attempt markers and conclusions are lost ` +
@@ -1534,8 +1547,10 @@ export async function syncMilestoneBranches(
           `later cycle may announce the same attempt again (Issue #2309)`,
       );
     } catch (err) {
-      log(
-        `WARNING: Could not announce the running sync attempt for ` +
+      logAt(
+        log,
+        "warn",
+        `Could not announce the running sync attempt for ` +
           `'${milestone.milestoneBranch}' in ${repo}: ${
             err instanceof Error ? err.message : String(err)
           } — the merge continues (Issue #2309)`,
@@ -1588,8 +1603,10 @@ export async function syncMilestoneBranches(
         defaultBranchFn,
       );
       if (!milestonesResult.ok) {
-        log(
-          `WARNING: Could not find active milestones for ${repo}: ${milestonesResult.error.message}`,
+        logAt(
+          log,
+          "warn",
+          `Could not find active milestones for ${repo}: ${milestonesResult.error.message}`,
         );
         continue;
       }
@@ -1737,8 +1754,10 @@ export async function syncMilestoneBranches(
           deps.dedupAuthors ?? {},
         );
         if (headPr && hasExhaustedConflictAttempts(headPr.attempts)) {
-          log(
-            `WARNING: Skipping sync for '${milestone.milestoneTitle}' in ` +
+          logAt(
+            log,
+            "warn",
+            `Skipping sync for '${milestone.milestoneTitle}' in ` +
               `${repo} — PR #${headPr.number} has spent ` +
               `${spentConflictAttempts(headPr.attempts)} of ` +
               `${CONFLICT_RESOLUTION_BUDGET} conflict-resolution attempts ` +
@@ -1880,8 +1899,10 @@ export async function syncMilestoneBranches(
           // budget is checked above and takes precedence over this local
           // ledger reading.
           if (!headPr && isConflictBudgetExhausted(entry)) {
-            log(
-              `WARNING: Skipping sync for '${milestone.milestoneTitle}' in ` +
+            logAt(
+              log,
+              "warn",
+              `Skipping sync for '${milestone.milestoneTitle}' in ` +
                 `${repo} — the conflict budget is spent ` +
                 `(${entry.conflictAttempts ?? 0} of ` +
                 `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} concluded failures), ` +
@@ -1972,8 +1993,10 @@ export async function syncMilestoneBranches(
           try {
             held = await deps.acquireHeadLockFn(repo, headPr.number);
           } catch (error) {
-            log(
-              `WARNING: Could not take the PR lock for #${headPr.number} in ` +
+            logAt(
+              log,
+              "warn",
+              `Could not take the PR lock for #${headPr.number} in ` +
                 `${repo} — skipping the sync this cycle (Issue #2965): ${
                   error instanceof Error ? error.message : String(error)
                 }`,
@@ -2123,7 +2146,9 @@ export async function syncMilestoneBranches(
                 log,
               );
               if (landing.kind === "unconfirmed") {
-                log(
+                logAt(
+                  log,
+                  "warn",
                   describeUnconfirmedLanding(
                     repo,
                     milestone.milestoneBranch,
@@ -2259,8 +2284,10 @@ export async function syncMilestoneBranches(
               streaksDirty = true;
             }
           } else {
-            log(
-              `WARNING: Failed to sync milestone branch '${milestone.milestoneBranch}' in ${repo}: ${syncResult.error.message}`,
+            logAt(
+              log,
+              "warn",
+              `Failed to sync milestone branch '${milestone.milestoneBranch}' in ${repo}: ${syncResult.error.message}`,
             );
             failed++;
             // Forensic record (Issue #4260): a chronically diverging
@@ -2410,8 +2437,10 @@ export async function syncMilestoneBranches(
                 } else {
                   // One line, and nothing posted: an automatic attempt still
                   // remains, so no human is asked about it yet.
-                  log(
-                    `WARNING: Milestone branch '${milestone.milestoneBranch}' ` +
+                  logAt(
+                    log,
+                    "warn",
+                    `Milestone branch '${milestone.milestoneBranch}' ` +
                       `in ${repo}: conflict attempt ${attempts} of ` +
                       `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed at rung ` +
                       `${verdict.rung} (Issue #1778)`,
@@ -2514,12 +2543,18 @@ export async function syncMilestoneBranches(
       if (stoppedAt) break;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      log(`WARNING: Milestone branch sync failed for ${repo}: ${message}`);
+      logAt(
+        log,
+        "warn",
+        `Milestone branch sync failed for ${repo}: ${message}`,
+      );
     } finally {
       if (builtInClone && deps.releaseBuildArtefactsFn) {
         await deps.releaseBuildArtefactsFn(repo).catch((err) =>
-          log(
-            `WARNING: Could not release the build artefacts of ${repo}'s ` +
+          logAt(
+            log,
+            "warn",
+            `Could not release the build artefacts of ${repo}'s ` +
               `milestone sync: ${
                 err instanceof Error ? err.message : String(err)
               } — they stay until the relaunch (Issue #3178)`,
@@ -2545,8 +2580,10 @@ export async function syncMilestoneBranches(
         await clearSyncCursor(deps.cursorPath);
       }
     } catch (err) {
-      log(
-        `WARNING: Could not record the milestone sync cursor: ${
+      logAt(
+        log,
+        "warn",
+        `Could not record the milestone sync cursor: ${
           err instanceof Error ? err.message : String(err)
         } (Issue #2215)`,
       );
@@ -2622,7 +2659,11 @@ export async function escalateSyncConflict(
     log,
   );
   if (confirmed.kind === "unconfirmed") {
-    log(describeUnconfirmedLanding(repo, milestone.milestoneBranch, confirmed));
+    logAt(
+      log,
+      "warn",
+      describeUnconfirmedLanding(repo, milestone.milestoneBranch, confirmed),
+    );
     return { posted: false, landing: confirmed };
   }
   const landingConfirmed = confirmed;

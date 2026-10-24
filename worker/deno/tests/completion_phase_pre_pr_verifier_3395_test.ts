@@ -23,6 +23,8 @@ import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
+import { PrePushGateBlockedError } from "../lib/git_push.ts";
+import { preprReviewMarker } from "../lib/prepr_review_record.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
@@ -163,6 +165,15 @@ interface Scenario {
   claimReply?: string;
   /** Model configured for the run (default: the config default). */
   claudeModel?: string;
+  /** When true, the pre-push gate returns a verdict failure. */
+  prePushBlocked?: boolean;
+  /** Issue body for this run. Omitted, the fixture has no acceptance criteria. */
+  issueBody?: string;
+  /**
+   * Summary written by each recovery turn, in order. Omitted, `retryWrites`
+   * is written on every turn.
+   */
+  summaryWrites?: string[];
 }
 
 interface Outcome {
@@ -183,6 +194,7 @@ interface Outcome {
   labels: string[];
   posted: { number: number; body: string }[];
   errors: string[];
+  prBodies: string[];
 }
 
 async function runCompletion(scenario: Scenario): Promise<Outcome> {
@@ -204,6 +216,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const labels: string[] = [];
   const posted: { number: number; body: string }[] = [];
   const errors: string[] = [];
+  const prBodies: string[] = [];
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -215,7 +228,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     repo: REPO,
     issueNumber: ISSUE,
     issueTitle: "Run a pre-PR verifier",
-    issueBody: ISSUE_BODY,
+    issueBody: scenario.issueBody ?? ISSUE_BODY,
     issueLabels: ["enhancement", "work-on"],
     issueComments: "",
     githubUser: "testbot",
@@ -238,7 +251,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       createClient: () =>
         stubClient(comments, posted, !!scenario.failPrComment),
       runGhCommand: (args: string[]) => {
-        if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
+        if (args[0] === "pr" && args[1] === "create") {
+          prCreateCalls++;
+          const bodyAt = args.indexOf("--body");
+          if (bodyAt >= 0) prBodies.push(args[bodyAt + 1] ?? "");
+        }
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(JSON.stringify({ state: "OPEN" }));
         }
@@ -270,7 +287,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     claude: {
       runClaudeWithRetry: (options: { prompt: string }) => {
         claudePrompts.push(options.prompt);
-        if (scenario.retryWrites !== undefined) {
+        const scripted = scenario.summaryWrites?.shift();
+        if (scripted !== undefined) {
+          Deno.writeTextFileSync(summaryPath, scripted);
+        } else if (scenario.retryWrites !== undefined) {
           Deno.writeTextFileSync(summaryPath, scenario.retryWrites);
         }
         return Promise.resolve({
@@ -334,6 +354,15 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     },
   });
   deps.logger.error = (message) => errors.push(message);
+  if (scenario.prePushBlocked) {
+    deps.git.gateUnpushedCommits = () =>
+      Promise.resolve({
+        ok: false,
+        error: new PrePushGateBlockedError(
+          "deno test failed: balance_test",
+        ),
+      });
+  }
 
   let result;
   let summaryText = "";
@@ -373,6 +402,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     labels,
     posted,
     errors,
+    prBodies,
   };
 }
 
@@ -446,20 +476,64 @@ Deno.test(
 
 // (b)
 Deno.test(
-  "completion - findings that persist with no PR fail the run and post the verifier comment once",
+  "completion - findings that persist with no PR raise it and post a change-request record (Issue #4236)",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_CLEAN,
       verifier: [checked([FINDING])],
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0);
-    const posted = outcome.comments.filter((c) =>
-      c.includes(PRE_PR_VERIFIER_COMMENT_HEADING)
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.category, undefined);
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.armed, 0);
+    assertEquals(outcome.labels.includes("failed-once"), false);
+    assertEquals(outcome.labels.includes("failed"), false);
+    assertEquals(
+      outcome.comments.some((c) => c.includes("Automated Processing Failed")),
+      false,
     );
-    assertEquals(posted.length, 1);
-    assertStringIncludes(posted[0]!, FINDING.problem);
+    assertEquals(outcome.verifierInputs.length, 2);
+    assertEquals(outcome.claudePrompts.length, 1);
+    const record = outcome.posted.filter((c) => c.number === 4412);
+    assertEquals(record.length, 1);
+    assertStringIncludes(
+      record[0]!.body,
+      preprReviewMarker("changes_requested"),
+    );
+    assertStringIncludes(record[0]!.body, "src/balance.ts:42");
+    assertStringIncludes(record[0]!.body, FINDING.problem);
+    assertStringIncludes(
+      record[0]!.body,
+      "pre-PR review requested changes: 1 findings",
+    );
+    assertEquals(outcome.prBodies.length, 1);
+    assertStringIncludes(
+      outcome.prBodies[0]!,
+      "pre-PR review requested changes: 1 findings",
+    );
+  },
+);
+
+Deno.test(
+  "completion - a pre-push gate failure still fails the run and raises no PR (Issue #4236)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      verifier: [checked([FINDING])],
+      prePushBlocked: true,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.category, "pre_push_gate");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.armed, 0);
+    assertEquals(
+      outcome.posted.some((c) =>
+        c.body.includes(preprReviewMarker("changes_requested"))
+      ),
+      false,
+    );
   },
 );
 
@@ -645,36 +719,51 @@ Deno.test("completion retains evidence, substantive and mixed verifier causes wi
     problem: "missing evidence syntax",
     category: "summary_incomplete",
   };
+  // Issue #4236: a verifier block that survives recovery raises the PR. The
+  // first block's categories are still the real ones — a crash-shaped wrapper
+  // does not replace them — and the findings are on the change-request record.
   for (
-    const [summary, findings, category, causes] of [
-      [SUMMARY_CLEAN, [evidence], "summary_incomplete", ["summary_incomplete"]],
-      [SUMMARY_CLEAN, [FINDING], "quality_check", ["quality_check"]],
-      [SUMMARY_CLEAN, [evidence, FINDING], "quality_check", [
-        "summary_incomplete",
-        "quality_check",
-      ]],
-      [SUMMARY_PLACEHOLDER, [FINDING], "quality_check", [
-        "summary_incomplete",
-        "quality_check",
-      ]],
+    const [findings, causes] of [
+      [[evidence], ["summary_incomplete"]],
+      [[FINDING], ["quality_check"]],
+      [[evidence, FINDING], ["summary_incomplete", "quality_check"]],
     ] as const
   ) {
     const o = await runCompletion({
-      summary,
+      summary: SUMMARY_CLEAN,
       verifier: [checked([...findings])],
     });
-    assertEquals(o.status, "failure");
-    assertEquals(o.category, category);
-    assertEquals(o.causes.at(-1), causes);
-    assertEquals(o.prCreateCalls, 0);
-    assertEquals(
-      classifyCodingFailure(
-        "wrapper quotes rate limit ENOSPC timeout",
-        o.category,
-      ).disposition,
-      "ladder",
-    );
+    assertEquals(o.status, "continue");
+    assertEquals(o.prCreateCalls, 1);
+    assertEquals(o.armed, 0);
+    assertEquals(o.causes[0], causes);
+    const record = o.posted.find((c) => c.number === 4412);
+    assert(record, "the change-request record was posted");
+    for (const finding of findings) {
+      assertStringIncludes(record.body, `${finding.file}:${finding.line}`);
+    }
   }
+
+  // A mechanical summary gate still fails the run. Its category stays a
+  // ladder failure, not a crash read off the gate's quoted text.
+  const blocked = await runCompletion({
+    summary: SUMMARY_PLACEHOLDER,
+    verifier: [checked([FINDING])],
+  });
+  assertEquals(blocked.status, "failure");
+  assertEquals(blocked.category, "quality_check");
+  assertEquals(blocked.causes.at(-1), [
+    "summary_incomplete",
+    "quality_check",
+  ]);
+  assertEquals(blocked.prCreateCalls, 0);
+  assertEquals(
+    classifyCodingFailure(
+      "wrapper quotes rate limit ENOSPC timeout",
+      blocked.category,
+    ).disposition,
+    "ladder",
+  );
 });
 
 Deno.test("existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)", async () => {
@@ -715,4 +804,77 @@ Deno.test("existing PR outcomes retain evidence and substantive verifier causes 
     assert(o.labels.includes("standing-violation"));
     assertEquals(o.prCreateCalls, 0);
   }
+});
+
+const CRITERION = "The router sends planning to opus.";
+const ISSUE_WITH_CRITERION = `## Problem
+
+Route planning to opus.
+
+## Acceptance criteria
+
+- [ ] ${CRITERION}
+`;
+const CLOSURE_TAIL = `## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — Australian English, TDD, fail-loud error handling
+`;
+const SUMMARY_MET = `${SUMMARY_CLEAN}
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — the router sends planning to opus — evidence: \`lib/config_defaults.ts\` — reviewer: met
+
+${CLOSURE_TAIL}`;
+const SUMMARY_UNMET = `${SUMMARY_CLEAN}
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — the router sends planning to opus — evidence: \`lib/config_defaults.ts\` — reviewer: partial — reason: ran out of turns
+
+${CLOSURE_TAIL}`;
+
+Deno.test("completion - findings remembered on one attempt are not posted after a clean re-run (Issue #4236)", async () => {
+  const writes = [SUMMARY_UNMET, SUMMARY_MET];
+  const outcome = await runCompletion({
+    summary: SUMMARY_MET,
+    issueBody: ISSUE_WITH_CRITERION,
+    summaryWrites: writes,
+    verifier: [checked([FINDING]), checked([FINDING]), checked([])],
+  });
+
+  assertEquals(
+    {
+      status: outcome.status,
+      verifiers: outcome.verifierInputs.length,
+      prs: outcome.prCreateCalls,
+      armed: outcome.armed,
+      prompts: outcome.claudePrompts.length,
+      reason: outcome.reason,
+    },
+    {
+      status: "continue",
+      verifiers: 3,
+      prs: 1,
+      armed: 1,
+      prompts: 2,
+      reason: undefined,
+    },
+  );
+  assertEquals(
+    outcome.posted.some((posted) =>
+      posted.body.includes(preprReviewMarker("changes_requested"))
+    ),
+    false,
+  );
+  assertEquals(
+    outcome.prBodies.some((body) =>
+      body.includes("pre-PR review requested changes")
+    ),
+    false,
+  );
 });

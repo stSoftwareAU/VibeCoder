@@ -26,6 +26,11 @@ import { STANDING_VIOLATION_LABEL } from "./standing_violation_routing.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { classifyHeadExtension } from "./git_push_recovery.ts";
+import {
+  commentCarriesOpenPreprReview,
+  renderPreprReviewResolved,
+} from "./prepr_review_record.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
   type CommentType,
@@ -1607,7 +1612,7 @@ async function _processFeedbackWithHeartbeat(
     deps.git.commitAndPushPending(
       pushBranch,
       `Address PR #${prNumber} feedback\n\nAutomated final-mile commit (Issue #1643).`,
-      { cwd: processorDeps.workDir },
+      { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
       false,
       preFlight,
       undefined,
@@ -1752,7 +1757,7 @@ async function _processFeedbackWithHeartbeat(
       });
       const recoveryResult = await deps.git.recoverFromPushRejection(
         pushBranch,
-        { cwd: processorDeps.workDir },
+        { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
         undefined,
         verifyBeforePush,
       );
@@ -1769,7 +1774,7 @@ async function _processFeedbackWithHeartbeat(
         const retryFinalise = await deps.git.commitAndPushPending(
           pushBranch,
           `Address PR #${prNumber} feedback\n\nRetry after push recovery (Issue #1643).`,
-          { cwd: processorDeps.workDir },
+          { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
           false,
           preFlight,
           undefined,
@@ -1815,11 +1820,21 @@ async function _processFeedbackWithHeartbeat(
       { cwd: processorDeps.workDir },
     );
     if (movedResult.ok && movedResult.value) {
-      logger.info("Branch HEAD moved during Claude run", {
-        branch: pushBranch,
-        beforeSha,
+      const extended = await classifyHeadExtension(beforeSha, {
+        cwd: processorDeps.workDir,
       });
-      hasChanges = true;
+      if (extended.status === "unrelated") {
+        logger.info(
+          "Branch HEAD moved off the starting head during the run; not treating it as this pass's work",
+          { branch: pushBranch, beforeSha, detail: extended.message },
+        );
+      } else {
+        logger.info("Branch HEAD moved during Claude run", {
+          branch: pushBranch,
+          beforeSha,
+        });
+        hasChanges = true;
+      }
     }
   }
 
@@ -2209,6 +2224,35 @@ async function _processFeedbackWithHeartbeat(
   // must not be reported as pushed even though the fix branch itself is fine.
   const actuallyPushed = hasChanges && pushSucceeded &&
     !(fixBranch && fixPrError);
+
+  // Issue #4236: answering the worker's own change-request record posts a
+  // resolved marker so auto-merge can arm. A failed post leaves the record
+  // open, which keeps the merge held.
+  if (
+    commentCarriesOpenPreprReview(input.commentBody) &&
+    (actuallyPushed || rebuttalPosted)
+  ) {
+    try {
+      await deps.github.runGhCommand([
+        "pr",
+        "comment",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--body",
+        renderPreprReviewResolved(),
+      ]);
+    } catch (err) {
+      logger.error(
+        "Pre-PR review resolution comment failed to post — auto-merge stays blocked",
+        {
+          repo,
+          prNumber,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    }
+  }
 
   logger.info("PR feedback processing complete", {
     repo,

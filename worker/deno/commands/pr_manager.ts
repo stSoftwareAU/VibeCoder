@@ -122,6 +122,18 @@ async function fetchHeadRefName(
   return head;
 }
 
+/** Fleet logins whose pre-PR review markers count when this command arms. */
+function fleetAuthorsForArming(
+  config: WorkerConfig,
+  args: Record<string, unknown>,
+): string[] {
+  return resolveFleetMaintenanceAuthorSet({
+    githubUser: resolveActingGithubUser(args),
+    fleetPrAuthors: config.fleetPrAuthors ?? [],
+    serviceAccounts: config.serviceAccounts ?? [],
+  });
+}
+
 export const prManagerCommand: Command = {
   name: "pr-manager",
   description:
@@ -129,7 +141,7 @@ export const prManagerCommand: Command = {
 
   async execute(
     args: Record<string, unknown>,
-    _config: WorkerConfig,
+    config: WorkerConfig,
   ): Promise<CommandResult> {
     const operation = String(args["operation"] ?? "");
 
@@ -262,6 +274,8 @@ export const prManagerCommand: Command = {
           // arming here would squash one.
           headRefName: await fetchHeadRefName(repo, prNumber),
           ghCommandFn: runGhCommand,
+          // Issue #4236: arming without the fleet set is refused.
+          fleetAuthors: fleetAuthorsForArming(config, args),
         });
         return {
           success: result.result === AutoMergeResult.Enabled ||
@@ -292,6 +306,8 @@ export const prManagerCommand: Command = {
           skipAutoMerge,
           headRefName,
           ghCommandFn: runGhCommand,
+          // Issue #4236: arming without the fleet set is refused.
+          fleetAuthors: fleetAuthorsForArming(config, args),
         });
         // If not allowed, fall back to the *gated* direct merge.
         //
@@ -349,7 +365,7 @@ export const prManagerCommand: Command = {
               "Missing required arguments: --repo, --pr-number, --comment-id",
           };
         }
-        const workerId = getWorkerUniqueId(_config.workerName);
+        const workerId = getWorkerUniqueId(config.workerName);
         const result = await claimPrComment({
           repo,
           prNumber,
@@ -701,8 +717,8 @@ export const prManagerCommand: Command = {
           {
             allowedAuthors: resolveFleetMaintenanceAuthorSet({
               githubUser: resolveActingGithubUser(args),
-              fleetPrAuthors: _config.fleetPrAuthors ?? [],
-              serviceAccounts: _config.serviceAccounts ?? [],
+              fleetPrAuthors: config.fleetPrAuthors ?? [],
+              serviceAccounts: config.serviceAccounts ?? [],
             }),
             dryRun,
           },

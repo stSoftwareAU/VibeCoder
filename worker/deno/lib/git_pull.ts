@@ -666,7 +666,7 @@ async function syncMilestoneBranchWithDefaultBody(
           // Porcelain v1 is a two-character status field, then the path.
           files.slice(0, 3).map((line) => line.slice(2).trim()).join(", ")}${
           files.length > 3 ? `, +${files.length - 3} more` : ""
-        })${cleaned.ok ? "" : " — WARNING: " + cleaned.error.message} — `;
+        })${cleaned.ok ? "" : " — " + cleaned.error.message} — `;
     }
 
     const checkoutResult = await runGitCommand(

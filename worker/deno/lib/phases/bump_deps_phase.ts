@@ -64,7 +64,7 @@ const BUMP_SCRIPT_TIMEOUT_MS = 20 * 60 * 1000;
  * On unattended launchd/cron hosts Deno is installed at `~/.deno/bin/deno`,
  * which the inherited PATH may not include. Per-repo bump scripts that
  * resolve `deno` from PATH (correctly, fail-loud per Issue #3234) would
- * then abort with "ERROR: deno is required" and the bump would be silently
+ * then abort with "deno is required" and the bump would be silently
  * reverted. Prepending the directory of the same `deno` the worker uses
  * keeps those scripts working.
  *

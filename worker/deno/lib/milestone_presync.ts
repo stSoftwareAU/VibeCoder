@@ -77,6 +77,7 @@ import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.t
 import { runClaudeWithRetry } from "./claude_runner.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import { assertSafeGitRef } from "./git_ref_args.ts";
+import { bindLogger, logAt } from "./log_sink.ts";
 
 /**
  * What is wrong, in the words the log line and the deferral reason share
@@ -299,8 +300,10 @@ export async function presyncMilestoneBranch(
   // load-bearing, not incidental.
   const tip = await deps.defaultTipSha();
   if (!tip.ok) {
-    deps.log(
-      `WARNING: Could not read the tip of '${defaultBranch}' for ` +
+    logAt(
+      deps.log,
+      "warn",
+      `Could not read the tip of '${defaultBranch}' for ` +
         `'${milestoneBranch}' (${tip.error.message}) — the ledger paces this ` +
         `branch on its deferral alone (Issue #1780)`,
     );
@@ -365,8 +368,10 @@ export async function presyncMilestoneBranch(
       await saveSyncStreaks(streakPath, streaks);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      deps.log(
-        `WARNING: The milestone sync ledger at ${streakPath} could not be ` +
+      logAt(
+        deps.log,
+        "warn",
+        `The milestone sync ledger at ${streakPath} could not be ` +
           `written while recording ${what} for '${milestoneBranch}' ` +
           `(${message}) — this attempt cannot be charged or paced ` +
           `(Issue #1780)`,
@@ -402,8 +407,10 @@ export async function presyncMilestoneBranch(
     const wedge = entry.gateRefusal;
     const tip = await deps.milestoneTipSha();
     if (!tip.ok) {
-      deps.log(
-        `WARNING: '${milestoneBranch}' in ${repo} is held back by a wedged ` +
+      logAt(
+        deps.log,
+        "warn",
+        `'${milestoneBranch}' in ${repo} is held back by a wedged ` +
           `resolution gate and its tip could not be read ` +
           `(${tip.error.message}) — the hold stands until a tip is readable ` +
           `and has moved (Issue #2388)`,
@@ -459,8 +466,10 @@ export async function presyncMilestoneBranch(
     let reportedSha = entry.conflictEscalatedSha;
     if (conflict) {
       const conflictKey = conflict.defaultSha || UNRESOLVED_SHA;
-      deps.log(
-        `WARNING: The pre-cut sync of '${milestoneBranch}' in ${repo} ` +
+      logAt(
+        deps.log,
+        "warn",
+        `The pre-cut sync of '${milestoneBranch}' in ${repo} ` +
           `resolved a conflict itself before landing: ` +
           `${conflict.files.join(", ")} (Issue #1780)`,
       );
@@ -480,8 +489,10 @@ export async function presyncMilestoneBranch(
     await persist("the landed sync", false);
     const base = await deps.milestoneTipSha();
     if (!base.ok) {
-      deps.log(
-        `WARNING: '${milestoneBranch}' synced but its new tip could not be ` +
+      logAt(
+        deps.log,
+        "warn",
+        `'${milestoneBranch}' synced but its new tip could not be ` +
           `read (${base.error.message}) — the branch is still cut from ` +
           `origin/${milestoneBranch} (Issue #1780)`,
       );
@@ -533,8 +544,10 @@ export async function presyncMilestoneBranch(
   await persist(`the ${verdict.outcome} conclusion`);
   if (verdict.outcome === "failed") {
     const attempts = entry.conflictAttempts ?? 0;
-    deps.log(
-      `WARNING: Milestone branch '${milestoneBranch}' in ${repo}: conflict ` +
+    logAt(
+      deps.log,
+      "warn",
+      `Milestone branch '${milestoneBranch}' in ${repo}: conflict ` +
         `attempt ${attempts} of ${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed ` +
         `at rung ${verdict.rung}` +
         (isConflictBudgetExhausted(entry)
@@ -806,7 +819,7 @@ export async function presyncMilestoneBranchForIssueRun(
               },
               conflict,
               ghFn,
-              (message: string) => logger.info(message),
+              bindLogger(logger),
             ).then((report) => report.posted),
           reportGateWedge: (entry, conflict, tipSha) =>
             concludeGateRefusal(
@@ -815,7 +828,7 @@ export async function presyncMilestoneBranchForIssueRun(
               conflict,
               tipSha,
               nowMs,
-              { ghCommandFn: ghFn, log: (m: string) => logger.info(m) },
+              { ghCommandFn: ghFn, log: bindLogger(logger) },
             ),
         }
         : {}),
@@ -841,6 +854,6 @@ export async function presyncMilestoneBranchForIssueRun(
           }),
           logger,
         ),
-      log: (message: string) => logger.info(message),
+      log: bindLogger(logger),
     }));
 }
