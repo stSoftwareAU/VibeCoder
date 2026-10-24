@@ -19,6 +19,7 @@ import type {
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import type { BumpInfo } from "../bump_deps.ts";
+import { createRepeatGateSplitHook } from "../repeat_gate_split.ts";
 import {
   formatQualityFailureMessage,
   GATE_EXCERPT_HEAD_CHARS,
@@ -225,7 +226,22 @@ export async function workOnIssueQualityGate(
     if (landed) {
       phaseResult = landed;
     } else {
-      await deps.github.handleIssueFailure({
+      // Issue #4130: a repeat quality-gate failure splits the parent issue into
+      // sub-issues instead of being recorded again. The hook needs the branch
+      // this run pushed; without one, a repeat is recorded as before.
+      const splitOnRepeatGate = state.repoPath && state.branchName
+        ? createRepeatGateSplitHook({
+          ctx,
+          deps,
+          branch: {
+            branchName: state.branchName,
+            repoPath: state.repoPath,
+            baseBranch: state.milestoneBranch ?? state.defaultBranch,
+            defaultBranch: state.defaultBranch,
+          },
+        })
+        : undefined;
+      const failureRecord = await deps.github.handleIssueFailure({
         repo: ctx.repo,
         issueNumber: ctx.issueNumber,
         githubUser: ctx.githubUser,
@@ -241,7 +257,14 @@ export async function workOnIssueQualityGate(
           planningLabel: ctx.config.planningLabel,
           questionLabel: ctx.config.questionLabel,
         },
+        ...(splitOnRepeatGate ? { splitOnRepeatGate } : {}),
       });
+      // Issue #4130: a split closed the parent issue, so the run owes no
+      // cooldown kind. `failureLadderApplied` stays set either way: the split
+      // wrote nothing for the main loop to step again.
+      if (failureRecord.ok && failureRecord.value.split) {
+        state.issueSplit = true;
+      }
       // Issue #1949: the main loop now applies the same ladder to every
       // non-transient coding failure. Tell it this one is already done, so a
       // single run cannot step the issue twice and land it on `failed`.

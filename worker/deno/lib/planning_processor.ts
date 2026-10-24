@@ -1340,24 +1340,7 @@ export async function processIssuePlanning(
       (Date.now() - runStartedAtMs) / 1000,
       "planning round posted — sub-issues created",
     );
-    // Issue #2103: the shared carrier — one shape for all four processors;
-    // the CodeGraph facts ride the same result (Issue #2159).
-    const withGraft = withGraftContext(result, graftSlot);
-    return withGraft.ok &&
-        (codegraphCarrier.codegraphContext || codegraphCarrier.rtkOutput)
-      ? {
-        ok: true,
-        value: {
-          ...withGraft.value,
-          ...(codegraphCarrier.codegraphContext
-            ? { codegraphContext: codegraphCarrier.codegraphContext }
-            : {}),
-          ...(codegraphCarrier.rtkOutput
-            ? { rtkOutput: codegraphCarrier.rtkOutput }
-            : {}),
-        },
-      }
-      : withGraft;
+    return attachPlanningFacts(result, graftSlot, codegraphCarrier);
   } catch (err) {
     runOutcome = outcomeForThrown(
       "planning",
@@ -1387,12 +1370,74 @@ export async function processIssuePlanning(
   }
 }
 
+/**
+ * Run the planning round for an issue whose claim the caller already holds
+ * (Issue #4130).
+ *
+ * The repeat-gate split runs inside a coding run that holds the issue's claim
+ * and a live heartbeat. {@link processIssuePlanning} would claim the issue a
+ * second time, and its `stopHeartbeat` would clear the live heartbeat, so this
+ * entry point runs the same round with neither: no claim, no heartbeat.
+ *
+ * Errors propagate to the caller, including {@link AgentTurnLimitError}. They
+ * are not handed to `handlePlanningFailure`, which would post a planning
+ * failure against an issue whose coding run owns the outcome.
+ *
+ * @param ctx - The held issue's context
+ * @param processorDeps - The planning processor's dependencies
+ * @returns The planning result, with the Graft and CodeGraph/RTK facts attached
+ */
+export async function planHeldIssue(
+  ctx: IssueContext,
+  processorDeps: PlanningProcessorDeps,
+): Promise<Result<PlanningResult>> {
+  const graftSlot: GraftContextSlot = {};
+  const codegraphCarrier: PlanningRunCarrier = { invocations: [] };
+  const result = await _processPlanningWithHeartbeat(
+    ctx,
+    processorDeps,
+    graftSlot,
+    codegraphCarrier,
+  );
+  return attachPlanningFacts(result, graftSlot, codegraphCarrier);
+}
+
 /** What the body hands back to every one of its return paths. */
 interface PlanningRunCarrier {
   invocations: PlanningInvocationStats[];
   codegraphContext?: CodegraphContextResult;
   /** Issue #2384: `record()` writes `savedTokens` into this same object. */
   rtkOutput?: RtkOutputResult;
+}
+
+/**
+ * Attach the Graft and CodeGraph/RTK facts a planning round collected to its
+ * result. Shared by {@link processIssuePlanning} and {@link planHeldIssue} so
+ * the two cannot drift.
+ */
+function attachPlanningFacts(
+  result: Result<PlanningResult>,
+  graftSlot: GraftContextSlot,
+  codegraphCarrier: PlanningRunCarrier,
+): Result<PlanningResult> {
+  // Issue #2103: the shared carrier — one shape for all four processors;
+  // the CodeGraph facts ride the same result (Issue #2159).
+  const withGraft = withGraftContext(result, graftSlot);
+  return withGraft.ok &&
+      (codegraphCarrier.codegraphContext || codegraphCarrier.rtkOutput)
+    ? {
+      ok: true,
+      value: {
+        ...withGraft.value,
+        ...(codegraphCarrier.codegraphContext
+          ? { codegraphContext: codegraphCarrier.codegraphContext }
+          : {}),
+        ...(codegraphCarrier.rtkOutput
+          ? { rtkOutput: codegraphCarrier.rtkOutput }
+          : {}),
+      },
+    }
+    : withGraft;
 }
 
 /** A cap ends the whole planning round, including helper-owned repair loops. */

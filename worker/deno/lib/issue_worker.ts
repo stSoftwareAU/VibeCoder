@@ -231,6 +231,9 @@ async function workOnIssueRecorded(
     // Preserve a failure already booked by a phase; a later merge must not
     // relabel that recorded decision as an uncharged skip.
     if (state.failureLadderApplied) result = { ...result, ladderApplied: true };
+    // Issue #4130: a repeat worker-gate failure split into sub-issues, so the
+    // main loop records no cooldown kind for this run.
+    if (state.issueSplit) result = { ...result, issueSplit: true };
     result = await reconcileAlreadyLandedFailure(result, ctx, deps);
     deferTerminalRelease = ctx.deferTerminalRelease === true &&
       ((!result.success && !result.expectedSkip) ||
@@ -314,6 +317,8 @@ async function workOnIssueRecorded(
       // Issue #1949: a phase that already stepped the failure ladder says so,
       // so the main loop does not step it a second time in the same run.
       ...(state.failureLadderApplied ? { ladderApplied: true } : {}),
+      // Issue #4130: a split repeat gate failure earns no cooldown kind.
+      ...(state.issueSplit ? { issueSplit: true } : {}),
       // Issue #2162: the CodeGraph figures, read here rather than in the
       // execute phase so the `codegraph_explore` tally the invocation folded
       // in afterwards is the one the callbacks report.

@@ -293,6 +293,8 @@ import {
   isSetupFault,
   planCodingFailure,
 } from "./coding_failure_ladder.ts";
+// Issue #4130: a repeat worker-gate failure splits the parent into sub-issues.
+import { createRepeatGateSplitHook } from "./repeat_gate_split.ts";
 // Adaptive claim floor (Issue #245): the evidence lookup and the key the
 // per-cycle deferral set is written with.
 import { fetchIssueClaimEvidence } from "./claim_evidence_lookup.ts";
@@ -4842,6 +4844,9 @@ export async function createProductionRunCoreDeps(
       // A setup fault (Issue #2954) is released unlabelled and consumes no
       // attempt — the fault is the host's or the repository's, not the
       // issue's.
+      // A repeat worker-gate failure that splits into sub-issues (Issue #4130)
+      // earns no cooldown kind either: the parent is closed, so there is
+      // nothing to re-claim.
       const plan = planCodingFailure({
         success: result.success,
         expectedSkip: isExpectedSkip,
@@ -4851,8 +4856,11 @@ export async function createProductionRunCoreDeps(
         ...(result.ladderApplied ? { ladderApplied: true } : {}),
         ...(result.phase ? { phase: result.phase } : {}),
       });
-      const failureKind: CooldownFailureKind | undefined = plan.cooldownKind;
+      let splitSubIssues:
+        | { subIssueUrls: string[]; notes: string[] }
+        | undefined;
       if (plan.applyLadder) {
+        const branch = result.branchContext;
         const ladderOutcome = await applyCodingFailureLadder({
           repo: issue.repo,
           issueNumber: issue.issueNumber,
@@ -4868,7 +4876,23 @@ export async function createProductionRunCoreDeps(
             planningLabel: config.planningLabel,
             questionLabel: config.questionLabel,
           },
+          // Issue #4130: only a run that holds a branch can split one.
+          ...(branch
+            ? {
+              splitOnRepeatGate: createRepeatGateSplitHook({
+                ctx,
+                deps: workerDeps,
+                branch: {
+                  branchName: branch.branchName,
+                  repoPath: branch.repoPath,
+                  baseBranch: branch.milestoneBranch ?? branch.defaultBranch,
+                  defaultBranch: branch.defaultBranch,
+                },
+              }),
+            }
+            : {}),
         }, { handleIssueFailure: workerDeps.github.handleIssueFailure });
+        splitSubIssues = ladderOutcome.ladder?.split;
         if (ladderOutcome.error) {
           // Never swallowed: the run already failed and its claim still has
           // to be released, so this is reported rather than thrown.
@@ -4877,7 +4901,7 @@ export async function createProductionRunCoreDeps(
             issueNumber: issue.issueNumber,
             error: ladderOutcome.error.message,
           });
-        } else {
+        } else if (!splitSubIssues) {
           logger.info("Coding-run failure disposition", {
             repo: issue.repo,
             issueNumber: issue.issueNumber,
@@ -4888,6 +4912,25 @@ export async function createProductionRunCoreDeps(
           });
         }
       }
+      // Issue #4130: a split is not a failed attempt. A phase may have split
+      // it already (`issueSplit`, the quality gate), or the ladder just did.
+      const issueSplit = result.issueSplit === true ||
+        splitSubIssues !== undefined;
+      if (issueSplit) {
+        logger.info("Repeat worker-gate failure split into sub-issues", {
+          repo: issue.repo,
+          issueNumber: issue.issueNumber,
+          ...(splitSubIssues
+            ? {
+              subIssueUrls: splitSubIssues.subIssueUrls,
+              notes: splitSubIssues.notes,
+            }
+            : {}),
+        });
+      }
+      const failureKind: CooldownFailureKind | undefined = issueSplit
+        ? undefined
+        : plan.cooldownKind;
 
       // Keep this install's refusal memory immediately. The fleet-wide bound
       // reads the durable attempt tally after final claim release below.

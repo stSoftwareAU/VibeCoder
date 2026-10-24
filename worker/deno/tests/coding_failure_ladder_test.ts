@@ -8,7 +8,7 @@
  * infrastructure failure does not.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStrictEquals } from "@std/assert";
 import {
   applyCodingFailureLadder,
   classifyCodingFailure,
@@ -22,7 +22,10 @@ import {
   SECURITY_FIX_GATE_MARKER,
   SUMMARY_RULE_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
-import type { HandleFailureOptions } from "../lib/label_types.ts";
+import type {
+  HandleFailureOptions,
+  RepeatGateSplitHook,
+} from "../lib/label_types.ts";
 
 // ---------------------------------------------------------------------------
 // classifyCodingFailure
@@ -506,4 +509,37 @@ Deno.test("declared failure causes outrank quoted deadline and timeout wording (
     "transient",
   );
   assertEquals(classifyCodingFailure(reason).disposition, "transient");
+});
+
+Deno.test("applyCodingFailureLadder - a split hook is forwarded to handleIssueFailure unchanged (Issue #4130)", async () => {
+  const { calls, handleIssueFailure } = recordingHandler();
+  const hook: RepeatGateSplitHook = () =>
+    Promise.resolve({ split: false, reason: "not under test" });
+
+  await applyCodingFailureLadder({
+    repo: "owner/repo",
+    issueNumber: 42,
+    githubUser: "vibe-bot",
+    failureReason: "Quality checks failed: ./quality.sh exited 1",
+    category: "quality_check",
+    splitOnRepeatGate: hook,
+  }, { handleIssueFailure });
+
+  assertEquals(calls.length, 1);
+  assertStrictEquals(calls[0]?.splitOnRepeatGate, hook);
+});
+
+Deno.test("applyCodingFailureLadder - no split hook is passed when the option is absent (Issue #4130)", async () => {
+  const { calls, handleIssueFailure } = recordingHandler();
+
+  await applyCodingFailureLadder({
+    repo: "owner/repo",
+    issueNumber: 42,
+    githubUser: "vibe-bot",
+    failureReason: "Quality checks failed: ./quality.sh exited 1",
+    category: "quality_check",
+  }, { handleIssueFailure });
+
+  assertEquals(calls.length, 1);
+  assertEquals(Object.hasOwn(calls[0] ?? {}, "splitOnRepeatGate"), false);
 });

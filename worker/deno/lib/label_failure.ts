@@ -11,6 +11,11 @@
  * `failed-once`, writes its record and stays claimable once the escalating
  * cooldown ends. The worker never applies `failed`.
  *
+ * Issue #4130: a repeat failure of a worker gate (summary, quality, pre-push
+ * or security-fix) splits the parent issue into sub-issues when the caller
+ * supplies `splitOnRepeatGate`. A split writes no failure record and applies
+ * no label. When the split cannot happen, the repeat is recorded as before.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -20,17 +25,21 @@ import {
   type ClarityStatus,
   detectFailureCategory,
   extractKeyErrorLines,
+  type FailureCategory,
   formatZeroOutputDiagnostics,
   getFailureCategoryDisplay,
   getFailureDiagnosis,
   getFailureDiagnosisOneliner,
   isInfrastructureFailure,
+  isSplittableWorkerGateCategory,
 } from "./failure_diagnosis.ts";
 import type {
   FailureOptions,
   HandleFailureOptions,
   HandleFailureResult,
   LabelManagerDeps,
+  RepeatGateSplitHook,
+  RepeatGateSplitOutcome,
 } from "./label_types.ts";
 import { DEFAULT_LABEL_CONFIG } from "./label_types.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
@@ -316,11 +325,42 @@ ${diagnosisText}
 }
 
 /**
+ * Ask the split hook to split a repeat worker-gate failure (Issue #4130).
+ *
+ * A throw is turned into a refusal rather than propagated, so the caller
+ * always falls back to recording the repeat. The reason is returned, never
+ * dropped, so the caller can log it.
+ */
+async function trySplitOnRepeatGate(
+  hook: RepeatGateSplitHook,
+  category: FailureCategory,
+  gateOutput: string,
+): Promise<RepeatGateSplitOutcome> {
+  try {
+    return await hook({ category, gateOutput });
+  } catch (err) {
+    return {
+      split: false,
+      reason: `split threw: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
+}
+
+/**
  * Unified failure handler for push/PR/Claude failures.
  *
  * Records the failure on the issue with `failed-once`, as a repeat when the
  * label is already there. Never terminal (Issue #4158): the issue stays
  * claimable, and the cooldown alone paces the next attempt.
+ *
+ * Issue #4130: a repeat failure of a worker gate (summary, quality, pre-push
+ * or security-fix) with a `splitOnRepeatGate` hook is split into sub-issues
+ * instead. A split returns early with `split` set and writes no failure
+ * record, no label and no assignee removal. A refused or throwing split is
+ * logged and falls through to the repeat record. A first failure, any other
+ * category, and a missing hook never split.
  *
  * NOTE: This does NOT handle git branch cleanup — the caller is responsible
  * for that (git checkout, branch deletion, etc.).
@@ -410,6 +450,37 @@ export async function handleIssueFailure(
     labels.failedOnceLabel,
     ghCommandFn,
   );
+
+  // Issue #4130: a repeat worker-gate failure splits the issue into sub-issues
+  // rather than being recorded again. Nothing is written to the issue when it
+  // splits, so the caller's branch cleanup is its only remaining work.
+  if (
+    repeat && isSplittableWorkerGateCategory(failureCategory) &&
+    options.splitOnRepeatGate
+  ) {
+    const outcome = await trySplitOnRepeatGate(
+      options.splitOnRepeatGate,
+      failureCategory,
+      options.failureMessage,
+    );
+    if (outcome.split) {
+      return {
+        ok: true,
+        value: {
+          markedAsFailedOnce: false,
+          failureCategory,
+          isInfrastructure: false,
+          split: {
+            subIssueUrls: outcome.subIssueUrls,
+            notes: outcome.notes,
+          },
+        },
+      };
+    }
+    console.warn(
+      `[label_manager] Warning: repeat gate failure on issue #${options.issueNumber} in ${options.repo} was not split — recording it as a repeat failure instead: ${outcome.reason} (Issue #4130)`,
+    );
+  }
 
   await markIssueAsFailedOnce({ ...options, repeat }, deps);
   return {

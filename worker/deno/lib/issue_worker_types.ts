@@ -166,6 +166,12 @@ export interface PhaseState {
    */
   failureLadderApplied?: boolean;
   /**
+   * A repeat worker-gate failure split the parent issue into sub-issues and
+   * closed it (Issue #4130). No failure record was written and no cooldown
+   * applies: the parent is closed, so there is nothing to re-claim.
+   */
+  issueSplit?: boolean;
+  /**
    * Check-agnostic diffable findings captured during the baseline quality
    * check (Issue #2604). Populated by `workOnIssueBaselineQuality` and
    * consumed by the post-Claude quality gate to compute a generic
@@ -579,6 +585,12 @@ interface WorkOnIssueResultBase {
    * but leaves the labels alone.
    */
   ladderApplied?: boolean;
+  /**
+   * A repeat worker-gate failure split the parent issue into sub-issues and
+   * closed it (Issue #4130), so the main loop records no cooldown kind for
+   * this run. Carried from {@link PhaseState.issueSplit}.
+   */
+  issueSplit?: boolean;
   /**
    * What this run's CodeGraph step produced (Issue #2162, part of #2145),
    * read from {@link PhaseState.codegraphContext} once the run is over so

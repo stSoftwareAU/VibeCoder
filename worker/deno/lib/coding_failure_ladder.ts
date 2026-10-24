@@ -27,7 +27,7 @@
  *     S -->|"no"| C{"classifyCodingFailure"}
  *     C -->|"account state: rate limit,<br/>out of credit, interrupted,<br/>scheduled release, deadline-bound timeout<br/>host state: OOM, full disk,<br/>crash, missing tools, external kill<br/>host capability: token lacks<br/>the workflow scope"| T["transient:<br/>flat 600 s cooldown,<br/>no attempt consumed"]
  *     C -->|"anything else"| L["ladder:<br/>failed-once record<br/>+ escalating cooldown"]
- *     L --> L1["each failure: record,<br/>cooldown 2 h → 6 h → 24 h"]
+ *     L --> L1["each failure: record,<br/>cooldown 2 h → 6 h → 24 h<br/>a repeat worker gate with a split hook<br/>splits instead (Issue #4130)"]
  *     L1 --> L2["retried when the cooldown ends,<br/>never parked (Issue #4158)"]
  * ```
  *
@@ -58,6 +58,7 @@ import type {
   HandleFailureOptions,
   HandleFailureResult,
   LabelConfig,
+  RepeatGateSplitHook,
 } from "./label_types.ts";
 
 /** What a terminal coding-run failure earns. */
@@ -243,6 +244,12 @@ export interface CodingFailureLadderOptions {
   failurePhase?: string;
   /** Configured label names; defaults apply when absent. */
   labels?: LabelConfig;
+  /**
+   * Splits the parent issue when this run is a repeat worker-gate failure
+   * (Issue #4130). Passed on to `handleIssueFailure` only when supplied; without
+   * it a repeat is recorded as before.
+   */
+  splitOnRepeatGate?: RepeatGateSplitHook;
 }
 
 /** Injection seam for {@link applyCodingFailureLadder}. */
@@ -295,6 +302,9 @@ export async function applyCodingFailureLadder(
     category: options.category,
     diagnosticContext,
     ...(options.labels ? { labels: options.labels } : {}),
+    ...(options.splitOnRepeatGate
+      ? { splitOnRepeatGate: options.splitOnRepeatGate }
+      : {}),
   };
 
   try {

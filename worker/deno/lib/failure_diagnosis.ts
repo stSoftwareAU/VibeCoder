@@ -848,6 +848,50 @@ export function getFailureCategoryDisplay(
 }
 
 /**
+ * Whether a worker gate's repeat failure splits the parent issue into
+ * sub-issues on run 2, instead of being recorded as another repeat failure
+ * (Issue #4130).
+ *
+ * This is the single "is this a worker gate that splits on run 2" test. It is
+ * deliberately NOT `isWorkerGateCategory`: that registry-driven guard covers
+ * the marker categories, including `criteria_unmet`, and excludes
+ * `quality_check`. `criteria_unmet` is intentionally not included here because
+ * the issue lists exactly these four gates.
+ */
+export function isSplittableWorkerGateCategory(
+  category: FailureCategory,
+): boolean {
+  switch (category) {
+    case "summary_incomplete":
+    case "quality_check":
+    case "pre_push_gate":
+    case "security_fix_gate":
+      return true;
+    case "killed":
+    case "timeout":
+    case "rate_limit":
+    case "zero_output":
+    case "push_failure":
+    case "token_scope":
+    case "no_changes":
+    case "evidence_missing":
+    case "workflow_gate":
+    case "internal_error":
+    case "missing_tools":
+    case "interrupted":
+    case "scheduled_release":
+    case "repo_config":
+    case "prompt_too_long":
+    case "clone_corrupt":
+    case "criteria_unmet":
+    case "unknown":
+      return false;
+    default:
+      return assertNever(category);
+  }
+}
+
+/**
  * Check if clarity was assessed or skipped (i.e. not "not_assessed").
  *
  * Returns true if clarity was assessed as CLEAR or skipped (meaning the

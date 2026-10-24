@@ -60,6 +60,23 @@ export const DEFAULT_LABEL_CONFIG: LabelConfig = {
   questionLabel: "question",
 };
 
+/** What a repeat-gate split reports (Issue #4130). */
+export type RepeatGateSplitOutcome =
+  | { split: true; subIssueUrls: string[]; notes: string[] }
+  | { split: false; reason: string };
+
+/** What the failure handler tells the split about the failing run (Issue #4130). */
+export interface RepeatGateSplitRequest {
+  category: FailureCategory;
+  /** This run's raw failure message (the gate output). */
+  gateOutput: string;
+}
+
+/** Splits the parent issue into sub-issues instead of recording a repeat gate failure (Issue #4130). */
+export type RepeatGateSplitHook = (
+  req: RepeatGateSplitRequest,
+) => Promise<RepeatGateSplitOutcome>;
+
 /** Options for marking an issue as failed. */
 export interface FailureOptions {
   category?: FailureCategory;
@@ -86,6 +103,16 @@ export interface FailureOptions {
    * `failed-once` and stays claimable: an assigned issue is never parked.
    */
   repeat?: boolean;
+  /**
+   * Splits the parent issue into sub-issues when this is a repeat worker-gate
+   * failure (Issue #4130), instead of recording it as another repeat failure.
+   * Optional on purpose: only a caller that holds a branch to clean up and can
+   * run planning supplies it. The coding-run callers supply it — the
+   * quality-gate remediation phase and the main loop's
+   * `applyCodingFailureLadder`. Planning, question and other callers never see
+   * a worker-gate category, so they leave it unset.
+   */
+  splitOnRepeatGate?: RepeatGateSplitHook;
 }
 
 /** Options for the unified failure handler. */
@@ -96,6 +123,8 @@ export interface HandleFailureResult {
   markedAsFailedOnce: boolean;
   failureCategory: FailureCategory;
   isInfrastructure: boolean;
+  /** Present when a repeat worker-gate failure split the issue (Issue #4130). */
+  split?: { subIssueUrls: string[]; notes: string[] };
 }
 
 /** Options for handling question failure. */
