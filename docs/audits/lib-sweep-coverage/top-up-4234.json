@@ -1,0 +1,16 @@
+{
+  "issue": 4234,
+  "chunk": "top-up-4234",
+  "title": "top-up: pre-PR verifier convergence and summary-gate modules",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4234",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: gate_recovery_loop.ts, summary_gate_prefill.ts, verifier_convergence.ts, removed_assertion_input.ts, summary_gate_registry.ts (#4234)",
+  "status": "claimed",
+  "sweptAt": "dca0de36f23e2fd92b2ac165d709cc0131a862b4",
+  "paths": [
+    "worker/deno/lib/gate_recovery_loop.ts",
+    "worker/deno/lib/summary_gate_prefill.ts",
+    "worker/deno/lib/verifier_convergence.ts",
+    "worker/deno/lib/removed_assertion_input.ts",
+    "worker/deno/lib/summary_gate_registry.ts"
+  ]
+}

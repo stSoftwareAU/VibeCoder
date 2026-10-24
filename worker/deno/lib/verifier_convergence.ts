@@ -7,8 +7,9 @@
  * unless its severity is `critical` or `high`. Everything the diff cannot place
  * fails closed: it blocks.
  *
- * This module only splits and reshapes results. It is not wired into the
- * completion phase here.
+ * This module only splits and reshapes results. The completion phase
+ * (`lib/phases/completion_phase.ts`) is its one caller, and passes it only the
+ * findings the previous pass did not raise.
  *
  * @module
  */
@@ -98,7 +99,9 @@ function isAdvisoryOnRetry(
 /**
  * Split a verifier's findings on a retry or recovery turn. `isRetry` false
  * blocks everything. `changed` is `parseDiffChangedLines(diff)`, or null when
- * the diff is unknown.
+ * the diff is unknown. The function demotes every finding it is given that is
+ * on an unchanged line and is not critical or high; the caller passes only the
+ * findings the previous pass did not raise (Issue #4234).
  */
 export function splitFindingsForRetry(opts: {
   findings: readonly ReviewFinding[];

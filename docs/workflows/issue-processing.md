@@ -1321,6 +1321,19 @@ final message; marking a criterion partial, listing a known gap or noting a
 test as not red-checked does not settle it (Issue #3797). `testChanges: meaningful`
 is not a finding and does not block.
 
+**Retry convergence (Issue #4234).** On a retry the verifier is given the
+previous blocking findings: this run's latest pass, else the bullets of the
+last pre-PR gate comment the worker posted. Each needs an `earlierFindings`
+verdict; a missing one, or one not `fixed`, adds a blocking `(earlier review)`
+finding. A finding may carry `severity` (`critical`, `high`, `medium` or
+`low`). A finding whose text matches one on the previous blocking list keeps
+blocking. Any other finding on a line the PR does not change, with severity
+other than `critical` or `high` (or none), is posted as an advisory comment
+([`PRE_PR_VERIFIER_ADVISORY_HEADING`](../../worker/deno/lib/verifier_convergence.ts))
+and does not block. A finding the diff cannot place fails closed and blocks:
+an absolute or `..` path, a `(...)` file, no positive line, or a diff that is
+unread or not fully parsed. First passes block everything.
+
 **When it cannot run.** A pass that cannot run (brief missing, git failure,
 a failed caller listing, launch error, timeout, unparseable reply, or a
 malformed `callers` array) is logged as a warning as "not checked",
