@@ -27,6 +27,7 @@ import { readPrResponseMessage } from "./pr_branch_preparation.ts";
 import type { ConflictIssueContext } from "./conflict_issue_context.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { isProviderUnavailableFailure } from "./agent_output.ts";
+import { beginHandlerLandingStep } from "./handler_watchdog.ts";
 
 export type {
   MergeConflictRepairContext,
@@ -219,6 +220,10 @@ export async function runMergeConflictAgent(
     };
   }
 
+  // The agent has exited. Commit, the pre-commit safety gate and push are
+  // still to come, and those count as the handler still working (Issue #4173).
+  // A no-op when this run is not inside a watched handler.
+  beginHandlerLandingStep("commit");
   return { ok: true, value: { terminated: false } };
 }
 

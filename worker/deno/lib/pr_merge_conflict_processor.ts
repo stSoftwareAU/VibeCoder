@@ -47,6 +47,7 @@ import {
   createMergeConflictReplyReader,
   runMergeConflictAgent,
 } from "./merge_conflict_agent.ts";
+import { endHandlerLandingStep } from "./handler_watchdog.ts";
 import { isMilestoneHead } from "./gated_head_guard.ts";
 import {
   type ConflictTakeoverDeps,
@@ -914,6 +915,19 @@ async function recordConsultedIssues(
  *   simply too hard — that case returns `ok: true` with `merged: false`.
  */
 export async function processMergeConflict(
+  ...args: Parameters<typeof resolveTrackedMergeConflict>
+): Promise<Result<MergeConflictResult>> {
+  try {
+    return await resolveTrackedMergeConflict(...args);
+  } finally {
+    // The conflict agent marks commit/push as still landing (Issue #4173).
+    // Clear it when the attempt returns so a later wedge in this same
+    // handler is not treated as that landing. A no-op when no step was begun.
+    endHandlerLandingStep();
+  }
+}
+
+async function resolveTrackedMergeConflict(
   input: MergeConflictInput,
   processorDeps: MergeConflictProcessorDeps,
 ): Promise<Result<MergeConflictResult>> {
