@@ -230,10 +230,13 @@ Deno.test("commitAndPushPending still pushes a merge of the base", async () => {
       )).code,
       0,
     );
-    assertEquals(await originTip(repo), await gitOk(
-      ["rev-parse", "HEAD"],
-      repo.downstream,
-    ));
+    assertEquals(
+      await originTip(repo),
+      await gitOk(
+        ["rev-parse", "HEAD"],
+        repo.downstream,
+      ),
+    );
   } finally {
     await Deno.remove(repo.tmp, { recursive: true });
   }

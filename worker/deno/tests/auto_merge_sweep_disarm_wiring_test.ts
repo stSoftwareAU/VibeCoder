@@ -69,6 +69,9 @@ async function sweepOnePr(
         },
       }));
     }
+    if (args[0] === "api" && args[1]?.endsWith("/comments")) {
+      return Promise.resolve("[]");
+    }
     // Branch update, disarm and anything else: succeed with no output.
     return Promise.resolve("");
   };

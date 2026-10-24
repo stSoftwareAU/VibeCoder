@@ -1,3 +1,4 @@
+import { fetchIssueCommentBodies } from "./prepr_review_record.ts";
 import { agentTranscriptDir } from "./agent_transcript.ts";
 import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
 /**
@@ -3573,6 +3574,8 @@ export async function createProductionRunCoreDeps(
         // `mergeStateStatus`, so the sweep can see an armed PR whose head
         // has fallen behind its base.
         prLiveState: (repo, pr) => readPrLiveState(repo, pr.number, gh),
+        prCommentBodies: (repo, prNumber) =>
+          fetchIssueCommentBodies(repo, prNumber, gh),
         // Issue #2462: the REST update-branch call the merge ladder already
         // uses — reused as-is, never re-implemented here.
         updateBranchFn: (repo, prNumber) =>
