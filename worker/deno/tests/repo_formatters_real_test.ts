@@ -17,6 +17,7 @@ import {
   runFormatterCommand,
   runRepoFormatters,
 } from "../lib/repo_formatters.ts";
+import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
 import type { Logger } from "../types.ts";
 
 interface GitRunResult {
@@ -118,14 +119,22 @@ Deno.test("runRepoFormatters - real deno fmt with the production deps fixes and 
 Deno.test("createRepoFormatterDeps().runCommand runs the formatter as the worker's own uid (Issue #4113)", async () => {
   // Base ran `sudo -u agent`, so this fails there wherever the `agent` account
   // exists: the uid it reports is then not the worker's.
-  const uid = Deno.uid();
-  assert(
-    uid !== null,
-    "Deno.uid() is null on this platform, so the formatter's uid cannot be checked (Issue #4113)",
-  );
+  // The worker's uid is read by spawning `id -u` directly in this process, which
+  // has the same uid as the test, so no --allow-sys is needed (Deno.uid()).
+  const direct = await new Deno.Command("id", {
+    args: ["-u"],
+    stdout: "piped",
+    stderr: "piped",
+    stdin: "null",
+  }).output();
+  const directStderr = new TextDecoder().decode(direct.stderr);
+  const directUid = new TextDecoder().decode(direct.stdout).trim();
+  assertEquals(direct.code, 0, directStderr);
+  assert(directUid.length > 0, "direct `id -u` printed no uid (Issue #4113)");
+
   const result = await createRepoFormatterDeps().runCommand(["id", "-u"]);
   assertEquals(result.exitCode, 0, result.output);
-  assertEquals(result.output.trim(), String(uid));
+  assertEquals(result.output.trim(), directUid);
 });
 
 Deno.test("runFormatterCommand records a missing binary as exit 1 with the error text (Issue #4113)", async () => {
@@ -137,16 +146,38 @@ Deno.test("runFormatterCommand records a missing binary as exit 1 with the error
 });
 
 Deno.test("runFormatterCommand gives the child a credential-free environment (Issue #4113)", async () => {
-  const name = "VIBE_TEST_FORMATTER_TOKEN_4113";
-  Deno.env.set(name, "secret");
-  try {
-    const result = await runFormatterCommand(["env"]);
-    assertEquals(result.exitCode, 0, result.output);
-    assertEquals(result.output.includes(name), false, result.output);
-    // Positive control: the child does get an environment, so the absence
-    // above is the allowlist at work rather than an empty environment.
-    assertStringIncludes(result.output, "PATH=");
-  } finally {
-    Deno.env.delete(name);
-  }
+  // Only reads the environment: parallel tests share it, so nothing is set here.
+  const allowed = new Set(ALLOWED_ENV_NAMES);
+  const result = await runFormatterCommand(["env"]);
+  assertEquals(result.exitCode, 0, result.output);
+
+  // `env` prints NAME=value per line. A continuation line of a multi-line value
+  // has no '=' of its own at line start, so only lines containing '=' count,
+  // and a name is the text before the first '='.
+  const childNames = result.output
+    .split("\n")
+    .filter((line) => line.includes("="))
+    .map((line) => line.slice(0, line.indexOf("=")));
+  const offenders = childNames.filter((name) => !allowed.has(name));
+  assertEquals(
+    offenders,
+    [],
+    `child environment carries names outside ALLOWED_ENV_NAMES: ${
+      offenders.join(", ")
+    }`,
+  );
+
+  // Positive control 1: the child does get an environment, so the check above
+  // is the allowlist at work rather than an empty environment.
+  assertStringIncludes(result.output, "PATH=");
+
+  // Positive control 2: the parent does have names outside the allowlist, so
+  // the check above is not vacuous.
+  const parentOutside = Object.keys(Deno.env.toObject()).filter((name) =>
+    !allowed.has(name)
+  );
+  assert(
+    parentOutside.length > 0,
+    "the parent process has no environment name outside ALLOWED_ENV_NAMES, so the child check would pass vacuously (Issue #4113)",
+  );
 });
