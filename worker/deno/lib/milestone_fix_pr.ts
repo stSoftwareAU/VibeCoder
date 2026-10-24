@@ -42,6 +42,7 @@ import { makeGhDefaultBranchFn } from "./milestone_branch_sync.ts";
 import { clearMilestoneReviewRequests } from "./milestone_pr_reviewers.ts";
 import { isMergeCommitNotAllowed } from "./milestone_sync_pr.ts";
 import { findOwnedOpenArtefact } from "./owned_open_artefact.ts";
+import { logAt } from "./log_sink.ts";
 
 /** `owner/repo` with the character set GitHub actually allows. */
 const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
@@ -324,8 +325,10 @@ async function reportFixPrNotArmed(
   deps: MilestoneFixPrDeps,
 ): Promise<void> {
   const warn = deps.warn ?? deps.log;
-  warn?.(
-    `WARNING: the milestone fix PR ${repo}#${prNumber} was not armed for ` +
+  logAt(
+    warn,
+    "warn",
+    `the milestone fix PR ${repo}#${prNumber} was not armed for ` +
       `auto-merge: ${reason}`,
   );
   try {
@@ -342,8 +345,10 @@ async function reportFixPrNotArmed(
   } catch (commentError) {
     // Fail loud: the refusal must never become silent because the comment
     // could not be posted either.
-    warn?.(
-      `WARNING: could not post the auto-merge reason comment on ` +
+    logAt(
+      warn,
+      "warn",
+      `could not post the auto-merge reason comment on ` +
         `${repo}#${prNumber}: ${
           commentError instanceof Error
             ? commentError.message

@@ -44,6 +44,17 @@ to complete that issue; nothing more from a person is needed or wanted.
 - **A crash is not an answer.** A run that failed, made no model turn, or
   stopped early is retried on the normal ladder. It is never read as "nothing
   to do".
+- **Every PR is armed for auto-merge.** A PR is armed when it is raised and
+  stays armed (owner, 25 October 2026). It merges once it has an approving
+  review and CI is green; nothing else holds it. The worker never disarms a PR
+  or skips arming it because of a finding or a label. A PR left unarmed does
+  not merge even after it is approved, and every late merge causes more
+  conflicts (Issue #4291).
+- **Requirements come from the owner.** A new gate, check, evidence
+  obligation or rule that can fail or hold back a run that delivered its issue
+  works against this principle. Fleet tooling (review learning, idle-task
+  audits) never invents one from its own findings. It proposes removing or
+  rewording guidance that causes mistakes, or files a worker defect.
 - **A failure is recorded, never parked.** Every failed run writes its
   evidence on the issue and keeps `failed-once`, so the failure is visible and
   countable. It is never relabelled as a hand-off, an analysis, or a partial
@@ -2666,7 +2677,7 @@ and claim handler.
 - [`worker/deno/lib/idle_task_claim_handler.ts`](worker/deno/lib/idle_task_claim_handler.ts)
   — Routes claimed `idle-task` issues to the template's `runTask()`.
 - [`worker/deno/lib/idle_task_templates/`](worker/deno/lib/idle_task_templates/)
-  — Per-template implementations. Nineteen production templates:
+  — Per-template implementations. Twenty production templates:
   `security_scan_template.ts` (#1, security audit), `best_practices_template.ts`
   (#2, bucket-scoped best-practices review — see
   [`docs/BEST-PRACTICES-SCAN.md`](docs/BEST-PRACTICES-SCAN.md)),
@@ -2723,9 +2734,14 @@ and claim handler.
   tool the gate skips with a warning while CI installs and runs it — the drift
   that let NEAT-AI-core PR 597 pass locally and fail in CI; suppressed for a
   tool `container/tools.json` already pins for that repository — see
-  [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md)).
-  The idle-task filer picks uniformly at random (1/19 each) between the
-  nineteen on every idle pass.
+  [`docs/GATE-SKIP-DRIFT-SCAN.md`](docs/GATE-SKIP-DRIFT-SCAN.md));
+  and `ponytail_debt_template.ts` (#20, native weekly report that lists every
+  `// SIMPLE-ON-PURPOSE:` marker with its path, line, ceiling and upgrade
+  condition, flags a marker with no `upgrade when`, and posts or refreshes one
+  ledger issue without committing or opening a pull request — see
+  [`docs/PONYTAIL-DEBT-SCAN.md`](docs/PONYTAIL-DEBT-SCAN.md)).
+  The idle-task filer picks uniformly at random (1/20 each) between the
+  twenty on every idle pass.
 
 See [`docs/IDLE-TASK-FRAMEWORK.md`](docs/IDLE-TASK-FRAMEWORK.md) for the
 operator manual, lifecycle sequence diagram, registry flowchart, and
@@ -2741,7 +2757,7 @@ claimed issue to the `process-add-repo` command, which validates access and
 detects visibility at runtime, idempotently appends the slug to the per-machine
 `.config.json` (a forbidden-to-commit secrets file — never committed), syncs the
 full canonical GitHub label set to the target repo, configures the
-default-branch protection "wall", seeds all nineteen idle-task wrappers
+default-branch protection "wall", seeds all twenty idle-task wrappers
 in the target repo, then comments and closes the add-repo issue.
 
 - **Timing.** The monitored-list change takes effect on the next config reload /
@@ -2770,7 +2786,7 @@ in the target repo, then comments and closes the add-repo issue.
   (through `escalateToHuman`), and the repo is **not** added.
 - **Deliberate skips.** The remaining one-off setup syncs (workflows,
   `.gitignore`, collaborator precheck) are **not** re-run — best-practice setup
-  is delegated to the nineteen idle tasks. Visibility gating (which idle checks fire
+  is delegated to the twenty idle tasks. Visibility gating (which idle checks fire
   on private repos) is handled at runtime per.
 - **Labels.** No new worker-applied label behaviour: the flow relies on the
   existing `idle-task` self-apply (via the wrappers) and `needs-human` (only
@@ -3189,7 +3205,7 @@ summary-only correction turn (Issue #3324), and only a block that survives it
 finalises the PR. A standing Standards violation on the branch's own lines is
 a defect in the change, not a documentation shortfall, so that recovery turn
 may fix the code for it, and an existing PR finalised with one still standing
-is labelled `standing-violation` rather than auto-merged (Issue #3382).
+has it posted on the PR for the next run to fix (Issues #3382, #4291).
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in

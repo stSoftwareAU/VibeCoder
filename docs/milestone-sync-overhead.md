@@ -25,11 +25,12 @@ is never bypassed.
 
 - CI fixes and review fixes on an ordinary issue PR land as commits on that
   PR, not separate PRs, so they are not separate rows here.
-- Cost: Issue #3644's lifecycle ledger (sub-issues #3718 to #3723) is not on
-  the default branch yet, so no per-issue API-equivalent cost is reported. The
-  cost column is "unknown", never zero. CI runner minutes are reported for
-  VibeCoder from the Actions API instead (sum of `updated_at` minus
-  `run_started_at` per run, a wall-clock approximation).
+- Cost: this window predates follow-on recording, so its cost column stays
+  "unknown", never zero. A conflict-fix run now writes a `follow_on` event
+  with `followOn: merge_conflict` (Issue #4153); CI-fix and review-fix runs
+  already did. CI runner minutes are reported for VibeCoder from the Actions
+  API instead (sum of `updated_at` minus `run_started_at` per run, a
+  wall-clock approximation).
 
 ## Baseline
 
@@ -38,7 +39,9 @@ is never bypassed.
 | VibeCoder | 110 | 32/32 | 42 | 14 | 1 | 0.29 | 10 min |
 | private repo P1 | 149 | 86/87 | 66 | 23 (of 24) | 1 | 0.58 | 12 min |
 
-Other PRs: VibeCoder 5, P1 73. Per-issue API-equivalent cost: unknown.
+Other PRs: VibeCoder 5, P1 73. Per-issue API-equivalent cost for this window:
+unknown. Conflict-fix runs after Issue #4153 write that cost as a `follow_on`
+/ `merge_conflict` event; this window predates that recording.
 
 | Median open to merge | VibeCoder | P1 |
 | --- | --- | --- |
@@ -160,8 +163,9 @@ flowchart TD
 - After: the guard prevents identical re-pushes, which were 0 in this window, so
   the expected reduction for the window is 0. This is a guard against a path
   the code allowed, not a measured saving.
-- Re-measure with the same commands once #3644's ledger is on the default
-  branch.
+- Re-measure with the same commands for a window whose conflict-fix runs
+  wrote `follow_on` / `merge_conflict` events (Issue #4153). This window
+  predates that recording, so its cost stays unknown.
 
 ## Related
 

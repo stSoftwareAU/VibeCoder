@@ -23,6 +23,7 @@ import {
   AutoMergeResult,
   type EnableAutoMergeResult,
 } from "./pr_auto_merge.ts";
+import { logAt } from "./log_sink.ts";
 
 /** Marker on the comment placed on a retargeted milestone-fix PR. */
 export const MILESTONE_FIX_RETARGETED_MARKER =
@@ -248,8 +249,10 @@ async function commentOnce(
       `${marker}\n${body}`,
     ]);
   } catch (err) {
-    o.log(
-      `WARNING: could not comment on ${o.repo}#${prNumber} about its base: ${
+    logAt(
+      o.log,
+      "warn",
+      `could not comment on ${o.repo}#${prNumber} about its base: ${
         err instanceof Error ? err.message : String(err)
       } (Issue #3433)`,
     );
@@ -294,8 +297,10 @@ export async function checkPrBaseIntegrity(
   switch (decision.kind) {
     case "mistargeted-milestone-fix": {
       await disarmAutoMerge(repo, pr.number, gh, log);
-      log(
-        `WARNING: [MILESTONE_FIX_RETARGETED] ${repo}#${pr.number} has milestone-fix head '${reading.headRefName}' on base '${base}', not a milestone branch — auto-merge disarmed (Issue #3433)`,
+      logAt(
+        log,
+        "warn",
+        `[MILESTONE_FIX_RETARGETED] ${repo}#${pr.number} has milestone-fix head '${reading.headRefName}' on base '${base}', not a milestone branch — auto-merge disarmed (Issue #3433)`,
       );
       // Issue #3433. Posted in the target repo, so it cites no VibeCoder issue number (Issue #3674).
       const text =
@@ -322,8 +327,10 @@ export async function checkPrBaseIntegrity(
     case "moved-onto-default": {
       const from = reading.lastBaseChange?.from ?? "unknown";
       await disarmAutoMerge(repo, pr.number, gh, log);
-      log(
-        `WARNING: ${repo}#${pr.number} was moved onto '${base}' from '${from}' after it was opened — auto-merge disarmed (Issue #3433)`,
+      logAt(
+        log,
+        "warn",
+        `${repo}#${pr.number} was moved onto '${base}' from '${from}' after it was opened — auto-merge disarmed (Issue #3433)`,
       );
       await commentOnce(
         o,
@@ -343,8 +350,10 @@ export async function checkPrBaseIntegrity(
     }
     case "base-changed-since-armed": {
       const disarmed = await disarmAutoMerge(repo, pr.number, gh, log);
-      log(
-        `WARNING: ${repo}#${pr.number} base changed after auto-merge was armed — disarmed for re-evaluation (Issue #3433)`,
+      logAt(
+        log,
+        "warn",
+        `${repo}#${pr.number} base changed after auto-merge was armed — disarmed for re-evaluation (Issue #3433)`,
       );
       if (!disarmed) {
         return {

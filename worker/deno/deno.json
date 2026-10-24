@@ -12,7 +12,7 @@
     "check": "deno check --frozen --lock=deno.lock '**/*.ts'",
     "check:manifests": "deno run --frozen --lock=deno.lock --allow-read --allow-env --allow-run check_manifests.ts",
     "drift-pins-on-base": "deno run --frozen --lock=deno.lock --allow-read --allow-run=git tests/support/markdown_docs.ts",
-    "pr-summary-check": "deno run --frozen --lock=deno.lock --allow-read --allow-env=GIT_COMMAND_TIMEOUT,GIT_MERGE_TIMEOUT,HOME,VIBE_AUDIT_DISABLED,WORK_DIR --allow-run=git lib/pr_summary_check_cli.ts",
+    "pr-summary-check": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env=GIT_COMMAND_TIMEOUT,GIT_MERGE_TIMEOUT,HOME,VIBE_AUDIT_DISABLED,WORK_DIR --allow-run=git,deno,cargo lib/pr_summary_check_cli.ts",
     "pr-summary-ci": "deno run --frozen --lock=deno.lock --allow-read --allow-env=GIT_COMMAND_TIMEOUT,GIT_MERGE_TIMEOUT,HOME,VIBE_AUDIT_DISABLED,WORK_DIR --allow-run=git lib/pr_summary_ci_cli.ts",
     "lint": "deno lint",
     "fmt": "deno fmt",
@@ -27,6 +27,7 @@
     "security-tabletop": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts security-tabletop",
     "publish-decision-check": "deno run --frozen --lock=deno.lock --allow-read --allow-env mod.ts publish-decision-check --repo ../..",
     "security-tree-sweep": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname mod.ts security-tree-sweep --repo ../.. --slug stSoftwareAU/VibeCoder",
+    "lib-sweep-record": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-sys=hostname commands/lib_sweep_record.ts",
     "references-refresh": "deno run --frozen --lock=deno.lock --allow-read --allow-write --allow-env --allow-run --allow-net --allow-sys=hostname mod.ts references-refresh --repo ../.. --slug stSoftwareAU/VibeCoder",
     "stabilisation-report": "deno run --frozen --lock=deno.lock --allow-read lib/stabilisation_report_cli.ts"
   },

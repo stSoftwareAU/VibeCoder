@@ -565,11 +565,11 @@ flowchart LR
 ### ⚖️ Idle-Task Template Weights
 
 When no claimable work exists, the worker files a background **idle-task**
-issue. It picks which template to run from the nineteen registered templates by
+issue. It picks which template to run from the twenty registered templates by
 a random draw — the authoritative list lives in the
 [idle-task registry](IDLE-TASK-FRAMEWORK.md#registry), which this page
 deliberately does not restate. By default the draw is **uniform** — each
-template has a 1/19 chance, so only ~2/19 of idle runs are
+template has a 1/20 chance, so only ~2/20 of idle runs are
 supply-chain-relevant.
 
 Set `idle_task_template_weights` to bias the draw toward the templates you care
@@ -4847,8 +4847,14 @@ round. The formatters cover exactly what the gate's format checks would flag:
 `deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
 `.cjs`, `.mts`, `.cts`, `.json`, `.jsonc`) that the deno root's own fmt
 `include`/`exclude` covers, and `cargo fmt --all` for a cargo root whose `.rs`
-files changed. Markdown is never formatted: `deno fmt` re-wraps whole documents
-and trips markdownlint MD018, so a Markdown miss is left to the check to report.
+files changed. Markdown outside `docs/archive/pr-summaries/` and
+`docs/archive/handover/` is never formatted: `deno fmt` re-wraps whole documents
+and trips markdownlint MD018, so a Markdown miss there is left to the check to
+report. Those two directories are the worker's own notes, and `docs/archive/`
+is excluded from the markdownlint globs. After the repository formatters,
+`formatBeforeGate` runs `deno fmt` on the Markdown and JSON the branch changed
+under them and commits that too. A missing formatter or a write failure is
+logged, and the gate still runs.
 Only the formatted paths are staged. A formatter that is missing, fails or
 throws never fails the run on its own: it is logged, and the gate that follows
 still runs every check and reports what was left unfixed.

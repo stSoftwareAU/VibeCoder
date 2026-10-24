@@ -46,6 +46,7 @@ import {
 } from "./milestone_sync_pr_retirement.ts";
 import { scrubUntrustedText } from "./prompt_delimiter.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { logAt } from "./log_sink.ts";
 
 /** Auto-merge enablement result codes. */
 export enum AutoMergeResult {
@@ -309,8 +310,10 @@ async function postBehindSyncReason(
     await commentFn(repo, prNumber, body);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: could not post the in-cycle sync deferral on ${repo}#${prNumber}: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `could not post the in-cycle sync deferral on ${repo}#${prNumber}: ${message}`,
     );
   }
 }
@@ -345,6 +348,26 @@ export function autoMergeOutcomeNeedsComment(
 }
 
 /**
+ * The reason the target repository is shown (Issue #4183).
+ *
+ * `outcome.message` keeps its `(Issue #N)` citation for the worker log. This
+ * comment is posted on the target repository, which autolinks a bare `#N` to
+ * its own issue or pull request, so a VibeCoder citation is removed here.
+ * The pull request's own number stays: that `#N` is the target's PR.
+ */
+function armingReasonForComment(message: string): string {
+  const ownPr = new Set<string>();
+  for (const match of message.matchAll(/\bPR #(\d+)\b/g)) {
+    ownPr.add(match[1]!);
+  }
+  const withoutCitation = message.replace(/\s*\(Issue #\d+\)/g, "");
+  return withoutCitation.replace(
+    /#(\d+)\b/g,
+    (full, digits: string) => ownPr.has(digits) ? full : digits,
+  ).replace(/[ \t]{2,}/g, " ").trim();
+}
+
+/**
  * Build the comment body explaining why auto-merge was not armed at creation
  * (Issue #2457).
  *
@@ -352,7 +375,8 @@ export function autoMergeOutcomeNeedsComment(
  * periodic sweep re-reads the PR every cycle and arms it the moment the
  * obstruction clears. A latched refusal names the latch's reset time instead,
  * because in-run retries are futile — every further `gh` call in the window
- * fails the same way.
+ * fails the same way. VibeCoder issue citations stay on `outcome.message`
+ * for the log and are omitted from this comment (Issue #4183).
  */
 export function buildArmingReasonComment(
   outcome: EnableAutoMergeResult,
@@ -363,7 +387,9 @@ export function buildArmingReasonComment(
     : `The Auto-Merge sweep retries.`;
   return [
     ARMING_REASON_MARKER,
-    `Auto-merge was not armed on this PR: ${outcome.message}`,
+    `Auto-merge was not armed on this PR: ${
+      armingReasonForComment(outcome.message)
+    }`,
     "",
     retryLine,
   ].join("\n");
@@ -452,8 +478,10 @@ async function postOpenChildrenLookupReason(
     return true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log(
-      `WARNING: could not post the unreadable ${subject} on ${repo}#${prNumber}: ${message}`,
+    logAt(
+      log,
+      "warn",
+      `could not post the unreadable ${subject} on ${repo}#${prNumber}: ${message}`,
     );
     return false;
   }
@@ -733,7 +761,7 @@ export function invisiblePolicyWarning(
   baseRefName: string,
   refusal: string,
 ): string {
-  return `WARNING: ${repo} '${baseRefName}' is policy-protected but the ` +
+  return `${repo} '${baseRefName}' is policy-protected but the ` +
     `effective-rules endpoint shows no rule the fleet token can read — ` +
     `an organisation ruleset (needs admin:org to list) or a repository ` +
     `setting; arming GitHub auto-merge instead of retrying the direct ` +
@@ -787,6 +815,10 @@ export async function enableAutoMerge(
       message: `Auto-merge disabled for ${repo} (skip_auto_merge=true)`,
     };
   }
+
+  // Issue #4291: PRs do not merge until they have a review approval and CI
+  // is green, and GitHub enforces both, so nothing here withholds arming for
+  // a review, a finding or a label. Only the routing holds below remain.
 
   // Issue #3909: the milestone summary PR is the irreversible step — merging
   // it deletes the milestone branch and GitHub auto-closes every PR based on
@@ -865,8 +897,10 @@ export async function enableAutoMerge(
       });
     } catch (err) {
       const thrown = err instanceof Error ? err.message : String(err);
-      log(
-        `WARNING: in-cycle milestone sync threw for ${repo}#${prNumber}: ${thrown}`,
+      logAt(
+        log,
+        "warn",
+        `in-cycle milestone sync threw for ${repo}#${prNumber}: ${thrown}`,
       );
       sync = { status: "deferred", detail: thrown };
     }
@@ -1268,7 +1302,7 @@ export async function enableAutoMerge(
             prNumber,
             errorMsg,
           );
-          log(`WARNING: ${refusal}`);
+          logAt(log, "warn", `${refusal}`);
           return {
             result: AutoMergeResult.Failed,
             message: `Auto-merge not armed on PR #${prNumber}: ${refusal}`,
@@ -1371,7 +1405,7 @@ async function refuseMilestoneMerge(
       ? "open-children count"
       : "declared dependencies";
     const message =
-      `WARNING: refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
+      `refusing to auto-merge milestone summary PR ${repo}#${prNumber} ` +
       `for milestone #${gate.milestoneNumber} '${gate.milestoneTitle}' — its ` +
       `${subject} could not be read: ${gate.message} (Issue #3909)`;
     log(message);

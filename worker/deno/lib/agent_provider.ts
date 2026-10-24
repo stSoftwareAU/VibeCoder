@@ -646,8 +646,10 @@ function buildClaudeCliArgs(
   if (request.agents) {
     args.push("--agents", JSON.stringify(request.agents));
   }
-  // The split run's advisor edit guard (Issue #2344), beside the sub-agent
-  // definitions it enforces. Absent pushes nothing.
+  // One --settings for this spawn (Issues #2344, #2383, #4139). The caller
+  // has already merged the edit guard and the hooks into settingsJson, and
+  // the CLI keeps a single settings payload, so the flag is emitted once.
+  // Absent pushes nothing.
   if (request.settingsJson) {
     args.push("--settings", request.settingsJson);
   }
@@ -659,13 +661,6 @@ function buildClaudeCliArgs(
   // directory the agent never runs from.
   if (request.mcpConfigPath) {
     args.push("--mcp-config", request.mcpConfigPath);
-  }
-
-  // This spawn's hooks, carried on the command line (Issue #2383) rather than
-  // written to `~/.claude/settings.json`: a run that installs none emits no
-  // flag and spawns the argv it always did.
-  if (request.settingsJson) {
-    args.push("--settings", request.settingsJson);
   }
 
   // Static content passed separately so the CLI caches it (Issue #1262).

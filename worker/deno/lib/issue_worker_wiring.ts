@@ -221,6 +221,12 @@ import {
   type SecurityFixDiscrimination,
 } from "./security_fix_discrimination.ts";
 import {
+  type FactsFlipSeams,
+  type FactsFlipVerdict,
+  verifyFactsFlips,
+} from "./facts_flip_verifier.ts";
+import type { SummaryFacts } from "./summary_facts.ts";
+import {
   fileBaselineCarryoverTracker,
   fileRedCheckTracker,
 } from "./baseline_carryover_tracker.ts";
@@ -568,6 +574,16 @@ export interface QualityDeps {
   runSecurityFixDiscrimination?: (
     input: DiscriminationRunInput,
   ) => Promise<SecurityFixDiscrimination>;
+  /**
+   * Re-run each tested facts entry's named test under a mutant of the cited
+   * line (Issues #4186, #4188). Optional: when absent, or when it throws, the
+   * completion phase records a loud `not_checked` and never treats that as a
+   * pass. A `refused` verdict blocks the raise.
+   */
+  verifyFactsFlips?: (
+    facts: SummaryFacts,
+    seams: FactsFlipSeams,
+  ) => Promise<FactsFlipVerdict[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -853,6 +869,7 @@ export function createDefaultDeps(
         runCoverageCarryOverCheck(input, defaultMutationRunnerSeams()),
       runSecurityFixDiscrimination: (input) =>
         runSecurityFixDiscrimination(input, defaultMutationRunnerSeams()),
+      verifyFactsFlips,
     },
   };
 }

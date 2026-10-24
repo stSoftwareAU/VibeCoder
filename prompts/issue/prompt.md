@@ -170,10 +170,12 @@ guessing.
      sorts `use` statements but does not merge them), so a duplicate import
      can pass CI and still breach a standard only review enforces
      (Issue #3230).
-   - **A new state on an existing screen re-reads that screen's existing
-     text.** When the change adds a state or mode to a screen that
-     already exists (an earlier date, a paged or partial load, a
-     fallback, an empty or error case), list every message the screen
+   - **A new case re-reads the text it now reaches.** When a change
+     sends a new case to text that already exists — a widened
+     condition, a new arm or allowed value, a newly called function or
+     component, or a new state on a screen that already exists (an
+     earlier date, a paged or partial load, a fallback, an empty or
+     error case) — list every message the screen
      already renders — notes, empty-state text, warnings, badges,
      labels — and say for each whether it is still true in the new
      state. Reword, hide or mark each one that is not, so the new state
@@ -892,7 +894,8 @@ the summary says who judged it:
   prints it, in backticks, with no prose rewording (no spaces for underscores,
   no shortened directory): the worker places the breach against the diff by
   that path, and one it cannot match to a changed file or a file at HEAD is
-  treated as on the branch's own lines and holds auto-merge (Issue #3613).
+  treated as on the branch's own lines and routed back to you for a fix
+  (Issue #3613).
   A breach in a line this diff adds or changes may not be deferred: "stands",
   "left for a follow-up" and "out of scope" are not reasons, and the gate
   blocks PR creation on any reason that neither records a fix nor links an
@@ -905,7 +908,7 @@ the summary says who judged it:
 - **Issues with no acceptance criteria are unaffected** — no reviewers, neither
   block. A `## Standards Review` the summary carries anyway is still read: each
   `violation` in it is held to the reason rules above, so an own-line breach
-  left standing blocks the PR and holds auto-merge (Issue #3761).
+  left standing blocks the PR (Issue #3761).
 
 A gate reads both blocks before the PR is raised and blocks PR creation when one
 of these rules is broken, commenting on the issue with every rule it found
@@ -1468,10 +1471,10 @@ The file MUST contain:
    value or with the reason it does not need it; a behaviour-carrying
    parameter is required rather than defaulted to a value that turns the
    behaviour off, and a caller left on the old hard-coded value is a
-   blocking self-review finding. Likewise, a state or mode the diff adds
-   to a screen that already exists re-reads that screen's existing text
-   (see **A new state on an existing screen re-reads that screen's
-   existing text** under Instructions): the Test Plan lists every note,
+   blocking self-review finding. Likewise, when a change sends a new case
+   to text that already exists it re-reads the text it now reaches
+   (see **A new case re-reads the text it now reaches** under
+   Instructions): the Test Plan lists every note,
    empty-state text, warning, badge and label the screen already
    renders, each marked still true or changed for the new state, with a
    test asserting each one that differs; a pre-existing message left
