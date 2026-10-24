@@ -731,3 +731,104 @@ Deno.test("version normalisation scans long heading whitespace linearly (Issue #
     { baseChars: 4000 },
   );
 });
+
+Deno.test("anchor: a valid anchor is accepted and trimmed (Issue #4125)", () => {
+  const facts = okFacts(
+    mutate((f) => {
+      f.branchOutcomes.entries[0].anchor = "  const x = 1;\t";
+    }),
+  );
+  assertEquals(facts.branchOutcomes.entries[0]?.anchor, "const x = 1;");
+  assertEquals(
+    Object.keys(facts.branchOutcomes.entries[1] ?? {}).includes("anchor"),
+    false,
+  );
+});
+
+Deno.test("anchor: accepted on an exempt entry too (Issue #4125)", () => {
+  const facts = okFacts(
+    mutate((f) => {
+      f.branchOutcomes.entries[1].anchor = "console.warn(msg);";
+    }),
+  );
+  assertEquals(facts.branchOutcomes.entries[1]?.anchor, "console.warn(msg);");
+});
+
+Deno.test("anchor: a non-string anchor is rejected at .anchor (Issue #4125)", () => {
+  assertEquals(
+    errorOf(mutate((f) => f.branchOutcomes.entries[0].anchor = 42)),
+    `${E}.anchor: expected a string`,
+  );
+  assertEquals(
+    errorOf(mutate((f) => f.branchOutcomes.entries[0].anchor = null)),
+    `${E}.anchor: expected a string`,
+  );
+});
+
+Deno.test("anchor: an empty or whitespace-only anchor is rejected (Issue #4125)", () => {
+  assertEquals(
+    errorOf(mutate((f) => f.branchOutcomes.entries[0].anchor = "")),
+    `${E}.anchor: must not be empty`,
+  );
+  assertEquals(
+    errorOf(mutate((f) => f.branchOutcomes.entries[1].anchor = "   \t ")),
+    `${E1}.anchor: must not be empty`,
+  );
+});
+
+Deno.test("anchor: a multi-line anchor is rejected at .anchor (Issue #4125)", () => {
+  assertEquals(
+    errorOf(mutate((f) => f.branchOutcomes.entries[0].anchor = "a\nb")),
+    `${E}.anchor: must be a single line`,
+  );
+  assertEquals(
+    errorOf(mutate((f) => f.branchOutcomes.entries[0].anchor = "a\r\nb")),
+    `${E}.anchor: must be a single line`,
+  );
+});
+
+Deno.test("anchor: an over-cap anchor is rejected at .anchor (Issue #4125)", () => {
+  assertEquals(
+    errorOf(
+      mutate((f) =>
+        f.branchOutcomes.entries[0].anchor = "a".repeat(MAX_FIELD_CHARS + 1)
+      ),
+    ),
+    `${E}.anchor: exceeds ${MAX_FIELD_CHARS} chars`,
+  );
+  const atCap = okFacts(
+    mutate((f) => {
+      f.branchOutcomes.entries[0].anchor = "a".repeat(MAX_FIELD_CHARS);
+    }),
+  );
+  assertEquals(
+    atCap.branchOutcomes.entries[0]?.anchor?.length,
+    MAX_FIELD_CHARS,
+  );
+});
+
+Deno.test("anchor: an unknown key next to anchor is still rejected (Issue #4125)", () => {
+  assertEquals(
+    errorOf(
+      mutate((f) => {
+        f.branchOutcomes.entries[0].anchors = "const x = 1;";
+      }),
+    ),
+    `${E}["anchors"]: unknown key`,
+  );
+});
+
+Deno.test("anchor: anchored facts render identically to unanchored facts (Issue #4125)", () => {
+  const plain = okFacts(valid());
+  const anchored = okFacts(
+    mutate((f) => {
+      f.branchOutcomes.entries[0].anchor = "const x = 1;";
+      f.branchOutcomes.entries[1].anchor = "console.warn(msg);";
+    }),
+  );
+  assertEquals(anchored.branchOutcomes.entries[0]?.anchor, "const x = 1;");
+  assertEquals(
+    renderBranchOutcomes(anchored),
+    renderBranchOutcomes(plain),
+  );
+});

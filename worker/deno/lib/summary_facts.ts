@@ -9,6 +9,10 @@
  * Pure: no IO. Every validation error reads `<field path>: <reason>`. Hostile
  * key text is never echoed verbatim: keys are capped and JSON-quoted.
  *
+ * An entry may carry an optional `anchor` (Issue #4125): the trimmed text of
+ * the cited source line at `line`. It is checked against the head by
+ * facts_anchor_check.ts and is never rendered.
+ *
  * Australian English spelling used throughout.
  */
 
@@ -43,6 +47,7 @@ export interface TestedEntry {
   path: string;
   line: number;
   endLine?: number;
+  anchor?: string;
   outcome: string;
   test: string;
   testName: string;
@@ -54,6 +59,7 @@ export interface ExemptEntry {
   path: string;
   line: number;
   endLine?: number;
+  anchor?: string;
   outcome: string;
   exempt: { kind: ExemptKind; reason: string };
 }
@@ -172,6 +178,7 @@ const ENTRY_KEYS = [
   "path",
   "line",
   "endLine",
+  "anchor",
   "outcome",
   "test",
   "testName",
@@ -243,6 +250,12 @@ function checkEntry(value: unknown, path: string): Check<BranchOutcomeEntry> {
     }
     endLine = checked.value;
   }
+  let anchor: string | undefined;
+  if (has(e, "anchor")) {
+    const checked = checkText(e.anchor, `${path}.anchor`, true);
+    if (!checked.ok) return checked;
+    anchor = checked.value.trim();
+  }
   const outcome = checkText(e.outcome, `${path}.outcome`, true);
   if (!outcome.ok) return outcome;
 
@@ -250,6 +263,7 @@ function checkEntry(value: unknown, path: string): Check<BranchOutcomeEntry> {
     path: entryPath.value,
     line: line.value,
     ...(endLine === undefined ? {} : { endLine }),
+    ...(anchor === undefined ? {} : { anchor }),
     outcome: outcome.value,
   };
   let entry: BranchOutcomeEntry;

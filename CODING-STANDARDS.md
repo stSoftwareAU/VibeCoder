@@ -920,7 +920,8 @@ unknown keys are rejected and only version 1 is accepted. `noneAdded: true`
 requires an empty `entries`; `false` requires at least one entry. Every entry
 has `path` (repo-relative, characters `[A-Za-z0-9_.-/]` only, no `..` or empty
 segment, at most 300 chars), `line` (a positive integer), an optional `endLine`
-(not less than `line`) and `outcome`. Each entry then gives either `test` (a
+(not less than `line`), `outcome` and an optional `anchor` (described below).
+Each entry then gives either `test` (a
 test file path), `testName` and `flipWentRed`, or `exempt:
 {"kind": "out-of-scope" | "untestable", "reason": "..."}` — never both, never
 neither; the reason needs at least 3 words. Text fields are single-line,
@@ -949,6 +950,7 @@ as before.
       {
         "path": "worker/deno/lib/example.ts",
         "line": 42,
+        "anchor": "return FAIL_CLOSED_DEFAULT;",
         "outcome": "returns the fail-closed default when the file is absent",
         "test": "worker/deno/tests/example_test.ts",
         "testName": "example fails closed when the file is absent",
@@ -957,6 +959,7 @@ as before.
       {
         "path": "worker/deno/lib/example.ts",
         "line": 57,
+        "anchor": "await retryAfterFault(path);",
         "outcome": "retries after a disk fault",
         "exempt": {
           "kind": "untestable",
@@ -967,6 +970,19 @@ as before.
   }
 }
 ```
+
+`anchor` is the trimmed text of the cited line `line` as it is at the head:
+single line, non-empty, at most 1,000 chars; a longer source line is cut to its
+first 1,000 chars after trimming, on both sides of the comparison. The anchor
+check (`checkFactsAnchors`, `worker/deno/lib/facts_anchor_check.ts`) reads
+`git show HEAD:<path>` and blocks a mismatch, naming the line(s) where the
+anchor now appears or saying "not found"; an entry without `anchor` is reported
+not checked, never a pass. It runs wherever `pr-summary-check` runs (`deno task
+pr-summary-check`, `pr-summary-ci` in the validate-scripts workflow, and the
+completion phase); the review-fleet-prs gate does not run it for fleet target
+repositories' PRs yet. The diff-mapping citation check
+(`worker/deno/lib/branch_outcome_citations.ts`) is kept for entries without an
+anchor.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that

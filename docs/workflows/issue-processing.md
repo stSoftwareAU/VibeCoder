@@ -2337,6 +2337,24 @@ every branch its own fix commits add and refreshes the facts file's entries
 committed summary's `Branch outcomes:` list otherwise, rather than leaving the
 first round's entries standing (`prompts/pr_feedback/prompt.md`).
 
+**Anchors (Issue #4125).** An entry may carry `anchor`: the trimmed text of the
+cited line at `line` as it is at the head (single line, non-empty, at most
+1,000 chars; a longer source line is cut to its first 1,000 chars after
+trimming, on both sides of the comparison). `checkFactsAnchors`
+(`worker/deno/lib/facts_anchor_check.ts`) reads `git show HEAD:<path>` and
+blocks a mismatch, naming the line(s) where the anchor now appears, or saying
+"not found" when it appears nowhere or the file is absent at HEAD. It needs no
+previous head, so it covers worker pushes, foreign pushes and base merges alike.
+An entry without `anchor` is reported not checked (the gate shows `not_checked`,
+not a block), and so is a file that cannot be read. The anchor is never rendered
+into the `Branch outcomes:` list. The check runs wherever `pr-summary-check`
+runs; in the completion phase a stale anchor blocks PR creation alongside the
+other facts problems. The review-fleet-prs gate does not yet run it for fleet
+target repositories' PRs. The diff-mapping citation check in
+`worker/deno/lib/branch_outcome_citations.ts` (`pr-feedback.md`, step 5) is kept
+for entries without an anchor. After a later commit or base merge shifts lines,
+the agent re-reads each cited line and renumbers it (`prompts/issue/prompt.md`).
+
 ## 🔎 A summary that describes named code wrongly blocks the PR (Issue #3257)
 
 A first-run PR summary has repeatedly described named code wrongly — quoting

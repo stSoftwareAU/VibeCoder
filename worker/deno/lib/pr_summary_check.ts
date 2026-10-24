@@ -26,8 +26,14 @@ import {
 } from "./branch_outcomes_gate.ts";
 import {
   applyBranchOutcomesFacts,
+  type BranchOutcomesFactsOutcome,
   resolveBranchOutcomesFacts,
 } from "./pr_summary_facts.ts";
+import {
+  checkFactsAnchors,
+  gitReadAtHead,
+  type ReadAtHead,
+} from "./facts_anchor_check.ts";
 
 /** Outcome of one gate. A `not_checked` gate is not a pass. */
 export type GateStatus =
@@ -81,6 +87,55 @@ function fromVerdict(
 /** A gate that could not run for want of an input. */
 function notChecked(gate: string, issueRef: string, note: string): GateReport {
   return { gate, issueRef, status: "not_checked", problems: [], note };
+}
+
+/**
+ * Issue #4125: the Facts citation anchors gate. A cited line that no longer
+ * holds its anchor at the head blocks; an entry without an anchor is not
+ * checked, never passed.
+ */
+async function factsAnchorReport(
+  facts: BranchOutcomesFactsOutcome,
+  readAtHead: ReadAtHead,
+): Promise<GateReport> {
+  const gate = "Facts citation anchors";
+  const issueRef = "#4125";
+  if (facts.kind === "absent") {
+    return { gate, issueRef, status: "not_applicable", problems: [] };
+  }
+  if (facts.kind === "error") {
+    return notChecked(
+      gate,
+      issueRef,
+      "facts file unusable; the Branch outcomes gate reports it",
+    );
+  }
+  if (facts.facts.branchOutcomes.entries.length === 0) {
+    return { gate, issueRef, status: "not_applicable", problems: [] };
+  }
+  const anchors = await checkFactsAnchors(
+    facts.facts,
+    readAtHead,
+    facts.relativePath,
+  );
+  if (anchors.stale.length > 0) {
+    return { gate, issueRef, status: "blocked", problems: anchors.stale };
+  }
+  if (anchors.notChecked.length > 0) {
+    const shown = anchors.notChecked.slice(0, 3).join("; ");
+    const more = anchors.notChecked.length > 3
+      ? ` (+${anchors.notChecked.length - 3} more)`
+      : "";
+    return notChecked(gate, issueRef, shown + more);
+  }
+  if (anchors.checked === 0) {
+    return notChecked(
+      gate,
+      issueRef,
+      "no facts entry was checked against the head",
+    );
+  }
+  return { gate, issueRef, status: "passed", problems: [] };
 }
 
 /** Run every local PR-summary gate. Fails loud when git cannot be read. */
@@ -223,6 +278,14 @@ export async function runPrSummaryCheck(
     branchOutcomes.problems.unshift(factsProblem);
   }
   reports.push(branchOutcomes);
+
+  // Issue #4125: read at HEAD, not the working tree, from the repo root.
+  reports.push(
+    await factsAnchorReport(
+      facts,
+      gitReadAtHead((args) => runGit(args, { cwd: repoRoot })),
+    ),
+  );
 
   reports.push(notChecked(
     "Summary claim check",

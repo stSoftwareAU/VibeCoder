@@ -55,7 +55,7 @@ ${block}
 `;
 }
 
-function factsFor(test: string): SummaryFacts {
+function factsFor(test: string, anchor?: string): SummaryFacts {
   return {
     version: 1,
     branchOutcomes: {
@@ -63,6 +63,7 @@ function factsFor(test: string): SummaryFacts {
       entries: [{
         path: CHANGED,
         line: 42,
+        ...(anchor === undefined ? {} : { anchor }),
         outcome: "error",
         test,
         testName: "rejects bad input",
@@ -102,6 +103,11 @@ interface Scenario {
   facts?: string;
   /** Create a directory at the facts path so it cannot be read. */
   factsIsDirectory?: boolean;
+  /**
+   * File text at HEAD by repo-relative path (Issue #4125 `git show HEAD:<path>`).
+   * A path not listed is absent at HEAD, as git reports it.
+   */
+  headFiles?: Record<string, string>;
   lsTreeFails?: boolean;
   /**
    * Make the plain `diff --name-only <base>...HEAD` call fail (non-zero
@@ -122,6 +128,8 @@ interface Outcome {
   prCreateCalls: number;
   prBodies: string[];
   lsTreeArgs: string[][];
+  /** `git show` calls the anchor check made (Issue #4125). */
+  showArgs: string[][];
   comments: string[];
   logs: { level: string; message: string; context: unknown }[];
 }
@@ -147,6 +155,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let claudeCalls = 0;
   const prBodies: string[] = [];
   const lsTreeArgs: string[][] = [];
+  const showArgs: string[][] = [];
   const logs: Outcome["logs"] = [];
 
   const config = buildDefaultWorkerConfig();
@@ -224,6 +233,21 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           );
           return ok(existing.join("\n"));
         }
+        if (cmdArgs[0] === "show") {
+          showArgs.push(cmdArgs);
+          const path = (cmdArgs[1] ?? "").replace(/^HEAD:/, "");
+          const text = scenario.headFiles?.[path];
+          if (text !== undefined) return ok(text);
+          // The real git wording for a path absent at HEAD.
+          return Promise.resolve({
+            ok: true as const,
+            value: {
+              code: 128,
+              stdout: "",
+              stderr: `fatal: path '${path}' does not exist in 'HEAD'`,
+            },
+          });
+        }
         return ok("");
       },
     },
@@ -280,6 +304,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     prCreateCalls,
     prBodies,
     lsTreeArgs,
+    showArgs,
     comments,
     logs,
   };
@@ -484,3 +509,113 @@ Deno.test("completion facts - ambiguous ownership and unresolved evidence remain
     assertStringIncludes(blockedText(outcome), cause!);
   }
 });
+
+// --- Facts citation anchors (Issue #4125) -----------------------------------
+
+const ANCHOR_TEXT = "if (!input.ok) return reject(input);";
+
+/** The changed file at HEAD: the anchor on `line`, filler on every other line. */
+function changedAt(line: number): string {
+  const lines = Array.from(
+    { length: line + 2 },
+    (_, i) => `// filler ${i + 1}`,
+  );
+  lines[line - 1] = `  ${ANCHOR_TEXT}`;
+  return lines.join("\n") + "\n";
+}
+
+Deno.test(
+  "completion facts - an anchor moved at HEAD blocks PR creation, naming the new line (Issue #4125)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: summaryWith(BRANCH_OUTCOMES_MARKER),
+      facts: JSON.stringify(factsFor(EXISTING_TEST, ANCHOR_TEXT)),
+      changedFiles: CHANGED,
+      existingTestsAtHead: [EXISTING_TEST],
+      // A line was inserted above the anchor, so it now sits at line 43.
+      headFiles: { [CHANGED]: changedAt(43) },
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertStringIncludes(
+      outcome.reason ?? "",
+      "line 42 no longer holds its anchor",
+    );
+    assertStringIncludes(blockedText(outcome), "line(s) 43");
+    assert(outcome.comments.some((c) => c.includes("line(s) 43")));
+  },
+);
+
+Deno.test(
+  "completion facts - every stale anchor is listed in the gate comment (Issue #4125)",
+  async () => {
+    const facts = factsFor(EXISTING_TEST, ANCHOR_TEXT);
+    facts.branchOutcomes.entries.push({
+      ...facts.branchOutcomes.entries[0]!,
+      line: 44,
+    });
+    const outcome = await runCompletion({
+      summary: summaryWith(BRANCH_OUTCOMES_MARKER),
+      facts: JSON.stringify(facts),
+      changedFiles: CHANGED,
+      existingTestsAtHead: [EXISTING_TEST],
+      headFiles: { [CHANGED]: changedAt(43) },
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    const gateComment = outcome.comments.find((c) =>
+      c.includes("Branch outcomes not recorded")
+    );
+    assert(gateComment, "expected the branch-outcomes gate comment");
+    assertStringIncludes(gateComment, "entries[0]");
+    assertStringIncludes(gateComment, "entries[1]");
+  },
+);
+
+Deno.test(
+  "completion facts - an anchor still on its cited line at HEAD does not block (Issue #4125)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: summaryWith(BRANCH_OUTCOMES_MARKER),
+      facts: JSON.stringify(factsFor(EXISTING_TEST, ANCHOR_TEXT)),
+      changedFiles: CHANGED,
+      existingTestsAtHead: [EXISTING_TEST],
+      headFiles: { [CHANGED]: changedAt(42) },
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assert(outcome.showArgs.flat().includes(`HEAD:${CHANGED}`));
+    assert(
+      outcome.logs.some((log) =>
+        log.level === "info" &&
+        log.message === "Checked facts citation anchors"
+      ),
+    );
+  },
+);
+
+Deno.test(
+  "completion facts - an entry without an anchor is not checked and does not block (Issue #4125)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: summaryWith(BRANCH_OUTCOMES_MARKER),
+      facts: JSON.stringify(factsFor(EXISTING_TEST)),
+      changedFiles: CHANGED,
+      existingTestsAtHead: [EXISTING_TEST],
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    // No anchor means the file is never read at HEAD.
+    assertEquals(outcome.showArgs, []);
+    assert(
+      outcome.logs.some((log) =>
+        log.level === "warn" &&
+        log.message === "Facts citation anchors not checked"
+      ),
+    );
+  },
+);

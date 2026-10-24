@@ -51,6 +51,8 @@ interface Call {
 function fakeGit(opts: {
   diff?: { code: number; stdout: string; stderr: string } | "error";
   tests?: string[];
+  /** File text at HEAD by repo-relative path (Issue #4125 `git show`). */
+  files?: Record<string, string>;
 } = {}): { runGit: GitRunner; calls: Call[] } {
   const calls: Call[] = [];
   const runGit: GitRunner = (args, options) => {
@@ -58,6 +60,12 @@ function fakeGit(opts: {
     const ok = (stdout = "", code = 0, stderr = "") =>
       Promise.resolve({ ok: true as const, value: { code, stdout, stderr } });
     if (args[0] === "rev-parse") return ok();
+    if (args[0] === "show" && opts.files !== undefined) {
+      const path = (args[1] ?? "").replace(/^HEAD:/, "");
+      if (Object.hasOwn(opts.files, path)) return ok(opts.files[path]);
+      // The real git wording for a path absent at HEAD.
+      return ok("", 128, `fatal: path '${path}' does not exist in 'HEAD'`);
+    }
     if (args[0] === "diff") {
       if (opts.diff === "error") {
         return Promise.resolve({
@@ -351,7 +359,11 @@ const MARKER_ONLY_SUMMARY = GOOD_SUMMARY.replace(
 );
 
 /** Run with a repo root holding the given facts file (none when undefined). */
-async function runWithFacts(summary: string, facts?: string) {
+async function runWithFacts(
+  summary: string,
+  facts?: string,
+  git = fakeGit(),
+) {
   const dir = await Deno.makeTempDir();
   try {
     if (facts !== undefined) {
@@ -361,7 +373,11 @@ async function runWithFacts(summary: string, facts?: string) {
         facts,
       );
     }
-    return await run(summary, { issueNumber: FACTS_ISSUE, repoRoot: dir });
+    return await run(
+      summary,
+      { issueNumber: FACTS_ISSUE, repoRoot: dir },
+      git,
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -482,4 +498,111 @@ Deno.test("runPrSummaryCheck - ambiguous outcome ownership names the blocker (Is
   const report = result.value.find((gate) => gate.issueRef === "#3147")!;
   assertEquals(report.status, "blocked");
   assertStringIncludes(report.problems.join("\n"), "ambiguous");
+});
+
+// --- Facts citation anchors (Issue #4125) -----------------------------------
+
+const FOO_PATH = "worker/deno/lib/foo.ts";
+const ANCHOR_TEXT = "if (!input.ok) return reject(input);";
+
+/** foo.ts at HEAD: the anchor on `line`, filler on every other line. */
+function fooAt(line: number): string {
+  const lines = Array.from(
+    { length: line + 2 },
+    (_, i) => `// filler ${i + 1}`,
+  );
+  lines[line - 1] = `  ${ANCHOR_TEXT}`;
+  return lines.join("\n") + "\n";
+}
+
+/** Facts citing foo.ts line 42, carrying `anchor` when one is given. */
+function anchoredFacts(anchor?: string): string {
+  return JSON.stringify({
+    version: 1,
+    branchOutcomes: {
+      noneAdded: false,
+      entries: [{
+        path: FOO_PATH,
+        line: 42,
+        ...(anchor === undefined ? {} : { anchor }),
+        outcome: "error",
+        test: TEST_PATH,
+        testName: "rejects bad",
+        flipWentRed: "went red when the guard was removed",
+      }],
+    },
+  });
+}
+
+function gateOf(reports: GateReport[], ref: string): GateReport {
+  return reports.find((r) => r.issueRef === ref)!;
+}
+
+Deno.test("runPrSummaryCheck - a facts anchor still on its cited line at HEAD passes (Issue #4125)", async () => {
+  const r = await runWithFacts(
+    MARKER_ONLY_SUMMARY,
+    anchoredFacts(ANCHOR_TEXT),
+    fakeGit({ files: { [FOO_PATH]: fooAt(42) } }),
+  );
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#4125"), "passed");
+  assertEquals(statusOf(r.value, "#3147"), "passed");
+  assertEquals(hasBlock(r.value), false);
+});
+
+Deno.test("runPrSummaryCheck - a later commit that moves the anchor blocks, naming the new line (Issue #4125)", async () => {
+  // The same facts, after a commit inserted a line above the anchor.
+  const r = await runWithFacts(
+    MARKER_ONLY_SUMMARY,
+    anchoredFacts(ANCHOR_TEXT),
+    fakeGit({ files: { [FOO_PATH]: fooAt(43) } }),
+  );
+  assert(r.ok);
+  const report = gateOf(r.value, "#4125");
+  assertEquals(report.status, "blocked");
+  const problems = report.problems.join("\n");
+  assertStringIncludes(problems, "line 42 no longer holds its anchor");
+  assertStringIncludes(problems, "line(s) 43");
+  assertEquals(hasBlock(r.value), true);
+});
+
+Deno.test("runPrSummaryCheck - a facts entry without an anchor is not checked, never passed (Issue #4125)", async () => {
+  const git = fakeGit({ files: { [FOO_PATH]: fooAt(42) } });
+  const r = await runWithFacts(MARKER_ONLY_SUMMARY, anchoredFacts(), git);
+  assert(r.ok);
+  const report = gateOf(r.value, "#4125");
+  assertEquals(report.status, "not_checked");
+  assertStringIncludes(report.note!, "has no anchor");
+  assertEquals(report.problems, []);
+  assertEquals(hasBlock(r.value), false);
+  // An entry without an anchor never reads the file at HEAD.
+  assertEquals(git.calls.some((c) => c.args[0] === "show"), false);
+});
+
+Deno.test("runPrSummaryCheck - no facts file is not applicable to the anchor gate (Issue #4125)", async () => {
+  const r = await runWithFacts(GOOD_SUMMARY);
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#4125"), "not_applicable");
+});
+
+Deno.test("runPrSummaryCheck - valid facts with no branch outcomes entries are not applicable to the anchor gate (Issue #4125)", async () => {
+  const noneAddedFacts = JSON.stringify({
+    version: 1,
+    branchOutcomes: { noneAdded: true, entries: [] },
+  });
+  const r = await runWithFacts(MARKER_ONLY_SUMMARY, noneAddedFacts);
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#4125"), "not_applicable");
+});
+
+Deno.test("runPrSummaryCheck - an unusable facts file is not checked, and the Branch outcomes gate names it (Issue #4125)", async () => {
+  const r = await runWithFacts(MARKER_ONLY_SUMMARY, "{ not json");
+  assert(r.ok);
+  const report = gateOf(r.value, "#4125");
+  assertEquals(report.status, "not_checked");
+  assertEquals(
+    report.note,
+    "facts file unusable; the Branch outcomes gate reports it",
+  );
+  assertEquals(statusOf(r.value, "#3147"), "blocked");
 });

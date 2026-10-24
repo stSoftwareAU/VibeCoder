@@ -49,6 +49,7 @@ import {
   prSummaryDigestInput,
   resolveBranchOutcomesFacts,
 } from "../pr_summary_facts.ts";
+import { checkFactsAnchors, gitReadAtHead } from "../facts_anchor_check.ts";
 import {
   buildSummaryClaimGateComment,
   runSummaryClaimCheck,
@@ -3106,6 +3107,38 @@ async function completionBody(
   if (branchOutcomesFacts.kind === "error") {
     branchOutcomesFactsProblem = branchOutcomesFacts.reason;
   }
+  // Issue #4125: a facts entry's cited line must still hold its anchor at
+  // HEAD, so a line that moved since the facts were written blocks. An
+  // entry without an anchor is logged as not checked and never blocks.
+  let branchOutcomesAnchorExtras: string[] = [];
+  if (branchOutcomesFacts.kind === "valid") {
+    const anchors = await checkFactsAnchors(
+      branchOutcomesFacts.facts,
+      gitReadAtHead((args) =>
+        deps.git.runGitCommand(args, { cwd: state.repoPath })
+      ),
+      branchOutcomesFacts.relativePath,
+    );
+    const anchorLog = {
+      source: branchOutcomesFacts.relativePath,
+      checked: anchors.checked,
+      notChecked: anchors.notChecked.length,
+      stale: anchors.stale.length,
+    };
+    if (anchors.notChecked.length > 0) {
+      logger.warn("Facts citation anchors not checked", {
+        ...anchorLog,
+        problems: anchors.notChecked.slice(0, 3),
+      });
+    } else {
+      logger.info("Checked facts citation anchors", anchorLog);
+    }
+    const [firstStale, ...restStale] = anchors.stale;
+    if (firstStale !== undefined && branchOutcomesFactsProblem === null) {
+      branchOutcomesFactsProblem = firstStale;
+      branchOutcomesAnchorExtras = restStale;
+    }
+  }
 
   const branchOutcomesBlocked = branchOutcomesFactsProblem !== null ||
     (branchOutcomes.applicable && !branchOutcomes.valid);
@@ -3294,7 +3327,11 @@ async function completionBody(
       buildBranchOutcomesGateComment(
         branchOutcomesFactsProblem === null ? branchOutcomes : {
           ...branchOutcomes,
-          problems: [branchOutcomesFactsProblem, ...branchOutcomes.problems],
+          problems: [
+            branchOutcomesFactsProblem,
+            ...branchOutcomesAnchorExtras,
+            ...branchOutcomes.problems,
+          ],
         },
       ),
   };

@@ -1512,7 +1512,8 @@ The file MUST contain:
 
    ```json
    {"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
-     {"path":"lib/x.ts","line":12,"outcome":"empty input returns early",
+     {"path":"lib/x.ts","line":12,"anchor":"if (items.length === 0) return [];",
+      "outcome":"empty input returns early",
       "test":"tests/x_test.ts","testName":"returns early on empty input",
       "flipWentRed":"removing the guard turned it red: the call threw"}
    ]}}
@@ -1524,9 +1525,20 @@ The file MUST contain:
    reason of at least three words:
 
    ```json
-   {"path":"lib/x.ts","line":40,"outcome":"disk-full write fails",
+   {"path":"lib/x.ts","line":40,"anchor":"await Deno.writeTextFile(path, text);",
+    "outcome":"disk-full write fails",
     "exempt":{"kind":"untestable","reason":"the suite cannot stage ENOSPC"}}
    ```
+
+   Record an `anchor` on every entry, tested or exempt: the trimmed text of the
+   cited line `line` as it is at the head, single line, non-empty, at most 1,000
+   chars (a longer line is cut to its first 1,000 chars after trimming). Copy it
+   from the final head after your last code edit. The anchor check reads that
+   line with `git show HEAD:<path>` and blocks a mismatch, naming where the text
+   now appears, so the fix is a renumber. After any later commit or base merge
+   that shifts lines, re-read each cited line, renumber `line`/`endLine`, and add
+   entries for branches that commit added. The anchor is never rendered into the
+   Branch outcomes list.
 
    When the diff adds no branch, write
    `{"version":1,"branchOutcomes":{"noneAdded":true,"entries":[]}}`. Leave the
@@ -1672,6 +1684,7 @@ For that button case, the matching
 ```json
 {"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
   {"path":"assets/css/buttons.css","line":31,
+   "anchor":"flex-wrap: nowrap;",
    "outcome":"wrap disabled on narrow viewports",
    "test":"e2e/buttons.spec.ts",
    "testName":"the buttons' rects share one row at 375px",

@@ -624,7 +624,12 @@ Six checks run, each only when it applies:
    it cannot read or that fails to parse or validate at either ref (never
    read as "no citations"). A hit whose head citations came from the facts
    file names that facts file, not the `.md` summary, and asks for the
-   entry's `line`/`endLine` to be renumbered there.
+   entry's `line`/`endLine` to be renumbered there. An entry that carries
+   `anchor` (Issue #4125; CODING-STANDARDS.md → **Branch outcomes facts
+   file**) is checked by the anchor check at the pr-summary gates instead:
+   `checkFactsAnchors` reads HEAD, so it needs no before-run head and covers
+   foreign pushes and base merges too. The mapping above is kept for entries
+   without an `anchor`.
 6. **Diff-scoped mutation check (Issue #3750)** — in every review-fix run the
    mutation check runs over the lines this run itself added: the working tree,
    uncommitted edits and untracked files included, against the before-run head.
