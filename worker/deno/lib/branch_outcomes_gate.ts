@@ -287,12 +287,36 @@ function isNoneBody(body: string): boolean {
 }
 
 /**
- * A header that only points at the facts file (`recorded in
- * …pr-summary-N.facts.json`). It is not itself an outcome list.
+ * Path characters that may sit before `.facts.json` in a pointer. The marker
+ * itself is checked separately so a second `.facts.json` cannot hide in it.
  */
-const FACTS_POINTER_RE = /\.facts\.json\b/;
-function isFactsPointer(text: string): boolean {
-  return FACTS_POINTER_RE.test(text);
+const FACTS_PATH_RE = /^[A-Za-z0-9_.\/-]+$/;
+
+/**
+ * The one trailing note a pure pointer may carry: `, including the …
+ * status`, as in the #4178 red-check sentence. It is still only a pointer.
+ */
+const POINTER_NOTE_RE = /^including the(?:\s+[\w-]+){1,4}\s+status$/i;
+
+/**
+ * Whether `text` is nothing but a facts-file pointer: `recorded in
+ * <path>.facts.json`, an optional trailing full stop, and at most the
+ * #4178 `, including the … status` note. Any other trailing text — a second
+ * phrase, unresolved evidence, an admission — is a real block.
+ */
+function isPureFactsPointer(text: string): boolean {
+  let rest = text.trim();
+  if (rest.endsWith(".")) rest = rest.slice(0, -1).trimEnd();
+  const prefix = "recorded in ";
+  if (!rest.toLowerCase().startsWith(prefix)) return false;
+  rest = rest.slice(prefix.length);
+  const marker = ".facts.json";
+  const at = rest.toLowerCase().indexOf(marker);
+  if (at <= 0 || !FACTS_PATH_RE.test(rest.slice(0, at))) return false;
+  rest = rest.slice(at + marker.length).trim();
+  if (rest.startsWith(",")) rest = rest.slice(1).trim();
+  if (rest.length === 0) return true;
+  return POINTER_NOTE_RE.test(rest) && !admitsUnreached(rest);
 }
 
 /**
@@ -377,13 +401,18 @@ export function parseBranchOutcomes(
       ? leadingIndent(rawLine)
       : -1;
     const collected = collectEntries(lines, i + 1, headerIndent, boundaryLevel);
-    // A facts-file pointer followed only by ordinary prose and bullet lists
-    // (the Red checks under a Test Plan) is not a second Branch outcomes
-    // block. A list that actually uses the path:line shape still is
-    // (Issue #4178).
-    const pointer = isFactsPointer(body) ||
-      isFactsPointer(collected.bodyExtra);
-    if (pointer && !collected.entries.some(isOutcomeShapedEntry)) {
+    // Only a pure facts-file pointer is skipped, and only when no list sits
+    // directly under it. The #4178 red-check bullets follow an intervening
+    // prose paragraph, so that pointer still syncs. A list directly under
+    // the header, a path:line entry, or any other inline text stays a block
+    // for the ownership refusal and the admission check.
+    const inline = [body, collected.bodyExtra].filter((part) => part.length > 0)
+      .join(" ");
+    if (
+      isPureFactsPointer(inline) &&
+      !collected.listDirectlyUnder &&
+      !collected.entries.some(isOutcomeShapedEntry)
+    ) {
       i = collected.nextIndex - 1;
       continue;
     }
@@ -511,6 +540,8 @@ function collectEntries(
   entryLines: number[][];
   bodyExtra: string;
   bodyExtraLines: number[];
+  /** True when a list item was collected before any intervening prose. */
+  listDirectlyUnder: boolean;
   nextIndex: number;
 } {
   const entries: string[] = [];
@@ -519,6 +550,8 @@ function collectEntries(
   const wrapLines: number[] = [];
   let sawBlank = false;
   let wrapping = true;
+  let sawProseBeforeList = false;
+  let listDirectlyUnder = false;
   let j = startIndex;
 
   for (; j < lines.length; j++) {
@@ -558,6 +591,7 @@ function collectEntries(
       const capped = capEntry(stripped);
       entries.push(capped);
       entryLines.push(capped.length < stripped.length ? [] : [j]);
+      if (!sawProseBeforeList) listDirectlyUnder = true;
       sawBlank = false;
       continue;
     }
@@ -581,7 +615,10 @@ function collectEntries(
       continue;
     }
 
-    if (entries.length === 0) continue;
+    if (entries.length === 0) {
+      sawProseBeforeList = true;
+      continue;
+    }
     break;
   }
 
@@ -590,6 +627,7 @@ function collectEntries(
     entryLines,
     bodyExtra: wrap.join(" ").trim(),
     bodyExtraLines: wrapLines,
+    listDirectlyUnder,
     nextIndex: j,
   };
 }

@@ -390,6 +390,51 @@ Deno.test("a second hand-written branch-outcomes block outside the markers is st
   );
 });
 
+const FACTS_POINTER_LINE =
+  "**Branch outcomes:** recorded in `docs/archive/pr-summaries/pr-summary-4051.facts.json`";
+
+Deno.test("a facts-pointer header followed directly by a non-outcome bullet is refused", () => {
+  const owned =
+    `${BRANCH_OUTCOMES_MARKER}\nBranch outcomes: none added\n${BRANCH_OUTCOMES_END_MARKER}\n`;
+  const rendered = "Branch outcomes: none added";
+  for (
+    const bullet of [
+      `\n${FACTS_POINTER_LINE}\n\n- A reviewer finding still needs investigation.\n`,
+      `\n${FACTS_POINTER_LINE}\n- A reviewer finding still needs investigation.\n`,
+    ]
+  ) {
+    assertThrows(
+      () => applyBranchOutcomesFacts(owned + bullet, rendered),
+      Error,
+      "unowned evidence",
+    );
+  }
+});
+
+Deno.test("inline unresolved evidence after a facts pointer is refused", () => {
+  const owned =
+    `${BRANCH_OUTCOMES_MARKER}\nBranch outcomes: none added\n${BRANCH_OUTCOMES_END_MARKER}\n`;
+  const rendered = "Branch outcomes: none added";
+  assertThrows(
+    () =>
+      applyBranchOutcomesFacts(
+        owned + `\n${FACTS_POINTER_LINE} unresolved evidence\n`,
+        rendered,
+      ),
+    Error,
+    "unowned evidence",
+  );
+  assertThrows(
+    () =>
+      applyBranchOutcomesFacts(
+        owned + `\n${FACTS_POINTER_LINE}\nunresolved evidence\n`,
+        rendered,
+      ),
+    Error,
+    "unowned evidence",
+  );
+});
+
 Deno.test("a known renderer marker directly after a legacy entry is a boundary (Issue #3979)", () => {
   const legacy =
     "**Branch outcomes:**\n\n- `lib/a.ts:1` — outcome — test `tests/a_test.ts` — flip: went red\n";

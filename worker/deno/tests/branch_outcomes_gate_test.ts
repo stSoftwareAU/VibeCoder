@@ -113,6 +113,25 @@ Deno.test("parseBranchOutcomes - red-check bullets after a facts pointer are not
   assertEquals(record.entries, []);
 });
 
+Deno.test("parseBranchOutcomes - a facts pointer with a non-outcome bullet directly under it stays a block", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:** recorded in `docs/archive/pr-summaries/pr-summary-4051.facts.json`\n\n" +
+      "- A reviewer finding still needs investigation.\n",
+  );
+  assertEquals(record.present, true);
+  assertEquals(record.entries, [
+    "A reviewer finding still needs investigation.",
+  ]);
+});
+
+Deno.test("parseBranchOutcomes - inline text after a facts pointer stays a block", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:** recorded in `docs/archive/pr-summaries/pr-summary-4051.facts.json` unresolved evidence\n",
+  );
+  assertEquals(record.present, true);
+  assertStringIncludes(record.body, "unresolved evidence");
+});
+
 Deno.test("parseBranchOutcomes - a hand-written outcome list is still a block (Issue #4178)", () => {
   const record = parseBranchOutcomes(
     "**Branch outcomes:**\n\n- lib/a.ts:1 — outcome\n",
