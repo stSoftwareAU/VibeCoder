@@ -202,7 +202,7 @@ progress and stopped on conflicts. Its contract is absolute:
   path. A reviewer audits every call from the comment, without reading the diff.
 - **A superseded change leaves the PR summary.** When the base side already
   carries part of the PR's change, the agent rewrites the branch's committed
-  `docs/archive/pr-summaries/pr-summary-*.md` so it claims only what the merged
+  `docs/archive/pr-summaries/pr-summary-<issue>.md` so it claims only what the merged
   diff still carries, stages it with the resolutions, and names the refresh in
   `.pr_response_message` (Issue #3015). After a verified push to the PR's own
   head, the worker rebuilds the PR description from `pr-summary-<N>.md` when
