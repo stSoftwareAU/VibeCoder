@@ -18,7 +18,17 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
 import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
+
+/** A markdownlint run. Minutes. A timeout fails the check. */
+const MARKDOWNLINT_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** `--help` probe. Seconds. A timeout is not "binary absent". */
+const MARKDOWNLINT_PROBE_TIMEOUT_MS = 10_000;
 
 /** Status of the markdownlint check. */
 export type MarkdownlintStatus = "PASSED" | "SKIPPED" | "FAILED";
@@ -144,27 +154,33 @@ function extractFilesChecked(output: string): number {
  * the `globs` array from `.markdownlint-cli2.jsonc` automatically when
  * no positional arguments are supplied.
  */
-function makeBinaryRunner(binaryPath: string): MarkdownlintRunner {
-  return async (scriptDir: string) => {
-    const command = new Deno.Command(binaryPath, {
-      args: [],
-      cwd: scriptDir,
-      // Issue #1226: the linter is Node code from this repository's own
-      // `node_modules`, so a compromised dependency runs here. Its
-      // environment is BUILT from the allowlist rather than inherited — no
-      // credential is in scope for it to read.
-      env: buildUntrustedCommandEnv(),
-      clearEnv: true,
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const result = await command.output();
-    return {
-      exitCode: result.code,
-      stdout: new TextDecoder().decode(result.stdout),
-      stderr: new TextDecoder().decode(result.stderr),
-    };
+export async function runMarkdownlintBinary(
+  binaryPath: string,
+  scriptDir: string,
+  timeoutMs: number = MARKDOWNLINT_TIMEOUT_MS,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const result = await commandOutputWithTimeout(binaryPath, {
+    args: [],
+    cwd: scriptDir,
+    // Issue #1226: the linter is Node code from this repository's own
+    // `node_modules`, so a compromised dependency runs here. Its
+    // environment is BUILT from the allowlist rather than inherited — no
+    // credential is in scope for it to read.
+    env: buildUntrustedCommandEnv(),
+    clearEnv: true,
+    stdout: "piped",
+    stderr: "piped",
+    timeoutMs,
+  });
+  return {
+    exitCode: result.code,
+    stdout: new TextDecoder().decode(result.stdout),
+    stderr: new TextDecoder().decode(result.stderr),
   };
+}
+
+function makeBinaryRunner(binaryPath: string): MarkdownlintRunner {
+  return (scriptDir: string) => runMarkdownlintBinary(binaryPath, scriptDir);
 }
 
 /**
@@ -184,9 +200,12 @@ function makeBinaryRunner(binaryPath: string): MarkdownlintRunner {
  * unexecutable binary throws; one that runs has proved it exists, whatever it
  * then decides about the repository.
  */
-export async function canRunBinary(binaryPath: string): Promise<boolean> {
+export async function canRunBinary(
+  binaryPath: string,
+  timeoutMs: number = MARKDOWNLINT_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
   try {
-    const command = new Deno.Command(binaryPath, {
+    await commandOutputWithTimeout(binaryPath, {
       // `--help` is a no-op for the runners considered here and — unlike
       // `--version` — cannot be mistaken for a glob and lint the tree.
       args: ["--help"],
@@ -196,12 +215,13 @@ export async function canRunBinary(binaryPath: string): Promise<boolean> {
       clearEnv: true,
       stdout: "null",
       stderr: "null",
+      timeoutMs,
     });
-    await command.output();
     // Exit code deliberately ignored: it reports what the binary thought of
     // its arguments, not whether the binary is there.
     return true;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return false;
   }
 }
@@ -227,7 +247,8 @@ export const detectMarkdownlintRunner: DetectMarkdownlintRunner = async (
     if (stat.isFile && await canRunBinary(local)) {
       return makeBinaryRunner(local);
     }
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     // not present locally — fall through to PATH lookup
   }
 

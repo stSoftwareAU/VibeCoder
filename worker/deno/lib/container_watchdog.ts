@@ -56,6 +56,28 @@ import {
   type ContainerRuntimeDialect,
 } from "./container_runtime.ts";
 import { emitSelfHealEvent, type SelfHealEvent } from "./self_heal_events.ts";
+import {
+  commandOutputSyncWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** `kill -0` liveness probe. Seconds. A timeout is not "already dead". */
+const KILL_PROBE_TIMEOUT_MS = 10_000;
+
+/** True when `kill -0` exits zero. A non-positive timeout throws. */
+export function probePidAlive(
+  pid: number,
+  timeoutMs: number = KILL_PROBE_TIMEOUT_MS,
+): boolean {
+  const output = commandOutputSyncWithTimeout("kill", {
+    args: ["-0", String(pid)],
+    stdin: "null",
+    stdout: "null",
+    stderr: "null",
+    timeoutMs,
+  });
+  return output.code === 0;
+}
 
 /**
  * Seconds added to the worker's own maximum run duration to form the
@@ -990,14 +1012,9 @@ export function createReapDeps(options: ReapDepsOptions): ReapDeps {
         return true;
       }
       try {
-        const output = new Deno.Command("kill", {
-          args: ["-0", String(pid)],
-          stdin: "null",
-          stdout: "null",
-          stderr: "null",
-        }).outputSync();
-        return output.code === 0;
-      } catch {
+        return probePidAlive(pid);
+      } catch (error) {
+        if (isCommandTimeoutError(error)) throw error;
         return false;
       }
     },

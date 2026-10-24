@@ -247,6 +247,74 @@ export async function commandOutputWithTimeout(
 }
 
 /**
+ * Spawn a streaming child that is signalled when `timeoutMs` elapses.
+ *
+ * A timeout of zero or less throws and does not spawn. The timer is cleared
+ * when the child exits, so a finished process is not signalled later.
+ */
+export function spawnCommandWithTimeout(
+  executable: string,
+  options: Deno.CommandOptions & { timeoutMs: number },
+): Deno.ChildProcess {
+  const { timeoutMs, ...commandOptions } = options;
+  if (!(timeoutMs > 0)) {
+    throw new Error(`${executable} timed out after ${timeoutMs}ms`);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const child = new Deno.Command(executable, {
+      ...commandOptions,
+      signal: controller.signal,
+    }).spawn();
+    child.status.finally(() => clearTimeout(timer));
+    return child;
+  } catch (error) {
+    clearTimeout(timer);
+    throw error;
+  }
+}
+
+/**
+ * Synchronous `Deno.Command` with the same timeout contract.
+ *
+ * A timeout of zero or less throws and does not spawn. The abort timer is
+ * cleared before the function returns.
+ */
+export function commandOutputSyncWithTimeout(
+  executable: string,
+  options: Deno.CommandOptions & { timeoutMs: number },
+): Deno.CommandOutput {
+  const { timeoutMs, ...commandOptions } = options;
+  if (!(timeoutMs > 0)) {
+    throw new Error(`${executable} timed out after ${timeoutMs}ms`);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const output = new Deno.Command(executable, {
+      ...commandOptions,
+      signal: controller.signal,
+    }).outputSync();
+    if (controller.signal.aborted) {
+      throw new Error(`${executable} timed out after ${timeoutMs}ms`);
+    }
+    return output;
+  } catch (error) {
+    if (
+      controller.signal.aborted ||
+      (error instanceof DOMException && error.name === "AbortError") ||
+      isCommandTimeoutError(error)
+    ) {
+      throw new Error(`${executable} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Run a fetch request with timeout protection.
  *
  * Wraps a fetch call with an AbortController that fires after the

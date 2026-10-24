@@ -58,6 +58,7 @@ import {
 import { WORKFLOW_SPECS } from "./workflow_definitions.ts";
 import { spawnGh } from "./gh_spawn.ts";
 import { runGitArgv } from "./git_timeout.ts";
+import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -148,19 +149,34 @@ function createDefaultRunCommand(
         stderr: result.stderr.trim(),
       };
     }
-    const command = new Deno.Command(cmd[0]!, {
-      args: cmd.slice(1),
-      stdout: "piped",
-      stderr: "piped",
-      ...(extraEnv ? { env: { ...Deno.env.toObject(), ...extraEnv } } : {}),
-    });
-    const output = await command.output();
-    const decoder = new TextDecoder();
-    return {
-      success: output.success,
-      stdout: decoder.decode(output.stdout).trim(),
-      stderr: decoder.decode(output.stderr).trim(),
-    };
+    return await runDirectCommand(
+      cmd,
+      DIRECT_COMMAND_TIMEOUT_MS,
+      extraEnv ? { ...Deno.env.toObject(), ...extraEnv } : undefined,
+    );
+  };
+}
+
+/** A non-git, non-gh argv. Minutes. A timeout throws; it is not a zero exit. */
+const DIRECT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
+
+export async function runDirectCommand(
+  cmd: string[],
+  timeoutMs: number = DIRECT_COMMAND_TIMEOUT_MS,
+  env?: Record<string, string>,
+): Promise<CommandOutput> {
+  const output = await commandOutputWithTimeout(cmd[0] ?? "", {
+    args: cmd.slice(1),
+    stdout: "piped",
+    stderr: "piped",
+    ...(env ? { env } : {}),
+    timeoutMs,
+  });
+  const decoder = new TextDecoder();
+  return {
+    success: output.success,
+    stdout: decoder.decode(output.stdout).trim(),
+    stderr: decoder.decode(output.stderr).trim(),
   };
 }
 

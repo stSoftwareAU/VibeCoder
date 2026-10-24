@@ -10,6 +10,26 @@
  */
 
 import { buildRunIdFooterLine } from "./run_id.ts";
+import {
+  commandOutputSyncWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** `hostname` fallback. Seconds. A timeout is not "unknown-host". */
+const HOSTNAME_TIMEOUT_MS = 10_000;
+
+/** The `hostname` command. A non-positive timeout throws and does not spawn. */
+export function readHostnameCommand(
+  timeoutMs: number = HOSTNAME_TIMEOUT_MS,
+): string {
+  const output = commandOutputSyncWithTimeout("hostname", {
+    stdout: "piped",
+    stderr: "null",
+    timeoutMs,
+  });
+  if (!output.success) return "";
+  return new TextDecoder().decode(output.stdout).trim();
+}
 
 /** Options for resolving worker identity. */
 export interface WorkerIdentityOptions {
@@ -96,16 +116,10 @@ export function getHostname(): string {
 
   // Strategy 3: Run hostname command (requires --allow-run)
   try {
-    const cmd = new Deno.Command("hostname", {
-      stdout: "piped",
-      stderr: "null",
-    });
-    const output = cmd.outputSync();
-    if (output.success) {
-      const h = new TextDecoder().decode(output.stdout).trim();
-      if (h.length > 0) return h;
-    }
-  } catch {
+    const h = readHostnameCommand();
+    if (h.length > 0) return h;
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     // Command not found or permission denied
   }
 

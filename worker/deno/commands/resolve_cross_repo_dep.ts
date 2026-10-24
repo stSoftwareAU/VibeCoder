@@ -26,6 +26,7 @@ import {
 } from "../lib/cross_repo_fix.ts";
 import { spawnGh } from "../lib/gh_spawn.ts";
 import { runGitArgv } from "../lib/git_timeout.ts";
+import { commandOutputWithTimeout } from "../lib/subprocess_timeout.ts";
 
 /**
  * Default command runner using `Deno.Command`.
@@ -52,19 +53,29 @@ export const defaultRunCommand: RunCommand = async (
       stderr: result.stderr.trim(),
     };
   }
-  const command = new Deno.Command(cmd[0]!, {
+  return await runDirectCommand(cmd);
+};
+
+/** A non-git, non-gh argv. Minutes. A timeout throws; it is not a zero exit. */
+const DIRECT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
+
+export async function runDirectCommand(
+  cmd: string[],
+  timeoutMs: number = DIRECT_COMMAND_TIMEOUT_MS,
+): Promise<CommandOutput> {
+  const output = await commandOutputWithTimeout(cmd[0] ?? "", {
     args: cmd.slice(1),
     stdout: "piped",
     stderr: "piped",
+    timeoutMs,
   });
-  const output = await command.output();
   const decoder = new TextDecoder();
   return {
     success: output.success,
     stdout: decoder.decode(output.stdout).trim(),
     stderr: decoder.decode(output.stderr).trim(),
   };
-};
+}
 
 /** Typed data returned by the command. */
 export interface ResolveCrossRepoDepData {

@@ -81,26 +81,7 @@ export const SPAWN_TIMEOUT_SCAN_DIRS: readonly string[] = [
  * Shrink only: delete an entry once that file no longer offends. Adding an
  * entry is a new gap, and the check fails it.
  */
-export const SPAWN_TIMEOUT_BASELINE: ReadonlySet<string> = new Set([
-  "worker/deno/commands/diagnose.ts",
-  "worker/deno/commands/process_add_repo.ts",
-  "worker/deno/commands/resolve_cross_repo_dep.ts",
-  "worker/deno/lib/claude_runner.ts",
-  "worker/deno/lib/claude_tail_cleanup.ts",
-  "worker/deno/lib/codex_quota.ts",
-  "worker/deno/lib/container_watchdog.ts",
-  "worker/deno/lib/file_lock.ts",
-  "worker/deno/lib/kill_diagnostics.ts",
-  "worker/deno/lib/markdownlint_check.ts",
-  "worker/deno/lib/memory_pressure.ts",
-  "worker/deno/lib/orphan_collector.ts",
-  "worker/deno/lib/pid_guard.ts",
-  "worker/deno/lib/purge_stale_workflow_issues.ts",
-  "worker/deno/lib/repo_credentials.ts",
-  "worker/deno/lib/semgrep_check.ts",
-  "worker/deno/lib/worker_identity.ts",
-  "worker/deno/lib/worker_log_gzip.ts",
-]);
+export const SPAWN_TIMEOUT_BASELINE: ReadonlySet<string> = new Set([]);
 
 const COMMAND_NEEDLE = "new Deno.Command";
 const RUN_NEEDLE = "runWithTimeout";

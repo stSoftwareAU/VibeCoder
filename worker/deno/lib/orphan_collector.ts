@@ -27,6 +27,13 @@
 
 import type { Logger } from "../types.ts";
 import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** `ps` and `kill` for the orphan sweep. Seconds. */
+const ORPHAN_PROBE_TIMEOUT_MS = 10_000;
+import {
   getDescendants as pidGuardGetDescendants,
   getElapsedSeconds as pidGuardGetElapsedSeconds,
   isRunning as pidGuardIsRunning,
@@ -69,18 +76,45 @@ export interface CollectOrphansOptions {
   logger?: Logger;
 }
 
-async function defaultGetParentPid(pid: number): Promise<number | null> {
+export async function readParentPid(
+  pid: number,
+  timeoutMs: number = ORPHAN_PROBE_TIMEOUT_MS,
+): Promise<number | null> {
   try {
-    const out = await new Deno.Command("ps", {
+    const out = await commandOutputWithTimeout("ps", {
       args: ["-p", String(pid), "-o", "ppid="],
       stdout: "piped",
       stderr: "null",
-    }).output();
+      timeoutMs,
+    });
     if (!out.success) return null;
     const ppid = parseInt(trim(new TextDecoder().decode(out.stdout)), 10);
     return Number.isNaN(ppid) ? null : ppid;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return null;
+  }
+}
+
+async function defaultGetParentPid(pid: number): Promise<number | null> {
+  return await readParentPid(pid);
+}
+
+export async function signalOrphanProcess(
+  pid: number,
+  signal: "TERM" | "KILL",
+  timeoutMs: number = ORPHAN_PROBE_TIMEOUT_MS,
+): Promise<void> {
+  try {
+    await commandOutputWithTimeout("kill", {
+      args: [`-${signal}`, String(pid)],
+      stdout: "null",
+      stderr: "null",
+      timeoutMs,
+    });
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
+    // best-effort
   }
 }
 
@@ -88,15 +122,7 @@ async function defaultSendSignal(
   pid: number,
   signal: "TERM" | "KILL",
 ): Promise<void> {
-  try {
-    await new Deno.Command("kill", {
-      args: [`-${signal}`, String(pid)],
-      stdout: "null",
-      stderr: "null",
-    }).output();
-  } catch {
-    // best-effort
-  }
+  await signalOrphanProcess(pid, signal);
 }
 
 export const DEFAULT_ORPHAN_COLLECTOR_DEPS: OrphanCollectorDeps = {

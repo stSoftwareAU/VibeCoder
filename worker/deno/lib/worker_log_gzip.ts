@@ -39,6 +39,14 @@
  * Australian English spelling throughout (behaviour, organisation, authorised).
  */
 
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** One process-table snapshot. Seconds. A timeout is not "no live PIDs". */
+const LOG_PS_TIMEOUT_MS = 10_000;
+
 /** Logs smaller than this many bytes are not worth compressing. */
 export const DEFAULT_MIN_COMPRESS_BYTES = 200;
 
@@ -286,13 +294,16 @@ function createLivePidProbe(): (pid: number) => Promise<boolean> {
 }
 
 /** Snapshot every live PID, or `null` when the process table is unreadable. */
-async function listLivePids(): Promise<Set<number> | null> {
+export async function listLivePids(
+  timeoutMs: number = LOG_PS_TIMEOUT_MS,
+): Promise<Set<number> | null> {
   try {
-    const output = await new Deno.Command("ps", {
+    const output = await commandOutputWithTimeout("ps", {
       args: ["-A", "-o", "pid="],
       stdout: "piped",
       stderr: "null",
-    }).output();
+      timeoutMs,
+    });
     if (!output.success) return null;
     const pids = new Set<number>();
     for (const line of new TextDecoder().decode(output.stdout).split("\n")) {
@@ -300,7 +311,8 @@ async function listLivePids(): Promise<Set<number> | null> {
       if (!Number.isNaN(pid)) pids.add(pid);
     }
     return pids;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return null;
   }
 }
