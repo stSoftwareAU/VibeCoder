@@ -1,0 +1,22 @@
+{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
+  {"path":"worker/deno/lib/repo_formatters.ts","line":145,
+   "outcome":"spawn failure (missing binary) resolves exit 1 with the error text",
+   "test":"worker/deno/tests/repo_formatters_real_test.ts",
+   "testName":"runFormatterCommand records a missing binary as exit 1 with the error text (Issue #4113)",
+   "flipWentRed":"removing the catch turned it red: NotFound: Failed to spawn was thrown"},
+  {"path":"worker/deno/lib/repo_formatters.ts","line":135,
+   "outcome":"child environment is built from the allowlist (clearEnv)",
+   "test":"worker/deno/tests/repo_formatters_real_test.ts",
+   "testName":"runFormatterCommand gives the child a credential-free environment (Issue #4113)",
+   "flipWentRed":"dropping clearEnv turned it red: the child listed non-allowlisted names such as VIBE_RUN_ID"},
+  {"path":"worker/deno/lib/repo_formatters.ts","line":156,
+   "outcome":"production deps run the formatters as the worker, not through sudo -u agent",
+   "test":"worker/deno/tests/repo_formatters_real_test.ts",
+   "testName":"createRepoFormatterDeps().runCommand runs the formatter as the worker's own uid (Issue #4113)",
+   "flipWentRed":"pointing runCommand back at createDefaultDeps turned it red: uid 1001 versus 1000"},
+  {"path":"worker/deno/lib/repo_formatters.ts","line":269,
+   "outcome":"failure excerpt keeps the head of the output as well as the tail",
+   "test":"worker/deno/tests/repo_formatters_test.ts",
+   "testName":"repo formatters - a failing formatter's log line and excerpt keep the head (the cause), not just the usage tail (Issue #4113)",
+   "flipWentRed":"reverting to redactedTail(output, 500) turned it red: Permission denied was missing from the excerpt"}
+]}}
