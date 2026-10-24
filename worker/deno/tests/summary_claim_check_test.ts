@@ -759,6 +759,30 @@ Deno.test("buildSummaryClaimQuestionPrompt - throws on a non-integer issue numbe
   );
 });
 
+Deno.test("buildSummaryClaimQuestionPrompt names the base side for a parity sentence with and without prose files (Issue #4223)", () => {
+  const shared = {
+    repo: "acme/widgets",
+    issueNumber: 7,
+    baseRef: "origin/main",
+    summaryPath: ".pr_summary",
+  };
+  const summaryOnly = buildSummaryClaimQuestionPrompt({
+    ...shared,
+    docFiles: [],
+  });
+  const withProse = buildSummaryClaimQuestionPrompt({
+    ...shared,
+    docFiles: ["docs/manual.md"],
+  });
+  for (const prompt of [summaryOnly, withProse]) {
+    assertStringIncludes(prompt, "git show origin/main:");
+    assertStringIncludes(prompt, "as before");
+    assertStringIncludes(prompt, "file:line");
+    assertFalse(prompt.includes("git show undefined:"));
+    assertFalse(prompt.includes("git show :"));
+  }
+});
+
 Deno.test("buildSummaryClaimQuestionPrompt - the same args with a valid issue number do not throw", () => {
   const prompt = buildSummaryClaimQuestionPrompt({
     repo: "acme/widgets",

@@ -521,8 +521,12 @@ Six checks run, each only when it applies:
    This prose scope has its own 20-file and 40-section caps before the overall
    40-file model-pass cap; overflow and unreadable input are logged as not
    checked, never passed. It reports contradictions about triggers, refusals,
-   allowances, skips, absolute words or counted lists, quoting the sentence
-   and naming the contradicting `file:line`. Unchanged sentences are checked
+   allowances, skips, absolute words, counted lists or a parity sentence
+   ("as before", "exactly as X", "the same as", "unchanged", "no behaviour
+   change"), quoting the sentence and naming the contradicting `file:line`.
+   A parity sentence is checked against the base side as well as the head;
+   the base may be opened only for that check, with `git show origin/<base>:<path>`.
+   Unchanged sentences are checked
    only for what this push makes false. Sets without one code list require a
    grep of the whole head tree. Unconfirmed source/prose findings are logged
    and do not trigger the write-enabled recovery turn.

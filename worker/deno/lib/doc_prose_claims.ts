@@ -89,9 +89,30 @@ export function selectManualProseFiles(
   return { files: kept.slice(0, cap), overCap: kept.slice(cap) };
 }
 
+/**
+ * The parity rule both claim instructions share (Issue #4223).
+ * A ref names the base side the model may open. With no ref, a "before"
+ * claim that cannot be checked is not reported.
+ */
+export function docProseParityRule(baseRef: string | undefined): string {
+  const shape =
+    "A sentence that compares the change with the code before it, or with another path (as before, exactly as X did, the same as, unchanged, no behaviour change), is a claim about both sides. ";
+  const report =
+    "Report the sentence when the two sides behave differently for any case it covers, and name both `file:line`s in `reason`.";
+  if (baseRef === undefined || baseRef === "") {
+    return shape +
+      "Open the other path at the head. A before claim that cannot be checked is not reported. " +
+      report;
+  }
+  return shape +
+    `Open the base side with \`git show ${baseRef}:<path>\`, or the other path at the head. ` +
+    report;
+}
+
 /** The shared question both prose-against-code passes ask. */
 export function docProseClaimInstruction(
   change: "this branch's diff" | "this push's change",
+  baseRef?: string,
 ): string {
   return "For each listed Markdown manual or prompt (a `.md` file that is " +
     "not a PR summary), check the lines " + change +
@@ -103,8 +124,9 @@ export function docProseClaimInstruction(
     "Check only sentences that say when the change's new " +
     "behaviour happens, what it refuses, rejects, allows or skips, or that " +
     'use an absolute word ("only", "never", "always", "any", "every", ' +
-    '"all", "each", "automatically") or a counted or closed list ' +
-    '("X, Y and Z are the …"). For each such sentence, open the head code ' +
+    '"all", "each", "automatically"), a counted or closed list ' +
+    '("X, Y and Z are the …"), or a comparison with earlier code or another path ' +
+    '("as before", "exactly as X did", "the same as", "unchanged", "no behaviour change"). For each such sentence, open the head code ' +
     "that decides it — the branch condition, its callers, the list or set " +
     "it names — with Read or Grep, and report the sentence when that code " +
     "contradicts it: a condition the code never tests, a refusal the code " +
@@ -112,5 +134,6 @@ export function docProseClaimInstruction(
     "the absolute word misses. Quote it verbatim, one per entry, with " +
     "`file` = that manual, prompt or source file's path, and name the contradicting " +
     "`file:line` in `reason`. Do not report a sentence the head code agrees " +
-    "with, or one you could not check. When a sentence names a set without a single list in code (signal senders, callers or result readers, or files a command reads), Grep the whole head tree for other members, including files outside the diff.";
+    "with, or one you could not check. When a sentence names a set without a single list in code (signal senders, callers or result readers, or files a command reads), Grep the whole head tree for other members, including files outside the diff. " +
+    docProseParityRule(baseRef);
 }

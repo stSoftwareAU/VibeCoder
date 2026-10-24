@@ -80,6 +80,7 @@ import { isTestFilePath } from "./security_fix_gate.ts";
 import { generateBoundaryId, isBoundaryId } from "./prompt_delimiter.ts";
 import {
   docProseClaimInstruction,
+  docProseParityRule,
   isManualProsePath,
   isProseSourcePath,
   MAX_DOC_PROSE_FILES,
@@ -180,7 +181,9 @@ export function buildSummaryClaimQuestionPrompt(opts: {
     "exist, or does not do, contain, match or cover what the sentence " +
     "says. Quote each verbatim, one per entry, `file` = the summary " +
     "path. Do not report a sentence you could not check, and do not " +
-    "judge wording, style, or completeness.";
+    "judge wording, style, or completeness. Also check a parity sentence " +
+    "(as before, exactly as X did, the same as, unchanged, no behaviour change). " +
+    docProseParityRule(opts.baseRef);
   const summaryExample = {
     file: opts.summaryPath,
     sentence:
@@ -212,7 +215,7 @@ export function buildSummaryClaimQuestionPrompt(opts: {
       : [],
     instruction: hasDocs
       ? "For the summary file: " + summaryInstruction.replace(/^C/, "c") +
-        "\n\n" + docProseClaimInstruction("this branch's diff")
+        "\n\n" + docProseClaimInstruction("this branch's diff", opts.baseRef)
       : summaryInstruction,
     example: {
       findings: hasDocs

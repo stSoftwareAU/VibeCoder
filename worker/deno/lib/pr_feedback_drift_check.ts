@@ -428,9 +428,8 @@ export function buildDriftQuestionPrompt(opts: {
   ];
   if (opts.baseRef) {
     intro.push(
-      `The PR's base branch is \`origin/${opts.baseRef}\`, named for ` +
-        "context only — judge drift against this push's change, not " +
-        "against the base.",
+      `The PR's base branch is \`origin/${opts.baseRef}\`. Judge drift ` +
+        "against this push's change. Open the base only to verify a parity sentence.",
     );
   }
 
@@ -457,7 +456,10 @@ export function buildDriftQuestionPrompt(opts: {
     );
   }
   if (opts.files.some((f) => isManualProsePath(f) || isProseSourcePath(f))) {
-    instruction.push(docProseClaimInstruction("this push's change"));
+    instruction.push(docProseClaimInstruction(
+      "this push's change",
+      opts.baseRef ? `origin/${opts.baseRef}` : undefined,
+    ));
   }
   instruction.push(
     "A sentence that was already false before this push, but untouched " +
