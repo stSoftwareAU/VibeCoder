@@ -561,8 +561,7 @@ export interface ClassifyOptions {
   openMilestones?: ReadonlySet<string>;
   /**
    * Issue numbers whose priority label was added by an untrusted author. This
-   * models the claim scan's `label-author-not-allowed` refusal
-   * (collect_label_candidates.ts, right after the blocked/assignee skip).
+   * models the label-author refusal in collect_label_candidates.ts.
    *
    * Omitted or empty means "no data" and no issue is excluded by this gate —
    * the same fail-safe as `openPRs`. Issue #4212.
@@ -749,8 +748,11 @@ export function classifyIssues(
       });
       continue;
     }
-    // Issue #4212: gate order mirrors the scan. The label-author refusal sits
-    // right after the blocked and assignee skips, and before the tracker gate.
+    // Issue #4212: the scan refuses assigned and blocked issues first, then
+    // trackers in `filterAndSort`, then label-author later, per candidate. The
+    // audit applies this gate ahead of the tracker gate, as Issue #4212
+    // specifies. Both refuse the issue, so only the reported reason differs for
+    // an issue that is both a tracker and untrusted.
     if (untrustedLabelIssues.has(issue.number)) {
       result.push({
         number: issue.number,
@@ -1000,11 +1002,13 @@ export function pickDominantReason(
   if (seen.has("stream_occupied")) return "stream_occupied";
   // Issue #1050: below stream occupancy — a tracker is only ever refused
   // after the label, blocking-label, assignee and label-author gates have
-  // passed it, but
-  // "the stream is busy" is the more actionable answer when both apply.
+  // passed it, but "the stream is busy" is the more actionable answer when
+  // both apply.
   if (seen.has("milestone_tracker")) return "milestone_tracker";
-  // Issue #4212: the label-author refusal is applied after the blocked and
-  // assignee skips and before the tracker gate, so it outranks assignee_filter.
+  // Issue #4212: the audit applies the label-author refusal after the blocked
+  // and assignee skips and ahead of the tracker gate, as the issue specifies,
+  // so it outranks assignee_filter. The scan drops trackers earlier, in
+  // filterAndSort; both refuse the issue, so only the reported reason differs.
   if (seen.has("label_author_not_allowed")) {
     return "label_author_not_allowed";
   }
