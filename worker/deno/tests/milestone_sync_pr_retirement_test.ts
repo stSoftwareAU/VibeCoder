@@ -168,7 +168,9 @@ Deno.test("retireMilestoneSyncPrs - a refused close is reported loudly, never co
   });
   assertEquals(closed, []);
   assert(
-    logs.some((l) => l.startsWith("WARNING") && l.includes("1957")),
+    logs.some((l) =>
+      l.includes("Could not close sync PR") && l.includes("1957")
+    ),
     `expected a loud failure, got ${JSON.stringify(logs)}`,
   );
 });
@@ -235,7 +237,7 @@ Deno.test("closeLandedMilestoneSyncPrs - an unreadable comparison closes nothing
   });
   assertEquals(closed, []);
   assert(
-    logs.some((l) => l.startsWith("WARNING") && l.includes("502")),
+    logs.some((l) => l.includes("Could not compare") && l.includes("502")),
     `expected the unreadable diff to be loud, got ${JSON.stringify(logs)}`,
   );
 });
@@ -277,7 +279,7 @@ Deno.test("closeRetargetedSyncPr - a refused close is loud and reports failure (
     log: (m) => logs.push(m),
   });
   assertEquals(closed, false);
-  assert(logs.some((l) => l.startsWith("WARNING")));
+  assert(logs.some((l) => l.includes("Could not close sync PR")));
 });
 
 // ---------------------------------------------------------------------------

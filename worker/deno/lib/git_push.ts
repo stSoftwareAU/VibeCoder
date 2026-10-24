@@ -200,7 +200,7 @@ export async function recoverExistingPr(
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      messages.push("WARNING: Failed to update PR body (non-fatal)");
+      messages.push("Failed to update PR body (non-fatal)");
     }
   }
 

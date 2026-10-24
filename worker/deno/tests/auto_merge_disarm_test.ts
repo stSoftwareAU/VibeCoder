@@ -33,6 +33,6 @@ Deno.test("disarmAutoMerge logs a warning and returns false on failure", async (
   );
   assertEquals(ok, false);
   assertEquals(logs, [
-    "WARNING: could not disarm auto-merge on o/r#7: boom (Issue #3433)",
+    "could not disarm auto-merge on o/r#7: boom (Issue #3433)",
   ]);
 });

@@ -47,6 +47,25 @@ class MalformedGhResponseError extends Error {
   }
 }
 
+/**
+ * A milestone list or issue list that failed (Issue #4106).
+ *
+ * Thrown so a rate limit or a 5xx is a failed report, not an empty
+ * milestone or a milestone that looks complete because both lists came
+ * back empty.
+ */
+class MilestoneHealthFetchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MilestoneHealthFetchError";
+  }
+}
+
+/** The message of an unknown throw, for a failed-report error. */
+function describeFetchCause(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** Dependencies for the milestone health check. */
 export interface MilestoneHealthDeps {
   /** Repositories to scan (owner/repo format). */
@@ -451,8 +470,11 @@ async function getRepoMilestoneHealth(
       "api",
       `repos/${repo}/milestones`,
     ]);
-  } catch {
-    return { repo, milestones: [] };
+  } catch (error) {
+    throw new MilestoneHealthFetchError(
+      `milestone health for ${repo} failed: could not list milestones: ` +
+        describeFetchCause(error),
+    );
   }
 
   const milestonesContext = `gh api repos/${repo}/milestones`;
@@ -488,8 +510,12 @@ async function getRepoMilestoneHealth(
         cache,
         ghCommandFn,
       );
-    } catch {
-      // Continue with empty list
+    } catch (error) {
+      throw new MilestoneHealthFetchError(
+        `milestone health for ${repo} failed: could not list closed ` +
+          `issues for milestone '${milestone.title}': ` +
+          describeFetchCause(error),
+      );
     }
 
     // Fetch open issues via the shared `issues_all` cache (Issue #1805).
@@ -503,8 +529,12 @@ async function getRepoMilestoneHealth(
         cache,
         ghCommandFn,
       );
-    } catch {
-      // Continue with empty list
+    } catch (error) {
+      throw new MilestoneHealthFetchError(
+        `milestone health for ${repo} failed: could not list open ` +
+          `issues for milestone '${milestone.title}': ` +
+          describeFetchCause(error),
+      );
     }
 
     // Build set of open issue numbers for dependency checking
@@ -560,12 +590,13 @@ async function getRepoMilestoneHealth(
 /**
  * Get milestone health across all configured repositories.
  *
- * A repo is skipped only when its health lookup throws something other than a
- * MalformedGhResponseError, e.g. its default branch cannot be resolved. A
- * failed milestone-list call still reports the repo with no milestones, and a
- * failed issue fetch or REST branch call leaves that milestone's issues or
- * branch out. Non-JSON GraphQL output falls back to REST; valid JSON of an
- * invalid shape fails the report (#3856).
+ * A repo is skipped only when its health lookup throws something other than
+ * a malformed response or a failed milestone or issue listing, for example
+ * when its default branch cannot be resolved. A failed milestone list or a
+ * failed issue fetch fails the report, so an outage is never an empty
+ * success (Issue #4106). A failed REST branch call still leaves that
+ * milestone's branch out. Non-JSON GraphQL output falls back to REST; valid
+ * JSON of an invalid shape fails the report (#3856).
  *
  * @param deps - Injected dependencies
  * @returns Result with the milestone health report
@@ -592,7 +623,12 @@ export async function getMilestoneHealth(
       repoReports.push(repoHealth);
     } catch (e) {
       // Issue #3856: malformed gh data is a fault, not a skipped repo (see Issue #2607 for the same fail-loud precedent).
-      if (e instanceof MalformedGhResponseError) return { ok: false, error: e };
+      if (
+        e instanceof MalformedGhResponseError ||
+        e instanceof MilestoneHealthFetchError
+      ) {
+        return { ok: false, error: e };
+      }
       // Skip repos that fail — continue with remaining repos
       continue;
     }

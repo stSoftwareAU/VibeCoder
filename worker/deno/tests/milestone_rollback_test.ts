@@ -690,7 +690,7 @@ Deno.test("executeRollback - a branch that already merges cleanly reverts nothin
       "the trial merge was undone",
     );
     assert(
-      warnings.some((line) => line.startsWith("WARNING:")),
+      warnings.some((line) => line.includes("milestone roll-back")),
       "the anomaly is reported, not swallowed",
     );
   } finally {

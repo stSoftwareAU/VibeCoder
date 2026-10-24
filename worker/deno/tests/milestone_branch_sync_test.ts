@@ -408,7 +408,7 @@ Deno.test("syncMilestoneBranches - handles sync failure gracefully", async () =>
   }
   // Should log a warning about the failure
   const hasWarning = logs.some((l) =>
-    l.includes("WARNING") || l.includes("failed")
+    l.includes("Failed to sync milestone branch")
   );
   assertEquals(hasWarning, true);
 });
@@ -2112,7 +2112,7 @@ Deno.test("syncMilestoneBranches - a measurement that fails or throws still sync
     assertEquals(order.includes(LEDGER_BRANCH), true);
     assertEquals(order.includes(SECOND_BRANCH), true);
     const warnings = lines.filter((line) =>
-      line.startsWith("WARNING: Could not measure how far")
+      line.startsWith("Could not measure how far")
     );
     assertEquals(warnings.length, 2);
     assertEquals(

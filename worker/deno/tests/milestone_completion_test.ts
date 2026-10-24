@@ -915,7 +915,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body holds on a pendi
   assertStringIncludes(createdPrs[0]!.body, "#10 depends on #20");
   assertEquals(
     logs.some((msg) =>
-      msg.includes("WARNING") && msg.includes("declared dependencies") &&
+      msg.includes("declared dependencies") &&
       msg.includes("Issue #3014")
     ),
     true,
@@ -997,7 +997,6 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes unverifiab
   );
   assertEquals(
     logs.some((msg) =>
-      msg.includes("WARNING") &&
       msg.includes("could not verify declared dependencies") &&
       msg.includes("Issue #3014")
     ),
@@ -1108,7 +1107,9 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body cites a doc line
   );
   assertStringIncludes(createdPrs[0]!.body, "#10");
   assertEquals(
-    logs.some((msg) => msg.includes("WARNING") && msg.includes("Issue #3223")),
+    logs.some((msg) =>
+      msg.includes("closed as not planned") && msg.includes("Issue #3223")
+    ),
     true,
   );
 });
@@ -1206,7 +1207,6 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes the not-pl
   );
   assertEquals(
     logs.some((msg) =>
-      msg.includes("WARNING") &&
       msg.includes("could not check milestone") &&
       msg.includes("Issue #3223")
     ),
@@ -3194,9 +3194,7 @@ Deno.test("closeGitHubMilestone - logs warning on failure without throwing", asy
   const logs: string[] = [];
   await closeGitHubMilestone("owner/repo", 5, ghFn, (msg) => logs.push(msg));
 
-  const warningLog = logs.find((l) =>
-    l.includes("WARNING") && l.includes("Failed to close milestone")
-  );
+  const warningLog = logs.find((l) => l.includes("Failed to close milestone"));
   assertEquals(warningLog !== undefined, true);
 });
 
@@ -4682,7 +4680,6 @@ Deno.test("close-out - a classification failure falls through to the existing fl
   assertEquals(r.comments, []);
   assertEquals(
     r.logs.some((l) =>
-      l.includes("WARNING") &&
       l.includes("Failed to classify final PRs for milestone branch")
     ),
     true,
@@ -5013,7 +5010,7 @@ Deno.test("Issue #3908 - open children per GitHub veto finalisation even when th
   assertStringIncludes(joined, "#3887");
   // The disagreement between the two sources is logged loudly with both
   // counts and both issue-number sets.
-  assertStringIncludes(joined, "WARNING: Open-children disagreement");
+  assertStringIncludes(joined, "Open-children disagreement");
   assertStringIncludes(joined, "GitHub reports 12");
   assertStringIncludes(joined, "cached issue list reports 0");
 });
@@ -5361,7 +5358,7 @@ Deno.test("milestone deadlock rollup - a failed partial rollup for one milestone
 
   const result = await checkAndHandleMilestoneCompletions(deps);
   assertEquals(result.ok, true);
-  assertStringIncludes(logs.join("\n"), "WARNING");
+  assertStringIncludes(logs.join("\n"), "partial rollup");
 });
 
 Deno.test("milestone deadlock rollup - the final rollup still fires after a merged partial rollup, with no new partial rollup", async () => {
@@ -5576,9 +5573,7 @@ Deno.test("close-out - an unresolved fleet set classes a roll-back-commented fin
     "no fresh final PR is raised on an unattributable comment",
   );
   assert(
-    r.logs.some((l) =>
-      l.includes("WARNING") && l.includes("fleet author set unresolved")
-    ),
+    r.logs.some((l) => l.includes("fleet author set unresolved")),
     "the unresolved fleet set is logged loudly",
   );
 });

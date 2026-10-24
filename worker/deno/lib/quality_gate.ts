@@ -1113,7 +1113,7 @@ async function runSourceTargetCheck(
 
       if (!exists) {
         errors.push(
-          `ERROR: ${file}:${lineno} sources '${target}' which does not exist`,
+          `${file}:${lineno} sources '${target}' which does not exist`,
         );
         failures++;
       }

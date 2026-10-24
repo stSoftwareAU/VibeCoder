@@ -400,7 +400,10 @@ Deno.test("stale workflow - processStalePlanning logs warning for stale planning
 
   assertEquals(results.length, 1);
   assertEquals(results[0]!.action, "warning");
-  assertEquals(deps.logs.some((l) => l.includes("WARNING")), true);
+  assertEquals(
+    deps.logs.some((l) => l.includes("[stale-workflow]") && l.includes("#60")),
+    true,
+  );
   // No comments posted — warning only
   assertEquals(deps.postedComments.length, 0);
 });

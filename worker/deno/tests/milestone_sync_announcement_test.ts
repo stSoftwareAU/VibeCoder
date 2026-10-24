@@ -92,7 +92,7 @@ Deno.test("announceAgentAttempt - a post that failed is said out loud and not re
   assertEquals(posted, false);
   assert(
     logs.some((line) =>
-      line.includes("WARNING") && line.includes("gh is down")
+      line.includes("Could not announce") && line.includes("gh is down")
     ),
     `the reason must reach the log, got ${JSON.stringify(logs)}`,
   );
