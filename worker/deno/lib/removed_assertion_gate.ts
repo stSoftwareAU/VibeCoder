@@ -17,7 +17,12 @@
  * assertion a diff removes from a test file must be named in that Test
  * Plan with a verified Required by quote from the issue title/body or a
  * verified Moved to destination (Issue #3739). Replaced by assertions must
- * occur on added lines in the same file. An unchanged assertion is exempt
+ * occur on added lines in the same file. A containment check added in the
+ * same test, whose expected literal is a strict substring of a removed
+ * assertion's expected literal, is broadened: it accepts the old output,
+ * and a Required by quote does not clear it (Issue #4163). An exact-equality
+ * assertion on the new value, or an added negative check for the old
+ * literal in that test, does. An unchanged assertion is exempt
  * when it was simply moved: re-wrapped, re-indented or relocated
  * with the same text and the same guards, skips and early exits around it
  * (see {@link findRemovedAssertions}). An edit to any line of a multi-line
@@ -1078,6 +1083,15 @@ const TEST_DECL_RE =
   /^(?:await\s+)?(?:Deno\.test|it|test|describe|context|suite|specify|bench|t\.(?:step|test|run|Run)|\w+\.(?:step|Run))(?:\.(?:only|each|concurrent|sequential|serial|skip|ignore|todo|fixme))*\s*[(`]|^@test\b|^(?:it|describe|context|specify|test)\s+["']/;
 
 /**
+ * A line that opens a test even when the name is a quoted argument
+ * (`Deno.test("name"`, `it("name"`). {@link TEST_DECL_RE} only treats
+ * `(` or a backtick as the opener, so a double-quoted name would not pair
+ * with its replacement (Issue #4163).
+ */
+const TEST_OPEN_RE =
+  /^(?:await\s+)?(?:Deno\.test|it|test|describe|context|suite|specify|bench)\b/;
+
+/**
  * A skip marker: a skipped or ignored test (`it.skip(`, `Deno.test.ignore(`,
  * `xit(`, `ignore: true`), an attribute or decorator that skips or inverts a
  * test (`#[ignore]`, `#[should_panic]`, a non-test `#[cfg(…)]`,
@@ -1288,6 +1302,20 @@ interface SideStatement {
    * walk did not reach could hide behind an unchanged key.
    */
   chainCut: boolean;
+  /**
+   * Canonical head of the innermost enclosing test, or `""` when the
+   * assertion sits outside one. Used to pair a removed assertion with the
+   * replacement in the same test (Issue #4163). Not part of {@link key}.
+   */
+  testKey: string;
+  /** Expected literals of containment matchers in this statement. */
+  containmentLiterals: string[];
+  /** Expected literals of exact-equality matchers in this statement. */
+  exactLiterals: string[];
+  /** Every quoted literal in the statement, for a negative-check clear. */
+  literals: string[];
+  /** True when the statement negates the check it makes. */
+  negative: boolean;
 }
 
 /**
@@ -1368,6 +1396,22 @@ class LineFacts {
   }
   testDecl(i: number): boolean {
     return this.#flag("testDecl", i, (t) => TEST_DECL_RE.test(t));
+  }
+  /**
+   * Whether line `i` opens a test or example group. `Deno.test("name"` does
+   * not match {@link TEST_DECL_RE} (the quote is not `(`), so this also
+   * accepts a call that merely begins with the test name, a function named
+   * `test…`, and a function carrying a Rust test attribute.
+   */
+  testScope(i: number): boolean {
+    return this.#flag("testScope", i, (t) => {
+      if (TEST_DECL_RE.test(t)) return true;
+      if (TEST_OPEN_RE.test(t)) return true;
+      const fn = t.match(FN_DECL_RE);
+      if (!fn) return false;
+      const name = fn[1] ?? "";
+      return /^test/i.test(name) || this.#hasRustTestAttr(i);
+    });
   }
   callback(i: number): boolean {
     return this.#flag("callback", i, (t) => CALLBACK_OPENER_RE.test(t));
@@ -1698,6 +1742,7 @@ function buildStatement(
     context.push("X:" + facts.key(exitLines[e]!));
   }
 
+  const source = statementSource(lexed, start, end);
   return {
     start,
     end,
@@ -1706,6 +1751,11 @@ function buildStatement(
     key: canonicaliseUncapped(joined) + "\u0001" + context.join("\u0002"),
     unclosed,
     chainCut,
+    testKey: enclosingTestKey(facts, ancestors, start),
+    containmentLiterals: containmentLiteralsOf(source),
+    exactLiterals: exactLiteralsOf(source),
+    literals: quotedLiterals(source),
+    negative: NEGATIVE_ASSERTION_RE.test(blankQuoted(source)),
   };
 }
 
@@ -2231,6 +2281,376 @@ function describeUnaccounted(unaccounted: readonly RemovedAssertion[]): string {
   return extra > 0 ? `${named}; and ${extra} more` : named;
 }
 
+/**
+ * Containment matchers whose expected text, when it is a strict substring
+ * of the removed assertion's expected text, still accepts the old output
+ * (Issue #4163). `assertStringIncludes` and `assertMatch` take the literal
+ * as the second argument; the others take it as the first.
+ */
+const CONTAINMENT_MATCHER_RE =
+  /\b(assertStringIncludes|assertMatch|toContain|includes|contains)\s*\(/g;
+
+/** Exact-equality matchers. `toBe` / `toEqual` / `toStrictEqual` take the expected value first. */
+const EXACT_MATCHER_RE =
+  /\b(assertStrictEquals|assertEquals|assertEqual|assert_eq!|toStrictEqual|toEqual|toBe)\s*\(|\bassert\.(strictEqual|deepEqual|equal)\s*\(/g;
+
+/**
+ * A negated assertion, including `assert(!…)`, `assertEquals(…, false)` and
+ * `includes(…) === false`. Run on code with string contents blanked, so a
+ * literal cannot trip it. A negated containment does not accept the old
+ * output, so it is not a broadened replacement (Issue #4163).
+ */
+const NEGATIVE_ASSERTION_RE =
+  /\bassertFalse\s*\(|\bassertNotMatch\s*\(|\bassertNotEquals\s*\(|\bassert_ne!\s*\(|\brefute\w*\s*\(|\bassert!?\s*\(\s*!|\.not\.|,\s*false\s*\)|(?:===|==)\s*false\b/;
+
+/** Up to how many broadened pairs one problem names. */
+const MAX_NAMED_BROADENED = 5;
+
+/** The statement with comments removed and string contents kept. */
+function statementSource(
+  lexed: readonly LexedLine[],
+  start: number,
+  end: number,
+): string {
+  const parts: string[] = [];
+  for (let i = start; i <= end; i++) {
+    const line = lexed[i];
+    if (!line || line.commentOnly) continue;
+    parts.push(line.stripped);
+  }
+  return parts.join("\n");
+}
+
+/**
+ * A same-length copy with quoted contents replaced by spaces. The lexer's
+ * `code` and `stripped` lines are not always the same length (a shell quote
+ * the lexer only partly understands), so matcher names are sought on this
+ * copy rather than on `code`.
+ */
+function blankQuoted(text: string): string {
+  const chars = text.split("");
+  for (let i = 0; i < chars.length; i++) {
+    const quote = chars[i];
+    if (quote !== '"' && quote !== "'" && quote !== "`") continue;
+    let j = i + 1;
+    while (j < chars.length) {
+      const ch = chars[j]!;
+      if (ch === "\\") {
+        chars[j] = " ";
+        if (j + 1 < chars.length) chars[j + 1] = " ";
+        j += 2;
+        continue;
+      }
+      if (ch === quote) break;
+      if (ch === "\n" && quote !== "`") break;
+      chars[j] = " ";
+      j++;
+    }
+    i = j;
+  }
+  return chars.join("");
+}
+
+/** Canonical head of the innermost enclosing test, or `""` outside one. */
+function enclosingTestKey(
+  facts: LineFacts,
+  ancestors: readonly number[],
+  start: number,
+): string {
+  for (let k = ancestors.length - 1; k >= 0; k--) {
+    const line = ancestors[k]!;
+    const first = facts.start(line);
+    const scopeLine = facts.testScope(first)
+      ? first
+      : facts.testScope(line)
+      ? line
+      : -1;
+    if (scopeLine === -1) continue;
+    const key = facts.headKey(scopeLine, Math.max(scopeLine, start - 1));
+    if (key !== null && key !== "") return key;
+    return facts.key(scopeLine);
+  }
+  return "";
+}
+
+/**
+ * The text inside one quoted or slash-delimited literal that opens at
+ * `start`. A backslash keeps the following character, so an escaped closer
+ * does not end the literal. Returns null when the closer is missing.
+ */
+function readDelimited(
+  text: string,
+  start: number,
+  close: string,
+  multiline: boolean,
+): { value: string; end: number } | null {
+  let value = "";
+  for (let i = start + 1; i < text.length; i++) {
+    const ch = text[i]!;
+    if (ch === "\\") {
+      const next = text[i + 1];
+      if (next === undefined) return null;
+      value += next;
+      i++;
+      continue;
+    }
+    if (text.startsWith(close, i)) return { value, end: i + close.length };
+    if (ch === "\n" && !multiline) return null;
+    value += ch;
+  }
+  return null;
+}
+
+/** The expected literal an argument holds, or null when it is not a literal. */
+function literalText(argument: string): string | null {
+  const text = argument.trim();
+  if (text === "") return null;
+  const opener = text[0]!;
+  if (opener === '"' || opener === "'" || opener === "`") {
+    const read = readDelimited(text, 0, opener, opener === "`");
+    if (!read || text.slice(read.end).trim() !== "") return null;
+    if (opener === "`" && read.value.includes("${")) return null;
+    return read.value;
+  }
+  if (opener === "/") {
+    const read = readDelimited(text, 0, "/", false);
+    if (!read || !/^[a-z]*$/i.test(text.slice(read.end).trim())) return null;
+    return read.value;
+  }
+  return null;
+}
+
+/** An ASCII letter, which is the only character a regex flag may be. */
+function isRegexFlag(ch: string): boolean {
+  const code = ch.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+/**
+ * Quoted literals and slash-delimited regex bodies. Templates with
+ * substitutions are excluded. A regex body is kept so `assertNotMatch` of
+ * the old pattern can clear a shortened `assertMatch` (Issue #4163).
+ * The body is read by {@link readDelimited}, the same linear walk as
+ * {@link literalText}, so the source is never compiled as a pattern.
+ */
+function quotedLiterals(text: string): string[] {
+  const found: string[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const read = readDelimited(text, i, ch, ch === "`");
+      if (!read) continue;
+      if (!(ch === "`" && read.value.includes("${"))) found.push(read.value);
+      i = read.end - 1;
+      continue;
+    }
+    if (ch !== "/") continue;
+    const read = readDelimited(text, i, "/", false);
+    if (!read) continue;
+    let end = read.end;
+    while (end < text.length && isRegexFlag(text[end]!)) end++;
+    found.push(read.value);
+    i = end - 1;
+  }
+  return found;
+}
+
+/**
+ * Argument `n` (0-based) of the call whose `(` is at `openParen`. Structure
+ * is read from `code`, where string contents are blank, and the text is
+ * taken from `stripped`, so a comma inside a literal does not split it.
+ */
+function nthArgument(
+  code: string,
+  stripped: string,
+  openParen: number,
+  n: number,
+): string | null {
+  let depth = 1;
+  let argStart = openParen + 1;
+  let argIndex = 0;
+  for (let i = openParen + 1; i < code.length; i++) {
+    const ch = code[i]!;
+    if (ch === "(" || ch === "[" || ch === "{") depth++;
+    else if (ch === ")" || ch === "]" || ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return argIndex === n ? stripped.slice(argStart, i).trim() : null;
+      }
+    } else if (ch === "," && depth === 1) {
+      if (argIndex === n) return stripped.slice(argStart, i).trim();
+      argIndex++;
+      argStart = i + 1;
+    }
+  }
+  return null;
+}
+
+/** Expected literals of each match of `pattern` in one assertion. */
+function matcherLiterals(
+  stripped: string,
+  pattern: RegExp,
+  argIndex: (name: string) => number,
+): string[] {
+  const code = blankQuoted(stripped);
+  pattern.lastIndex = 0;
+  const found: string[] = [];
+  for (const match of code.matchAll(pattern)) {
+    const name = match[1] ?? match[2] ?? "";
+    const open = (match.index ?? 0) + match[0].length - 1;
+    if (code[open] !== "(") continue;
+    const argument = nthArgument(code, stripped, open, argIndex(name));
+    if (argument === null) continue;
+    const literal = literalText(argument);
+    if (literal !== null) found.push(literal);
+  }
+  return found;
+}
+
+function containmentLiteralsOf(stripped: string): string[] {
+  return matcherLiterals(
+    stripped,
+    CONTAINMENT_MATCHER_RE,
+    (name) => name === "assertStringIncludes" || name === "assertMatch" ? 1 : 0,
+  );
+}
+
+function exactLiteralsOf(stripped: string): string[] {
+  return matcherLiterals(
+    stripped,
+    EXACT_MATCHER_RE,
+    (name) =>
+      name === "toBe" || name === "toEqual" || name === "toStrictEqual" ? 0 : 1,
+  );
+}
+
+/** A removed or added assertion the broadened-containment check can pair. */
+interface CheckedAssertion {
+  file: string;
+  testKey: string;
+  text: string;
+  containmentLiterals: readonly string[];
+  exactLiterals: readonly string[];
+  literals: readonly string[];
+  negative: boolean;
+}
+
+function checkedAssertion(
+  file: string,
+  statement: SideStatement,
+): CheckedAssertion {
+  return {
+    file,
+    testKey: statement.testKey,
+    text: statement.text,
+    containmentLiterals: statement.containmentLiterals,
+    exactLiterals: statement.exactLiterals,
+    literals: statement.literals,
+    negative: statement.negative,
+  };
+}
+
+function showLiteral(literal: string): string {
+  const flat = literal.replaceAll("\n", "\\n");
+  return flat.length > 80 ? `${flat.slice(0, 80)}…` : flat;
+}
+
+/**
+ * One problem when an added containment check in the same test expects a
+ * strict substring of a removed assertion's expected literal, so the new
+ * check accepts the old output. A Required by quote does not clear it. An
+ * added exact-equality assertion on a new value that contains that literal
+ * and is not the old expected text, or an added negative check naming the
+ * old literal, does. Returns null when nothing broadened.
+ */
+function broadenedContainmentProblems(diffText: string): string | null {
+  const analysed = analyseTestPatches(diffText);
+  const surviving = new Map<string, number>();
+  const added: CheckedAssertion[] = [];
+  for (const { patch, newStatements, newUnterminatedFrom } of analysed) {
+    for (const statement of newStatements) {
+      if (statement.unclosed || statement.chainCut) continue;
+      if (
+        newUnterminatedFrom !== -1 && statement.start >= newUnterminatedFrom
+      ) continue;
+      surviving.set(statement.key, (surviving.get(statement.key) ?? 0) + 1);
+      const changed = patch.newLines
+        .slice(statement.start, statement.end + 1)
+        .some((line) => line.changed);
+      if (!changed || statement.testKey === "") continue;
+      added.push(checkedAssertion(patch.file, statement));
+    }
+  }
+
+  const hits: { file: string; text: string; literal: string }[] = [];
+  const seen = new Set<string>();
+  for (const { patch, oldStatements } of analysed) {
+    for (const statement of oldStatements) {
+      if (statement.unclosed || statement.chainCut) continue;
+      const count = surviving.get(statement.key) ?? 0;
+      if (count > 0) {
+        surviving.set(statement.key, count - 1);
+        continue;
+      }
+      if (statement.testKey === "") continue;
+      const old = checkedAssertion(patch.file, statement);
+      const expected = [
+        ...new Set([...old.containmentLiterals, ...old.exactLiterals]),
+      ];
+      if (expected.length === 0) continue;
+      const peers = added.filter((item) =>
+        item.file === old.file && item.testKey === old.testKey
+      );
+      for (const peer of peers) {
+        // A negated containment rejects the old text. It is the absence
+        // check, not a replacement that still accepts the old output.
+        if (peer.negative) continue;
+        for (const literal of peer.containmentLiterals) {
+          const parents = expected.filter((value) =>
+            literal === ""
+              ? value !== ""
+              : value.length > literal.length && value.includes(literal)
+          );
+          if (parents.length === 0) continue;
+          // An exact check of the new value pins output the old text cannot
+          // match. Equality with the fragment is that case; so is a longer
+          // new value that contains the fragment, such as "NEW: 5" for "5".
+          // The old expected text itself does not count: it still accepts
+          // the output the containment was broadened away from.
+          const exactClears = literal !== "" &&
+            peers.some((item) =>
+              item.exactLiterals.some((exact) =>
+                exact.includes(literal) && !parents.includes(exact)
+              )
+            );
+          const negativeClears = parents.every((parent) =>
+            peers.some((item) =>
+              item.negative && item.literals.includes(parent)
+            )
+          );
+          if (exactClears || negativeClears) continue;
+          const key = `${old.file}\u0000${old.text}\u0000${literal}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          hits.push({ file: old.file, text: old.text, literal });
+        }
+      }
+    }
+  }
+  if (hits.length === 0) return null;
+  const named = hits.slice(0, MAX_NAMED_BROADENED).map((hit) =>
+    `${hit.file}: ${hit.text} broadened to a containment of "${
+      showLiteral(hit.literal)
+    }"`
+  ).join("; ");
+  const extra = hits.length - MAX_NAMED_BROADENED;
+  const listed = extra > 0 ? `${named}; and ${extra} more` : named;
+  return "broadened containment assertion accepts the old output by " +
+    `construction: ${listed}. A Required by quote does not clear it; an ` +
+    "exact-equality assertion on the new value, or an added negative check " +
+    "for the old literal in the same test, does";
+}
+
 /** Shared rule evaluation once the gate is known to be applicable. */
 function evaluateApplicable(
   testPlan: TestPlanSection,
@@ -2324,6 +2744,8 @@ function evaluateApplicable(
         }
       }
     }
+    const broadened = broadenedContainmentProblems(testDiff!);
+    if (broadened !== null) problems.push(broadened);
   }
 
   return {
@@ -2352,7 +2774,10 @@ function evaluateApplicable(
  *      in its own Test Plan list entry with a Required by quote of at least
  *      5 words from the issue title or body. Explicit Moved to entries must
  *      name an added copy with preserved context and copy count. Replaced
- *      by assertions must be added in the original test file.
+ *      by assertions must be added in the original test file. A containment
+ *      check added in the same test whose expected literal is a strict
+ *      substring of a removed assertion's expected literal is broadened,
+ *      and a Required by quote does not clear it.
  *   5. `testDiff === null` → no assertion-naming problem is raised (the
  *      caller logs the gap); rule 3 still applies.
  *
@@ -2504,6 +2929,14 @@ export function buildRemovedAssertionGateComment(
       "`assertEquals(result.code, 0)`",
     "  Moved to: `worker/deno/tests/foo_test.ts`",
     "```",
+    "",
+    "4. A containment check (`includes`, `assertStringIncludes`, " +
+      "`toContain`, `contains`, or `assertMatch` on a literal) whose " +
+      "expected text is a strict substring of a removed assertion's " +
+      "expected text is broadened. It accepts the old output, and a " +
+      "Required by quote does not clear it. Use an exact-equality " +
+      "assertion on the new value, or add a negative check for the old " +
+      "literal in the same test.",
   );
 
   return lines.join("\n");
