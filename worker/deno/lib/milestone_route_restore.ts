@@ -21,6 +21,7 @@ import { logAt, type LogSink } from "./log_sink.ts";
 import {
   fetchOpenMilestoneChildren,
   isMilestoneBranch,
+  type OpenMilestoneChild,
 } from "./milestone_children_gate.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 
@@ -116,7 +117,16 @@ export async function readBranchCompare(
 /** What {@link restoreClosedMilestoneRoute} did. */
 export type RouteRestoreOutcome =
   /** A fresh rollup pull request was opened. */
-  | { action: "created"; prUrl: string; milestoneBranch: string }
+  | {
+    action: "created";
+    prUrl: string;
+    milestoneBranch: string;
+    /**
+     * Set when this pass merged the child into the milestone branch before
+     * opening the rollup. The caller must not merge that pull request again.
+     */
+    landedChildPr?: number;
+  }
   /** An open rollup from this branch already exists. */
   | { action: "exists"; prNumber: number; milestoneBranch: string }
   /** No merged rollup — the route was not closed. */
@@ -129,7 +139,12 @@ export type RouteRestoreOutcome =
   /** The route stays closed: the milestone is closed or has no open work. */
   | { action: "left-closed"; milestoneBranch: string; detail: string }
   /** A lookup or create failed. Never reported as success. */
-  | { action: "failed"; reason: string };
+  | { action: "failed"; reason: string }
+  /**
+   * The child was merged and the rollup was not opened. Its issue is not
+   * left closed (Issue #4175).
+   */
+  | { action: "land-failed"; reason: string };
 
 /** Inputs for {@link restoreClosedMilestoneRoute}. */
 export interface RouteRestoreOptions {
@@ -145,6 +160,12 @@ export interface RouteRestoreOptions {
   getDefaultBranchFn?: (repo: string) => Promise<Result<string>>;
   /** Sink for progress and failure lines. */
   log?: LogSink;
+  /**
+   * When the branch is not ahead, merge this child into the milestone
+   * branch and open the rollup in the same pass (Issue #4175). Omitted by
+   * the sync path, which must not open a pull request into a waiting route.
+   */
+  landChildPrNumber?: number;
 }
 
 interface RawRollupPr {
@@ -259,6 +280,181 @@ Child pull requests stay based on \`${milestoneBranch}\` and merge there. This p
 The fleet does not move a milestone pull request onto \`${defaultBranch}\` directly.
 
 Raised automatically by the Vibe Coder.`;
+}
+
+async function openFreshRollup(
+  repo: string,
+  milestoneBranch: string,
+  defaultBranch: string,
+  aheadBy: number,
+  ghCommandFn: GhCommandFn,
+): Promise<{ ok: true; prUrl: string } | { ok: false; reason: string }> {
+  const body = buildRestoredRollupBody(
+    milestoneBranch,
+    defaultBranch,
+    aheadBy,
+  );
+  try {
+    const prUrl = (await ghCommandFn([
+      "pr",
+      "create",
+      "--repo",
+      repo,
+      "--title",
+      `Milestone rollup: ${milestoneBranch} → ${defaultBranch}`,
+      "--body",
+      body,
+      "--head",
+      milestoneBranch,
+      "--base",
+      defaultBranch,
+    ])).trim();
+    return { ok: true, prUrl };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `could not create the rollup PR for ${milestoneBranch}: ${
+        errorText(err)
+      }`,
+    };
+  }
+}
+
+/** Reopen milestone issues a child merge closed. Returns a clause for the failure. */
+async function reopenClosedIssues(
+  repo: string,
+  issueNumbers: readonly number[],
+  ghCommandFn: GhCommandFn,
+): Promise<string> {
+  if (issueNumbers.length === 0) {
+    return "No milestone issue number was available to reopen.";
+  }
+  const problems: string[] = [];
+  for (const number of issueNumbers) {
+    if (!Number.isInteger(number) || number <= 0) {
+      problems.push(`#${number} is not a pull-request issue number`);
+      continue;
+    }
+    try {
+      await ghCommandFn([
+        "issue",
+        "reopen",
+        String(number),
+        "--repo",
+        repo,
+      ]);
+    } catch (err) {
+      problems.push(`#${number} could not be reopened (${errorText(err)})`);
+    }
+  }
+  if (problems.length > 0) {
+    return `Reopen failed: ${problems.join("; ")}.`;
+  }
+  const listed = issueNumbers.map((number) => `#${number}`).join(", ");
+  return `Reopened ${listed} so the issue is not left closed.`;
+}
+
+/**
+ * Merge the child into the milestone branch, then open the rollup.
+ * A rollup that cannot be created does not leave the issue closed.
+ */
+async function landChildAndOpenRollup(
+  options: {
+    repo: string;
+    milestoneBranch: string;
+    defaultBranch: string;
+    childPrNumber: number;
+    children: readonly OpenMilestoneChild[];
+    ghCommandFn: GhCommandFn;
+    log?: LogSink;
+  },
+): Promise<RouteRestoreOutcome> {
+  const {
+    repo,
+    milestoneBranch,
+    defaultBranch,
+    childPrNumber,
+    children,
+    ghCommandFn,
+    log,
+  } = options;
+  if (!Number.isInteger(childPrNumber) || childPrNumber <= 0) {
+    return {
+      action: "failed",
+      reason: `child PR number ${childPrNumber} is not a positive integer`,
+    };
+  }
+  const issueNumbers = children
+    .filter((child) => child.kind === "issue")
+    .map((child) => child.number);
+  try {
+    await ghCommandFn([
+      "pr",
+      "merge",
+      String(childPrNumber),
+      "--repo",
+      repo,
+      "--merge",
+    ]);
+  } catch (err) {
+    return {
+      action: "failed",
+      reason:
+        `child PR #${childPrNumber} was not merged onto ${milestoneBranch} (${
+          errorText(err)
+        }), so its issue was not closed`,
+    };
+  }
+  const compare = await readBranchCompare(
+    repo,
+    defaultBranch,
+    milestoneBranch,
+    ghCommandFn,
+  );
+  if (!compare.ok || compare.value.aheadBy <= 0) {
+    const reopen = await reopenClosedIssues(
+      repo,
+      issueNumbers,
+      ghCommandFn,
+    );
+    const why = compare.ok
+      ? `${milestoneBranch} is still not ahead of ${defaultBranch}`
+      : compare.error.message;
+    return {
+      action: "land-failed",
+      reason:
+        `child PR #${childPrNumber} merged onto ${milestoneBranch} but no rollup was opened (${why}). ${reopen}`,
+    };
+  }
+  const opened = await openFreshRollup(
+    repo,
+    milestoneBranch,
+    defaultBranch,
+    compare.value.aheadBy,
+    ghCommandFn,
+  );
+  if (!opened.ok) {
+    const reopen = await reopenClosedIssues(
+      repo,
+      issueNumbers,
+      ghCommandFn,
+    );
+    return {
+      action: "land-failed",
+      reason: `${opened.reason}. ${reopen}`,
+    };
+  }
+  logAt(
+    log,
+    "info",
+    `merged child PR #${childPrNumber} onto ${milestoneBranch} in ${repo} and opened rollup ${opened.prUrl} in the same pass (Issue #4175)`,
+  );
+  return {
+    action: "created",
+    prUrl: opened.prUrl,
+    milestoneBranch,
+    landedChildPr: childPrNumber,
+  };
 }
 
 /**
@@ -385,49 +581,42 @@ export async function restoreClosedMilestoneRoute(
           : `rollup PR #${merged.number} has merged and ${milestoneBranch} has no file changes ${defaultBranch} does not already have`,
       };
     }
+    if (options.landChildPrNumber !== undefined) {
+      return await landChildAndOpenRollup({
+        repo,
+        milestoneBranch,
+        defaultBranch,
+        childPrNumber: options.landChildPrNumber,
+        children: children.value,
+        ghCommandFn,
+        log,
+      });
+    }
     return {
       action: "waiting",
       milestoneBranch,
       detail:
-        `${milestoneBranch} is not ahead of ${defaultBranch}, so no rollup is open and the child stays unarmed`,
+        `${milestoneBranch} is not ahead of ${defaultBranch}, so no rollup is open yet`,
     };
   }
 
-  const body = buildRestoredRollupBody(
+  const opened = await openFreshRollup(
+    repo,
     milestoneBranch,
     defaultBranch,
     aheadBy,
+    ghCommandFn,
   );
-  try {
-    const prUrl = (await ghCommandFn([
-      "pr",
-      "create",
-      "--repo",
-      repo,
-      "--title",
-      `Milestone rollup: ${milestoneBranch} → ${defaultBranch}`,
-      "--body",
-      body,
-      "--head",
-      milestoneBranch,
-      "--base",
-      defaultBranch,
-    ])).trim();
-    const carried = children.value.length > 0
-      ? "while the milestone still has open work"
-      : "while the branch still has changes the default branch does not";
-    logAt(
-      log,
-      "info",
-      `opened a fresh rollup for ${milestoneBranch} in ${repo} after rollup PR #${merged.number} merged ${carried} (Issue #4175): ${prUrl}`,
-    );
-    return { action: "created", prUrl, milestoneBranch };
-  } catch (err) {
-    return {
-      action: "failed",
-      reason: `could not create the rollup PR for ${milestoneBranch}: ${
-        errorText(err)
-      }`,
-    };
+  if (!opened.ok) {
+    return { action: "failed", reason: opened.reason };
   }
+  const carried = children.value.length > 0
+    ? "while the milestone still has open work"
+    : "while the branch still has changes the default branch does not";
+  logAt(
+    log,
+    "info",
+    `opened a fresh rollup for ${milestoneBranch} in ${repo} after rollup PR #${merged.number} merged ${carried} (Issue #4175): ${opened.prUrl}`,
+  );
+  return { action: "created", prUrl: opened.prUrl, milestoneBranch };
 }

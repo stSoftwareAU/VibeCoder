@@ -18,7 +18,6 @@ import {
 import type { MergeGateFn } from "../lib/milestone_merge_gate.ts";
 import { syncMilestoneBranchWithDefault } from "../lib/git_pull.ts";
 import { hasExistingMilestoneSummaryPr } from "../lib/milestone_completion.ts";
-import { restoreClosedMilestoneRoute } from "../lib/milestone_route_restore.ts";
 import {
   _resetBaseProtectionMemo,
   AutoMergeResult,
@@ -208,11 +207,12 @@ Deno.test("a closed-route milestone with an open child gets a restored route and
   );
 });
 
-Deno.test("a not-ahead child stays unarmed, and landed work still reaches a rollup (Issue #4175)", async () => {
+Deno.test("a not-ahead child is merged onto its milestone and a rollup is opened in the same pass (Issue #4175)", async () => {
   _resetMilestoneBehindMemo();
   _resetBaseProtectionMemo();
   const calls: string[][] = [];
-  const waiting = await enableAutoMerge({
+  let childMerged = false;
+  const result = await enableAutoMerge({
     repo: REPO,
     prNumber: 4109,
     headRefName: "issue-3905-widget",
@@ -248,129 +248,152 @@ Deno.test("a not-ahead child stays unarmed, and landed work still reaches a roll
         ]));
       }
       if (key.includes("/compare/") && key.includes("ahead_by")) {
-        return Promise.resolve(JSON.stringify({ ahead_by: 0, files: [] }));
+        return Promise.resolve(JSON.stringify(
+          childMerged
+            ? { ahead_by: 1, files: [{ filename: "widget.txt" }] }
+            : { ahead_by: 0, files: [] },
+        ));
+      }
+      if (args[0] === "pr" && args[1] === "merge") {
+        childMerged = true;
+        return Promise.resolve("Merged\n");
       }
       if (args[0] === "pr" && args[1] === "create") {
         return Promise.resolve("https://github.com/owner/repo/pull/4200\n");
       }
-      if (args[0] === "pr" && args[1] === "merge") {
-        return Promise.resolve("Enabled auto-merge\n");
-      }
       return Promise.resolve("");
     },
   });
-  assertEquals(waiting.result, AutoMergeResult.Deferred);
-  assert(
-    !calls.some((args) => args[0] === "pr" && args[1] === "merge"),
-    "the child is not armed while the branch is not ahead",
+  assertEquals(result.result, AutoMergeResult.MergedDirectly);
+  const mergeAt = calls.findIndex((args) =>
+    args[0] === "pr" && args[1] === "merge"
   );
-  assert(
-    !calls.some((args) => args[0] === "pr" && args[1] === "create"),
-    "no rollup is opened when the branch is not ahead",
+  const createAt = calls.findIndex((args) =>
+    args[0] === "pr" && args[1] === "create"
   );
-  assert(
-    !calls.some((args) => args.includes("--disable-auto")),
-    "a waiting route is not held",
-  );
+  assert(mergeAt >= 0, "the child pull request is merged by this pass");
+  assert(createAt > mergeAt, "the rollup is opened after the child merges");
+  const merge = calls[mergeAt]!;
+  assert(merge.includes("4109"));
+  assert(merge.includes("--merge"));
+  assert(!merge.includes("--auto"));
+  assert(!merge.includes("--base"));
+  const created = calls[createAt]!;
+  assertEquals(created[created.indexOf("--head") + 1], BRANCH);
+  assertEquals(created[created.indexOf("--base") + 1], DEFAULT);
   assert(
     !calls.some((args) => args[0] === "pr" && args[1] === "edit"),
     "the child is not retargeted onto the default branch",
   );
+  assert(
+    !calls.some((args) => args.includes("--disable-auto")),
+    "the pass does not hold the child",
+  );
 
-  // The child's commit has landed on the milestone branch. No open child
-  // remains. The rollup must still carry widget.txt to the default branch.
-  const root = await Deno.makeTempDir({ prefix: "issue-4175-landed-" });
-  const clone = `${root}/clone`;
-  try {
-    await gitOk(["init", "-b", "main", clone], root);
-    await gitOk(["config", "user.email", "t@example.com"], clone);
-    await gitOk(["config", "user.name", "Test"], clone);
-    await gitOk(["config", "commit.gpgsign", "false"], clone);
-    await Deno.writeTextFile(`${clone}/README.md`, "seed\n");
-    await gitOk(["add", "README.md"], clone);
-    await gitOk(["commit", "-m", "seed"], clone);
-    await gitOk(["checkout", "-b", "milestone/clean-up"], clone);
-    await Deno.writeTextFile(`${clone}/widget.txt`, "the widget\n");
-    await gitOk(["add", "widget.txt"], clone);
-    await gitOk(["commit", "-m", "Ship the widget"], clone);
+});
 
-    const diffNames = (await gitOk(
-      ["diff", "--name-only", "main...milestone/clean-up"],
-      clone,
-    )).trim().split("\n");
-    assert(diffNames.includes("widget.txt"));
-
-    const created: string[][] = [];
-    const restored = await restoreClosedMilestoneRoute({
-      repo: REPO,
-      milestoneBranch: BRANCH,
-      defaultBranch: "main",
-      ghCommandFn: (args) => {
-        const key = args.join(" ");
-        if (key.includes("pr list") && key.includes("--head")) {
-          return Promise.resolve(JSON.stringify([
-            {
-              number: 4077,
-              state: "MERGED",
-              baseRefName: "main",
-              mergedAt: "2026-10-13T13:58:25Z",
-            },
-          ]));
-        }
-        if (key.includes("/milestones?state=all")) {
-          return Promise.resolve(JSON.stringify([
-            { number: 7, title: "Clean up", state: "open" },
-          ]));
-        }
-        if (key.includes("/compare/") && key.includes("ahead_by")) {
-          return Promise.resolve(JSON.stringify({
-            ahead_by: 1,
-            files: diffNames.map((filename) => ({ filename })),
-          }));
-        }
-        if (args[0] === "pr" && args[1] === "create") {
-          created.push(args);
-          return Promise.resolve("https://github.com/owner/repo/pull/4200\n");
-        }
-        return Promise.resolve("[]");
-      },
-    });
-    assertEquals(restored.action, "created");
-    assertEquals(created.length, 1);
-    assertEquals(created[0]![created[0]!.indexOf("--head") + 1], BRANCH);
-    assertEquals(created[0]![created[0]!.indexOf("--base") + 1], "main");
-
-    const existing = await hasExistingMilestoneSummaryPr(
-      REPO,
-      "Clean up",
-      BRANCH,
-      (args) => {
-        const key = args.join(" ");
-        if (key.includes("pr list")) {
-          return Promise.resolve(JSON.stringify([{
+Deno.test("a not-ahead child whose rollup cannot be opened does not leave its issue closed (Issue #4175)", async () => {
+  _resetMilestoneBehindMemo();
+  _resetBaseProtectionMemo();
+  const calls: string[][] = [];
+  let childMerged = false;
+  const result = await enableAutoMerge({
+    repo: REPO,
+    prNumber: 4109,
+    headRefName: "issue-3905-widget",
+    baseRefName: BRANCH,
+    getDefaultBranchFn: () => Promise.resolve({ ok: true, value: DEFAULT }),
+    isBaseProtectedFn: () => Promise.resolve(true),
+    ghCommandFn: (args) => {
+      calls.push(args);
+      const key = args.join(" ");
+      if (key.includes("pr list") && key.includes("--head")) {
+        return Promise.resolve(JSON.stringify([
+          {
             number: 4077,
-            title: "Milestone rollup",
-            headRefName: BRANCH,
             state: "MERGED",
-            isCrossRepository: false,
-          }]));
-        }
-        if (key.includes("/compare/") && key.includes("ahead_by")) {
-          return Promise.resolve(JSON.stringify({
-            ahead_by: 1,
-            files: [{ filename: "widget.txt" }],
-          }));
-        }
-        return Promise.resolve("[]");
-      },
-      undefined,
-      [],
-      "main",
-    );
-    assertEquals(existing, { ok: true, value: null });
-  } finally {
-    await Deno.remove(root, { recursive: true }).catch(() => {});
-  }
+            baseRefName: DEFAULT,
+            mergedAt: "2026-10-13T13:58:25Z",
+          },
+        ]));
+      }
+      if (key.includes("pr list") && key.includes("--base")) {
+        return Promise.resolve(JSON.stringify([
+          { number: 4109, title: "Ship the widget" },
+        ]));
+      }
+      if (key.includes("/milestones?state=all")) {
+        return Promise.resolve(JSON.stringify([
+          { number: 7, title: "Clean up", state: "open" },
+        ]));
+      }
+      if (key.includes("/issues?milestone=")) {
+        return Promise.resolve(JSON.stringify([
+          { number: 3905, title: "Ship the widget" },
+        ]));
+      }
+      if (key.includes("/compare/") && key.includes("ahead_by")) {
+        return Promise.resolve(JSON.stringify(
+          childMerged
+            ? { ahead_by: 1, files: [{ filename: "widget.txt" }] }
+            : { ahead_by: 0, files: [] },
+        ));
+      }
+      if (args[0] === "pr" && args[1] === "merge") {
+        childMerged = true;
+        return Promise.resolve("Merged\n");
+      }
+      if (args[0] === "pr" && args[1] === "create") {
+        return Promise.reject(new Error("rollup refused"));
+      }
+      if (args[0] === "issue" && args[1] === "reopen") {
+        return Promise.resolve("reopened\n");
+      }
+      return Promise.resolve("");
+    },
+  });
+  assertEquals(result.result, AutoMergeResult.Failed);
+  assertStringIncludes(result.message, "rollup refused");
+  const reopened = calls.find((args) =>
+    args[0] === "issue" && args[1] === "reopen"
+  );
+  assert(reopened, "the milestone issue is reopened");
+  assert(reopened.includes("3905"));
+  assert(
+    !calls.some((args) => args[0] === "pr" && args[1] === "edit"),
+    "the child is not retargeted onto the default branch",
+  );
+});
+
+Deno.test("a merged rollup does not count when the branch still has a file diff (Issue #4175)", async () => {
+  const existing = await hasExistingMilestoneSummaryPr(
+    REPO,
+    "Clean up",
+    BRANCH,
+    (args) => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) {
+        return Promise.resolve(JSON.stringify([{
+          number: 4077,
+          title: "Milestone rollup",
+          headRefName: BRANCH,
+          state: "MERGED",
+          isCrossRepository: false,
+        }]));
+      }
+      if (key.includes("/compare/") && key.includes("ahead_by")) {
+        return Promise.resolve(JSON.stringify({
+          ahead_by: 1,
+          files: [{ filename: "widget.txt" }],
+        }));
+      }
+      return Promise.resolve("[]");
+    },
+    undefined,
+    [],
+    "main",
+  );
+  assertEquals(existing, { ok: true, value: null });
 });
 
 // ---------------------------------------------------------------------------

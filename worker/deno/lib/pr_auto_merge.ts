@@ -886,6 +886,10 @@ export async function enableAutoMerge(
     !options.decideMilestoneBaseFn && options.baseRefName &&
     isMilestoneBranch(options.baseRefName)
   ) {
+    // A sync head is not the child whose work the rollup must carry. Landing
+    // it here would open a route by merging the sync pull request.
+    const landThisChild = options.headRefName === undefined ||
+      !isMilestoneSyncBranch(options.headRefName);
     const restored = await restoreClosedMilestoneRoute({
       repo,
       milestoneBranch: options.baseRefName,
@@ -894,6 +898,7 @@ export async function enableAutoMerge(
       ...(options.getDefaultBranchFn
         ? { getDefaultBranchFn: options.getDefaultBranchFn }
         : {}),
+      ...(landThisChild ? { landChildPrNumber: prNumber } : {}),
     });
     if (restored.action === "failed") {
       return {
@@ -902,14 +907,29 @@ export async function enableAutoMerge(
           `PR #${prNumber} left on ${options.baseRefName}: fresh rollup was not opened (${restored.reason}) — retrying next scan (Issue #4175)`,
       };
     }
-    // No open rollup and the branch is not ahead. Arming would merge the
-    // child and close its issue on a branch with no route (Issue #4175).
-    // Leave it unarmed. The next auto-merge scan calls this again.
+    if (restored.action === "land-failed") {
+      return {
+        result: AutoMergeResult.Failed,
+        message:
+          `PR #${prNumber} on ${options.baseRefName}: ${restored.reason} (Issue #4175)`,
+      };
+    }
+    if (
+      restored.action === "created" && restored.landedChildPr === prNumber
+    ) {
+      return {
+        result: AutoMergeResult.MergedDirectly,
+        message:
+          `PR #${prNumber} merged onto ${options.baseRefName} and a rollup was opened at ${restored.prUrl} (Issue #4175)`,
+      };
+    }
+    // Still waiting, and this pull request is not the child to land (a sync
+    // head). Do not arm it onto a branch with no rollup.
     if (restored.action === "waiting") {
       return {
         result: AutoMergeResult.Deferred,
         message:
-          `PR #${prNumber} left on ${options.baseRefName}: ${restored.detail} — not armed, retried on the next scan (Issue #4175)`,
+          `PR #${prNumber} left on ${options.baseRefName}: ${restored.detail} — not armed (Issue #4175)`,
       };
     }
   }
