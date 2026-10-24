@@ -1183,8 +1183,13 @@ function Get-VibeDenoCommand {
     missing lockfile is a hard error rather than a silent re-resolve that could
     pull unreviewed transitive code into this credential-handling process.
 
+    The CLI's stdout is sent to the host (Issue #4164). Left on the success
+    stream it would be returned ahead of the boolean, and an array of two or
+    more items is always $true, so a failed step that printed a line would
+    pass and the operator would not see the line.
+
 .OUTPUTS
-    True when the subcommand exited zero.
+    True when the subcommand exited zero, and nothing else on the success stream.
 #>
 function Invoke-VibeSetupCli {
     param([Parameter(Mandatory = $true)][string[]] $Arguments)
@@ -1200,7 +1205,9 @@ function Invoke-VibeSetupCli {
     $argv = @("run", "--frozen", "--lock=$DenoLock", "--allow-all", $SetupCli) +
         $Arguments +
         @("--script-dir", $ScriptDir, "--config-path", $ConfigFile)
-    & $deno @argv
+    # Out-Host, as in Invoke-VibeSetupCliPassthrough, so the function returns
+    # only the boolean (Issue #4164).
+    & $deno @argv | Out-Host
     return ($LASTEXITCODE -eq 0)
 }
 
