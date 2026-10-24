@@ -5263,7 +5263,13 @@ Deno.test("milestone deadlock rollup - a deadlock raises a partial rollup and ar
   _resetBaseProtectionMemo();
   const { gh, calls } = scriptDeadlockGh();
   const logs: string[] = [];
-  const deps = createMockDeps({ ghCommandFn: gh, log: (m) => logs.push(m) });
+  const deps = createMockDeps({
+    ghCommandFn: gh,
+    log: (m) => logs.push(m),
+    // Issue #4236: arming without this set is refused. The scripted thread
+    // answers `/comments` with an empty list, so there is no review record.
+    fleetAuthors: ["bot"],
+  });
 
   const result = await checkAndHandleMilestoneCompletions(deps);
   assertEquals(result.ok, true);

@@ -276,7 +276,8 @@ function apiResponse(
   args: readonly string[],
   noise: ReadonlySet<number>,
 ): string {
-  const path = args[1] ?? "";
+  // `gh api --paginate` puts the path after the flag, so it is not args[1].
+  const path = args.find((arg) => arg.startsWith("repos/")) ?? args[1] ?? "";
   const prefix = `repos/${REPO}/`;
   if (!path.startsWith(prefix)) return "[]";
   const rest = path.slice(prefix.length);

@@ -139,6 +139,9 @@ function deps(
     ghCommandFn: gh,
     log: (msg: string) => logs.push(msg),
     authorOptions: { fleetAuthors: ["bot"] },
+    // Issue #4236: arming without this set is refused. These tests are
+    // about the summary PR, and its thread has no review record.
+    fleetAuthors: ["bot"],
     ...overrides,
   };
 }
