@@ -13,17 +13,37 @@
  * that already exists. The issue prompt's Test Plan step must require
  * listing the messages checked.
  *
+ * The old heading must not sit beside the new one. These four live copies
+ * are checked for its absence; the historical PR summary
+ * `docs/archive/pr-summaries/pr-summary-3259.md` is not one of them.
+ *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assert } from "@std/assert";
+import { assert, assertFalse } from "@std/assert";
 import {
   type DocSection,
   excerpt,
   flat,
+  flatWholeFile,
   readRepoDoc,
   section,
 } from "./support/markdown_docs.ts";
+
+/** Heading retired by Issue #4198. Absence is over the whole live copy. */
+const OLD_HEADING =
+  "A new state on an existing screen re-reads that screen's existing text";
+
+/**
+ * Live copies of the rule. The archived PR summary is omitted on purpose:
+ * it records the wording the original change shipped with.
+ */
+const LIVE_COPIES = [
+  "CODING-STANDARDS.md",
+  "prompts/coding_guidelines/prompt.md",
+  "prompts/issue/prompt.md",
+  "docs/workflows/issue-processing.md",
+] as const;
 
 const PARAGRAPH_START = "**A new case re-reads the text it now reaches.**";
 
@@ -146,4 +166,18 @@ Deno.test("issue prompt Test Plan step lists the messages checked (Issue #3259)"
     text.includes("each marked still true or changed for the new state"),
     `PR Summary File section is missing the per-message marking requirement: ${text}`,
   );
+  assertFalse(
+    text.includes("re-reads that screen's existing text"),
+    `PR Summary File section still carries the old heading phrase: ${text}`,
+  );
+});
+
+Deno.test("the old existing-screen heading is absent from the live copies (Issue #4198)", async () => {
+  for (const path of LIVE_COPIES) {
+    const text = flatWholeFile(await readRepoDoc(path));
+    assertFalse(
+      text.includes(OLD_HEADING),
+      `${path} still carries the old heading "${OLD_HEADING}"`,
+    );
+  }
 });
