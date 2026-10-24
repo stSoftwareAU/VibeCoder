@@ -93,6 +93,34 @@ Deno.test("parseBranchOutcomes - 'none added; existing <test> covers it' is not 
   assertEquals(record.noneDeclared, false);
 });
 
+// Issue #4178: GRQ-AutoTrader#4124's summary points at the facts file, then
+// describes red checks in ordinary Test Plan prose. Those bullets are not
+// under a Branch outcomes list, so they are not a second block.
+const RED_CHECK_POINTER = [
+  "**Branch outcomes:** recorded in `docs/archive/pr-summaries/pr-summary-4051.facts.json`, including the cost-query status.",
+  "",
+  "The cost verifier adds production branches and a target default.",
+  "",
+  "Red checks (each run on the real template, then restored):",
+  "",
+  '- `RecordingFrequency DAILY → CONTINUOUS`: test red (panics with "…")',
+  "- `RecordingMode removed`: test red (missing-property panic naming #4051).",
+].join("\n");
+
+Deno.test("parseBranchOutcomes - red-check bullets after a facts pointer are not a block (Issue #4178)", () => {
+  const record = parseBranchOutcomes(RED_CHECK_POINTER);
+  assertEquals(record.present, false);
+  assertEquals(record.entries, []);
+});
+
+Deno.test("parseBranchOutcomes - a hand-written outcome list is still a block (Issue #4178)", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:**\n\n- lib/a.ts:1 — outcome\n",
+  );
+  assertEquals(record.present, true);
+  assertEquals(record.entries, ["lib/a.ts:1 — outcome"]);
+});
+
 Deno.test("parseBranchOutcomes - a later header is still collected", () => {
   const record = parseBranchOutcomes(
     "**Branch outcomes:** none added\n\n" +

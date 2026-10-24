@@ -36,6 +36,7 @@ import {
 } from "./milestone_merge_state.ts";
 import { requireDiskSpaceForGitOperation } from "./disk_space.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
+import { endHandlerLandingStep } from "./handler_watchdog.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
 import { mergeWithUnshallowRetry } from "./git_merge_unshallow_retry.ts";
 import {
@@ -486,6 +487,19 @@ async function readRef(
  * @returns Result carrying the summary, and the conflict when there was one
  */
 export async function syncMilestoneBranchWithDefault(
+  ...args: Parameters<typeof syncMilestoneBranchWithDefaultBody>
+): Promise<Result<MilestoneSyncOutcome>> {
+  try {
+    return await syncMilestoneBranchWithDefaultBody(...args);
+  } finally {
+    // The conflict agent marks commit/push as still landing (Issue #4173).
+    // Clear it here so a later wedge in this same handler is not treated as
+    // that landing. A no-op when no step was begun.
+    endHandlerLandingStep();
+  }
+}
+
+async function syncMilestoneBranchWithDefaultBody(
   milestoneBranch: string,
   defaultBranch: string,
   options: GitCommandOptions = {},
