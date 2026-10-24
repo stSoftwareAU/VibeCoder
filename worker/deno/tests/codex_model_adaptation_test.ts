@@ -409,6 +409,11 @@ Deno.test("Codex refused built-in default - an api-key login never adapts (Issue
         codex.alternativeModels?.(REFUSED, "health", pinnedEnv),
         [],
       );
+      // A model other than the phase's built-in default gets no alternative.
+      assertEquals(
+        codex.alternativeModels?.("gpt-6.1-sol", "health", chatgptEnv),
+        [],
+      );
     } finally {
       resetCodexRoutingState();
     }
@@ -824,4 +829,26 @@ Deno.test({
       await Deno.remove(home, { recursive: true });
     }
   },
+});
+
+Deno.test("Codex refused built-in default - an absent CODEX_HOME reads no auth.json (Issue #4221)", () => {
+  // Scoped spy on the file read, restored in finally: the ChatGPT-login check
+  // must not look at the root directory when no CODEX_HOME is set.
+  const readPaths: string[] = [];
+  const realReadTextFileSync = Deno.readTextFileSync;
+  const namespace = Deno as { readTextFileSync: typeof Deno.readTextFileSync };
+  namespace.readTextFileSync = (path) => {
+    readPaths.push(String(path));
+    return realReadTextFileSync(path);
+  };
+  try {
+    assertEquals(isCodexChatgptLogin(emptyEnv), false);
+    assertEquals(
+      readPaths.filter((path) => path.endsWith("auth.json")),
+      [],
+      "no auth.json is read",
+    );
+  } finally {
+    namespace.readTextFileSync = realReadTextFileSync;
+  }
 });
