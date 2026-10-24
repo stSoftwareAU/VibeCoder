@@ -394,7 +394,7 @@ function isMergedPrBlocked(
 export type IssueExclusionReason =
   | "label_filter"
   | "assignee_filter"
-  /** Every candidate's priority label was added by an untrusted author (Issue #4212). */
+  /** This issue's priority label was added by an untrusted author (Issue #4212). */
   | "label_author_not_allowed"
   | "blocking_label"
   /** A milestone-tracking issue `filterAndSort` drops (Issue #1050). */
