@@ -1,0 +1,12 @@
+{
+  "issue": 4125,
+  "chunk": "top-up-4125",
+  "title": "top-up: facts-file line citations carry an anchor checked at the head",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4125",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/facts_anchor_check.ts (checks each facts entry's cited line still holds its anchor at HEAD, so stale line citations block without needing the previous head) (#4125)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/facts_anchor_check.ts"
+  ],
+  "sweptAt": "f19e6c2e51c4107c1d862afef9969ca6205eeaaf"
+}
