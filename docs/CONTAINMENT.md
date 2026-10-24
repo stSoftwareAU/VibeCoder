@@ -403,7 +403,7 @@ only. Routing the agent container through it is #4047, so until then the
 container reaches the network directly and the proxy enforces nothing for it.
 
 ```bash
-deno run --allow-env --allow-net worker/deno/mod.ts egress-proxy \
+deno run --allow-read --allow-env --allow-net worker/deno/mod.ts egress-proxy \
   --allow github.com,*.example.org --listen 127.0.0.1:3128
 ```
 
@@ -425,8 +425,13 @@ deno run --allow-env --allow-net worker/deno/mod.ts egress-proxy \
 - **Bounds.** Concurrent connections default to 256, idle time defaults to 60 s
   (while reading the request head and while tunnelling), and the request head
   defaults to 8 KiB at most.
-- **Footprint.** The proxy reads no files and keeps no cache. It needs only
-  `--allow-env --allow-net`, and it runs under a read-only root filesystem.
+- **Footprint.** The proxy module (`egress_proxy.ts`) opens no files and keeps no cache.
+  Started through `mod.ts`, the command needs `--allow-read --allow-env --allow-net`
+  (`mod.ts` reads `deno.json` when it loads) and no `--allow-write`. With the image's
+  modules already cached it runs against a read-only Deno cache (`--cached-only`), as
+  checked with a read-only copy of the Deno cache directory. `mod.ts`'s own start-up
+  may log non-fatal `[SECURITY] refusing to stage the gh credential` lines when it has
+  no write access; the proxy still runs.
 
 ```mermaid
 flowchart TD

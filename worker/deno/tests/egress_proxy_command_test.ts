@@ -15,7 +15,7 @@ import {
   parseEgressProxyArgs,
 } from "../commands/egress_proxy.ts";
 import { startEgressProxy } from "../lib/egress_proxy.ts";
-import type { WorkerConfig } from "../types.ts";
+import type { CommandResult, WorkerConfig } from "../types.ts";
 
 const CONFIG = {} as WorkerConfig;
 
@@ -225,4 +225,32 @@ Deno.test("egress-proxy - execute takes the allowlist from env when --allow is a
   assertEquals(started.length, 1);
   assertEquals(started[0]!.allowlist, ["api.github.com", "crates.io"]);
   assertEquals(started[0]!.port, 4001);
+});
+
+Deno.test("egress-proxy - a proxy that fails to start returns exit 1 and names the cause", async () => {
+  // The positive control (start succeeds, exit success) is the test above that
+  // asserts result.success === true with the same valid allowlist.
+  const logged: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => {
+    logged.push(args.map(String).join(" "));
+  };
+  let result: CommandResult;
+  try {
+    result = await egressProxyCommand.execute(
+      { allow: "api.github.com,crates.io", listen: "127.0.0.1:4002" },
+      CONFIG,
+      {
+        start: () => Promise.reject(new Error("address already in use")),
+        waitForStop: () => Promise.resolve(),
+      },
+    );
+  } finally {
+    console.error = originalError;
+  }
+
+  assertEquals(result.success, false);
+  assertEquals(result.exitCode, 1);
+  assertStringIncludes(result.message, "address already in use");
+  assertEquals(logged.filter((line) => line.includes("listening")), []);
 });

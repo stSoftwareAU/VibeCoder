@@ -183,6 +183,8 @@ async function readDenial(wire: Wire): Promise<Denial> {
 /** A local upstream that echoes every byte it receives. */
 interface EchoServer {
   readonly port: number;
+  /** Resolves once every connection accepted so far has ended. */
+  ended(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -217,6 +219,9 @@ function startEchoServer(): EchoServer {
   })();
   return {
     port: (listener.addr as Deno.NetAddr).port,
+    async ended() {
+      await Promise.all(handlers);
+    },
     async close() {
       listener.close();
       await acceptLoop;
@@ -250,6 +255,8 @@ interface Harness {
   readonly resolved: string[];
   /** Every address the connector was asked to dial. */
   readonly dialled: string[];
+  /** Resolves once the upstream end of every dialled connection has closed. */
+  upstreamEnded(): Promise<void>;
   open(): Promise<Wire>;
   close(): Promise<void>;
 }
@@ -294,6 +301,9 @@ async function startHarness(opts: HarnessOptions): Promise<Harness> {
     lines,
     resolved,
     dialled,
+    upstreamEnded() {
+      return echoServer.ended();
+    },
     async open() {
       const conn = await Deno.connect({
         hostname: "127.0.0.1",
@@ -541,6 +551,46 @@ async function cutsOffIdleClient(): Promise<void> {
   }
 }
 
+async function cutsOffIdleTunnel(): Promise<void> {
+  const h = await startHarness({
+    allowlist: ["allowed.example"],
+    idleTimeoutMs: 50,
+  });
+  try {
+    const wire = await h.open();
+    await wire.write(
+      "CONNECT allowed.example:443 HTTP/1.1\r\nHost: allowed.example:443\r\n\r\n",
+    );
+    expectEqual(
+      await wire.readHead(),
+      "HTTP/1.1 200 Connection Established",
+      "tunnel status",
+    );
+
+    // Positive control: the tunnel is up, so bytes sent now reach the upstream
+    // and come back through it.
+    const ping = "ping\n";
+    await wire.write(ping);
+    expectEqual(
+      decoder.decode(await wire.readExact(ping.length)),
+      ping,
+      "tunnelled bytes before idling",
+    );
+
+    // Send nothing more. The idle timer closes both ends of the tunnel: the
+    // client read ends with null, and the upstream sees its end close too.
+    expectEqual(await wire.readSome(), null, "idle tunnel read");
+    await h.upstreamEnded();
+
+    // An established tunnel that idles out is not a refusal, so no line.
+    expectEqual(h.lines, [], "denial lines");
+    expectEqual(h.resolved, ["allowed.example"], "resolved hosts");
+    expectEqual(h.dialled, [PUBLIC_ADDRESS], "dialled addresses");
+  } finally {
+    await h.close();
+  }
+}
+
 async function refusesNon443Port(): Promise<void> {
   const h = await startHarness({ allowlist: ["allowed.example"] });
   try {
@@ -762,6 +812,7 @@ const SCENARIOS: Readonly<Record<string, () => Promise<void>>> = {
   "sanitise-control-characters": sanitisesControlCharacters,
   "cut-off-over-long-header": cutsOffOverLongHeader,
   "cut-off-idle-client": cutsOffIdleClient,
+  "cut-off-idle-tunnel": cutsOffIdleTunnel,
   "refuse-non-443-port": refusesNon443Port,
   "refuse-at-connection-cap": refusesAtConnectionCap,
   "hand-off-to-route": handsOffToRoute,

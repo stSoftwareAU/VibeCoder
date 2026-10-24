@@ -130,6 +130,10 @@ Deno.test("egress proxy cuts off an idle client", async () => {
   await runScenario("cut-off-idle-client");
 });
 
+Deno.test("egress proxy cuts off an idle established tunnel", async () => {
+  await runScenario("cut-off-idle-tunnel");
+});
+
 Deno.test("egress proxy refuses a non-443 port", async () => {
   await runScenario("refuse-non-443-port");
 });

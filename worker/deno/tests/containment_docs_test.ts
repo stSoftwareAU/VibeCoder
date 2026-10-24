@@ -331,16 +331,22 @@ Deno.test("CONTAINMENT.md's egress proxy section does not claim the container is
   }
 });
 
-Deno.test("CONTAINMENT.md's egress proxy section states the proxy reads no files and keeps no cache", async () => {
+Deno.test("CONTAINMENT.md's egress proxy section states the proxy opens no files, keeps no cache and needs --allow-read --allow-env --allow-net", async () => {
   const body = docSection(
     await readRepoDoc("docs/CONTAINMENT.md"),
     "Egress proxy",
   );
-  const phrase = "reads no files and keeps no cache";
-  assert(
-    body.includes(phrase),
-    `the egress-proxy section must state the proxy ${phrase} (missing from the section)`,
-  );
+  for (
+    const phrase of [
+      "opens no files and keeps no cache",
+      "--allow-read --allow-env --allow-net",
+    ]
+  ) {
+    assert(
+      body.includes(phrase),
+      `the egress-proxy section must state "${phrase}" (missing from the section)`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------
