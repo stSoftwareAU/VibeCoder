@@ -72,7 +72,7 @@ flowchart TD
 
 ## Test Plan
 
-- Added `worker/deno/tests/hard_kill_evidence_test.ts` (35 tests), 10 tests in `worker/deno/tests/container_watchdog_test.ts`, 2 in `worker/deno/tests/container_reap_command_test.ts`, and wedge/healthy-run assertions in `worker/deno/tests/run_sh_launcher_test.ts`.
+- Added `worker/deno/tests/hard_kill_evidence_test.ts` (32 tests), 10 tests in `worker/deno/tests/container_watchdog_test.ts`, 2 in `worker/deno/tests/container_reap_command_test.ts`, and wedge/healthy-run assertions in `worker/deno/tests/run_sh_launcher_test.ts`.
 - Removed from `worker/deno/tests/run_sh_launcher_test.ts`: none (the source-grep test added earlier in this branch was deleted before the PR; it is not on base).
 - Red-checks (each production change broken on purpose, then restored): see the Branch outcomes list; the hostname test goes red without `--allow-sys=hostname`; the straddling-token tests go red when redaction runs after truncation.
 - Callers/siblings checked: `reapWedgedContainer` callers `reap` (watchdog, passes `evidenceDir`) and `reapStaleContainers` (passes none; test `reapStaleContainers - a pre-launch reap captures no evidence`); `run.ps1` does not pass the flag (stated above).
