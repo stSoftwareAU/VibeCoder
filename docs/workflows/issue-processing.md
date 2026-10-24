@@ -1327,8 +1327,8 @@ as its own numbered REQUIRED ITEM. That turn may change code for a verifier item
 afterwards. Findings still present on the re-run are reported like other
 summary-gate blocks: a `failure` with no PR, or `summary_incomplete` over an
 existing PR, with the comment on the issue thread. In the existing-PR case,
-auto-merge is withheld (and disarmed if already armed), `standing-violation` is applied and the surviving
-verifier findings are also posted on the PR (Issue #3796). A finding is
+the surviving verifier findings are also posted on the PR (Issue #3796), and
+the PR is still armed for auto-merge (Issue #4291). A finding is
 settled by a fix or an evidence-backed dispute naming the finding in the
 final message; marking a criterion partial, listing a known gap or noting a
 test as not red-checked does not settle it (Issue #3797). `testChanges: meaningful`
@@ -2524,10 +2524,9 @@ if the next model check misses them; an unreadable manual does not clear its
 confirmed finding. A failed invocation, malformed reply or unchanged sentence
 therefore cannot silently clear the block. A later block folded with another
 gate does not get this extra turn. A surviving manual or source-comment finding
-holds an existing PR whether the block is claim-check-only or mixed:
-auto-merge is withheld (and disarmed if already armed),
-`standing-violation` is applied, and the findings are posted with the existing
-worker repair marker so PR feedback can act on them. With no PR, the run fails.
+on an existing PR, whether the block is claim-check-only or mixed, is posted
+with the existing worker repair marker so PR feedback can act on it, and the
+PR is still armed for auto-merge (Issue #4291). With no PR, the run fails.
 
 A pre-PR verifier block on that same attempt is checked again after the claim
 correction: the claim gate returns first and completion rechecks the gates.
@@ -2729,7 +2728,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on summary or manual/prompt sentences, after the one claim correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised; auto-merge withheld for surviving standing violations, verifier findings or manual findings, otherwise armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on summary or manual/prompt sentences, after the one claim correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and armed for auto-merge; surviving standing violations, verifier findings or manual findings are posted on the PR (Issue #4291); issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -2941,25 +2940,19 @@ documentation-shortfall rule, "do not change the code", and "this turn cannot
 change code" is not a settling reason. The quality gate re-runs over the
 changed tree before completion re-runs. If a later block in the same run
 finalises an existing PR as `summary_incomplete` while such a violation is
-still standing, the worker does not arm auto-merge on that PR, labels it
-`standing-violation`, and disarms (`gh pr merge --disable-auto`) any auto-merge
-an earlier pass had already armed (Issue #4075), logging a warning; the rest of
-finalisation is unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
-skips a PR carrying `standing-violation` and disarms one that is already armed
-(`gh pr merge --disable-auto`), so the sweep never arms a held PR
-(Issue #3517). The CI-fix pass honours the label too: after it pushes a fix
-it does not re-arm auto-merge on a PR that carried the label when the pass
-claimed it, and logs the hold instead (Issue #3685). Disarming an already
-armed PR is left to the sweep.
-The same hold applies when a pre-PR verifier block survives the recovery
-turn, whether it blocks alone or was folded into an earlier gate's notice
+still standing, the worker posts the violation on that PR and arms auto-merge
+as usual; the rest of finalisation is unchanged. PRs do not merge until they
+have a review approval and CI is green, and GitHub enforces both, so no
+violation, finding or label withholds arming or disarms the PR (Issue #4291).
+The same applies when a pre-PR verifier block survives the recovery turn,
+whether it blocks alone or was folded into an earlier gate's notice
 (Issue #3796). The worker posts those findings on the PR with the leading
 `<!-- vibe-pre-pr-verifier-hold -->` marker. Failure to post is logged at
-error level; it does not arm auto-merge. The feedback scan accepts this
-top-level comment only through the special hold path when its author is a
-fleet login. It can process the host's own hold comment, but skips one with
-a fleet eyes reaction and still skips ordinary own-login comments
-(Issue #3798). Repairing the findings does not itself release the hold.
+error level, and the PR is still armed. The feedback scan accepts this
+top-level comment only through the special findings path when its author is
+a fleet login. It can process the host's own findings comment, but skips one
+with a fleet eyes reaction and still skips ordinary own-login comments
+(Issue #3798).
 The Issue #3196 reason rules still cannot see the diff. This routing runs
 whatever headings the linked issue uses, so an issue that states no criteria
 still has its summary's `## Standards Review` read (Issue #3761, NEAT-AI#4065).

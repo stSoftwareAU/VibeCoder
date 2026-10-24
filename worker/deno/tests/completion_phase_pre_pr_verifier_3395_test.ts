@@ -407,7 +407,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 }
 
 for (const summary of [SUMMARY_CLEAN, SUMMARY_PLACEHOLDER]) {
-  Deno.test(`completion - surviving verifier holds ${summary === SUMMARY_CLEAN ? "standalone" : "folded"} existing PR (Issue #3796)`, async () => {
+  Deno.test(`completion - surviving verifier findings are posted on the ${summary === SUMMARY_CLEAN ? "standalone" : "folded"} existing PR, which is still armed (Issues #3796, #4291)`, async () => {
     const outcome = await runCompletion({
       summary,
       verifier: [checked([FINDING])],
@@ -415,12 +415,14 @@ for (const summary of [SUMMARY_CLEAN, SUMMARY_PLACEHOLDER]) {
     });
     assertEquals(outcome.verifierInputs.length, 2);
     assertEquals(outcome.claudePrompts.length, 1);
-    assertEquals(outcome.armed, 0);
-    assert(outcome.labels.includes("standing-violation"));
+    // Issue #4291: the CI quality gate is the only merge gate.
+    assertEquals(outcome.armed, 1);
+    assertEquals(outcome.labels.includes("standing-violation"), false);
     const holds = outcome.posted.filter((c) => c.number === 4412);
     assertEquals(holds.length, 1);
     assertStringIncludes(holds[0]!.body, "<!-- vibe-pre-pr-verifier-hold -->");
     assertStringIncludes(holds[0]!.body, FINDING.problem);
+    assertEquals(holds[0]!.body.includes("Auto-merge withheld"), false);
     assert(
       outcome.posted.some((c) =>
         c.number === ISSUE && c.body.includes(FINDING.problem)
@@ -436,19 +438,19 @@ Deno.test("completion - clean verifier does not hold another gate's existing PR 
     existingPr: true,
   });
   assertEquals(outcome.armed, 1);
-  assertEquals(outcome.labels.includes("standing-violation"), false);
 });
 
-Deno.test("completion - failed verifier hold comment is an error and never arms merge (Issue #3796)", async () => {
+Deno.test("completion - a failed verifier findings comment is an error and the PR is still armed (Issues #3796, #4291)", async () => {
   const outcome = await runCompletion({
     summary: SUMMARY_CLEAN,
     verifier: [checked([FINDING])],
     existingPr: true,
     failPrComment: true,
   });
-  assertEquals(outcome.armed, 0);
-  assert(outcome.labels.includes("standing-violation"));
-  assert(outcome.errors.some((message) => message.includes("verifier hold")));
+  assertEquals(outcome.armed, 1);
+  assert(
+    outcome.errors.some((message) => message.includes("verifier findings")),
+  );
 });
 
 const VERIFIER_WORDS = "The pre-PR verifier found blocking problems";
@@ -476,7 +478,7 @@ Deno.test(
 
 // (b)
 Deno.test(
-  "completion - findings that persist with no PR raise it and post a change-request record (Issue #4236)",
+  "completion - findings that persist with no PR raise it armed and post a change-request record (Issues #4236, #4291)",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_CLEAN,
@@ -486,7 +488,8 @@ Deno.test(
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.category, undefined);
     assertEquals(outcome.prCreateCalls, 1);
-    assertEquals(outcome.armed, 0);
+    // Issue #4291: the record routes the next run; it does not hold the merge.
+    assertEquals(outcome.armed, 1);
     assertEquals(outcome.labels.includes("failed-once"), false);
     assertEquals(outcome.labels.includes("failed"), false);
     assertEquals(
@@ -735,7 +738,8 @@ Deno.test("completion retains evidence, substantive and mixed verifier causes wi
     });
     assertEquals(o.status, "continue");
     assertEquals(o.prCreateCalls, 1);
-    assertEquals(o.armed, 0);
+    // Issue #4291: the record never withholds arming.
+    assertEquals(o.armed, 1);
     assertEquals(o.causes[0], causes);
     const record = o.posted.find((c) => c.number === 4412);
     assert(record, "the change-request record was posted");
@@ -800,8 +804,9 @@ Deno.test("existing PR outcomes retain evidence and substantive verifier causes 
     assertEquals(emitted?.category, category);
     assertEquals(emitted?.categories, categories);
     assertEquals(emitted?.failureClass, "agent-outcome");
-    assertEquals(o.armed, 0);
-    assert(o.labels.includes("standing-violation"));
+    // Issue #4291: the findings are posted and the PR is still armed.
+    assertEquals(o.armed, 1);
+    assertEquals(o.labels.includes("standing-violation"), false);
     assertEquals(o.prCreateCalls, 0);
   }
 });

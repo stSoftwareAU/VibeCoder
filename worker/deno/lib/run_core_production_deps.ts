@@ -1,7 +1,3 @@
-import {
-  fetchIssueCommentBodies,
-  fleetMarkerBodies,
-} from "./prepr_review_record.ts";
 import { agentTranscriptDir } from "./agent_transcript.ts";
 import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
 /**
@@ -129,7 +125,6 @@ import {
   resolveFleetPrSlots,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
-import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
 import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
@@ -3578,18 +3573,6 @@ export async function createProductionRunCoreDeps(
         // `mergeStateStatus`, so the sweep can see an armed PR whose head
         // has fallen behind its base.
         prLiveState: (repo, pr) => readPrLiveState(repo, pr.number, gh),
-        // Issue #4236: the sweep wants marker bodies, not the raw comment
-        // records. Filtering here is what the default reader does; returning
-        // the records makes the type fail and, if that were ignored, the
-        // marker check would see no record and arm the pull request.
-        prCommentBodies: async (repo, prNumber) => {
-          const comments = await fetchIssueCommentBodies(repo, prNumber, gh);
-          if (!comments.ok) return comments;
-          return {
-            ok: true as const,
-            value: fleetMarkerBodies(comments.value, maintenanceAuthors),
-          };
-        },
         // Issue #2462: the REST update-branch call the merge ladder already
         // uses — reused as-is, never re-implemented here.
         updateBranchFn: (repo, prNumber) =>
@@ -3603,14 +3586,6 @@ export async function createProductionRunCoreDeps(
             gh,
             log: (m: string) => logger.warn(m),
           }),
-        // Issue #3517: a standing-violation PR is disarmed, never armed.
-        disarmAutoMerge: (repo, prNumber) =>
-          disarmAutoMerge(
-            repo,
-            prNumber,
-            gh,
-            (m: string) => logger.warn(m),
-          ),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
             repo,

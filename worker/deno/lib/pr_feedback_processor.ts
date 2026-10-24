@@ -22,7 +22,6 @@ import {
   generateBoundaryId,
 } from "./prompt_delimiter.ts";
 import { verifyFeedbackFix } from "./pr_feedback_verifier.ts";
-import { STANDING_VIOLATION_LABEL } from "./standing_violation_routing.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
@@ -1684,7 +1683,7 @@ async function _processFeedbackWithHeartbeat(
           });
         }
       } catch (error) {
-        // A failed measurement or sync must not suppress the merge hold.
+        // A failed measurement or sync must not suppress the review failure.
         logger.warn("Held review body sync failed", {
           prNumber,
           error: String(error),
@@ -1694,36 +1693,9 @@ async function _processFeedbackWithHeartbeat(
     const message =
       `Review-fix verification did not clear. The review remains outstanding.\n\n${failure.message}`;
     await chargeReviewFailure(message);
-    // Attempt both holds even if one GitHub operation is unavailable.
-    const holds = await Promise.allSettled([
-      (async () => {
-        await deps.github.ensureLabelExists(repo, STANDING_VIOLATION_LABEL);
-        await deps.github.runGhCommand([
-          "pr",
-          "edit",
-          String(prNumber),
-          "--repo",
-          repo,
-          "--add-label",
-          STANDING_VIOLATION_LABEL,
-        ]);
-      })(),
-      deps.github.runGhCommand([
-        "pr",
-        "merge",
-        String(prNumber),
-        "--repo",
-        repo,
-        "--disable-auto",
-      ]),
-    ]);
-    for (const hold of holds) {
-      if (hold.status === "rejected") {
-        logger.error("Could not apply review-fix merge hold", {
-          error: String(hold.reason),
-        });
-      }
-    }
+    // Issue #4291: the review stays outstanding, and GitHub holds the merge
+    // on it. Auto-merge stays armed and no label is added: PRs do not merge
+    // until they have a review approval and CI is green.
     return {
       ok: true as const,
       value: { processed: false, changesPushed: false, summary: message },
@@ -2226,8 +2198,8 @@ async function _processFeedbackWithHeartbeat(
     !(fixBranch && fixPrError);
 
   // Issue #4236: answering the worker's own change-request record posts a
-  // resolved marker so auto-merge can arm. A failed post leaves the record
-  // open, which keeps the merge held.
+  // resolved marker, so the next pass does not answer it again. A failed
+  // post leaves the record open. It never affects arming (Issue #4291).
   if (
     commentCarriesOpenPreprReview(input.commentBody) &&
     (actuallyPushed || rebuttalPosted)
@@ -2244,7 +2216,7 @@ async function _processFeedbackWithHeartbeat(
       ]);
     } catch (err) {
       logger.error(
-        "Pre-PR review resolution comment failed to post — auto-merge stays blocked",
+        "Pre-PR review resolution comment failed to post — the record stays open",
         {
           repo,
           prNumber,
