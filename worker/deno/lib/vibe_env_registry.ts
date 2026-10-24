@@ -385,6 +385,10 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "the launch instant, a measurement",
   },
+  VIBE_HARD_KILL_AT_EPOCH: {
+    role: "launch_plumbing",
+    note: "the launcher watchdog's kill instant, a measurement",
+  },
   VIBE_HOST_DISK_AVAIL_BYTES: {
     role: "launch_plumbing",
     note: "a disk MEASUREMENT handed to the guest, never a setting",

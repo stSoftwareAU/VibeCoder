@@ -316,6 +316,13 @@ export interface WorkerConfig {
    */
   minClaimRunwaySeconds: number;
   /**
+   * Seconds from run start to the run's finish deadline (`.config.json`
+   * `run_finish_seconds`, Issue #4242). Accepted, validated and logged at run
+   * start; not yet applied to any claim or agent deadline. Must exceed the
+   * run duration target. See `lib/run_timeline.ts`.
+   */
+  runFinishSeconds?: number;
+  /**
    * Labels marking an issue as a long job for the adaptive claim floor
    * (`.config.json` `claim_long_job_labels`, Issue #245). An issue carrying
    * one is claimed only with a runway that can host a real execute, the same
@@ -1404,6 +1411,8 @@ export interface ConfigFile {
   /** Positive per-invocation Claude Code turn cap; defaults to 100. */
   claude_max_turns?: number;
   min_claim_runway_seconds?: number;
+  /** Seconds from run start to the run's finish deadline (Issue #4242) */
+  run_finish_seconds?: number;
   /** Labels marking an issue as a long job (Issue #245) */
   claim_long_job_labels?: string[];
   /** Extend the issue-work deadline while progress holds (Issue #4296) */

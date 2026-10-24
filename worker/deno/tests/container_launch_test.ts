@@ -1247,6 +1247,22 @@ Deno.test("buildContainerLaunchPlan - passes the supervisor run cap into the con
   );
 });
 
+Deno.test("buildContainerLaunchPlan - hands the launcher watchdog's kill instant to the worker", () => {
+  // The plan's epoch plus the watchdog seconds (11400 in inputs()) is the
+  // instant the launcher reaps the container; the worker's run timeline reads
+  // it as the hard-kill deadline.
+  const plan = buildContainerLaunchPlan(
+    inputs({ planEpochSeconds: 1_700_000_000 }),
+  );
+  const index = plan.runArgs.indexOf("VIBE_HARD_KILL_AT_EPOCH=1700011400");
+  assertEquals(index > 0 && plan.runArgs[index - 1] === "--env", true);
+  const bare = buildContainerLaunchPlan(inputs());
+  assertEquals(
+    bare.runArgs.some((arg) => arg.startsWith("VIBE_HARD_KILL_AT_EPOCH=")),
+    false,
+  );
+});
+
 // --- The runtime's own volume-removal verb (Issue #731) --------------------
 
 Deno.test("buildContainerLaunchPlan - carries the runtime's own volume-removal verb (Issue #731)", () => {

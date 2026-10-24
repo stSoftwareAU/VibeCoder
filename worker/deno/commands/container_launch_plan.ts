@@ -336,6 +336,7 @@ export async function buildLaunchPlanForCommand(
     ...(hostId ? { hostId } : {}),
     ...(hostDisk ? { hostDisk } : {}),
     ...(runCap ? { runCap } : {}),
+    planEpochSeconds: Math.floor(Date.now() / 1000),
     resources,
     ...(containerfile ? { containerfile } : {}),
     ...(extension ? { containerExtension: extension } : {}),

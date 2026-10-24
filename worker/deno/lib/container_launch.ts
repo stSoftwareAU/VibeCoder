@@ -103,6 +103,7 @@ import {
 } from "./agent_provider.ts";
 import { extensionBuildArguments } from "./container_extension_build.ts";
 import { EXTENSION_START_ENV } from "./container_extension_start.ts";
+import { HARD_KILL_AT_EPOCH_ENV } from "./run_timeline.ts";
 import type { ContainerExtensionSpec } from "../types.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
 import { resolveAgentStateDir } from "./agent_state_dir.ts";
@@ -258,6 +259,16 @@ export interface ContainerLaunchInputs {
    * ceiling, which is the behaviour that shipped before this issue.
    */
   runCap?: { maxSeconds: number; startedEpochSeconds: number };
+  /**
+   * The epoch-seconds at which the launch plan was made, passed in as
+   * VIBE_HARD_KILL_AT_EPOCH (`planEpochSeconds + watchdogSeconds`) so the
+   * worker's run timeline can name the launcher watchdog's kill instant.
+   * Optional: absent means no hard-kill instant is handed over. The sum is
+   * conservative, because an image build may run between plan time and the
+   * watchdog start: the watchdog can fire no earlier than this instant, so
+   * the worker treats it as the soonest the kill could land.
+   */
+  planEpochSeconds?: number;
   /**
    * VM sizing for the worker container. Optional: absent falls back to the
    * built-in floor (8g / 6 cpus) — never to the runtime's 1 GiB default,
@@ -1245,6 +1256,20 @@ export function buildContainerLaunchPlan(
     runArgs.push(
       "--env",
       `VIBE_RUN_STARTED_EPOCH=${Math.floor(inputs.runCap.startedEpochSeconds)}`,
+    );
+  }
+  // The launcher watchdog's kill instant (the plan's epoch plus the watchdog
+  // seconds validated above), so the worker's run timeline can report the
+  // hard-kill deadline. Absent when the plan carries no epoch.
+  if (
+    inputs.planEpochSeconds !== undefined &&
+    Number.isFinite(inputs.planEpochSeconds)
+  ) {
+    runArgs.push(
+      "--env",
+      `${HARD_KILL_AT_EPOCH_ENV}=${
+        Math.floor(inputs.planEpochSeconds) + Math.floor(inputs.watchdogSeconds)
+      }`,
     );
   }
   // Last, so the launcher can append the worker's own arguments after it.
