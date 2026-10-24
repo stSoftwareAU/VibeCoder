@@ -816,35 +816,35 @@ export async function enableAutoMerge(
     };
   }
 
-  // Issue #4236: every caller that knows the fleet must refuse while a
-  // pre-PR review record is unresolved. A comment list that cannot be
-  // read is the same refusal. Callers that omit the fleet set cannot
-  // tell a worker marker from a stranger's, so they do not consult it
-  // here — the CI-fix pass supplies the set and also checks before calling.
-  if (options.fleetAuthors && options.fleetAuthors.length > 0) {
-    const review = await fetchIssueCommentBodies(
-      repo,
-      prNumber,
-      ghCommandFn,
-    );
-    if (!review.ok) {
-      return {
-        result: AutoMergeResult.Deferred,
-        message:
-          `PR #${prNumber} pre-PR review record could not be read (${review.error.message}) — not arming until it can be (Issue #4236)`,
-      };
-    }
-    if (
-      preprReviewBlocksArm(
-        fleetMarkerBodies(review.value, options.fleetAuthors),
-      )
-    ) {
-      return {
-        result: AutoMergeResult.Deferred,
-        message:
-          `PR #${prNumber} has an unresolved pre-PR review record — not arming until it is resolved (Issue #4236)`,
-      };
-    }
+  // Issue #4236: a missing fleet set is not "no record". Without the
+  // logins the worker's marker cannot be told from a stranger's, so
+  // arming would guess. An unreadable comment list is the same refusal.
+  const fleet = options.fleetAuthors ?? [];
+  if (fleet.length === 0) {
+    return {
+      result: AutoMergeResult.Deferred,
+      message:
+        `PR #${prNumber} fleet logins were not supplied — not arming until a pre-PR review record can be ruled out (Issue #4236)`,
+    };
+  }
+  const review = await fetchIssueCommentBodies(
+    repo,
+    prNumber,
+    ghCommandFn,
+  );
+  if (!review.ok) {
+    return {
+      result: AutoMergeResult.Deferred,
+      message:
+        `PR #${prNumber} pre-PR review record could not be read (${review.error.message}) — not arming until it can be (Issue #4236)`,
+    };
+  }
+  if (preprReviewBlocksArm(fleetMarkerBodies(review.value, fleet))) {
+    return {
+      result: AutoMergeResult.Deferred,
+      message:
+        `PR #${prNumber} has an unresolved pre-PR review record — not arming until it is resolved (Issue #4236)`,
+    };
   }
 
   // Issue #3909: the milestone summary PR is the irreversible step — merging

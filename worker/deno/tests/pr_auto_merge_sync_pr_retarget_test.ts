@@ -19,9 +19,16 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   _resetBaseProtectionMemo,
   AutoMergeResult,
-  enableAutoMerge,
+  enableAutoMerge as enableAutoMergeReal,
   type EnableAutoMergeOptions,
 } from "../lib/pr_auto_merge.ts";
+import { armWithNoReviewRecord } from "./support/arm_with_no_review_record.ts";
+
+function enableAutoMerge(
+  options: EnableAutoMergeOptions,
+): ReturnType<typeof enableAutoMergeReal> {
+  return armWithNoReviewRecord(enableAutoMergeReal, options);
+}
 
 const REPO = "org/repo";
 const SYNC_HEAD = "sync/milestone-scan-issues-20260906";

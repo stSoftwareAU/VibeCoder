@@ -506,6 +506,9 @@ async function armAutoMergeAtCreation(
     repo,
     prNumber,
     skipAutoMerge,
+    // Issue #4236: arming without the fleet set is refused. These are the
+    // logins whose pre-PR review markers count.
+    fleetAuthors: fleetAuthorsFor(ctx),
     commentFn,
     // Route the milestone gates' warnings into the worker log rather than
     // `console.warn`, which no operator reads.

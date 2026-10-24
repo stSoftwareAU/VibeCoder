@@ -628,18 +628,45 @@ export async function fetchPrComments(
     : `repos/${repo}/issues/${prNumber}/comments`;
 
   try {
+    // `--paginate` is required. A busy pull request's change-request record
+    // sits past the first page of thirty, and the feedback pass must still
+    // see it (Issue #4236).
     const output = await ghCommandFn([
       "api",
+      "--paginate",
       apiPath,
       "--jq",
       '[.[] | {login: .user.login, id: .id, body: .body, thumbs_up: (.reactions["+1"] // 0), eyes: (.reactions.eyes // 0), created_at: .created_at}]',
     ]);
-    const parsed: unknown = JSON.parse(output);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as CommentEntry[];
+    const parsed = parseCommentPages(output);
+    return parsed ?? [];
   } catch {
     return [];
   }
+}
+
+/**
+ * Flatten what `gh api --paginate --jq` prints: one JSON array per line.
+ * A single page is one array. A page that is not JSON is unreadable, and
+ * the caller treats that as no comments for this scan.
+ */
+function parseCommentPages(output: string): CommentEntry[] | null {
+  const comments: CommentEntry[] = [];
+  const trimmed = output.trim();
+  if (trimmed === "") return [];
+  for (const line of trimmed.split("\n")) {
+    const piece = line.trim();
+    if (piece === "") continue;
+    let page: unknown;
+    try {
+      page = JSON.parse(piece);
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(page)) return null;
+    comments.push(...(page as CommentEntry[]));
+  }
+  return comments;
 }
 
 /**

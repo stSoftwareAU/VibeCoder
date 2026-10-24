@@ -21,6 +21,7 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
  */
 
 import { browserGranted } from "./browser_grant.ts";
+import { resolveAlertDedupAuthors } from "./alert_dedup_authors.ts";
 import type {
   CiProviderConfig,
   CustomLabelPromptMapping,
@@ -513,7 +514,13 @@ export interface ExecuteClaudePhaseDeps {
   ) => Promise<Result<string, Error>>;
   /** Finalise a PR (auto-merge, etc.). */
   finalisePr: (
-    options: { repo: string; prNumber: number; skipAutoMerge?: boolean },
+    options: {
+      repo: string;
+      prNumber: number;
+      skipAutoMerge?: boolean;
+      /** Fleet logins whose pre-PR review markers count (Issue #4236). */
+      fleetAuthors?: readonly string[];
+    },
   ) => Promise<Result<string, Error>>;
   /** Ensure an issue is closed when its PR is merged. */
   ensureIssueClosedIfPrMerged: (
@@ -855,9 +862,20 @@ export async function attemptPrSelfHealing(
           "(skip_auto_merge, Issue #1650)",
       );
     }
-    await deps.finalisePr({ repo, prNumber, skipAutoMerge }).catch(() => {
-      deps.log("SELF-HEALING: finalise PR failed (non-fatal)");
-    });
+    // Issue #4236: arming without a fleet set is refused. This host's login
+    // is the identity the self-heal path already holds; a sibling set is
+    // read from the configured fleet when that read succeeds.
+    const configuredFleet = await resolveAlertDedupAuthors(
+      {},
+      (message) => deps.log(message),
+    );
+    const fleetAuthors = configuredFleet.length > 0
+      ? configuredFleet
+      : (githubUser.trim() !== "" ? [githubUser] : []);
+    await deps.finalisePr({ repo, prNumber, skipAutoMerge, fleetAuthors })
+      .catch(() => {
+        deps.log("SELF-HEALING: finalise PR failed (non-fatal)");
+      });
 
     // Issue #174: this PR came from `findExistingPrForBranch`, so its head is
     // this run's branch by construction — naming it makes the provenance

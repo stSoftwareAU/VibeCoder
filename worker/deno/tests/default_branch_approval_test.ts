@@ -362,24 +362,26 @@ Deno.test("enableAutoMerge defers an unapproved default-branch PR and says why",
   assertStringIncludes(outcome.message, "#305");
 });
 
-Deno.test("enableAutoMerge arms no approval policy when no fleet authors are supplied", async () => {
+Deno.test("enableAutoMerge does not arm when no fleet authors are supplied (Issue #4236)", async () => {
   _resetBaseProtectionMemo();
-  let sawPolicy = true;
+  let directCalls = 0;
 
-  await enableAutoMerge({
+  const outcome = await enableAutoMerge({
     repo: REPO,
     prNumber: 116,
     baseRefName: DEFAULT_BRANCH,
     ghCommandFn: ghForSweep(),
     isBaseProtectedFn: () => Promise.resolve(false),
     log: () => {},
-    directMergeFn: (_repo, _pr, _gh, _gate, options) => {
-      sawPolicy = options?.approvedDefaultBranch !== undefined;
+    directMergeFn: () => {
+      directCalls++;
       return Promise.resolve({ ok: true, value: { merged: true } });
     },
   });
 
-  assertEquals(sawPolicy, false);
+  assertEquals(outcome.result, AutoMergeResult.Deferred);
+  assertStringIncludes(outcome.message, "fleet logins were not supplied");
+  assertEquals(directCalls, 0, "a missing fleet set must not reach the merge");
 });
 
 Deno.test("a protected base still goes through native auto-merge, never the direct path", async () => {

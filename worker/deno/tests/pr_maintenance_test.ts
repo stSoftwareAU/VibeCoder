@@ -682,6 +682,55 @@ Deno.test("findPrCommentsToFix - a fleet pre-PR review record is a change reques
   assertEquals(result.value.commentId, "200");
 });
 
+Deno.test("findPrCommentsToFix - an open pre-PR review record past the first page is still actionable (Issue #4236)", async () => {
+  const body = renderPreprReviewRequest([{
+    file: "src/balance.ts",
+    line: 42,
+    problem: "rounding drops the final cent",
+  }]);
+  const noise = Array.from({ length: 30 }, (_unused, index) => ({
+    login: "stranger",
+    id: index + 1,
+    body: "unrelated",
+    eyes: 0,
+    thumbs_up: 0,
+  }));
+  const page1 = JSON.stringify(noise);
+  const page2 = JSON.stringify([{
+    login: "testbot",
+    id: 200,
+    body,
+    eyes: 0,
+    thumbs_up: 0,
+  }]);
+  const result = await findPrCommentsToFix(makeBaseScanOptions({
+    isAuthorisedCommenter: () => false,
+    ghCommandFn: (args) => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) {
+        return Promise.resolve(JSON.stringify([{
+          number: 10,
+          headRefName: "issue-10-fix",
+          headRefOid: "abc123",
+        }]));
+      }
+      if (key.includes("issues/10/comments")) {
+        const paginated = args.includes("--paginate");
+        return Promise.resolve(paginated ? `${page1}\n${page2}` : page1);
+      }
+      return Promise.resolve("[]");
+    },
+  }));
+  assertEquals(result.ok, true);
+  if (!result.ok || !result.value) {
+    throw new Error(
+      "expected the record past the first page to be actionable",
+    );
+  }
+  assertEquals(result.value.commentType, "pr_review");
+  assertEquals(result.value.commentId, "200");
+});
+
 Deno.test("findPrCommentsToFix - a resolved pre-PR review record is not actionable (Issue #4236)", async () => {
   const open = renderPreprReviewRequest([{
     file: "src/balance.ts",

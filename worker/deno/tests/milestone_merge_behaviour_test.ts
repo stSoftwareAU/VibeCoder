@@ -23,8 +23,15 @@ import { assert, assertEquals } from "@std/assert";
 import {
   _resetBaseProtectionMemo,
   AutoMergeResult,
-  enableAutoMerge,
+  enableAutoMerge as enableAutoMergeReal,
 } from "../lib/pr_auto_merge.ts";
+import { armWithNoReviewRecord } from "./support/arm_with_no_review_record.ts";
+
+function enableAutoMerge(
+  options: Parameters<typeof enableAutoMergeReal>[0],
+): ReturnType<typeof enableAutoMergeReal> {
+  return armWithNoReviewRecord(enableAutoMergeReal, options);
+}
 import { fetchPRBranchStateBatch } from "../lib/pr_branch_state.ts";
 import {
   type PrBranchEntry,
