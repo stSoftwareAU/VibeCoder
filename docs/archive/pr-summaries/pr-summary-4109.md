@@ -57,8 +57,11 @@ Version bump: `VERSION` untouched by this change; the merged commit records the 
 - Carriage is decided by probing the descriptor's argv quietly
   (`probeDescriptorInvocationCapabilities`), not by a provider-id table.
 - Reroute to Claude only when Claude is both enabled and installed in the image.
-  The image stamp is checked first, so an enabled set that names an uninstalled
-  provider strips the run instead of throwing (`lib/issue_run_provider_agents.ts`).
+  The image stamp is checked first: when it lacks Claude, the run is stripped.
+  When the stamp lists Claude, `claudeUsable` calls `resolveEnabledAgentProviderIds`,
+  which asserts every enabled id is installed in the image
+  (`assertImageInstalledProvider`) and throws if the enabled set names an
+  uninstalled provider (`lib/issue_run_provider_agents.ts`).
 - External orchestration is decided first (`resolveIssueOrchestration`) and is
   never planned; automatic Codex routing forces it.
 - The #4010 guard in `runClaudeWithTimeoutBody` stays as a backstop and is not
