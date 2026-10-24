@@ -15,9 +15,15 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  type ConflictDeferralTracking,
   type ConflictDrainOptions,
   drainConflictingPrs,
 } from "../lib/merge_conflict_drain.ts";
+import {
+  type ConflictDeferralIo,
+  readConflictDeferrals,
+  writeConflictDeferrals,
+} from "../lib/merge_conflict_deferrals.ts";
 import type { ConflictingPr } from "../lib/pr_merge_conflict_scan.ts";
 import {
   resetRunTimelineForTests,
@@ -30,6 +36,8 @@ const HOUR_MS = 3600_000;
 const START = 1_700_000_000_000;
 const TARGET_MARK = "run target has passed";
 const STOP_PREFIX = "Merge-conflict drain stopping";
+/** The deferral store's work directory. Its volume is in memory, so no disk. */
+const WORK_DIR = "/work";
 
 interface LogEntry {
   message: string;
@@ -96,6 +104,36 @@ function oneHourTimeline() {
     killAfterSeconds: 30,
     warn: () => {},
   });
+}
+
+/** An in-memory volume for the deferral store, as the fairness tests use. */
+function fakeVolume(): { io: ConflictDeferralIo } {
+  const files = new Map<string, string>();
+  return {
+    io: {
+      readTextFile: (path) => {
+        const data = files.get(path);
+        return data === undefined
+          ? Promise.reject(new Deno.errors.NotFound(path))
+          : Promise.resolve(data);
+      },
+      writeTextFile: (path, data) => {
+        files.set(path, data);
+        return Promise.resolve();
+      },
+    },
+  };
+}
+
+/** Deferral tracking over the in-memory volume, read and written at `now`. */
+function tracking(
+  volume: { io: ConflictDeferralIo },
+  now: () => number,
+): ConflictDeferralTracking {
+  return {
+    load: () => readConflictDeferrals(WORK_DIR, volume.io, now()),
+    save: (state) => writeConflictDeferrals(WORK_DIR, state, volume.io, now()),
+  };
 }
 
 Deno.test("merge-conflict drain after target - a clock past the target at drain start starts nothing", async () => {
@@ -258,4 +296,66 @@ Deno.test("merge-conflict drain after target - with no timeline set the drain is
     0,
     "no refusal line without a timeline",
   );
+});
+
+Deno.test("merge-conflict drain after target - with deferral tracking the refusal logs once and names the PR left behind, as a deadline stop does (Issue #4243)", async () => {
+  setRunTimeline(oneHourTimeline());
+  try {
+    const log = makeRecordingLogger();
+    const volume = fakeVolume();
+    const nowMs = START + HOUR_MS + 1000;
+    let findNextCalls = 0;
+    let resolveCalls = 0;
+    const finder = queueFinder([pr("org/alpha", 1), pr("org/beta", 2)]);
+
+    const result = await drainConflictingPrs({
+      // Issue #1774: this PR is still open at the claim point.
+      prLiveState: () =>
+        Promise.resolve({ open: true, mergeable: "CONFLICTING" }),
+      logger: log,
+      findNext: (exclude, prefer) => {
+        findNextCalls++;
+        return finder(exclude, prefer);
+      },
+      acquireLease: alwaysLease,
+      resolve: () => {
+        resolveCalls++;
+        return Promise.resolve({ processed: true, merged: true });
+      },
+      now: () => nowMs,
+      deferrals: tracking(volume, () => nowMs),
+    });
+
+    assertEquals(resolveCalls, 0, "no resolution starts");
+    assertEquals(result.stopReason, "deadline");
+    assertEquals(result.taken, 0);
+    assertEquals(result.merged, 0);
+    // The start-gate lists nothing, so the one listing is the drain's own
+    // check for the PR a bound left behind (Issue #1111), made after the gate.
+    assertEquals(findNextCalls, 1, "only the leftBehind listing is made");
+    assertEquals(
+      result.leftBehind,
+      1,
+      "the PR the target refusal left in the queue is named",
+    );
+    // The same decision a deadline stop records (see the fairness test).
+    assertEquals(result.decisions.at(-1), {
+      repo: "org/alpha",
+      prNumber: 1,
+      outcome: "skipped",
+      reason: { kind: "deferred-bound", bound: "deadline", deferralStreak: 1 },
+    });
+    assertEquals(
+      log.entries.filter((e) => e.message.includes(TARGET_MARK)).length,
+      1,
+      "exactly one refusal line",
+    );
+    assertEquals(
+      log.entries.filter((e) => e.message.includes(STOP_PREFIX)).length,
+      1,
+      "the only stop line is the target refusal",
+    );
+  } finally {
+    resetRunTimelineForTests();
+  }
 });

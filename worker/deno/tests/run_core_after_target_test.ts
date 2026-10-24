@@ -447,38 +447,24 @@ Deno.test(
 );
 
 /**
- * Run a case where the scan finds nothing, so the idle hooks are reached,
- * with the clock past the target. `crossing` picks where the target passes:
- * before the ladder (the outer-cycle path) or while the scan looks for work
- * and finds none (the slot path, which only a pool reaches).
+ * Run a serial scan where the scan finds nothing, so the idle hooks are
+ * reached, and the clock passes the target before the Priority ladder. The
+ * serial scan has no sibling slot, so the outer-cycle observer answers.
  *
- * @param maxConcurrentIssues - 1 for the serial scan, 2 for the pool.
- * @param crossing - Where the clock passes the target.
  * @returns The filer and claim counts, and the refusal lines logged.
  */
-async function runIdleFilerPastTarget(
-  maxConcurrentIssues: number,
-  crossing: "before-ladder" | "during-scan",
-): Promise<{ filerCalls: number; claimCalls: number; refusals: number }> {
+async function runIdleFilerPastTarget(): Promise<{
+  filerCalls: number;
+  claimCalls: number;
+  refusals: number;
+}> {
   const clock: Clock = { now: START_MS };
   let filerCalls = 0;
   let claimCalls = 0;
-  let crossed = false;
-  const crossingOverride: Partial<RunCoreDeps> = crossing === "before-ladder"
-    ? crossTargetBeforeLadder(clock)
-    : {
-      findNextIssue: () => {
-        if (!crossed) {
-          crossed = true;
-          clock.now = PAST_TARGET_MS;
-        }
-        return Promise.resolve({ ok: true, value: null });
-      },
-    };
   const { logs } = await runLoop(
     clock,
     {
-      ...crossingOverride,
+      ...crossTargetBeforeLadder(clock),
       processIssue: () => {
         claimCalls++;
         return Promise.resolve({ ok: true, value: { success: true } });
@@ -488,21 +474,80 @@ async function runIdleFilerPastTarget(
         return Promise.resolve();
       },
     },
-    maxConcurrentIssues,
+    1,
   );
   const refusals =
     logs.filter((line) => line.includes("reason=past_run_target")).length;
-  if (maxConcurrentIssues === 2) console.error("DEBUG-TMP-ALL\n" + logs.map((l) => l.slice(0, 220)).join("\n"));
   return { filerCalls, claimCalls, refusals };
+}
+
+/**
+ * The slot path, with a busy sibling. A slot with no sibling holding a claim
+ * drains the pool instead of reaching its idle hooks (Issue #219), so the
+ * fixture has slot s1 claim an issue before the target and park inside
+ * processIssue. Slot s2 then scans, and the clock passes the target during that
+ * scan: s2 finds nothing, reaches its idle hooks with s1 still holding its
+ * claim, and is refused there.
+ *
+ * The cycle ends at the target (both come from `runDurationSeconds`), so after
+ * its one refused observation s2 stops at the cycle deadline rather than
+ * scanning again. The sibling is released on that re-scan wait, which is the
+ * only point the idle slot reaches after the refusal.
+ *
+ * @returns The filer and claim counts, and the log lines written.
+ */
+async function runSlotIdleFilerPastTarget(): Promise<{
+  filerCalls: number;
+  claimCalls: number;
+  logs: string[];
+}> {
+  const clock: Clock = { now: START_MS };
+  let openBusy: () => void = () => {};
+  const busy = new Promise<void>((resolve) => {
+    openBusy = resolve;
+  });
+  let openStarted: () => void = () => {};
+  const busyStarted = new Promise<void>((resolve) => {
+    openStarted = resolve;
+  });
+  let claimable = true;
+  let filerCalls = 0;
+  let claimCalls = 0;
+  const { logs } = await runLoop(clock, {
+    findNextIssue: () => {
+      if (claimable) {
+        claimable = false;
+        return Promise.resolve({ ok: true as const, value: CLAIMABLE_ISSUE });
+      }
+      // The idle slot scans only once its sibling is inside processIssue, and
+      // the target passes during this scan.
+      return busyStarted.then(() => {
+        clock.now = PAST_TARGET_MS;
+        return { ok: true as const, value: null };
+      });
+    },
+    processIssue: () => {
+      claimCalls++;
+      openStarted();
+      return busy.then(() => ({ ok: true as const, value: { success: true } }));
+    },
+    runIdleTaskFiler: () => {
+      filerCalls++;
+      return Promise.resolve();
+    },
+    sleep: () => {
+      // The idle slot's re-scan wait, after its refusal: release the sibling.
+      openBusy();
+      return Promise.resolve();
+    },
+  }, 2);
+  return { filerCalls, claimCalls, logs };
 }
 
 Deno.test(
   "run_core after target - the idle-task filer neither fires nor claims past the target, outer-cycle path (Issue #4243)",
   async () => {
-    const { filerCalls, claimCalls, refusals } = await runIdleFilerPastTarget(
-      1,
-      "before-ladder",
-    );
+    const { filerCalls, claimCalls, refusals } = await runIdleFilerPastTarget();
 
     assertEquals(claimCalls, 0);
     assertEquals(filerCalls, 0);
@@ -514,15 +559,20 @@ Deno.test(
 Deno.test(
   "run_core after target - the idle-task filer neither fires nor claims past the target, slot path (Issue #4243)",
   async () => {
-    const { filerCalls, claimCalls, refusals } = await runIdleFilerPastTarget(
-      2,
-      "during-scan",
-    );
+    const { filerCalls, claimCalls, logs } = await runSlotIdleFilerPastTarget();
 
-    assertEquals(claimCalls, 0);
+    // The one claim is the sibling's, begun before the target. The idle slot
+    // never claims, and the filer never runs.
+    assertEquals(claimCalls, 1);
     assertEquals(filerCalls, 0);
-    // A slot that finds nothing after the target is refused, so the slot
-    // path's gate was reached and not vacuous.
-    assertEquals(refusals >= 1, true);
+    // The slot's own refusal is prefixed `[sN] `, which only the slot path
+    // adds; the outer-cycle observer logs with no prefix and is not counted.
+    // Exactly one: the slot observes once, in the scan the target crosses, and
+    // then stops at the cycle deadline, which is the target itself.
+    const slotRefusals = logs.filter((line) =>
+      /^\[s\d+\] \[idle-hooks\] skipping=idle-task-filer reason=past_run_target/
+        .test(line)
+    );
+    assertEquals(slotRefusals.length, 1);
   },
 );
