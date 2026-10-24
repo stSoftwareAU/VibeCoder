@@ -3404,18 +3404,43 @@ async function runRetryLadder(
           continue;
         }
 
-        // No cheaper model on this provider. A refusal is terminal for the
-        // provider — a ChatGPT login that does not offer a model never will
-        // (Issue #4019) — so the configured `agent_provider_fallback` is the
-        // remaining remedy (Issue #4034). Only the health gate consulted it
-        // before, and a phase whose model the provider refused gave up every
-        // cycle while a healthy alternative stood idle. The fallback resolves
-        // its own model: the refused id names the old provider's catalogue,
-        // and a session id belongs to the CLI that recorded it.
-        const refusingProvider = selectAgentProvider(
+        // No cheaper model on this provider. A Codex built-in default that a
+        // ChatGPT login refused is first retried once without --model
+        // (Issue #4221). Otherwise a refusal is terminal for the provider — a
+        // ChatGPT login that does not offer a model never will (Issue #4019) —
+        // so the configured `agent_provider_fallback` is the remedy (Issue
+        // #4034). Only the health gate consulted it before, and a phase whose
+        // model the provider refused gave up every cycle while a healthy
+        // alternative stood idle. The fallback resolves its own model: the
+        // refused id names the old provider's catalogue, and a session id
+        // belongs to the CLI that recorded it.
+        const refusingDescriptor = selectAgentProvider(
           currentOptions.agentProvider,
           currentOptions.env ? { env: currentOptions.env } : {},
-        ).id;
+        );
+        // (Issue #4221) A ChatGPT login refused a built-in default: retry once
+        // on the same provider with the CLI's own default, before any switch.
+        // A second refusal falls through to the switch: the refused default now
+        // resolves to no model, so adaptAfterModelRefusal returns false.
+        // An explicit request model is never dropped: only a routed default.
+        if (
+          !currentOptions.model &&
+          refusingDescriptor.adaptAfterModelRefusal?.(
+            currentModel,
+            currentOptions.phase,
+            currentOptions.env,
+          )
+        ) {
+          currentOptions.logger?.info(
+            `[model-adaptation] ${refusingDescriptor.id} refused built-in default model "${currentModel}" — retrying once with the CLI default model (Issue #4221).`,
+          );
+          currentOptions = { ...currentOptions, model: undefined };
+          retryCount = 0;
+          totalWaitTime = 0;
+          waitInterval = initialWaitInterval;
+          continue;
+        }
+        const refusingProvider = refusingDescriptor.id;
         const nextProvider = providerAfterModelRefusal(
           configuredProviderFallbackPolicy(),
           refusingProvider,

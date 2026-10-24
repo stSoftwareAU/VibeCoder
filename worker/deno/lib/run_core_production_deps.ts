@@ -62,6 +62,7 @@ import {
   setPhaseModelConfigOverrides,
 } from "./claude_executor.ts";
 import {
+  clearRefusedCodexModels,
   setCodexPhaseEffortConfigOverrides,
   setCodexPhaseModelConfigOverrides,
 } from "./codex_executor.ts";
@@ -808,6 +809,8 @@ export async function createProductionRunCoreDeps(
   setPhaseEffortConfigOverrides(config.phaseEffortOverrides);
   // Apply the Codex phase model/effort config overrides (Issue #363)
   setCodexPhaseModelConfigOverrides(config.codexPhaseModelOverrides);
+  // a fresh run starts with no refused Codex models (Issue #4221)
+  clearRefusedCodexModels();
   setCodexPhaseEffortConfigOverrides(config.codexPhaseEffortOverrides);
   // Apply the Gemini phase model config overrides (Issue #364)
   setGeminiPhaseModelConfigOverrides(config.geminiPhaseModelOverrides);
@@ -2176,19 +2179,20 @@ export async function createProductionRunCoreDeps(
     // explicit-model health check; the first healthy one adapts this run's
     // routing. Operator pins always win (the resolver substitutes only the
     // designed defaults), and providers without the seam return
-    // { adapted: false }.
+    // { adapted: false }. (Issue #4221) Codex's alternative is the CLI default
+    // (no --model) when a ChatGPT login refuses a built-in default.
     // (Issue #2637) Rotate to a Claude credential with budget before any
     // fallback provider, and find the way back once one reopens.
     selectPreferredCredential: ({ excludeHeld }) =>
       selectPreferredClaudeCredential(excludeHeld),
     async tryModelAdaptation() {
-      const provider = activeAgentProvider();
-      const failedModel = provider.resolveModel("health");
+      const provider = activeAgentProvider({ env });
+      const failedModel = provider.resolveModel("health", env);
       const alternatives = failedModel
-        ? (provider.alternativeModels?.(failedModel) ?? [])
+        ? (provider.alternativeModels?.(failedModel, "health", env) ?? [])
         : [];
       for (const alternative of alternatives) {
-        const probe = await claudeHealthCheck(
+        const probe = await agentHealthCheck(
           30,
           logger,
           provider,
@@ -2196,7 +2200,7 @@ export async function createProductionRunCoreDeps(
           alternative,
         );
         if (probe.healthy) {
-          provider.applyModelAdaptation?.(failedModel!, alternative);
+          provider.applyModelAdaptation?.(failedModel!, alternative, "health");
           return {
             adapted: true,
             detail: `${failedModel} → ${alternative}`,
