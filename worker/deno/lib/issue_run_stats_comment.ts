@@ -70,6 +70,10 @@ import {
   type GateStageOutcome,
 } from "./gate_stage_outcome.ts";
 import { getRunId } from "./run_id.ts";
+import {
+  defaultWorkerCheckoutDir,
+  readCheckoutWorkerFacts,
+} from "./run_callback_context.ts";
 import type { IssueSubAgentTier } from "../types.ts";
 import {
   buildIssueSubAgentDegradationLine,
@@ -644,6 +648,50 @@ export function measureIssuePhaseRun(args: {
  * An implementation run also carries the split figures (Issue #2346): one
  * `split: on`/`split: off` line always, and the executor counts on a split run
  * — see {@link buildExecutorSplitStatsLines}.
+ */
+
+/** The checkout identity one run-stats comment can name (Issue #4120). */
+export interface WorkerStatsIdentity {
+  version: string;
+  /** Full SHA; the comment prints the first seven characters. */
+  commit: string;
+  updateMode: "dynamic" | "frozen";
+  /** Required when {@link updateMode} is `frozen`. */
+  pinnedRef?: string;
+}
+
+/**
+ * One bullet naming the worker that produced the run.
+ *
+ * `- **Worker:** 1.10.124 (abc1234), dynamic` or
+ * `- **Worker:** 1.10.124 (abc1234), frozen at <ref>`.
+ */
+export function formatWorkerStatsLine(worker: WorkerStatsIdentity): string {
+  const short = worker.commit.slice(0, 7);
+  if (worker.updateMode === "frozen") {
+    if (!worker.pinnedRef) {
+      throw new Error("a frozen worker stats line requires pinnedRef");
+    }
+    return `- **Worker:** ${worker.version} (${short}), frozen at ${worker.pinnedRef}`;
+  }
+  return `- **Worker:** ${worker.version} (${short}), dynamic`;
+}
+
+/** Facts for the stats line, or nothing when the checkout could not say. */
+function workerStatsIdentity(): WorkerStatsIdentity | undefined {
+  const facts = readCheckoutWorkerFacts(defaultWorkerCheckoutDir());
+  if (!facts.version || !facts.commit || !facts.updateMode) return undefined;
+  if (facts.updateMode === "frozen" && !facts.pinnedRef) return undefined;
+  return {
+    version: facts.version,
+    commit: facts.commit,
+    updateMode: facts.updateMode,
+    ...(facts.pinnedRef ? { pinnedRef: facts.pinnedRef } : {}),
+  };
+}
+
+/**
+ * One cost/model stats comment for a completed run.
  *
  * @returns The comment body, or `""` when no invocation produced stats (so
  *   callers post nothing rather than an empty comment)
@@ -662,6 +710,8 @@ export function buildIssueRunStatsComment(args: {
   subAgentDegradation?: IssueSubAgentDegradation;
   agentRefusal?: AgentRefusalOutcome;
   scope?: RunStatsScope;
+  /** Checkout identity (Issue #4120). Omitted renders no worker line. */
+  worker?: WorkerStatsIdentity;
 }): string {
   const scope = args.scope ?? "issue";
   const invocations = args.claudeResults.flatMap((result) =>
@@ -705,7 +755,11 @@ export function buildIssueRunStatsComment(args: {
   );
   // Issue #3406: the safety-refusal line, directly after the degradation line.
   const refusalLine = buildAgentRefusalLine(args.agentRefusal);
-  const body = `${marker}\n${section}${
+  // Issue #4120: one identity line, only when the caller names the worker.
+  const workerLine = args.worker
+    ? `\n${formatWorkerStatsLine(args.worker)}`
+    : "";
+  const body = `${marker}\n${section}${workerLine}${
     subAgentLine ? `\n${subAgentLine}` : ""
   }${refusalLine ? `\n${refusalLine}` : ""}${
     graftLine ? `\n${graftLine}` : ""
@@ -944,6 +998,7 @@ export async function postIssueRunStatsComment(args: {
     return { posted: false, reason: "no_stats" };
   }
 
+  const worker = workerStatsIdentity();
   try {
     const existing = await args.getIssueComments(repo, issueNumber);
     // The published total is a number the worker vouches for, so it is summed
@@ -990,6 +1045,7 @@ export async function postIssueRunStatsComment(args: {
           : {}),
         ...(args.agentRefusal ? { agentRefusal: args.agentRefusal } : {}),
         ...(args.scope ? { scope: args.scope } : {}),
+        ...(worker ? { worker } : {}),
       }),
     );
     return { posted: true };

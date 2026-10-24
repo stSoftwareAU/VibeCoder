@@ -1059,6 +1059,53 @@ export async function createProductionRunCoreDeps(
   // `resetIterationCaches` at every iteration boundary.
   const timelineBatchRegistry = new TimelineBatchRegistry();
 
+  // Issue #4213: one copy of the claim scan's `label-author-not-allowed`
+  // rule. The idle-detect audit passes this as `untrustedLabelIssuesFn` and
+  // the census calls it for the same set. The priority filter is
+  // `isUnblockedFor` over `top-priority`, `work-on` and `low-priority`
+  // (Issue #3571); timelines go through this iteration's batch registry
+  // (PR #3963).
+  const untrustedLabelIssuesFor = async (
+    repo: string,
+    issues: readonly {
+      number: number;
+      labels: readonly string[];
+      assignees?: readonly string[];
+    }[],
+  ): Promise<Set<number>> => {
+    const priorityIssues = issues.filter((issue) =>
+      [
+        LABEL_DEFAULTS.topPriorityLabel,
+        LABEL_DEFAULTS.workOnLabel,
+        LABEL_DEFAULTS.lowPriorityLabel,
+      ].some((label) =>
+        isUnblockedFor(
+          {
+            number: issue.number,
+            labels: [...issue.labels],
+            assignees: [...(issue.assignees ?? [])],
+            milestone: "",
+          },
+          label,
+        )
+      )
+    );
+    const batchedGh = await timelineBatchRegistry.getBatchedGh(
+      repo,
+      priorityIssues.map((issue) => issue.number),
+      options.idleDetectGhCommandFn ?? runGhCommand,
+    );
+    return await censusUntrustedLabelIssues(
+      repo,
+      priorityIssues,
+      trustedAuthorsFor(config, repo),
+      batchedGh,
+      timelineCache,
+      resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
+      (msg) => logger.warn(msg),
+    );
+  };
+
   // Replace heartbeat functions with machineId-bound wrappers so every
   // production heartbeat publishes a GitHub marker (Issue #1454).
 
@@ -2217,10 +2264,15 @@ export async function createProductionRunCoreDeps(
     async recheckAgentAuth() {
       // Issue #4167: always a fresh probe — the cached "healthy" from the
       // cycle-start gate is exactly what a mid-cycle outage invalidates.
+      // Issue #4267: resolve the provider once and probe that same one.
+      // checkClaudeHealth keys its cache by this id, so a hard-coded
+      // "claude" clear leaves a dead Codex credential looking healthy
+      // until the TTL expires.
+      const provider = activeAgentProvider();
       try {
-        const result = await claudeHealthCheck(30, logger);
+        const result = await agentHealthCheck(30, logger, provider);
         if (!result.healthy) {
-          invalidateHealthCache(healthCacheDir, "claude");
+          invalidateHealthCache(healthCacheDir, provider.id);
         }
         return {
           authFailed: !result.healthy && result.exitCode === 2,
@@ -5904,6 +5956,10 @@ export async function createProductionRunCoreDeps(
           // idle-task-only issue is refused by a rule the fleet applied
           // deliberately — not a misclassification.
           quotaIdleDeferred: lastScanIdleDeferred,
+          // Issue #4213: the census's untrusted-label set. An issue whose
+          // priority label an untrusted author added is reported as
+          // `label_author_not_allowed`. The census calls this same closure.
+          untrustedLabelIssuesFn: untrustedLabelIssuesFor,
           log: (line: string) => logger.info(line),
         });
         // Return the claimable total so the run-core gate can skip
@@ -6027,34 +6083,12 @@ export async function createProductionRunCoreDeps(
             } catch {
               openMilestones = new Set<string>();
             }
-            // Issue #3571: the claim scan's `label-author-not-allowed` gate
-            // refuses an issue whose priority label an untrusted author added.
-            // The census reads that same gate (through
-            // `wasLabelAddedByAllowedAuthor`) so such an issue counts as
-            // `claim_refused`, not claimable. Best-effort per issue: a failed
+            // Issue #3571 / #4213: the claim scan's label-author gate, from
+            // the one closure the idle-detect audit also passes. A failed
             // timeline read counts the issue trusted and is logged loudly.
-            // PR #3963: skip issues the census already excludes for labels
-            // or assignment, and share the scan's iteration timeline batch.
-            const priorityIssues = issues.filter((issue) =>
-              [
-                LABEL_DEFAULTS.topPriorityLabel,
-                LABEL_DEFAULTS.workOnLabel,
-                LABEL_DEFAULTS.lowPriorityLabel,
-              ].some((label) => isUnblockedFor(issue, label))
-            );
-            const censusGh = await timelineBatchRegistry.getBatchedGh(
+            const untrustedLabelIssues = await untrustedLabelIssuesFor(
               repo,
-              priorityIssues.map((issue) => issue.number),
-              options.idleDetectGhCommandFn ?? runGhCommand,
-            );
-            const untrustedLabelIssues = await censusUntrustedLabelIssues(
-              repo,
-              priorityIssues,
-              trustedAuthorsFor(config, repo),
-              censusGh,
-              timelineCache,
-              resolveFleetAuthors(githubUser, [], config.fleetPrAuthors ?? []),
-              (msg) => logger.warn(msg),
+              issues,
             );
             return {
               repo,

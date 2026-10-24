@@ -48,6 +48,13 @@ export const PHASE_MODEL_TIERS: Readonly<Record<string, ModelTier>> = {
   ci_fix: "standard",
   pr_feedback: "standard",
   quality_fix: "standard",
+  // Issue #4174. Resolving a merge is the engineer writing the merged
+  // result, the same standard tier as the other reactive code phases
+  // (owner decision 2026-10-22: Opus reviews, Sonnet manages, Haiku
+  // executes). Compaction is a summarising turn, the same fast tier as
+  // summarise.
+  merge_conflict: "standard",
+  compaction: "fast",
   spelling_fix: "fast",
   summarise: "fast",
   health: "fast",

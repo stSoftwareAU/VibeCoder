@@ -9,8 +9,19 @@
 /** Fraction of the window's points kept in reserve for issue work. */
 export const BUDGET_RESERVE_FRACTION = 0.2;
 
-/** Hard ceiling on the paced sleep, so pacing never parks the worker for an hour. */
-export const MAX_PACED_SLEEP_SECONDS = 300;
+/** Hard ceiling on the paced sleep: three times the base it was given.
+ *
+ * The base is the run loop's jittered `sleepInterval`. A fixed 300 s ceiling
+ * matched the default interval, so pacing could never lengthen a default
+ * host. Three times the base it actually received can (Issue #4137). A zero
+ * base caps at zero, which stays finite.
+ */
+export const PACED_SLEEP_CAP_MULTIPLE = 3;
+
+/** The paced-sleep ceiling for one base, in seconds. */
+export function pacedSleepCapSeconds(baseSleepSeconds: number): number {
+  return Math.max(0, baseSleepSeconds) * PACED_SLEEP_CAP_MULTIPLE;
+}
 
 /**
  * Whether a quota reading leaves the window at or below its reserve.
@@ -61,7 +72,7 @@ export interface PacedSleepResult {
  * cyclesLeftInWindow`, where `cyclesLeftInWindow = max(1, (reset − now) /
  * (cycleSeconds + baseSleepSeconds))`. Spend at or below that keeps the base
  * sleep; otherwise the sleep is stretched by the overspend ratio, capped at
- * {@link MAX_PACED_SLEEP_SECONDS} and never below the base.
+ * {@link pacedSleepCapSeconds} (three times the base) and never below the base.
  */
 export function computePacedSleepSeconds(
   input: PacedSleepInput,
@@ -79,6 +90,7 @@ export function computePacedSleepSeconds(
   const reserve = limit * BUDGET_RESERVE_FRACTION;
   const inReserve = isInReserve(limit, remaining);
   const base = Math.max(0, baseSleepSeconds);
+  const cap = pacedSleepCapSeconds(base);
 
   // Floored at 1 so a window about to reset (or a stale/negative reset) cannot
   // divide by a fraction of a cycle and inflate the affordable spend.
@@ -106,13 +118,11 @@ export function computePacedSleepSeconds(
   // `0 × Infinity`, which is `NaN` and would reach `deps.sleep()` as one.
   const stretched = affordablePerCycle > 0
     ? base * (spentLastCycle / affordablePerCycle)
-    : MAX_PACED_SLEEP_SECONDS;
-  // Cap the stretch, not the sleep: a jittered base above the cap stands, so
-  // pacing can lengthen a sleep but never shorten one.
-  const sleepSeconds = Math.max(
-    base,
-    Math.min(MAX_PACED_SLEEP_SECONDS, stretched),
-  );
+    : cap;
+  // Cap the stretch, not the sleep: the ceiling is three times this base, so
+  // a base is never above its own cap and pacing can lengthen a sleep but
+  // never shorten one.
+  const sleepSeconds = Math.max(base, Math.min(cap, stretched));
   const reason = affordablePerCycle <= 0
     ? "remaining budget is at or below the reserve"
     : "last cycle's spend exceeds the affordable spend per cycle";

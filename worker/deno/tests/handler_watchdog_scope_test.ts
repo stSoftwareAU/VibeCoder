@@ -11,9 +11,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
+  beginHandlerLandingStep,
   currentAgentRunOwner,
+  endHandlerLandingStep,
+  handlerLandingStep,
   newAgentRunOwner,
   noteAgentRunWorkItem,
   runAsAgentRunOwner,
@@ -281,10 +284,12 @@ function baseDeps(overrides: Partial<RunCoreDeps>): RunCoreDeps {
 /** A PR Feedback handler that notes its work item and never returns. */
 function wedgedPrFeedback(
   seen: { ownerId?: string },
+  onStart?: () => void,
 ): RunCoreDeps["findAndProcessPrFeedback"] {
   return () => {
     seen.ownerId = currentAgentRunOwner()?.id;
     noteAgentRunWorkItem("stSoftwareAU/GRQ-taxation#740 review 5329450436");
+    onStart?.();
     return new Promise(() => {});
   };
 }
@@ -372,6 +377,7 @@ async function runWithActivity(
   activity: (
     now: number,
   ) => { lastToolCallAtMs?: number; lastChunkAtMs: number } | undefined,
+  onStart?: () => void,
 ): Promise<{ abandonedAtMs?: number; errors: string[]; logs: string[] }> {
   const errors: string[] = [];
   const logs: string[] = [];
@@ -398,7 +404,7 @@ async function runWithActivity(
     terminateActiveAgentRuns: () => Promise.resolve(),
     agentRunActivity: (owner) =>
       owner === seen.ownerId ? activity(now) : undefined,
-    findAndProcessPrFeedback: wedgedPrFeedback(seen),
+    findAndProcessPrFeedback: wedgedPrFeedback(seen, onStart),
     findNextIssue: () => {
       shutdown?.();
       return Promise.resolve({ ok: true, value: null });
@@ -426,6 +432,11 @@ Deno.test("run_core watchdog - a handler whose agent keeps making progress is no
   );
   const line = errors.find((e) => e.includes("hard timeout"))!;
   assert(line.includes("ceiling"), line);
+  assert(
+    line.includes(`${HANDLER_PROGRESS_CEILING_MS / 1000}s`),
+    line,
+  );
+  assertEquals(line.includes(`${BASE_MS / 1000}s`), false, line);
 });
 
 Deno.test("run_core watchdog - a stalled handler is still abandoned at the base timeout (Issue #2720)", async () => {
@@ -441,4 +452,92 @@ Deno.test("run_core watchdog - a stalled handler is still abandoned at the base 
   // No live agent at all: the same.
   const idle = await runWithActivity(() => undefined);
   assertEquals(idle.abandonedAtMs, BASE_MS, idle.errors.join(" | "));
+});
+
+Deno.test("decideHandlerExtension - a landing step with no live agent is extended until the ceiling, and a wedge with neither is killed (Issue #4173)", () => {
+  const landing = decideHandlerExtension({
+    nowMs: 1_000_000,
+    activity: undefined,
+    landing: { step: "commit" },
+    ceilingMs: 10_000_000,
+  }, POLICY);
+  assertEquals(landing.action, "extend");
+  if (landing.action === "extend") {
+    assertEquals(landing.newDeadlineMs, 1_000_000 + 900_000);
+    assert(
+      landing.reason.includes("landing step commit still running"),
+      landing.reason,
+    );
+  }
+  const atCeiling = decideHandlerExtension({
+    nowMs: 1_200_000,
+    activity: undefined,
+    landing: { step: "commit" },
+    ceilingMs: 1_200_000,
+  }, POLICY);
+  assertEquals(atCeiling.action, "kill");
+  assert(atCeiling.reason.includes("ceiling"), atCeiling.reason);
+
+  const wedged = decideHandlerExtension({
+    nowMs: 1_000_000,
+    activity: undefined,
+    ceilingMs: 10_000_000,
+  }, POLICY);
+  assertEquals(wedged.action, "kill");
+  assert(wedged.reason.includes("no live agent run"), wedged.reason);
+
+  // A stalled agent is not kept alive by a leftover landing flag.
+  const stalled = decideHandlerExtension({
+    nowMs: 1_000_000,
+    activity: { lastToolCallAtMs: 600_000, lastChunkAtMs: 650_000 },
+    landing: { step: "commit" },
+    ceilingMs: 10_000_000,
+  }, POLICY);
+  assertEquals(stalled.action, "kill");
+  assert(stalled.reason.includes("stale"), stalled.reason);
+});
+
+Deno.test("run_core watchdog - a handler whose agent has exited but whose landing step is still running is extended, not killed (Issue #4173)", async () => {
+  const { abandonedAtMs, errors, logs } = await runWithActivity(
+    () => undefined,
+    () => beginHandlerLandingStep("commit"),
+  );
+  assert(abandonedAtMs !== undefined, errors.join(" | "));
+  assert(abandonedAtMs > BASE_MS, `killed at the base: ${abandonedAtMs}`);
+  assertEquals(abandonedAtMs, HANDLER_PROGRESS_CEILING_MS);
+  assert(
+    logs.some((m) =>
+      m.includes("landing step commit") && m.includes("extended")
+    ),
+    logs.join(" | "),
+  );
+  const line = errors.find((e) => e.includes("hard timeout"))!;
+  assert(line.includes(`${HANDLER_PROGRESS_CEILING_MS / 1000}s`), line);
+  assertEquals(line.includes(`${BASE_MS / 1000}s`), false, line);
+});
+
+Deno.test("run_core watchdog - a handler wedged with no agent and no landing step is still killed at the base timeout (Issue #4173)", async () => {
+  const idle = await runWithActivity(() => undefined);
+  assertEquals(idle.abandonedAtMs, BASE_MS, idle.errors.join(" | "));
+  const line = idle.errors.find((e) => e.includes("hard timeout"))!;
+  assert(line.includes(`${BASE_MS / 1000}s`), line);
+  assert(line.includes("no live agent run"), line);
+});
+
+Deno.test("handler landing step - recorded for the current owner and cleared when the step ends (Issue #4173)", async () => {
+  const owner = newAgentRunOwner("Auto-Merge");
+  await runAsAgentRunOwner(owner, () => {
+    assertEquals(handlerLandingStep(owner.id), undefined);
+    beginHandlerLandingStep("commit");
+    assertEquals(handlerLandingStep(owner.id), { step: "commit" });
+    endHandlerLandingStep();
+    assertEquals(handlerLandingStep(owner.id), undefined);
+    return Promise.resolve();
+  });
+  assertEquals(handlerLandingStep(owner.id), undefined);
+  assertThrows(
+    () => beginHandlerLandingStep("  "),
+    Error,
+    "a handler landing step needs a name",
+  );
 });

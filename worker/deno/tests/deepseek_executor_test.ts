@@ -112,6 +112,8 @@ Deno.test("deepseek routing - the full phase table routes as designed", () => {
       spelling_fix: "deepseek-flash",
       summarise: "deepseek-flash",
       health: "deepseek-flash",
+      merge_conflict: "deepseek-flash",
+      compaction: "deepseek-flash",
     };
 
     for (const [phase, model] of Object.entries(expected)) {

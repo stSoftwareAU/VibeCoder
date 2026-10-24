@@ -645,7 +645,7 @@ remaining window can afford per cycle, stretches the sleep
 proportionally (capped) so the hour's quota lasts the hour:
 
 ```
-budget-pacing: remaining=1500 affordable/cycle=31 spent=270 sleep=259s (last cycle's spend exceeds the affordable spend per cycle)
+budget-pacing: remaining=4000 affordable/cycle=200 spent=300 sleep=450s (last cycle's spend exceeds the affordable spend per cycle)
 ```
 
 The decision lives in `worker/deno/lib/budget_pacing.ts`
@@ -655,14 +655,20 @@ output is derived from them:
 - **`BUDGET_RESERVE_FRACTION = 0.2`** — one fifth of the window
   (`limit` points, 5,000 for a user token) is kept in reserve for issue
   work, so pacing never spends the last 1,000 points on idle sleep.
-- **`MAX_PACED_SLEEP_SECONDS = 300`** — the ceiling on the paced sleep,
-  so pacing can slow the worker down but never park it.
+- **`PACED_SLEEP_CAP_MULTIPLE = 3`** — the paced sleep is at most three
+  times the base it was given. That base is the run loop's jittered
+  `sleepInterval` (default 300 s, see
+  [Operational defaults](CONFIGURATION.md)). A default host can therefore
+  sleep longer than its jittered base — up to three times that base —
+  when the window is overspent. Pacing never returns a sleep shorter
+  than the base. A `sleepInterval` of zero caps at zero, which stays a
+  finite number.
 - The **affordable spend per cycle** is
   `(remaining − limit·reserve) / cyclesLeftInWindow`, where
   `cyclesLeftInWindow = max(1, (reset − now) / (cycleSeconds + baseSleep))`.
   When `spentLastCycle` is at or below that, the base sleep stands; when
   it exceeds it, the sleep is stretched by the overspend ratio
-  (`base × spent / affordable`) and capped at 300 s.
+  (`base × spent / affordable`) and capped at three times the base.
 - `inReserve` is set when `remaining ≤ limit·reserve`; the sleep is
   never returned below the base. With nothing affordable left there is
   no finite overspend ratio, so the stretch goes straight to the cap —
