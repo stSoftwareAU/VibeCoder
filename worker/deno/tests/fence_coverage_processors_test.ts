@@ -1,3 +1,4 @@
+import { buildWorkerGatePlanningPrompt } from "../lib/worker_gate_split.ts";
 /** Fence coverage for issue processors and planning repair (Issue #4206). */
 import {
   buildCritiqueFallbackPublishPrompt,
@@ -79,7 +80,27 @@ const coverage = {
   secondBody: makeCanary("CoverageSecondBody"),
 };
 
+const workerGate = {
+  parentTitle: makeCanary("WorkerGateTitle"),
+  branchProgress: makeCanary("WorkerGateProgress"),
+  gateOutput: makeCanary("WorkerGateOutput"),
+  priorGateOutput: makeCanary("WorkerGatePrior"),
+};
+
 const rows: FenceCoverageRow[] = [
+  {
+    name: "buildWorkerGatePlanningPrompt",
+    canaries: Object.values(workerGate),
+    render: () =>
+      buildWorkerGatePlanningPrompt({
+        ...workerGate,
+        repo: "owner/repo",
+        parentIssueNumber: 1,
+        category: "quality_check",
+        categoryDisplay: "Quality check",
+        childDepth: 1,
+      }),
+  },
   {
     name: "buildSingleInvocationPlanningPrompt",
     canaries: Object.values(single),
