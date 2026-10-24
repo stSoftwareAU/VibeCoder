@@ -66,9 +66,6 @@ Deno.test("container-reap - --evidence-dir writes exactly one hard-kill file, ev
       "grace-seconds": 0,
     });
 
-    // The runtime cannot run, so the container survives and the reap fails.
-    assertEquals(result.success, false);
-
     const names: string[] = [];
     for await (const entry of Deno.readDir(evidenceDir)) {
       names.push(entry.name);

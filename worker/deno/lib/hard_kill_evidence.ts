@@ -257,9 +257,12 @@ export function lastToolCall(transcriptTail: string): string | null {
 /** Outcome of one bounded step. */
 type Bounded<T> = { ok: true; value: T } | { ok: false; cause: string };
 
-/** The first non-empty line of an error or output, capped. */
+/**
+ * The first non-empty line of an error or output, capped. Redacted before it
+ * is cut (SECURITY.md: redact before you truncate).
+ */
 function firstLine(text: string, limit = 200): string {
-  const line = text
+  const line = redactGhBodyText(text)
     .split("\n")
     .map((entry) => entry.trim())
     .find((entry) => entry !== "") ?? "";
@@ -426,7 +429,9 @@ export async function captureHardKillEvidence(
       record.lastLogLine = cause;
       return;
     }
-    const text = read.value;
+    // Redact the raw text before any cut: a secret straddling a line or field
+    // boundary would otherwise leave an unredactable fragment (SECURITY.md).
+    const text = redactGhBodyText(read.value);
     if (text.trim() === "") {
       const cause = unavailable(`${newest.name} is empty`);
       record.evidence.workerLogTail = cause;
@@ -480,7 +485,8 @@ export async function captureHardKillEvidence(
       record.lastToolCall = cause;
       return;
     }
-    const text = read.value;
+    // Redact the raw transcript before the tool call is cut to its cap.
+    const text = redactGhBodyText(read.value);
     record.evidence.agentTranscriptTail = text.trim() === ""
       ? unavailable(`${newest.name} is empty`)
       : tailLines(text, TRANSCRIPT_TAIL_LINES);
@@ -499,7 +505,10 @@ export async function captureHardKillEvidence(
         `exit ${result.value.code}: ${firstLine(result.value.stderr)}`,
       );
     }
-    return tailLines(result.value.stdout.trim(), GUEST_TAIL_LINES);
+    return tailLines(
+      redactGhBodyText(result.value.stdout).trim(),
+      GUEST_TAIL_LINES,
+    );
   };
 
   const guestBranch = async (): Promise<void> => {
@@ -558,7 +567,7 @@ export async function captureHardKillEvidence(
         record.evidence.bootLogs = unavailable(boot.cause);
       } else if (boot.value.code === 0) {
         record.evidence.bootLogs = tailLines(
-          boot.value.stdout,
+          redactGhBodyText(boot.value.stdout),
           BOOT_LOG_TAIL_LINES,
         );
       } else {

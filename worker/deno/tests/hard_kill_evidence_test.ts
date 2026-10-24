@@ -23,6 +23,7 @@ import {
   type EvidenceSeams,
   type HardKillEvidence,
   lastToolCall,
+  MAX_FIELD_CHARS,
   MAX_LINE_CHARS,
   MAX_TOOL_CALL_CHARS,
   tailLines,
@@ -648,4 +649,101 @@ Deno.test("captureHardKillEvidence - a long run of characters after vibe- return
 
   assertEquals(outcome.ok, true);
   assertEquals(recordOf(h).runId, "unknown");
+});
+
+// ---------------------------------------------------------------------------
+// Redact before you truncate (SECURITY.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether any run of `length` consecutive characters of `secret` is in `text`.
+ * A cut can keep the head or the tail of a token, so every window is checked.
+ */
+function leaksFragment(text: string, secret: string, length: number): boolean {
+  for (let start = 0; start + length <= secret.length; start++) {
+    if (text.includes(secret.slice(start, start + length))) return true;
+  }
+  return false;
+}
+
+Deno.test("captureHardKillEvidence - a token straddling the line cap leaves no fragment in the file", async () => {
+  // 1975 filler characters and a space put the token's first 24 characters
+  // inside the 2000-character line cap: an un-redacted cut would keep them.
+  const h = harness({
+    files: {
+      "worker.log": {
+        text: `${"x".repeat(1975)} ${TOKEN}\n`,
+        mtimeMs: 1,
+      },
+    },
+  });
+
+  await captureHardKillEvidence(h.seams, BASE);
+
+  const text = h.writes[0]!.text;
+  assert(!text.includes(TOKEN), "the raw token must not reach the file");
+  assert(
+    !leaksFragment(text, TOKEN, 20),
+    "no 20-character fragment of the token may reach the file",
+  );
+  assertStringIncludes(text, "***REDACTED***");
+});
+
+Deno.test("captureHardKillEvidence - a token straddling the field cap leaves no fragment in the file", async () => {
+  // 200 lines of 400 characters: the joined tail is 80,199 characters, so the
+  // 64 KiB field cap starts at 14,663. The token starts 16 characters before
+  // that point, so 24 of its characters would survive an un-redacted cut.
+  const lineCount = 200;
+  const lineLength = 400;
+  const joinedLength = lineCount * lineLength + (lineCount - 1);
+  const tokenStart = joinedLength - MAX_FIELD_CHARS - 16;
+  const tokenLine = Math.floor(tokenStart / (lineLength + 1));
+  const offset = tokenStart - tokenLine * (lineLength + 1);
+  const lines = Array.from(
+    { length: lineCount },
+    (_, index) =>
+      index === tokenLine
+        ? `${"x".repeat(offset)}${TOKEN}${
+          "x".repeat(lineLength - offset - TOKEN.length)
+        }`
+        : "x".repeat(lineLength),
+  );
+  const h = harness({
+    files: {
+      "worker.log": { text: `${lines.join("\n")}\n`, mtimeMs: 1 },
+    },
+  });
+
+  await captureHardKillEvidence(h.seams, BASE);
+
+  const text = h.writes[0]!.text;
+  assert(!text.includes(TOKEN), "the raw token must not reach the file");
+  assert(
+    !leaksFragment(text, TOKEN, 20),
+    "no 20-character fragment of the token may reach the file",
+  );
+  assertStringIncludes(text, "***REDACTED***");
+});
+
+Deno.test("captureHardKillEvidence - a token straddling the 500-character tool call cap leaves no fragment in the file", async () => {
+  // `Bash {"command":"` is 17 characters, so the token starts at 476 and the
+  // 500-character cap keeps 24 of its characters.
+  const line = '{"type":"assistant","message":{"content":[{"type":"tool_use",' +
+    '"id":"t1","name":"Bash","input":{"command":"' +
+    `${"x".repeat(458)} ${TOKEN}"}}]}}`;
+  const h = harness({
+    files: {
+      "agent-vibe-m3k9x2-0a1b2c-2.jsonl": { text: `${line}\n`, mtimeMs: 1 },
+    },
+  });
+
+  await captureHardKillEvidence(h.seams, BASE);
+
+  const text = h.writes[0]!.text;
+  assert(!text.includes(TOKEN), "the raw token must not reach the file");
+  assert(
+    !leaksFragment(text, TOKEN, 20),
+    "no 20-character fragment of the token may reach the file",
+  );
+  assertStringIncludes(recordOf(h).lastToolCall, "***REDACTED***");
 });
