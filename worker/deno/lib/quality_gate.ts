@@ -41,7 +41,10 @@ import {
   scanDirectoriesForSpawnTimeout,
   SPAWN_TIMEOUT_SCAN_DIRS,
 } from "./spawn_timeout_check.ts";
-import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
 import { scanDirectoriesForRedactInversion } from "./redact_truncate_order_check.ts";
 import { scanDirectoriesForSharedTmpPath } from "./tmp_state_dir_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
@@ -179,6 +182,9 @@ export interface QualityGateConfig {
   onProgress?: QualityProgressReporter;
 }
 
+/** One gate subprocess. Minutes, so a hang fails the gate instead of the run. */
+export const QUALITY_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
+
 /**
  * Run a subprocess command and capture output.
  *
@@ -195,8 +201,6 @@ export interface QualityGateConfig {
  * Returns the exit code and combined stdout/stderr. A timeout is exit 124,
  * never a zero exit.
  */
-export const QUALITY_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
-
 export async function runCommand(
   cmd: string[],
   options?: {
@@ -220,7 +224,7 @@ export async function runCommand(
       timeoutMs,
     });
   } catch (error) {
-    if (error instanceof Error && error.message.includes("timed out after")) {
+    if (isCommandTimeoutError(error)) {
       return { exitCode: 124, output: error.message };
     }
     throw error;

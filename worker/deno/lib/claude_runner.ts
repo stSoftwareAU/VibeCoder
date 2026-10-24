@@ -1474,9 +1474,18 @@ async function runClaudeWithTimeoutBody(
       stdout: "piped",
       stderr: "piped",
       stdin: promptViaStdin ? "piped" : "null",
-      // Backstop at the end of the grace. The watchdog still kills the tree
-      // at timeoutSeconds; this signal fires only if that child is still alive.
-      timeoutMs: (timeoutSeconds + killAfterSeconds) * 1000,
+      // Backstop past the latest deadline the watchdog can reach. The
+      // watchdog still kills the tree at its deadline; this signal fires only
+      // if that child is still alive.
+      timeoutMs: agentSpawnBackstopMs(
+        timeoutSeconds,
+        killAfterSeconds,
+        options.progressExtension === undefined ? undefined : {
+          enabled: options.progressExtension.policy.enabled === true,
+          ceilingMs: options.progressExtension.ceilingMs,
+        },
+        clock.now(),
+      ),
     });
     const childPid = child.pid;
     if (promptViaStdin && promptFilePath) {
@@ -2786,6 +2795,31 @@ export async function killClaudeProcessTree(
 
 /** Default gap between two memory-pressure evidence lines (Issue #4384). */
 export const DEFAULT_MEMORY_WATCH_MIN_INTERVAL_MS = 60_000;
+
+/** The longest delay `setTimeout` honours; a longer one fires at once. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * The agent spawn's backstop timeout, in milliseconds (Issue #4251).
+ *
+ * It must not fire before the watchdog's own deadline plus its grace. With
+ * the progress extension on (Issue #4296) that deadline moves: up to the
+ * supervisor's ceiling when there is one, and without limit when there is
+ * not, so the backstop is then the longest timer there is.
+ */
+export function agentSpawnBackstopMs(
+  timeoutSeconds: number,
+  killAfterSeconds: number,
+  extension: { enabled: boolean; ceilingMs?: number } | undefined,
+  nowMs: number,
+): number {
+  let budgetMs = timeoutSeconds * 1000;
+  if (extension?.enabled === true) {
+    if (extension.ceilingMs === undefined) return MAX_TIMER_DELAY_MS;
+    budgetMs = Math.max(budgetMs, extension.ceilingMs - nowMs);
+  }
+  return Math.min(budgetMs + killAfterSeconds * 1000, MAX_TIMER_DELAY_MS);
+}
 
 /** `ps` for the memory watch. Seconds. A timeout is not an empty table. */
 const AGENT_PS_TIMEOUT_MS = 10_000;

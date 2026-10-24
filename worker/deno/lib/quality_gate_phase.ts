@@ -46,6 +46,9 @@ import {
 /** A repository quality run or formatter. Minutes, so a hang fails closed. */
 const REPOSITORY_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 
+/** `--kill-after=10` plus slack, past which the native backstop fires. */
+const NATIVE_TIMEOUT_WRAPPER_GRACE_SECONDS = 30;
+
 /** `id`, `which`, `lsof`, `pgrep` and `kill`. Seconds. */
 const PROBE_TIMEOUT_MS = 10_000;
 
@@ -267,7 +270,7 @@ export interface QualityGateDeps {
   /** Run a command and capture output. Returns [exitCode, output]. */
   runCommand: (
     cmd: string[],
-    options?: { stdin?: "null" | "inherit"; cwd?: string },
+    options?: { stdin?: "null" | "inherit"; cwd?: string; timeoutMs?: number },
   ) => Promise<{ exitCode: number; output: string }>;
   /** Format quality failure message. */
   formatFailureMsg: (
@@ -625,7 +628,13 @@ export async function runNativeQualityCheck(
     cmd = ["bash", "-c", qualityCommand];
   }
 
-  const result = await deps.runCommand(cmd, { stdin: "null" });
+  // The repository's configured timeout bounds the run, not the 30-minute
+  // default. With a `timeout` wrapper its TERM and --kill-after come first,
+  // so this backstop sits just past them.
+  const timeoutMs = timeoutCmd
+    ? (timeoutSeconds + NATIVE_TIMEOUT_WRAPPER_GRACE_SECONDS) * 1000
+    : timeoutSeconds * 1000;
+  const result = await deps.runCommand(cmd, { stdin: "null", timeoutMs });
 
   // Always clean up subprocesses after quality check
   await deps.cleanupSubprocesses();

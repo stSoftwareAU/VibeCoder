@@ -309,3 +309,36 @@ Deno.test("commandOutputWithTimeout - a child that outlives the timeout is a tim
     `sleep 3 was still running after ${elapsed}ms, so the timeout did not fire`,
   );
 });
+
+Deno.test("commandOutputWithTimeout - a grandchild holding the pipes does not outlast the timeout", async () => {
+  const started = Date.now();
+  await assertRejects(
+    () =>
+      commandOutputWithTimeout("bash", {
+        args: ["-c", "sleep 3 & wait"],
+        stdout: "piped",
+        stderr: "piped",
+        stdin: "null",
+        timeoutMs: 200,
+      }),
+    Error,
+    "bash timed out after 200ms",
+  );
+  const elapsed = Date.now() - started;
+  assert(
+    elapsed < 1_500,
+    `the orphaned sleep held the pipes for ${elapsed}ms past a 200ms timeout`,
+  );
+});
+
+Deno.test("commandOutputWithTimeout - a finished child returns its piped output and exit code", async () => {
+  const output = await commandOutputWithTimeout("bash", {
+    args: ["-c", "printf out; printf err >&2; exit 3"],
+    stdin: "null",
+    timeoutMs: 10_000,
+  });
+  assertEquals(output.code, 3);
+  assertEquals(output.success, false);
+  assertEquals(new TextDecoder().decode(output.stdout), "out");
+  assertEquals(new TextDecoder().decode(output.stderr), "err");
+});

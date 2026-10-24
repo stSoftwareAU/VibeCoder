@@ -11,18 +11,17 @@
  *
  * Any offender fails the check. There is no baseline of known gaps.
  *
- * Scanning reuses the comment stripper and directory walk from
- * `spawn_chokepoint_scan.ts`. The match itself is string walking: a
+ * Scanning reuses the directory walk from `spawn_chokepoint_scan.ts`.
+ * Comments and strings are blanked in one pass, so a `//` inside a URL
+ * string is not read as a comment that swallows the rest of the line and
+ * leaves a quote open. The match itself is string walking: a
  * `new RegExp(...)` built from a variable is what the gate's semgrep stage
  * rejects.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
-import {
-  stripLineAndBlockComments,
-  walkTsFiles,
-} from "./spawn_chokepoint_scan.ts";
+import { walkTsFiles } from "./spawn_chokepoint_scan.ts";
 
 /** How an offending call skipped its timeout. */
 export type SpawnTimeoutKind = "deno-command" | "run-with-timeout";
@@ -115,7 +114,10 @@ function blankQuoted(
       chars[index] = " ";
       return index + 1;
     }
-    if (chars[index] !== "\n") chars[index] = " ";
+    // A quoted string cannot span lines. Stopping here keeps a stray quote
+    // (a regex such as /["']/) from blanking the code that follows.
+    if (chars[index] === "\n") return index;
+    chars[index] = " ";
     index++;
   }
   return index;
@@ -172,28 +174,58 @@ function blankTemplate(chars: string[], start: number, end: number): number {
 }
 
 /**
- * Copy `source` with string and template contents replaced by spaces.
+ * Blank comments and string contents in one pass.
  *
- * Newlines stay put so a later index still names the original line. Code
- * inside a template `${...}` is left intact. Comments are not touched here;
- * callers strip those first.
+ * `code` has comments blanked and strings kept, for the import check.
+ * `blanked` has both blanked, for the call match. Newlines stay put in both
+ * so an index still names the original line. Code inside a template `${...}`
+ * is left intact.
  */
-function blankStringLiterals(source: string): string {
-  const chars = [...source];
+function lexSource(source: string): { code: string; blanked: string } {
+  const code = [...source];
+  const blanked = [...code];
+  const end = blanked.length;
+  const blankBoth = (from: number, to: number) => {
+    for (let at = from; at < to; at++) {
+      if (blanked[at] === "\n") continue;
+      code[at] = " ";
+      blanked[at] = " ";
+    }
+  };
   let index = 0;
-  while (index < chars.length) {
-    const char = chars[index];
+  while (index < end) {
+    const char = blanked[index];
+    const next = blanked[index + 1];
+    if (char === "/" && next === "/") {
+      let stop = index;
+      while (stop < end && blanked[stop] !== "\n") stop++;
+      blankBoth(index, stop);
+      index = stop;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      let stop = index + 2;
+      while (
+        stop < end && !(blanked[stop] === "*" && blanked[stop + 1] === "/")
+      ) {
+        stop++;
+      }
+      stop = Math.min(stop + 2, end);
+      blankBoth(index, stop);
+      index = stop;
+      continue;
+    }
     if (char === '"' || char === "'") {
-      index = blankQuoted(chars, index, chars.length, char);
+      index = blankQuoted(blanked, index, end, char);
       continue;
     }
     if (char === "`") {
-      index = blankTemplate(chars, index, chars.length);
+      index = blankTemplate(blanked, index, end);
       continue;
     }
     index++;
   }
-  return chars.join("");
+  return { code: code.join(""), blanked: blanked.join("") };
 }
 
 function endOfCall(code: string, openParen: number): number {
@@ -279,8 +311,7 @@ function callOffence(
   const open = skipSpace(blanked, needleAt + needle.length);
   if (blanked.charAt(open) !== "(") return null;
   const end = endOfCall(blanked, open);
-  // `blanked` keeps every newline, so its index names the original line even
-  // where a line comment was removed from the stripped text.
+  // `blanked` keeps every newline, so its index names the original line.
   if (hasWord(blanked.slice(open, end), requiredWord)) return null;
   const line = lineNumber(blanked, needleAt);
   return {
@@ -301,8 +332,7 @@ export function scanContentForSpawnTimeout(
   content: string,
   repoRelPath: string,
 ): SpawnTimeoutViolation[] {
-  const stripped = stripLineAndBlockComments(content);
-  const blanked = blankStringLiterals(stripped);
+  const { code, blanked } = lexSource(content);
   const offences: SpawnTimeoutViolation[] = [];
 
   let from = 0;
@@ -322,7 +352,7 @@ export function scanContentForSpawnTimeout(
     from = at + COMMAND_NEEDLE.length;
   }
 
-  if (importsRunWithTimeout(stripped)) {
+  if (importsRunWithTimeout(code)) {
     from = 0;
     while (from < blanked.length) {
       const at = blanked.indexOf(RUN_NEEDLE, from);

@@ -10,9 +10,8 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { realHostname, realPsSupervisors } from "../commands/diagnose.ts";
-import { runDirectCommand as runAddRepoCommand } from "../commands/process_add_repo.ts";
-import { runDirectCommand as runResolveCommand } from "../commands/resolve_cross_repo_dep.ts";
 import {
+  agentSpawnBackstopMs,
   isCommandAvailable,
   readAgentProcessTable,
 } from "../lib/claude_runner.ts";
@@ -42,10 +41,12 @@ import {
   readElapsedClock,
   sendSignal,
 } from "../lib/pid_guard.ts";
-import { runDirectCommand as runPurgeCommand } from "../lib/purge_stale_workflow_issues.ts";
 import { runCredentialCommand } from "../lib/repo_credentials.ts";
 import { probe } from "../lib/semgrep_check.ts";
-import { spawnCommandWithTimeout } from "../lib/subprocess_timeout.ts";
+import {
+  runDirectCommand,
+  spawnCommandWithTimeout,
+} from "../lib/subprocess_timeout.ts";
 import { getHostname } from "../lib/worker_identity.ts";
 import { listLivePids } from "../lib/worker_log_gzip.ts";
 
@@ -59,14 +60,8 @@ Deno.test("diagnose process table timeout is not an empty report (Issue #4251)",
 Deno.test("diagnose hostname timeout is not unknown-host (Issue #4251)", () =>
   timedOut(() => realHostname(0)));
 
-Deno.test("add-repo direct command timeout is not a zero exit (Issue #4251)", () =>
-  timedOut(() => runAddRepoCommand(["sleep", "30"], 0)));
-
-Deno.test("cross-repo direct command timeout is not a zero exit (Issue #4251)", () =>
-  timedOut(() => runResolveCommand(["sleep", "30"], 0)));
-
-Deno.test("workflow-purge direct command timeout is not a zero exit (Issue #4251)", () =>
-  timedOut(() => runPurgeCommand(["sleep", "30"], 0)));
+Deno.test("direct command timeout is not a zero exit (Issue #4251)", () =>
+  timedOut(() => runDirectCommand(["sleep", "30"], 0)));
 
 Deno.test("agent spawn timeout does not start the child (Issue #4251)", () => {
   assertThrows(
@@ -165,3 +160,35 @@ Deno.test("hostname comes from Deno.hostname, not a spawn (Issue #4251)", () => 
 
 Deno.test("live-pid snapshot timeout is not 'nothing is running' (Issue #4251)", () =>
   timedOut(() => listLivePids(0)));
+
+Deno.test("agent backstop without extensions sits at the end of the grace (Issue #4251)", () => {
+  assertEquals(agentSpawnBackstopMs(600, 10, undefined, 0), 610_000);
+  assertEquals(
+    agentSpawnBackstopMs(600, 10, { enabled: false, ceilingMs: 0 }, 0),
+    610_000,
+  );
+});
+
+Deno.test("agent backstop does not kill a run the progress extension extended (Issue #4251)", () => {
+  // Capped: no grant can move the deadline past the ceiling.
+  assertEquals(
+    agentSpawnBackstopMs(600, 10, {
+      enabled: true,
+      ceilingMs: 5_000_000,
+    }, 1_000_000),
+    4_010_000,
+  );
+  // Uncapped: extensions have no limit, so the backstop is the longest timer.
+  assertEquals(
+    agentSpawnBackstopMs(600, 10, { enabled: true }, 0),
+    2_147_483_647,
+  );
+});
+
+Deno.test("agent backstop never exceeds the longest timer delay (Issue #4251)", () => {
+  // A longer delay than setTimeout honours fires at once.
+  assertEquals(
+    agentSpawnBackstopMs(30 * 24 * 3600, 10, undefined, 0),
+    2_147_483_647,
+  );
+});

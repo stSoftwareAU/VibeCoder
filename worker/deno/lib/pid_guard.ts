@@ -839,17 +839,32 @@ export async function terminateProcessTree(
     );
     return;
   }
+  // A signal that fails (its `kill` timed out) is reported once the tree has
+  // had every other signal: one hung `kill` must not skip the pid's own TERM
+  // or the SIGKILL escalation and leave the tree running.
+  let signalError: unknown = undefined;
+  const signal = async (signalPid: number, name: string) => {
+    try {
+      await deps.sendSignal(signalPid, name);
+    } catch (err) {
+      signalError ??= err;
+    }
+  };
+  const finish = () => {
+    if (signalError !== undefined) throw signalError;
+  };
+
   if (pgid !== null) {
-    await deps.sendSignal(-pgid, "TERM");
+    await signal(-pgid, "TERM");
   }
-  await deps.sendSignal(pid, "TERM");
+  await signal(pid, "TERM");
 
   // Wait for termination
   for (let i = 0; i < maxWaitSeconds; i++) {
-    if (!(await deps.isRunning(pid))) return;
+    if (!(await deps.isRunning(pid))) return finish();
     // A live pid that is no longer ours means the target exited and the
     // kernel re-issued its pid: our work here is done.
-    if (!(await isSameProcess(target, deps.getStartTime))) return;
+    if (!(await isSameProcess(target, deps.getStartTime))) return finish();
     await deps.sleep(1000);
   }
 
@@ -860,13 +875,14 @@ export async function terminateProcessTree(
         `[pid-guard] PID ${pid} was reused before the SIGKILL escalation — ` +
           `nothing signalled (Issue #501)`,
       );
-      return;
+      return finish();
     }
     if (pgid !== null) {
-      await deps.sendSignal(-pgid, "KILL");
+      await signal(-pgid, "KILL");
     }
-    await deps.sendSignal(pid, "KILL");
+    await signal(pid, "KILL");
   }
+  finish();
 }
 
 /**
@@ -880,6 +896,7 @@ export async function terminateProcessTree(
  */
 export async function checkPidFile(
   pidFilePath: string,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
 ): Promise<PidGuardResult> {
   try {
     const content = await Deno.readTextFile(pidFilePath);
@@ -894,7 +911,22 @@ export async function checkPidFile(
       };
     }
 
-    if (await isRunning(existingPid)) {
+    let running: boolean;
+    try {
+      running = await isRunning(existingPid, timeoutMs);
+    } catch (err) {
+      // A probe that timed out has not shown the holder gone. Proceeding on
+      // it is how a second instance would start beside the first.
+      return {
+        canProceed: false,
+        message: `Could not tell whether PID ${existingPid} is running: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        existingPid,
+      };
+    }
+
+    if (running) {
       return {
         canProceed: false,
         message: `Another instance is running (PID ${existingPid})`,

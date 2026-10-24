@@ -54,6 +54,44 @@ Deno.test("scanContentForSpawnTimeout - signal named only inside a string is sti
   assertEquals(offences.length, 1);
 });
 
+Deno.test("scanContentForSpawnTimeout - a URL in a string does not hide the next spawn", () => {
+  const offences = scanContentForSpawnTimeout(
+    [
+      'const endpoint = "https://example.com/api";',
+      'const command = new Deno.Command("curl", { args: [endpoint] });',
+    ].join("\n"),
+    FILE,
+  );
+  assertEquals(offences.length, 1);
+  assertEquals(offences[0]?.line, 2);
+});
+
+Deno.test("scanContentForSpawnTimeout - a quote inside a regex does not hide the next spawn", () => {
+  const offences = scanContentForSpawnTimeout(
+    [
+      "const quoted = /[\"']/;",
+      'const command = new Deno.Command("ps", { args: [] });',
+      'const other = "x";',
+    ].join("\n"),
+    FILE,
+  );
+  assertEquals(offences.length, 1);
+  assertEquals(offences[0]?.line, 2);
+});
+
+Deno.test("scanContentForSpawnTimeout - a comment opener inside a string does not hide the next spawn", () => {
+  const offences = scanContentForSpawnTimeout(
+    [
+      'const glob = "src/*";',
+      'const command = new Deno.Command("ls", { args: [glob] });',
+      'const tail = "*/";',
+    ].join("\n"),
+    FILE,
+  );
+  assertEquals(offences.length, 1);
+  assertEquals(offences[0]?.line, 2);
+});
+
 Deno.test("scanContentForSpawnTimeout - a comment and a template example are not spawns", () => {
   const offences = scanContentForSpawnTimeout(
     [

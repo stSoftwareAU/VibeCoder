@@ -591,6 +591,35 @@ Deno.test("runNativeQualityCheck - runs directly without timeout command", async
   assertEquals(cmdUsed[2], "./quality.sh");
 });
 
+Deno.test("runNativeQualityCheck - a configured timeout past 30 minutes is not cut short", async () => {
+  let timeoutMs: number | undefined;
+  const deps = createMockDeps({
+    findTimeoutCmd: async () => "timeout",
+    runCommand: async (_cmd, opts) => {
+      timeoutMs = opts?.timeoutMs;
+      return { exitCode: 0, output: "passed" };
+    },
+  });
+
+  await runNativeQualityCheck("./quality.sh", 3600, deps);
+  // The `timeout` wrapper's own TERM and --kill-after=10 come first.
+  assertEquals(timeoutMs !== undefined && timeoutMs > 3610 * 1000, true);
+});
+
+Deno.test("runNativeQualityCheck - without a timeout command the configured timeout still bounds the run", async () => {
+  let timeoutMs: number | undefined;
+  const deps = createMockDeps({
+    findTimeoutCmd: async () => null,
+    runCommand: async (_cmd, opts) => {
+      timeoutMs = opts?.timeoutMs;
+      return { exitCode: 0, output: "passed" };
+    },
+  });
+
+  await runNativeQualityCheck("./quality.sh", 600, deps);
+  assertEquals(timeoutMs, 600 * 1000);
+});
+
 // =============================================================================
 // buildFinalFailureMessage tests
 // =============================================================================

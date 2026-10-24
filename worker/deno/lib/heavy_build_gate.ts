@@ -287,9 +287,15 @@ export async function releaseCheckoutTargetDirs(
   let dirs: EphemeralTargetDir[];
   try {
     dirs = await deps.listTargetDirs(root);
-  } catch {
-    // No root yet means nothing was built there.
-    return { bytes: 0, errors: [] };
+  } catch (err) {
+    // No root yet means nothing was built there. Any other failure — a `du`
+    // that timed out among them — left this checkout's dirs in place, and
+    // saying so is what keeps a leak on the disk floor visible.
+    if (err instanceof Deno.errors.NotFound) return { bytes: 0, errors: [] };
+    return {
+      bytes: 0,
+      errors: [`${root}: ${err instanceof Error ? err.message : String(err)}`],
+    };
   }
   let bytes = 0;
   const errors: string[] = [];

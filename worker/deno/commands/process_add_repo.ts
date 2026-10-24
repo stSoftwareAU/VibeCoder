@@ -73,10 +73,7 @@ import {
   parseAddRepoTitle,
   validateAddRepoTarget,
 } from "../lib/add_repo.ts";
-import type {
-  CommandOutput,
-  RunCommand,
-} from "../setup/collaborator_precheck.ts";
+import type { RunCommand } from "../setup/collaborator_precheck.ts";
 import {
   createAllIdleTaskWrappers,
   type CreateAllIdleTaskWrappersResult,
@@ -84,7 +81,7 @@ import {
 import { runGhCommand as defaultGhCommand } from "../lib/github.ts";
 import { spawnGh } from "../lib/gh_spawn.ts";
 import { runGitArgv } from "../lib/git_timeout.ts";
-import { commandOutputWithTimeout } from "../lib/subprocess_timeout.ts";
+import { runDirectCommand } from "../lib/subprocess_timeout.ts";
 import {
   type LabelSyncResult,
   syncLabelsForRepo,
@@ -639,27 +636,6 @@ export const defaultRunCommand: RunCommand = async (cmd: string[]) => {
   }
   return await runDirectCommand(cmd);
 };
-
-/** A non-git, non-gh argv. Minutes. A timeout throws; it is not a zero exit. */
-const DIRECT_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
-
-export async function runDirectCommand(
-  cmd: string[],
-  timeoutMs: number = DIRECT_COMMAND_TIMEOUT_MS,
-): Promise<CommandOutput> {
-  const output = await commandOutputWithTimeout(cmd[0] ?? "", {
-    args: cmd.slice(1),
-    stdout: "piped",
-    stderr: "piped",
-    timeoutMs,
-  });
-  const decoder = new TextDecoder();
-  return {
-    success: output.success,
-    stdout: decoder.decode(output.stdout).trim(),
-    stderr: decoder.decode(output.stderr).trim(),
-  };
-}
 
 /**
  * Run the canonical label sync for the target repo and reduce the result
