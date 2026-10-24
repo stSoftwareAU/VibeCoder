@@ -1,8 +1,9 @@
 /**
  * Test helper: whether a needle sits inside a genuine untrusted-content fence
- * (Issue #4234). Shared so the recovery-turn tests assert fencing against one
- * definition instead of a pasted copy. It mirrors the helper that was private
- * to `worker/deno/tests/summary_rule_gate_retry_test.ts`.
+ * (Issue #4234). This is the single copy, used by
+ * `worker/deno/tests/summary_rule_gate_retry_test.ts` and
+ * `worker/deno/tests/summary_rule_gate_retry_4234_test.ts`, so the recovery-turn
+ * tests assert fencing against one definition instead of a pasted copy.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */

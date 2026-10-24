@@ -1323,8 +1323,10 @@ final message; marking a criterion partial, listing a known gap or noting a
 test as not red-checked does not settle it (Issue #3797). `testChanges: meaningful`
 is not a finding and does not block.
 
-**Retry convergence (Issue #4234).** On a retry the verifier is given the
-previous blocking findings: this run's latest pass, else the bullets of the
+**Retry convergence (Issue #4234).** A retry is any pass after a recovery turn
+in this run, a pass on an issue labelled `failed-once` or `failed`, or a pass
+with earlier verifier findings. On a retry the verifier is given the previous
+blocking findings: this run's latest pass, else the bullets of the
 last pre-PR gate comment the worker posted. Each needs an `earlierFindings`
 verdict; a missing one, or one not `fixed`, adds a blocking `(earlier review)`
 finding. A finding may carry `severity` (`critical`, `high`, `medium` or
@@ -1334,7 +1336,7 @@ other than `critical` or `high` (or none), is posted as an advisory comment
 ([`PRE_PR_VERIFIER_ADVISORY_HEADING`](../../worker/deno/lib/verifier_convergence.ts))
 and does not block. A finding the diff cannot place fails closed and blocks:
 an absolute or `..` path, a `(...)` file, no positive line, or a diff that is
-unread or not fully parsed. First passes block everything.
+unread or not fully parsed. A pass that is not a retry blocks everything.
 
 **When it cannot run.** A pass that cannot run (brief missing, git failure,
 a failed caller listing, launch error, timeout, unparseable reply, or a
@@ -1982,8 +1984,8 @@ already carries a PR (Issue #3163), up to three turns in all (Issue #4234); a
 block the loop does not clear on an existing-PR branch finalises as
 `summary_incomplete`. The turns are shared: a summary missing both an earlier
 gate's requirement and the Docs sweep line is asked for both at once, in the
-earlier gate's notice, rather than losing the sweep to a later block (Issue
-#3085 review).
+earlier gate's notice, rather than losing the sweep to a later block
+(Issue #3085 review).
 
 **The line's own terms are re-run at the head (Issue #3172).** A complete-looking
 line used to pass while hits of its own grep terms still stated the removed
@@ -2644,7 +2646,7 @@ flowchart TD
   criterion `met` without the work is the over-claim the Spec reviewer exists
   to catch. Further rounds follow only while the number of blocking findings
   (each gate's own problem count) keeps falling, up to
-  `MAX_UNMET_CRITERIA_ROUNDS`. That count includes the unmet criteria, so a
+  `OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns`. That count includes the unmet criteria, so a
   round that leaves it level or higher ends the run.
 - **A run that still cannot finish fails** as `criteria_unmet` on the ordinary
   `failed-once` → `failed` ladder. No PR is raised, no follow-up is filed, and

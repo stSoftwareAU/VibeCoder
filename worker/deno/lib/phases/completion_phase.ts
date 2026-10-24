@@ -3364,7 +3364,12 @@ async function completionBody(
     // Issue #4234: a pass after a block is a retry, and its findings are
     // answered one by one (see `splitFindingsForRetry` below).
     const previousFindings = previousPrePrVerifierFindings(ctx, state);
-    const isRetry = previousFindings.length > 0;
+    // A retry is a pass after a recovery turn in this run, a pass on an issue
+    // labelled `failed-once` or `failed`, or a pass with earlier verifier
+    // findings (Issue #4234). Each operand alone makes the pass a retry.
+    const isRetry = previousFindings.length > 0 ||
+      (state.summaryRuleBlocks?.length ?? 0) > 0 ||
+      ctx.issueLabels.some((l) => l === "failed-once" || l === "failed");
     const verifierRun = await deps.claude.runPrePrVerifier({
       previousFindings,
       // The agent's reply to those findings, from the recovery turn (Issue #4234).

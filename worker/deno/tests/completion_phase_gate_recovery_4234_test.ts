@@ -28,10 +28,6 @@ import {
   resetFleetTelemetry,
 } from "../lib/fleet_telemetry.ts";
 import {
-  RUN_MAX_SECONDS_ENV,
-  RUN_STARTED_EPOCH_ENV,
-} from "../lib/run_hard_cap.ts";
-import {
   runCompletion,
   SUMMARY_WITH_BLOCK,
 } from "./support/completion_summary_harness.ts";
@@ -298,6 +294,122 @@ Deno.test(
       2,
       "the verifier comment reports both passes' findings",
     );
+  },
+);
+
+// -----------------------------------------------------------------------------
+// What makes a pass a retry (Issue #4234 review). A retry is a pass after a
+// recovery turn in this run, a pass on a `failed-once` or `failed` issue, or a
+// pass with earlier verifier findings. Each test below isolates one of them.
+// -----------------------------------------------------------------------------
+
+/** A fresh finding on a line this change does not touch, at `severity`. */
+function freshOnUnchangedLine(
+  severity: "medium" | "high",
+): ReviewFinding {
+  return finding("N", {
+    file: "worker/deno/lib/other_module.ts",
+    line: 9,
+    severity,
+  });
+}
+
+// (a) Not a retry: the first pass of a first attempt blocks on a fresh finding.
+Deno.test(
+  "retry - a fresh medium finding blocks the first pass of a first attempt (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      verifier: [checked([freshOnUnchangedLine("medium")])],
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(
+      outcome.comments.filter((c) =>
+        c.includes(PRE_PR_VERIFIER_ADVISORY_HEADING)
+      )
+        .length,
+      0,
+      "nothing is advisory on a first pass",
+    );
+  },
+);
+
+// (b) Retry by a recovery turn in this run (no earlier verifier finding, no label).
+Deno.test(
+  "retry - a medium finding first raised after a recovery turn is advisory (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_NO_DOCS_SWEEP,
+      retryWrites: SUMMARY_CLEAN,
+      verifier: [checked([]), checked([freshOnUnchangedLine("medium")])],
+    });
+
+    assertEquals(outcome.claudePrompts.length, 1, "one recovery turn");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+  },
+);
+
+Deno.test(
+  "retry - a high finding first raised after a recovery turn still blocks (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_NO_DOCS_SWEEP,
+      retryWrites: SUMMARY_CLEAN,
+      verifier: [checked([]), checked([freshOnUnchangedLine("high")])],
+    });
+
+    assertEquals(outcome.claudePrompts.length, 1, "one recovery turn");
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+  },
+);
+
+// (c) Retry by label: the first pass of a `failed-once` issue.
+Deno.test(
+  "retry - a medium finding is advisory on the first pass of a failed-once issue (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      labels: ["enhancement", "work-on", "failed-once"],
+      verifier: [checked([freshOnUnchangedLine("medium")])],
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+  },
+);
+
+Deno.test(
+  "retry - a high finding on the first pass of a failed-once issue still blocks (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      labels: ["enhancement", "work-on", "failed-once"],
+      verifier: [checked([freshOnUnchangedLine("high")])],
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+  },
+);
+
+// (e) Retry by earlier verifier findings: a prior run's verifier section on the
+// issue, with no recovery turn in this run and no label.
+Deno.test(
+  "retry - earlier verifier findings on the issue make the first pass a retry (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      issueComments: [{ author: "testbot", body: verifierSectionFor([F2]) }],
+      verifier: [checked([freshOnUnchangedLine("medium")])],
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.claudePrompts.length, 0, "no recovery turn ran");
   },
 );
 
@@ -606,42 +718,41 @@ Deno.test(
 );
 
 // -----------------------------------------------------------------------------
-// Host run cap is not inherited (Issue #4234 review).
+// The run's hard-cap ceiling reaches the recovery turn through the seam
+// (Issue #4234 review). No test mutates the process environment.
 // -----------------------------------------------------------------------------
 
 Deno.test(
-  "gate recovery - a near-expired host run cap does not change the recovery outcome (Issue #4234)",
+  "gate recovery - a near-expired run hard cap skips the recovery turn, and an uncapped run invokes it (Issue #4234)",
   async () => {
-    const savedMax = Deno.env.get(RUN_MAX_SECONDS_ENV);
-    const savedStart = Deno.env.get(RUN_STARTED_EPOCH_ENV);
-    const started = String(Math.floor(Date.now() / 1000) - 3600);
-    Deno.env.set(RUN_MAX_SECONDS_ENV, "60");
-    Deno.env.set(RUN_STARTED_EPOCH_ENV, started);
-    try {
-      const outcome = await runCompletion({
-        summary: SUMMARY_NO_DOCS_SWEEP,
-        retryWrites: SUMMARY_CLEAN,
-        verifier: [checked([])],
-      });
+    const nearlyExpired = await runCompletion({
+      summary: SUMMARY_NO_DOCS_SWEEP,
+      retryWrites: SUMMARY_CLEAN,
+      verifier: [checked([])],
+      runCeilingMs: Date.now() + 1000,
+    });
 
-      assertEquals(
-        outcome.status,
-        "continue",
-        "the harness removes the host cap, so the turn is not skipped for runway",
-      );
-      assertEquals(outcome.claudePrompts.length, 1, "the recovery turn ran");
-      assertEquals(
-        Deno.env.get(RUN_MAX_SECONDS_ENV),
-        "60",
-        "the host cap is restored once the run ends",
-      );
-      assertEquals(Deno.env.get(RUN_STARTED_EPOCH_ENV), started);
-    } finally {
-      if (savedMax === undefined) Deno.env.delete(RUN_MAX_SECONDS_ENV);
-      else Deno.env.set(RUN_MAX_SECONDS_ENV, savedMax);
-      if (savedStart === undefined) Deno.env.delete(RUN_STARTED_EPOCH_ENV);
-      else Deno.env.set(RUN_STARTED_EPOCH_ENV, savedStart);
-    }
+    assertEquals(
+      nearlyExpired.claudePrompts.length,
+      0,
+      "one second of runway is below the minimum, so the agent is not invoked",
+    );
+    assertEquals(
+      nearlyExpired.status,
+      "failure",
+      "the skipped turn leaves the block standing",
+    );
+
+    // The pair: the same scenario with no injected ceiling is uncapped, so the
+    // recovery turn runs and the PR is raised.
+    const uncapped = await runCompletion({
+      summary: SUMMARY_NO_DOCS_SWEEP,
+      retryWrites: SUMMARY_CLEAN,
+      verifier: [checked([])],
+    });
+
+    assertEquals(uncapped.claudePrompts.length, 1, "the recovery turn ran");
+    assertEquals(uncapped.status, "continue");
   },
 );
 

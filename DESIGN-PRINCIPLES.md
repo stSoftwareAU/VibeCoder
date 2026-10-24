@@ -3188,9 +3188,12 @@ pre-PR verifier's several findings share one item. A further turn is granted
 only while the number of blocking findings (each gate's own problem count)
 keeps falling. When it stops with the block still
 standing, an existing PR is finalised as before, unless the claim check alone
-is still blocking on the summary's own sentences (a doc finding never
-qualifies, since that turn can only rewrite the summary): that block first
-gets one summary-only correction turn (Issue #3324), and only a block that
+is still blocking on the summary's own sentences, or on manual or prompt
+Markdown (Issue #3865): a doc finding in manual or prompt Markdown qualifies,
+because that narrow turn rewrites the flagged sentences by index. A doc finding
+in a source comment never qualifies: it stays with the ordinary recovery and
+hold path, since the narrow turn accepts Markdown only. A qualifying block first
+gets one narrow claim correction turn (Issue #3324), and only a block that
 survives it finalises the PR. A standing Standards violation on the branch's
 own lines is a defect in the change, not a documentation shortfall, so that
 recovery turn

@@ -80,6 +80,7 @@ import {
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import { setupRepo as setupRepoCommand } from "../commands/git_operations.ts";
 import { repairSharedObjectStore } from "./object_store_repair.ts";
+import { resolveRunHardCap } from "./run_hard_cap.ts";
 import { sweepBrokenRefs } from "./broken_ref_repair.ts";
 import { ensureRepoClone } from "./ensure_repo_clone.ts";
 import { ensureLaneWorktree } from "./lane_worktree.ts";
@@ -510,6 +511,13 @@ export interface InfrastructureDeps {
    * (Issue #2689). Injected so each test owns its latch.
    */
   warnMissingWorkflowScope: MissingScopeWarner;
+  /**
+   * The run's hard-cap ceiling in epoch ms, or undefined when the supervisor
+   * sets no cap (Issue #4234). Production reads the supervisor's published cap
+   * through `resolveRunHardCap`; tests inject it, so no test has to mutate the
+   * process environment.
+   */
+  runHardCapCeilingMs: (killAfterSeconds: number) => number | undefined;
 }
 
 /** Quality — quality gate, helpers. */
@@ -830,6 +838,10 @@ export function createDefaultDeps(
       evaluateRunGuard,
       workflowScopeState: () => workflowScopeState(),
       warnMissingWorkflowScope: warnMissingWorkflowScopeOnce,
+      runHardCapCeilingMs: (killAfterSeconds) => {
+        const cap = resolveRunHardCap({ killAfterSeconds });
+        return cap.capped ? cap.cap.ceilingMs : undefined;
+      },
     },
 
     quality: {
@@ -1512,6 +1524,8 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     // Issue #1475: a mocked host can push workflows unless a test says otherwise.
     workflowScopeState: () => "granted",
     warnMissingWorkflowScope: createMissingScopeWarner(),
+    // Issue #4234: a mocked run is uncapped unless a test injects a ceiling.
+    runHardCapCeilingMs: () => undefined,
     evaluateRunGuard: mockFn<InfrastructureDeps["evaluateRunGuard"]>(() =>
       Promise.resolve({ action: "proceed", reason: "mock proceed" })
     ),

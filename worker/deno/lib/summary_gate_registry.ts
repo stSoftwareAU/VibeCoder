@@ -5,8 +5,8 @@
  * here, so the local check and the worker agree on what a gate is called. The
  * drift test (`worker/deno/tests/pr_summary_gate_registry_test.ts`) runs the
  * completion phase over a summary that blocks every gate at once, and fails
- * when the gate ids the completion phase records differ from the entries marked
- * `completionFold: true` here.
+ * when the gate ids the completion phase records differ from the ids listed
+ * here. Any exception the test names, with its reason, is listed in that test.
  *
  * Entries are listed in the order the completion phase applies them.
  *
@@ -23,8 +23,8 @@
  */
 export type SummaryGateLocalCheck = "deterministic" | "model" | "worker-only";
 
-/** The fields every PR-summary gate carries. */
-interface SummaryGateCommon {
+/** One PR-summary gate. */
+export interface SummaryGate {
   /** Stable key, used to look the gate up. */
   id: string;
   /** Report name, as printed by the local check. */
@@ -34,19 +34,6 @@ interface SummaryGateCommon {
   localCheck: SummaryGateLocalCheck;
 }
 
-/**
- * One PR-summary gate. `completionFold` says whether the completion phase folds
- * the gate's verdict into the summary-rule block it records (its
- * `summaryRuleBlocks[].gates`). `false` is an exception, and must say why: the
- * drift test expects exactly the `true` entries to be recorded.
- */
-export type SummaryGate =
-  & SummaryGateCommon
-  & (
-    | { completionFold: true }
-    | { completionFold: false; reason: string }
-  );
-
 /** Every PR-summary gate the completion phase applies, in its order. */
 export const PR_SUMMARY_GATES: readonly SummaryGate[] = [
   {
@@ -54,91 +41,78 @@ export const PR_SUMMARY_GATES: readonly SummaryGate[] = [
     name: "Prompt-scrubbed Markdown",
     issueRef: "#3710",
     localCheck: "deterministic",
-    completionFold: true,
   },
   {
     id: "acceptance-closure",
     name: "Acceptance-criteria closure",
     issueRef: "#518",
     localCheck: "deterministic",
-    completionFold: true,
   },
   {
     id: "independent-review",
     name: "Independent two-axis review",
     issueRef: "#663",
     localCheck: "deterministic",
-    completionFold: true,
   },
   {
     id: "reproduction-status",
     name: "Reproduction status",
     issueRef: "#521",
     localCheck: "deterministic",
-    completionFold: true,
   },
   {
     id: "docs-sweep",
     name: "Docs sweep",
     issueRef: "#3073",
     localCheck: "deterministic",
-    completionFold: true,
   },
   {
     id: "removed-assertions",
     name: "Removed test assertions",
     issueRef: "#3131",
     localCheck: "deterministic",
-    completionFold: true,
   },
   {
     id: "result-placeholders",
     name: "Result placeholders",
     issueRef: "#3124",
     localCheck: "deterministic",
-    completionFold: true,
   },
   {
     id: "branch-outcomes",
     name: "Branch outcomes",
     issueRef: "#3147",
     localCheck: "deterministic",
-    completionFold: true,
   },
   {
     id: "unmet-criteria",
     name: "Unmet acceptance criteria",
     issueRef: "#4146",
     localCheck: "deterministic",
-    completionFold: true,
   },
   {
     id: "claim-check",
     name: "Summary claim check",
     issueRef: "#3257",
     localCheck: "model",
-    completionFold: true,
   },
   {
     id: "pre-pr-verifier",
     name: "Pre-PR verifier",
     issueRef: "#3395",
     localCheck: "model",
-    completionFold: true,
   },
   {
     id: "mutation-check",
     name: "Mutation check",
     issueRef: "#3393",
     localCheck: "worker-only",
-    completionFold: true,
   },
   {
     id: "coverage-carry-over",
     name: "Coverage carry-over",
     issueRef: "#3795",
     localCheck: "worker-only",
-    completionFold: true,
   },
 ];
 

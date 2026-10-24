@@ -89,7 +89,6 @@ import type { StandingViolation } from "./standing_violation_routing.ts";
 import type { DegradedShortfall } from "./degraded_delivery.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 import { clampTurnTimeout } from "./gate_recovery_loop.ts";
-import { resolveRunHardCap } from "./run_hard_cap.ts";
 
 /** One summary-rule gate verdict observed during a single run. */
 export interface SummaryRuleRunVerdict {
@@ -444,16 +443,6 @@ ${
 const RECOVERY_TURN_RESPONSE_MAX_CHARS = 6000;
 
 /**
- * The run's ceiling in epoch ms, or undefined when the supervisor sets no cap
- * (Issue #4234). The ceiling is the instant past which a recovery turn may not
- * work; `resolveRunHardCap` reads it from the environment the supervisor sets.
- */
-function runCeilingMs(killAfterSeconds: number): number | undefined {
-  const cap = resolveRunHardCap({ killAfterSeconds });
-  return cap.capped ? cap.cap.ceilingMs : undefined;
-}
-
-/**
  * Recover from a summary-rule gate block inside the run (Issue #2189).
  *
  * Called by the completion phase for each summary-rule block, whether or not a
@@ -482,8 +471,8 @@ function runCeilingMs(killAfterSeconds: number): number | undefined {
  *   abandoning it (Issue #1140).
  * @param rerunCompletion - Re-runs the completion attempt after the retry.
  * @param clock - Test seam (Issue #4234). Production omits it: the turn reads
- *   `Date.now()` and the run's ceiling from `resolveRunHardCap`. When given, it
- *   supplies the clock and the ceiling (`undefined` = uncapped) instead.
+ *   `Date.now()`. When given, it supplies the clock, and its `ceilingMs` (when
+ *   set) replaces the run's ceiling from `deps.infrastructure.runHardCapCeilingMs`.
  */
 export async function recoverFromSummaryRuleBlock(
   ctx: IssueContext,
@@ -520,11 +509,13 @@ export async function recoverFromSummaryRuleBlock(
 
   // Issue #4234: the turn's agent timeout is clamped to the run's remaining
   // time, so a turn is never cut off mid-edit by the supervisor's ceiling.
-  // Production reads the clock and the ceiling itself; a test injects both.
+  // Production reads the clock and the ceiling itself (the ceiling through the
+  // infrastructure seam); a test may inject either.
   const timeout = clampTurnTimeout({
     configuredSeconds: config.claudeTimeout,
     nowMs: clock ? clock.nowMs() : Date.now(),
-    ceilingMs: clock ? clock.ceilingMs : runCeilingMs(config.claudeKillAfter),
+    ceilingMs: clock?.ceilingMs ??
+      deps.infrastructure.runHardCapCeilingMs(config.claudeKillAfter),
   });
   if (timeout.skip) {
     // Too little runway for a turn that could finish: the agent is not started.

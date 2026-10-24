@@ -135,6 +135,9 @@ const NO_VERDICT_REPLY = {
   value: { output: "" },
 };
 
+/** A realPath that resolves nothing: the paths are purely lexical. */
+const NO_SYMLINKS = (path: string) => Promise.resolve(path);
+
 /**
  * CLI deps with fakes for every seam. The model fakes default to a reply that
  * carries no verdict, so the default-on claim check never blocks on its own.
@@ -159,6 +162,7 @@ function deps(
     stdout: (l: string) => out.push(l),
     stderr: (l: string) => err.push(l),
     cwd: () => ROOT,
+    realPath: NO_SYMLINKS,
     askModel: model.askModel ?? (() => Promise.resolve(NO_VERDICT_REPLY)),
     runVerifier: model.runVerifier ??
       (() => Promise.reject(new Error("the verifier was not expected to run"))),
@@ -340,27 +344,155 @@ Deno.test("parseArgs - rejects missing base, missing or extra file, unknown flag
   assert(!parseArgs(["s.md", "--base"]).ok);
 });
 
-Deno.test("repoRelativePath - names the summary by its path under the repo root, or null outside it", () => {
-  assertEquals(repoRelativePath("s.md", "/repo", "/repo"), "s.md");
+Deno.test("repoRelativePath - names the summary by its path under the repo root, or null outside it", async () => {
   assertEquals(
-    repoRelativePath(
+    await repoRelativePath("s.md", "/repo", "/repo", NO_SYMLINKS),
+    "s.md",
+  );
+  assertEquals(
+    await repoRelativePath(
       "../../docs/archive/pr-summaries/pr-summary-7.md",
       "/repo",
       "/repo/worker/deno",
+      NO_SYMLINKS,
     ),
     "docs/archive/pr-summaries/pr-summary-7.md",
   );
   assertEquals(
-    repoRelativePath("/repo/docs/x.md", "/repo", "/elsewhere"),
+    await repoRelativePath(
+      "/repo/docs/x.md",
+      "/repo",
+      "/elsewhere",
+      NO_SYMLINKS,
+    ),
     "docs/x.md",
   );
   assertEquals(
-    repoRelativePath("../../x.md", "/repo", "/repo/worker/deno"),
+    await repoRelativePath(
+      "../../x.md",
+      "/repo",
+      "/repo/worker/deno",
+      NO_SYMLINKS,
+    ),
     "x.md",
   );
-  assertEquals(repoRelativePath("/other/x.md", "/repo", "/repo"), null);
-  assertEquals(repoRelativePath("../x.md", "/repo", "/repo"), null);
+  assertEquals(
+    await repoRelativePath("/other/x.md", "/repo", "/repo", NO_SYMLINKS),
+    null,
+  );
+  assertEquals(
+    await repoRelativePath("../x.md", "/repo", "/repo", NO_SYMLINKS),
+    null,
+  );
 });
+
+/**
+ * A real temp tree: a repo root with a summary under it, and a directory
+ * outside the repo holding a file. The body makes any symlinks it needs.
+ */
+async function withRealTree(
+  body: (paths: { root: string; outside: string }) => Promise<void>,
+): Promise<void> {
+  const tmp = await Deno.makeTempDir({ prefix: "pr-summary-confine-" });
+  try {
+    const root = `${tmp}/repo`;
+    const outside = `${tmp}/outside`;
+    await Deno.mkdir(`${root}/docs/archive/pr-summaries`, { recursive: true });
+    await Deno.mkdir(`${root}/worker/deno`, { recursive: true });
+    await Deno.mkdir(outside);
+    await Deno.writeTextFile(
+      `${root}/docs/archive/pr-summaries/pr-summary-7.md`,
+      "## Summary\n",
+    );
+    await Deno.writeTextFile(`${outside}/secret.md`, "outside the repo\n");
+    await body({ root, outside });
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+}
+
+const REAL_REALPATH = (path: string) => Deno.realPath(path);
+
+Deno.test("repoRelativePath - a .. traversal out of the repo is null, and one inside resolves (Issue #4234)", () =>
+  withRealTree(async ({ root }) => {
+    const cwd = `${root}/worker/deno`;
+    assertEquals(
+      await repoRelativePath(
+        "../../../outside/secret.md",
+        root,
+        cwd,
+        REAL_REALPATH,
+      ),
+      null,
+    );
+    assertEquals(
+      await repoRelativePath("../../docs/x.md", root, cwd, REAL_REALPATH),
+      "docs/x.md",
+    );
+  }));
+
+Deno.test("repoRelativePath - a symlink in the repo pointing outside is null (Issue #4234)", () =>
+  withRealTree(async ({ root, outside }) => {
+    await Deno.symlink(outside, `${root}/docs/escape`);
+    assertEquals(
+      await repoRelativePath(
+        "docs/escape/secret.md",
+        root,
+        root,
+        REAL_REALPATH,
+      ),
+      null,
+    );
+  }));
+
+Deno.test("repoRelativePath - a missing segment then .. onto a symlink pointing outside is null (Issue #4234)", () =>
+  withRealTree(async ({ root, outside }) => {
+    await Deno.symlink(outside, `${root}/link`);
+    assertEquals(
+      await repoRelativePath(
+        `${root}/missing/../link/secret.md`,
+        root,
+        root,
+        REAL_REALPATH,
+      ),
+      null,
+    );
+  }));
+
+Deno.test("repoRelativePath - a .. after a symlink resolves through the link, not the text (Issue #4234)", () =>
+  withRealTree(async ({ root, outside }) => {
+    // `docs/link/../x` names `outside/x` to the kernel, not `docs/x`.
+    await Deno.symlink(outside, `${root}/docs/link`);
+    assertEquals(
+      await repoRelativePath("docs/link/../x.md", root, root, REAL_REALPATH),
+      null,
+    );
+  }));
+
+Deno.test("repoRelativePath - a symlink in the repo to another in-repo file names that file (Issue #4234)", () =>
+  withRealTree(async ({ root }) => {
+    await Deno.symlink(
+      `${root}/docs/archive/pr-summaries/pr-summary-7.md`,
+      `${root}/docs/alias.md`,
+    );
+    assertEquals(
+      await repoRelativePath("docs/alias.md", root, root, REAL_REALPATH),
+      "docs/archive/pr-summaries/pr-summary-7.md",
+    );
+  }));
+
+Deno.test("repoRelativePath - a plain file under the repo is named by its path (Issue #4234)", () =>
+  withRealTree(async ({ root }) => {
+    assertEquals(
+      await repoRelativePath(
+        "docs/archive/pr-summaries/pr-summary-7.md",
+        root,
+        root,
+        REAL_REALPATH,
+      ),
+      "docs/archive/pr-summaries/pr-summary-7.md",
+    );
+  }));
 
 Deno.test("main - the claim check runs by default with the real model wiring's settings (Issue #4234)", async () => {
   const calls: Array<Parameters<CliDeps["askModel"]>> = [];

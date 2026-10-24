@@ -23,10 +23,6 @@ import { AutoMergeResult } from "../../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../../types.ts";
 import { buildDefaultWorkerConfig } from "../../lib/config_defaults.ts";
 import {
-  RUN_MAX_SECONDS_ENV,
-  RUN_STARTED_EPOCH_ENV,
-} from "../../lib/run_hard_cap.ts";
-import {
   DRIFT_VERDICT_CLOSE,
   DRIFT_VERDICT_OPEN,
 } from "../../lib/pr_feedback_drift_check.ts";
@@ -235,6 +231,11 @@ export interface Scenario {
    * reads. Omitted, the PR changes no test file.
    */
   testFileChange?: { file: string; patch: string };
+  /**
+   * The run's hard-cap ceiling in epoch ms (Issue #4234), injected through the
+   * infrastructure seam `runHardCapCeilingMs`. Omitted, the run is uncapped.
+   */
+  runCeilingMs?: number;
 }
 
 export interface Outcome {
@@ -263,35 +264,11 @@ export interface Outcome {
 }
 
 /**
- * The host's run-cap variables, which `resolveRunHardCap` reads (Issue #4234).
- * A test must not inherit them: a cap the supervisor set on the host would
- * change a recovery turn's runway, so `runCompletion` removes them for the run.
- */
-const HOST_RUN_CAP_ENV = [RUN_MAX_SECONDS_ENV, RUN_STARTED_EPOCH_ENV] as const;
-
-/**
- * Drive the live completion phase over a blocked summary rule. The host's run
- * cap is removed for the duration and restored afterwards (Issue #4234), so the
- * outcome never depends on the environment the test runner happens to inherit.
+ * Drive the live completion phase over a blocked summary rule. The run's hard
+ * cap is injected through `runCeilingMs` (Issue #4234), so the outcome never
+ * depends on the environment the test runner happens to inherit.
  */
 export async function runCompletion(scenario: Scenario): Promise<Outcome> {
-  const saved = HOST_RUN_CAP_ENV.map((name) =>
-    [name, Deno.env.get(name)] as const
-  );
-  for (const name of HOST_RUN_CAP_ENV) Deno.env.delete(name);
-  try {
-    return await runCompletionWithoutHostCap(scenario);
-  } finally {
-    for (const [name, value] of saved) {
-      if (value === undefined) Deno.env.delete(name);
-      else Deno.env.set(name, value);
-    }
-  }
-}
-
-async function runCompletionWithoutHostCap(
-  scenario: Scenario,
-): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   const workDir = await Deno.makeTempDir();
   const summaryPath =
@@ -348,6 +325,9 @@ async function runCompletionWithoutHostCap(
   };
 
   const deps = createMockDeps({
+    infrastructure: {
+      runHardCapCeilingMs: () => scenario.runCeilingMs,
+    },
     logger: {
       info: capture("info"),
       warn: capture("warn"),

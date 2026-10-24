@@ -4,12 +4,12 @@
  * The drift test runs the live completion phase (`runCompletion`, the shared
  * harness) over one summary that blocks every gate at once, and checks that the
  * gate ids the first recorded summary-rule verdict carries are exactly the
- * registry entries marked `completionFold: true`. A gate the completion phase
- * records but the registry does not fold, or a folded registry entry the
- * completion phase never records, fails the test and names the id.
+ * registry entries, less the `NOT_FOLDED` exceptions below. A gate the
+ * completion phase records but the registry does not hold, or a registry entry
+ * the completion phase never records, fails the test and names the id.
  *
- * An exception is a registry entry with `completionFold: false` and a reason,
- * never a silent skip. The drift test does not read source text.
+ * An exception is an id listed in `NOT_FOLDED` with a reason beside it, never a
+ * silent skip. The drift test does not read source text.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -110,7 +110,14 @@ const MAXIMAL_SCENARIO: Scenario = {
   testFileChange: { file: MAXIMAL_TEST_FILE, patch: MAXIMAL_TEST_PATCH },
 };
 
-Deno.test("drift - a maximal-blocking completion run records exactly the gates the registry folds", async () => {
+/**
+ * The registry gate ids the completion phase is allowed not to record. Each
+ * entry needs a reason beside it. Empty today: every registry gate is folded
+ * into the summary-rule block the completion phase records.
+ */
+const NOT_FOLDED: readonly string[] = [];
+
+Deno.test("drift - a maximal-blocking completion run records every registry gate, less NOT_FOLDED", async () => {
   const outcome = await runCompletion(MAXIMAL_SCENARIO);
   const first = outcome.summaryRuleBlocks[0];
   assert(
@@ -122,8 +129,8 @@ Deno.test("drift - a maximal-blocking completion run records exactly the gates t
     "the first summary-rule verdict carries no gate ids",
   );
   const recorded = [...first.gates];
-  const folded = PR_SUMMARY_GATES.filter((g) => g.completionFold).map((g) =>
-    g.id
+  const expected = PR_SUMMARY_GATES.map((g) => g.id).filter((id) =>
+    !NOT_FOLDED.includes(id)
   );
   const problems: string[] = [];
   for (const id of new Set(recorded)) {
@@ -131,17 +138,17 @@ Deno.test("drift - a maximal-blocking completion run records exactly the gates t
       problems.push(`completion phase recorded gate "${id}" more than once`);
     }
   }
-  for (const id of folded) {
+  for (const id of expected) {
     if (!recorded.includes(id)) {
       problems.push(
-        `registry gate "${id}" is marked completionFold: true, but the completion phase did not record it: wire it into the late-verdict fold in lib/phases/completion_phase.ts, or mark it completionFold: false with a reason in lib/summary_gate_registry.ts`,
+        `registry gate "${id}" is not recorded by the completion phase: wire it into the late-verdict fold in lib/phases/completion_phase.ts, or list it in NOT_FOLDED with a reason in tests/pr_summary_gate_registry_test.ts`,
       );
     }
   }
   for (const id of recorded) {
-    if (!folded.includes(id)) {
+    if (!expected.includes(id)) {
       problems.push(
-        `completion phase recorded gate "${id}", which the registry does not mark completionFold: true: add or fix its entry in lib/summary_gate_registry.ts`,
+        `completion phase recorded gate "${id}", which is not a registry entry in PR_SUMMARY_GATES (lib/summary_gate_registry.ts), or is listed in NOT_FOLDED: add or fix its entry, or correct NOT_FOLDED`,
       );
     }
   }
@@ -164,16 +171,6 @@ Deno.test("registry - ids and names are unique and every gate carries an issue r
   assertEquals(new Set(names).size, names.length);
   for (const gate of PR_SUMMARY_GATES) {
     assert(/^#\d+$/.test(gate.issueRef), `${gate.id} has no issue reference`);
-  }
-});
-
-Deno.test("registry - every completionFold: false exception names a reason", () => {
-  for (const gate of PR_SUMMARY_GATES) {
-    if (gate.completionFold) continue;
-    assert(
-      gate.reason.trim().length > 0,
-      `${gate.id} is completionFold: false with no reason`,
-    );
   }
 });
 

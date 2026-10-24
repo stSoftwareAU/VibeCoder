@@ -146,31 +146,55 @@ export function issueNumberFromSummaryPath(path: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-/** Collapse `.` and `..` segments and empty ones, keeping a leading `/`. */
-function normalisePath(path: string): string {
-  const out: string[] = [];
+/** The parent of a resolved absolute path; `/` is its own parent. */
+function parentOf(path: string): string {
+  const slash = path.lastIndexOf("/");
+  return slash <= 0 ? "/" : path.slice(0, slash);
+}
+
+/**
+ * Resolve an absolute path the way the kernel opens it (Issue #4234): walk its
+ * segments, follow every symlink that exists, and apply each `..` to the
+ * location already resolved, so `a/link/../x` lands where `link` points. A
+ * segment that does not exist is taken by name, and a later `..` pops it. A
+ * segment that cannot be resolved is kept by name, which the kernel cannot open
+ * through either. See CODING-STANDARDS "Path Confinement".
+ */
+async function resolvedPath(
+  path: string,
+  realPath: (path: string) => Promise<string>,
+): Promise<string> {
+  let current = "/";
   for (const segment of path.split("/")) {
     if (segment === "" || segment === ".") continue;
-    if (segment === "..") out.pop();
-    else out.push(segment);
+    if (segment === "..") {
+      current = parentOf(current);
+      continue;
+    }
+    const candidate = current === "/" ? `/${segment}` : `${current}/${segment}`;
+    current = await realPath(candidate).catch(() => candidate);
   }
-  return `/${out.join("/")}`;
+  return current;
 }
 
 /**
  * The summary file's path relative to the repository root, or `null` when it
- * lies outside the root. The model-backed checks name the summary by this
- * repo-relative path, as the completion phase does.
+ * lies outside the root (Issue #4234). Both the file and the root are resolved
+ * through their symlinks first, so the path returned is that of the location the
+ * kernel reads. The model-backed checks name the summary by this repo-relative
+ * path, as the completion phase does.
  */
-export function repoRelativePath(
+export async function repoRelativePath(
   file: string,
   repoRoot: string,
   cwd: string,
-): string | null {
-  const absolute = normalisePath(
+  realPath: (path: string) => Promise<string>,
+): Promise<string | null> {
+  const absolute = await resolvedPath(
     file.startsWith("/") ? file : `${cwd}/${file}`,
+    realPath,
   );
-  const root = normalisePath(repoRoot);
+  const root = await resolvedPath(repoRoot, realPath);
   if (!absolute.startsWith(`${root}/`)) return null;
   return absolute.slice(root.length + 1);
 }
@@ -184,6 +208,11 @@ export interface CliDeps {
   stderr: (line: string) => void;
   /** Working directory, for resolving the summary path. Defaults to `Deno.cwd()`. */
   cwd?: () => string;
+  /**
+   * Resolves a path through its symlinks, to confine the summary path to the
+   * location the kernel reads. The real one is `Deno.realPath`.
+   */
+  realPath: (path: string) => Promise<string>;
   /**
    * The one model call behind the claim check. The real one is
    * `runClaudeWithRetry`, which the completion phase also uses.
@@ -245,10 +274,11 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
 
   const repoRoot = root.value;
   const issueNumber = issueNumberFromSummaryPath(args.value.summaryFile);
-  const summaryPath = repoRelativePath(
+  const summaryPath = await repoRelativePath(
     args.value.summaryFile,
     repoRoot,
     (deps.cwd ?? (() => Deno.cwd()))(),
+    deps.realPath,
   );
   const repo = repoLabel(repoRoot);
   const logger = createLogger({
@@ -381,6 +411,7 @@ if (import.meta.main) {
     stdout: (line) => console.log(line),
     stderr: (line) => console.error(line),
     cwd: () => Deno.cwd(),
+    realPath: (path) => Deno.realPath(path),
     askModel: runClaudeWithRetry,
     runVerifier: (input) => runPrePrVerifier(input),
   });
