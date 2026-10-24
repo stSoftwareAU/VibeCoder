@@ -31,6 +31,7 @@ import {
   isInfrastructureFailure,
   isWorkerGateSplitCategory,
 } from "./failure_diagnosis.ts";
+import { defaultLogger } from "./logger.ts";
 import { retireBlockedRun, runWorkerGateSplit } from "./worker_gate_split.ts";
 import type {
   FailureOptions,
@@ -506,21 +507,28 @@ export async function handleIssueFailure(
     console.log(
       `[worker-gate-split] ${options.repo}#${options.issueNumber}: ${fallbackReason}`,
     );
-    await ghCommandFn([
-      "issue",
-      "comment",
-      String(options.issueNumber),
-      "--repo",
-      options.repo,
-      "--body",
-      [
-        heading,
-        "",
-        fallbackReason,
-        "",
-        `The repeat failure record stands and this issue keeps \`${labels.failedOnceLabel}\`.`,
-      ].join("\n"),
-    ]);
+    try {
+      await ghCommandFn([
+        "issue",
+        "comment",
+        String(options.issueNumber),
+        "--repo",
+        options.repo,
+        "--body",
+        [
+          heading,
+          "",
+          fallbackReason,
+          "",
+          `The repeat failure record stands and this issue keeps \`${labels.failedOnceLabel}\`.`,
+        ].join("\n"),
+      ]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      defaultLogger.warn(
+        `[worker-gate-split] ${options.repo}#${options.issueNumber}: could not post the split comment: ${message}`,
+      );
+    }
   }
 
   await markIssueAsFailedOnce({ ...options, repeat }, deps);

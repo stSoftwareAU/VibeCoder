@@ -776,6 +776,58 @@ Deno.test("#4130 - a throwing issue read keeps the repeat record and says why", 
   }
 });
 
+Deno.test("#4130 - a failed fallback comment still writes the repeat record", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "gate-split-comment-throw-" });
+  const calls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args.includes("title,body,author")) {
+      return Promise.reject(new Error("could not read the issue"));
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      const body = flagValue(args, "--body");
+      if (body.includes("Worker-gate split")) {
+        return Promise.reject(new Error("secondary rate limit"));
+      }
+    }
+    if (args[0] === "issue" && args[1] === "view" && args.includes("labels")) {
+      return Promise.resolve("failed-once");
+    }
+    if (args[0] === "label" && args[1] === "list") {
+      return Promise.resolve("failed\nfailed-once\nenhancement\n");
+    }
+    return Promise.resolve("");
+  };
+  try {
+    const result = await handleIssueFailure({
+      repo: "org/repo",
+      issueNumber: 42,
+      githubUser: "worker-user",
+      failureMessage: GATE_OUTPUT,
+      category: "quality_check",
+    }, {
+      ghCommandFn: gh,
+      cacheDir: dir,
+      planWorkerGateSplit: () =>
+        Promise.reject(new Error("planning must not run")),
+      readBranchProgress: () => Promise.resolve(PROGRESS),
+    });
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.workerGateSplit, "fallback");
+      assertEquals(result.value.markedAsFailedOnce, true);
+    }
+    assertEquals(
+      calls.some((args) => args.includes("--remove-assignee")),
+      true,
+    );
+    assertEquals(labelsAdded(calls).includes("failed-once"), true);
+    assertEquals(labelsAdded(calls).includes("failed"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("#4130 - a suppressed filing is skipped and the repeat record stands", async () => {
   const dir = await Deno.makeTempDir({ prefix: "gate-split-suppressed-" });
   const calls: string[][] = [];
