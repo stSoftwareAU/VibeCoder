@@ -121,25 +121,19 @@ async function makeRepo(
 
 /** True when `cargo` and `rustfmt` are both runnable; the Rust tests skip otherwise. */
 async function hasCargo(): Promise<boolean> {
-  for (
-    const [bin, flag] of [["cargo", "--version"], [
-      "rustfmt",
-      "--version",
-    ]] as const
-  ) {
-    try {
-      const out = await new Deno.Command(bin, {
-        args: [flag],
-        stdin: "null",
-        stdout: "null",
-        stderr: "null",
-      }).output();
-      if (out.code !== 0) return false;
-    } catch {
-      return false;
-    }
+  // `cargo fmt` is what the formatter runs; a rustup shim with no default
+  // toolchain answers `cargo --version` yet fails `cargo fmt`.
+  try {
+    const out = await new Deno.Command("cargo", {
+      args: ["fmt", "--version"],
+      stdin: "null",
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    return out.code === 0;
+  } catch {
+    return false;
   }
-  return true;
 }
 
 /**

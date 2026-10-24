@@ -1460,10 +1460,12 @@ build artefacts.
   The key is derived from the checkout path, which covers a lane worktree
   (`worktrees/<slot>/<repo>`) and the shared clone the maintenance passes use
   alike.
-- **One directory per account.** The repository's own quality commands, tests
-  and installs run as `agent` and the worker's as `vibe` (Issue #571); neither
-  can write a directory the other created, so the account the command drops to
-  is part of the key.
+- **One directory per account.** The quality gate's repository commands run
+  as `agent` and the worker's as `vibe` (Issue #571); neither can write a
+  directory the other created, so the account the command drops to is part of
+  the key. Not every repository-controlled process drops: the repository
+  formatters (Issue #4113) and the lock-file regeneration installs run as the
+  worker, with an environment built from the allowlist.
 - **Nothing changes where the trim is honoured.** No launcher reading, an
   older launcher that writes no flag, a runtime that trims, or an explicit
   `CARGO_TARGET_DIR` — all leave the environment exactly as it was. The
