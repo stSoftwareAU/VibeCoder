@@ -62,6 +62,7 @@ import {
   setPhaseModelConfigOverrides,
 } from "./claude_executor.ts";
 import {
+  clearRefusedCodexModels,
   setCodexPhaseEffortConfigOverrides,
   setCodexPhaseModelConfigOverrides,
 } from "./codex_executor.ts";
@@ -808,6 +809,8 @@ export async function createProductionRunCoreDeps(
   setPhaseEffortConfigOverrides(config.phaseEffortOverrides);
   // Apply the Codex phase model/effort config overrides (Issue #363)
   setCodexPhaseModelConfigOverrides(config.codexPhaseModelOverrides);
+  // a fresh run starts with no refused Codex models (Issue #4221)
+  clearRefusedCodexModels();
   setCodexPhaseEffortConfigOverrides(config.codexPhaseEffortOverrides);
   // Apply the Gemini phase model config overrides (Issue #364)
   setGeminiPhaseModelConfigOverrides(config.geminiPhaseModelOverrides);

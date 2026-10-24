@@ -24,6 +24,8 @@ import {
   buildCodexArgs,
   clearRefusedCodexModels,
   CODEX_CLI_DEFAULT_MODEL,
+  codexBuiltInDefaultModel,
+  isCodexChatgptLogin,
   markCodexModelRefused,
   resolveCodexModel,
   setActiveRepoCodexModelEffortOverrides,
@@ -124,12 +126,14 @@ async function readCalls(log: string): Promise<string[]> {
   }
 }
 
+/** A logger whose lines record their level, as `info: <message>`. */
 function recordingLogger(lines: string[]): Logger {
-  const push = (message: string) => lines.push(message);
+  const at = (level: string) => (message: string) =>
+    lines.push(`${level}: ${message}`);
   return {
-    info: push,
-    warn: push,
-    error: push,
+    info: at("info"),
+    warn: at("warn"),
+    error: at("error"),
     debug: () => {},
   } as unknown as Logger;
 }
@@ -182,6 +186,7 @@ interface RetryRun {
 async function runSummariseOnCodex(
   stubBody: string,
   env: EnvLookup,
+  model?: string,
 ): Promise<RetryRun> {
   setConfiguredProviderFallbackPolicy(
     resolveProviderFallbackPolicy({
@@ -200,6 +205,7 @@ async function runSummariseOnCodex(
             clock: fakeClock(),
             prompt: "test",
             phase: "summarise",
+            ...(model === undefined ? {} : { model }),
             agentProvider: "codex",
             agentBinaryPath: stub.path,
             env,
@@ -553,8 +559,16 @@ Deno.test({
         "the retry omits --model",
       );
       assert(
-        log.some((line) => line.includes("[codex-adaptation]")),
-        `the adaptation is logged: ${log}`,
+        log.some((line) =>
+          line.startsWith("info: ") && line.includes("[model-adaptation]")
+        ),
+        `the adaptation is logged at info: ${log}`,
+      );
+      assert(
+        !log.some((line) =>
+          line.startsWith("warn: ") && line.includes("[model-adaptation]")
+        ),
+        `the adaptation is not a warning: ${log}`,
       );
       assert(
         !log.some((line) => line.includes("[provider-fallback]")),
@@ -642,7 +656,7 @@ Deno.test({
         `the switch leaves Codex straight away: ${calls}`,
       );
       assert(
-        !log.some((line) => line.includes("[codex-adaptation]")),
+        !log.some((line) => line.includes("[model-adaptation]")),
         `no adaptation is logged for an api-key login: ${log}`,
       );
     } finally {
@@ -682,4 +696,132 @@ Deno.test("Codex refused built-in default - the refusal warning is printed once 
     console.warn = original;
     resetCodexRoutingState();
   }
+});
+
+Deno.test("Codex refused built-in default - a fresh worker run forgets the refused models (Issue #4221)", async () => {
+  const home = await makeCodexHome(CHATGPT_AUTH);
+  const workDir = await Deno.makeTempDir({ prefix: "codex_fresh_4221_" });
+  const env = envFrom({ CODEX_HOME: home });
+  resetCodexRoutingState();
+  try {
+    markRefusedQuietly(REFUSED, "health");
+    assertEquals(resolveCodexModel("health", env), undefined);
+
+    // Building the production deps is the start of a run: the mark is cleared.
+    await createProductionRunCoreDeps(
+      productionOptions(workDir, env, recordingProbe(true, [])),
+    );
+    assertEquals(resolveCodexModel("health", env), REFUSED);
+  } finally {
+    resetCodexRoutingState();
+    await Deno.remove(home, { recursive: true });
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("Codex refused built-in default - resolving with nothing refused never reads CODEX_HOME (Issue #4221)", async () => {
+  const home = await makeCodexHome(CHATGPT_AUTH);
+  const base = envFrom({ CODEX_HOME: home });
+  resetCodexRoutingState();
+  try {
+    let codexHomeReads = 0;
+    const countingEnv: EnvLookup = (name) => {
+      if (name === "CODEX_HOME") codexHomeReads += 1;
+      return base(name);
+    };
+    assertEquals(resolveCodexModel("health", countingEnv), REFUSED);
+    assertEquals(codexHomeReads, 0, "no ChatGPT-login probe without a refusal");
+  } finally {
+    resetCodexRoutingState();
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("Codex refused built-in default - a phase-less call is never adapted (Issue #4221)", async () => {
+  const home = await makeCodexHome(CHATGPT_AUTH);
+  const env = envFrom({ CODEX_HOME: home });
+  resetCodexRoutingState();
+  try {
+    assertEquals(codexBuiltInDefaultModel(undefined, env), undefined);
+    const codex = selectAgentProvider("codex", { env });
+    assertEquals(codex.alternativeModels?.(REFUSED, undefined, env), []);
+    assertEquals(
+      codex.adaptAfterModelRefusal?.(REFUSED, undefined, env),
+      false,
+    );
+    assertEquals(resolveCodexModel("health", env), REFUSED, "nothing marked");
+  } finally {
+    resetCodexRoutingState();
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("Codex refused built-in default - the ChatGPT-login check agrees with the billing probe (Issue #4221)", async () => {
+  const chatgptHome = await makeCodexHome(CHATGPT_AUTH);
+  const apiHome = await makeCodexHome(APIKEY_AUTH);
+  const absentHome = await Deno.makeTempDir({ prefix: "codex_absent_4221_" });
+  const cases: [string, EnvLookup, boolean][] = [
+    ["ChatGPT login", envFrom({ CODEX_HOME: chatgptHome }), true],
+    ["api-key auth.json", envFrom({ CODEX_HOME: apiHome }), false],
+    ["no auth.json", envFrom({ CODEX_HOME: absentHome }), false],
+    ["no CODEX_HOME", emptyEnv, false],
+  ];
+  try {
+    for (const [label, env, expected] of cases) {
+      const billing = selectAgentProvider("codex", { env }).billing;
+      const proof = billing.resolveStoredBilling?.({
+        workDir: absentHome,
+        env,
+      });
+      assertEquals(isCodexChatgptLogin(env), expected, label);
+      assertEquals(
+        proof?.reason === "codex-chatgpt-login",
+        expected,
+        `${label}: the billing probe agrees`,
+      );
+    }
+  } finally {
+    await Deno.remove(chatgptHome, { recursive: true });
+    await Deno.remove(apiHome, { recursive: true });
+    await Deno.remove(absentHome, { recursive: true });
+  }
+});
+
+Deno.test({
+  name:
+    "runClaudeWithRetry - an explicit request model is never dropped by the in-run retry (Issue #4221)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const home = await makeCodexHome(CHATGPT_AUTH);
+    resetCodexRoutingState();
+    try {
+      // The stub refuses only the call that names --model, so a model-less
+      // Codex retry would succeed: the test fails if one is made.
+      const { exitCode, calls, log } = await runSummariseOnCodex(
+        buildCodexStubBody(true),
+        envFrom({ CODEX_HOME: home }),
+        REFUSED,
+      );
+
+      assertEquals(exitCode, 0, `the fallback run must succeed: ${log}`);
+      assertEquals(calls.length, 2, `no model-less Codex retry: ${calls}`);
+      assertEquals(
+        modelFlag(argvOf(itemAt(calls, 0))),
+        REFUSED,
+        "the explicit model is sent",
+      );
+      assert(
+        argvOf(itemAt(calls, 1))[0] !== "exec",
+        `the second call is the switch, not a Codex retry: ${calls}`,
+      );
+      assert(
+        !log.some((line) => line.includes("[model-adaptation]")),
+        `no adaptation is logged: ${log}`,
+      );
+    } finally {
+      resetCodexRoutingState();
+      await Deno.remove(home, { recursive: true });
+    }
+  },
 });

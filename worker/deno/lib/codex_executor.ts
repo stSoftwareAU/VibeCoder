@@ -186,7 +186,7 @@ export function resolveCodexModel(
   // came from the designed default, the CLI's own model stands for the run.
   // An explicit pin always wins.
   if (
-    model && phase && _refusedCodexModels.size > 0 &&
+    model && _refusedCodexModels.size > 0 &&
     isCodexChatgptLogin(env) &&
     _refusedCodexModels.has(model.trim().toLowerCase()) &&
     codexBuiltInDefaultModel(phase, env) === model
@@ -211,7 +211,9 @@ const _refusedCodexModelsWarned = new Set<string>();
  * Whether Codex authenticates with a persisted ChatGPT login (Issue #4221).
  *
  * Mirrors the descriptor's `resolveStoredBilling`: only an explicit
- * `CODEX_HOME` is read, and no environment variable is consulted.
+ * `CODEX_HOME` is read, and no environment variable is consulted. That hook is
+ * the twin of this check and must agree with it (a `codex-chatgpt-login`
+ * reason is exactly the true answer here).
  *
  * @param env - Environment lookup; defaults to the process environment.
  * @returns True only when the explicit `CODEX_HOME` holds a ChatGPT login.
@@ -293,7 +295,6 @@ export function codexAlternativeModels(
   env?: EnvLookup,
 ): string[] {
   const id = model.trim().toLowerCase();
-  if (_refusedCodexModels.has(id)) return [];
   if (!isCodexChatgptLogin(env)) return [];
   const builtIn = codexBuiltInDefaultModel(phase, env);
   if (builtIn === undefined || builtIn.trim().toLowerCase() !== id) return [];

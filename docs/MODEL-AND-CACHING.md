@@ -1098,9 +1098,7 @@ both providers supply their own names, tables and override state to it:
    (model only; effort has no per-repo base, exactly as Claude's has none)
 4. **Global config phase overrides** — `codex_phase_model_overrides` /
    `codex_phase_effort_overrides` in `.config.json`
-5. **Phase-specific hardcoded defaults** — the tables above
-   On a ChatGPT login, a built-in default that the login refuses is skipped for
-   the rest of the run; see **Refused built-in defaults (ChatGPT login)** below.
+5. **Phase-specific hardcoded defaults** — the tables above; on a ChatGPT login a built-in default the login refuses is skipped for the rest of the run (see **Refused built-in defaults (ChatGPT login)** below)
 6. **Global environment variable** — `CODEX_MODEL` / `CODEX_EFFORT`
 
 An explicit `model`/`effort` on the invocation request still beats all six, and
@@ -1124,6 +1122,11 @@ refused for the rest of the run and omits `--model`, so the Codex CLI picks its
 own model. It warns **once** per refused id per run, naming the id, the phase
 and the re-pin knob (`codex_phase_model_overrides` or
 `provider_model_tiers.codex`).
+
+A ChatGPT login is detected only from an explicit `CODEX_HOME`: a login in the
+CLI's default `$HOME/.codex` is not detected, as for the billing probe. The
+in-run retry applies only when the model came from phase routing; an explicit
+request `model` is never dropped.
 
 Two triggers reach this path:
 
