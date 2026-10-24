@@ -33,8 +33,16 @@ import {
 } from "./branch_outcomes_gate.ts";
 import {
   applyBranchOutcomesFacts,
+  type BranchOutcomesFactsOutcome,
   resolveBranchOutcomesFacts,
 } from "./pr_summary_facts.ts";
+import {
+  type FactsFlipVerdict,
+  fillMissingFlipVerdicts,
+  flipVerifierFailedReason,
+  verifyFactsFlips,
+} from "./facts_flip_verifier.ts";
+import { defaultMutationRunnerSeams } from "./mutation_runner.ts";
 
 /** Outcome of one gate. A `not_checked` gate is not a pass. */
 export type GateStatus =
@@ -298,6 +306,8 @@ export async function runPrSummaryCheck(
   }
   reports.push(branchOutcomes);
 
+  reports.push(await factsFlipStage(facts, repoRoot));
+
   reports.push(
     input.issueNumber === null
       ? notChecked(
@@ -315,6 +325,82 @@ export async function runPrSummaryCheck(
   ));
 
   return { ok: true, value: reports };
+}
+
+/** Map flip verdicts onto the report. A refusal blocks; not_checked does not. */
+function factsFlipReport(verdicts: readonly FactsFlipVerdict[]): GateReport {
+  const refusals: string[] = [];
+  const unchecked: string[] = [];
+  for (const verdict of verdicts) {
+    if (verdict.verdict.kind === "refused") {
+      refusals.push(verdict.verdict.message);
+    } else if (verdict.verdict.kind === "not_checked") {
+      unchecked.push(verdict.verdict.reason);
+    }
+  }
+  if (refusals.length > 0) {
+    return {
+      gate: "Facts flip verifier",
+      issueRef: "#4190",
+      status: "blocked",
+      problems: refusals,
+      ...(unchecked.length > 0 ? { note: unchecked.join("; ") } : {}),
+    };
+  }
+  if (unchecked.length > 0) {
+    return notChecked(
+      "Facts flip verifier",
+      "#4190",
+      unchecked.join("; "),
+    );
+  }
+  return {
+    gate: "Facts flip verifier",
+    issueRef: "#4190",
+    status: "passed",
+    problems: [],
+  };
+}
+
+/**
+ * The facts flip stage (Issue #4190). Calls the shared verifier. A missing
+ * facts file does not apply; a facts file that cannot be read is not checked.
+ */
+async function factsFlipStage(
+  facts: BranchOutcomesFactsOutcome,
+  repoRoot: string,
+): Promise<GateReport> {
+  if (facts.kind === "absent") {
+    return {
+      gate: "Facts flip verifier",
+      issueRef: "#4190",
+      status: "not_applicable",
+      problems: [],
+      note: "no facts file",
+    };
+  }
+  if (facts.kind === "error") {
+    return notChecked("Facts flip verifier", "#4190", facts.reason);
+  }
+  try {
+    const verdicts = fillMissingFlipVerdicts(
+      facts.facts,
+      await verifyFactsFlips(facts.facts, {
+        ...defaultMutationRunnerSeams(),
+        repoPath: repoRoot,
+        budgetRaw: "",
+        warn: () => {},
+      }),
+      "the flip verifier returned no verdict for this entry",
+    );
+    return factsFlipReport(verdicts);
+  } catch (error) {
+    return factsFlipReport(fillMissingFlipVerdicts(
+      facts.facts,
+      [],
+      flipVerifierFailedReason(error),
+    ));
+  }
 }
 
 /** Whether any gate blocked. */
