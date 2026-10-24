@@ -16,24 +16,31 @@
  *  2. The merged-PR closers (`closeIssuesForMergedPrs`, the milestone
  *     auto-close, and `ensureIssueClosedIfPrMerged`, which the sweep and the
  *     recovery path use): a merged PR whose body marks a criterion `missing`
- *     leaves the issue open, labelled `needs-human`, with a comment naming
- *     the missing criteria; an all-`met` body still closes.
+ *     leaves the issue open with its existing labels and logs the missing
+ *     criteria; an all-`met` body still closes.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  buildMissingCriteriaHoldComment,
   findMissingCriteria,
   withholdIssueClose,
 } from "../lib/missing_criterion_close_guard.ts";
 import { assemblePrBody } from "../lib/pr_body_sync.ts";
 import { hasClosingKeyword } from "../lib/pr_body.ts";
-import { closeIssuesForMergedPrs } from "../lib/pr_issue_linking.ts";
+import {
+  closeIssuesForMergedPrs,
+  findExistingPrForIssue,
+} from "../lib/pr_issue_linking.ts";
+import { IssueCache } from "../lib/issue_cache.ts";
 import { ensureIssueClosedIfPrMerged } from "../lib/issue_lifecycle.ts";
 import type { MergeLanding } from "../lib/merge_landing.ts";
 import type { Logger } from "../types.ts";
+import { classifyExistingPrForIssue } from "../lib/superseding_pr.ts";
+import { workOnIssueMergedPrPrecheck } from "../lib/phases/merged_pr_precheck_phase.ts";
+import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 const ISSUE = 2301;
 
@@ -89,6 +96,139 @@ const milestoneLanded = () =>
     mergeCommit: "abc123",
     baseRefName: "milestone/2285-policy",
   });
+
+for (const cached of [false, true]) {
+  Deno.test(`incomplete merged PR does not suppress the remaining work (cache=${cached})`, async () => {
+    const dir = await Deno.makeTempDir({ prefix: "missing-criteria-lookup-" });
+    try {
+      const cache = cached ? new IssueCache(dir) : undefined;
+      let body = MISSING_SUMMARY;
+      const gh = (args: string[]): Promise<string> => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(JSON.stringify({ body, state: "MERGED" }));
+        }
+        const state = args[args.indexOf("--state") + 1];
+        return Promise.resolve(JSON.stringify(
+          state === "open" ? [] : [{
+            number: 2459,
+            title: `Policy doc (Issue #${ISSUE})`,
+            url: "https://github.com/owner/repo/pull/2459",
+            body,
+            mergedAt: "2026-10-03T21:00:00Z",
+            closedAt: new Date().toISOString(),
+            isCrossRepository: false,
+          }],
+        ));
+      };
+      const missing = await findExistingPrForIssue(
+        "owner/repo",
+        ISSUE,
+        gh,
+        undefined,
+        cache,
+      );
+      assertEquals(
+        missing.ok,
+        false,
+        "a partial merge leaves the original issue eligible",
+      );
+      const lookup = () =>
+        findExistingPrForIssue("owner/repo", ISSUE, gh, undefined, cache);
+      assertEquals(
+        await classifyExistingPrForIssue("owner/repo", ISSUE, {
+          findExistingPrForIssue: lookup,
+          runGhCommand: gh,
+        }),
+        { kind: "none" },
+      );
+      let precheckLookups = 0;
+      const precheck = await workOnIssueMergedPrPrecheck(
+        {
+          repo: "owner/repo",
+          issueNumber: ISSUE,
+          issueTitle: "Finish the missing CLI",
+          issueBody: "",
+          issueLabels: ["work-on"],
+          issueComments: "",
+          githubUser: "bot",
+          config: buildDefaultWorkerConfig(),
+        },
+        {
+          branchName: "",
+          baseBranch: "",
+          defaultBranch: "",
+          repoPath: dir,
+          clarityStatus: "not_assessed",
+          claudeOutput: "",
+          executeStartTime: 0,
+          baselineQualityPassed: true,
+          baselineQualityOutput: "",
+        },
+        createMockDeps({
+          pr: { findExistingPrForIssue: lookup },
+          github: {
+            runGhCommand: (args) => {
+              precheckLookups++;
+              return gh(args);
+            },
+          },
+        }),
+      );
+      assertEquals(precheck, { status: "continue" });
+      assertEquals(
+        precheckLookups,
+        0,
+        "an incomplete merge is not a close candidate",
+      );
+      body = MET_SUMMARY;
+      const met = await findExistingPrForIssue(
+        "owner/repo",
+        ISSUE,
+        gh,
+        undefined,
+        cache,
+      );
+      assert(met.ok);
+      assertEquals(met.value, "https://github.com/owner/repo/pull/2459");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}
+
+for (const cached of [false, true]) {
+  for (const state of ["open", "closed"]) {
+    Deno.test(`incomplete ${state} PR still blocks a duplicate attempt (cache=${cached})`, async () => {
+      const dir = await Deno.makeTempDir({ prefix: "incomplete-pr-state-" });
+      try {
+        const result = await findExistingPrForIssue(
+          "owner/repo",
+          ISSUE,
+          (args) =>
+            Promise.resolve(JSON.stringify(
+              args[args.indexOf("--state") + 1] === state
+                ? [{
+                  number: 2459,
+                  title: `Policy doc (Issue #${ISSUE})`,
+                  url: "https://github.com/owner/repo/pull/2459",
+                  body: MISSING_SUMMARY,
+                  mergedAt: null,
+                  closedAt: new Date().toISOString(),
+                  isCrossRepository: false,
+                }]
+                : [],
+            )),
+          undefined,
+          cached ? new IssueCache(dir) : undefined,
+        );
+        assert(result.ok);
+        assertEquals(result.value, "https://github.com/owner/repo/pull/2459");
+      } finally {
+        await Deno.remove(dir, { recursive: true });
+      }
+    });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -165,6 +305,7 @@ interface World {
   closed: string[];
   labelled: string[];
   comments: string[];
+  logs: string[];
   fn: (args: string[]) => Promise<string>;
 }
 
@@ -174,6 +315,7 @@ function world(prBody: string, issueLabels: string[] = []): World {
     closed: [],
     labelled: [],
     comments: [],
+    logs: [],
     fn: (args: string[]): Promise<string> => {
       if (args[0] === "pr" && args[1] === "list") {
         return Promise.resolve(JSON.stringify([{
@@ -225,20 +367,32 @@ async function runCloser(w: World): Promise<number> {
     w.fn,
     "planning",
     undefined,
-    { verifyMergeLandedFn: milestoneLanded, logger: makeLogger() },
+    {
+      verifyMergeLandedFn: milestoneLanded,
+      logger: makeLogger(w.logs),
+      logFn: (line) => w.logs.push(line),
+    },
   );
 }
 
-Deno.test("closeIssuesForMergedPrs - a milestone merge whose summary marks a criterion missing leaves the issue open for a human (Issue #3177)", async () => {
-  const w = world(MISSING_SUMMARY);
+Deno.test("closeIssuesForMergedPrs - a missing criterion leaves assigned work queued (Issue #3177)", async () => {
+  const w = world(MISSING_SUMMARY, ["work-on", "top-priority"]);
   const count = await runCloser(w);
   assertEquals(w.closed, []);
   assertEquals(count, 0);
-  assertEquals(w.labelled, ["needs-human"]);
-  assertEquals(w.comments.length, 1);
-  assertStringIncludes(w.comments[0]!, "#2459");
-  assertStringIncludes(w.comments[0]!, "policy-check");
-  assertStringIncludes(w.comments[0]!, "drift test");
+  assertEquals(w.labelled, []);
+  assertEquals(w.comments, []);
+  assertStringIncludes(w.logs.join("\n"), "#2459");
+  assertStringIncludes(w.logs.join("\n"), "policy-check");
+  assertStringIncludes(w.logs.join("\n"), "drift test");
+  await runCloser(w);
+  assertEquals(w.closed, []);
+  assertEquals(w.labelled, [], "a repeated sweep cannot park the issue again");
+  assertEquals(
+    w.comments,
+    [],
+    "a repeated sweep does not post duplicate hand-offs",
+  );
 });
 
 Deno.test("closeIssuesForMergedPrs - an issue already handed to a human is not commented on again (Issue #3177)", async () => {
@@ -247,6 +401,19 @@ Deno.test("closeIssuesForMergedPrs - an issue already handed to a human is not c
   assertEquals(w.closed, []);
   assertEquals(w.labelled, []);
   assertEquals(w.comments, []);
+});
+
+Deno.test("closeIssuesForMergedPrs - missing-value test prose does not hold a completed issue", async () => {
+  const w = world([
+    "## Acceptance criteria",
+    "",
+    "- **Each negative test fails for its reason**, asserted by the exact failure list:",
+    "  - a removed row fails;",
+    "  - a missing or unreadable data-effective-value fails.",
+  ].join("\n"));
+  assertEquals(await runCloser(w), 1);
+  assertEquals(w.closed, [String(ISSUE)]);
+  assertEquals(w.labelled, []);
 });
 
 Deno.test("closeIssuesForMergedPrs - an all-met milestone merge still closes the issue (Issue #3177)", async () => {
@@ -274,8 +441,9 @@ Deno.test("ensureIssueClosedIfPrMerged - a merged PR whose summary marks a crite
   assertEquals(result.value.closed, false);
   assertStringIncludes(result.value.reason, "missing");
   assertEquals(w.closed, []);
-  assertEquals(w.labelled, ["needs-human"]);
-  assertEquals(w.comments.length, 1);
+  assertEquals(w.labelled, []);
+  assertEquals(w.comments, []);
+  assertStringIncludes(result.value.reason, "policy-check");
 });
 
 Deno.test("ensureIssueClosedIfPrMerged - an all-met merged PR still closes the issue (Issue #3177)", async () => {
@@ -294,17 +462,4 @@ Deno.test("ensureIssueClosedIfPrMerged - an all-met merged PR still closes the i
   assert(result.ok);
   assertEquals(result.value.closed, true);
   assertEquals(w.closed, [String(ISSUE)]);
-});
-
-Deno.test("buildMissingCriteriaHoldComment names the PR, the branch and every missing criterion (Issue #3177)", () => {
-  const comment = buildMissingCriteriaHoldComment({
-    prNumber: 2459,
-    baseRefName: "milestone/2285-policy",
-    missing: ["- one", "- two"],
-  });
-  assertStringIncludes(comment, "PR #2459");
-  assertStringIncludes(comment, "`milestone/2285-policy`");
-  assertStringIncludes(comment, "one");
-  assertStringIncludes(comment, "two");
-  assertStringIncludes(comment, "needs-human");
 });

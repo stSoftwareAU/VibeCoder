@@ -21,6 +21,7 @@ import {
   workOnIssueSetupBranch,
 } from "../lib/issue_worker.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import { analyseIssueClarity } from "../commands/assess_clarity.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
@@ -869,6 +870,62 @@ Deno.test("clarityPhase - detailed issue bodies proceed normally", async () => {
   const result = await workOnIssueClarityPhase(ctx, state, deps);
 
   assertEquals(result.status, "continue");
+});
+
+const REPORT_REQUIREMENTS = `1. Store a reporting start date per account.
+2. Exclude earlier transactions from account totals.
+3. Clip each reporting period to the account start date.
+4. Show the actual date range beside each total.
+5. Hide comparisons without a complete prior period.
+6. Test accounts with different start dates and clipped periods.`;
+
+Deno.test("clarityPhase - six clear requirements without code paths keep their labels (Issue #4147)", async () => {
+  const ctx = makeContext({
+    issueTitle: "Account reports start at the account reporting date",
+    issueBody: REPORT_REQUIREMENTS,
+    issueLabels: ["enhancement", "work-on", "top-priority"],
+    issueCommentRows: [],
+  });
+  assertEquals(
+    analyseIssueClarity(ctx.issueTitle, ctx.issueBody, ctx.issueLabels).reason,
+    "too_complex",
+  );
+  const state = makeState();
+  const calls = makeStubGhCalls();
+  const deps = createMockDeps({
+    github: { createClient: () => makeStubGhClient(calls) },
+  });
+
+  const result = await workOnIssueClarityPhase(ctx, state, deps);
+
+  assertEquals(result.status, "continue");
+  assertEquals(state.clarityStatus, "assessed_clear");
+  assertEquals(calls, makeStubGhCalls());
+});
+
+Deno.test("clarityPhase - vague instructions still require clarification with six requirements (Issue #4147)", async () => {
+  const ctx = makeContext({
+    issueTitle: "Improve things",
+    issueBody: `Make it better.\n\n${REPORT_REQUIREMENTS}`,
+    issueLabels: ["work-on", "top-priority"],
+    issueCommentRows: [],
+  });
+  assertEquals(
+    analyseIssueClarity(ctx.issueTitle, ctx.issueBody, ctx.issueLabels).reason,
+    "vague",
+  );
+  const state = makeState();
+  const calls = makeStubGhCalls();
+  const deps = createMockDeps({
+    github: { createClient: () => makeStubGhClient(calls) },
+  });
+
+  const result = await workOnIssueClarityPhase(ctx, state, deps);
+
+  assertEquals(result.status, "early_exit");
+  assertEquals(calls.postComment.length, 1);
+  assertEquals(calls.addLabel.map((call) => call.label), ["needs-human"]);
+  assertEquals(calls.unassignIssue.length, 1);
 });
 
 Deno.test("clarityPhase - removes stale planning label from issue (Issue #1215)", async () => {

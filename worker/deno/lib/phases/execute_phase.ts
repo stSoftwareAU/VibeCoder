@@ -42,7 +42,10 @@ import type { WorkerDeps } from "../issue_worker_wiring.ts";
 import { getPromptsCommit } from "../prompt_manager.ts";
 import { promptOverrideMappings } from "../custom_label_prompts_config.ts";
 import { LABEL_DEFAULTS } from "../config_defaults.ts";
-import { detectScreenshotRequired } from "../execute_claude_phase.ts";
+import {
+  detectScreenshotRequired,
+  emptyRunFailureReason,
+} from "../execute_claude_phase.ts";
 import {
   describeGraftContext,
   graftContextFacts,
@@ -1971,7 +1974,7 @@ async function executeClaudeBody(
     // just broke, and the stream's next issue would resume straight into it.
     await handOnStreamSession({
       workDir: config.workDir,
-      joined: claudeResult.value.exitCode === 0
+      joined: !emptyRunFailureReason(claudeResult.value)
         ? state.streamSession
         : undefined,
       state: state.sessionResumeState,
@@ -2087,17 +2090,15 @@ async function executeClaudeBody(
       return { status: "continue" };
     }
 
-    // Issue #4116: an agent that exited non-zero and changed nothing crashed
-    // (most often "Autocompact is thrashing"); it did not conclude there was
-    // nothing to do. As `no_changes` it reached the analysis-only hand-off and
-    // a human — 12 of 13 `needs-human` issues on GRQ-AutoTrader on
-    // 2026-10-23. #4148 fixed this in `execute_claude_phase.ts`, which this
-    // pipeline does not use. `interrupted` is retried, never escalated.
-    if (claudeResult.value.exitCode !== 0) {
+    // A failed or unfinished agent with no recoverable work is interrupted,
+    // even when its process exits zero. Both execution entry points share
+    // this completion check (Issues #4116, #4147).
+    const emptyFailure = emptyRunFailureReason(claudeResult.value);
+    if (emptyFailure) {
       logger.warn(
-        "Agent exited non-zero without changing anything — a failed run, " +
+        "Agent did not complete and changed nothing — a failed run, " +
           "retried, not analysis-only (Issue #4116)",
-        { exitCode: claudeResult.value.exitCode },
+        { exitCode: claudeResult.value.exitCode, reason: emptyFailure },
       );
       // The session that failed is not resumed by the retry.
       if (state.sessionResumeState) {
@@ -2107,7 +2108,7 @@ async function executeClaudeBody(
         category: "interrupted",
         status: "failure",
         reason: formatDetailedFailureMessage(
-          `Run interrupted before completing — the agent exited ${claudeResult.value.exitCode} without making any change`,
+          `Run interrupted before completing — the agent ${emptyFailure} without making any change`,
           {
             elapsedSeconds: Math.round(
               (Date.now() - state.executeStartTime) / 1000,
