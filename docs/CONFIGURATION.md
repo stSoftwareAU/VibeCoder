@@ -2660,6 +2660,17 @@ The finish and the hard kill are logged and published through
 `lib/run_timeline.ts`, but no claim or agent deadline reads them yet: the cycle
 deadline and the run hard cap above still govern.
 
+The one-hour target is a start gate (Issue #4243). Once it has passed, the
+Priority ladder starts no new handler: the handler it reached, and every one
+after it, defers to the next cycle, and the cycle logs one
+`stop reason=deadline — <handler> and any after it defer to the next cycle.`
+line. That covers milestone branch sync and the merge-conflict pass, which are
+ladder handlers. A handler already running is not interrupted; it keeps its own
+budget. The Priority 2 slot pool and the maintenance lane also refuse a new
+claim or pass past the target. Two starts are not yet covered: the serial
+scan's first claim, when a ladder handler carries the run past the target, and
+the idle-task filer that runs once a cycle's scan finds nothing.
+
 #### The agent is told to wind down before the cap (Issue #508)
 
 An agent cannot be interrupted mid-session — its stdin carries the prompt and

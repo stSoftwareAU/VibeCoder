@@ -115,6 +115,7 @@ import {
   DEFAULT_RUN_FINISH_SECONDS,
   DEFAULT_RUN_TARGET_SECONDS,
   describeRunTimeline,
+  pastRunTarget,
   resolveRunTimeline,
   setRunTimeline,
 } from "./run_timeline.ts";
@@ -2748,8 +2749,8 @@ async function deferClaimForAdaptiveFloor(
  * `shouldExitOnFailures()` at 10 consecutive failures.
  *
  * Two guards close that: the `endTime` deadline is re-checked before every
- * *continuation* (matching the outer loop's own `while (now < endTime)`
- * semantics — the first pass is already in time by construction), and a run of
+ * pass, the first included (Issue #4243: the Priority ladder may cross the
+ * target after the outer loop's own `while (now < endTime)` check), and a run of
  * consecutive failures backs off for `sleepInterval` before the next claim. An
  * isolated failure still continues immediately, so normal scan throughput is
  * unchanged.
@@ -2846,11 +2847,13 @@ async function runIssueScanLoop(
 
   while (true) {
     // Deadline gate (Issues #3648/#397): never claim another billed issue run
-    // once the cycle's planned shutdown time has passed. Skipped on the first
-    // pass, which the outer loop has already gated on the same deadline. It
-    // stops *new claims* only — a claim already taken keeps its full budget
-    // (Issue #420).
-    const pastDeadline = iteration > 0 && deps.now() >= endTime;
+    // once the cycle's planned shutdown time has passed. It applies on EVERY
+    // pass, the first included (Issue #4243): the outer loop checks the
+    // deadline before the Priority ladder, and the ladder runs between that
+    // check and this scan and may cross the target, so the first pass is no
+    // longer in time by construction. It stops *new claims* only — a claim
+    // already taken keeps its full budget (Issue #420).
+    const pastDeadline = deps.now() >= endTime;
     // Minimum-runway floor (Issues #4304/#425): a claim the supervisor hard
     // cap will kill before it can finish setup is doomed on arrival, so it is
     // not taken. Measured against the hard cap, not the cycle deadline —
@@ -4280,7 +4283,12 @@ async function runSlot(
         // together must not become N. The first observer of an idle episode
         // wins; `tryConsume` sets the flag synchronously, before the first
         // `await` below, so two slots cannot both win it.
-        if (pool.idleHooks && pool.idleHooks.filerLatch.tryConsume(slotId)) {
+        if (pool.idleHooks && refuseIdleFilerPastTarget(deps.now(), log)) {
+          // Issue #4243: refused past the target. No permit is spent and no
+          // hook runs; the refusal line above is the only record.
+        } else if (
+          pool.idleHooks && pool.idleHooks.filerLatch.tryConsume(slotId)
+        ) {
           // Issue #898, extended by Issue #925: the repos this pass was
           // never shown. `excludedRepos` was read before the scan, and a
           // sibling can acquire a repository between that read and this
@@ -5258,6 +5266,30 @@ function runPostScanAutoMerge(
       );
     }
   });
+}
+
+/**
+ * Refuse the idle-task filer once the run's target has passed (Issue #4243).
+ *
+ * Filing is a start, so nothing new begins after the target. The refusal is
+ * decided before the filer latch is consumed, so a refused observation spends
+ * no permit, and before the hooks run, so it makes no transcript, audit or
+ * census call. Logs one line for each refused observation.
+ *
+ * @param now - Current epoch-ms (the caller's injected clock).
+ * @param log - The observer's log sink.
+ * @returns True when the filer is refused for the target.
+ */
+function refuseIdleFilerPastTarget(
+  now: number,
+  log: (message: string) => void,
+): boolean {
+  if (!pastRunTarget(now)) return false;
+  log(
+    "[idle-hooks] skipping=idle-task-filer reason=past_run_target — the run " +
+      "target has passed; no idle task is raised (Issue #4243)",
+  );
+  return true;
 }
 
 /**
@@ -6854,6 +6886,17 @@ export async function runCoreLoop(
               continue;
             }
 
+            // Issue #4243: nothing new starts once the run's one-hour target
+            // has passed. Work already dispatched is not interrupted; this
+            // handler and every one after it defer to the next cycle.
+            if (timeline.pastTarget(deps.now())) {
+              deps.log(
+                `stop reason=deadline — ${handler.name} and any after it ` +
+                  `defer to the next cycle.`,
+              );
+              break;
+            }
+
             // Issue #2427: persist the cursor as we enter each priority so a
             // mid-cycle rate-limit pause records the priority in flight.
             await saveCursor(handler.priority);
@@ -7053,7 +7096,17 @@ export async function runCoreLoop(
           // shared latch bounds the two paths together by the fleet's idle
           // capacity for one episode (Issue #1083).
           if (!tracker.foundClaimableIssue) {
-            if (idleHookState.filerLatch.tryConsume(IDLE_CYCLE_OBSERVER_ID)) {
+            if (
+              refuseIdleFilerPastTarget(
+                deps.now(),
+                (message) => deps.log(message),
+              )
+            ) {
+              // Issue #4243: refused past the target. No permit is spent and
+              // no hook runs; the refusal line above is the only record.
+            } else if (
+              idleHookState.filerLatch.tryConsume(IDLE_CYCLE_OBSERVER_ID)
+            ) {
               const hookOutcome = await runIdleWorkHooks(deps, idleHookState, {
                 log: (message) => deps.log(message),
                 // The fleet-wide question, asked once every slot has

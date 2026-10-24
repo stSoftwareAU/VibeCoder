@@ -14,6 +14,7 @@ import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { directMergePr } from "./direct_merge.ts";
 import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { isMilestoneFixBranch } from "./milestone_branch_names.ts";
+import { pastRunTarget } from "./run_timeline.ts";
 import {
   milestoneFixMergeCommitRefusal,
   milestoneFixMergeMethod,
@@ -205,6 +206,11 @@ export interface EnableAutoMergeOptions {
   /** Logging function for the open-children gate. Defaults to `console.warn`. */
   log?: (message: string) => void;
   /**
+   * Clock seam (epoch milliseconds) for the run-target start-gate on the
+   * in-cycle milestone sync (Issue #4243). Defaults to `Date.now`; tests inject.
+   */
+  now?: () => number;
+  /**
    * Whether the PR's base branch enforces required checks (Issue #4375).
    * Defaults to a rules lookup (`repos/{repo}/rules/branches/{base}`);
    * injectable for tests. `null` = unknown, treated as unprotected (the
@@ -233,7 +239,9 @@ export interface EnableAutoMergeOptions {
    * When the milestone base is behind the default branch, attempt one
    * in-cycle sync and re-ask the gate if it lands (Issue #2005). Absent — or
    * when the sync conflicts — the child is armed anyway (Issue #2460); only
-   * the sync-reason comment is skipped when no hook was supplied.
+   * the sync-reason comment is skipped when no hook was supplied. Once the
+   * run target has passed the hook is not called at all (Issue #4243): the
+   * attempt is deferred, and the periodic sync clears "behind" next cycle.
    */
   syncBehindMilestone?: (info: {
     milestoneBranch: string;
@@ -858,17 +866,32 @@ export async function enableAutoMerge(
       detail: string;
       unmeasured?: string;
     };
-    try {
-      sync = await options.syncBehindMilestone({
-        milestoneBranch: routeGate.milestoneBranch,
-        behindBy: routeGate.behindBy,
-      });
-    } catch (err) {
-      const thrown = err instanceof Error ? err.message : String(err);
+    // Issue #4243: no new sync attempt starts once the run target has passed.
+    // The hook is not called; the attempt is deferred as a non-landing sync,
+    // so the arming path below runs unchanged and the PR is still armed.
+    if (pastRunTarget((options.now ?? (() => Date.now()))())) {
       log(
-        `WARNING: in-cycle milestone sync threw for ${repo}#${prNumber}: ${thrown}`,
+        `In-cycle milestone sync deferred for ${repo}#${prNumber}: the run ` +
+          `target has passed; no new sync attempt starts, the periodic sync ` +
+          `clears "behind" next cycle (Issue #4243)`,
       );
-      sync = { status: "deferred", detail: thrown };
+      sync = {
+        status: "deferred",
+        detail: "the run target has passed; deferred to the next cycle",
+      };
+    } else {
+      try {
+        sync = await options.syncBehindMilestone({
+          milestoneBranch: routeGate.milestoneBranch,
+          behindBy: routeGate.behindBy,
+        });
+      } catch (err) {
+        const thrown = err instanceof Error ? err.message : String(err);
+        log(
+          `WARNING: in-cycle milestone sync threw for ${repo}#${prNumber}: ${thrown}`,
+        );
+        sync = { status: "deferred", detail: thrown };
+      }
     }
     if (sync.status === "level" || sync.status === "synced") {
       invalidateMilestoneBehindMemoForBranch(

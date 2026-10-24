@@ -206,6 +206,18 @@ export function getRunTimeline(): RunTimeline | undefined {
   return current;
 }
 
+/**
+ * Whether the run's target mark has passed. Start-gates ("nothing new starts
+ * after the target", Issue #4243) call this with their own clock reading.
+ *
+ * @param now - Current epoch-ms (the caller's injected clock).
+ * @returns True once the process-wide timeline's target has been reached;
+ *   false when no timeline is set (nothing refuses).
+ */
+export function pastRunTarget(now: number): boolean {
+  return current?.pastTarget(now) ?? false;
+}
+
 /** Forget the process-wide timeline. For tests only. */
 export function resetRunTimelineForTests(): void {
   current = undefined;

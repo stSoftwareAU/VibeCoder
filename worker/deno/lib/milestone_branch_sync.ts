@@ -74,6 +74,7 @@ import {
   hasConflictEscalationComment,
 } from "./milestone_conflict_dedup.ts";
 import { concludeGateRefusal } from "./milestone_gate_wedge.ts";
+import { pastRunTarget } from "./run_timeline.ts";
 import {
   DEFAULT_CONFLICT_ATTEMPT_OVERHEAD_MS,
   DEFAULT_MIN_MS_PER_CONFLICT_ATTEMPT,
@@ -1553,9 +1554,25 @@ export async function syncMilestoneBranches(
   }
   const minMsPerMilestone = deps.minMsPerMilestoneSync ??
     MIN_MS_PER_MILESTONE_SYNC;
-  let stoppedAt: { repo: string; milestoneBranch: string } | undefined;
+  // Issue #2215: set when the pass stops early, so the cursor resumes there.
+  // Issue #4243: a run-target stop uses the same mechanism. It carries no
+  // branch when it fires before the repository's milestones are read.
+  let stoppedAt: { repo: string; milestoneBranch?: string } | undefined;
 
   for (const repo of orderedRepos) {
+    // Issue #4243: nothing new starts once the run target has passed. This
+    // gate sits before the clone check and the lease, so a refused repository
+    // spends no clone, lease or API call. It runs only between repositories
+    // and milestones, so a sync already under way is never interrupted.
+    if (pastRunTarget(now())) {
+      stoppedAt = { repo };
+      log(
+        `Milestone sync stopped before the milestones of ${repo}: the run ` +
+          `target has passed; no new sync attempt starts — resuming here ` +
+          `next cycle (Issue #4243)`,
+      );
+      break;
+    }
     // Issue #2030: the lane runs beside the issue pool, so the clone is
     // leased for the whole repository pass and given back whatever happens.
     let lease: RepoLease | null | undefined;
@@ -1641,6 +1658,18 @@ export async function syncMilestoneBranches(
       );
 
       for (const { milestone, behindBy } of orderedMilestones) {
+        // Issue #4243: the start-gate for each milestone. It runs before the
+        // branch probe, so a refused milestone spends no API call. It sits
+        // between milestones only, so the sync that ran last was never cut.
+        if (pastRunTarget(now())) {
+          stoppedAt = { repo, milestoneBranch: milestone.milestoneBranch };
+          log(
+            `Milestone sync stopped before '${milestone.milestoneBranch}' in ` +
+              `${repo}: the run target has passed; no new sync attempt ` +
+              `starts — resuming here next cycle (Issue #4243)`,
+          );
+          break;
+        }
         const streakKey = syncStreakKey(repo, milestone.milestoneBranch);
 
         // Verify the milestone branch exists on the remote. An EMPTY
