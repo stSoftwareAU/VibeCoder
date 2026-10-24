@@ -130,8 +130,10 @@ flowchart TD
 
 `agent_provider_mode: "auto"` is the quota-aware path from #1926. Before each
 work item it ranks enabled Claude OAuth and Codex ChatGPT subscriptions using
-all known windows, reset timing, status freshness and the configured provider
-preference. API-key accounts, unknown billing and providers without a
+the lowest remaining percentage across each provider's current known windows.
+The provider with more remaining capacity wins in either direction. Status
+freshness still controls eligibility; reset timing and configured provider
+preference break equal-capacity ties. API-key accounts, unknown billing and providers without a
 fixed-subscription status adapter are excluded. A real quota or authentication
 failure makes that provider unavailable to subsequent work; quota failures are
 rechecked at the stated reset, or after a five-minute cooldown when no reset was
@@ -147,8 +149,21 @@ override continues to take precedence in either mode.
 Provision Codex's persistent subscription home using
 [Codex subscription authentication](CODEX-SUBSCRIPTION-AUTH.md). The router
 reads the same explicit `CODEX_HOME` that the child receives and ignores parent
-API keys that the child withholds. Rollout quota retains its original evidence
-time, so rereading an old session cannot make its budget fresh.
+API keys that the child withholds. It first attempts a bounded, read-only
+`codex app-server` `account/rateLimits/read` request, with no thread or model
+turn. Successful quota observations are cached for five minutes per subscription
+home. If the probe fails, rollout quota retains its original evidence time, so
+rereading an old session cannot make its budget fresh.
+
+When automatic routing selects Codex for an issue, both worker entry paths use
+the external orchestrator even without a separate `external_orchestration`
+opt-in. This preserves the manager/executor/reviewer workflow without passing
+Claude's native `--agents` definitions to Codex. Unpinned roles use Codex's
+manager (`gpt-6.1-sol`), executor (`gpt-6-luna`) and reviewer (`gpt-6-astra`)
+defaults. Explicit role provider/model settings remain pins; existing model-only
+settings retain their Claude interpretation. An explicit per-repo provider pin
+still determines that repository's provider. Allocation experiment assignments
+remain authoritative when configured.
 
 The shared `phase_model_tiers` policy and `provider_model_tiers` catalogue keep
 labels independent of model vendors; see

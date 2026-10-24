@@ -1,8 +1,9 @@
 # Codex Budget Sources — What Was Verified, and What the Worker Uses
 
-> Issue #1697, parent #1694. Verified against **`openai/codex` at tag
-> `rust-v0.147.0`** — the exact release `container/providers/codex.sh` downloads
-> and checksums against the `codex` pin in `container/tools.json`.
+> Issues #1697 and #1926. The rollout parser was originally verified against
+> `openai/codex` at `rust-v0.147.0`. The image now pins **0.163.0** in
+> `container/tools.json`; automatic routing also uses the documented App Server
+> account quota protocol.
 
 Claude's remaining budget comes from `anthropic-ratelimit-*` headers on a
 `POST /v1/messages` probe (`worker/deno/lib/claude_token_budget.ts`). **None of
@@ -15,8 +16,8 @@ reads.
 
 The Codex CLI is not installed in the worker's own container — a default image
 is Claude-only, and `AGENT_PROVIDERS="claude,codex"` is what puts both CLIs in
-one image — so this is a **source reading of the pinned release**, not captured
-live output. Every claim below cites the file it came from, so a version bump
+one image — so the original rollout verification was a **source reading of
+0.147.0**, not captured live output. Source claims cite their files, so a version bump
 can re-check it in minutes. The opt-in `codex-budget` diagnostic is the live
 half: run it against a real `CODEX_HOME` and it prints what that credential's
 telemetry really contains.
@@ -29,10 +30,10 @@ flowchart TD
         R["$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl<br/>token_count → rate_limits"]
         E["turn.failed / error message<br/>explicit exhaustion"]
         A["auth.json shape<br/>subscription vs API key"]
+        S["codex app-server<br/>account/rateLimits/read"]
     end
     subgraph rejected["Rejected"]
         J["codex exec --json stream<br/>carries no rate limits at all"]
-        S["codex app-server<br/>account/getRateLimits (experimental)"]
         P["a synthetic prompt<br/>spends quota to measure quota"]
         C["Claude's OAuth endpoint / headers<br/>different vendor"]
     end
@@ -40,6 +41,7 @@ flowchart TD
     E --> B
     A --> B
     B --> Q["known % · explicit exhaustion · reason code"]
+    S --> Q
 ```
 
 ### 1. Rollout session files — the budget source
@@ -116,6 +118,25 @@ returned or logged.
 | Retry-after                | ❌        | `CodexErr` carries a `retry_delay: Option<Duration>` (`codex-rs/protocol/src/error.rs`) but it is consumed by the CLI's **own** retry loop and is never serialised: `ThreadErrorEvent` — the only error shape `--json` emits — is `{ message: String }` and nothing else. There is no retry-after for a caller to read |
 | Account / credential scope | ✅        | `limit_id` names the server-side limit family (`codex`, `codex_secondary`, …), `limit_name` the specific limit when one is named, `plan_type` the ChatGPT plan. The _account_ is scoped by `CODEX_HOME`: one `CodexBudgetAdapter` per `CODEX_HOME`, and two credentials never share a cache                            |
 
+## Live quota for automatic selection
+
+Automatic routing reads `account/rateLimits/read` after the App Server
+`initialize` / `initialized` handshake. This is an account request with no model
+turn; see the [official App Server account API](https://learn.chatgpt.com/docs/app-server).
+It prefers the `codex` entry in `rateLimitsByLimitId`, or the single `rateLimits`
+response when no map was returned. Another model's bucket cannot substitute for
+Codex's subscription. The shared parser accepts the API's `usedPercent`,
+`windowDurationMins` and `resetsAt` fields as well as rollout snake_case fields.
+
+The child receives the selected ChatGPT `CODEX_HOME` with API keys, other vendor
+credentials and GitHub tokens withheld. The probe has a ten-second deadline,
+a 512,000-byte response limit and cleans up its own child on every outcome.
+Malformed responses, RPC errors and timeouts remain unknown and expose no raw
+account error text. A failed live probe falls back to the passive observation
+with its original timestamp. A successful observation is cached for five minutes
+per home. The protocol is covered with a simulated peer; live renewal and model
+availability checks remain the separate operator validation in Issue #4166.
+
 ## What was rejected, and why
 
 - **`codex exec --json` itself.** Under `--json` the exec front end emits
@@ -126,13 +147,6 @@ returned or logged.
   `--json` does not print. Parsing the worker's existing Codex stdout for quota
   would find nothing, for ever. This is the single most important negative
   finding here.
-- **`codex app-server`'s `account/getRateLimits`.** It exists
-  (`codex-rs/app-server-protocol/src/protocol/v2/account.rs`) and would give a
-  free reading, but the whole `AppServer` subcommand is marked `[experimental]`
-  in `codex-rs/cli/src/main.rs` and the request is tagged `ExperimentalApi`.
-  Wiring an unattended fleet to an experimental JSON-RPC daemon is a larger
-  commitment than this read-only adapter; it is the recorded upgrade path, not
-  the current source.
 - **A synthetic prompt to read the quota off the response.** Codex has no
   `max_tokens: 0` equivalent that returns rate-limit headers, so a probe would
   have to run a real turn — spending quota to estimate quota. Forbidden.

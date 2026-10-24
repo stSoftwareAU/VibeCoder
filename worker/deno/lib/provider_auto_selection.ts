@@ -12,12 +12,10 @@
  * unknown billing modes can never win, so a missing subscription probe cannot
  * accidentally turn into API spend.
  *
- * Selection is not "largest remaining percentage wins". For every fresh,
- * known window we calculate remaining percentage per hour until reset, then
- * use the most constrained (lowest) rate as the provider's score. This favours
- * capacity that will replenish soon while preserving a healthier long-lived
- * allowance elsewhere. Configured provider order is the final deterministic
- * tie-breaker.
+ * Selection prefers the largest remaining percentage in each provider's most
+ * constrained window. Reset time breaks equal-capacity ties; it cannot make
+ * a nearly spent subscription outrank one with more capacity. Configured
+ * provider order is the final deterministic tie-breaker.
  *
  * Unknown quota is not exhaustion. A provider whose fixed-price status is
  * known but whose quota is unknown remains a last-resort candidate after every
@@ -105,29 +103,28 @@ function futureResets(
 }
 
 /**
- * Score a fresh known status by its most constrained remaining/hour window.
+ * Score a fresh known status by its most constrained remaining percentage.
  *
- * A missing reset cannot produce a defensible rate and is ignored. If every
- * window lacks a usable reset the status falls into the unknown-quota band;
- * no reset time is invented.
+ * An expired window no longer describes current capacity. A missing reset
+ * does not invalidate a measured percentage; no reset time is invented.
  */
-function constrainedRatePerHour(
+function constrainedRemainingPercent(
   status: ProviderSubscriptionStatus,
   now: number,
 ): number | null {
-  const rates: number[] = [];
+  const remainingPercentages: number[] = [];
   for (const window of status.windows) {
     const remaining = window.remainingPercent;
     const reset = window.resetsAt;
     if (
       remaining === undefined || !Number.isFinite(remaining) ||
-      reset === undefined || !Number.isFinite(reset) || reset <= now
+      (reset !== undefined && Number.isFinite(reset) && reset <= now)
     ) continue;
-    const hours = (reset - now) / 3_600_000;
-    if (hours <= 0) continue;
-    rates.push(Math.max(0, remaining) / hours);
+    remainingPercentages.push(Math.min(100, Math.max(0, remaining)));
   }
-  return rates.length === 0 ? null : Math.min(...rates);
+  return remainingPercentages.length === 0
+    ? null
+    : Math.min(...remainingPercentages);
 }
 
 function candidateView(
@@ -206,7 +203,7 @@ function candidateView(
   }
 
   const score = status.availability === "available"
-    ? constrainedRatePerHour(status, options.now)
+    ? constrainedRemainingPercent(status, options.now)
     : null;
   return {
     provider: status.provider,
@@ -245,9 +242,7 @@ function compareCandidates(
   const rightBand = bandRank(right.band);
   if (leftBand !== rightBand) return leftBand - rightBand;
 
-  // Higher remaining-per-hour is preferable: it represents capacity that can
-  // be spent before it replenishes, while leaving longer-lived allowance on
-  // another provider intact.
+  // Prefer the subscription with more remaining capacity.
   if (left.score !== null || right.score !== null) {
     const l = left.score ?? Number.NEGATIVE_INFINITY;
     const r = right.score ?? Number.NEGATIVE_INFINITY;
@@ -322,7 +317,7 @@ export function formatAutomaticProviderSelection(
     const state = candidate.excluded ?? candidate.band ?? "unknown";
     const score = candidate.score === null
       ? ""
-      : ` score=${candidate.score.toFixed(3)}%/h`;
+      : ` remaining=${candidate.score.toFixed(3)}%`;
     return `${candidate.provider}/${candidate.credentialLabel}:${state}${score}`;
   }).join(", ");
   const winner = selection.winner === null

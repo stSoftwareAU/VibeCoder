@@ -172,8 +172,8 @@ Deno.test("auto mode selects quota winner and updates only default routing", asy
       env: CONFIGURED_ENV,
       resolveStatus: (provider) =>
         provider === "claude"
-          ? available("claude", 80, 160)
-          : available("codex", 35, 2),
+          ? available("claude", 35, 2)
+          : available("codex", 80, 160),
       log: (line) => logs.push(line),
     });
 
@@ -444,6 +444,7 @@ Deno.test("auto Codex status uses the child's subscription home despite ambient 
       workDir: "/unused-work",
       now: Date.now(),
       env: statedEnv({ CODEX_HOME: home, OPENAI_API_KEY: "must-not-bill" }),
+      probeCodex: async () => ({ known: false, reason: "read-error" }),
     });
     assertEquals(status.billingMode, "fixed-subscription");
     assertEquals(status.availability, "unknown");
@@ -454,6 +455,70 @@ Deno.test("auto Codex status uses the child's subscription home despite ambient 
     });
     assertEquals(absent.billingMode, "metered");
     assertEquals(absent.availability, "unavailable");
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("auto Codex status refreshes quota without a previous model run", async () => {
+  const home = await Deno.makeTempDir({ prefix: "codex-live-status-" });
+  try {
+    await Deno.writeTextFile(
+      `${home}/auth.json`,
+      JSON.stringify({ auth_mode: "chatgpt", tokens: {} }),
+    );
+    let probes = 0;
+    const context = {
+      workDir: "/unused",
+      now: Date.now(),
+      env: statedEnv({ CODEX_HOME: home }),
+      probeCodex: async ({ codexHome }: { codexHome: string }) => {
+        probes++;
+        assertEquals(codexHome, home);
+        return {
+          known: true as const,
+          remainingFraction: 0.8,
+          windows: [{
+            window: "primary" as const,
+            usedPercent: 20,
+            remainingFraction: 0.8,
+          }],
+        };
+      },
+    };
+    const status = await resolveAutomaticProviderStatus("codex", context);
+    assertEquals(status.availability, "available");
+    assertEquals(status.confidence, "authoritative");
+    assertEquals(status.windows[0]?.remainingPercent, 80);
+    await resolveAutomaticProviderStatus("codex", context);
+    assertEquals(probes, 1, "the fresh live observation is cached");
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("auto Codex status never probes an API-key account", async () => {
+  const home = await Deno.makeTempDir({ prefix: "codex-api-status-" });
+  try {
+    await Deno.writeTextFile(
+      `${home}/auth.json`,
+      JSON.stringify({
+        auth_mode: "apikey",
+        OPENAI_API_KEY: "not-a-subscription",
+      }),
+    );
+    let probes = 0;
+    const status = await resolveAutomaticProviderStatus("codex", {
+      workDir: "/unused",
+      now: Date.now(),
+      env: statedEnv({ CODEX_HOME: home }),
+      probeCodex: async () => {
+        probes++;
+        return { known: false, reason: "read-error" };
+      },
+    });
+    assertEquals(status.billingMode, "metered");
+    assertEquals(probes, 0);
   } finally {
     await Deno.remove(home, { recursive: true });
   }

@@ -6,15 +6,14 @@
  * `POST /v1/messages` probe (`claude_token_budget.ts`). **None of that
  * transfers.** Codex is a different vendor with a different credential, a
  * different header family and a different quota model, so this module states
- * what was actually confirmed against the CLI this image pins — Codex
- * `0.147.0`, `container/tools.json` — and parses only those shapes.
+ * what was originally confirmed against Codex `0.147.0`, plus the App Server
+ * account protocol used by the current `0.163.0` image pin.
  *
  * ## What was verified, and how
  *
  * The Codex CLI is not installed in the worker's own container (a default
  * image is Claude-only), so the verification is a **source reading of the
- * pinned release** — `openai/codex` at tag `rust-v0.147.0`, the exact tag
- * `container/providers/codex.sh` downloads and checksums — rather than
+ * historical release** — `openai/codex` at tag `rust-v0.147.0` — rather than
  * captured live output. Every claim below cites the file it came from, so a
  * version bump can re-check it. `docs/CODEX-BUDGET-SOURCES.md` is the long
  * form.
@@ -58,6 +57,10 @@
  *   and is never serialised: `ThreadErrorEvent`, the only error shape `--json`
  *   emits, is `{ message: String }` and nothing else.
  *
+ * Automatic routing also uses the documented `account/rateLimits/read`
+ * App Server request through `codex_quota.ts`. Its camelCase windows share
+ * this parser with the historical rollout shape; it starts no model turn.
+ *
  * ## What was rejected, and why
  *
  * - **Claude's OAuth usage endpoint and `anthropic-ratelimit-*` headers.**
@@ -67,13 +70,6 @@
  * - **A synthetic prompt to read the quota off the response.** Codex has no
  *   `max_tokens: 0` equivalent that returns headers, so a probe would have to
  *   run a real turn: spending quota to measure quota. Forbidden outright.
- * - **`codex app-server`'s `account/getRateLimits`.** It exists
- *   (`codex-rs/app-server-protocol/src/protocol/v2/account.rs`) and would give
- *   a free reading, but the whole `AppServer` subcommand is marked
- *   `[experimental]` in `codex-rs/cli/src/main.rs` and the request is tagged
- *   `ExperimentalApi`. Wiring an unattended fleet to an experimental JSON-RPC
- *   daemon is a bigger commitment than this issue's read-only adapter, so it
- *   is recorded as the upgrade path, not taken.
  * - **A token count converted to a percentage.** `TokenUsage` describes the
  *   context window, not the subscription window; dividing one by the other
  *   would invent a figure. Absent, never fabricated.
@@ -293,15 +289,17 @@ function parseWindow(
   value: unknown,
 ): CodexBudgetWindow | undefined {
   if (!isRecord(value)) return undefined;
-  const usedPercent = finiteNumber(value.used_percent);
+  const usedPercent = finiteNumber(value.used_percent ?? value.usedPercent);
   if (usedPercent === undefined) return undefined;
 
-  const minutes = finiteNumber(value.window_minutes);
+  const minutes = finiteNumber(
+    value.window_minutes ?? value.windowDurationMins,
+  );
   const windowMinutes = minutes !== undefined && Number.isInteger(minutes) &&
       minutes > 0
     ? minutes
     : undefined;
-  const resetAt = codexResetAtToEpochMs(value.resets_at);
+  const resetAt = codexResetAtToEpochMs(value.resets_at ?? value.resetsAt);
 
   // Clamped: a backend that reports 103% has over-consumed, not gone negative.
   const remainingFraction = Math.min(1, Math.max(0, (100 - usedPercent) / 100));
@@ -325,7 +323,7 @@ function parseWindow(
  * window is returned so a caller can rank differently without re-reading.
  *
  * @param value - The `rate_limits` object from a `token_count` event, an
- *   `account/getRateLimits` response, or any other source of the same shape.
+ *   `account/rateLimits/read` response, or any other source of the same shape.
  * @returns The budget, or an explicit unknown with a safe reason code.
  */
 export function parseCodexRateLimitSnapshot(value: unknown): CodexBudget {
@@ -355,23 +353,29 @@ export function parseCodexRateLimitSnapshot(value: unknown): CodexBudget {
   }
 
   const creditsRaw = value.credits;
+  const hasCredits = isRecord(creditsRaw)
+    ? creditsRaw.has_credits ?? creditsRaw.hasCredits
+    : undefined;
   const credits = isRecord(creditsRaw) &&
-      typeof creditsRaw.has_credits === "boolean" &&
+      typeof hasCredits === "boolean" &&
       typeof creditsRaw.unlimited === "boolean"
-    ? { hasCredits: creditsRaw.has_credits, unlimited: creditsRaw.unlimited }
+    ? { hasCredits, unlimited: creditsRaw.unlimited }
     : undefined;
 
-  const reachedTypeRaw = nonEmptyString(value.rate_limit_reached_type);
+  const reachedTypeRaw = nonEmptyString(
+    value.rate_limit_reached_type ?? value.rateLimitReachedType,
+  );
   const rateLimitReachedType = reachedTypeRaw !== undefined
     ? REACHED_TYPE_KINDS[reachedTypeRaw.toLowerCase()]
     : undefined;
-  const spendControlReached = typeof value.spend_control_reached === "boolean"
-    ? value.spend_control_reached
+  const spendControl = value.spend_control_reached ?? value.spendControlReached;
+  const spendControlReached = typeof spendControl === "boolean"
+    ? spendControl
     : undefined;
 
-  const limitId = nonEmptyString(value.limit_id);
-  const limitName = nonEmptyString(value.limit_name);
-  const planType = nonEmptyString(value.plan_type);
+  const limitId = nonEmptyString(value.limit_id ?? value.limitId);
+  const limitName = nonEmptyString(value.limit_name ?? value.limitName);
+  const planType = nonEmptyString(value.plan_type ?? value.planType);
 
   return {
     known: true,

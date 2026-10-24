@@ -47,7 +47,7 @@ Deno.test("auto selector rejects metered and unknown billing modes", () => {
   );
 });
 
-Deno.test("auto selector uses reset-aware constrained rate, not headline percent", () => {
+Deno.test("auto selector prefers more remaining capacity regardless of reset speed", () => {
   const selected = selectAutomaticProvider([
     status("claude", {
       windows: [{
@@ -65,9 +65,9 @@ Deno.test("auto selector uses reset-aware constrained rate, not headline percent
     }),
   ], { now: NOW, preference: ["claude", "codex"] });
 
-  // 35% with two hours to reset has much more spendable capacity/hour than
-  // 80% held for almost a week, so Codex is the deliberate winner.
-  assertEquals(selected.winner?.provider, "codex");
+  // More remaining capacity wins even when the other subscription resets sooner.
+  assertEquals(selected.winner?.provider, "claude");
+  assertEquals(selected.winner?.score, 80);
   assertEquals(selected.reason, "fresh-known-capacity");
 });
 
@@ -87,7 +87,7 @@ Deno.test("auto selector uses the most constrained known window", () => {
   ], { now: NOW });
 
   // Claude's tempting short window is constrained by the nearly-spent weekly
-  // allowance (0.1%/h), so Codex's 2%/h wins.
+  // allowance (10%), so Codex's 20% wins.
   assertEquals(selected.winner?.provider, "codex");
 });
 
@@ -163,4 +163,35 @@ Deno.test("automatic decision log contains labels but no credential material", (
   assertMatch(line, /automatic provider selected=/);
   assertMatch(line, /claude\/provider-2/);
   assertEquals(line.includes("token"), false);
+});
+
+Deno.test("auto selector also prefers Codex when it has more remaining capacity", () => {
+  const selected = selectAutomaticProvider([
+    status("claude", {
+      windows: [{ id: "primary", remainingPercent: 35, resetsAt: NOW + 1000 }],
+    }),
+    status("codex", {
+      windows: [{
+        id: "primary",
+        remainingPercent: 80,
+        resetsAt: NOW + 160 * 3_600_000,
+      }],
+    }),
+  ], { now: NOW, preference: ["claude", "codex"] });
+  assertEquals(selected.winner?.provider, "codex");
+  assertEquals(selected.winner?.score, 80);
+});
+
+Deno.test("auto selector retains measured capacity without a reset and ignores expired windows", () => {
+  const selected = selectAutomaticProvider([
+    status("claude", { windows: [{ id: "primary", remainingPercent: 40 }] }),
+    status("codex", {
+      windows: [
+        { id: "primary", remainingPercent: 0, resetsAt: NOW - 1 },
+        { id: "weekly", remainingPercent: 70 },
+      ],
+    }),
+  ], { now: NOW });
+  assertEquals(selected.winner?.provider, "codex");
+  assertEquals(selected.winner?.score, 70);
 });
