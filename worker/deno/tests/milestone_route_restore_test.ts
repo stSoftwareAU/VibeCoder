@@ -21,19 +21,12 @@ import { hasExistingMilestoneSummaryPr } from "../lib/milestone_completion.ts";
 import {
   _resetBaseProtectionMemo,
   AutoMergeResult,
-  enableAutoMerge as enableAutoMergeReal,
+  enableAutoMerge,
 } from "../lib/pr_auto_merge.ts";
-import { armWithNoReviewRecord } from "./support/arm_with_no_review_record.ts";
 
 const REPO = "owner/repo";
 const BRANCH = "milestone/clean-up";
 const DEFAULT = "Develop";
-
-function enableAutoMerge(
-  options: Parameters<typeof enableAutoMergeReal>[0],
-): ReturnType<typeof enableAutoMergeReal> {
-  return armWithNoReviewRecord(enableAutoMergeReal, options);
-}
 
 Deno.test("decideMilestoneBaseMerge - an open rollup restores the route even when an older rollup merged (Issue #4175)", async () => {
   const decision = await decideMilestoneBaseMerge({
