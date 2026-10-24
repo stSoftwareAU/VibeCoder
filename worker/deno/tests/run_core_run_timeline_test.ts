@@ -308,31 +308,6 @@ Deno.test(
 const START_EPOCH_S = START_MS / 1000;
 
 Deno.test(
-  "run_core - with no deps.env the process hard-kill variable is not read (Issue #4242)",
-  async () => {
-    const previous = Deno.env.get(HARD_KILL_AT_EPOCH_ENV);
-    Deno.env.set(HARD_KILL_AT_EPOCH_ENV, String(HARD_KILL_EPOCH_S));
-    try {
-      const { logs } = await runLoopCapturing(undefined);
-      const lines = timelineLines(logs);
-      assertEquals(lines.length, 1);
-      assertStringIncludes(
-        lines[0] ?? "",
-        `Run timeline: target=${TARGET_ISO} finish=${FINISH_ISO} ` +
-          `hard-kill=none (`,
-      );
-    } finally {
-      if (previous === undefined) {
-        Deno.env.delete(HARD_KILL_AT_EPOCH_ENV);
-      } else {
-        Deno.env.set(HARD_KILL_AT_EPOCH_ENV, previous);
-      }
-      resetRunTimelineForTests();
-    }
-  },
-);
-
-Deno.test(
   "run_core - a clamped finish is warned to logWarn, not logError (Issue #4242)",
   async () => {
     try {

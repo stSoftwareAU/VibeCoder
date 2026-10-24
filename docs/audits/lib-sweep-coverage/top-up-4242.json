@@ -1,0 +1,12 @@
+{
+  "issue": 4242,
+  "chunk": "top-up-4242",
+  "title": "top-up: run timeline target and deadline resolution",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4242",
+  "definition": "modules added to worker/deno/lib/ after the sweeps recorded their coverage: lib/run_timeline.ts (#4242)",
+  "status": "claimed",
+  "sweptAt": "ffdc31c906ae2d3f9a0beedd0692dd843e306878",
+  "paths": [
+    "worker/deno/lib/run_timeline.ts"
+  ]
+}
