@@ -1098,7 +1098,7 @@ both providers supply their own names, tables and override state to it:
    (model only; effort has no per-repo base, exactly as Claude's has none)
 4. **Global config phase overrides** — `codex_phase_model_overrides` /
    `codex_phase_effort_overrides` in `.config.json`
-5. **Phase-specific hardcoded defaults** — the tables above; on a ChatGPT login a built-in default the login refuses is skipped for the rest of the run (see **Refused built-in defaults (ChatGPT login)** below)
+5. **Phase-specific hardcoded defaults** — the tables above; on a ChatGPT login a built-in default the login refuses is skipped for the rest of the run (see **ChatGPT login** below)
 6. **Global environment variable** — `CODEX_MODEL` / `CODEX_EFFORT`
 
 An explicit `model`/`effort` on the invocation request still beats all six, and
@@ -1113,14 +1113,14 @@ is missing an entry, exactly as `buildClaudeModelArgs` does — a typo or a new
 phase whose author forgot a default is caught rather than shipping silently. A
 phase-less invocation is deliberate and stays quiet.
 
-**Refused built-in defaults (ChatGPT login).** On a ChatGPT login — an explicit
+**ChatGPT login.** On a ChatGPT login — an explicit
 `CODEX_HOME` whose `auth.json` is a ChatGPT login — a model taken from the
 built-in step-5 defaults may be one the login refuses. Today that is
 `gpt-6-luna`, the cheap tier: Codex returns HTTP 400 "The '<model>' model is not
 supported when using Codex with a ChatGPT account". The worker then marks that id
 refused for the rest of the run and omits `--model`, so the Codex CLI picks its
 own model. It warns **once** per refused id per run, naming the id, the phase
-and the re-pin knob (`codex_phase_model_overrides` or
+and the re-pin knobs (`codex_phase_model_overrides` or
 `provider_model_tiers.codex`).
 
 A ChatGPT login is detected only from an explicit `CODEX_HOME`: a login in the
@@ -1137,11 +1137,16 @@ Two triggers reach this path:
   with no `--model` before the `agent_provider_fallback` switch (Issue #4034). A
   second refusal falls through to that switch.
 
-Explicit pins are never skipped: `CODEX_MODEL_<PHASE>`,
-`codex_phase_model_overrides` (repo or global), repo `codex_model` and
-`CODEX_MODEL` keep their `--model`, even when refused. API-key mode is unchanged,
-because the refused set is never consulted. This mirrors DeepSeek's tier
-adaptation (Issue #2059); see [DeepSeek per-phase routing](#-deepseek-per-phase-routing).
+Explicit pins are never dropped. Which ids a given login accepts is not yet
+verified live (Issue #4166). Pin ids the account accepts through the precedence
+list above, or through the
+[`provider_model_tiers.codex` example](#model-selection): `CODEX_MODEL_<PHASE>`,
+`codex_phase_model_overrides`, repo `codex_model` and `CODEX_MODEL` are steps
+of that list, and `provider_model_tiers.codex` is merged into the global
+`codex_phase_model_overrides` (step 4), so it is a pin rather than a built-in
+default. API-key mode is unchanged, because the refused set is never
+consulted. This mirrors DeepSeek's tier adaptation (Issue #2059); see
+[DeepSeek per-phase routing](#-deepseek-per-phase-routing).
 
 ```mermaid
 flowchart LR
@@ -1367,8 +1372,8 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
   a ChatGPT account" (Issue #4019). Where the refused model is a built-in
   default on a Codex ChatGPT login, the invocation is first retried once on
   Codex with no `--model` (Issue #4221, see the
-  [Codex per-phase routing](#-codex-per-phase-routing) section's "Refused
-  built-in defaults"); the provider switch applies only if that retry is refused
+  [Codex per-phase routing](#-codex-per-phase-routing) section's "ChatGPT
+  login"); the provider switch applies only if that retry is refused
   too. The fallback resolves its own model for the phase and starts a fresh
   session. It is capped at one switch per
   invocation and logged as `[provider-fallback] <from> refused model … retrying

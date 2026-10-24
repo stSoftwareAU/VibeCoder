@@ -1588,8 +1588,8 @@ not need it, making a behaviour-carrying parameter required rather than
 defaulting it to a value that turns the behaviour off, and treating a caller
 left on the old hard-coded value as a blocking self-review finding.
 
-**A new state on an existing screen re-reads that screen's existing text
-(Issue #3259).** Fleet UI PRs added a state or mode to an existing screen
+**A new case re-reads the text it now reaches (Issue #3259).** Fleet UI
+PRs added a state or mode to an existing screen
 and left the screen's existing messages describing the old state; tests
 rendered only the new rows, so the suite stayed green. GRQ-AutoTrader#2560
 added "Load older decisions" paging to Activity, and its empty state still

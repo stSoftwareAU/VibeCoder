@@ -8,9 +8,10 @@
  * Scores, and every row still drew today's live `CurrentStars` badge beside
  * that date's stars, while the unreadable-decisions note still said rows
  * "may read as not evaluated" where every row read "Not considered".
- * CODING-STANDARDS.md and the issue prompt must both carry the "a new state
- * on an existing screen re-reads that screen's existing text" rule, and the
- * issue prompt's Test Plan step must require listing the messages checked.
+ * CODING-STANDARDS.md and the issue prompt must both carry the "a new case
+ * re-reads the text it now reaches" rule: a change sends a new case to text
+ * that already exists. The issue prompt's Test Plan step must require
+ * listing the messages checked.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -24,8 +25,15 @@ import {
   section,
 } from "./support/markdown_docs.ts";
 
-const PARAGRAPH_START =
-  "**A new state on an existing screen re-reads that screen's existing text.**";
+const PARAGRAPH_START = "**A new case re-reads the text it now reaches.**";
+
+const TRIGGER = "a change sends a new case to text that already exists";
+
+const TRIGGER_EXAMPLES = [
+  "a widened condition",
+  "a new arm or allowed value",
+  "a newly called function or component",
+];
 
 function existingScreenTextParagraph(
   sectionText: DocSection,
@@ -53,6 +61,8 @@ Deno.test("CODING-STANDARDS carries the existing-screen-text rule (Issue #3259)"
   );
 
   const keyPhrases = [
+    TRIGGER,
+    ...TRIGGER_EXAMPLES,
     "list every message the screen already renders",
     "say whether it is still true in the new state",
     "reword it, hide it or mark it",
@@ -81,6 +91,8 @@ Deno.test("the injected coding_guidelines twin carries the existing-screen-text 
   );
   for (
     const phrase of [
+      TRIGGER,
+      ...TRIGGER_EXAMPLES,
       "list every message the screen already renders",
       "say whether it is still true in the new state",
       "reword it, hide it or mark it",
@@ -102,7 +114,9 @@ Deno.test("issue prompt Instructions carry the existing-screen-text rule (Issue 
   );
 
   const keyPhrases = [
-    "A new state on an existing screen re-reads that screen's existing text.",
+    "A new case re-reads the text it now reaches.",
+    TRIGGER,
+    ...TRIGGER_EXAMPLES,
     "list every message the screen already renders",
     "add a test that renders the new state",
     "A pre-existing message left unchanged that is false or misleading in the new state is a blocking self-review finding",
@@ -121,8 +135,12 @@ Deno.test("issue prompt Test Plan step lists the messages checked (Issue #3259)"
   );
 
   assert(
-    text.includes("re-reads that screen's existing text"),
-    `PR Summary File section is missing the existing-screen-text requirement: ${text}`,
+    text.includes("re-reads the text it now reaches"),
+    `PR Summary File section is missing the reached-text requirement: ${text}`,
+  );
+  assert(
+    text.includes(TRIGGER),
+    `PR Summary File section is missing the new-case trigger: ${text}`,
   );
   assert(
     text.includes("each marked still true or changed for the new state"),

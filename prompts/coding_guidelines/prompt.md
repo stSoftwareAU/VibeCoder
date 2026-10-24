@@ -134,6 +134,12 @@ progress survives.
   Something that never finishes must fail loudly, not quietly consume the
   host.
 
+- **Give every shell command its own timeout.** Every shell command carries
+  its own `timeout`, sized to that command: seconds for `git` and `gh`,
+  minutes for a build. Builds and test suites run one at a time, in the
+  foreground, and never with `run_in_background`. Save and push the work in
+  hand before the finish deadline the prompt states.
+
 ## General Coding Principles
 
 - **KISS** — Favour simplicity. When choosing between two approaches, prefer the
@@ -728,6 +734,11 @@ bullet under **Cross-Platform Bash Compatibility** shows.
 
 - Cap test execution at **10–15 minutes** (600–900 seconds).
 - On timeout, report the timeout rather than retrying blindly.
+- **Give every shell command its own timeout.** Every shell command carries
+  its own `timeout`, sized to that command: seconds for `git` and `gh`,
+  minutes for a build. Builds and test suites run one at a time, in the
+  foreground, and never with `run_in_background`. Save and push the work in
+  hand before the finish deadline the prompt states.
 
 ### Avoid Running Full E2E Suites
 
@@ -1702,13 +1713,14 @@ above cannot find this caller, because the diff never changed it and there
 is nothing to revert. List the callers and siblings checked in the PR summary
 (Issue #3253).
 
-**A new state on an existing screen re-reads that screen's existing text.**
-When a change adds a state or mode to a screen that already exists (an
-earlier date, a paged or partial load, a fallback, an empty or error case),
-list every message the screen already renders: notes, empty-state text,
-warnings, badges and labels. For each one, say whether it is still true in
-the new state. If it is not, reword it, hide it or mark it, so the new
-state never shows a message written for another state. Add a test that
+**A new case re-reads the text it now reaches.** When a change sends a new
+case to text that already exists — a widened condition, a new arm or allowed
+value, a newly called function or component, or a new state on a screen that
+already exists (an earlier date, a paged or partial load, a fallback, an empty
+or error case) — list every message the screen already renders: notes,
+empty-state text, warnings, badges and labels. For each one, say whether it
+is still true in the new state. If it is not, reword it, hide it or mark it,
+so the new state never shows a message written for another state. Add a test that
 renders the new state and asserts each message that differs in that state,
 or is absent from it. A test that renders only the new rows stays green
 while an old message is wrong, and **Every changed call site needs a test
