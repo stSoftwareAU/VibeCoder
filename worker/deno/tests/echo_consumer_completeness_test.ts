@@ -35,6 +35,11 @@ export interface EchoAllowlistEntry {
  */
 export const ECHO_ALLOWLIST: readonly EchoAllowlistEntry[] = [
   {
+    module: "worker_gate_split.ts",
+    reason:
+      "parseWorkerGatePlan reads newly drafted part titles and scopes. It does not match the reply against fenced gate output or replace an original with a model echo.",
+  },
+  {
     module: "caller_checks.ts",
     reason:
       "renderCallerCheckSection fences the caller list and tells the model to copy the symbol and caller exactly. callerGapFindings matches that copy with callerKey against the raw expected entries only, so a scrubbed copy is a missing verdict. Tracked in #4269 and not fixed in this change.",

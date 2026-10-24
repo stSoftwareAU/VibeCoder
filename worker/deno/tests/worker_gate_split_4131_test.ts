@@ -41,7 +41,7 @@ function createdBodies(calls: string[][]): string[] {
 }
 
 function depthMarkers(body: string): string[] {
-  return body.match(/<!--\s*vibe-split-depth:\s*\d+\s*-->/g) ?? [];
+  return body.match(/<!--\s*vibe-split-depth\s+depth="\d+"\s*-->/g) ?? [];
 }
 
 interface DepthHarness {
@@ -142,47 +142,47 @@ async function runDepth(
 }
 
 Deno.test("lastSplitDepth keeps the last marker in range and ignores any other", () => {
-  assertEquals(lastSplitDepth("<!-- vibe-split-depth: 0 -->"), 0);
+  assertEquals(lastSplitDepth('<!-- vibe-split-depth depth="0" -->'), 0);
   assertEquals(
     lastSplitDepth(
-      "<!-- vibe-split-depth: 1 -->\n<!-- vibe-split-depth: 2 -->",
+      '<!-- vibe-split-depth depth="1" -->\n<!-- vibe-split-depth depth="2" -->',
     ),
     2,
   );
-  assertEquals(lastSplitDepth("<!-- vibe-split-depth: 9 -->"), null);
+  assertEquals(lastSplitDepth('<!-- vibe-split-depth depth="9" -->'), null);
   assertEquals(lastSplitDepth("no marker"), null);
 });
 
 Deno.test("#4131 - depth 0 splits and the children are depth 1", async () => {
   const { ok, split, seeds, calls } = await runDepth(
-    "Ordinary parent\n<!-- vibe-split-depth: 0 -->",
+    'Ordinary parent\n<!-- vibe-split-depth depth="0" -->',
     "vibe-worker",
   );
   assertEquals(ok, true);
   assertEquals(split, "split");
   assertEquals(seeds[0]?.childDepth, 1);
   assertEquals(depthMarkers(createdBodies(calls)[0] ?? ""), [
-    "<!-- vibe-split-depth: 1 -->",
+    '<!-- vibe-split-depth depth="1" -->',
   ]);
 });
 
 Deno.test("#4131 - depth 1 splits and the children are depth 2", async () => {
   const { ok, split, seeds, calls } = await runDepth(
-    "First split\n<!-- vibe-split-depth: 1 -->",
+    'First split\n<!-- vibe-split-depth depth="1" -->',
     "vibe-worker",
   );
   assertEquals(ok, true);
   assertEquals(split, "split");
   assertEquals(seeds[0]?.childDepth, 2);
   assertEquals(depthMarkers(createdBodies(calls)[0] ?? ""), [
-    "<!-- vibe-split-depth: 2 -->",
+    '<!-- vibe-split-depth depth="2" -->',
   ]);
 });
 
 Deno.test("#4131 - depth 2 comments, applies failed, and files nothing", async () => {
   const dir = await Deno.makeTempDir({ prefix: "split-depth-terminal-" });
   const { gh, calls, seeds, planner } = harness(
-    "Second split\n<!-- vibe-split-depth: 2 -->",
+    'Second split\n<!-- vibe-split-depth depth="2" -->',
     "vibe-worker",
   );
   const logs: string[] = [];
@@ -255,7 +255,7 @@ Deno.test("#4131 - a depth marker written outside the fleet is depth 0", async (
   console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
   const dir = await Deno.makeTempDir({ prefix: "split-depth-forged-" });
   const { gh, calls, seeds, planner } = harness(
-    "Forged\n<!-- vibe-split-depth: 2 -->",
+    'Forged\n<!-- vibe-split-depth depth="2" -->',
     "outsider",
   );
   try {
@@ -277,7 +277,7 @@ Deno.test("#4131 - a depth marker written outside the fleet is depth 0", async (
     assertEquals(seeds.length, 1);
     assertEquals(seeds[0]?.childDepth, 1);
     assertEquals(depthMarkers(createdBodies(calls)[0] ?? ""), [
-      "<!-- vibe-split-depth: 1 -->",
+      '<!-- vibe-split-depth depth="1" -->',
     ]);
     assertEquals(labelsAdded(calls).includes("failed"), false);
     for (const line of logs) {

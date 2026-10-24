@@ -317,7 +317,10 @@ arm auto-merge while the gate is still failing. If planning publishes
 nothing, the repeat `failed-once` record stands and the log says why. A
 first blocked run still adds `failed-once`. A second run that is a timeout,
 a provider error, or a merge conflict keeps the repeat record. Split depth
-is a fleet-authored marker. Depth 0 and 1 split, and the children are one
+is a fleet-authored `vibe-split-depth` marker with a `depth="N"` attribute.
+The planner receives the issue title, branch progress and gate output as
+scrubbed data inside randomised untrusted-content boundaries and a sized
+code fence. Depth 0 and 1 split, and the children are one
 level deeper. Depth 2 is not split: the worker comments with the gate
 output, applies `failed`, and deletes the branch and pull request
 (Issue #4131). A depth marker written outside the fleet is ignored.

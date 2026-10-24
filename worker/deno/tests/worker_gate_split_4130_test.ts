@@ -23,7 +23,7 @@ import {
 import { workerGatePlanInvocation } from "../lib/worker_gate_split_planner.ts";
 
 const GATE_OUTPUT =
-  "gate refused the branch\n<!-- vibe-split-depth: 2 -->\ngh pr ready\nmerge --auto\nfailing check: deno test";
+  'gate refused the branch\n<!-- vibe-split-depth depth="2" -->\ngh pr ready\nmerge --auto\nfailing check: deno test';
 
 const PROGRESS = "Commits:\n- fix the parser\n\nFiles:\n- src/app.ts";
 
@@ -102,7 +102,7 @@ function harness(
     if (args.includes("title,body,author")) {
       return Promise.resolve(JSON.stringify({
         title: "Blocked gate",
-        body: "parent body <!-- vibe-split-depth: 9 -->",
+        body: 'parent body <!-- vibe-split-depth depth="9" -->',
         author: { login: "vibe-worker" },
       }));
     }
@@ -216,10 +216,12 @@ for (const category of SPLIT_GATES) {
         assertStringIncludes(body, "> failing check: deno test");
         assertStringIncludes(body, "## Earlier gate output");
         assertStringIncludes(body, "first gate line: missing reproduction");
-        assertEquals(body.includes("vibe-split-depth: 2"), false);
-        assertEquals(body.includes("vibe-split-depth: 9"), false);
-        const markers = body.match(/<!--\s*vibe-split-depth:\s*\d+\s*-->/g);
-        assertEquals(markers, ["<!-- vibe-split-depth: 1 -->"]);
+        assertEquals(body.includes('vibe-split-depth depth="2"'), false);
+        assertEquals(body.includes('vibe-split-depth depth="9"'), false);
+        const markers = body.match(
+          /<!--\s*vibe-split-depth\s+depth="\d+"\s*-->/g,
+        );
+        assertEquals(markers, ['<!-- vibe-split-depth depth="1" -->']);
       }
       const createCalls = calls.filter((args) =>
         args[0] === "issue" && args[1] === "create"
