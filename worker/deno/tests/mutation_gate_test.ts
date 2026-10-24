@@ -99,15 +99,266 @@ function mutate(source: string, lines: number[], cap = 40) {
   return generateDenoMutants("lib/m.ts", source, lines, cap);
 }
 
+/** Operand-dropping mutants only, in generator order (Issue #3901). */
+function droppedOperands(source: string, lines: number[], cap = 40) {
+  return generateDenoMutantsDetailed("lib/m.ts", source, lines, cap).mutants
+    .filter((m) => m.description.startsWith("dropped operand "));
+}
+
 Deno.test("generateDenoMutants - negates a single-line if", () => {
-  const [m, ...rest] = mutate("  if (a && b) {\n  }\n", [1]);
-  assertEquals(rest.length, 0);
-  assertEquals(m?.description, "negated if condition");
-  assertEquals(m?.mutatedSource, "  if (!(a && b)) {\n  }\n");
+  const ms = mutate("  if (a && b) {\n  }\n", [1]);
+  assertEquals(ms[0]?.description, "negated if condition");
+  assertEquals(ms[0]?.mutatedSource, "  if (!(a && b)) {\n  }\n");
+  // The negation still comes first. Each operand is then dropped on its own.
+  assertEquals(ms.slice(1).map((m) => m.description), [
+    "dropped operand `a` (replaced with true)",
+    "dropped operand `b` (replaced with true)",
+  ]);
 });
 
 Deno.test("generateDenoMutants - skips an if whose parens do not balance on the line", () => {
-  assertEquals(mutate("if (a &&\n  b) {\n}\n", [1]), []);
+  // negateIf needs the closing paren on the same line, so the whole condition
+  // is not negated. The operand that is on the added line is still dropped.
+  const ms = mutate("if (a &&\n  b) {\n}\n", [1]);
+  assertEquals(
+    ms.filter((m) => m.description === "negated if condition"),
+    [],
+  );
+  assertEquals(ms.map((m) => m.description), [
+    "dropped operand `a` (replaced with true)",
+  ]);
+  assertEquals(ms[0]?.mutatedSource, "if (true &&\n  b) {\n}\n");
+});
+
+Deno.test("generateDenoMutants - drops each operand of a single-line || and && (Issue #3901)", () => {
+  const or = droppedOperands("if (a || b) return 2;\n", [1]);
+  assertEquals(or.map((m) => m.description), [
+    "dropped operand `a` (replaced with false)",
+    "dropped operand `b` (replaced with false)",
+  ]);
+  assertEquals(or.map((m) => m.mutatedSource), [
+    "if (false || b) return 2;\n",
+    "if (a || false) return 2;\n",
+  ]);
+  const all = mutate("if (a || b) return 2;\n", [1]);
+  assertEquals(all[0]?.description, "negated if condition");
+
+  const and = droppedOperands("if (a && b) return 2;\n", [1]);
+  assertEquals(and.map((m) => m.description), [
+    "dropped operand `a` (replaced with true)",
+    "dropped operand `b` (replaced with true)",
+  ]);
+  assertEquals(and.map((m) => m.mutatedSource), [
+    "if (true && b) return 2;\n",
+    "if (a && true) return 2;\n",
+  ]);
+});
+
+Deno.test("generateDenoMutants - drops one operand of a wrapped if when only that line is added (Issue #3901)", () => {
+  const src = [
+    "if (",
+    "  !staleRemote.ok ||",
+    "  (staleRemote.value.code !== 0 && staleRemote.value.code !== 2)",
+    ") {",
+    "  return;",
+    "}",
+  ].join("\n");
+  // The closing paren is on its own line, so the whole condition is not negated.
+  assertEquals(
+    mutate(src, [1, 2, 3, 4]).filter((m) =>
+      m.description === "negated if condition"
+    ),
+    [],
+  );
+  const group = droppedOperands(src, [3]);
+  assertEquals(group.map((m) => m.description), [
+    "dropped operand `(staleRemote.value.code !== 0 && staleRemote.value.code !== 2)` (replaced with false)",
+  ]);
+  assertEquals(group[0]?.line, 3);
+  assertEquals(group[0]?.mutatedSource.split("\n")[2], "  false");
+  // The inner && operands share that line, so neither is dropped on its own.
+  assertFalse(
+    group.some((m) => m.mutatedSource.split("\n")[2]?.includes("&& true")),
+  );
+
+  const first = droppedOperands(src, [2]);
+  assertEquals(first.map((m) => m.description), [
+    "dropped operand `!staleRemote.ok` (replaced with false)",
+  ]);
+  assertEquals(first[0]?.mutatedSource.split("\n")[1], "  false ||");
+  // The closing-paren line is not an operand.
+  assertEquals(droppedOperands(src, [4]), []);
+});
+
+Deno.test("generateDenoMutants - a wrapped || drops only the added operand line (Issue #3901)", () => {
+  const src = [
+    "if (",
+    "  fa.filename !== fb.filename ||",
+    "  fa.previous_filename !== fb.previous_filename",
+    ") {",
+    "}",
+  ].join("\n");
+  const ms = droppedOperands(src, [3]);
+  assertEquals(ms.map((m) => `${m.line}:${m.description}`), [
+    "3:dropped operand `fa.previous_filename !== fb.previous_filename` (replaced with false)",
+  ]);
+  assertEquals(ms[0]?.mutatedSource.split("\n")[2], "  false");
+  assertEquals(droppedOperands(src, [1]), []);
+});
+
+Deno.test("generateDenoMutants - drops each operand of a boolean const, including one split across lines (Issue #3901)", () => {
+  const single = droppedOperands(
+    "const keep = s.ok && !a && c > 0;\n",
+    [1],
+  );
+  assertEquals(single.map((m) => m.description), [
+    "dropped operand `s.ok` (replaced with true)",
+    "dropped operand `!a` (replaced with true)",
+    "dropped operand `c > 0` (replaced with true)",
+  ]);
+  assertEquals(
+    single[1]?.mutatedSource,
+    "const keep = s.ok && true && c > 0;\n",
+  );
+
+  const split = droppedOperands("const keep = s.ok && !a &&\n  c > 0;\n", [
+    1,
+    2,
+  ]);
+  assertEquals(split.map((m) => `${m.line}:${m.description}`), [
+    "1:dropped operand `s.ok` (replaced with true)",
+    "1:dropped operand `!a` (replaced with true)",
+    "2:dropped operand `c > 0` (replaced with true)",
+  ]);
+  assertEquals(
+    split[2]?.mutatedSource,
+    "const keep = s.ok && !a &&\n  true;\n",
+  );
+});
+
+Deno.test("generateDenoMutants - a nested (b && c) is one || operand (Issue #3901)", () => {
+  const src = "if (a || (b && c)) return 1;\n";
+  const ms = droppedOperands(src, [1]);
+  assertEquals(ms.map((m) => m.description), [
+    "dropped operand `a` (replaced with false)",
+    "dropped operand `(b && c)` (replaced with false)",
+  ]);
+  assertEquals(ms.map((m) => m.mutatedSource), [
+    "if (false || (b && c)) return 1;\n",
+    "if (a || false) return 1;\n",
+  ]);
+  // Same-line precedence: `&&` binds tighter, so it is not split on its own.
+  const mixed = droppedOperands("if (a || b && c) return 1;\n", [1]);
+  assertEquals(mixed.map((m) => m.mutatedSource), [
+    "if (false || b && c) return 1;\n",
+    "if (a || false) return 1;\n",
+  ]);
+});
+
+Deno.test("generateDenoMutants - a compound if drops an untested operand, not the inner && (Issue #3901)", () => {
+  const src = "if (!s.ok || (s.code !== 0 && s.code !== 2)) return 3;\n";
+  const ms = droppedOperands(src, [1]);
+  assertEquals(ms.map((m) => m.description), [
+    "dropped operand `!s.ok` (replaced with false)",
+    "dropped operand `(s.code !== 0 && s.code !== 2)` (replaced with false)",
+  ]);
+  assertEquals(ms[1]?.mutatedSource, "if (!s.ok || false) return 3;\n");
+});
+
+Deno.test("generateDenoMutants - inner operands on their own lines are dropped (Issue #3901)", () => {
+  const src = [
+    "if (",
+    "  a ||",
+    "  (b &&",
+    "    c)",
+    ") {",
+    "}",
+  ].join("\n");
+  const ms = droppedOperands(src, [3, 4]);
+  assertEquals(ms.map((m) => `${m.line}:${m.description}`), [
+    "3:dropped operand `b` (replaced with true)",
+    "4:dropped operand `c` (replaced with true)",
+  ]);
+  assertEquals(ms[0]?.mutatedSource.split("\n")[2], "  (true &&");
+  assertEquals(ms[1]?.mutatedSource.split("\n")[3], "    true)");
+});
+
+Deno.test("generateDenoMutants - || and && inside a string, template or comment are not operands (Issue #3901)", () => {
+  const src = [
+    'const s = "a || b";',
+    "const t = `a && b`;",
+    "// a || b && c",
+    "/* a || b */",
+    "const u = ok; // a || b",
+    "const v = `",
+    "  a || b",
+    "`;",
+    "const w = `a || b`; if (c || d) {}",
+  ].join("\n");
+  assertEquals(droppedOperands(src, [1, 2, 3, 4, 5, 7]), []);
+  assertEquals(droppedOperands(src, [9]).map((m) => m.description), [
+    "dropped operand `c` (replaced with false)",
+    "dropped operand `d` (replaced with false)",
+  ]);
+});
+
+Deno.test("generateDenoMutants - a type-only union is not an operand chain (Issue #3901)", () => {
+  assertEquals(droppedOperands("type T = A | B;\n", [1]), []);
+  assertEquals(mutate("type T = A | B;\n", [1]), []);
+});
+
+Deno.test("generateDenoMutants - drops operands in while, return and a ternary condition (Issue #3901)", () => {
+  assertEquals(
+    droppedOperands("while (a || b) {}\n", [1]).map((m) => m.description),
+    [
+      "dropped operand `a` (replaced with false)",
+      "dropped operand `b` (replaced with false)",
+    ],
+  );
+  assertEquals(
+    droppedOperands("return a && b;\n", [1]).map((m) => m.mutatedSource),
+    [
+      "return true && b;\n",
+      "return a && true;\n",
+    ],
+  );
+  assertEquals(
+    droppedOperands("const x = a || b ? 1 : 2;\n", [1]).map((m) =>
+      m.mutatedSource
+    ),
+    [
+      "const x = false || b ? 1 : 2;\n",
+      "const x = a || false ? 1 : 2;\n",
+    ],
+  );
+});
+
+Deno.test("generateDenoMutants - an operand that is already the identity is not a no-op mutant (Issue #3901)", () => {
+  assertEquals(
+    droppedOperands("if (false || b) return 1;\n", [1]).map((m) =>
+      m.description
+    ),
+    ["dropped operand `b` (replaced with false)"],
+  );
+  assertEquals(
+    droppedOperands("if (a && true) return 1;\n", [1]).map((m) =>
+      m.description
+    ),
+    ["dropped operand `a` (replaced with true)"],
+  );
+});
+
+Deno.test("generateDenoMutants - operand mutants follow the other kinds and count towards the cap (Issue #3901)", () => {
+  const detailed = generateDenoMutantsDetailed(
+    "lib/m.ts",
+    "if (a || b) return 2;\n",
+    [1],
+    1,
+  );
+  assertEquals(detailed.mutants.map((m) => m.description), [
+    "negated if condition",
+  ]);
+  assertEquals(detailed.dropped, 2);
 });
 
 Deno.test("generateDenoMutants - negates a simple ternary condition", () => {
