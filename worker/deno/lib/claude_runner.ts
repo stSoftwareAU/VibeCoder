@@ -1203,7 +1203,7 @@ async function runClaudeWithTimeoutBody(
   // outlive the finish (less the kill grace and the WIP checkpoint reserve),
   // and told the deadline on the last line of its user prompt. The system
   // prompt is never touched: the prompt cache keys on its bytes.
-  const timeline = getRunTimeline();
+  const timeline = options.runTimeline ?? getRunTimeline();
   const budget = timeline
     ? planAgentSessionBudget({
       timeline,
