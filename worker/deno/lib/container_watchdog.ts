@@ -44,8 +44,9 @@
  * When the watchdog reap is given an evidence directory, the worker log, the
  * agent transcript, the VM boot log and the guest's process and memory state
  * are captured into `hard-kill-<container>-<epoch>.json` **before** the kill
- * destroys them. Capture is bounded and redacted, and it never blocks or fails
- * the reap: a capture that fails is logged loudly and the kill goes ahead. The
+ * destroys them. Capture is bounded and redacted. It never fails the reap: a
+ * capture that fails is logged loudly and the kill goes ahead. It does delay
+ * the kill, by at most about 75 seconds (`hard_kill_evidence.ts`). The
  * pre-launch reaper passes no directory and so captures nothing.
  *
  * ## Why the seams
@@ -596,8 +597,9 @@ async function stillListed(
 /**
  * Capture hard-kill evidence for a reap, if the reap asked for it (Issue #4253).
  *
- * Never blocks or fails the reap: a capture that fails, or throws, is logged
- * loudly and reported as null, and the kill goes ahead regardless.
+ * Never fails the reap: a capture that fails, or throws, is logged loudly and
+ * reported as null, and the kill goes ahead regardless. The capture is bounded,
+ * so it delays the kill by at most about 75 seconds.
  *
  * @param deps - Injected operations
  * @param options - The reap request

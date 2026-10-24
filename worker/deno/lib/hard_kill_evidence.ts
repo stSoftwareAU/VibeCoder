@@ -7,11 +7,14 @@
  * process and memory state. This module reads that evidence first and writes
  * it to `hard-kill-<container>-<epoch>.json` in the evidence directory.
  *
- * Capture never blocks or throws. Every step is bounded by a timeout, the
- * whole capture is bounded by a total cap, and a step that fails is recorded
- * in the file as `unavailable: <cause>` rather than dropped silently. Every
- * string in the record is passed through `redactGhBodyText` (see
- * `gh_body_redaction.ts`) before it is written.
+ * Capture never throws. Every step is bounded by a timeout. Collection stops
+ * at `DEFAULT_TOTAL_CAP_MS` in all; any field not read by then stays marked
+ * as not collected. The file is then written under its own
+ * `DEFAULT_STEP_TIMEOUT_MS` bound, so the whole capture can take up to that
+ * cap plus one step. A step that fails is recorded in the file as
+ * `unavailable: <cause>` rather than dropped silently. Every string in the
+ * record is passed through `redactGhBodyText` (see `gh_body_redaction.ts`)
+ * before it is written, and text is redacted before any cut.
  *
  * Uses Australian English spelling throughout (behaviour, colour, etc.).
  */
@@ -45,10 +48,13 @@ export const MAX_TOOL_CALL_CHARS = 500;
 /** Bound on one `container exec` or boot-log invocation for guest probes. */
 export const DEFAULT_EXEC_TIMEOUT_MS = 10_000;
 
-/** Bound on one evidence step (a listing, a read, a write, a runtime call). */
+/** Bound on one evidence step: a listing, a read, a write or a runtime call. */
 export const DEFAULT_STEP_TIMEOUT_MS = 15_000;
 
-/** Bound on the whole capture, after which fields not yet read stay unavailable. */
+/**
+ * Bound on collection in all. Fields not read by then stay marked as not
+ * collected; the file write follows under `DEFAULT_STEP_TIMEOUT_MS`.
+ */
 export const DEFAULT_TOTAL_CAP_MS = 60_000;
 
 /** Lines of the VM boot log kept in the evidence. */
@@ -84,7 +90,7 @@ export interface EvidenceSeams {
   readTail(path: string, maxBytes: number): Promise<string>;
   /** Create the file's directory if needed and write the text to the file. */
   writeFile(path: string, text: string): Promise<void>;
-  /** The host's name. */
+  /** The host's name. A failure throws, and the capture records its cause. */
   hostname(): string;
   /** A timer whose promise resolves after `ms`, and which can be cancelled. */
   timeout(ms: number): { promise: Promise<void>; cancel: () => void };
@@ -104,12 +110,6 @@ export interface EvidenceOptions {
   trigger: string;
   /** The capture time, in milliseconds since the epoch. */
   nowMs: number;
-  /** Bound on one guest probe, in milliseconds. */
-  execTimeoutMs?: number;
-  /** Bound on one evidence step, in milliseconds. */
-  stepTimeoutMs?: number;
-  /** Bound on the whole capture, in milliseconds. */
-  totalCapMs?: number;
 }
 
 /** Guest state read through the container runtime's exec. */
@@ -350,20 +350,17 @@ export async function captureHardKillEvidence(
   options: EvidenceOptions,
 ): Promise<CaptureOutcome> {
   const { containerName, evidenceDir, runtimeExecutable } = options;
-  const execMs = options.execTimeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
-  const stepMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
-  const totalCapMs = options.totalCapMs ?? DEFAULT_TOTAL_CAP_MS;
   const unavailable = (cause: string): string =>
     `${UNAVAILABLE_PREFIX}${cause}`;
   const notCollected = unavailable(
-    `not collected before the ${totalCapMs}ms capture cap ended`,
+    `not collected before the ${DEFAULT_TOTAL_CAP_MS}ms capture cap ended`,
   );
 
   let host: string;
   try {
     host = seams.hostname();
-  } catch {
-    host = "unknown";
+  } catch (error) {
+    host = unavailable(firstLine(messageOf(error)));
   }
 
   const record: HardKillEvidence = {
@@ -395,7 +392,7 @@ export async function captureHardKillEvidence(
   const filesP = bounded(
     seams,
     () => seams.listLogFiles(evidenceDir),
-    stepMs,
+    DEFAULT_STEP_TIMEOUT_MS,
   );
 
   let logRunId: string | undefined;
@@ -421,7 +418,7 @@ export async function captureHardKillEvidence(
     const read = await bounded(
       seams,
       () => seams.readTail(joinPath(evidenceDir, newest.name), TAIL_READ_BYTES),
-      stepMs,
+      DEFAULT_STEP_TIMEOUT_MS,
     );
     if (!read.ok) {
       const cause = unavailable(`could not read ${newest.name}: ${read.cause}`);
@@ -477,7 +474,7 @@ export async function captureHardKillEvidence(
     const read = await bounded(
       seams,
       () => seams.readTail(joinPath(evidenceDir, newest.name), TAIL_READ_BYTES),
-      stepMs,
+      DEFAULT_STEP_TIMEOUT_MS,
     );
     if (!read.ok) {
       const cause = unavailable(`could not read ${newest.name}: ${read.cause}`);
@@ -496,8 +493,12 @@ export async function captureHardKillEvidence(
   const execField = async (args: readonly string[]): Promise<string> => {
     const result = await bounded(
       seams,
-      () => seams.runRuntime(["exec", containerName, ...args], execMs),
-      execMs,
+      () =>
+        seams.runRuntime(
+          ["exec", containerName, ...args],
+          DEFAULT_EXEC_TIMEOUT_MS,
+        ),
+      DEFAULT_EXEC_TIMEOUT_MS,
     );
     if (!result.ok) return unavailable(result.cause);
     if (result.value.code !== 0) {
@@ -515,8 +516,12 @@ export async function captureHardKillEvidence(
     // Probe first: a wedged VM must not be asked for five more things.
     const probe = await bounded(
       seams,
-      () => seams.runRuntime(["exec", containerName, "true"], execMs),
-      execMs,
+      () =>
+        seams.runRuntime(
+          ["exec", containerName, "true"],
+          DEFAULT_EXEC_TIMEOUT_MS,
+        ),
+      DEFAULT_EXEC_TIMEOUT_MS,
     );
     let failure: string | undefined;
     if (!probe.ok) {
@@ -559,9 +564,9 @@ export async function captureHardKillEvidence(
         () =>
           seams.runRuntime(
             bootLogsArgs(runtimeExecutable, containerName),
-            stepMs,
+            DEFAULT_STEP_TIMEOUT_MS,
           ),
-        stepMs,
+        DEFAULT_STEP_TIMEOUT_MS,
       );
       if (!boot.ok) {
         record.evidence.bootLogs = unavailable(boot.cause);
@@ -579,23 +584,47 @@ export async function captureHardKillEvidence(
     await Promise.all([bootP, guestBranch()]);
   };
 
-  // The branches never reject; a step that fails leaves its field recorded
-  // as unavailable, and a field never reached stays "not collected".
+  // A step that fails is recorded in its own field. A branch that throws
+  // anyway, or a timer that throws, is a bug in the capture: every field still
+  // waiting for its value says so, rather than claiming the cap ended.
+  const stepFailure = (error: unknown): string =>
+    unavailable(`capture step failed: ${firstLine(messageOf(error))}`);
+  const markUnfilled = (cause: string): void => {
+    const fill = (value: string): string =>
+      value === notCollected ? cause : value;
+    record.lastLogLine = fill(record.lastLogLine);
+    record.lastToolCall = fill(record.lastToolCall);
+    record.evidence.workerLogTail = fill(record.evidence.workerLogTail);
+    record.evidence.agentTranscriptTail = fill(
+      record.evidence.agentTranscriptTail,
+    );
+    record.evidence.bootLogs = fill(record.evidence.bootLogs);
+    const guest = record.evidence.guest;
+    guest.ps = fill(guest.ps);
+    guest.meminfo = fill(guest.meminfo);
+    guest.pressureCpu = fill(guest.pressureCpu);
+    guest.pressureMemory = fill(guest.pressureMemory);
+    guest.pressureIo = fill(guest.pressureIo);
+  };
+
   const branches = Promise.all([
     workerLogBranch(),
     transcriptBranch(),
     runtimeBranch(),
-  ]).then(() => undefined, () => undefined);
+  ]).then(
+    () => undefined,
+    (error: unknown) => markUnfilled(stepFailure(error)),
+  );
 
   try {
-    const cap = seams.timeout(totalCapMs);
+    const cap = seams.timeout(DEFAULT_TOTAL_CAP_MS);
     try {
       await Promise.race([branches, cap.promise]);
     } finally {
       cap.cancel();
     }
-  } catch {
-    // A throwing timer leaves the fields unfilled, which the record shows.
+  } catch (error) {
+    markUnfilled(stepFailure(error));
   }
 
   record.runId = logRunId ?? transcriptRunId ?? "unknown";
@@ -608,7 +637,7 @@ export async function captureHardKillEvidence(
   const written = await bounded(
     seams,
     () => seams.writeFile(file, body),
-    stepMs,
+    DEFAULT_STEP_TIMEOUT_MS,
   );
   if (!written.ok) {
     return { ok: false, error: `could not write ${file}: ${written.cause}` };
@@ -669,13 +698,7 @@ export function createEvidenceSeams(
       await Deno.mkdir(dirnameOf(path), { recursive: true });
       await Deno.writeTextFile(path, text, { mode: 0o600 });
     },
-    hostname: () => {
-      try {
-        return Deno.hostname();
-      } catch {
-        return "unknown";
-      }
-    },
+    hostname: () => Deno.hostname(),
     timeout: (ms) => {
       let handle: ReturnType<typeof setTimeout> | undefined;
       const promise = new Promise<void>((resolve) => {

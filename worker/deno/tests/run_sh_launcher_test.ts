@@ -673,6 +673,17 @@ Deno.test("run.sh - reaps a container that outlives the watchdog deadline", asyn
     const text = await Deno.readTextFile(records[0]!);
     const evidence: Record<string, unknown> = JSON.parse(text);
     assertEquals(evidence.container, name);
+    // The host is named (Issue #4253). A host the reaper cannot read is
+    // recorded as "unavailable: <cause>", so this goes red if run.sh drops
+    // --allow-sys=hostname from the reap.
+    assertEquals(typeof evidence.host, "string");
+    const host = evidence.host as string;
+    assert(host.length > 0, "the record must name the host");
+    assert(
+      !host.startsWith("unavailable:"),
+      `the reaper could not read the host: ${host}`,
+    );
+    assert(host !== "unknown", "the record must not fall back to 'unknown'");
     for (
       const field of [
         "host",
@@ -726,21 +737,6 @@ Deno.test("run.sh - a healthy run is never reaped", async () => {
   } finally {
     await harness.cleanup();
   }
-});
-
-Deno.test("run.sh - the watchdog reap is handed the worker log directory as its evidence directory (Issue #4253)", async () => {
-  // The launch contract: the reaper writes its record into the host-visible log
-  // directory before the kill, and reads the hostname only with that permission
-  // granted. Pinned in the source, scoped to the watchdog function, because the
-  // wedge test proves the location only on the one path it exercises.
-  const source = executableLines(await Deno.readTextFile(RUN_SH), "bash")
-    .join("\n");
-  const start = source.indexOf("watchdog_reap_on_deadline() {");
-  assert(start >= 0, "run.sh has no watchdog_reap_on_deadline function");
-  const watchdog = source.slice(start, source.indexOf("\n}\n", start));
-  assertStringIncludes(watchdog, "container-reap");
-  assertStringIncludes(watchdog, "--allow-sys=hostname");
-  assertStringIncludes(watchdog, '--evidence-dir "${RUN_CORE_LOG_DIR}"');
 });
 
 Deno.test("run.sh - refuses to launch when another worker is already running on this host (Issue #26)", async () => {

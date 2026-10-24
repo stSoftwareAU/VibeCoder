@@ -8,9 +8,12 @@
  *
  * The reaping behaviour itself is covered by `container_watchdog_test.ts`
  * (injected seams) and end-to-end by the launcher tests. The evidence tests
- * (Issue #4253) name a runtime path that does not exist, so every runtime step
- * fails to start and no container is touched; the reaper's read-only process
- * listing is the only subprocess they run. Nothing here signals a process.
+ * (Issue #4253) run the real `reap()` against `/nonexistent-dir/docker`, a
+ * runtime path that does not exist: every runtime invocation fails to start,
+ * so no container is touched. The reaper's process-table scan does run a real,
+ * read-only `ps -A`. It can match only a process whose executable is `docker`
+ * and whose argv carries the probe's container name. That name is random for
+ * each run, so no real process can match and nothing is signalled.
  *
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
@@ -55,12 +58,13 @@ Deno.test("container-reap - the 'another worker is running' status is its own nu
 });
 
 Deno.test("container-reap - --evidence-dir writes exactly one hard-kill file, even when every runtime step fails", async () => {
+  const name = `vibe-coder-probe-${crypto.randomUUID().slice(0, 8)}`;
   const evidenceDir = await Deno.makeTempDir({ prefix: "hard-kill-evidence-" });
   const workDir = await Deno.makeTempDir({ prefix: "hard-kill-work-" });
   try {
     const result = await reap({
       runtime: "/nonexistent-dir/docker",
-      name: "vibe-coder-4253",
+      name,
       "evidence-dir": evidenceDir,
       "work-dir": workDir,
       "grace-seconds": 0,
@@ -70,8 +74,8 @@ Deno.test("container-reap - --evidence-dir writes exactly one hard-kill file, ev
     for await (const entry of Deno.readDir(evidenceDir)) {
       names.push(entry.name);
     }
-    const evidenceFiles = names.filter((name) =>
-      /^hard-kill-vibe-coder-4253-\d+\.json$/.test(name)
+    const evidenceFiles = names.filter((entry) =>
+      new RegExp(`^hard-kill-${name}-\\d+\\.json$`).test(entry)
     );
     assertEquals(evidenceFiles.length, 1);
     assertEquals(
@@ -82,7 +86,7 @@ Deno.test("container-reap - --evidence-dir writes exactly one hard-kill file, ev
     const record = JSON.parse(
       await Deno.readTextFile(`${evidenceDir}/${evidenceFiles[0]}`),
     ) as { container: string; evidence: { bootLogs: string } };
-    assertEquals(record.container, "vibe-coder-4253");
+    assertEquals(record.container, name);
     assertStringIncludes(record.evidence.bootLogs, "unavailable: exit -1:");
   } finally {
     await Deno.remove(evidenceDir, { recursive: true });
@@ -91,11 +95,12 @@ Deno.test("container-reap - --evidence-dir writes exactly one hard-kill file, ev
 });
 
 Deno.test("container-reap - without --evidence-dir no evidence file is written", async () => {
+  const name = `vibe-coder-probe-${crypto.randomUUID().slice(0, 8)}`;
   const workDir = await Deno.makeTempDir({ prefix: "hard-kill-work-" });
   try {
     const result = await reap({
       runtime: "/nonexistent-dir/docker",
-      name: "vibe-coder-4254",
+      name,
       "work-dir": workDir,
       "grace-seconds": 0,
     });

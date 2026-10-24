@@ -36,7 +36,6 @@ const NOW = Date.parse("2026-10-24T01:02:03.000Z");
 const EPOCH = Math.floor(NOW / 1000);
 const FILE = `${DIR}/hard-kill-${CONTAINER}-${EPOCH}.json`;
 const RUN_ID = "vibe-m3k9x2-0a1b2c";
-const TOTAL_CAP_MS = 1_234;
 const TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
 
 const BASE: EvidenceOptions = {
@@ -494,7 +493,7 @@ Deno.test("captureHardKillEvidence - boot logs that exit 1 are recorded with the
   );
 });
 
-Deno.test("captureHardKillEvidence - a failing hostname is recorded as unknown and the capture goes on", async () => {
+Deno.test("captureHardKillEvidence - a failing hostname is recorded with its cause and the capture goes on", async () => {
   const h = harness({
     files: HAPPY_FILES,
     hostname: () => {
@@ -505,8 +504,36 @@ Deno.test("captureHardKillEvidence - a failing hostname is recorded as unknown a
   const outcome = await captureHardKillEvidence(h.seams, BASE);
 
   assertEquals(outcome.ok, true);
-  assertEquals(recordOf(h).host, "unknown");
+  assertEquals(recordOf(h).host, "unavailable: no hostname");
   assertEquals(recordOf(h).runId, RUN_ID);
+});
+
+Deno.test("captureHardKillEvidence - a branch that throws names the failure in each field it had not filled", async () => {
+  // The last line has no timestamp, so the worker branch falls back to the
+  // file's modified time; an invalid time makes that throw after the log
+  // fields are filled. The runtime never answers and no timer fires, so the
+  // boot logs and guest fields are still waiting when the branch fails.
+  const h = harness({
+    files: {
+      "worker.log": {
+        text: "[2026-10-24T01:00:00.000Z] fine\nno stamp here\n",
+        mtimeMs: Number.NaN,
+      },
+    },
+    runtime: () => new Promise<EvidenceInvocation>(() => {}),
+    firesFor: () => false,
+  });
+
+  const outcome = await captureHardKillEvidence(h.seams, BASE);
+
+  assertEquals(outcome, { ok: true, file: FILE });
+  const record = recordOf(h);
+  const failed = "unavailable: capture step failed: Invalid time value";
+  assertEquals(record.evidence.bootLogs, failed);
+  assertEquals(record.evidence.guest.ps, failed);
+  assertEquals(record.evidence.guest.pressureIo, failed);
+  // A field the branch had already filled keeps its value.
+  assertEquals(record.lastLogLine, "no stamp here");
 });
 
 // ---------------------------------------------------------------------------
@@ -518,18 +545,15 @@ Deno.test("captureHardKillEvidence - a hung runtime at the total cap leaves its 
     files: HAPPY_FILES,
     runtime: () => new Promise<EvidenceInvocation>(() => {}),
     // Only the total cap fires; every step timer stays pending.
-    firesFor: (ms) => ms === TOTAL_CAP_MS,
+    firesFor: (ms) => ms === DEFAULT_TOTAL_CAP_MS,
   });
 
-  const outcome = await captureHardKillEvidence(h.seams, {
-    ...BASE,
-    totalCapMs: TOTAL_CAP_MS,
-  });
+  const outcome = await captureHardKillEvidence(h.seams, BASE);
 
   assertEquals(outcome, { ok: true, file: FILE });
   const record = recordOf(h);
   const notCollected =
-    `unavailable: not collected before the ${TOTAL_CAP_MS}ms capture cap ended`;
+    `unavailable: not collected before the ${DEFAULT_TOTAL_CAP_MS}ms capture cap ended`;
   assertEquals(record.evidence.bootLogs, notCollected);
   assertEquals(record.evidence.guest.ps, notCollected);
   assertEquals(record.evidence.guest.pressureIo, notCollected);
