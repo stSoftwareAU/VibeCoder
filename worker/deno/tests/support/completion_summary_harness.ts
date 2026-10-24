@@ -138,7 +138,10 @@ Fixed the fault. Closes #${ISSUE}.
 - \`worker/deno/tests/completion_phase_summary_rule_retry_test.ts\`
 `;
 
-export function stubClient(comments: string[]): GitHubClient {
+export function stubClient(
+  comments: string[],
+  failCommentContaining?: string,
+): GitHubClient {
   return {
     getIssue: () => {
       throw new Error("stub");
@@ -147,6 +150,12 @@ export function stubClient(comments: string[]): GitHubClient {
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
     postComment: (_repo: string, _issue: number, body: string) => {
+      if (
+        failCommentContaining !== undefined &&
+        body.includes(failCommentContaining)
+      ) {
+        return Promise.reject(new Error("stub: comment refused"));
+      }
       comments.push(body);
       return Promise.resolve(undefined);
     },
@@ -195,6 +204,13 @@ export interface Scenario {
    * end. Omitted, the model pass is not scripted and reports nothing.
    */
   claimSentences?: readonly (readonly string[])[];
+  /** The issue's comments before the run (Issue #4234), as the author's login. */
+  issueComments?: readonly { author: string; body: string }[];
+  /**
+   * A substring: an issue comment whose body contains it fails to post (Issue
+   * #4234). Other comments post normally, so only that one post is refused.
+   */
+  failCommentContaining?: string;
 }
 
 export interface Outcome {
@@ -233,7 +249,9 @@ const HOST_RUN_CAP_ENV = [RUN_MAX_SECONDS_ENV, RUN_STARTED_EPOCH_ENV] as const;
  * outcome never depends on the environment the test runner happens to inherit.
  */
 export async function runCompletion(scenario: Scenario): Promise<Outcome> {
-  const saved = HOST_RUN_CAP_ENV.map((name) => [name, Deno.env.get(name)] as const);
+  const saved = HOST_RUN_CAP_ENV.map((name) =>
+    [name, Deno.env.get(name)] as const
+  );
   for (const name of HOST_RUN_CAP_ENV) Deno.env.delete(name);
   try {
     return await runCompletionWithoutHostCap(scenario);
@@ -269,10 +287,9 @@ async function runCompletionWithoutHostCap(
   let retryTurn = 0;
   let claimPasses = 0;
   const logs: Outcome["logs"] = [];
-  const capture =
-    (level: "info" | "warn" | "error") => (message: string) => {
-      logs.push({ level, message });
-    };
+  const capture = (level: "info" | "warn" | "error") => (message: string) => {
+    logs.push({ level, message });
+  };
 
   const config = buildDefaultWorkerConfig();
   // Never inherit the host's work directory — gate state is persisted under it.
@@ -285,6 +302,10 @@ async function runCompletionWithoutHostCap(
     issueBody: scenario.issueBody ?? ISSUE_WITH_CRITERIA,
     issueLabels: scenario.labels ?? ["enhancement", "work-on"],
     issueComments: "",
+    issueCommentRows: scenario.issueComments?.map((c) => ({
+      author: c.author,
+      body: c.body,
+    })),
     githubUser: "testbot",
     config,
   };
@@ -307,7 +328,7 @@ async function runCompletionWithoutHostCap(
       error: capture("error"),
     },
     github: {
-      createClient: () => stubClient(comments),
+      createClient: () => stubClient(comments, scenario.failCommentContaining),
       runGhCommand: (args: string[]) => {
         if (
           scenario.landedDuringGate && args[0] === "pr" && args[1] === "list" &&
@@ -477,5 +498,6 @@ async function runCompletionWithoutHostCap(
     verifierInputs,
     finalisePrCalls,
     finalisedBeforeTurn,
+    logs,
   };
 }

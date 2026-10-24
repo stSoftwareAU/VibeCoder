@@ -14,15 +14,23 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  buildPrePrVerifierGateComment,
   PRE_PR_VERIFIER_COMMENT_HEADING,
   type PrePrVerifierResult,
   type ReviewFinding,
 } from "../lib/pre_pr_verifier.ts";
-import { PRE_PR_VERIFIER_ADVISORY_HEADING } from "../lib/verifier_convergence.ts";
+import {
+  findingToEarlierText,
+  PRE_PR_VERIFIER_ADVISORY_HEADING,
+} from "../lib/verifier_convergence.ts";
 import {
   getFleetTelemetry,
   resetFleetTelemetry,
 } from "../lib/fleet_telemetry.ts";
+import {
+  RUN_MAX_SECONDS_ENV,
+  RUN_STARTED_EPOCH_ENV,
+} from "../lib/run_hard_cap.ts";
 import {
   runCompletion,
   SUMMARY_WITH_BLOCK,
@@ -371,6 +379,338 @@ Deno.test(
     assertStringIncludes(
       outcome.reason ?? "",
       "recovery stopped after 1 turn: blocking findings did not decrease (1 → 1)",
+    );
+  },
+);
+
+// -----------------------------------------------------------------------------
+// One pass for real (Issue #4234 review): the three opening gates fold together.
+// -----------------------------------------------------------------------------
+
+/** The docs-sweep line the clean summary carries, reused in the fixtures below. */
+const DOCS_SWEEP_LINE = SUMMARY_CLEAN.match(/\*\*Docs sweep\*\*[^\n]*/)![0];
+
+/**
+ * A summary with no closure, independent-review or reproduction block, but a
+ * docs sweep and branch outcomes that pass: only the three opening gates block.
+ */
+const SUMMARY_WITHOUT_THREE_GATES = [
+  "## Summary",
+  "",
+  "Fixed the fault. Closes #4234.",
+  "",
+  DOCS_SWEEP_LINE,
+  "",
+  "**Branch outcomes:** none added",
+  "",
+  "## Test Plan",
+  "",
+  "- `worker/deno/tests/completion_phase_gate_recovery_4234_test.ts`",
+  "",
+].join("\n");
+
+Deno.test(
+  "gate recovery - closure, independent review and reproduction blocked together go to one recovery prompt (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITHOUT_THREE_GATES,
+      labels: ["bug", "work-on"],
+      verifier: [checked([])],
+    });
+
+    // The first pass reports all three gates, so its one recovery prompt
+    // carries all three items. The unmet criteria (Issue #4146) fold in as a
+    // fourth item, since these criteria are unmet. Later turns are a separate
+    // question (the closure render and the loop's count decide them), so they
+    // are not pinned.
+    const prompt = outcome.claudePrompts[0]!;
+    assertStringIncludes(prompt, "REQUIRED ITEM 1 of 4");
+    assertStringIncludes(prompt, "REQUIRED ITEM 2 of 4");
+    assertStringIncludes(prompt, "REQUIRED ITEM 3 of 4");
+    assertStringIncludes(prompt, "Acceptance-criteria closure missing");
+    assertStringIncludes(prompt, "Independent review missing");
+    assertStringIncludes(prompt, "Reproduction status missing");
+    assertStringIncludes(
+      outcome.comments[0]!,
+      "Acceptance-criteria closure missing",
+    );
+    assertStringIncludes(outcome.comments[0]!, "Reproduction status missing");
+  },
+);
+
+// -----------------------------------------------------------------------------
+// Per-finding counts (Issue #4234 review): a count of problems, not of sections.
+// -----------------------------------------------------------------------------
+
+/** Three claims the model reports as describing named code wrongly. */
+const CLAIM_SENTENCES = [
+  "The first claim names a helper that does not exist.",
+  "The second claim names a regex that matches nothing.",
+  "The third claim names a test that covers nothing.",
+];
+
+/**
+ * The docs-sweep-only summary, with the claim sentences in it. The docs sweep
+ * blocks every pass (the recovery writes nothing), so the claim check folds
+ * into that block, where its per-problem count reaches the loop.
+ */
+const SUMMARY_WITH_CLAIMS = [
+  SUMMARY_NO_DOCS_SWEEP.trimEnd(),
+  "",
+  ...CLAIM_SENTENCES,
+  "",
+].join("\n");
+
+Deno.test(
+  "gate recovery - a claim-check count that falls from three problems to two keeps the loop going (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_CLAIMS,
+      claimSentences: [
+        CLAIM_SENTENCES,
+        CLAIM_SENTENCES.slice(0, 2),
+        CLAIM_SENTENCES.slice(0, 2),
+      ],
+      verifier: [checked([])],
+    });
+
+    // docs sweep (1) + three claim problems = 4; then 1 + two = 3, which falls.
+    // The third pass holds at 3, so the loop stops after the second turn.
+    assertEquals(outcome.verifierInputs.length, 3, "three gate passes");
+    assertEquals(outcome.claudePrompts.length, 2, "two recovery turns");
+    assertEquals(outcome.status, "failure");
+    assertStringIncludes(
+      outcome.reason ?? "",
+      "blocking findings did not decrease (4 → 3 → 3)",
+    );
+  },
+);
+
+Deno.test(
+  "gate recovery - a claim-check count that holds at three problems stops the loop after one turn (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_CLAIMS,
+      claimSentences: [CLAIM_SENTENCES, CLAIM_SENTENCES],
+      verifier: [checked([])],
+    });
+
+    assertEquals(outcome.claudePrompts.length, 1, "one recovery turn");
+    assertEquals(outcome.verifierInputs.length, 2, "two gate passes");
+    assertStringIncludes(
+      outcome.reason ?? "",
+      "blocking findings did not decrease (4 → 4)",
+    );
+  },
+);
+
+// -----------------------------------------------------------------------------
+// The agent's reply reaches the verifier (Issue #4234 review).
+// -----------------------------------------------------------------------------
+
+Deno.test(
+  "gate recovery - the agent's reply to the verifier's findings reaches the next verifier pass (Issue #4234)",
+  async () => {
+    const reply =
+      "Fixed F1 by removing the claim. Disputed F2: the test covers it at line 9.";
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      retryWrites: SUMMARY_CLEAN,
+      retryOutput: reply,
+      verifier: [checked([F1, F2]), checked([])],
+    });
+
+    assertEquals(outcome.verifierInputs.length, 2, "two verifier passes");
+    assertEquals(
+      outcome.verifierInputs[0]!.agentResponse,
+      undefined,
+      "the first pass has no recovery turn behind it",
+    );
+    assertEquals(outcome.verifierInputs[1]!.agentResponse, reply);
+    assertEquals(outcome.verifierInputs[1]!.previousFindings?.length, 2);
+  },
+);
+
+// -----------------------------------------------------------------------------
+// Anchored verifier-comment parsing (Issue #4234 review).
+// -----------------------------------------------------------------------------
+
+/** One folded gate comment's separator, as `foldInLateSummaryVerdicts` writes it. */
+const FOLD = "\n\n---\n\n";
+
+/** The verifier's own gate comment for `list`, as the worker posts it. */
+function verifierSectionFor(list: ReviewFinding[]): string {
+  const result = checked(list);
+  if (result.status !== "checked") {
+    throw new Error("a checked verifier result is expected");
+  }
+  return buildPrePrVerifierGateComment(result.review);
+}
+
+/**
+ * A folded section that QUOTES the verifier heading mid-text, with a bullet
+ * under it the old `indexOf` slice would have parsed as a finding.
+ */
+const QUOTED_VERIFIER_SECTION = [
+  "The agent quoted the verifier's comment back:",
+  "",
+  PRE_PR_VERIFIER_COMMENT_HEADING,
+  "",
+  "A quoted intro line.",
+  "",
+  "A quoted summary line.",
+  "",
+  "- `worker/deno/lib/quoted.ts:1` — QUOTED PROBLEM — fix: QUOTED FIX",
+].join("\n");
+
+Deno.test(
+  "gate recovery - a verifier heading quoted mid-section is not taken as the verifier's findings (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      issueComments: [{
+        author: "testbot",
+        body: [QUOTED_VERIFIER_SECTION, verifierSectionFor([F2])].join(FOLD),
+      }],
+      verifier: [checked([])],
+    });
+
+    assertEquals(
+      outcome.verifierInputs[0]!.previousFindings,
+      [findingToEarlierText(F2)],
+      "only the verifier's own section is read back",
+    );
+  },
+);
+
+Deno.test(
+  "gate recovery - the verifier's own folded section is read back as its findings (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      issueComments: [{
+        author: "testbot",
+        body: [
+          "Closure block missing: the gate's own text.",
+          verifierSectionFor([F2]),
+        ].join(FOLD),
+      }],
+      verifier: [checked([])],
+    });
+
+    assertEquals(
+      outcome.verifierInputs[0]!.previousFindings,
+      [findingToEarlierText(F2)],
+    );
+  },
+);
+
+// -----------------------------------------------------------------------------
+// Host run cap is not inherited (Issue #4234 review).
+// -----------------------------------------------------------------------------
+
+Deno.test(
+  "gate recovery - a near-expired host run cap does not change the recovery outcome (Issue #4234)",
+  async () => {
+    const savedMax = Deno.env.get(RUN_MAX_SECONDS_ENV);
+    const savedStart = Deno.env.get(RUN_STARTED_EPOCH_ENV);
+    const started = String(Math.floor(Date.now() / 1000) - 3600);
+    Deno.env.set(RUN_MAX_SECONDS_ENV, "60");
+    Deno.env.set(RUN_STARTED_EPOCH_ENV, started);
+    try {
+      const outcome = await runCompletion({
+        summary: SUMMARY_NO_DOCS_SWEEP,
+        retryWrites: SUMMARY_CLEAN,
+        verifier: [checked([])],
+      });
+
+      assertEquals(
+        outcome.status,
+        "continue",
+        "the harness removes the host cap, so the turn is not skipped for runway",
+      );
+      assertEquals(outcome.claudePrompts.length, 1, "the recovery turn ran");
+      assertEquals(
+        Deno.env.get(RUN_MAX_SECONDS_ENV),
+        "60",
+        "the host cap is restored once the run ends",
+      );
+      assertEquals(Deno.env.get(RUN_STARTED_EPOCH_ENV), started);
+    } finally {
+      if (savedMax === undefined) Deno.env.delete(RUN_MAX_SECONDS_ENV);
+      else Deno.env.set(RUN_MAX_SECONDS_ENV, savedMax);
+      if (savedStart === undefined) Deno.env.delete(RUN_STARTED_EPOCH_ENV);
+      else Deno.env.set(RUN_STARTED_EPOCH_ENV, savedStart);
+    }
+  },
+);
+
+// -----------------------------------------------------------------------------
+// Gate-failure telemetry line (Issue #4234 review).
+// -----------------------------------------------------------------------------
+
+const GATE_FAILURE_RATE_PREFIX = "[gate-failure-rate]";
+
+Deno.test(
+  "gate recovery - the gate-failure-rate line is logged once for a run that recorded a summary-rule block (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_NO_DOCS_SWEEP,
+      retryWrites: SUMMARY_CLEAN,
+      verifier: [checked([])],
+    });
+
+    const lines = outcome.logs.filter((l) =>
+      l.message.startsWith(GATE_FAILURE_RATE_PREFIX)
+    );
+    assertEquals(lines.length, 1, "logged exactly once");
+  },
+);
+
+Deno.test(
+  "gate recovery - the gate-failure-rate line is not logged for a run with no block (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      verifier: [checked([])],
+    });
+
+    const lines = outcome.logs.filter((l) =>
+      l.message.startsWith(GATE_FAILURE_RATE_PREFIX)
+    );
+    assertEquals(lines.length, 0, "no summary gate blocked, so no line");
+  },
+);
+
+// -----------------------------------------------------------------------------
+// The advisory verifier comment is non-fatal (Issue #4234 review).
+// -----------------------------------------------------------------------------
+
+Deno.test(
+  "gate recovery - a refused advisory verifier comment is logged and the run continues (Issue #4234)",
+  async () => {
+    const fresh = finding("N", {
+      file: "worker/deno/lib/other_module.ts",
+      line: 9,
+      severity: "medium",
+    });
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      failCommentContaining: PRE_PR_VERIFIER_ADVISORY_HEADING,
+      verifier: [checked([F1]), checked([fresh])],
+    });
+
+    assertEquals(outcome.status, "continue", "the advisory post is not fatal");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(
+      outcome.logs.filter((l) =>
+        l.level === "warn" &&
+        l.message.includes(
+          "Could not post the pre-PR verifier advisory comment",
+        )
+      ).length,
+      1,
+      "the refused post is logged once",
     );
   },
 );

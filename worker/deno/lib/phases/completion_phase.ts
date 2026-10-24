@@ -3449,14 +3449,16 @@ async function completionBody(
 
   /**
    * The late summary-rule verdicts, in the fixed order they are folded into
-   * an earlier gate's block: docs sweep, removed assertions, result
+   * an earlier gate's block: acceptance closure, independent review and
+   * reproduction status (Issue #4234 moved them in: they were checked one at a
+   * time before), then the scrub, docs sweep, removed assertions, result
    * placeholder, branch outcomes, mutation check, coverage carry-over, the
-   * summary claim check, then the pre-PR verifier (Issue #3147 added branch
-   * outcomes; Issue #3393 the mutation check; Issue #3795 the coverage
-   * carry-over check; Issue #3257 the claim check; Issue #3395 added the
-   * verifier last). One
-   * source of truth for both the ordered fold below and the gates' own
-   * standalone blocks further down.
+   * summary claim check, the pre-PR verifier and the unmet criteria (Issue
+   * #3147 added branch outcomes; Issue #3393 the mutation check; Issue #3795
+   * the coverage carry-over check; Issue #3257 the claim check; Issue #3395
+   * added the verifier; Issue #4146 the unmet criteria). One source of truth
+   * for both the ordered fold below and the gates' own standalone blocks
+   * further down.
    */
   interface LateSummaryVerdict {
     /** The gate this verdict is reported under (Issue #4234). */
@@ -3503,9 +3505,10 @@ async function completionBody(
   const reviewVerdict: LateSummaryVerdict = {
     gate: "independent-review",
     blocked: review.applicable && !review.valid,
-    reason: `Independent Spec/Standards review not reported in the PR summary: ${
-      review.problems[0] ?? "review blocks missing"
-    }`,
+    reason:
+      `Independent Spec/Standards review not reported in the PR summary: ${
+        review.problems[0] ?? "review blocks missing"
+      }`,
     comment: () => buildIndependentReviewComment(review),
     findings: Math.max(1, review.problems.length),
   };
@@ -3979,7 +3982,8 @@ async function completionBody(
       if (verdict.needsTestChanges) allowsTestChanges = true;
       foldedReason = `${foldedReason}; ${verdict.reason}`;
       const verdictComment = verdict.comment();
-      foldedComment = `${foldedComment}${FOLDED_SECTION_SEPARATOR}${verdictComment}`;
+      foldedComment =
+        `${foldedComment}${FOLDED_SECTION_SEPARATOR}${verdictComment}`;
       sections.push(verdictComment);
       gates.push(verdict.gate);
       sectionFindings.push({ gate: verdict.gate, findings: verdict.findings });
