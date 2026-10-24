@@ -71,6 +71,18 @@ function assertCoverage(
   const allowed = new Set(allowlist.map((entry) => entry.name));
   if (builders.length === 0) problems.push("Builder scan found nothing");
   if (rows.length === 0) problems.push("Row scan found nothing");
+  // A Set is useful for lookup, but must not hide duplicate coverage rows.
+  // Duplicate registrations can disguise stale fixtures or conflicting tests.
+  for (const [entries, description] of [
+    [rows, "coverage row"],
+    [allowlist.map((entry) => entry.name), "NO_UNTRUSTED_INPUT entry"],
+  ] as const) {
+    const seen = new Set<string>();
+    for (const name of entries) {
+      if (seen.has(name)) problems.push(`Duplicate ${description}: ${name}`);
+      seen.add(name);
+    }
+  }
   for (const name of builderNames) {
     if (!covered.has(name) && !allowed.has(name)) {
       problems.push(`Missing fence coverage: ${name}`);
@@ -193,6 +205,21 @@ Deno.test("fence coverage completeness - rejects empty scans, missing, stale and
       rows: ["buildRealPrompt"],
       allowlist: [],
       reason: "Missing fence coverage: buildDummyPrompt",
+    },
+    {
+      builders: ["buildRealPrompt"],
+      rows: ["buildRealPrompt", "buildRealPrompt"],
+      allowlist: [],
+      reason: "Duplicate coverage row: buildRealPrompt",
+    },
+    {
+      builders: ["buildRealPrompt", "buildFixedPrompt"],
+      rows: ["buildRealPrompt"],
+      allowlist: [
+        { name: "buildFixedPrompt", reason: "fixed" },
+        { name: "buildFixedPrompt", reason: "fixed again" },
+      ],
+      reason: "Duplicate NO_UNTRUSTED_INPUT entry: buildFixedPrompt",
     },
     {
       builders: ["buildRealPrompt"],
