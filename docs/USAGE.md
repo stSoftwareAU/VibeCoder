@@ -304,7 +304,9 @@ For the full planning workflow, see
 
 An assigned issue is completed, never parked (Issue #4158). A failure is
 recorded on the issue and the worker tries again after a cooldown; it never
-applies `failed` and never hands the issue to a human.
+applies `failed` and never hands the issue to a human. The one exception is a
+repeat worker-gate failure, which splits the issue into sub-issues instead
+(Issue #4130, see below).
 
 ```mermaid
 flowchart TD
@@ -388,9 +390,9 @@ not finished, so the worker:
   removes `failed-once`.
 
 The clean-up steps are best-effort: a failure is logged and reported as a note,
-never recorded as a repeat. A split run records no cooldown. Only a worker gate
-splits: timeouts, provider errors, merge conflicts, crashes and
-`criteria_unmet` keep the repeat record and cooldown. If planning publishes no
+never recorded as a repeat. A split run records no cooldown. Only the four
+worker gates split. Every other category, including `criteria_unmet`, is handled
+as before, under the rules in the sections above. If planning publishes no
 sub-issues, fails or throws, the run falls back to the ordinary repeat record,
 with a warning that names the reason, and the branch is left as it is.
 

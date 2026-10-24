@@ -559,6 +559,30 @@ for (const g of GUARDED) {
   });
 }
 
+for (const g of GUARDED) {
+  Deno.test(`repeat gate split: leaves the PRs on branch '${g.name}' (base '${g.base}') alone`, async () => {
+    const { outcome, rec } = await runSplit({
+      branchName: g.name,
+      baseBranch: g.base,
+      defaultBranch: g.defaultBranch,
+      prs: JSON.stringify([{
+        number: 401,
+        isDraft: false,
+        isCrossRepository: false,
+      }]),
+    });
+    assert(outcome.split, "the split still stands");
+    assert(
+      !rec.gh.some((a) => a[0] === "pr"),
+      "no gh pr list and no gh pr close is issued",
+    );
+    assert(
+      outcome.notes.some((n) => n.includes("left the pull requests in place")),
+      "a note records the refusal",
+    );
+  });
+}
+
 // ---------------------------------------------------------------------------
 // (f) a failing PR close or branch delete does not stop the rest
 // ---------------------------------------------------------------------------

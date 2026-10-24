@@ -5293,8 +5293,9 @@ four gates `summary_incomplete`, `quality_check`, `pre_push_gate` and
 `security_fix_gate`, and nothing else), and the caller supplied a
 `splitOnRepeatGate` hook. The predicate is deliberately not `isWorkerGateCategory`:
 `criteria_unmet` is not in the list. The first failure still adds `failed-once`.
-Every other category is recorded as before, with the repeat record and the
-escalating cooldown.
+Every other category is handled as before: a non-transient one takes the repeat
+record and the escalating cooldown, and transient infrastructure keeps its flat
+cooldown.
 
 The callers that build the hook are the quality-gate remediation phase
 (`worker/deno/lib/phases/quality_gate_remediation_phase.ts`, when the run has a

@@ -47,14 +47,6 @@ sub-issue (the redacted gate output and branch summary) and the local clone.
 
 ## Residual notes (not findings)
 
-- **PR closure is not guarded by the branch refusal list.** `branchDeleteRefusal`
-  applies to the remote branch delete only. `closeRunPullRequests` closes open
-  pull requests whose head is `branch.branchName` without that check. A coding
-  run's branch is an issue branch (`createBranchName`) or a resumed one, never a
-  milestone branch (`createMilestoneBranchName` is used only for milestone
-  branches), so this path is not reachable for a shared branch today. A
-  hardening step that applies the same refusal to the PR close would close it.
-  It is not made here, because this record only triages what the code does.
 - **Gate output reaches an LLM planner.** The fence and the "data, not
   instructions" line are the mitigation. They lower the risk and do not remove
   it. The planner's output is limited to filing sub-issues, and the worker

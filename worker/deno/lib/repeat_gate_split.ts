@@ -24,6 +24,11 @@
  * INVARIANT: this path never marks a pull request ready, merges one, or arms
  * auto-merge. It only ever closes pull requests.
  *
+ * BRANCH GUARD: the guard (`branchDeleteRefusal`) covers both PR closing and
+ * the remote branch delete. An empty name, the base branch, the default branch
+ * and every `milestone/` branch are never touched: their pull requests are not
+ * closed and the remote branch is not deleted. Each refusal is a note.
+ *
  * WHAT THIS DESTROYS: the remote run branch and its commits (the tip is removed
  * with `git push --delete`). The work survives only as the summary in each
  * sub-issue and in the local clone, which this path does not touch. That is
@@ -439,9 +444,11 @@ async function completeSubIssue(
 }
 
 /**
- * Why the run branch must not be deleted, or `undefined` when it may be
- * (Issue #4130). The base, the default branch and every milestone branch are
- * shared work, so they are never deleted.
+ * Why the run branch must not be touched, or `undefined` when it may be
+ * (Issue #4130). The guard covers both steps: closing its open pull requests
+ * and deleting the remote branch. An empty name, the base branch, the default
+ * branch and every `milestone/` branch are shared work, so none of their pull
+ * requests are closed and none of them is deleted.
  */
 function branchDeleteRefusal(branch: RepeatGateBranch): string | undefined {
   const name = branch.branchName.trim();
@@ -494,6 +501,9 @@ function splitLinks(subIssueUrls: string[]): string {
  * Close every open pull request on the run branch, drafts included. Each
  * close is independent: one refusal does not stop the others. `--delete-branch`
  * is never passed, so the branch is removed only by the deletion step.
+ *
+ * The branch guard ({@link branchDeleteRefusal}) runs first: a refused branch
+ * has no `gh pr list` and no `gh pr close` at all, and a note says why.
  */
 async function closeRunPullRequests(
   deps: WorkerDeps,
@@ -503,6 +513,11 @@ async function closeRunPullRequests(
   subIssueUrls: string[],
   notes: string[],
 ): Promise<void> {
+  const refusal = branchDeleteRefusal(branch);
+  if (refusal !== undefined) {
+    notes.push(`left the pull requests in place: ${refusal}`);
+    return;
+  }
   const raw = await deps.github.runGhCommand([
     "pr",
     "list",
