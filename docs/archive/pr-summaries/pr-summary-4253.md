@@ -47,11 +47,20 @@ Backend/CLI change; no UI files. Targeted runs on the final head:
 `deno task test:unit tests/hard_kill_evidence_test.ts tests/container_watchdog_test.ts tests/container_reap_command_test.ts`
 passed (74 tests);
 `deno test -A --filter "run.sh - " tests/run_sh_launcher_test.ts` passed (104
-tests). `./quality.sh` on an earlier head of this branch failed only on tests
-unrelated to this change: 10 tests needing the codex/gemini/deepseek provider
-images or `cargo fmt` (not installed in this sandbox) and the lib-sweep ledger,
-which `docs/audits/lib-sweep-coverage/top-up-4253.json` then fixed
-(`lib_sweep_coverage_test.ts` and `deno task check:manifests` pass).
+tests). `./quality.sh` on the final head: every check passed (fmt, lint, type
+check, mermaid, markdownlint, semgrep, chokepoints, source targets) except
+`deno tests`, where 29758 passed and 8 failed. All 8 fail the same way: "The
+running container image did not install the \"codex\" (or \"gemini\" /
+\"deepseek\") coding-agent provider. Installed: claude." They are in
+`claude_runner_provider_fallback_4034_test.ts` (2),
+`execute_claude_phase_rtk_test.ts`, `execute_claude_phase_test.ts` (2),
+`execute_phase_assignment_3718_test.ts`,
+`external_orchestration_3642_config_test.ts` and
+`external_orchestration_3642_phase_test.ts`. Running those six files on a
+checkout of the base commit (`ffdc31c9`) gives the identical 8 failures (79
+passed, 8 failed), so the branch did not cause them; this sandbox's container
+image carries only the `claude` provider. The serial test pass did not run
+because the parallel pass failed.
 
 ```mermaid
 flowchart TD
@@ -102,11 +111,12 @@ because they mention the watchdog without listing reaper flags.
   evidence:
   `worker/deno/tests/run_sh_launcher_test.ts::run.sh - reaps a container that outlives the watchdog deadline`
   — reviewer: met
-- **met** — Tests and `./quality.sh` pass. — evidence: the touched test files
-  pass on the final head; the remaining `./quality.sh` failures are
-  environmental (missing provider images and `cargo`) and fail on the base
-  branch too — reviewer: missing — reason: the Spec reviewer saw only the diff
-  and could not judge the gate; the sandbox failures are listed under Evidence
+- **partial** — Tests and `./quality.sh` pass. — evidence: `./quality.sh` on the
+  final head passes every check except `deno tests`; the 8 failing tests need
+  the codex/gemini/deepseek provider images and fail identically on the base
+  commit `ffdc31c9` (see Evidence) — reviewer: partial — reason: the gate is not
+  green in this sandbox because of the missing provider images; the touched test
+  files all pass
 - **unrequested** — `docs/TROUBLESHOOTING.md` pointer to the record — reviewer:
   unrequested — reason: operators reading the exit-87 section need to know where
   the record is
@@ -149,7 +159,7 @@ because they mention the watchdog without listing reaper flags.
 
 ## Test Plan
 
-- Added `worker/deno/tests/hard_kill_evidence_test.ts` (32 tests), 10 tests in
+- Added `worker/deno/tests/hard_kill_evidence_test.ts` (32 tests), 8 tests in
   `worker/deno/tests/container_watchdog_test.ts`, 2 in
   `worker/deno/tests/container_reap_command_test.ts`, and wedge/healthy-run
   assertions in `worker/deno/tests/run_sh_launcher_test.ts`.

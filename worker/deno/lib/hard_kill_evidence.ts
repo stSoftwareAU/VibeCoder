@@ -45,7 +45,7 @@ export const MAX_LINE_CHARS = 2000;
 /** Longest serialised tool call kept. */
 export const MAX_TOOL_CALL_CHARS = 500;
 
-/** Bound on one `container exec` or boot-log invocation for guest probes. */
+/** Bound on one `container exec` invocation for the guest probes. */
 export const DEFAULT_EXEC_TIMEOUT_MS = 10_000;
 
 /** Bound on one evidence step: a listing, a read, a write or a runtime call. */
