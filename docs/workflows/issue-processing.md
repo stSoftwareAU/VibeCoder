@@ -1287,9 +1287,14 @@ raised. The agent dispatches nothing for it.
   `{symbol, caller: "file:line", verdict, note}`, where `verdict` is
   `unchanged`, `changed and tested` or `regressed`. The code adds a blocking
   finding for every listed caller with no verdict and for every `regressed`
-  verdict, whatever the model's own findings say. A git failure while listing
-  callers, or a malformed `callers` array, makes the pass "not checked". The
-  fleet reviewer does not get this list.
+  verdict, whatever the model's own findings say. A verdict matches a listed
+  caller when it copies the symbol and caller either as the worker holds them
+  or as the fenced list shows them (the once-scrubbed text). A scrubbed form
+  shared by two different listed callers (for example two secrets both shown
+  as the redaction placeholder) matches neither, so each needs a verdict that
+  copies its raw symbol and caller. A git failure while listing callers, or a
+  malformed `callers` array, makes the pass "not checked". The fleet reviewer
+  does not get this list.
 - **Disposable checkout.** A `git clone --shared` of the issue checkout at the
   head commit, with its `origin` remote removed, holding the exact PR summary
   text the gates read. The verifier may run commands there: tests, flipping a
