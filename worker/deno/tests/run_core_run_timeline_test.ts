@@ -169,7 +169,8 @@ const HARD_KILL_ISO = new Date(HARD_KILL_EPOCH_S * 1000).toISOString();
  * sleep, so the loop stops after one pass.
  */
 async function runLoopCapturing(
-  env: (name: string) => string | undefined,
+  env: ((name: string) => string | undefined) | undefined,
+  options: { withLogWarn?: boolean } = {},
 ): Promise<{ logs: string[]; warns: string[]; errors: string[] }> {
   const logs: string[] = [];
   const warns: string[] = [];
@@ -181,9 +182,11 @@ async function runLoopCapturing(
       nowValue = START_MS + (DEFAULT_RUN_FINISH_SECONDS + 1) * 1000;
       return Promise.resolve();
     },
-    env,
+    ...(env ? { env } : {}),
     log: (m: string) => logs.push(m),
-    logWarn: (m: string) => warns.push(m),
+    ...(options.withLogWarn === false
+      ? {}
+      : { logWarn: (m: string) => warns.push(m) }),
     logError: (m: string) => errors.push(m),
   });
   await runCoreLoop(createDefaultRunCoreConfig(), deps);
@@ -298,5 +301,99 @@ Deno.test(
       config.claudeKillAfterSeconds,
       OPERATIONAL_DEFAULTS.claudeKillAfter,
     );
+  },
+);
+
+/** Epoch-seconds for the simulated start, as the watchdog would publish it. */
+const START_EPOCH_S = START_MS / 1000;
+
+Deno.test(
+  "run_core - with no deps.env the process hard-kill variable is not read (Issue #4242)",
+  async () => {
+    const previous = Deno.env.get(HARD_KILL_AT_EPOCH_ENV);
+    Deno.env.set(HARD_KILL_AT_EPOCH_ENV, String(HARD_KILL_EPOCH_S));
+    try {
+      const { logs } = await runLoopCapturing(undefined);
+      const lines = timelineLines(logs);
+      assertEquals(lines.length, 1);
+      assertStringIncludes(
+        lines[0] ?? "",
+        `Run timeline: target=${TARGET_ISO} finish=${FINISH_ISO} ` +
+          `hard-kill=none (`,
+      );
+    } finally {
+      if (previous === undefined) {
+        Deno.env.delete(HARD_KILL_AT_EPOCH_ENV);
+      } else {
+        Deno.env.set(HARD_KILL_AT_EPOCH_ENV, previous);
+      }
+      resetRunTimelineForTests();
+    }
+  },
+);
+
+Deno.test(
+  "run_core - a clamped finish is warned to logWarn, not logError (Issue #4242)",
+  async () => {
+    try {
+      // A hard kill at the finish leaves no kill grace or WIP reserve, so the
+      // finish is clamped and the clamp warned.
+      const { warns, errors } = await runLoopCapturing((name) =>
+        name === HARD_KILL_AT_EPOCH_ENV
+          ? String(START_EPOCH_S + 7200)
+          : undefined
+      );
+      assertEquals(
+        warns.some((line) => line.includes("clamped the finish")),
+        true,
+      );
+      assertEquals(
+        errors.some((line) => line.includes("clamped the finish")),
+        false,
+      );
+    } finally {
+      resetRunTimelineForTests();
+    }
+  },
+);
+
+Deno.test(
+  "run_core - without logWarn the malformed and clamp warnings go to log, not logError (Issue #4242)",
+  async () => {
+    try {
+      const malformed = await runLoopCapturing(
+        (name) => (name === HARD_KILL_AT_EPOCH_ENV ? "soon" : undefined),
+        { withLogWarn: false },
+      );
+      assertEquals(
+        malformed.logs.some((line) =>
+          line.includes(`${HARD_KILL_AT_EPOCH_ENV}="soon"`)
+        ),
+        true,
+      );
+      assertEquals(
+        malformed.errors.some((line) => line.includes(HARD_KILL_AT_EPOCH_ENV)),
+        false,
+      );
+
+      resetRunTimelineForTests();
+      const clamped = await runLoopCapturing(
+        (name) =>
+          name === HARD_KILL_AT_EPOCH_ENV
+            ? String(START_EPOCH_S + 7200)
+            : undefined,
+        { withLogWarn: false },
+      );
+      assertEquals(
+        clamped.logs.some((line) => line.includes("clamped the finish")),
+        true,
+      );
+      assertEquals(
+        clamped.errors.some((line) => line.includes("clamped the finish")),
+        false,
+      );
+    } finally {
+      resetRunTimelineForTests();
+    }
   },
 );

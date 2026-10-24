@@ -2280,6 +2280,37 @@ Deno.test("config - a non-number run_finish_seconds is rejected (Issue #4242)", 
       () => loadConfig(configPath),
       Error,
     );
-    assertStringIncludes(error.message, "run_finish_seconds");
+    // The structural check in validation.ts refuses it before the finish
+    // check in config.ts runs.
+    assertStringIncludes(
+      error.message,
+      "has invalid structure: run_finish_seconds - Expected number, got string",
+    );
   });
+});
+
+Deno.test("config - a run_finish_seconds that parses to Infinity is refused as not finite (Issue #4242)", async () => {
+  // JSON.stringify cannot write Infinity, so the file is written as raw text:
+  // `1e999` parses to Infinity, which validation.ts accepts as a number and
+  // the finite check in config.ts then refuses.
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const configPath = `${tempDir}/.config.json`;
+    await Deno.writeTextFile(
+      configPath,
+      '{"allowed_authors":["testuser"],"repos":["org/repo1"],' +
+        '"run_finish_seconds": 1e999}',
+    );
+    const error = await assertRejects(
+      () => loadConfig(configPath),
+      Error,
+    );
+    assertStringIncludes(
+      error.message,
+      "run_finish_seconds must be a finite number",
+    );
+    assertStringIncludes(error.message, "got Infinity");
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
 });

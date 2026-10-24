@@ -571,8 +571,9 @@ function warnOf(
 export interface RunCoreDeps {
   /**
    * Environment reader for the run timeline (Issue #4242) — it reads
-   * `VIBE_HARD_KILL_AT_EPOCH`. Defaults to the process environment when
-   * absent, so harnesses that state none keep the real environment.
+   * `VIBE_HARD_KILL_AT_EPOCH`. Absent means no environment is read, so the
+   * timeline's hard kill reads as "not set"; the production factory passes
+   * the real environment.
    */
   env?: (name: string) => string | undefined;
 
@@ -5760,9 +5761,9 @@ export async function runCoreLoop(
     startedMs: startTime,
     runDurationSeconds: config.runDurationSeconds,
     runFinishSeconds: config.runFinishSeconds,
-    ...(deps.env ? { env: deps.env } : {}),
+    env: deps.env ?? (() => undefined),
     killAfterSeconds: config.claudeKillAfterSeconds,
-    warn: deps.logWarn ?? deps.logError,
+    warn: deps.logWarn ?? deps.log,
   });
   setRunTimeline(timeline);
   deps.log(`Run timeline: ${describeRunTimeline(timeline)}`);

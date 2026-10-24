@@ -673,7 +673,7 @@ export async function loadConfig(
   if (!Number.isFinite(runFinishSeconds)) {
     throw new Error(
       `run_finish_seconds must be a finite number, got ` +
-        `${JSON.stringify(runFinishSeconds)}.`,
+        `${String(runFinishSeconds)}.`,
     );
   }
   if (runFinishSeconds <= DEFAULT_RUN_TARGET_SECONDS) {
