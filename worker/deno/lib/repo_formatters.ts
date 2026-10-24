@@ -27,8 +27,8 @@
  */
 
 import {
-  createDefaultDeps,
   type QualityGateDeps,
+  runCommandAsWorker,
 } from "./quality_gate_phase.ts";
 import {
   type GitCommandOptions,
@@ -37,7 +37,7 @@ import {
 } from "./git_timeout.ts";
 import { defaultLogger } from "./logger.ts";
 import type { Logger, Result } from "../types.ts";
-import { redactedTail } from "./redacted_text.ts";
+import { redactedHeadTail, redactedTail } from "./redacted_text.ts";
 import { appendRunIdTrailer, getRunId } from "./run_id.ts";
 import {
   listPushedFiles,
@@ -68,7 +68,11 @@ export interface FormatterRun {
   exitCode: number;
   /** True when tracked files differ after this formatter ran. */
   changed: boolean;
-  /** Redacted output tail; present only when exitCode !== 0. */
+  /**
+   * Redacted head and tail of the formatter's output; present only when
+   * exitCode !== 0. The head is kept because `cargo fmt` prints the error
+   * and then a long usage text (Issue #4113).
+   */
   excerpt?: string;
 }
 
@@ -94,10 +98,20 @@ export interface RepoFormatterDeps {
   runId: () => string;
 }
 
-/** Real dependencies: the worker's own command runner, git and logger. */
+/**
+ * Real dependencies: git, the logger, and a command runner that stays the
+ * worker account (Issue #4113).
+ *
+ * The quality gate's runner drops to the untrusted `agent` account so a
+ * repository script cannot read the worker's credential files (Issue #571).
+ * These formatters are the repository's pinned toolchains, run on files the
+ * agent already wrote, and that account cannot write the worktree — a
+ * formatting miss was never fixed. The environment is still the allowlist,
+ * with no credential variable in it. The agent's own commands are unchanged.
+ */
 export function createRepoFormatterDeps(): RepoFormatterDeps {
   return {
-    runCommand: createDefaultDeps().runCommand,
+    runCommand: runCommandAsWorker,
     runGitCommand,
     logger: defaultLogger,
     runId: () => getRunId(),
@@ -207,7 +221,9 @@ export async function runRepoFormatters(
         dir: step.dir,
         exitCode,
         changed,
-        ...(exitCode !== 0 ? { excerpt: redactedTail(output, 500) } : {}),
+        ...(exitCode !== 0
+          ? { excerpt: redactedHeadTail(output, 500, 500) }
+          : {}),
       };
       runs.push(run);
 
