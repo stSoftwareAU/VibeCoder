@@ -31,7 +31,10 @@ import {
 import { runGhCommand as defaultGhCommand } from "../github.ts";
 import { guardedLabelArgs } from "../guarded_issue_labels.ts";
 import type { AlertDedupAuthorOptions } from "../alert_dedup_authors.ts";
-import { hasFleetAuthoredOpenIssueTitled } from "../idle_task_wrapper_dedup.ts";
+import {
+  findFleetAuthoredIssuesTitled,
+  hasFleetAuthoredOpenIssueTitled,
+} from "../idle_task_wrapper_dedup.ts";
 import { loadPrompt as defaultLoadPrompt } from "../prompt_manager.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
 import { repoCheckoutPath } from "../repo_checkout_path.ts";
@@ -76,7 +79,7 @@ export const PONYTAIL_DEBT_BODY_FINGERPRINT =
 
 const CALLER = "worker/deno/lib/idle_task_templates/ponytail_debt_template.ts";
 
-/** How many open title matches are read before refusing to guess. */
+/** `--limit` on the fleet-authored title search. */
 const REPORT_LIST_LIMIT = 20;
 
 /** Injectable dependencies for {@link createPonytailDebtTemplate}. */
@@ -163,34 +166,6 @@ export function renderPonytailDebtSummary(
   const issue = action === "posted" ? `as #${issueNumber}` : `#${issueNumber}`;
   return `${verb} the SIMPLE-ON-PURPOSE debt ledger ${issue}. ` +
     `${markers.length} markers, ${flagged} flagged.`;
-}
-
-interface ListedIssue {
-  number: number;
-  title: string;
-}
-
-function parseIssueList(raw: string): ListedIssue[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`issue list was not JSON: ${message}`);
-  }
-  if (!Array.isArray(parsed)) {
-    throw new Error("issue list was not a JSON array");
-  }
-  const issues: ListedIssue[] = [];
-  for (const row of parsed) {
-    if (typeof row !== "object" || row === null) continue;
-    const record = row as { number?: unknown; title?: unknown };
-    if (typeof record.number !== "number" || typeof record.title !== "string") {
-      continue;
-    }
-    issues.push({ number: record.number, title: record.title });
-  }
-  return issues;
 }
 
 function issueNumberFromCreate(raw: string): number | null {
@@ -283,34 +258,17 @@ export function createPonytailDebtTemplate(
         };
       }
 
-      const listed = parseIssueList(
-        await ghCommandFn([
-          "issue",
-          "list",
-          "--repo",
-          opts.repo,
-          "--state",
-          "open",
-          "--search",
-          `${PONYTAIL_DEBT_REPORT_TITLE} in:title`,
-          "--json",
-          "number,title",
-          "--limit",
-          String(REPORT_LIST_LIMIT),
-        ]),
-      );
-      if (listed.length >= REPORT_LIST_LIMIT) {
-        return {
-          ok: false,
-          summary: `Scanner error: open-issue search hit the ` +
-            `${REPORT_LIST_LIMIT}-issue limit, so the ledger was not posted ` +
-            `a second time.`,
-        };
-      }
-
-      const existing = listed
-        .filter((issue) => issue.title === PONYTAIL_DEBT_REPORT_TITLE)
-        .sort((a, b) => a.number - b.number)[0];
+      // The title is a public constant. Only a fleet-authored issue is the
+      // ledger; an outsider who copies the title must not have it rewritten.
+      const matches = await findFleetAuthoredIssuesTitled({
+        repo: opts.repo,
+        title: PONYTAIL_DEBT_REPORT_TITLE,
+        context: "ponytail-debt ledger",
+        ghCommand: ghCommandFn,
+        limit: REPORT_LIST_LIMIT,
+        ...dedupAuthors,
+      });
+      const existing = [...matches].sort((a, b) => a.number - b.number)[0];
 
       if (existing === undefined) {
         const created = await ghCommandFn([

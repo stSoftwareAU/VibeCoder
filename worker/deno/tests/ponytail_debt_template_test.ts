@@ -185,12 +185,14 @@ Deno.test("ponytail-debt runTask - refreshes the open ledger and does not create
   const calls: string[][] = [];
   const template = createPonytailDebtTemplate({
     ensureLabelFn: okLabel,
+    dedupAuthors: { fleetAuthors: ["vibe-coder"] },
     ghCommandFn: (args) => {
       calls.push(args);
       if (args[1] === "list") {
         return Promise.resolve(JSON.stringify([{
           number: 9,
           title: PONYTAIL_DEBT_REPORT_TITLE,
+          author: { login: "vibe-coder" },
         }]));
       }
       if (args[1] === "edit") return Promise.resolve("");
@@ -216,6 +218,41 @@ Deno.test("ponytail-debt runTask - refreshes the open ledger and does not create
   assertStringIncludes(bodyOf(edit), "**flagged: malformed**");
 
   await Deno.remove(dir, { recursive: true });
+});
+
+Deno.test("ponytail-debt runTask - an outsider's copy of the ledger title is not edited", async () => {
+  const calls: string[][] = [];
+  const template = createPonytailDebtTemplate({
+    ensureLabelFn: okLabel,
+    dedupAuthors: { fleetAuthors: ["vibe-coder"] },
+    scanFn: () => Promise.resolve({ ok: true, value: [] }),
+    ghCommandFn: (args) => {
+      calls.push(args);
+      if (args[1] === "list") {
+        return Promise.resolve(JSON.stringify([{
+          number: 4,
+          title: PONYTAIL_DEBT_REPORT_TITLE,
+          author: { login: "mallory" },
+        }]));
+      }
+      if (args[1] === "create") {
+        return Promise.resolve("https://github.com/acme/repo/issues/11\n");
+      }
+      return Promise.reject(new Error(`unexpected ${args.join(" ")}`));
+    },
+  });
+
+  const result = await template.runTask({
+    repo: "acme/repo",
+    workDir: "/work",
+    idleTaskIssueNumber: 7,
+  });
+
+  assertEquals(result.ok, true, result.summary);
+  assertStringIncludes(result.summary, "Posted");
+  assertStringIncludes(result.summary, "#11");
+  assertEquals(calls.some((args) => args[1] === "edit"), false);
+  assertEquals(calls.some(writesCommitOrPullRequest), false);
 });
 
 Deno.test("ponytail-debt runTask - a scanner error fails loud and posts nothing", async () => {
