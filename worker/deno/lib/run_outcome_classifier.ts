@@ -76,6 +76,9 @@ export const RUN_FAILURE_CLASSES = [
   "repo-config",
   "prompt-too-long",
   "clone-corrupt",
+  // Filed by `security_fix_gate_retry.ts`, never emitted by the classifier
+  // (Issue #4298): repeated gate blocks on one approved issue are a gate bug.
+  "security-fix-gate-blocked",
   "unknown",
 ] as const;
 

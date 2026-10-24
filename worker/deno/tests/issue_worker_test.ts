@@ -27,7 +27,6 @@ import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { CLARIFICATION_NEXT_STEP } from "../lib/phases/clarity_assessment_phase.ts";
-import { MILESTONE_BRANCH_NEXT_STEP } from "../lib/phases/setup_branch_phase.ts";
 import { UNFINISHED_RETRY_HEADING } from "../lib/unfinished_issue_retry.ts";
 
 /**
@@ -528,18 +527,14 @@ Deno.test("setupBranch - fails the run when milestone branch cannot be ensured",
   // The base branch is never swapped to the default branch.
   assertEquals(state.baseBranch, "milestone/fitness-performance");
   assertEquals(state.milestoneBranch, "milestone/fitness-performance");
-  // The failure is handed off on the issue with the git error text.
-  assertEquals(calls.postComment.length, 1);
-  assertStringIncludes(
-    calls.postComment[0]?.body ?? "",
-    "protected branch hook declined",
+  // Issue #4298: the failure is never handed to a human. The run fails on
+  // the normal retry ladder, which repeats the create-from-default and the
+  // ruleset repair next run — no `needs-human`, no hand-off comment.
+  assertEquals(calls.postComment.length, 0);
+  assertEquals(
+    calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+    false,
   );
-  assertStringIncludes(
-    calls.postComment[0]?.body ?? "",
-    MILESTONE_BRANCH_NEXT_STEP,
-  );
-  assertEquals(calls.addLabel.length, 1);
-  assertEquals(calls.addLabel[0]?.label, ctx.config.needsHumanLabel);
 
   // Cleanup heartbeat
   if (state.heartbeatHandle) {
