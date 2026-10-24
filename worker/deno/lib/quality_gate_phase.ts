@@ -278,6 +278,79 @@ export interface QualityGateParams {
 // Default dependency implementations
 // =============================================================================
 
+/**
+ * Spawn a repository command with the allowlisted environment (Issue #572).
+ *
+ * `dropToUntrusted` is the quality-gate path (Issue #571): the command runs as
+ * the `agent` account where the image provides one, because that account
+ * cannot read the worker's credential files. Formatters pass `false`. They are
+ * the repo's pinned `deno` and `cargo` toolchains, rewriting files the agent
+ * already wrote, and the `agent` account cannot write the worktree (Issue
+ * #4113). Dropping them would leave every formatting miss for the pre-push
+ * gate. The quality-gate runner itself still drops.
+ */
+async function spawnRepositoryCommand(
+  cmd: string[],
+  options: { stdin?: "null" | "inherit"; cwd?: string } | undefined,
+  repoCredentialEnv: Record<string, string>,
+  dropToUntrusted: boolean,
+): Promise<{ exitCode: number; output: string }> {
+  try {
+    const dropped = dropToUntrusted ? await untrustedSpawn(cmd) : [...cmd];
+    const env = untrustedQualityCommandEnv({
+      spawnable: dropped,
+      cwd: options?.cwd ?? Deno.cwd(),
+      repoCredentialEnv,
+    });
+    // `sudo`'s env_reset would strip the build-cache placement, so it
+    // travels in argv instead (Issue #2247). A worker-account spawn has no
+    // `sudo`, and `Deno.Command`'s env carries the placement.
+    const target = env["CARGO_TARGET_DIR"];
+    const spawnable = carryEnvThroughSudo(
+      dropped,
+      !dropToUntrusted || target === undefined
+        ? {}
+        : { CARGO_TARGET_DIR: target },
+    );
+    const proc = new Deno.Command(spawnable[0]!, {
+      args: spawnable.slice(1),
+      // The declared credentials are placed AFTER the allowlist, so a
+      // repository's own declaration is the only way a credential reaches
+      // its checks (Issues #572, #573). The build-cache placement of
+      // Issue #2247 rides the same overlay — see
+      // {@link untrustedQualityCommandEnv}. `./quality.sh` is resolved
+      // against the process cwd, so that is the checkout when the caller
+      // names none.
+      env,
+      clearEnv: true,
+      stdout: "piped",
+      stderr: "piped",
+      stdin: options?.stdin === "inherit" ? "inherit" : "null",
+      cwd: options?.cwd,
+    });
+    const result = await proc.output();
+    const stdout = new TextDecoder().decode(result.stdout);
+    const stderr = new TextDecoder().decode(result.stderr);
+    return { exitCode: result.code, output: stdout + stderr };
+  } catch (err) {
+    return { exitCode: 1, output: String(err) };
+  }
+}
+
+/**
+ * Run a command as the worker account, with the same allowlisted environment
+ * the untrusted runner uses and without the `agent` drop (Issue #4113).
+ *
+ * Production setter for the repository formatters. The quality gate keeps
+ * {@link createDefaultDeps}'s `runCommand`, which still drops.
+ */
+export function runCommandAsWorker(
+  cmd: string[],
+  options?: { stdin?: "null" | "inherit"; cwd?: string },
+): Promise<{ exitCode: number; output: string }> {
+  return spawnRepositoryCommand(cmd, options, {}, false);
+}
+
 /** Create default dependencies using real system calls. */
 export function createDefaultDeps(
   /**
@@ -314,57 +387,8 @@ export function createDefaultDeps(
     formatMissingToolsMsg: formatMissingToolsMessage,
     formatFailureMsg: formatQualityFailureMessage,
 
-    runCommand: async (
-      cmd: string[],
-      options?: { stdin?: "null" | "inherit"; cwd?: string },
-    ): Promise<{ exitCode: number; output: string }> => {
-      try {
-        // Issues #571 and #572: this runs the REPOSITORY's own command — its
-        // quality script, its tests, and every dependency install hook those
-        // reach. Two things follow, and neither works without the other.
-        //
-        // The environment is BUILT, not inherited: an allowlist of what a
-        // build needs, so no credential is in scope for a postinstall script
-        // to echo. And the command runs as a DIFFERENT account where the
-        // image provides one, because an environment allowlist cannot stop a
-        // process reading a credential file its own uid owns.
-        const dropped = await untrustedSpawn(cmd);
-        const env = untrustedQualityCommandEnv({
-          spawnable: dropped,
-          cwd: options?.cwd ?? Deno.cwd(),
-          repoCredentialEnv,
-        });
-        // `sudo`'s env_reset would strip the build-cache placement, so it
-        // travels in argv instead (Issue #2247).
-        const target = env["CARGO_TARGET_DIR"];
-        const spawnable = carryEnvThroughSudo(
-          dropped,
-          target === undefined ? {} : { CARGO_TARGET_DIR: target },
-        );
-        const proc = new Deno.Command(spawnable[0]!, {
-          args: spawnable.slice(1),
-          // The declared credentials are placed AFTER the allowlist, so a
-          // repository's own declaration is the only way a credential reaches
-          // its checks (Issues #572, #573). The build-cache placement of
-          // Issue #2247 rides the same overlay — see
-          // {@link untrustedQualityCommandEnv}. `./quality.sh` is resolved
-          // against the process cwd, so that is the checkout when the caller
-          // names none.
-          env,
-          clearEnv: true,
-          stdout: "piped",
-          stderr: "piped",
-          stdin: options?.stdin === "inherit" ? "inherit" : "null",
-          cwd: options?.cwd,
-        });
-        const result = await proc.output();
-        const stdout = new TextDecoder().decode(result.stdout);
-        const stderr = new TextDecoder().decode(result.stderr);
-        return { exitCode: result.code, output: stdout + stderr };
-      } catch (err) {
-        return { exitCode: 1, output: String(err) };
-      }
-    },
+    runCommand: (cmd, options) =>
+      spawnRepositoryCommand(cmd, options, repoCredentialEnv, true),
 
     cleanupPorts: async (): Promise<void> => {
       const ports =

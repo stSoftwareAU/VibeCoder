@@ -1573,7 +1573,8 @@ async function _processFeedbackWithHeartbeat(
   // The repo's own formatters run between the commit and the gate (follow-up
   // to #3806): a formatting-only miss in this round is fixed and committed
   // rather than failing the push or reaching CI. Same files the gate checks
-  // (the unpushed commits), never Markdown; never fatal.
+  // (the unpushed commits). Agent-authored Markdown stays unformatted; the
+  // worker's archive notes are formatted afterwards. Never fatal.
   const formatRound = () =>
     formatBeforeGate(deps, processorDeps.workDir, undefined);
   let verifierFailure: Error | undefined;
