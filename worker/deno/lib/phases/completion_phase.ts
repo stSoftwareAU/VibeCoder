@@ -2085,8 +2085,10 @@ async function completionBody(
   const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
     // The repo's own formatters first (part of #2932): a formatting-only miss
     // is fixed and committed here rather than failing the gate, or shipping
-    // to review and CI. Same files as the gate, never Markdown; a formatter
-    // that fails or throws is logged and the gate below still reports it.
+    // to review and CI. Same files as the gate. Agent-authored Markdown stays
+    // unformatted; the worker's archive notes are formatted afterwards. A
+    // formatter that fails or throws is logged and the gate below still
+    // reports it.
     await formatBeforeGate(
       deps,
       state.repoPath,
