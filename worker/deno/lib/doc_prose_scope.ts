@@ -8,14 +8,26 @@ import {
 import { parseDocsSweepLine } from "./docs_sweep_gate.ts";
 import { githubSlug } from "./markdown_anchors.ts";
 import { maskMarkdownCode } from "./markdown_code_spans.ts";
-import { sourceProseLines } from "./removed_assertion_gate.ts";
+import {
+  sourceProseLines,
+  sourceStringLiterals,
+} from "./removed_assertion_gate.ts";
+
+/** Cap on unchanged user-visible strings asked about in one run (Issue #4196). */
+const MAX_USER_VISIBLE_STRINGS = 40;
 
 /** An inclusive, one-based range the model is asked to check. */
 export interface ProseRange {
   file: string;
   start: number;
   end: number;
-  kind: "changed prose" | "source comment" | "affected manual section";
+  kind:
+    | "changed prose"
+    | "source comment"
+    | "affected manual section"
+    | "user-visible string";
+  /** Verbatim literal, present for a user-visible string so the prompt can quote it. */
+  text?: string;
 }
 
 /** Selected text also confines confirmation of model findings to the actual scope. */
@@ -89,6 +101,57 @@ function declarationEnd(code: readonly string[], start: number): number {
   return code.length - 1;
 }
 
+/**
+ * A changed line whose blanked code alters which case reaches existing text:
+ * a comparison, a case or match arm, an if / else-if / ternary, or an
+ * allowed-value array or set.
+ */
+function isConditionCode(code: string): boolean {
+  const scan = code.replace(/=>/g, "  ").replace(/->/g, "  ");
+  if (/<=|>=|===|!==|==|!=/.test(scan)) return true;
+  if (/(?:^|[^<>=!])<(?![<=])/.test(scan)) return true;
+  if (/(?:^|[^<>=!-])>(?![>=])/.test(scan)) return true;
+  if (/\b(?:case|match)\b/.test(scan)) return true;
+  if (/\bif\b/.test(scan) || /\belse\s+if\b/.test(scan)) return true;
+  if (/\?(?![.?])/.test(scan)) return true;
+  if (/new\s+Set\s*\(/.test(scan)) return true;
+  if (
+    /\[[^\]\n]*\]/.test(scan) &&
+    /\b(?:allowed|allowlist|includes|has)\b/.test(scan)
+  ) return true;
+  return false;
+}
+
+/** Nearest indent-0 declaration that contains `lineIndex`, if there is one. */
+function enclosingDeclaration(
+  code: readonly string[],
+  lineIndex: number,
+): { start: number; end: number } | undefined {
+  for (let i = lineIndex; i >= 0; i--) {
+    const line = code[i]!;
+    if (!line.trim() || line.search(/\S/) !== 0) continue;
+    if (
+      !/^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|enum|const|let|var|fn|struct|impl)\b/
+        .test(line.trim())
+    ) continue;
+    const end = declarationEnd(code, i);
+    if (lineIndex <= end) return { start: i, end };
+    return undefined;
+  }
+  return undefined;
+}
+
+// SIMPLE-ON-PURPOSE: two-word heuristic — upgrade when a single-word user-visible label is missed in a real PR
+function isUserVisibleLiteral(text: string): boolean {
+  const trimmed = text.trim();
+  const words = trimmed.split(/\s+/).filter((word) => /[A-Za-z]/.test(word));
+  if (words.length < 2) return false;
+  if (/[/\\]/.test(trimmed)) return false;
+  if (/%[sdif]|\{[0-9]+\}|\$\{/.test(trimmed)) return false;
+  if (trimmed.startsWith("/") || /\\[dws]/.test(trimmed)) return false;
+  return true;
+}
+
 /** Build the same scope for completion and review-fix checks. */
 export async function collectDocProseScope(input: {
   changedFiles: readonly string[];
@@ -115,6 +178,8 @@ export async function collectDocProseScope(input: {
     capOverflow: [],
   };
   const changed = changedLines(input.diff ?? "");
+  const stringCandidates: Array<{ file: string; line: number; text: string }> =
+    [];
   if (input.diff === null) {
     scope.notChecked.push(
       "the prose diff could not be read; changed lines not checked, never passed",
@@ -239,6 +304,48 @@ export async function collectDocProseScope(input: {
         );
       }
     }
+    const literals = sourceStringLiterals(content, file).filter((literal) =>
+      isUserVisibleLiteral(literal.text) && !touched.has(literal.line)
+    );
+    const seenInFile = new Set<string>();
+    for (const hunk of [...touched].sort((a, b) => a - b)) {
+      const row = code[hunk - 1];
+      if (row === undefined || !isConditionCode(row)) continue;
+      const declaration = enclosingDeclaration(code, hunk - 1);
+      for (const literal of literals) {
+        const inside = declaration
+          ? literal.line >= declaration.start + 1 &&
+            literal.line <= declaration.end + 1
+          : Math.abs(literal.line - hunk) <= 15;
+        if (!inside) continue;
+        const key = `${literal.line}:${literal.text}`;
+        if (seenInFile.has(key)) continue;
+        seenInFile.add(key);
+        stringCandidates.push({ file, line: literal.line, text: literal.text });
+      }
+    }
+  }
+  let keptStrings = 0;
+  for (const candidate of stringCandidates) {
+    if (keptStrings >= MAX_USER_VISIBLE_STRINGS) {
+      const note =
+        `${candidate.file}:${candidate.line}: user-visible string over the 40-string cap; not checked, never passed`;
+      scope.notChecked.push(note);
+      scope.capOverflow.push(note);
+      continue;
+    }
+    const before = scope.ranges.length;
+    add(
+      {
+        file: candidate.file,
+        start: candidate.line,
+        end: candidate.line,
+        kind: "user-visible string",
+        text: candidate.text,
+      },
+      candidate.text,
+    );
+    if (scope.ranges.length > before) keptStrings++;
   }
   for (const name of identifiers) mentions.add(name);
   const named = parseDocsSweepLine(input.summaryContent).section;
@@ -321,9 +428,13 @@ export async function collectDocProseScope(input: {
   return scope;
 }
 
-/** Paths and bounds only: source content stays in tool output, never copied from a scrubbed prompt. */
+/**
+ * Paths and bounds, plus the verbatim text of a user-visible string.
+ * Other source content stays in tool output and is not copied into the prompt.
+ */
 export function renderProseRanges(ranges: readonly ProseRange[]): string {
-  return ranges.map((r) => `${r.file}:${r.start}-${r.end} — ${r.kind}`).join(
-    "\n",
-  );
+  return ranges.map((r) => {
+    const line = `${r.file}:${r.start}-${r.end} — ${r.kind}`;
+    return r.text ? `${line}: ${r.text}` : line;
+  }).join("\n");
 }

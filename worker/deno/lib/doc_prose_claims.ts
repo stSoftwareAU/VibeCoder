@@ -96,7 +96,9 @@ export function docProseClaimInstruction(
   return "For each listed Markdown manual or prompt (a `.md` file that is " +
     "not a PR summary), check the lines " + change +
     " adds or edits and the explicitly listed affected manual sections, including unchanged sentences. " +
-    "For source files check only the listed comments, including unchanged module headers and doc comments attached to changed declarations; never treat executable code as prose. " +
+    "For source files check only the listed comments, including unchanged module headers and doc comments attached to changed declarations, and each listed user-visible string; never treat executable code as prose. " +
+    "For each listed user-visible string, ask whether this change sends a case to this text for which the text is now false. " +
+    "Report the literal verbatim as `sentence`, with `file` the literal's file, and name the `file:line` of the changed hunk that sends the new case in `reason`. " +
     "In unchanged prose ask whether this change makes the sentence false, not whether it was always right: this is not a whole-manual audit. " +
     "Check only sentences that say when the change's new " +
     "behaviour happens, what it refuses, rejects, allows or skips, or that " +

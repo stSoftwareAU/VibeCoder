@@ -764,6 +764,71 @@ export function sourceProseLines(source: string, path: string): {
   );
 }
 
+/** One string literal recovered from a lexed line. Column is 1-based. */
+export interface SourceStringLiteral {
+  text: string;
+  line: number;
+  column: number;
+}
+
+/**
+ * String literals on each line. `stripped` keeps the characters inside the
+ * quotes and `code` blanks them, so a quote-delimited run that differs
+ * between the two is a literal. Comment blanks exist only in `code` and are
+ * skipped. The return shape of {@link sourceProseLines} is unchanged.
+ */
+export function sourceStringLiterals(
+  source: string,
+  path: string,
+): SourceStringLiteral[] {
+  const lexed = lexLines(
+    source.split("\n").map((raw, seq) => ({ raw, changed: false, seq })),
+    langFor(path),
+  );
+  const literals: SourceStringLiteral[] = [];
+  for (let lineIndex = 0; lineIndex < lexed.lines.length; lineIndex++) {
+    const { code, stripped } = lexed.lines[lineIndex]!;
+    let i = 0;
+    let j = 0;
+    while (i < code.length && j < stripped.length) {
+      if (code[i] !== stripped[j]) {
+        // A comment is blanked in `code` and absent from `stripped`.
+        if (code[i] === " ") i++;
+        else {
+          i++;
+          j++;
+        }
+        continue;
+      }
+      const ch = stripped[j]!;
+      if (ch !== '"' && ch !== "'" && ch !== "`") {
+        i++;
+        j++;
+        continue;
+      }
+      const column = i + 1;
+      i++;
+      j++;
+      let text = "";
+      let closed = false;
+      while (i < code.length && j < stripped.length) {
+        if (stripped.startsWith(ch, j) && code.startsWith(ch, i)) {
+          literals.push({ text, line: lineIndex + 1, column });
+          i += ch.length;
+          j += ch.length;
+          closed = true;
+          break;
+        }
+        text += stripped[j];
+        i++;
+        j++;
+      }
+      if (!closed) break;
+    }
+  }
+  return literals;
+}
+
 /** The last significant code character, and the identifier it ends. */
 interface PrevToken {
   char: string;

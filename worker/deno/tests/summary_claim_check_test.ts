@@ -1906,3 +1906,54 @@ Deno.test("runSummaryClaimCheck - no overflow logs no cap warning at all (#4118)
     assertEquals(logger.errors, []);
   });
 });
+
+const REASON_LITERAL = "negative numbers are refused";
+const CLASSIFY_SOURCE = `/** Classifies a number. */
+export function classify(n: number): string {
+  if (n <= 0) {
+    return "${REASON_LITERAL}";
+  }
+  return "every other value is accepted";
+}
+`;
+const CLASSIFY_DIFF = `+++ b/src/classify.ts
+@@ -3 +3 @@
+-  if (n < 0) {
++  if (n <= 0) {
+`;
+
+Deno.test("runSummaryClaimCheck - a yes on an unchanged reason string is a docFinding; a no is not (Issue #4196)", async () => {
+  await withDocRepo({ "src/classify.ts": CLASSIFY_SOURCE }, async (dir) => {
+    const runGit = async (args: string[]) => {
+      if (args[0] === "diff") {
+        return { code: 0, stdout: CLASSIFY_DIFF, stderr: "" };
+      }
+      if (args[0] === "ls-files") {
+        return { code: 0, stdout: "src/classify.ts\n", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const yes = await runSummaryClaimCheck(docInput(dir, ["src/classify.ts"]), {
+      runGit,
+      askQuestion: async () =>
+        okResult(docVerdict("src/classify.ts", REASON_LITERAL)),
+      logger: makeLogger(),
+    });
+    assertEquals(yes.docFindings.map((f) => f.sentence), [REASON_LITERAL]);
+    assertEquals(yes.findings, []);
+    assertEquals(yes.unconfirmedFindings, []);
+
+    const no = await runSummaryClaimCheck(docInput(dir, ["src/classify.ts"]), {
+      runGit,
+      askQuestion: async () =>
+        okResult(
+          `${DRIFT_VERDICT_OPEN}\n${
+            JSON.stringify({ findings: [] })
+          }\n<!-- /vibe-drift-verdict -->`,
+        ),
+      logger: makeLogger(),
+    });
+    assertEquals(no.docFindings, []);
+    assertEquals(no.findings, []);
+  });
+});
