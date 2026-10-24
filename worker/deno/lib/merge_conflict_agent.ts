@@ -16,6 +16,7 @@
  */
 
 import type { Logger, Result } from "../types.ts";
+import type { RunStats } from "./run_stats.ts";
 import type { runClaudeWithRetry } from "./claude_runner.ts";
 import {
   buildMergeConflictPrompt,
@@ -85,6 +86,12 @@ export interface MergeConflictAgentRequest {
   repair?: MergeConflictRepairContext;
   /** The agent runner — `deps.claude.runClaudeWithRetry` in production. */
   runAgent: typeof runClaudeWithRetry;
+  /**
+   * Every invocation's stats, once the agent has actually been asked
+   * (Issue #4153). Called on a failed run too, so the cost is recorded
+   * either way. Absent for a caller that does not record.
+   */
+  onRunStats?: (stats: readonly (RunStats | undefined)[]) => void;
 }
 
 /**
@@ -130,6 +137,7 @@ export async function runMergeConflictAgent(
     logger,
     repair,
     runAgent,
+    onRunStats,
   } = request;
   const claudeTimeout = request.timeouts?.claudeTimeout ??
     DEFAULT_CONFLICT_AGENT_TIMEOUT;
@@ -172,11 +180,19 @@ export async function runMergeConflictAgent(
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
       phase: "merge_conflict",
+      captureInvocationStats: true,
       repo,
       cwd: workDir,
       logger,
     },
     { maxRetries },
+  );
+  // The cost was spent whether or not the run resolved the conflict
+  // (Issue #4153). A prompt that never reached the agent does not get here.
+  onRunStats?.(
+    claudeResult.ok
+      ? claudeResult.value.invocationStats ?? [claudeResult.value.runStats]
+      : [undefined],
   );
 
   if (!claudeResult.ok) {

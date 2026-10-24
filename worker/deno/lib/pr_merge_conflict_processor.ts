@@ -48,6 +48,8 @@ import {
   runMergeConflictAgent,
 } from "./merge_conflict_agent.ts";
 import { endHandlerLandingStep } from "./handler_watchdog.ts";
+import { redactSecrets } from "./secret_redaction.ts";
+import type { RunStats } from "./run_stats.ts";
 import { isMilestoneHead } from "./gated_head_guard.ts";
 import {
   type ConflictTakeoverDeps,
@@ -901,6 +903,41 @@ async function recordConsultedIssues(
   }
 }
 
+/**
+ * Record the cost of one conflict-fix agent run (Issue #4153).
+ *
+ * `cycle` is the head the attempt opened against, so a replay of the same
+ * unresolved conflict and the same attempt writes one event. A ledger fault
+ * is logged and does not fail the resolution: the cost record is not the
+ * merge.
+ */
+async function recordConflictFollowOn(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  cycle: string,
+  attempt: number,
+  runStats: readonly (RunStats | undefined)[],
+): Promise<void> {
+  const { repo, prNumber } = input;
+  try {
+    await processorDeps.deps.infrastructure.recordPrFollowOn({
+      workDir: processorDeps.workRoot,
+      repo,
+      prNumber,
+      followOn: "merge_conflict",
+      cycle,
+      attempt,
+      runStats,
+    });
+  } catch (error) {
+    processorDeps.logger.error(
+      `Lifecycle follow-on recording failed for ${repo}#${prNumber}: ${
+        redactSecrets(error instanceof Error ? error.message : String(error))
+      }`,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Processor
 // ---------------------------------------------------------------------------
@@ -1659,6 +1696,10 @@ async function resolveConflict(
 
       agentRan = true;
       timer.start("agent");
+      // The head the attempt opened against. A retry of the same unresolved
+      // conflict sees the same head, so the ledger dedupes a replay of this
+      // attempt and keeps a later attempt as its own cost (Issue #4153).
+      let conflictRunStats: readonly (RunStats | undefined)[] | undefined;
       const agentOutcome = await runMergeConflictAgent({
         repo,
         target: { kind: "pr", prNumber },
@@ -1675,8 +1716,20 @@ async function resolveConflict(
         },
         logger,
         runAgent: deps.claude.runClaudeWithRetry,
+        onRunStats: (stats) => {
+          conflictRunStats = stats;
+        },
       });
       timer.stop();
+      if (conflictRunStats !== undefined) {
+        await recordConflictFollowOn(
+          input,
+          processorDeps,
+          headBeforeMerge,
+          attemptNumber,
+          conflictRunStats,
+        );
+      }
       if (!agentOutcome.ok) {
         await abortMerge(run, workDir);
         return await failAttempt(
