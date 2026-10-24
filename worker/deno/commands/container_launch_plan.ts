@@ -36,7 +36,10 @@ import {
   stripContainerfile,
   STRIPPED_CONTAINERFILE_SUFFIX,
 } from "../lib/containerfile_strip.ts";
-import { detectContainerRuntime } from "../lib/container_runtime.ts";
+import {
+  type ContainerRuntimeProbe,
+  detectContainerRuntime,
+} from "../lib/container_runtime.ts";
 import { resolveBuildCommitStamp } from "../lib/worker_build_info.ts";
 import { resolveWatchdogSeconds } from "../lib/container_watchdog.ts";
 import { readRunCapPassthrough } from "../lib/run_hard_cap.ts";
@@ -102,14 +105,23 @@ export async function buildLaunchPlanForCommand(
      * the plan builds from the committed file.
      */
     strippedContainerfile?: string;
+    /** Environment reader. Defaults to the process environment. */
+    env?: (name: string) => string | undefined;
+    /** Clock in epoch-ms. Defaults to `Date.now`. */
+    now?: () => number;
+    /** Runtime probe. Defaults to the real one; injectable for tests. */
+    probe?: ContainerRuntimeProbe;
   } = {},
 ): Promise<ContainerLaunchPlan> {
+  const env = options.env ?? ((name: string) => Deno.env.get(name));
+  const now = options.now ?? Date.now;
   const [descriptor, manifestText] = await Promise.all([
     // The launch path opts into the service self-heal (Issue #4253): a
     // stopped apiserver kept host-25 dark ~5 h across 21 launcher runs when
     // one bounded `container system start` would have fixed it. Progress
     // lines go to STDERR — stdout carries the JSON plan run.sh consumes.
     detectContainerRuntime({
+      ...(options.probe ? { probe: options.probe } : {}),
       selfHeal: true,
       log: (message) => console.error(message),
       emitSelfHealEvent: (event) => emitSelfHealEventAuto(event),
@@ -123,7 +135,6 @@ export async function buildLaunchPlanForCommand(
   // same way `resolveContainerLaunchHostPaths` resolves it, so the key is read
   // from the file this plan goes on to stage — and the writable log mount then
   // points where the launcher's own `log-dir` command says it does.
-  const env = (name: string) => Deno.env.get(name);
   const configuredLogDir = await readConfiguredLogDir(
     resolveHostConfigPath({ baseDir, env }),
   );
@@ -168,7 +179,7 @@ export async function buildLaunchPlanForCommand(
   // stated in the file would have been ignored by the launcher's own disk
   // decisions while the worker honoured it.
   const claimFloors = resolveDiskFloors(
-    (name) => Deno.env.get(name),
+    env,
     await readConfiguredDiskFloors(hostPaths.configFile),
   );
 
@@ -254,8 +265,8 @@ export async function buildLaunchPlanForCommand(
   // unreadable df just omits the env and the worker does not gate.
   let hostDisk: { availableBytes: number; totalBytes: number } | undefined;
   try {
-    const storePath = Deno.env.get("VIBE_HOST_STORE_PATH")?.trim() ||
-      Deno.env.get("HOME")?.trim() || ".";
+    const storePath = env("VIBE_HOST_STORE_PATH")?.trim() ||
+      env("HOME")?.trim() || ".";
     const reading = await probeDiskReading(storePath);
     if (reading) {
       hostDisk = {
@@ -276,7 +287,7 @@ export async function buildLaunchPlanForCommand(
   // progress-extension policy can stop the run before loop.sh's `timeout`
   // does. Absent — run.sh invoked outside loop.sh — means no ceiling inside
   // the container, exactly as before.
-  const runCap = readRunCapPassthrough((name) => Deno.env.get(name));
+  const runCap = readRunCapPassthrough(env);
 
   // Host-aware VM sizing. systemMemoryInfo needs its --allow-sys entry in
   // the launchers; an unreadable value falls back to the floor (with a
@@ -292,7 +303,7 @@ export async function buildLaunchPlanForCommand(
     );
   }
   const resources = resolveContainerResources({
-    env: (name) => Deno.env.get(name),
+    env,
     ...(totalMemoryBytes !== undefined ? { totalMemoryBytes } : {}),
     cpuCount: navigator.hardwareConcurrency,
   });
@@ -301,7 +312,7 @@ export async function buildLaunchPlanForCommand(
   // duration plus a margin, so the host only steps in once the container has
   // demonstrably failed to stop itself.
   const watchdogSeconds = resolveWatchdogSeconds({
-    env: (name) => Deno.env.get(name),
+    env,
     maxRunSeconds: DEFAULT_MAX_RUN_SECONDS,
   });
 
@@ -336,7 +347,7 @@ export async function buildLaunchPlanForCommand(
     ...(hostId ? { hostId } : {}),
     ...(hostDisk ? { hostDisk } : {}),
     ...(runCap ? { runCap } : {}),
-    planEpochSeconds: Math.floor(Date.now() / 1000),
+    planEpochSeconds: Math.floor(now() / 1000),
     resources,
     ...(containerfile ? { containerfile } : {}),
     ...(extension ? { containerExtension: extension } : {}),

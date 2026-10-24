@@ -1,14 +1,16 @@
 /**
- * The run's timeline: when it should start wrapping up, when it must finish,
- * and when the launcher's watchdog will kill it regardless (Issue #4242).
+ * The run's timeline: its one-hour target, its two-hour finish, and when the
+ * launcher's watchdog will kill it regardless (Issue #4242).
  *
- * The target is the point at which the agent is asked to wrap up. The finish
- * is the point by which the run must be done. The hard kill is the epoch-ms
- * at which the launcher's watchdog ends the run whatever the worker is doing.
- * The finish is held back so the WIP checkpoint (commit and push) lands before
- * that kill: if the configured finish would leave less than the kill grace plus
- * {@link WIP_CHECKPOINT_RESERVE_SECONDS} before the hard kill, it is clamped
- * and the clamp is logged, never applied silently.
+ * The target is the run's one-hour mark and the finish its two-hour mark;
+ * both are instants measured from the run's start, and nothing reads either
+ * of them yet: no agent is asked to wrap up at the target, and the run's
+ * claim deadline (`runDurationSeconds`) is separate. The hard kill is the
+ * epoch-ms at which the launcher's watchdog ends the run whatever the worker
+ * is doing. The finish is held back so the WIP checkpoint (commit and push)
+ * lands before that kill: if the configured finish would leave less than the
+ * kill grace plus {@link WIP_CHECKPOINT_RESERVE_SECONDS} before the hard kill,
+ * it is clamped and the clamp is logged, never applied silently.
  *
  * The hard kill is read from {@link HARD_KILL_AT_EPOCH_ENV} (epoch-**seconds**,
  * published by the launcher) when that is present and plausible. Otherwise it
@@ -34,17 +36,17 @@ import {
 /** The launcher watchdog's kill, in epoch-**seconds**. */
 export const HARD_KILL_AT_EPOCH_ENV = "VIBE_HARD_KILL_AT_EPOCH";
 
-/** Default run target: when the agent is asked to wrap up, in seconds. */
+/** Default run target: the one-hour mark, in seconds from the run's start. */
 export const DEFAULT_RUN_TARGET_SECONDS = 3600;
 
-/** Default run finish: when the run must be done by, in seconds. */
+/** Default run finish: the two-hour mark, in seconds from the run's start. */
 export const DEFAULT_RUN_FINISH_SECONDS = 7200;
 
 /** The run's resolved timeline, with the helpers that read it. */
 export interface RunTimeline {
-  /** Epoch-ms at which the agent is asked to wrap up. */
+  /** Epoch-ms of the run's target mark (start plus the target seconds). */
   readonly targetMs: number;
-  /** Epoch-ms by which the run must be done (after any clamp). */
+  /** Epoch-ms of the run's finish mark, after any clamp. */
   readonly finishMs: number;
   /** Epoch-ms of the hard kill, or null when no kill is known. */
   readonly hardKillMs: number | null;
