@@ -50,6 +50,35 @@ export function hasClosingKeyword(
 }
 
 /**
+ * The prose around the closing keyword that names `issueNumber`, with
+ * whitespace collapsed, or null when the body does not close it.
+ *
+ * Callers that must ignore Markdown code pass text that has already had code
+ * masked. The match uses the same closing-keyword pattern as
+ * {@link hasClosingKeyword}.
+ */
+export function closingKeywordLine(
+  prBody: string,
+  issueNumber: number,
+): string | null {
+  for (const match of prBody.matchAll(CLOSING_KEYWORD_PATTERN)) {
+    if (Number(match[1]) !== issueNumber) continue;
+    const at = match.index ?? 0;
+    // The line the keyword starts on, through the line it ends on, so a
+    // hard-wrapped "close\n#N" stays one phrase and the previous paragraph
+    // does not leak in.
+    const lineStart = prBody.lastIndexOf("\n", Math.max(0, at - 1)) + 1;
+    const matchEnd = at + match[0].length;
+    const lineBreak = prBody.indexOf("\n", matchEnd);
+    const lineEnd = lineBreak === -1 ? prBody.length : lineBreak;
+    const phrase = prBody.slice(lineStart, lineEnd).replace(/\s+/g, " ").trim();
+    if (phrase.length === 0) return match[0].trim();
+    return phrase.length > 200 ? phrase.slice(0, 200).trim() : phrase;
+  }
+  return null;
+}
+
+/**
  * Extract the issue numbers a PR body closes, in the order written
  * (Issue #1113).
  *

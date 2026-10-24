@@ -14,8 +14,13 @@
  * tracked file differs afterwards, the formatted paths are committed as one
  * `style: apply repository formatters` commit.
  *
- * Markdown is never handed to `deno fmt`: it re-wraps whole documents and
- * trips markdownlint MD018. A Markdown miss is left to the check to report.
+ * Markdown outside the worker's own archive is never handed to `deno fmt`:
+ * it re-wraps whole documents and trips markdownlint MD018, so a Markdown
+ * miss there is left to the check to report. After those formatters,
+ * {@link formatBeforeGate} formats the Markdown and JSON the branch changed
+ * under `docs/archive/pr-summaries/` and `docs/archive/handover/` only.
+ * `docs/archive/` is excluded from the markdownlint globs, so that wrap does
+ * not trip MD018.
  *
  * Callers: the quality-gate phase, before every `./quality.sh` attempt; the
  * completion phase's `gateBeforePush()`, before every pre-push gate run; and
@@ -27,8 +32,8 @@
  */
 
 import {
-  createDefaultDeps,
   type QualityGateDeps,
+  runCommandAsWorker,
 } from "./quality_gate_phase.ts";
 import {
   type GitCommandOptions,
@@ -37,7 +42,7 @@ import {
 } from "./git_timeout.ts";
 import { defaultLogger } from "./logger.ts";
 import type { Logger, Result } from "../types.ts";
-import { redactedTail } from "./redacted_text.ts";
+import { redactedHeadTail, redactedTail } from "./redacted_text.ts";
 import { appendRunIdTrailer, getRunId } from "./run_id.ts";
 import {
   listPushedFiles,
@@ -68,7 +73,11 @@ export interface FormatterRun {
   exitCode: number;
   /** True when tracked files differ after this formatter ran. */
   changed: boolean;
-  /** Redacted output tail; present only when exitCode !== 0. */
+  /**
+   * Redacted head and tail of the formatter's output; present only when
+   * exitCode !== 0. The head is kept because `cargo fmt` prints the error
+   * and then a long usage text (Issue #4113).
+   */
   excerpt?: string;
 }
 
@@ -94,10 +103,20 @@ export interface RepoFormatterDeps {
   runId: () => string;
 }
 
-/** Real dependencies: the worker's own command runner, git and logger. */
+/**
+ * Real dependencies: git, the logger, and a command runner that stays the
+ * worker account (Issue #4113).
+ *
+ * The quality gate's runner drops to the untrusted `agent` account so a
+ * repository script cannot read the worker's credential files (Issue #571).
+ * These formatters are the repository's pinned toolchains, run on files the
+ * agent already wrote, and that account cannot write the worktree — a
+ * formatting miss was never fixed. The environment is still the allowlist,
+ * with no credential variable in it. The agent's own commands are unchanged.
+ */
 export function createRepoFormatterDeps(): RepoFormatterDeps {
   return {
-    runCommand: createDefaultDeps().runCommand,
+    runCommand: runCommandAsWorker,
     runGitCommand,
     logger: defaultLogger,
     runId: () => getRunId(),
@@ -140,6 +159,245 @@ async function snapshot(
   const error = gitStepError("diff", result);
   if (error !== undefined) return { ok: false, error: new Error(error) };
   return { ok: true, value: result.value.stdout };
+}
+
+/**
+ * Stage and commit exactly these tracked paths.
+ *
+ * Returns the git error, or `undefined` when the commit landed. The body
+ * keeps the run-id trailer in a paragraph of its own: the subject reads as a
+ * `Key: value` line, so the trailer would otherwise join it.
+ */
+async function commitTrackedPaths(
+  repoPath: string,
+  deps: RepoFormatterDeps,
+  paths: readonly string[],
+): Promise<string | undefined> {
+  const pathspecs = [...new Set(paths)].map((path) => `:(literal)${path}`);
+  const add = await deps.runGitCommand(["add", "-u", "--", ...pathspecs], {
+    cwd: repoPath,
+  });
+  const addError = gitStepError("add -u", add);
+  if (addError !== undefined) return addError;
+  const message = appendRunIdTrailer(
+    `${FORMATTER_COMMIT_MESSAGE}\n\n${FORMATTER_COMMIT_BODY}`,
+    deps.runId(),
+  );
+  const commit = await deps.runGitCommand(["commit", "-m", message], {
+    cwd: repoPath,
+  });
+  return gitStepError("commit", commit);
+}
+
+/** Directories whose Markdown and JSON the worker itself writes (Issue #4129). */
+const WORKER_OWNED_ARCHIVE_DIRS = [
+  "docs/archive/pr-summaries/",
+  "docs/archive/handover/",
+] as const;
+
+/** Extensions `deno fmt` will rewrite under those directories. */
+const ARCHIVE_FORMAT_EXTENSIONS = [".md", ".markdown", ".json", ".jsonc"];
+
+/**
+ * A branch path the archive step may rewrite.
+ *
+ * Refuses a path git could hand us that leaves the two directories: a
+ * leading slash, a NUL, or a `..` segment.
+ */
+function isWorkerOwnedArchiveFile(path: string): boolean {
+  if (
+    path.length === 0 || path.includes("\0") || path.startsWith("/") ||
+    path.split("/").includes("..")
+  ) {
+    return false;
+  }
+  const lower = path.toLowerCase();
+  if (!ARCHIVE_FORMAT_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+    return false;
+  }
+  return WORKER_OWNED_ARCHIVE_DIRS.some((dir) => path.startsWith(dir));
+}
+
+function isDenoConfig(path: string): boolean {
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  return base === "deno.json" || base === "deno.jsonc";
+}
+
+/**
+ * Stable key order, two-space indent, and one trailing newline.
+ *
+ * `deno fmt` pretty-prints JSON and leaves key order alone, so a writer that
+ * emitted keys in encounter order would fail a later check the moment the
+ * object was built differently. Invalid JSON is returned unchanged for the
+ * formatter to judge.
+ */
+function canonicalArchiveJson(text: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  return `${JSON.stringify(sortJsonKeys(parsed), null, 2)}\n`;
+}
+
+function sortJsonKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJsonKeys);
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      sorted[key] = sortJsonKeys(record[key]);
+    }
+    return sorted;
+  }
+  return value;
+}
+
+/**
+ * Format the worker's own archive Markdown and JSON, then commit.
+ *
+ * Runs after the repository formatters. Only the two worker-owned
+ * directories are touched, and only when the repository tracks a Deno
+ * config — that is the formatter the pre-push gate will check them with.
+ * A missing formatter, a write failure, or a formatter that exits non-zero
+ * is logged. This function never throws, so the gate still runs.
+ */
+export async function formatWorkerOwnedArchive(
+  repoPath: string,
+  baseRef: string | undefined,
+  deps: RepoFormatterDeps,
+): Promise<void> {
+  try {
+    const git: PrePushGit = async (args, cwd) => {
+      const result = await deps.runGitCommand(args, { cwd });
+      if (!result.ok) {
+        return { code: 1, stdout: "", stderr: result.error.message };
+      }
+      return result.value;
+    };
+    const changed = await listPushedFiles(
+      [{
+        localRef: "HEAD",
+        localSha: "HEAD",
+        remoteRef: "HEAD",
+        remoteSha: "0".repeat(40),
+      }],
+      repoPath,
+      git,
+      baseRef,
+    );
+    if (!changed.ok) {
+      deps.logger.warn(`repo formatters: ${changed.error}`);
+      return;
+    }
+    const archiveFiles = changed.value.filter(isWorkerOwnedArchiveFile);
+    if (archiveFiles.length === 0) return;
+
+    const tracked = await deps.runGitCommand(["ls-files", "-z"], {
+      cwd: repoPath,
+    });
+    if (!tracked.ok || tracked.value.code !== 0) {
+      deps.logger.warn(
+        `repo formatters: ${gitStepError("ls-files", tracked)}`,
+      );
+      return;
+    }
+    const trackedPaths = tracked.value.stdout.split("\0").filter((p) =>
+      p.length > 0
+    );
+    if (!trackedPaths.some(isDenoConfig)) {
+      deps.logger.info(
+        "repo formatters: no Deno formatter in this repository; " +
+          "worker-owned archive Markdown and JSON left for the gate",
+      );
+      return;
+    }
+
+    for (const path of archiveFiles) {
+      if (
+        !path.toLowerCase().endsWith(".json") &&
+        !path.toLowerCase().endsWith(".jsonc")
+      ) {
+        continue;
+      }
+      const absolute = `${repoPath}/${path}`;
+      try {
+        const current = await Deno.readTextFile(absolute);
+        const canonical = canonicalArchiveJson(current);
+        if (canonical !== undefined && canonical !== current) {
+          await Deno.writeTextFile(absolute, canonical);
+        }
+      } catch (error: unknown) {
+        deps.logger.warn(
+          `repo formatters: could not rewrite ${path}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    const { exitCode, output } = await deps.runCommand(
+      [
+        "deno",
+        "fmt",
+        "--permit-no-files",
+        ...archiveFiles.map((path) =>
+          path.startsWith("-") ? `./${path}` : path
+        ),
+      ],
+      { stdin: "null", cwd: repoPath },
+    );
+    const diff = await deps.runGitCommand(
+      [
+        "diff",
+        "--name-only",
+        "-z",
+        "--",
+        ...archiveFiles.map((path) => `:(literal)${path}`),
+      ],
+      { cwd: repoPath },
+    );
+    const diffError = gitStepError("diff --name-only", diff);
+    const changedCount = diff.ok && diff.value.code === 0
+      ? diff.value.stdout.split("\0").filter((name) =>
+        archiveFiles.includes(name)
+      ).length
+      : undefined;
+    const countText = changedCount === undefined
+      ? "could not count changed files"
+      : `${changedCount} files changed`;
+    if (exitCode === 0) {
+      deps.logger.info(
+        `Formatter deno fmt on worker-owned archive: exit ${exitCode}, ${countText}`,
+      );
+    } else {
+      deps.logger.warn(
+        `Formatter deno fmt on worker-owned archive: exit ${exitCode}, ${countText} — ${
+          redactedHeadTail(output, 500, 500)
+        }`,
+      );
+    }
+    if (diffError !== undefined) {
+      deps.logger.warn(`repo formatters: ${diffError}`);
+    }
+    if (changedCount === 0) return;
+
+    const gitError = await commitTrackedPaths(repoPath, deps, archiveFiles);
+    if (gitError !== undefined) {
+      deps.logger.warn(`repo formatters: ${gitError}`);
+      return;
+    }
+    deps.logger.info(
+      "repo formatters: committed worker-owned archive formatting",
+    );
+  } catch (error: unknown) {
+    deps.logger.warn(
+      `repo formatters: worker-owned archive skipped: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 }
 
 /**
@@ -207,7 +465,9 @@ export async function runRepoFormatters(
         dir: step.dir,
         exitCode,
         changed,
-        ...(exitCode !== 0 ? { excerpt: redactedTail(output, 500) } : {}),
+        ...(exitCode !== 0
+          ? { excerpt: redactedHeadTail(output, 500, 500) }
+          : {}),
       };
       runs.push(run);
 
@@ -242,28 +502,12 @@ export async function runRepoFormatters(
       return { runs, failures, committed: false };
     }
 
-    const pathspecs = [...new Set(steps.flatMap((step) => step.paths))]
-      .map((path) => `:(literal)${path}`);
-    const add = await deps.runGitCommand(["add", "-u", "--", ...pathspecs], {
-      cwd: repoPath,
-    });
-    if (!add.ok || add.value.code !== 0) {
-      const gitError = gitStepError("add -u", add)!;
-      deps.logger.warn(`repo formatters: ${gitError}`);
-      return { runs, failures, committed: false, gitError };
-    }
-
-    // The body keeps the trailer in a paragraph of its own: the subject reads
-    // as a `Key: value` line, so the trailer would otherwise join it.
-    const message = appendRunIdTrailer(
-      `${FORMATTER_COMMIT_MESSAGE}\n\n${FORMATTER_COMMIT_BODY}`,
-      deps.runId(),
+    const gitError = await commitTrackedPaths(
+      repoPath,
+      deps,
+      steps.flatMap((step) => step.paths),
     );
-    const commit = await deps.runGitCommand(["commit", "-m", message], {
-      cwd: repoPath,
-    });
-    if (!commit.ok || commit.value.code !== 0) {
-      const gitError = gitStepError("commit", commit)!;
+    if (gitError !== undefined) {
       deps.logger.warn(`repo formatters: ${gitError}`);
       return { runs, failures, committed: false, gitError };
     }
@@ -337,12 +581,16 @@ export async function formatBranchChanges(
  *
  * Never throws and returns nothing the caller must act on — a formatter that
  * is missing, fails or throws is logged here, and the gate that follows still
- * runs and reports whatever is left unfixed.
+ * runs and reports whatever is left unfixed. After the repository formatters,
+ * the worker's own archive Markdown and JSON are formatted the same way
+ * (Issue #4129).
  */
 export async function formatBeforeGate(
   deps: {
     git: { formatBranchChanges: typeof formatBranchChanges };
     logger: Logger;
+    /** Defaults to the production formatter runner, logging on `deps.logger`. */
+    formatterDeps?: RepoFormatterDeps;
   },
   repoPath: string,
   baseRef: string | undefined,
@@ -362,4 +610,9 @@ export async function formatBeforeGate(
       }`,
     );
   }
+  const formatterDeps = deps.formatterDeps ?? {
+    ...createRepoFormatterDeps(),
+    logger: deps.logger,
+  };
+  await formatWorkerOwnedArchive(repoPath, baseRef, formatterDeps);
 }

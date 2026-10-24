@@ -257,6 +257,52 @@ Deno.test("parseRevisionResponse - handles missing fields gracefully", () => {
   }
 });
 
+// Issue #4201: a revised body often contains a fenced block. JSON does not
+// escape backticks, so a first-fence unwrap eats the object and the title
+// and body are never updated. Both the bare reply and an outer json fence
+// must still yield the whole revision.
+Deno.test("parseRevisionResponse - JSON body containing an embedded code fence parses as bare JSON", () => {
+  const newBody = "## Evidence\n\n```\nERROR: x\n```";
+  const payload = {
+    update_title: false,
+    new_title: "",
+    update_body: true,
+    new_body: newBody,
+    summary: "Recorded the evidence fence",
+  };
+  const result = parseRevisionResponse(JSON.stringify(payload));
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.update_body, true);
+    assertEquals(result.value.new_body, newBody);
+    assertEquals(result.value.summary, "Recorded the evidence fence");
+  }
+});
+
+Deno.test("parseRevisionResponse - JSON body containing an embedded code fence parses inside an outer json fence", () => {
+  const newBody = "## Evidence\n\n```\nERROR: x\n```";
+  const payload = {
+    update_title: false,
+    new_title: "",
+    update_body: true,
+    new_body: newBody,
+    summary: "Recorded the evidence fence",
+  };
+  const output = "```json\n" + JSON.stringify(payload) + "\n```";
+  const result = parseRevisionResponse(output);
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.update_body, true);
+    assertEquals(result.value.new_body, newBody);
+    assertEquals(result.value.summary, "Recorded the evidence fence");
+  }
+});
+
+Deno.test("parseRevisionResponse - rejects a JSON object that is not a revision", () => {
+  const result = parseRevisionResponse('{"note": "not a revision"}');
+  assertEquals(result.ok, false);
+});
+
 // ============================================================================
 // buildRevisionPrompt
 // ============================================================================

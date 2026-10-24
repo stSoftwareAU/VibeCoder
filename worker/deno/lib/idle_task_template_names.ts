@@ -36,4 +36,5 @@ export const IDLE_TASK_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
   "duplicated-knowledge",
   "retro",
   "gate-skip-drift",
+  "ponytail-debt",
 ]);

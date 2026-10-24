@@ -70,8 +70,12 @@ function fixtureIssues(heldBy: string | null): Array<Record<string, unknown>> {
 }
 
 /**
- * A `gh` stub for the audit's three probes: the issue list answers from the
- * fixture, and both PR probes answer empty so no PR gate fires.
+ * A `gh` stub for the audit's probes: the issue list answers from the
+ * fixture, both PR probes answer empty so no PR gate fires, and the
+ * timeline answers with a `low-priority` add by {@link HUMAN} (Issue #4213).
+ * The audit refreshes trust so HUMAN is the allowed adder, and HUMAN is not
+ * a fleet login, so the label-author gate stays open and the occupancy
+ * assertions still see the backlog.
  */
 function makeGh(
   heldBy: string | null,
@@ -79,6 +83,17 @@ function makeGh(
   return (args: string[]) => {
     if (args[0] === "issue" && args[1] === "list") {
       return Promise.resolve(JSON.stringify(fixtureIssues(heldBy)));
+    }
+    if (
+      args[0] === "api" && /\/issues\/(\d+)\/timeline/.test(args[1] ?? "")
+    ) {
+      return Promise.resolve(JSON.stringify([{
+        id: 1,
+        event: "labeled",
+        label: { name: "low-priority" },
+        actor: { login: HUMAN },
+        created_at: "2026-01-01T00:00:00Z",
+      }]));
     }
     return Promise.resolve("[]");
   };
@@ -108,8 +123,19 @@ async function auditTotalVia(heldBy: string | null): Promise<number> {
       // under `config.workDir` — point it at this test's own directory so
       // the three cases never read each other's cached listing (Issue #1456).
       config: { ...fixtureConfig(), workDir },
+      // Issue #4213: trust starts closed until refresh. HUMAN added the
+      // backlog's label, and is not a fleet login, so the stream stays free.
+      resolveTrustedAuthors: () =>
+        Promise.resolve({
+          ok: true,
+          byRepo: new Map([[
+            REPO,
+            { allowedAuthors: [HUMAN], authorisedCommenters: [HUMAN] },
+          ]]),
+        }),
       idleDetectGhCommandFn: makeGh(heldBy),
     });
+    assertEquals((await deps.refreshTrustedAuthors!()).ok, true);
     const result = await deps.runIdleDetectAudit!({
       tick: 1,
       scanFoundClaimable: false,
