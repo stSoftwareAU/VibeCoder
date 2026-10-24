@@ -4847,8 +4847,14 @@ round. The formatters cover exactly what the gate's format checks would flag:
 `deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
 `.cjs`, `.mts`, `.cts`, `.json`, `.jsonc`) that the deno root's own fmt
 `include`/`exclude` covers, and `cargo fmt --all` for a cargo root whose `.rs`
-files changed. Markdown is never formatted: `deno fmt` re-wraps whole documents
-and trips markdownlint MD018, so a Markdown miss is left to the check to report.
+files changed. Markdown outside `docs/archive/pr-summaries/` and
+`docs/archive/handover/` is never formatted: `deno fmt` re-wraps whole documents
+and trips markdownlint MD018, so a Markdown miss there is left to the check to
+report. Those two directories are the worker's own notes, and `docs/archive/`
+is excluded from the markdownlint globs. After the repository formatters,
+`formatBeforeGate` runs `deno fmt` on the Markdown and JSON the branch changed
+under them and commits that too. A missing formatter or a write failure is
+logged, and the gate still runs.
 Only the formatted paths are staged. A formatter that is missing, fails or
 throws never fails the run on its own: it is logged, and the gate that follows
 still runs every check and reports what was left unfixed.
