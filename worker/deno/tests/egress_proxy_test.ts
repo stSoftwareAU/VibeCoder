@@ -166,6 +166,10 @@ Deno.test("egress proxy writes one line when the idle timer races a delayed reso
   await runScenario("idle-race-delayed-resolver");
 });
 
+Deno.test("egress proxy redacts a token carried in the hostname from the denial line", async () => {
+  await runScenario("redact-token-in-hostname");
+});
+
 Deno.test("formatEgressDenial appends a detail capped at 160 characters", () => {
   const line = formatEgressDenial(
     "allowed.example",
@@ -186,6 +190,21 @@ Deno.test("formatEgressDenial keeps CR and LF out of the host and the detail", (
     formatEgressDenial("evil\r\n.example", 443, "bad-request", "a\r\nb"),
     "[EGRESS_DENIED] host=evil.example port=443 reason=bad-request detail=ab",
   );
+});
+
+Deno.test("formatEgressDenial redacts a token carried in the detail", () => {
+  const token = `ghp_${"a".repeat(36)}`;
+  const line = formatEgressDenial(
+    "allowed.example",
+    443,
+    "resolve-failed",
+    `lookup failed for ${token}`,
+  );
+  assertEquals(
+    line,
+    "[EGRESS_DENIED] host=allowed.example port=443 reason=resolve-failed detail=lookup failed for ***REDACTED***",
+  );
+  assertEquals(/[\r\n]/.test(line), false, "redacted line kept a CR or LF");
 });
 
 Deno.test("parseEgressAllowlist splits a comma-separated string", () => {

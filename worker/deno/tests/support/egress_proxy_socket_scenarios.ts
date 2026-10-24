@@ -243,8 +243,8 @@ interface HarnessOptions {
   resolveFailsFor?: string[];
   /** Makes every dial throw, as a refused upstream connection would. */
   connectFails?: boolean;
-  /** Delays every resolver answer, so an idle timer can fire first. */
-  resolveDelayMs?: number;
+  /** Holds every resolver answer until this resolves, so the scenario decides when. */
+  resolveGate?: Promise<void>;
 }
 
 interface Harness {
@@ -255,10 +255,26 @@ interface Harness {
   readonly resolved: string[];
   /** Every address the connector was asked to dial. */
   readonly dialled: string[];
+  /** Resolves once the resolver has been asked at least `count` times. */
+  resolvedAtLeast(count: number): Promise<void>;
   /** Resolves once the upstream end of every dialled connection has closed. */
   upstreamEnded(): Promise<void>;
   open(): Promise<Wire>;
   close(): Promise<void>;
+}
+
+/** A promise with its resolver exposed, so a scenario can release it. */
+interface Deferred {
+  readonly promise: Promise<void>;
+  resolve(): void;
+}
+
+function deferred(): Deferred {
+  let release: () => void = () => {};
+  const promise = new Promise<void>((done) => {
+    release = done;
+  });
+  return { promise, resolve: () => release() };
 }
 
 async function startHarness(opts: HarnessOptions): Promise<Harness> {
@@ -267,6 +283,8 @@ async function startHarness(opts: HarnessOptions): Promise<Harness> {
   const resolved: string[] = [];
   const dialled: string[] = [];
   const wires: Wire[] = [];
+  // Each waiter re-checks the count whenever the resolver is asked again.
+  const resolveWaiters: Array<() => void> = [];
   const proxy = await startEgressProxy({
     hostname: "127.0.0.1",
     port: 0,
@@ -277,9 +295,8 @@ async function startHarness(opts: HarnessOptions): Promise<Harness> {
     maxHeaderBytes: opts.maxHeaderBytes,
     resolve: async (host) => {
       resolved.push(host);
-      if (opts.resolveDelayMs !== undefined) {
-        await new Promise((done) => setTimeout(done, opts.resolveDelayMs));
-      }
+      for (const recheck of resolveWaiters.splice(0)) recheck();
+      if (opts.resolveGate !== undefined) await opts.resolveGate;
       if (opts.resolveFailsFor?.includes(host)) {
         throw new Error("resolver exploded");
       }
@@ -301,6 +318,15 @@ async function startHarness(opts: HarnessOptions): Promise<Harness> {
     lines,
     resolved,
     dialled,
+    resolvedAtLeast(count) {
+      return new Promise<void>((wake) => {
+        const check = (): void => {
+          if (resolved.length >= count) wake();
+          else resolveWaiters.push(check);
+        };
+        check();
+      });
+    },
     upstreamEnded() {
       return echoServer.ended();
     },
@@ -770,23 +796,31 @@ async function refusesTrailingDotHost(): Promise<void> {
 }
 
 async function idleRaceWithDelayedResolver(): Promise<void> {
-  // Each resolver answers after the idle timer has already cut the client off.
-  // The first fails, the second succeeds; neither may add a second line or dial.
+  // Each resolver is held on a gate until both clients have been cut off by the
+  // idle timer, so every resolver answers after the cut-off. The first fails,
+  // the second succeeds; neither may add a second line or dial.
+  const gate = deferred();
   const h = await startHarness({
     allowlist: ["allowed.example", "other.example"],
     resolveFailsFor: ["allowed.example"],
     idleTimeoutMs: 50,
-    resolveDelayMs: 200,
+    resolveGate: gate.promise,
   });
   try {
     const first = await h.open();
     await first.write("CONNECT allowed.example:443 HTTP/1.1\r\n\r\n");
     const second = await h.open();
     await second.write("CONNECT other.example:443 HTTP/1.1\r\n\r\n");
+    // Both heads are read and both resolvers are parked on the gate before the
+    // cut-offs are awaited, so each idle line names its host.
+    await h.resolvedAtLeast(2);
     expectEqual(await first.readSome(), null, "first idle read");
     expectEqual(await second.readSome(), null, "second idle read");
-    // Let both delayed resolvers finish before the assertions.
-    await new Promise((done) => setTimeout(done, 400));
+    // Release the resolvers only now, after both cut-offs have been observed.
+    gate.resolve();
+    // close() awaits every connection handler, so both resolvers have returned
+    // and any dial they would make has happened (or not) before the asserts.
+    await h.proxy.close();
 
     expectEqual(
       [...h.lines].sort(),
@@ -796,6 +830,38 @@ async function idleRaceWithDelayedResolver(): Promise<void> {
       ],
       "denial lines",
     );
+    expectEqual(h.dialled, [], "dialled addresses");
+  } finally {
+    await h.close();
+  }
+}
+
+async function redactsTokenInHostname(): Promise<void> {
+  const token = `ghp_${"a".repeat(36)}`;
+  const h = await startHarness({ allowlist: ["allowed.example"] });
+  try {
+    // A token in the client-supplied host is refused, and must not reach the log.
+    const wire = await h.open();
+    await wire.write(`CONNECT ${token}.example.com:443 HTTP/1.1\r\n\r\n`);
+    const denial = await readDenial(wire);
+    expectEqual(denial.status, "HTTP/1.1 403 Forbidden", "status");
+    expectEqual(h.lines.length, 1, "denial line count");
+    const [line] = h.lines;
+    expectIncludes(line, "reason=not-allowlisted", "denial line");
+    expect(!line.includes(token), "token leaked into the denial line");
+
+    // Positive control: an un-tokened host is logged, so the token line was
+    // redacted rather than dropped.
+    const plain = await h.open();
+    await plain.write("CONNECT plain.example.com:443 HTTP/1.1\r\n\r\n");
+    await readDenial(plain);
+    expectEqual(h.lines.length, 2, "denial line count");
+    expectEqual(
+      h.lines[1],
+      "[EGRESS_DENIED] host=plain.example.com port=443 reason=not-allowlisted",
+      "plain host denial line",
+    );
+    expectEqual(h.resolved, [], "resolved hosts");
     expectEqual(h.dialled, [], "dialled addresses");
   } finally {
     await h.close();
@@ -821,6 +887,7 @@ const SCENARIOS: Readonly<Record<string, () => Promise<void>>> = {
   "refuse-lone-carriage-return": refusesLoneCarriageReturn,
   "refuse-trailing-dot-host": refusesTrailingDotHost,
   "idle-race-delayed-resolver": idleRaceWithDelayedResolver,
+  "redact-token-in-hostname": redactsTokenInHostname,
 };
 
 /** Write the one-line JSON result the parent test asserts on. */

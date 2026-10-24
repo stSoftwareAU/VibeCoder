@@ -7,16 +7,18 @@
  * exactly the first address it checked. Allowed tunnels are piped byte for
  * byte; the payload is never logged.
  *
- * #3699's credential broker extends this module through the per-host route
- * seam ({@link EgressRoute}). It adds no second outbound proxy: a route claims
- * an allowlisted host and receives the client connection instead of an
- * upstream dial. The container is not routed through this proxy yet (#4047).
+ * #3699's credential broker is planned to extend this module through `routes`;
+ * it will add no second outbound proxy (not yet delivered). A route claims an
+ * allowlisted host and receives the client connection instead of an upstream
+ * dial ({@link EgressRoute}). The container is not routed through this proxy
+ * yet (#4047).
  *
  * Imports are local only; nothing is fetched from a remote registry.
  * Australian English spelling used throughout (behaviour, sanitise).
  */
 
 import { validateEgressHost } from "./egress_allowlist.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import { isPrivateAddress } from "./public_url_guard.ts";
 
 /** Why a connection was refused. Each refusal logs one line with this class. */
@@ -43,9 +45,10 @@ export type EgressConnector = (
 ) => Promise<Deno.Conn>;
 
 /**
- * Takes over an allowlisted tunnel (the #3699 seam). The proxy replies
- * `200 Connection Established` first; the route then owns the client
- * connection, including its idle policy. The proxy dials nothing for a route.
+ * Takes over an allowlisted tunnel (the seam #3699 is planned to use). The
+ * proxy replies `200 Connection Established` first; the route then owns the
+ * client connection, including its idle policy. The proxy dials nothing for a
+ * route.
  */
 export type EgressRoute = (
   client: Deno.Conn,
@@ -153,14 +156,16 @@ function sanitiseLogText(raw: string, maxCodePoints: number): string {
 /**
  * The single line logged for one refusal. A detail, such as the resolver or
  * connector error, is appended only to this log line; the 403 body never
- * carries it.
+ * carries it. The line is sanitised, then passed through `redactSecrets`, so a
+ * secret shape in the client-supplied host or in the detail is masked before
+ * it reaches the log sink.
  *
  * @param host - The requested host; sanitised before use
  * @param port - The requested port, or 0 when unknown
  * @param reason - Why the connection was refused
  * @param detail - Optional error text, sanitised and capped at 160 characters
  * @returns `[EGRESS_DENIED] host=<h> port=<n> reason=<class>`, plus
- *   ` detail=<text>` when a detail is given
+ *   ` detail=<text>` when a detail is given; secrets masked, one line
  */
 export function formatEgressDenial(
   host: string,
@@ -171,8 +176,12 @@ export function formatEgressDenial(
   const line = `[EGRESS_DENIED] host=${
     sanitiseEgressHost(host)
   } port=${port} reason=${reason}`;
-  if (detail === undefined) return line;
-  return `${line} detail=${sanitiseLogText(detail, MAX_LOGGED_DETAIL_CHARS)}`;
+  const withDetail = detail === undefined
+    ? line
+    : `${line} detail=${sanitiseLogText(detail, MAX_LOGGED_DETAIL_CHARS)}`;
+  // Redaction runs after sanitising. It only swaps secret shapes for a
+  // placeholder with no line break, so the result is still one line.
+  return redactSecrets(withDetail);
 }
 
 /**

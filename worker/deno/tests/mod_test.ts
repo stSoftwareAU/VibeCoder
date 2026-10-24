@@ -441,3 +441,106 @@ Deno.test("mod - createDefaultRegistry commands have descriptions", () => {
     assertEquals(description.length > 0, true);
   }
 });
+
+// ---------------------------------------------------------------------------
+// egress-proxy is config-optional (Issue #4046)
+// ---------------------------------------------------------------------------
+// main() consults two config-optional lists for `egress-proxy`: the one after a
+// successful config load (which skips validateConfig) and the catch-block one
+// (which substitutes the default config when the load or validation throws).
+// Each test below runs the real entry point with no allowlist, so the only
+// acceptable outcome is the command's own exit-2 refusal naming the allowlist.
+
+const MOD_TS = new URL("../mod.ts", import.meta.url).pathname;
+
+/** Deno's module cache, so the child run stays offline. */
+async function resolveDenoDir(): Promise<string> {
+  const configured = Deno.env.get("DENO_DIR");
+  if (configured) return configured;
+  const info = await new Deno.Command(Deno.execPath(), {
+    args: ["info", "--json"],
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  return JSON.parse(new TextDecoder().decode(info.stdout)).denoDir as string;
+}
+
+/**
+ * Run `mod.ts egress-proxy` as a real subprocess with no allowlist anywhere in
+ * its environment, a throwaway HOME and cwd, and CONFIG_FILE pointing at a
+ * path inside that throwaway directory. `writeConfig` may create that file; if
+ * omitted, no config file exists. The command refuses before it binds a
+ * socket, so no proxy is left running.
+ */
+async function runEgressProxyWithoutAllowlist(
+  writeConfig?: (configPath: string) => Promise<void>,
+): Promise<{ code: number; output: string }> {
+  const root = await Deno.makeTempDir({ prefix: "egress_proxy_main_" });
+  try {
+    const home = `${root}/home`;
+    const cwd = `${root}/cwd`;
+    const configPath = `${root}/config.json`;
+    await Deno.mkdir(home);
+    await Deno.mkdir(cwd);
+    if (writeConfig) await writeConfig(configPath);
+    const run = await new Deno.Command(Deno.execPath(), {
+      args: ["run", "--allow-all", MOD_TS, "egress-proxy"],
+      cwd,
+      clearEnv: true,
+      env: {
+        PATH: Deno.env.get("PATH") ?? "",
+        HOME: home,
+        DENO_DIR: await resolveDenoDir(),
+        NO_COLOR: "true",
+        CI: "true",
+        CONFIG_FILE: configPath,
+      },
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    const decoder = new TextDecoder();
+    return {
+      code: run.code,
+      output: decoder.decode(run.stdout) + decoder.decode(run.stderr),
+    };
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+Deno.test("mod - egress-proxy runs with no config file and refuses on its missing allowlist (Issue #4046)", async () => {
+  // No file at all loads as {}, which validateConfig rejects (repos is
+  // required). Only the config-optional lists let the command past that.
+  const run = await runEgressProxyWithoutAllowlist();
+  assertEquals(
+    run.code,
+    2,
+    `expected the exit-2 allowlist refusal:\n${run.output}`,
+  );
+  assertStringIncludes(run.output, "no allowlist");
+  assertEquals(
+    run.output.includes("Configuration error"),
+    false,
+    `config validation stopped egress-proxy before it ran:\n${run.output}`,
+  );
+});
+
+Deno.test("mod - egress-proxy runs when the config file is malformed and refuses on its missing allowlist (Issue #4046)", async () => {
+  // A malformed file throws inside loadConfig, so the command is reached only
+  // through the catch-block config-optional list.
+  const run = await runEgressProxyWithoutAllowlist((configPath) =>
+    Deno.writeTextFile(configPath, "{not json")
+  );
+  assertEquals(
+    run.code,
+    2,
+    `expected the exit-2 allowlist refusal:\n${run.output}`,
+  );
+  assertStringIncludes(run.output, "no allowlist");
+  assertEquals(
+    run.output.includes("Configuration error"),
+    false,
+    `config load stopped egress-proxy before it ran:\n${run.output}`,
+  );
+});

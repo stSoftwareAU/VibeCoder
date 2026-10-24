@@ -423,8 +423,12 @@ deno run --allow-read --allow-env --allow-net worker/deno/mod.ts egress-proxy \
   link-local `fe80::/10`. The proxy connects to exactly the address it checked,
   so DNS rebinding between the check and the connect cannot redirect it.
 - **Bounds.** Concurrent connections default to 256, idle time defaults to 60 s
-  (while reading the request head and while tunnelling), and the request head
-  defaults to 8 KiB at most.
+  (while reading the request head, resolving and dialling the upstream, and
+  while tunnelling), and the request head defaults to 8 KiB at most. Idle before
+  the upstream is dialled gets the `idle-timeout` line and no 403. An idle
+  established tunnel is closed on both ends with no log line. A route that takes
+  a client after `200` owns that connection, so this idle guard does not bound
+  it.
 - **Footprint.** The proxy module (`egress_proxy.ts`) opens no files and keeps no cache.
   Started through `mod.ts`, the command needs `--allow-read --allow-env --allow-net`
   (`mod.ts` reads `deno.json` when it loads) and no `--allow-write`. With the image's
@@ -448,33 +452,36 @@ flowchart TD
     style T fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-**Refusals.** A refused connection gets HTTP `403` whose body opens
-`[EGRESS_DENIED] host=<host> reason=<class>`. The proxy also writes one stderr
-line per refused connection, `[EGRESS_DENIED] host=<host> port=<n>
-reason=<class>`, followed by ` detail=<text>` when the refusal has an underlying
-resolver or connector error. The detail is logged only and never appears in the
-403 body. The host is sanitised first: control characters are stripped and it
+**Refusals.** Each refusal writes one stderr line, `[EGRESS_DENIED] host=<host>
+port=<n> reason=<class>`, followed by ` detail=<text>` when the refusal has an
+underlying resolver or connector error. Every refusal except `idle-timeout` is
+also answered with HTTP `403`, whose body opens `[EGRESS_DENIED] host=<host>
+reason=<class>`, unless the client has already closed. An `idle-timeout` refusal
+closes the socket without a 403. A client that closes before it sends a request
+head is neither logged nor answered. The detail is logged only and never appears
+in the 403 body. The host is sanitised first: control characters are stripped and it
 is capped at 64 characters; the detail is sanitised the same way and capped at
 160 characters. The tunnel payload is never logged.
 
-| Reason class | Refused when |
-| ------------ | ------------ |
-| `method` | the method is not `CONNECT` |
-| `not-allowlisted` | the host is not on the allowlist |
-| `ip-literal` | the target is an IP literal |
-| `private-address` | a resolved address is in a range listed above |
-| `bad-request` | the request head is malformed |
-| `header-too-large` | the request head exceeds its size bound |
-| `idle-timeout` | the client is idle while reading the head or tunnelling |
-| `resolve-failed` | the name does not resolve |
-| `bad-port` | the port is not 443 |
-| `connect-failed` | the upstream connection fails |
-| `capacity` | the concurrent-connection bound is reached |
+| Reason class | Refused when | 403 sent? |
+| ------------ | ------------ | --------- |
+| `method` | the method is not `CONNECT` | yes |
+| `not-allowlisted` | the host is not on the allowlist | yes |
+| `ip-literal` | the target is an IP literal | yes |
+| `private-address` | a resolved address is in a range listed above | yes |
+| `bad-request` | the request head is malformed | yes |
+| `header-too-large` | the request head exceeds its size bound | yes |
+| `idle-timeout` | the client is idle before the upstream is dialled (reading the head, resolving or connecting) | no, the socket is closed |
+| `resolve-failed` | the name does not resolve | yes |
+| `bad-port` | the port is not 443 | yes |
+| `connect-failed` | the upstream connection fails | yes |
+| `capacity` | the concurrent-connection bound is reached | yes |
 
 **Per-host routes.** The `routes` option maps an allowlisted host to a handler
-that receives the accepted client connection, instead of the proxy dialling
-upstream. This is the seam where #3699's credential broker attaches. **#3699
-extends this proxy; it adds no second outbound proxy.**
+that receives the accepted client connection after the proxy has replied
+`200 Connection Established`; the proxy dials nothing for a route. This is the
+seam #3699's credential broker will attach to. **#3699 will extend this proxy
+through this seam (not yet delivered); it adds no second outbound proxy.**
 
 ## GitHub is the control plane
 
