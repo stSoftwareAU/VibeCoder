@@ -61,7 +61,7 @@ Full `./quality.sh` run on the final head: every stage passed except `deno tests
 
 - Added `worker/deno/tests/idle_detect_label_author_3964_test.ts` (10 tests). No existing test edited, so no assertion removed.
 - Red-checks: gate removed from `classifyIssues` → 3 failed; `assignee_filter` ranked above `label_author_not_allowed` → 1 failed; warn log removed → 1 failed. Each restored byte-identical.
-- Mutation red-checks (Issue #4146): deleting `number: issue.number` (`idle_detect_diagnostics.ts:758`), deleting `milestone: issue.milestone` (`:761`) and negating the `err instanceof Error` ternary (`:1400`) each fail the new tests (`a label-author verdict carries the issue number and milestone`, `the lookup warning carries the bare Error message, or the string form of a non-Error`). Each restored byte-identical.
+- Mutation red-checks (Issue #4146): deleting `number: issue.number` (`idle_detect_diagnostics.ts:761`), deleting `milestone: issue.milestone` (`:764`) and negating the `err instanceof Error` ternary (`:1403`) each fail the new tests (`a label-author verdict carries the issue number and milestone`, `the lookup warning carries the bare Error message, or the string form of a non-Error`). Each restored byte-identical.
 - Final head: `deno test -A tests/idle_detect_label_author_3964_test.ts tests/idle_detect_diagnostics_test.ts` passed (78 passed, 0 failed).
 - Existing callers of `classifyIssues`/`auditClaimableState` pass no new option, so their behaviour is unchanged; `tests/idle_detect_diagnostics_test.ts` covers them.
 
