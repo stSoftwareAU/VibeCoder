@@ -958,25 +958,6 @@ export async function runReviewFixFactsFlip(
   }
 }
 
-/** Append the facts-flip section to `.pr_response_message`, the PR reply. */
-async function appendFactsFlipReply(
-  workDir: string,
-  section: string,
-): Promise<void> {
-  const path = prResponseMessagePath(workDir);
-  let existing: string | undefined;
-  try {
-    existing = await Deno.readTextFile(path);
-  } catch (error) {
-    if (!(error instanceof Deno.errors.NotFound)) throw error;
-    existing = undefined;
-  }
-  const next = existing === undefined || existing.trim() === ""
-    ? section
-    : `${existing.trimEnd()}\n\n${section}`;
-  await Deno.writeTextFile(path, next);
-}
-
 /**
  * Inner feedback processing logic, separated to allow heartbeat
  * lifecycle management in the outer function (Issue #1204).
@@ -1690,8 +1671,13 @@ async function _processFeedbackWithHeartbeat(
 
   // Issue #4189: same push path as runReviewFixMutationCheck, outside that
   // check's catch so a thrown verifier is reported rather than dropped.
+  // The section stays in this variable. `.pr_response_message` is the agent's
+  // own reply, and a not-checked or refused verdict written there is read as
+  // a rebuttal, which dismisses an unanswered request-changes review instead
+  // of escalating it.
+  let factsFlipNote: string | null = null;
   try {
-    const flipReply = await runReviewFixFactsFlip({
+    factsFlipNote = await runReviewFixFactsFlip({
       repoPath: processorDeps.workDir,
       issueNumber: issueNumberFromBranch(input.branchName),
       logger,
@@ -1702,7 +1688,6 @@ async function _processFeedbackWithHeartbeat(
         "mutationCheckBudgetSeconds",
       ),
     });
-    if (flipReply) await appendFactsFlipReply(processorDeps.workDir, flipReply);
   } catch (error) {
     logger.error("Facts flip verifier failed", {
       reason: error instanceof Error ? error.message : String(error),
@@ -2262,16 +2247,20 @@ async function _processFeedbackWithHeartbeat(
       }
     }
   } else if (hasChanges && pushSucceeded) {
+    const notes = [
+      fixPr
+        ? `The fix was delivered through PR #${fixPr.number} (${fixPr.url}) ` +
+          `into the gated branch '${input.branchName}'.`
+        : undefined,
+      factsFlipNote ?? undefined,
+    ].filter((note): note is string => note !== undefined);
     const posted = await replyWithResult(
       repo,
       prNumber,
       deps,
       customMessage,
       pushVerification,
-      fixPr
-        ? `The fix was delivered through PR #${fixPr.number} (${fixPr.url}) ` +
-          `into the gated branch '${input.branchName}'.`
-        : undefined,
+      notes.length > 0 ? notes.join("\n\n") : undefined,
     );
     // Issue #3383/#3408: the fix is verified on the remote — dismiss the
     // review once the reply announcing it actually landed on the PR.
