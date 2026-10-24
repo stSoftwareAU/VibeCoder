@@ -26,19 +26,11 @@ export interface EchoAllowlistEntry {
 }
 
 /**
- * Seeded from the modules the scan finds.
- *
- * `caller_checks.ts` is a real echo consumer: the fenced list says to copy
- * the symbol and caller exactly, and `callerGapFindings` matches only the
- * raw `callerKey`. A scrubbed copy reports no verdict (#4269). That defect
- * is not fixed here.
+ * The scanned modules that are not echo-table rows, each with the reason it
+ * does not take a model's copy of fenced text as the original. A module that
+ * is an echo consumer belongs in ECHO_TABLE_MODULES instead.
  */
 export const ECHO_ALLOWLIST: readonly EchoAllowlistEntry[] = [
-  {
-    module: "caller_checks.ts",
-    reason:
-      "renderCallerCheckSection fences the caller list and tells the model to copy the symbol and caller exactly. callerGapFindings matches that copy with callerKey against the raw expected entries only, so a scrubbed copy is a missing verdict. Tracked in #4269 and not fixed in this change.",
-  },
   {
     module: "ci_failure_issue.ts",
     reason:
