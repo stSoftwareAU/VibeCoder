@@ -1,18 +1,20 @@
 /**
  * End-to-end check of the formatters' production wiring (Issue #4113).
  *
- * Unlike `repo_formatters_test.ts`, nothing here is faked: `deno fmt` really
- * runs through `createRepoFormatterDeps()`, and git really commits. The
- * formatters once ran as the untrusted `agent` account, which cannot write the
- * worker-owned worktree, so they reported a result and changed nothing.
+ * Unlike `worker/deno/tests/repo_formatters_test.ts`, nothing here is faked:
+ * `deno fmt` really runs through `createRepoFormatterDeps()`, and git really
+ * commits. The formatters once ran as the untrusted `agent` account, which
+ * cannot write the worker-owned worktree, so they reported a result and changed
+ * nothing.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   createRepoFormatterDeps,
   FORMATTER_COMMIT_MESSAGE,
+  runFormatterCommand,
   runRepoFormatters,
 } from "../lib/repo_formatters.ts";
 import type { Logger } from "../types.ts";
@@ -110,5 +112,41 @@ Deno.test("runRepoFormatters - real deno fmt with the production deps fixes and 
     assertEquals(status.stdout, "", "working tree should be clean");
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("createRepoFormatterDeps().runCommand runs the formatter as the worker's own uid (Issue #4113)", async () => {
+  // Base ran `sudo -u agent`, so this fails there wherever the `agent` account
+  // exists: the uid it reports is then not the worker's.
+  const uid = Deno.uid();
+  assert(
+    uid !== null,
+    "Deno.uid() is null on this platform, so the formatter's uid cannot be checked (Issue #4113)",
+  );
+  const result = await createRepoFormatterDeps().runCommand(["id", "-u"]);
+  assertEquals(result.exitCode, 0, result.output);
+  assertEquals(result.output.trim(), String(uid));
+});
+
+Deno.test("runFormatterCommand records a missing binary as exit 1 with the error text (Issue #4113)", async () => {
+  const result = await runFormatterCommand([
+    "definitely-not-a-real-binary-4113",
+  ]);
+  assertEquals(result.exitCode, 1, result.output);
+  assertStringIncludes(result.output, "definitely-not-a-real-binary-4113");
+});
+
+Deno.test("runFormatterCommand gives the child a credential-free environment (Issue #4113)", async () => {
+  const name = "VIBE_TEST_FORMATTER_TOKEN_4113";
+  Deno.env.set(name, "secret");
+  try {
+    const result = await runFormatterCommand(["env"]);
+    assertEquals(result.exitCode, 0, result.output);
+    assertEquals(result.output.includes(name), false, result.output);
+    // Positive control: the child does get an environment, so the absence
+    // above is the allowlist at work rather than an empty environment.
+    assertStringIncludes(result.output, "PATH=");
+  } finally {
+    Deno.env.delete(name);
   }
 });

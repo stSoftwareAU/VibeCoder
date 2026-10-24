@@ -4854,13 +4854,14 @@ throws never fails the run on its own: it is logged, and the gate that follows
 still runs every check and reports what was left unfixed. The formatters run as
 the worker account rather than the untrusted `agent` account the quality command
 uses (Issue #4113), because the worktree is owned by the worker and `agent`
-could never write a fix into it; they use the same allowlisted, credential-free
-environment (`buildUntrustedCommandEnv`) as the pre-push gate's own
-`deno fmt --check` and `cargo fmt --all --check` on those files, so they add no
-exposure beyond that gate. A failing formatter's log line and
-`FormatterRun.excerpt` carry the head and tail of its output (400 and 300
-characters) rather than only the last 500, because `cargo fmt` prints its usage
-text after the error.
+could never write a fix into it. They build a credential-free environment from
+the same allowlist (`buildUntrustedCommandEnv`) as the pre-push gate's own
+`deno fmt --check` and `cargo fmt --all --check` on those files; the environment
+is not identical (the gate also sets build-cache overrides), but no credential
+reaches either, so the formatters add no exposure beyond that gate. A failing
+formatter's log line and `FormatterRun.excerpt` carry the head and tail of its
+output (400 and 300 characters) rather than only the last 500, because
+`cargo fmt` prints its usage text after the error.
 
 The PR-feedback and CI-fix rounds do the same through `commitAndPushPending`
 (follow-up to #3806): the processors pass a Step 1a hook that runs the

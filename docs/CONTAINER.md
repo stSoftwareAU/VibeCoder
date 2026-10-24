@@ -1461,8 +1461,9 @@ build artefacts.
   (`worktrees/<slot>/<repo>`) and the shared clone the maintenance passes use
   alike.
 - **One directory per account.** The repository's own quality commands, tests
-  and installs run as `agent` and the worker's as `vibe` (Issue #571); neither can write a directory the
-  other created, so the account the command drops to is part of the key.
+  and installs run as `agent` and the worker's as `vibe` (Issue #571); neither
+  can write a directory the other created, so the account the command drops to
+  is part of the key.
 - **Nothing changes where the trim is honoured.** No launcher reading, an
   older launcher that writes no flag, a runtime that trims, or an explicit
   `CARGO_TARGET_DIR` — all leave the environment exactly as it was. The

@@ -28,11 +28,11 @@
  * The formatters run as the WORKER account, not the untrusted `agent` account
  * (Issue #4113). A formatter writes the tree it formats, and the worktree is
  * worker-owned, so `agent` could never write it: every fix silently failed.
- * They get the same credential-free environment the pre-push gate's own format
- * check already runs with ({@link runFormatterCommand}).
+ * They build a credential-free environment from the same allowlist the pre-push
+ * gate's own format check uses ({@link runFormatterCommand}).
  */
 
-import { type QualityGateDeps } from "./quality_gate_phase.ts";
+import { createDefaultDeps, type QualityGateDeps } from "./quality_gate_phase.ts";
 import {
   type GitCommandOptions,
   type GitCommandOutput,
@@ -110,13 +110,16 @@ export interface RepoFormatterDeps {
  * A formatter writes the tree it formats. The `agent` account cannot write the
  * worker-owned worktree, so the `sudo -u agent` route the repository's quality
  * command uses made every `deno fmt` and `cargo fmt` fail to write, and
- * nothing was ever fixed. So the formatters run here as the worker, with the
- * same credential-free environment the pre-push gate already gives its own
- * `deno fmt --check` and `cargo fmt --check` over the same files
- * (`defaultPreFlightRunner`, `buildUntrustedCommandEnv`). No credential is in
- * the environment and no sudo is involved, so this adds no exposure beyond that
- * gate. The isolation of the repository's quality script and tests (Issues #571
- * and #572) is unchanged: they still run through `createDefaultDeps`.
+ * nothing was ever fixed. So the formatters run here as the worker. The
+ * environment is built from the same allowlist (`buildUntrustedCommandEnv`) as
+ * the pre-push gate's runner uses for its `deno fmt --check` and `cargo fmt
+ * --all --check` over the same files, so no credential is in the environment
+ * and no sudo is involved, and this adds no exposure beyond that gate. This is
+ * a small argv-based runner rather than `defaultPreFlightRunner`, because that
+ * tokenises a command string (which breaks paths containing spaces or quotes)
+ * and adds a timeout and build-cache overrides a formatter run does not need.
+ * The isolation of the repository's quality script and tests (Issues #571 and
+ * #572) is unchanged: they still run through `createDefaultDeps`.
  *
  * Same contract as the runner it replaces: a missing binary or a spawn error
  * resolves with exit 1 and the error text, so it is recorded as a failure.
@@ -132,7 +135,7 @@ export const runFormatterCommand: RepoFormatterDeps["runCommand"] = async (
       clearEnv: true,
       stdout: "piped",
       stderr: "piped",
-      stdin: options?.stdin === "inherit" ? "inherit" : "null",
+      stdin: "null",
       cwd: options?.cwd,
     });
     const result = await proc.output();
@@ -150,7 +153,7 @@ export const runFormatterCommand: RepoFormatterDeps["runCommand"] = async (
  */
 export function createRepoFormatterDeps(): RepoFormatterDeps {
   return {
-    runCommand: runFormatterCommand,
+    runCommand: createDefaultDeps().runCommand,
     runGitCommand,
     logger: defaultLogger,
     runId: () => getRunId(),
