@@ -117,12 +117,11 @@ citations.
   `caller echo secret row: the redaction placeholder is not an identifier`;
   `caller_checks.ts` joins `ECHO_TABLE_MODULES`.
 - `worker/deno/tests/echo_consumer_completeness_test.ts`: the `caller_checks.ts`
-  allowlist entry is removed. Removed from
-  `worker/deno/tests/echo_consumer_completeness_test.ts`: the `ECHO_ALLOWLIST`
-  row for `caller_checks.ts`
-  - Required by: "Match a verdict that copies the fenced symbol and caller" —
-    the row said the defect is unfixed
-  - Moved to: `worker/deno/tests/echo_round_trip_test.ts`
+  allowlist entry is removed.
+- Removed from `worker/deno/tests/echo_consumer_completeness_test.ts`: `module: "caller_checks.ts",`
+  Required by: "Match a verdict that copies the fenced symbol and caller"
+- Removed from `worker/deno/tests/echo_consumer_completeness_test.ts`: `"renderCallerCheckSection fences the caller list and tells the model to copy the symbol and caller exactly. callerGapFindings matches that copy with callerKey against the raw expected entries only, so a scrubbed copy is a missing verdict. Tracked in #4269 and not fixed in this change.",`
+  Required by: "Match a verdict that copies the fenced symbol and caller"
 - Red checks: the new match tests fail against the per-field and the unfixed lib
   (17 failures; the cross-field test fails against the per-field version). The
   ambiguity operand, the `reported.has` operands, the raw early return and the
