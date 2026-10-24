@@ -2263,10 +2263,15 @@ export async function createProductionRunCoreDeps(
     async recheckAgentAuth() {
       // Issue #4167: always a fresh probe — the cached "healthy" from the
       // cycle-start gate is exactly what a mid-cycle outage invalidates.
+      // Issue #4267: resolve the provider once and probe that same one.
+      // checkClaudeHealth keys its cache by this id, so a hard-coded
+      // "claude" clear leaves a dead Codex credential looking healthy
+      // until the TTL expires.
+      const provider = activeAgentProvider();
       try {
-        const result = await claudeHealthCheck(30, logger);
+        const result = await agentHealthCheck(30, logger, provider);
         if (!result.healthy) {
-          invalidateHealthCache(healthCacheDir, "claude");
+          invalidateHealthCache(healthCacheDir, provider.id);
         }
         return {
           authFailed: !result.healthy && result.exitCode === 2,
