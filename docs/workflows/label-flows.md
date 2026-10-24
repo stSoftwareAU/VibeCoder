@@ -337,7 +337,7 @@ Colours match the seeded definitions in
 | Label | Colour | Who adds it | What happens |
 | ----- | ------ | ----------- | ------------ |
 | `failed-once` | `fbca04` | Worker | First failure — will retry |
-| `failed` | `d73a4a` | Worker | Second failure — skipped until you remove it |
+| `failed` | `d73a4a` | Human / legacy | The worker no longer applies it. A repeat worker-gate failure with a branch splits the issue into sub-issues (Issue #4130); any other repeat is recorded with `failed-once` (Issue #4158) |
 | `documentation` | `0075ca` | Human | Documentation-oriented path / clarification bypass |
 | `needs-screenshot` | `d93f0b` | Worker | Missing screenshot evidence; blocks auto-merge until resolved |
 | `degraded-model` | `e99695` | Worker | Planning/grill-class run used a fallback model |

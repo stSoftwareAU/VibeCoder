@@ -5,7 +5,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import {
   type FailureCategory,
   getFailureCategoryDisplay,
@@ -96,4 +96,12 @@ Deno.test("isSplittableWorkerGateCategory - true for the four display names, der
 Deno.test("isSplittableWorkerGateCategory - timeout and criteria_unmet do not split (Issue #4130)", () => {
   assertEquals(isSplittableWorkerGateCategory("timeout"), false);
   assertEquals(isSplittableWorkerGateCategory("criteria_unmet"), false);
+});
+
+Deno.test("isSplittableWorkerGateCategory - an unknown category value throws rather than returning undefined (Issue #4130)", () => {
+  assertThrows(
+    () => isSplittableWorkerGateCategory("not_a_category" as FailureCategory),
+    Error,
+    "Unreachable",
+  );
 });

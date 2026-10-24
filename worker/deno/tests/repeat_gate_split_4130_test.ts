@@ -26,7 +26,14 @@ import {
 } from "../lib/repeat_gate_split.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import type { GitHubClient, GitHubComment, Result } from "../types.ts";
-import type { RepeatGateSplitOutcome } from "../lib/label_types.ts";
+import type {
+  RepeatGateSplitHook,
+  RepeatGateSplitOutcome,
+} from "../lib/label_types.ts";
+import {
+  handleIssueFailure,
+  markIssueAsFailedOnce,
+} from "../lib/label_failure.ts";
 
 const REPO = "org/repo";
 const PARENT = 4130;
@@ -211,7 +218,10 @@ function commentArg(args: string[]): string {
   return at < 0 ? "" : (args[at + 1] ?? "");
 }
 
-async function runSplit(s: Scenario = {}): Promise<Run> {
+/** The hook for one scenario, and the recording of everything it touches. */
+function setupSplit(
+  s: Scenario,
+): { hook: RepeatGateSplitHook; rec: Recording } {
   const rec: Recording = {
     gh: [],
     git: [],
@@ -368,6 +378,11 @@ async function runSplit(s: Scenario = {}): Promise<Run> {
       };
     },
   });
+  return { hook, rec };
+}
+
+async function runSplit(s: Scenario = {}): Promise<Run> {
+  const { hook, rec } = setupSplit(s);
   const outcome = await hook({
     category: s.category ?? "quality_check",
     gateOutput: s.gateOutput ?? GATE_OUTPUT,
@@ -1266,3 +1281,131 @@ Deno.test("repeat gate split: 50 000 '## Failing gate output' lines are scanned 
   assertStringIncludes(edit.body, "## What the branch got done");
   assertWithinBudget(started);
 });
+
+// ---------------------------------------------------------------------------
+// (l) end to end: run 2 blocked by each worker gate, through handleIssueFailure
+// ---------------------------------------------------------------------------
+
+/** Every argument of every recorded call, in one list. */
+function allArgs(...calls: string[][][]): string[] {
+  return calls.flat(2);
+}
+
+for (const category of ALL_CATEGORIES) {
+  Deno.test(`repeat gate split end to end (${category}): sub-issues filed, parent closed, PR and branch deleted, no failed label`, async () => {
+    const { hook, rec } = setupSplit({
+      category,
+      prs: JSON.stringify([{ number: 201 }]),
+    });
+    // The failure handler's own gh seam: the issue already has `failed-once`.
+    const handlerGh: string[][] = [];
+    const ghCommandFn = (args: string[]): Promise<string> => {
+      handlerGh.push(args);
+      return Promise.resolve(
+        args[0] === "issue" && args[1] === "view" ? "failed-once" : "",
+      );
+    };
+    const cacheDir = await Deno.makeTempDir({ prefix: "split-e2e-4130-" });
+    let result: Awaited<ReturnType<typeof handleIssueFailure>>;
+    try {
+      result = await handleIssueFailure({
+        repo: REPO,
+        issueNumber: PARENT,
+        githubUser: FLEET,
+        failureMessage: GATE_OUTPUT,
+        category,
+        splitOnRepeatGate: hook,
+      }, { ghCommandFn, cacheDir });
+    } finally {
+      await Deno.remove(cacheDir, { recursive: true });
+    }
+
+    if (!result.ok) throw result.error;
+    assertEquals(result.value.markedAsFailedOnce, false);
+    assertEquals(result.value.split?.subIssueUrls, [SUB_1, SUB_2]);
+
+    // The parent is closed, the open PR is closed, the remote branch is gone.
+    assert(parentCloseCall(rec), "the parent is closed");
+    assert(
+      rec.gh.some((a) => a[0] === "pr" && a[1] === "close" && a[2] === "201"),
+      "the open PR is closed",
+    );
+    assert(
+      rec.git.some((a) =>
+        a.join(" ") === `push --delete --end-of-options origin ${BRANCH}`
+      ),
+      "the remote branch is deleted",
+    );
+    assertEquals(rec.labelsRemoved, [{ issue: PARENT, label: "failed-once" }]);
+
+    // The repeat is not recorded: no comment, no label write of any kind.
+    assertEquals(
+      handlerGh.filter((a) => a[0] !== "issue" || a[1] !== "view"),
+      [],
+      "the failure handler writes nothing to the issue when it splits",
+    );
+    assertEquals(rec.labelsAdded.filter((l) => l.issue === PARENT), []);
+    const everything = allArgs(rec.gh, rec.git, handlerGh);
+    assert(
+      !everything.some((arg) => arg === "failed" || arg === "labels[]=failed"),
+      "no call adds a label named failed",
+    );
+    assert(
+      !rec.labelsAdded.some((l) => l.label === "failed"),
+      "no client call adds a label named failed",
+    );
+    assert(!everything.includes("ready"), "no pr ready");
+    assert(!everything.includes("merge"), "no pr merge");
+    assert(!everything.includes("--auto"), "no --auto");
+  });
+}
+
+// ---------------------------------------------------------------------------
+// (m) the previous run's output is recovered from the REAL failure record
+// ---------------------------------------------------------------------------
+
+for (
+  const [layout, output] of [
+    [
+      "key error lines and a details block",
+      "WRITER-MARKER-ONE\nError: assertion mismatch in foo_test.ts\nmore context",
+    ],
+    ["no key error lines", "WRITER-MARKER-TWO plain output with nothing odd"],
+  ] as const
+) {
+  Deno.test(`repeat gate split: the prior run's gate output is recovered from the record markIssueAsFailedOnce writes (${layout})`, async () => {
+    const posted: string[] = [];
+    const ghCommandFn = (args: string[]): Promise<string> => {
+      if (args[0] === "issue" && args[1] === "comment") {
+        posted.push(args[args.indexOf("--body") + 1] ?? "");
+      }
+      return Promise.resolve("");
+    };
+    const cacheDir = await Deno.makeTempDir({ prefix: "split-writer-4130-" });
+    try {
+      const written = await markIssueAsFailedOnce({
+        repo: REPO,
+        issueNumber: PARENT,
+        githubUser: FLEET,
+        failureMessage: output,
+        category: "quality_check",
+      }, { ghCommandFn, cacheDir });
+      assert(written.ok);
+    } finally {
+      await Deno.remove(cacheDir, { recursive: true });
+    }
+    assertEquals(posted.length, 1, "the writer posts one failure record");
+
+    const { outcome, rec } = await runSplit({
+      comments: [comment(FLEET, posted[0] ?? "")],
+    });
+    assert(outcome.split, "the writer's record is accepted as fleet-authored");
+    const seed = seedOf(rec);
+    const previous = seed.slice(
+      seed.indexOf("#### Previous run's gate output"),
+    );
+    for (const line of output.split("\n")) {
+      assertStringIncludes(previous, line);
+    }
+  });
+}

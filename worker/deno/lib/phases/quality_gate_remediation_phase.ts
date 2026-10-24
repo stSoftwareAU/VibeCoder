@@ -263,13 +263,9 @@ export async function workOnIssueQualityGate(
       // cooldown kind. `failureLadderApplied` stays set either way: the split
       // wrote nothing for the main loop to step again.
       if (failureRecord.ok && failureRecord.value.split) {
+        // Not logged here: the split hook logs the sub-issues and notes, and
+        // `run_core_production_deps.ts` logs the split once per run.
         state.issueSplit = true;
-        deps.logger.info("Repeat worker-gate failure split into sub-issues", {
-          repo: ctx.repo,
-          issueNumber: ctx.issueNumber,
-          subIssueUrls: failureRecord.value.split.subIssueUrls,
-          notes: failureRecord.value.split.notes,
-        });
       }
       // Issue #1949: the main loop now applies the same ladder to every
       // non-transient coding failure. Tell it this one is already done, so a

@@ -71,6 +71,7 @@ import {
   type PlanningResult,
 } from "./planning_processor.ts";
 import { selectFleetAuthoredComments } from "./alert_dedup_authors.ts";
+import { hasBackReference } from "./issue_dependencies.ts";
 import { CARRIER_SUB_ISSUE_LABEL } from "./planning_carrier.ts";
 import { codeFenceFor } from "./prompt_delimiter.ts";
 import { redactedHeadTail } from "./redacted_text.ts";
@@ -130,8 +131,6 @@ const GATE_SECTION_HEADING = "## Failing gate output";
 const BRANCH_SECTION_HEADING = "## What the branch got done";
 const GATE_HEADING_RE = /^## Failing gate output\s*$/m;
 const BRANCH_HEADING_RE = /^## What the branch got done\s*$/m;
-/** `Part of #<n>`, the whole number captured, with a word boundary after it. */
-const PART_OF_RE = /Part of #(\d+)(?!\w)/g;
 const ISSUE_URL_RE =
   /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/issues\/(\d+)(?!\d)/;
 const UNAVAILABLE = "unavailable";
@@ -439,21 +438,6 @@ function buildSeedBlock(
 }
 
 /**
- * Whether `body` says `Part of #<parent>`. The captured digit run must equal
- * the parent's number as written, so `Part of #123` does not satisfy parent 12,
- * while `Part of #12.` and `Part of #12,` do. It is compared as text, not as a
- * number, so `Part of #012` does not satisfy it either: the check is the same
- * as the word-bounded literal it replaces.
- */
-function hasPartOf(body: string, parentIssueNumber: number): boolean {
-  const wanted = String(parentIssueNumber);
-  for (const match of body.matchAll(PART_OF_RE)) {
-    if (match[1] === wanted) return true;
-  }
-  return false;
-}
-
-/**
  * The issue's body with only its missing acceptance parts appended, or
  * `undefined` when every part is already there (Issue #4130). Nothing else in
  * the body is ever rewritten.
@@ -464,7 +448,7 @@ function appendMissingSections(
   sections: SubIssueSections,
 ): string | undefined {
   const missing: string[] = [];
-  if (!hasPartOf(body, parentIssueNumber)) {
+  if (!hasBackReference(body, parentIssueNumber)) {
     missing.push(`Part of #${parentIssueNumber}`);
   }
   if (!GATE_HEADING_RE.test(body)) {

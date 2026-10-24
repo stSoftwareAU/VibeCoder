@@ -11,7 +11,11 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import type { FailureCategory } from "../lib/failure_diagnosis.ts";
+import {
+  detectFailureCategory,
+  type FailureCategory,
+  isSplittableWorkerGateCategory,
+} from "../lib/failure_diagnosis.ts";
 import { handleIssueFailure } from "../lib/label_failure.ts";
 import type {
   HandleFailureOptions,
@@ -79,7 +83,7 @@ function recordingHook(outcome: RepeatGateSplitOutcome) {
 /** Runs the handler against the stub, with a throwaway label cache. */
 async function handle(
   ghCommandFn: (args: string[]) => Promise<string>,
-  options: Partial<HandleFailureOptions> & { category: FailureCategory },
+  options: Partial<HandleFailureOptions>,
 ) {
   const cacheDir = await Deno.makeTempDir({ prefix: "split-4130-" });
   try {
@@ -296,3 +300,67 @@ Deno.test("handleIssueFailure - a repeat gate failure without a split hook recor
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// (g) Run 2 ending in a timeout, a provider error or a merge conflict still
+// records the repeat as today: the category is detected from the realistic
+// message, the hook is supplied and never invoked, and `failed-once` is
+// written. A merge conflict has no category of its own, so its message maps to
+// a non-splittable one (`unknown`).
+// ---------------------------------------------------------------------------
+
+const REALISTIC_NON_GATE_FAILURES: {
+  name: string;
+  message: string;
+  category: FailureCategory;
+}[] = [
+  {
+    name: "timeout",
+    message:
+      "Claude CLI timed out after 3600s\nWatchdog: hard-timeout\nRaw exit code: 143 (SIGTERM)",
+    category: "timeout",
+  },
+  {
+    name: "provider error",
+    message:
+      'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+    category: "internal_error",
+  },
+  {
+    name: "merge conflict",
+    message:
+      "Failed to rebase onto origin/main: CONFLICT (content): Merge conflict in src/a.ts\nerror: could not apply abc1234... Add the thing",
+    category: "unknown",
+  },
+];
+
+for (const { name, message, category } of REALISTIC_NON_GATE_FAILURES) {
+  Deno.test(`handleIssueFailure - a repeat ${name} message is detected as ${category}, recorded and never split (Issue #4130)`, async () => {
+    assertEquals(detectFailureCategory(message), category);
+    assertEquals(isSplittableWorkerGateCategory(category), false);
+
+    const gh = ghStub("failed-once");
+    const { hook, requests } = recordingHook(SPLIT_OUTCOME);
+
+    // No explicit category: the handler detects it from the message.
+    const result = await handle(gh.ghCommandFn, {
+      failureMessage: message,
+      splitOnRepeatGate: hook,
+    });
+
+    if (!result.ok) throw result.error;
+    assertEquals(requests.length, 0);
+    assertEquals(result.value.failureCategory, category);
+    assertEquals(result.value.markedAsFailedOnce, true);
+    assertEquals(result.value.split, undefined);
+    assertStringIncludes(commentBody(gh.calls), "Repeat Attempt");
+    assert(
+      gh.calls.some((a) => a.includes("labels[]=failed-once")),
+      "the repeat is recorded with failed-once",
+    );
+    assert(
+      !gh.calls.flat().some((a) => a === "failed" || a === "labels[]=failed"),
+      "the failed label is never applied",
+    );
+  });
+}
