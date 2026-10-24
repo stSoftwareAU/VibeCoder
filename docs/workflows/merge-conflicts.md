@@ -1319,7 +1319,7 @@ The pass takes **every** conflicting PR that is due, not one per cycle
 holds new issue claims behind open PRs, so draining conflicts one per cycle —
 most of an hour once issue work is running — throttled issue throughput too.
 
-Three bounds keep the drain from becoming a monopoly:
+Three bounds keep the drain from becoming a monopoly (the run's one-hour target, Issue #4243, is a start gate on top of them: once it has passed, no further resolution starts and the pass ends as a `deadline` stop):
 
 | Bound | Value | Why |
 | --- | --- | --- |

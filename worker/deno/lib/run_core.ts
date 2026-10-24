@@ -2750,10 +2750,10 @@ async function deferClaimForAdaptiveFloor(
  *
  * Two guards close that: the `endTime` deadline is re-checked before every
  * pass, the first included (Issue #4243: the Priority ladder may cross the
- * target after the outer loop's own `while (now < endTime)` check), and a run of
- * consecutive failures backs off for `sleepInterval` before the next claim. An
- * isolated failure still continues immediately, so normal scan throughput is
- * unchanged.
+ * target after the outer loop's own `while (now < endTime)` check), and a run
+ * of consecutive failures backs off for `sleepInterval` before the next claim.
+ * An isolated failure still continues immediately, so normal scan throughput
+ * is unchanged.
  *
  * @param config - Run configuration (supplies the failure back-off interval)
  * @param deps - Injected dependencies
@@ -4278,15 +4278,15 @@ async function runSlot(
         // work must still not drive this decision. What changed is only the
         // *scope* of the question — this slot, rather than the whole fleet.
         noteSlotActivity(slotId, "idle", deps.now());
-        // The latch, not the re-scan, is the unit of filing: 74 empty scans
-        // in one cycle must not become 74 idle-tasks, and N slots idling
-        // together must not become N. The first observer of an idle episode
-        // wins; `tryConsume` sets the flag synchronously, before the first
-        // `await` below, so two slots cannot both win it.
         if (pool.idleHooks && refuseIdleFilerPastTarget(deps.now(), log)) {
           // Issue #4243: refused past the target. No permit is spent and no
-          // hook runs; the refusal line above is the only record.
+          // hook runs; `refuseIdleFilerPastTarget` logged the one line.
         } else if (
+          // The latch, not the re-scan, is the unit of filing: 74 empty scans
+          // in one cycle must not become 74 idle-tasks, and N slots idling
+          // together must not become N. The first observer of an idle episode
+          // wins; `tryConsume` sets the flag synchronously, before the first
+          // `await` below, so two slots cannot both win it.
           pool.idleHooks && pool.idleHooks.filerLatch.tryConsume(slotId)
         ) {
           // Issue #898, extended by Issue #925: the repos this pass was
@@ -7103,7 +7103,7 @@ export async function runCoreLoop(
               )
             ) {
               // Issue #4243: refused past the target. No permit is spent and
-              // no hook runs; the refusal line above is the only record.
+              // no hook runs; `refuseIdleFilerPastTarget` logged the one line.
             } else if (
               idleHookState.filerLatch.tryConsume(IDLE_CYCLE_OBSERVER_ID)
             ) {

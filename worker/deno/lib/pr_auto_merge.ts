@@ -869,7 +869,7 @@ export async function enableAutoMerge(
     // Issue #4243: no new sync attempt starts once the run target has passed.
     // The hook is not called; the attempt is deferred as a non-landing sync,
     // so the arming path below runs unchanged and the PR is still armed.
-    if (pastRunTarget((options.now ?? (() => Date.now()))())) {
+    if (pastRunTarget((options.now ?? Date.now)())) {
       log(
         `In-cycle milestone sync deferred for ${repo}#${prNumber}: the run ` +
           `target has passed; no new sync attempt starts, the periodic sync ` +

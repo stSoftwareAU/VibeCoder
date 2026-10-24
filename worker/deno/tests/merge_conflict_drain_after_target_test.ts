@@ -185,6 +185,15 @@ Deno.test("merge-conflict drain after target - a clock past the target at drain 
     );
     assertEquals(refusals[0]?.context?.taken, 0);
     assertEquals(refusals[0]?.context?.merged, 0);
+
+    // The pass summary reports the stop as a deadline with no cycle time to
+    // measure (this drain has no cycle deadline), so the remainder is 0.
+    const summaries = log.entries.filter((e) =>
+      e.message.startsWith("merge_conflict_pass=drain")
+    );
+    assertEquals(summaries.length, 1);
+    assertEquals(summaries[0]?.context?.stopReason, "deadline");
+    assertEquals(summaries[0]?.context?.remainingMs, 0);
   } finally {
     resetRunTimelineForTests();
   }

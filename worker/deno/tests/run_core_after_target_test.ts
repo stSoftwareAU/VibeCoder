@@ -353,7 +353,7 @@ Deno.test(
     const clock: Clock = { now: START_MS };
     let findCallsPastTarget = 0;
     let processCalls = 0;
-    await runLoop(
+    const { logs } = await runLoop(
       clock,
       {
         ...crossTargetBeforeLadder(clock),
@@ -371,6 +371,11 @@ Deno.test(
 
     assertEquals(findCallsPastTarget, 0);
     assertEquals(processCalls, 0);
+    // The refusal logs one line, and it names the claim that was deferred.
+    const claimStops = logs.filter((line) =>
+      line.includes("stopping before the next claim")
+    );
+    assertEquals(claimStops.length, 1);
   },
 );
 

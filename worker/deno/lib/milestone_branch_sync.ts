@@ -368,8 +368,8 @@ export interface MilestoneBranchSyncDeps {
   }) => Promise<boolean>;
   /**
    * Path of the sync cursor file (Issue #2215). When set, a pass that stops
-   * for lack of budget records the repository it stopped at, and the next
-   * pass starts there; a completed pass clears it. Unset: every pass starts
+   * early (out of budget, or past the run target, Issue #4243) records the
+   * repository it stopped at, and the next pass starts there; a completed pass clears it. Unset: every pass starts
    * from the first repository.
    */
   cursorPath?: string;
