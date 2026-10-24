@@ -231,9 +231,6 @@ async function workOnIssueRecorded(
     // Preserve a failure already booked by a phase; a later merge must not
     // relabel that recorded decision as an uncharged skip.
     if (state.failureLadderApplied) result = { ...result, ladderApplied: true };
-    // Issue #4130: a repeat worker-gate failure split into sub-issues, so the
-    // main loop records no cooldown kind for this run.
-    if (state.issueSplit) result = { ...result, issueSplit: true };
     result = await reconcileAlreadyLandedFailure(result, ctx, deps);
     deferTerminalRelease = ctx.deferTerminalRelease === true &&
       ((!result.success && !result.expectedSkip) ||

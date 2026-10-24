@@ -42,7 +42,10 @@ to complete that issue; nothing more from a person is needed or wanted.
   human after repeated failures (Issue #4158): the escalating cooldown
   (2 h → 6 h → 24 h) paces the retries, at most one a day, and the issue stays
   queued until it is done. An issue stuck in that loop is a Vibe Coder defect
-  to fix, not an issue to give up on.
+  to fix, not an issue to give up on. A second consecutive worker-gate failure
+  (summary, quality, pre-push or security-fix) is the exception to the repeat
+  record: the issue splits into sub-issues instead of repeating the failure
+  (Issue #4130), because the gate was right and the code was not done.
 
 ### Fully unattended operation and self-healing
 

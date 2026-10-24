@@ -1,0 +1,12 @@
+{
+  "issue": 4130,
+  "chunk": "top-up-4130",
+  "title": "top-up: repeat worker-gate failure splits the issue into sub-issues",
+  "ledger": "docs/audits/security-sweep-4130-repeat-gate-split.md",
+  "definition": "modules added to worker/deno/lib/ after the 12a-12af slices and top-up-4128 recorded their coverage: repeat_gate_split.ts, the split of a repeat worker-gate failure into sub-issues instead of a third failure record (#4130)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/repeat_gate_split.ts"
+  ],
+  "sweptAt": "df37422f5c8f6c98563bc841b9e41acea56e1b57"
+}

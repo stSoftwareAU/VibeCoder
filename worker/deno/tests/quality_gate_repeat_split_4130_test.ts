@@ -105,20 +105,19 @@ async function runFailingGate(
         splitOnRepeatGate?: unknown;
       }) => {
         seen.push(options);
-        return Promise.resolve({
-          ok: true,
-          value: {
-            markedAsFailedOnce: !handleOutcome.split,
+        const value = handleOutcome.split
+          ? {
+            markedAsFailedOnce: false,
             failureCategory: "quality_check",
             isInfrastructure: false,
-            ...(handleOutcome.split
-              ? {
-                markedAsFailedOnce: false,
-                split: { subIssueUrls: [SUB_ISSUE_URL], notes: [] },
-              }
-              : {}),
-          },
-        });
+            split: { subIssueUrls: [SUB_ISSUE_URL], notes: [] },
+          }
+          : {
+            markedAsFailedOnce: true,
+            failureCategory: "quality_check",
+            isInfrastructure: false,
+          };
+        return Promise.resolve({ ok: true, value });
       }) as never,
     },
   });

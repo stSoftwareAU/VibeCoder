@@ -321,7 +321,8 @@ flowchart TD
 
 **Every failure**: Comment added (headed *First Attempt*, then *Repeat
 Attempt*), `failed-once` label kept as the record, stale remote branch deleted,
-issue unassigned for automatic retry once its cooldown ends.
+issue unassigned for automatic retry once its cooldown ends. The exception is a
+repeat worker-gate failure that splits the issue (Issue #4130), described below.
 
 **Which failures count (Issue #1949)**: a terminal coding-run failure the run
 reports enters the ladder unless it is transient infrastructure — a failed
@@ -350,7 +351,8 @@ Three groups are exempt and consume no attempt, keeping the flat retry cooldown:
 
 Each ladder failure also steps an escalating re-claim cooldown (2 h → 6 h →
 24 h), so an issue that keeps failing is retried at most once a day rather than
-every cycle. It stays queued: repeated failures are a Vibe Coder defect to fix,
+every cycle. A repeat worker-gate failure that splits the issue steps no
+cooldown (Issue #4130, below). It stays queued: repeated failures are a Vibe Coder defect to fix,
 not a reason to give the issue back (Issue #4158).
 
 ```mermaid
@@ -362,6 +364,50 @@ flowchart LR
     style F fill:#3a86ff,stroke:#023e8a,color:#fff
     style T fill:#8ecae6,stroke:#219ebc,color:#000
     style L fill:#ef476f,stroke:#c5233c,color:#fff
+```
+
+**A repeat worker-gate failure splits the issue (Issue #4130)**: when an issue
+already carries `failed-once` and this run ends on a worker gate (summary
+incomplete, quality, pre-push or security-fix) with a branch to work from, the
+worker splits the issue into sub-issues instead of recording another repeat.
+The first failure still adds `failed-once`. The gate was right and the code was
+not finished, so the worker:
+
+- runs one planning round on the parent, seeded with this run's gate output,
+  the previous run's gate output and a summary of what the branch already did
+  (commits, diff stat and files touched; `unavailable: …` on a shallow clone);
+- tops each published sub-issue up with `Part of #N`, a `## Failing gate
+  output` section, a `## What the branch got done` section and the
+  `enhancement` label, where any of them is missing;
+- closes every open pull request on the run branch, drafts included (a
+  cross-repository pull request is left open), and deletes the remote run
+  branch. It never marks a pull request ready, merges one or arms auto-merge.
+  The base, default and `milestone/*` branches are never deleted;
+- closes the parent with links to the sub-issues if planning left it open
+  (unless planning's coverage or failure-detection gate holds it open), and
+  removes `failed-once`.
+
+The clean-up steps are best-effort: a failure is logged and reported as a note,
+never recorded as a repeat. A split run records no cooldown. Only a worker gate
+splits: timeouts, provider errors, merge conflicts, crashes and
+`criteria_unmet` keep the repeat record and cooldown. If planning publishes no
+sub-issues, fails or throws, the run falls back to the ordinary repeat record,
+with a warning that names the reason, and the branch is left as it is.
+
+```mermaid
+flowchart TD
+    T["Repeat worker-gate failure<br/>failed-once present, gate is summary,<br/>quality, pre-push or security-fix"] --> P["Planning round on the parent<br/>(held claim, branch summary seeded)"]
+    P -->|"sub-issues published"| S["Sub-issues topped up:<br/>Part of #N, gate and branch sections,<br/>enhancement label"]
+    S --> X["Open PRs on run branch closed<br/>remote run branch deleted"]
+    X --> Y["Parent closed with links if left open<br/>failed-once removed, no cooldown"]
+    P -->|"none published, fails or throws"| R["Repeat record<br/>+ 2 h / 6 h / 24 h cooldown"]
+
+    style T fill:#ef476f,stroke:#c5233c,color:#fff
+    style P fill:#3a86ff,stroke:#023e8a,color:#fff
+    style S fill:#8ecae6,stroke:#219ebc,color:#000
+    style X fill:#ffbe0b,stroke:#e09f00,color:#000
+    style Y fill:#06d6a0,stroke:#05a77d,color:#000
+    style R fill:#ef476f,stroke:#c5233c,color:#fff
 ```
 
 **A leftover `failed` label** (applied before Issue #4158) is stripped on the

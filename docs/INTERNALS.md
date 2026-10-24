@@ -5283,6 +5283,91 @@ the existing runner fields on the outcome/callback, including unknown/absent
 watchdog information. See the source-declared failure section of the issue
 workflow for the contract.
 
+#### A repeat worker-gate failure splits the issue (Issue #4130)
+
+A repeat worker-gate failure no longer records a third failure. `handleIssueFailure`
+(`worker/deno/lib/label_failure.ts`) takes the split branch only when all three
+hold: the issue already carries `failed-once` (`repeat`), the category passes
+`isSplittableWorkerGateCategory` (`worker/deno/lib/failure_diagnosis.ts`: the
+four gates `summary_incomplete`, `quality_check`, `pre_push_gate` and
+`security_fix_gate`, and nothing else), and the caller supplied a
+`splitOnRepeatGate` hook. The predicate is deliberately not `isWorkerGateCategory`:
+`criteria_unmet` is not in the list. The first failure still adds `failed-once`.
+Every other category is recorded as before, with the repeat record and the
+escalating cooldown.
+
+The callers that build the hook are the quality-gate remediation phase
+(`worker/deno/lib/phases/quality_gate_remediation_phase.ts`, when the run has a
+`repoPath` and a `branchName`) and the main loop's `applyCodingFailureLadder` in
+`worker/deno/lib/run_core_production_deps.ts` (when the run has a
+`branchContext`). Without a branch the hook is not supplied, so the repeat is
+recorded as before. The engine is `createRepeatGateSplitHook` in
+`worker/deno/lib/repeat_gate_split.ts`. Its steps, in order:
+
+1. **Seed and plan (can refuse).** The planner's comment thread is prefixed with
+   a context block holding this run's gate output (redacted, then cut to 2,000
+   head and 2,000 tail characters), the previous run's output (the
+   `### Error Output` of the parent's latest fleet-authored
+   `## Automated Processing Failed` record, read through
+   `selectFleetAuthoredComments`, or an "unavailable" line when none is readable)
+   and a branch summary. The summary lists up to 50 commits
+   (`git log origin/<base>..<ref>`), the diff stat and up to 100 touched files
+   (`git diff` over `origin/<base>...<ref>`), and is cut to 4,000 head and 1,000
+   tail characters. The ref is the local branch, then `origin/<branch>`. Any git
+   failure, including a shallow clone with no merge base, becomes a line
+   `unavailable: <first stderr line>`; history is not deepened. The block
+   instructs the planner to file sub-issues with the `enhancement` label and not
+   to touch the branch or any pull request. Then `planHeldIssue`
+   (`worker/deno/lib/planning_processor.ts`) runs one planning round on the held
+   claim. It neither claims the issue again nor stops the live heartbeat.
+2. **Refuse if nothing was published (before any change).** The hook refuses on
+   a GitHub client that cannot be built, a planning throw or `ok: false`, or no
+   sub-issue URL left after dropping the parent's own URL. A refusal returns
+   `split: false` with the reason. `handleIssueFailure` logs a warning that names
+   the reason ("was not split — recording it as a repeat failure instead") and
+   falls through to `markIssueAsFailedOnce` with the repeat flag. The branch is
+   left as it is.
+3. **Top up each sub-issue (best-effort).** Only sub-issues in the parent's
+   repository are touched; a URL in another repository is noted and skipped. The
+   body gets only the missing parts appended: `Part of #N`, a
+   `## Failing gate output` section and a `## What the branch got done` section.
+   Nothing else in the body is rewritten. The `enhancement` label is added if
+   missing.
+4. **Close the run's pull requests (best-effort).** `gh pr list --head <branch>
+   --state open --json number,isDraft,isCrossRepository` lists the open PRs.
+   Each same-repository PR, drafts included, is closed with `gh pr close
+   --comment`. A cross-repository PR with the same head name is left open and
+   noted. `--delete-branch` is never passed. Each close is independent.
+5. **Delete the remote branch (best-effort).** `git push --delete
+   --end-of-options origin <branch>` removes the remote run branch. It is refused
+   for an empty name, the base branch, the default branch and any `milestone/*`
+   branch. A remote ref that is already gone counts as deleted. The local branch
+   and worktree are never touched.
+6. **Close the parent (best-effort).** If the parent is still open, it is closed
+   as `completed` with a comment linking the sub-issues. The close is skipped,
+   and noted, when planning's coverage gate (`uncoveredAsks`) or its
+   failure-detection gate (`pendingFailureDetectionRepair`) holds the parent open.
+7. **Remove `failed-once` (best-effort).** The label is removed from the parent.
+
+Once planning has published sub-issues, nothing afterwards can refuse the split.
+Each later step is wrapped in `bestEffort`: a throw becomes a note and a warning,
+never a rejection, so a failed clean-up cannot turn a split into a recorded
+repeat. The hook returns `split: true` with the sub-issue URLs and notes.
+`handleIssueFailure` then returns early with `split` set. It writes no failure
+record, adds no label and removes no assignee. The quality-gate phase sets
+`state.issueSplit`, and the main loop passes the split to `failureKind`, which is
+`undefined` for a split. So a split run records no cooldown.
+
+**What it destroys.** The remote run branch and its commits go, and so do the
+branch's open pull requests (closed, not merged). What survives is the summary in
+each sub-issue (the gate output and the branch summary, both redacted and capped)
+and the local clone, which this path does not touch.
+
+**Invariant.** This path never marks a pull request ready, merges one or arms
+auto-merge. Its only pull request operation is `gh pr close`. The fallback when
+planning publishes nothing is the existing `failed-once` repeat record: `failed`
+is never applied (Issue #4158).
+
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
 The milestone-branch refusal release above frees a milestone's issues once a
@@ -5718,6 +5803,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [circuit_breaker.ts](../worker/deno/lib/circuit_breaker.ts)                                                       | Circuit breaker with persistent state                                                                                                                                                                                           |
 |                             | [cooldown_state.ts](../worker/deno/lib/cooldown_state.ts)                                                         | Issue retry cooldown with persistent state                                                                                                                                                                                      |
 |                             | [coding_failure_ladder.ts](../worker/deno/lib/coding_failure_ladder.ts)                                           | Routes non-transient coding-run failures into the `failed-once` → `failed` ladder (Issue #1949)                                                                                                                                 |
+|                             | [repeat_gate_split.ts](../worker/deno/lib/repeat_gate_split.ts)                                                   | Splits a repeat worker-gate failure into sub-issues and closes the run's PRs and remote branch (Issue #4130)                                                                                                                    |
 |                             | [crash_notification.ts](../worker/deno/lib/crash_notification.ts)                                                 | Operator alerts via issue comments and webhooks                                                                                                                                                                                 |
 |                             | [crash_cleanup.ts](../worker/deno/lib/crash_cleanup.ts)                                                           | Trap handler for unexpected exit cleanup                                                                                                                                                                                        |
 |                             | [failure_diagnosis.ts](../worker/deno/lib/failure_diagnosis.ts)                                                   | Failure root cause analysis                                                                                                                                                                                                     |

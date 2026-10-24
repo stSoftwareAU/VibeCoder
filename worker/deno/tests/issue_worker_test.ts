@@ -4751,6 +4751,97 @@ Deno.test("workOnIssue retains a genuine quality failure booked before a later m
   }
 });
 
+// Issue #4130: the quality-gate remediation phase's split reaches the result, so
+// the main loop records no cooldown kind; a recorded repeat does not set it.
+for (const split of [true, false]) {
+  Deno.test(
+    `workOnIssue carries a repeat gate split to the result (Issue #4130, split=${split})`,
+    async () => {
+      const root = await Deno.makeTempDir();
+      const branch = "issue-42-exact-implementation";
+      const head = "a".repeat(40);
+      let gates = 0;
+      let hookSupplied = false;
+      const ctx = makeContext({
+        config: makeConfig({ workDir: `${root}/work`, infraRetryBackoffMs: 0 }),
+        deferTerminalRelease: true,
+      });
+      const deps = createMockDeps({
+        git: {
+          setupRepo: () => Promise.resolve({ ok: true, value: root }),
+          createBranchName: () => branch,
+          createFeatureBranchFromBase: () =>
+            Promise.resolve({ ok: true, value: branch }),
+          runGitCommand: (args: string[]) =>
+            Promise.resolve({
+              ok: true,
+              value: {
+                code: 0,
+                stdout: args[0] === "rev-parse"
+                  ? head
+                  : args[0] === "log"
+                  ? "a implementation"
+                  : "",
+                stderr: "",
+              },
+            }),
+        },
+        quality: {
+          runQualityGate: () => {
+            const passed = gates++ === 0;
+            return Promise.resolve({
+              ok: true,
+              value: {
+                checks: [],
+                summary: { text: passed ? "passed" : "failed", passed },
+                passed,
+                output: passed ? "passed" : "quality.sh: 2 tests failed",
+              },
+            });
+          },
+        },
+        github: {
+          runGhCommand: (args: string[]) =>
+            Promise.resolve(
+              args[0] === "issue" ? JSON.stringify({ state: "OPEN" }) : "",
+            ),
+          handleIssueFailure: (options: { splitOnRepeatGate?: unknown }) => {
+            hookSupplied = typeof options.splitOnRepeatGate === "function";
+            return Promise.resolve({
+              ok: true,
+              value: split
+                ? {
+                  markedAsFailedOnce: false,
+                  failureCategory: "quality_check",
+                  isInfrastructure: false,
+                  split: {
+                    subIssueUrls: [
+                      "https://github.com/org/repo/issues/101",
+                    ],
+                    notes: [],
+                  },
+                }
+                : {
+                  markedAsFailedOnce: true,
+                  failureCategory: "quality_check",
+                  isInfrastructure: false,
+                },
+            });
+          },
+        },
+      });
+      try {
+        const result = await workOnIssue(ctx, deps);
+        assertEquals(hookSupplied, true, "the failing gate supplies a hook");
+        assertEquals(result.ladderApplied, true);
+        assertEquals(result.issueSplit, split ? true : undefined);
+      } finally {
+        await Deno.remove(root, { recursive: true });
+      }
+    },
+  );
+}
+
 Deno.test("terminal reconciliation preserves completed, skipped, booked and branchless outcomes (Issue #3977)", async () => {
   const ctx = makeContext();
   const branch = "issue-42-exact-implementation";

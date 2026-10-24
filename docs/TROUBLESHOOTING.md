@@ -856,7 +856,9 @@ causes and remedies:
    hints for Claude.
 4. For persistent silent failures on a specific issue, the worker records each
    failure with `failed-once` and an escalating cooldown (2 h → 6 h → 24 h), so
-   it retries at most once a day. It never parks the issue (Issue #4158).
+   it retries at most once a day. It never parks the issue (Issue #4158). If a
+   second consecutive run ends on a worker gate, the issue splits into
+   sub-issues instead (Issue #4130).
 
 ## 💳 Rate limits and subscription usage limits
 
@@ -953,7 +955,9 @@ The worker tracks failure counts per issue using persistent state.
 If an issue fails:
 
 1. **Every failure** — a failure record is posted, `failed-once` is kept on the
-   issue, the issue is unassigned, and the escalating cooldown starts
+   issue, the issue is unassigned, and the escalating cooldown starts. The
+   exception is a second consecutive worker-gate failure, which splits the issue
+   into sub-issues instead (Issue #4130).
 2. **Retry** — the worker claims it again when the cooldown ends. It is never
    parked behind `failed` or handed to a human (Issue #4158): an assigned
    issue is completed, and an issue that keeps failing is a Vibe Coder defect
