@@ -27,7 +27,9 @@ import {
   CODEX_PHASE_EFFORT_DEFAULTS,
   CODEX_PHASE_MODEL_DEFAULTS,
 } from "./config_defaults.ts";
-import type { EnvLookup } from "./env_lookup.ts";
+import { CODEX_HOME_ENV_VAR } from "./codex_auth.ts";
+import { resolveCodexAuthMode } from "./codex_auth_mode.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { resolvePhaseRoutedValue } from "./phase_routing.ts";
 import type { RepoConfig } from "../types.ts";
 
@@ -150,7 +152,8 @@ export function setActiveRepoCodexModelEffortOverrides(
  *   2. Per-repo `codex_phase_model_overrides`
  *   3. Per-repo `codex_model` base tier — applies to all phases
  *   4. Global config `codex_phase_model_overrides`
- *   5. {@link CODEX_PHASE_MODEL_DEFAULTS} — designed cost optimisation
+ *   5. {@link CODEX_PHASE_MODEL_DEFAULTS} — designed cost optimisation; a default
+ *      this ChatGPT login refused (Issue #4221) resolves to no `--model`
  *   6. Base `CODEX_MODEL` env var — global fallback
  *
  * @param phase - Optional phase name (e.g. `"planning"`).
@@ -163,7 +166,7 @@ export function resolveCodexModel(
   phase?: string,
   env?: EnvLookup,
 ): string | undefined {
-  return resolvePhaseRoutedValue({
+  const model = resolvePhaseRoutedValue({
     logPrefix: "codex-executor",
     what: "model",
     flag: "--model",
@@ -178,6 +181,158 @@ export function resolveCodexModel(
     phaseDefaults: CODEX_PHASE_MODEL_DEFAULTS,
     phaseDefaultsName: "CODEX_PHASE_MODEL_DEFAULTS",
   }, phase);
+
+  // (Issue #4221) A built-in default this ChatGPT login refused: when the value
+  // came from the designed default, the CLI's own model stands for the run.
+  // An explicit pin always wins.
+  if (
+    model && phase && _refusedCodexModels.size > 0 &&
+    isCodexChatgptLogin(env) &&
+    _refusedCodexModels.has(model.trim().toLowerCase()) &&
+    codexBuiltInDefaultModel(phase, env) === model
+  ) {
+    return undefined;
+  }
+  return model;
+}
+
+/**
+ * Sentinel meaning "send no `--model`", so the Codex CLI picks its own (Issue #4221).
+ */
+export const CODEX_CLI_DEFAULT_MODEL = "codex-cli-default";
+
+/** Built-in default models this ChatGPT login refused, lower-cased, for this run (Issue #4221). */
+const _refusedCodexModels = new Set<string>();
+
+/** Refused model ids already reported, so each warns once per process (Issue #4221). */
+const _refusedCodexModelsWarned = new Set<string>();
+
+/**
+ * Whether Codex authenticates with a persisted ChatGPT login (Issue #4221).
+ *
+ * Mirrors the descriptor's `resolveStoredBilling`: only an explicit
+ * `CODEX_HOME` is read, and no environment variable is consulted.
+ *
+ * @param env - Environment lookup; defaults to the process environment.
+ * @returns True only when the explicit `CODEX_HOME` holds a ChatGPT login.
+ */
+export function isCodexChatgptLogin(
+  env: EnvLookup = processEnvLookup,
+): boolean {
+  const home = (env(CODEX_HOME_ENV_VAR) ?? "").trim();
+  if (!home) return false;
+  return resolveCodexAuthMode(home, () => undefined).mode === "chatgpt";
+}
+
+/**
+ * Forget every refused model and warning, for a fresh run (Issue #4221).
+ */
+export function clearRefusedCodexModels(): void {
+  _refusedCodexModels.clear();
+  _refusedCodexModelsWarned.clear();
+}
+
+/**
+ * The built-in default model a phase resolves to, when no pin supplies one (Issue #4221).
+ *
+ * Returns the {@link CODEX_PHASE_MODEL_DEFAULTS} value only when steps 1–4 of
+ * {@link resolveCodexModel} are all absent for the phase.
+ *
+ * @param phase - Optional phase name (e.g. `"health"`).
+ * @param env - Environment lookup for the `CODEX_MODEL_<PHASE>` pin.
+ * @returns The designed default for the phase, or `undefined` when pinned or unknown.
+ */
+export function codexBuiltInDefaultModel(
+  phase: string | undefined,
+  env?: EnvLookup,
+): string | undefined {
+  if (!phase) return undefined;
+  if ((env ?? processEnvLookup)(`CODEX_MODEL_${phase.toUpperCase()}`)) {
+    return undefined;
+  }
+  if (_repoCodexPhaseModelOverrides[phase]) return undefined;
+  if (_repoCodexModel) return undefined;
+  if (_codexPhaseModelConfigOverrides[phase]) return undefined;
+  return CODEX_PHASE_MODEL_DEFAULTS[phase];
+}
+
+/**
+ * Record a built-in default model this ChatGPT login refused, for this run (Issue #4221).
+ *
+ * Warns once per refused id; the warning names the re-pin knobs.
+ *
+ * @param model - The refused model id.
+ * @param phase - The phase the refused default was routed for, if known.
+ */
+export function markCodexModelRefused(model: string, phase?: string): void {
+  const id = model.trim().toLowerCase();
+  _refusedCodexModels.add(id);
+  if (_refusedCodexModelsWarned.has(id)) return;
+  _refusedCodexModelsWarned.add(id);
+  console.warn(
+    `[codex] Model ${JSON.stringify(model)} (built-in default for phase "${
+      phase ?? "unknown"
+    }") was refused by this ChatGPT login — omitting --model so the Codex CLI ` +
+      `picks its own model for the rest of this run (Issue #4221). Re-pin it ` +
+      `with codex_phase_model_overrides or provider_model_tiers.codex.`,
+  );
+}
+
+/**
+ * The same-provider alternatives to a refused model: the CLI default, when a
+ * ChatGPT login refused a phase's built-in default (Issue #4221).
+ *
+ * @param model - The model that probed unavailable.
+ * @param phase - The phase the model was routed for, if known.
+ * @param env - Environment lookup; defaults to the process environment.
+ * @returns `[CODEX_CLI_DEFAULT_MODEL]` for a refused built-in default, else `[]`.
+ */
+export function codexAlternativeModels(
+  model: string,
+  phase?: string,
+  env?: EnvLookup,
+): string[] {
+  const id = model.trim().toLowerCase();
+  if (_refusedCodexModels.has(id)) return [];
+  if (!isCodexChatgptLogin(env)) return [];
+  const builtIn = codexBuiltInDefaultModel(phase, env);
+  if (builtIn === undefined || builtIn.trim().toLowerCase() !== id) return [];
+  return [CODEX_CLI_DEFAULT_MODEL];
+}
+
+/**
+ * Apply a Codex model adaptation for this run (Issue #4221): the refused model
+ * is dropped, so the phase runs on the CLI's own default.
+ *
+ * @param unavailable - The model that probed unavailable.
+ * @param _alternative - The alternative (always the CLI default).
+ * @param phase - The phase the model was routed for, if known.
+ */
+export function applyCodexModelAdaptation(
+  unavailable: string,
+  _alternative: string,
+  phase?: string,
+): void {
+  markCodexModelRefused(unavailable, phase);
+}
+
+/**
+ * In-run counterpart of {@link codexAlternativeModels} (Issue #4221): an
+ * invocation refused `model`, so mark it and let one retry drop `--model`.
+ *
+ * @param model - The model the refused invocation ran on.
+ * @param phase - The phase the invocation ran for, if known.
+ * @param env - Environment lookup; defaults to the process environment.
+ * @returns True when the refusal was adapted and a retry should omit `--model`.
+ */
+export function adaptCodexAfterModelRefusal(
+  model: string,
+  phase: string | undefined,
+  env?: EnvLookup,
+): boolean {
+  if (codexAlternativeModels(model, phase, env).length === 0) return false;
+  markCodexModelRefused(model, phase);
+  return true;
 }
 
 /**
@@ -407,7 +562,9 @@ export function buildCodexArgs(invocation: CodexInvocation): string[] {
     args.push(...STANDARD_FLAGS);
   }
 
-  if (invocation.model) args.push("--model", invocation.model);
+  if (invocation.model && invocation.model !== CODEX_CLI_DEFAULT_MODEL) {
+    args.push("--model", invocation.model);
+  }
   if (invocation.effort) {
     args.push("-c", `${REASONING_EFFORT_KEY}="${invocation.effort}"`);
   }

@@ -2176,7 +2176,8 @@ export async function createProductionRunCoreDeps(
     // explicit-model health check; the first healthy one adapts this run's
     // routing. Operator pins always win (the resolver substitutes only the
     // designed defaults), and providers without the seam return
-    // { adapted: false }.
+    // { adapted: false }. (Issue #4221) Codex's alternative is the CLI default
+    // (no --model) when a ChatGPT login refuses a built-in default.
     // (Issue #2637) Rotate to a Claude credential with budget before any
     // fallback provider, and find the way back once one reopens.
     selectPreferredCredential: ({ excludeHeld }) =>
@@ -2185,7 +2186,7 @@ export async function createProductionRunCoreDeps(
       const provider = activeAgentProvider();
       const failedModel = provider.resolveModel("health");
       const alternatives = failedModel
-        ? (provider.alternativeModels?.(failedModel) ?? [])
+        ? (provider.alternativeModels?.(failedModel, "health", env) ?? [])
         : [];
       for (const alternative of alternatives) {
         const probe = await claudeHealthCheck(
@@ -2196,7 +2197,7 @@ export async function createProductionRunCoreDeps(
           alternative,
         );
         if (probe.healthy) {
-          provider.applyModelAdaptation?.(failedModel!, alternative);
+          provider.applyModelAdaptation?.(failedModel!, alternative, "health");
           return {
             adapted: true,
             detail: `${failedModel} → ${alternative}`,

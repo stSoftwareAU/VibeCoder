@@ -3024,6 +3024,9 @@ async function runRetryLadder(
   // Providers this invocation moved away from after a model refusal
   // (Issue #4034), so the configured fallback walk never revisits one.
   const providersRefusedModel: string[] = [];
+  // Whether a refused built-in default was already retried without --model
+  // (Issue #4221), so a second refusal falls through to the provider switch.
+  let refusedModelAdapted = false;
 
   /**
    * The run-end result: this ladder was stopped by the worker, not by the
@@ -3412,10 +3415,31 @@ async function runRetryLadder(
         // cycle while a healthy alternative stood idle. The fallback resolves
         // its own model: the refused id names the old provider's catalogue,
         // and a session id belongs to the CLI that recorded it.
-        const refusingProvider = selectAgentProvider(
+        const refusingDescriptor = selectAgentProvider(
           currentOptions.agentProvider,
           currentOptions.env ? { env: currentOptions.env } : {},
-        ).id;
+        );
+        // (Issue #4221) A ChatGPT login refused a built-in default: retry once
+        // on the same provider with the CLI's own default, before any switch.
+        if (
+          !refusedModelAdapted &&
+          refusingDescriptor.adaptAfterModelRefusal?.(
+            currentModel,
+            currentOptions.phase,
+            currentOptions.env,
+          )
+        ) {
+          refusedModelAdapted = true;
+          currentOptions.logger?.warn(
+            `[codex-adaptation] ${refusingDescriptor.id} refused built-in default model "${currentModel}" — retrying once on ${refusingDescriptor.id} with the CLI default model (Issue #4221).`,
+          );
+          currentOptions = { ...currentOptions, model: undefined };
+          retryCount = 0;
+          totalWaitTime = 0;
+          waitInterval = initialWaitInterval;
+          continue;
+        }
+        const refusingProvider = refusingDescriptor.id;
         const nextProvider = providerAfterModelRefusal(
           configuredProviderFallbackPolicy(),
           refusingProvider,
