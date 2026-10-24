@@ -18,6 +18,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { selectAgentProvider } from "../lib/agent_provider.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { runClaudeWithRetry } from "../lib/claude_runner.ts";
 import {
   buildCodexArgs,
@@ -29,6 +30,11 @@ import {
   setCodexPhaseModelConfigOverrides,
 } from "../lib/codex_executor.ts";
 import type { EnvLookup } from "../lib/env_lookup.ts";
+import { createLogger } from "../lib/logger.ts";
+import {
+  createProductionRunCoreDeps,
+  type ProductionDepsOptions,
+} from "../lib/run_core_production_deps.ts";
 import {
   resolveProviderFallbackPolicy,
   setConfiguredProviderFallbackPolicy,
@@ -422,34 +428,93 @@ Deno.test("buildCodexArgs - the CLI default sentinel emits no --model (Issue #42
   );
 });
 
-Deno.test("Codex refused built-in default - the health-gate adaptation routes the phase to the CLI default (Issue #4221)", async () => {
+/** One health probe the production method made: its provider and model. */
+interface ProbeCall {
+  provider: string | undefined;
+  model: string | undefined;
+}
+
+type AgentHealthProbe = NonNullable<ProductionDepsOptions["agentHealthCheck"]>;
+
+/** A health probe that records each call and answers with `healthy`. */
+function recordingProbe(
+  healthy: boolean,
+  calls: ProbeCall[],
+): AgentHealthProbe {
+  return (_timeoutSeconds, _logger, provider, _binaryPath, model) => {
+    calls.push({
+      provider: typeof provider === "string" ? provider : provider?.id,
+      model,
+    });
+    return Promise.resolve({
+      healthy,
+      exitCode: healthy ? 0 : 1,
+      message: healthy ? "OK" : "model unavailable",
+    });
+  };
+}
+
+/** Run the production tryModelAdaptation, which the deps type leaves optional. */
+function runTryModelAdaptation(deps: {
+  tryModelAdaptation?: () => Promise<{ adapted: boolean; detail?: string }>;
+}): Promise<{ adapted: boolean; detail?: string }> {
+  assert(deps.tryModelAdaptation !== undefined, "tryModelAdaptation is wired");
+  return deps.tryModelAdaptation();
+}
+
+/** Production deps options for a Codex run; the probe is the only fake. */
+function productionOptions(
+  workDir: string,
+  env: EnvLookup,
+  probe: AgentHealthProbe,
+): ProductionDepsOptions {
+  return {
+    repoDir: "/tmp/test-repo",
+    workDir,
+    githubUser: "test-user",
+    logger: createLogger({ write: () => {} }),
+    config: buildDefaultWorkerConfig(),
+    env,
+    agentHealthCheck: probe,
+  };
+}
+
+Deno.test("Codex refused built-in default - the health gate adapts only on a healthy probe (Issue #4221)", async () => {
   const home = await makeCodexHome(CHATGPT_AUTH);
-  const env = envFrom({ CODEX_HOME: home });
+  const workDir = await Deno.makeTempDir({ prefix: "codex_adaptation_4221_" });
+  // The Codex provider is selected through the injected environment alone.
+  const env = envFrom({ VIBE_AGENT_PROVIDER: "codex", CODEX_HOME: home });
+  const expectedProbe: ProbeCall = {
+    provider: "codex",
+    model: CODEX_CLI_DEFAULT_MODEL,
+  };
   resetCodexRoutingState();
   try {
-    // Descriptor-level equivalent of `tryModelAdaptation` (Issue #2059): the
-    // production method probes with the module-level health check, which
-    // cannot be replaced from a test, so the probe result is taken as given.
-    const codex = selectAgentProvider("codex", { env });
-    const failedModel = codex.resolveModel("health", env);
-    assertEquals(failedModel, REFUSED);
-
-    const alternatives = codex.alternativeModels?.(
-      REFUSED,
-      "health",
-      env,
-    ) ?? [];
-    assertEquals(alternatives, [CODEX_CLI_DEFAULT_MODEL]);
-    // Offering the alternative alone adapts nothing: the id still routes.
-    // This is the state an unhealthy re-probe leaves behind.
+    // Healthy: the CLI-default probe is made once and the phase is adapted.
+    const healthyCalls: ProbeCall[] = [];
+    const healthy = await createProductionRunCoreDeps(
+      productionOptions(workDir, env, recordingProbe(true, healthyCalls)),
+    );
     assertEquals(resolveCodexModel("health", env), REFUSED);
-
-    // A healthy re-probe applies the alternative for this run.
-    codex.applyModelAdaptation?.(REFUSED, itemAt(alternatives, 0), "health");
+    const adapted = await runTryModelAdaptation(healthy.deps);
+    assertEquals(healthyCalls, [expectedProbe], "one CLI-default probe");
+    assertEquals(adapted.adapted, true);
     assertEquals(resolveCodexModel("health", env), undefined);
+
+    // Unhealthy: the same probe is made, nothing is adapted, the id stays.
+    resetCodexRoutingState();
+    const unhealthyCalls: ProbeCall[] = [];
+    const unhealthy = await createProductionRunCoreDeps(
+      productionOptions(workDir, env, recordingProbe(false, unhealthyCalls)),
+    );
+    const notAdapted = await runTryModelAdaptation(unhealthy.deps);
+    assertEquals(unhealthyCalls, [expectedProbe], "one CLI-default probe");
+    assertEquals(notAdapted.adapted, false);
+    assertEquals(resolveCodexModel("health", env), REFUSED);
   } finally {
     resetCodexRoutingState();
     await Deno.remove(home, { recursive: true });
+    await Deno.remove(workDir, { recursive: true });
   }
 });
 

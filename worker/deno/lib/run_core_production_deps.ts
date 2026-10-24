@@ -2183,13 +2183,13 @@ export async function createProductionRunCoreDeps(
     selectPreferredCredential: ({ excludeHeld }) =>
       selectPreferredClaudeCredential(excludeHeld),
     async tryModelAdaptation() {
-      const provider = activeAgentProvider();
-      const failedModel = provider.resolveModel("health");
+      const provider = activeAgentProvider({ env });
+      const failedModel = provider.resolveModel("health", env);
       const alternatives = failedModel
         ? (provider.alternativeModels?.(failedModel, "health", env) ?? [])
         : [];
       for (const alternative of alternatives) {
-        const probe = await claudeHealthCheck(
+        const probe = await agentHealthCheck(
           30,
           logger,
           provider,

@@ -3024,9 +3024,6 @@ async function runRetryLadder(
   // Providers this invocation moved away from after a model refusal
   // (Issue #4034), so the configured fallback walk never revisits one.
   const providersRefusedModel: string[] = [];
-  // Whether a refused built-in default was already retried without --model
-  // (Issue #4221), so a second refusal falls through to the provider switch.
-  let refusedModelAdapted = false;
 
   /**
    * The run-end result: this ladder was stopped by the worker, not by the
@@ -3421,15 +3418,15 @@ async function runRetryLadder(
         );
         // (Issue #4221) A ChatGPT login refused a built-in default: retry once
         // on the same provider with the CLI's own default, before any switch.
+        // A second refusal falls through to the switch: the refused default now
+        // resolves to no model, so adaptAfterModelRefusal returns false.
         if (
-          !refusedModelAdapted &&
           refusingDescriptor.adaptAfterModelRefusal?.(
             currentModel,
             currentOptions.phase,
             currentOptions.env,
           )
         ) {
-          refusedModelAdapted = true;
           currentOptions.logger?.warn(
             `[codex-adaptation] ${refusingDescriptor.id} refused built-in default model "${currentModel}" — retrying once on ${refusingDescriptor.id} with the CLI default model (Issue #4221).`,
           );
