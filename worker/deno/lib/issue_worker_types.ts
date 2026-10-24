@@ -382,7 +382,7 @@ export interface PhaseState {
    *
    * `pending` is set when a completion attempt deferred a claim-check-only
    * later block to the correction turn rather than reporting it immediately
-   * — the recovery turn has already been spent, so a still-blocked run would
+   * — the recovery turns have already been spent, so a still-blocked run would
    * otherwise fail (or finalise an existing PR as `summary_incomplete`) over
    * a claim the claim check only raised on this re-run. `used` means the
    * correction turn has already been spent this run, and its findings

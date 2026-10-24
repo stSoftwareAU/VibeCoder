@@ -1387,7 +1387,7 @@ export async function workOnIssueCompletion(
   let verdictsAtTurnStart = 0;
   while (
     result.status === "failure" &&
-    true &&
+    (state.summaryRuleBlocks?.length ?? 0) > verdictsAtTurnStart &&
     shouldRunRecoveryTurn(
       blockingFindingCounts(state.summaryRuleBlocks ?? []),
       OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns,

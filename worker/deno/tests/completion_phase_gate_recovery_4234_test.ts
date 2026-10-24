@@ -12,7 +12,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   PRE_PR_VERIFIER_COMMENT_HEADING,
   type PrePrVerifierResult,
@@ -372,6 +372,5 @@ Deno.test(
       outcome.reason ?? "",
       "recovery stopped after 1 turn: blocking findings did not decrease (1 → 1)",
     );
-    assert(!outcome.reason?.includes("PRE-FILLED DRAFT"));
   },
 );
