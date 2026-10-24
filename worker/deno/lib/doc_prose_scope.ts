@@ -196,19 +196,24 @@ function calledNames(lines: readonly string[]): Set<string> {
   return names;
 }
 
+/**
+ * Indent-0 declaration keyword and the name that follows it.
+ * The name is compared as text. A regex built from `name` is what
+ * semgrep's detect-non-literal-regexp rule rejects.
+ */
+const TOP_LEVEL_NAMED_DECLARATION =
+  /^(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\*?|class|const|let|var)\s+([A-Za-z_$][\w$]*)\b/;
+
 function topLevelDeclarationIndex(
   source: string,
   name: string,
 ): number | undefined {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(
-    `^(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:function\\*?|class|const|let|var)\\s+${escaped}\\b`,
-  );
   const lines = source.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     if (line.search(/\S/) !== 0) continue;
-    if (re.test(line.trim())) return i;
+    const declared = line.trim().match(TOP_LEVEL_NAMED_DECLARATION)?.[1];
+    if (declared === name) return i;
   }
   return undefined;
 }

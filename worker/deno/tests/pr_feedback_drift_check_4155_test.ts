@@ -3,7 +3,7 @@
 // part of the check, and an edit to one is restored.
 // Uses Australian English throughout.
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   type DriftCheckDeps,
   runPrFeedbackDriftCheck,
