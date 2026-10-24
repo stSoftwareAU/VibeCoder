@@ -515,9 +515,6 @@ async function executeWithFreshSessionFallback(
     logger: deps.logger,
     reason: "agent CLI refused it as Prompt is too long (Issue #2682)",
   });
-  // The window was sized for the discarded transcript; the fresh one starts
-  // at the CLI default.
-  delete state.autocompactTokens;
   state.claudeOutput = "";
   return await executeWithFreshSessionFallback(ctx, state, deps);
 }
@@ -1223,12 +1220,6 @@ async function executeClaudeBody(
           ...settingsJsonOption(undefined, rtk.hookSettings()),
           logger,
           sessionResumeState: state.sessionResumeState,
-          // The stream conversation could not be verifiably compacted before
-          // this issue started (Issue #2337), so every agent run of the issue
-          // asks the CLI to compact at the earliest window it accepts.
-          ...(state.autocompactTokens
-            ? { autocompactTokens: state.autocompactTokens }
-            : {}),
           // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.
           issueNumber,
           // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
@@ -1961,10 +1952,14 @@ async function executeClaudeBody(
     });
     // Hand the conversation on to the stream's next issue (Issue #2333). A
     // no-op unless setup joined a stream, so an excluded run kind — or one
-    // resuming its own checkpoint — writes no stream record.
+    // resuming its own checkpoint — writes no stream record. A run whose agent
+    // failed hands nothing on (Issue #4116): its conversation is the one that
+    // just broke, and the stream's next issue would resume straight into it.
     await handOnStreamSession({
       workDir: config.workDir,
-      joined: state.streamSession,
+      joined: claudeResult.value.exitCode === 0
+        ? state.streamSession
+        : undefined,
       state: state.sessionResumeState,
       ...(claudeResult.value.provider
         ? { runProviderId: claudeResult.value.provider }
@@ -2076,6 +2071,40 @@ async function executeClaudeBody(
     if (existingPr.ok && existingPr.value) {
       logger.info("PR already exists despite no local changes");
       return { status: "continue" };
+    }
+
+    // Issue #4116: an agent that exited non-zero and changed nothing crashed
+    // (most often "Autocompact is thrashing"); it did not conclude there was
+    // nothing to do. As `no_changes` it reached the analysis-only hand-off and
+    // a human — 12 of 13 `needs-human` issues on GRQ-AutoTrader on
+    // 2026-10-23. #4148 fixed this in `execute_claude_phase.ts`, which this
+    // pipeline does not use. `interrupted` is retried, never escalated.
+    if (claudeResult.value.exitCode !== 0) {
+      logger.warn(
+        "Agent exited non-zero without changing anything — a failed run, " +
+          "retried, not analysis-only (Issue #4116)",
+        { exitCode: claudeResult.value.exitCode },
+      );
+      // The session that failed is not resumed by the retry.
+      if (state.sessionResumeState) {
+        state.sessionResumeState = createSessionResumeState();
+      }
+      return {
+        category: "interrupted",
+        status: "failure",
+        reason: formatDetailedFailureMessage(
+          `Run interrupted before completing — the agent exited ${claudeResult.value.exitCode} without making any change`,
+          {
+            elapsedSeconds: Math.round(
+              (Date.now() - state.executeStartTime) / 1000,
+            ),
+            clarityStatus: state.clarityStatus,
+            outputSize: state.claudeOutput.length,
+            lastOutputSnippet: redactedTail(state.claudeOutput, 500) ||
+              undefined,
+          },
+        ),
+      };
     }
 
     // Issue #106: if the range comparison itself errored and nothing else

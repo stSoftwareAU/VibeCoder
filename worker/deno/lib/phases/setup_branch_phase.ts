@@ -55,6 +55,7 @@ import {
   primeStreamSession,
   resolveStreamRunKind,
 } from "../stream_session.ts";
+import { createSessionResumeState } from "../session_resume.ts";
 import { isStreamSharingTier } from "../issue_filter.ts";
 import {
   claimRepoLevelRejectionReport,
@@ -780,9 +781,9 @@ export async function workOnIssueSetupBranch(
       // Compact that conversation before the issue's first phase runs
       // (Issue #2337). It has carried every issue of this stream so far, so
       // left alone it is the next issue that dies of a full context window.
-      // Returns the `--autocompact` window when the compaction could not be
-      // verified — the CLI's own lever, pulled as early as it goes.
-      state.autocompactTokens = await deps.claude.primeStreamCompaction({
+      // Not proved compacted, the issue opens a new conversation, which the
+      // stream then carries on from (Issue #4116).
+      const freshSession = await deps.claude.primeStreamCompaction({
         outcome: adoption.outcome,
         providerId,
         ...(adoption.state.providerId !== undefined
@@ -794,6 +795,7 @@ export async function workOnIssueSetupBranch(
         logger,
         logFields: { repo, issueNumber },
       });
+      if (freshSession) state.sessionResumeState = createSessionResumeState();
     }
   }
 

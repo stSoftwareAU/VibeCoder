@@ -3811,15 +3811,18 @@ instead of restarting from zero. **Picking up pushed WIP does not depend on
 - **A resumed conversation is compacted before the issue's first phase**
   (Issue #2337), because it has carried every issue of the stream so far and
   left alone it is the *next* issue that fills the context window. Claude and
-  DeepSeek — one CLI, so one pair of levers — send `/compact` as the prompt of
-  a `--resume` print run, then **measure** the session's transcript file under
-  `CLAUDE_CONFIG_DIR`: smaller means it worked, and the run logs
-  `compaction: /compact`. Anything short of that proof — an unchanged or larger
-  transcript, a non-zero `/compact` run, a transcript that cannot be measured,
-  a spawn that failed — is treated as uncompacted, and every agent run of the
-  issue instead carries `--autocompact 100000` (the smallest window the CLI
-  accepts, so its own compaction happens earliest), logged as
-  `compaction: autocompact 100000`. A `new` or `reset` stream session has no
+  DeepSeek — one CLI, so one lever — send `/compact` as the prompt of a
+  `--resume` print run, then **verify** it in the session's transcript under
+  `CLAUDE_CONFIG_DIR`: the transcript is append-only, so a working `/compact`
+  grows the file and adds a `compact_boundary` record. A new boundary means it
+  worked, and the run logs `compaction: /compact` (Issue #4116). Anything short
+  of that proof — no new boundary, a non-zero `/compact` run, a transcript that
+  cannot be read, a spawn that failed — starts the issue on a **new session**
+  instead of resuming the uncompacted one, logged as
+  `compaction: fresh session`; the stream carries on from that conversation.
+  (The earlier fallback, `--autocompact 100000`, set the CLI's compaction
+  trigger below the size of the issue prompt itself, so runs aborted with
+  "Autocompact is thrashing".) A `new` or `reset` stream session has no
   conversation to compact and logs `compaction skipped: new stream session`
   without spending a CLI call, and Codex and Gemini expose no compaction
   control at all, so they carry the full transcript and log
