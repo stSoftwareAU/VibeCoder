@@ -110,6 +110,7 @@
 
 import {
   collectDocProseScope,
+  formatCapOverflowSummary,
   type ProseRange,
   renderProseRanges,
 } from "./doc_prose_scope.ts";
@@ -1657,8 +1658,17 @@ export async function runPrFeedbackDriftCheck(
         "tracked manuals could not be listed; not checked, never passed",
       );
     }
+    const overflow = new Set(scope.capOverflow);
     for (const message of scope.notChecked) {
+      if (overflow.has(message)) continue;
       logger.warn(`Drift check: ${message}`, { repo, prNumber });
+    }
+    const capSummary = formatCapOverflowSummary(
+      "Drift check",
+      scope.capOverflow,
+    );
+    if (capSummary !== undefined) {
+      logger.warn(capSummary, { repo, prNumber });
     }
     const docFiles: string[] = [];
     for (const path of prFiles) {

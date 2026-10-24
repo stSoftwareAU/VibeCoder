@@ -65,6 +65,7 @@
 
 import {
   collectDocProseScope,
+  formatCapOverflowSummary,
   type ProseRange,
   renderProseRanges,
 } from "./doc_prose_scope.ts";
@@ -861,16 +862,16 @@ export async function runSummaryClaimCheck(
           issueNumber,
         });
       }
-      if (scope.capOverflow.length > 0) {
-        const n = scope.capOverflow.length;
-        const shown = scope.capOverflow.slice(0, 3);
-        const more = n > shown.length ? `; and ${n - shown.length} more` : "";
-        deps.logger.warn(
-          `Summary claim check: ${n} doc-prose range(s) over a cap, not checked (first ${shown.length}): ${
-            shown.join("; ")
-          }${more}`,
-          { repo, issueNumber, notCheckedCount: n },
-        );
+      const capSummary = formatCapOverflowSummary(
+        "Summary claim check",
+        scope.capOverflow,
+      );
+      if (capSummary !== undefined) {
+        deps.logger.warn(capSummary, {
+          repo,
+          issueNumber,
+          notCheckedCount: scope.capOverflow.length,
+        });
       }
     }
 

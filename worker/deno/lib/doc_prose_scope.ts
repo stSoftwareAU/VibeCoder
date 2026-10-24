@@ -39,6 +39,25 @@ export interface DocProseScope {
   capOverflow: string[];
 }
 
+/**
+ * One warning for every cap-overflow note (Issues #4118, #4177).
+ * Empty overflow returns undefined so the caller logs nothing.
+ * The first three names are listed; the rest are a count.
+ */
+export function formatCapOverflowSummary(
+  prefix: string,
+  overflow: readonly string[],
+): string | undefined {
+  if (overflow.length === 0) return undefined;
+  const shown = overflow.slice(0, 3);
+  const more = overflow.length > shown.length
+    ? `; and ${overflow.length - shown.length} more`
+    : "";
+  return `${prefix}: ${overflow.length} doc-prose range(s) over a cap, not checked (first ${shown.length}): ${
+    shown.join("; ")
+  }${more}`;
+}
+
 /** Parse head-side changed lines from a zero-context git diff. */
 function changedLines(diff: string): Map<string, Set<number>> {
   const result = new Map<string, Set<number>>();
