@@ -2515,9 +2515,9 @@ flowchart TD
     B --> G{"Any confirmed finding<br/>or Test Plan problem?"}
     F --> G
     D --> G
-    G -- yes --> H{"First summary-rule<br/>block this run?"}
+    G -- yes --> H{"First block, or count fell<br/>and turns left?"}
     G -- no --> I["PR raised"]
-    H -- yes --> RT["One recovery turn<br/>(all folded gates, one per item)"]
+    H -- yes --> RT["Recovery turn (bounded loop, up to 3 while findings fall)<br/>(all folded gates, one per item)"]
     RT --> A
     H -- no --> J{"Claim check the only gate,<br/>summary/manual findings only,<br/>correction turn unused?"}
     J -- no --> K["Fail / finalise<br/>summary_incomplete"]
@@ -2796,8 +2796,8 @@ flowchart TD
     WF -->|"finding or unreadable"| F2
     WF -->|"clean or nothing in scope"| G{"Summary gates<br/>rule satisfied?"}
     G -->|yes| PR["gh pr create"]
-    G -->|no| R{"First summary-rule block<br/>of this run?"}
-    R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
+    G -->|no| R{"First block, or count fell<br/>and turns left?"}
+    R -->|yes| RT["Recovery turn (bounded loop, up to 3 while findings fall)<br/>one agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163, #4234)"]
     RT --> G
     R -->|no| CC{"Claim check the only gate<br/>still blocking, correction<br/>turn unused this run?"}
     CC -->|yes| CT["One claim correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
