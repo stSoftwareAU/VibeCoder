@@ -25,8 +25,18 @@ import {
 export const PRE_PR_VERIFIER_ADVISORY_HEADING =
   "**The pre-PR verifier noted advisory findings on unchanged lines.**";
 
-/** Cap on one finding's text, as `previousFindings` carries it. */
-const EARLIER_TEXT_MAX = 2000;
+/**
+ * Cap on each of a finding's file, problem and fix, as
+ * `buildPrePrVerifierGateComment` clips them. `findingToEarlierText` uses the
+ * same caps, so the text read back from a posted comment equals the in-run text.
+ */
+const GATE_FIELD_MAX = 500;
+
+/**
+ * Longest file name read as a path. Longer is not a git path, so it fails
+ * closed before any pattern scans it.
+ */
+const MAX_PATH_CHARS = 4_096;
 
 /**
  * Index of the first finding bullet in `buildPrePrVerifierGateComment`'s
@@ -35,10 +45,17 @@ const EARLIER_TEXT_MAX = 2000;
  */
 const GATE_COMMENT_FIRST_BULLET_LINE = 6;
 
-/** Complete problem/Fix text for one finding, the shape `previousFindings` carries. */
+/**
+ * Complete problem/Fix text for one finding, the shape `previousFindings`
+ * carries. Built the way `buildPrePrVerifierGateComment` builds its bullet, with
+ * the same clips, so a finding read back from the posted comment equals this
+ * text. The trim matches `previousFindingsFromGateComment`, which trims a bullet.
+ */
 export function findingToEarlierText(f: ReviewFinding): string {
-  const fix = f.fix ? ` — fix: ${f.fix}` : "";
-  return clip(`\`${f.file}:${f.line}\` — ${f.problem}${fix}`, EARLIER_TEXT_MAX);
+  const fix = f.fix ? ` — fix: ${clip(f.fix, GATE_FIELD_MAX)}` : "";
+  return `\`${clip(f.file, GATE_FIELD_MAX)}:${f.line}\` — ${
+    clip(f.problem, GATE_FIELD_MAX)
+  }${fix}`.trim();
 }
 
 /**
@@ -64,15 +81,18 @@ export interface ConvergenceSplit {
 
 /**
  * The repo-relative path a finding names, as `git diff` spells it: backslashes
- * become `/`, repeated slashes collapse, and a leading `./` is dropped. Null
- * for an absolute path or one with a `..` segment, which the diff cannot
- * place, so the finding stays blocking.
+ * become `/`, repeated slashes collapse, and every `.` and empty segment is
+ * dropped, so `a/./b/` reads as `a/b`. Null for an absolute path, a drive
+ * letter, a `..` segment, a path over {@link MAX_PATH_CHARS}, or an empty path,
+ * which the diff cannot place, so the finding stays blocking.
  */
 function normalisedPath(file: string): string | null {
-  const p = file.trim().replace(/\\/g, "/").replace(/\/+/g, "/");
-  if (p === "" || p.startsWith("/") || /^[A-Za-z]:\//.test(p)) return null;
-  if (p.split("/").includes("..")) return null;
-  const relative = p.replace(/^(\.\/)+/, "");
+  if (file.length > MAX_PATH_CHARS) return null;
+  const slashed = file.trim().replace(/\\/g, "/").replace(/\/+/g, "/");
+  if (slashed.startsWith("/") || /^[A-Za-z]:\//.test(slashed)) return null;
+  const segments = slashed.split("/");
+  if (segments.includes("..")) return null;
+  const relative = segments.filter((s) => s !== "" && s !== ".").join("/");
   return relative === "" ? null : relative;
 }
 

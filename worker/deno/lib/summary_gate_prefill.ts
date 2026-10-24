@@ -25,6 +25,7 @@
 
 import { isTestFilePath } from "./security_fix_gate.ts";
 import { codeChangingFiles, isDocsSweepExemptPath } from "./docs_sweep_gate.ts";
+import { HUNK_HEADER_RE } from "./branch_outcome_citations.ts";
 
 /** Cap on the total drafted text, including the truncation marker. */
 const MAX_OUTPUT_CHARS = 6_000;
@@ -75,8 +76,9 @@ export interface SummaryPrefillInput {
     removedAssertions: boolean;
   };
   /**
-   * Doc paths (README/docs excluding docs/archive) whose text mentions `term`
-   * as a whole word; injected so this module does no I/O.
+   * Markdown outside docs/archive whose text mentions `term` as a whole word
+   * (the caller greps `*.md` with `:(exclude)docs/archive`); injected so this
+   * module does no I/O.
    */
   docsMentioning: (term: string) => Promise<readonly string[]>;
 }
@@ -93,9 +95,6 @@ interface DiffFile {
   added: AddedLine[];
   removed: string[];
 }
-
-/** A hunk header, e.g. `@@ -12,3 +12,0 @@`. Counts default to 1 when omitted. */
-const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
 /**
  * Identifier definitions on a changed line: an exported declaration, a
@@ -114,9 +113,13 @@ const BRANCH_CONSTRUCT_RE =
 /** A test declaration on an added line: `Deno.test("…"`, `it("…"`, `test("…"`. */
 const TEST_NAME_RE = /(?:^|[^\w.$])(?:Deno\.test|it|test)\(\s*(["'])(.+?)\1/;
 
-/** Strip a diff path's trailing tab, then an `a/` or `b/` prefix. */
+/**
+ * Strip a diff path's trailing tab, then an `a/` or `b/` prefix. The `[^\n]*`
+ * tail takes a lone CR as text, where `.*$` would stop there and leave the
+ * path unstripped.
+ */
 function diffPath(raw: string): string {
-  let path = raw.replace(/\t.*$/, "").trim();
+  let path = raw.slice(0, MAX_SCAN_LINE_CHARS).replace(/\t[^\n]*/, "").trim();
   if (path === "/dev/null") return path;
   if (path.startsWith("a/") || path.startsWith("b/")) path = path.slice(2);
   return path;
@@ -180,7 +183,7 @@ function parseDiffFiles(diff: string): DiffFile[] {
       }
       continue;
     }
-    const hunk = HUNK_HEADER_RE.exec(line);
+    const hunk = HUNK_HEADER_RE.exec(line.slice(0, MAX_SCAN_LINE_CHARS));
     if (hunk) {
       oldLeft = hunk[2] === undefined ? 1 : Number(hunk[2]);
       newLeft = hunk[4] === undefined ? 1 : Number(hunk[4]);

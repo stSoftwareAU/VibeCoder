@@ -27,9 +27,11 @@ import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
-import { MAX_UNMET_CRITERIA_ROUNDS } from "../lib/unmet_criteria_gate.ts";
 import type { GitHubClient, Result } from "../types.ts";
-import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import {
+  buildDefaultWorkerConfig,
+  OPERATIONAL_DEFAULTS,
+} from "../lib/config_defaults.ts";
 
 const SHA = "4146aaaabbbbccccddddeeeeffff000011112222";
 const REPO = "stSoftwareAU/VibeCoder";
@@ -403,7 +405,10 @@ Deno.test(
       ),
     });
 
-    assertEquals(out.claudePrompts.length, MAX_UNMET_CRITERIA_ROUNDS);
+    assertEquals(
+      out.claudePrompts.length,
+      OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns,
+    );
     assertEquals(out.status, "failure");
     assertEquals(out.category, "criteria_unmet");
     assertEquals(out.prCreateArgs.length, 0);

@@ -16,11 +16,44 @@ import type {
 import { AutoMergeResult } from "../../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../../types.ts";
 import { buildDefaultWorkerConfig } from "../../lib/config_defaults.ts";
+import {
+  RUN_MAX_SECONDS_ENV,
+  RUN_STARTED_EPOCH_ENV,
+} from "../../lib/run_hard_cap.ts";
+import {
+  DRIFT_VERDICT_CLOSE,
+  DRIFT_VERDICT_OPEN,
+} from "../../lib/pr_feedback_drift_check.ts";
 
 export const SHA = "5e4d3c2b1a0918273645540fedcba98877665544";
 export const REPO = "stSoftwareAU/VibeCoder";
 export const ISSUE = 2189;
 export const PR_URL = `https://github.com/${REPO}/pull/1208`;
+
+/** The repo-relative path the completion phase reads the PR summary from. */
+export const ISSUE_SUMMARY_PATH =
+  `docs/archive/pr-summaries/pr-summary-${ISSUE}.md`;
+
+/**
+ * A model claim-check reply (Issue #4234): the drift verdict block naming each
+ * sentence in `file`, as the claim check's own parser reads it.
+ */
+export function claimVerdictReply(
+  file: string,
+  sentences: readonly string[],
+): string {
+  const findings = sentences.map((sentence) => ({
+    file,
+    sentence,
+    reason: "the head does not match the sentence",
+  }));
+  return [
+    "Verdict below.",
+    DRIFT_VERDICT_OPEN,
+    JSON.stringify({ findings }),
+    DRIFT_VERDICT_CLOSE,
+  ].join("\n");
+}
 
 export const ISSUE_WITH_CRITERIA = `## Problem
 
@@ -149,6 +182,19 @@ export interface Scenario {
   prExistsForBranch?: boolean;
   /** Output of `git diff --unified=0 <base>...HEAD`, when a scenario needs it. */
   diffUnified0?: string;
+  /**
+   * The agent's final message each recovery turn returns (Issue #4234), which
+   * the next pre-PR verifier pass receives as its `agentResponse`. Omitted, the
+   * turn's output is `done`.
+   */
+  retryOutput?: string;
+  /**
+   * Scripted summary-claim model pass, one entry per completion pass (Issue
+   * #4234): the sentences the model reports as describing named code wrongly.
+   * Each must appear verbatim in the summary. The last entry repeats past the
+   * end. Omitted, the model pass is not scripted and reports nothing.
+   */
+  claimSentences?: readonly (readonly string[])[];
 }
 
 export interface Outcome {
@@ -170,10 +216,38 @@ export interface Outcome {
   finalisePrCalls: number;
   /** The `finalisePrCalls` count at the start of each recovery turn (Issue #4234). */
   finalisedBeforeTurn: number[];
+  /** Every logger call the run made, in order (Issue #4234). */
+  logs: { level: "info" | "warn" | "error"; message: string }[];
 }
 
-/** Drive the live completion phase over a blocked summary rule. */
+/**
+ * The host's run-cap variables, which `resolveRunHardCap` reads (Issue #4234).
+ * A test must not inherit them: a cap the supervisor set on the host would
+ * change a recovery turn's runway, so `runCompletion` removes them for the run.
+ */
+const HOST_RUN_CAP_ENV = [RUN_MAX_SECONDS_ENV, RUN_STARTED_EPOCH_ENV] as const;
+
+/**
+ * Drive the live completion phase over a blocked summary rule. The host's run
+ * cap is removed for the duration and restored afterwards (Issue #4234), so the
+ * outcome never depends on the environment the test runner happens to inherit.
+ */
 export async function runCompletion(scenario: Scenario): Promise<Outcome> {
+  const saved = HOST_RUN_CAP_ENV.map((name) => [name, Deno.env.get(name)] as const);
+  for (const name of HOST_RUN_CAP_ENV) Deno.env.delete(name);
+  try {
+    return await runCompletionWithoutHostCap(scenario);
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) Deno.env.delete(name);
+      else Deno.env.set(name, value);
+    }
+  }
+}
+
+async function runCompletionWithoutHostCap(
+  scenario: Scenario,
+): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   const workDir = await Deno.makeTempDir();
   const summaryPath =
@@ -193,6 +267,12 @@ export async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let finalisePrCalls = 0;
   const finalisedBeforeTurn: number[] = [];
   let retryTurn = 0;
+  let claimPasses = 0;
+  const logs: Outcome["logs"] = [];
+  const capture =
+    (level: "info" | "warn" | "error") => (message: string) => {
+      logs.push({ level, message });
+    };
 
   const config = buildDefaultWorkerConfig();
   // Never inherit the host's work directory — gate state is persisted under it.
@@ -221,6 +301,11 @@ export async function runCompletion(scenario: Scenario): Promise<Outcome> {
   };
 
   const deps = createMockDeps({
+    logger: {
+      info: capture("info"),
+      warn: capture("warn"),
+      error: capture("error"),
+    },
     github: {
       createClient: () => stubClient(comments),
       runGhCommand: (args: string[]) => {
@@ -296,9 +381,31 @@ export async function runCompletion(scenario: Scenario): Promise<Outcome> {
         }
         return Promise.resolve({
           ok: true as const,
-          value: { exitCode: 0, output: "done", timedOut: false },
+          value: {
+            exitCode: 0,
+            output: scenario.retryOutput ?? "done",
+            timedOut: false,
+          },
         });
       },
+      ...(scenario.claimSentences === undefined ? {} : {
+        runSummaryClaimQuestion: () => {
+          const scripted = scenario.claimSentences!;
+          const pass = Math.min(claimPasses++, scripted.length - 1);
+          const sentences = scripted[pass] ?? [];
+          return Promise.resolve({
+            ok: true as const,
+            value: {
+              exitCode: 0,
+              output: claimVerdictReply(
+                ISSUE_SUMMARY_PATH,
+                sentences,
+              ),
+              timedOut: false,
+            },
+          });
+        },
+      }),
       ...(scenario.verifier === undefined ? {} : {
         runPrePrVerifier: (input: PrePrVerifierInput) => {
           verifierInputs.push(input);

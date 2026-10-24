@@ -440,6 +440,9 @@ ${
   }`;
 }
 
+/** Longest agent reply kept from a recovery turn for the verifier (Issue #4234). */
+const RECOVERY_TURN_RESPONSE_MAX_CHARS = 6000;
+
 /**
  * The run's ceiling in epoch ms, or undefined when the supervisor sets no cap
  * (Issue #4234). The ceiling is the instant past which a recovery turn may not
@@ -593,6 +596,12 @@ export async function recoverFromSummaryRuleBlock(
     return blocked;
   }
   recordClaudeRunStats(state, retryResult.value);
+  // Issue #4234: the agent's reply to the gate's items (its fixes and disputes)
+  // reaches the pre-PR verifier's next pass, which checks the claims in it.
+  state.recoveryTurnResponse = (retryResult.value.output ?? "").slice(
+    0,
+    RECOVERY_TURN_RESPONSE_MAX_CHARS,
+  );
 
   // The block whose shape is fixed and machine-checked is rendered by the
   // worker when the agent's own summary still fails it (Issue #2242). A no-op

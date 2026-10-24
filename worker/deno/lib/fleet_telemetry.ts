@@ -141,9 +141,16 @@ export interface IssuePhaseCounters {
    * counted for runs that did not recover.
    */
   gateRunFailures: Record<string, number>;
+  /**
+   * Per gate id, the first-attempt runs that ended still blocked on it (Issue
+   * #4234). Only counted for runs that did not recover AND whose issue had no
+   * earlier failed attempt ({@link GateRecoveryRun.firstAttempt}). A subset of
+   * {@link IssuePhaseCounters.gateRunFailures}.
+   */
+  gateFirstAttemptFailures: Record<string, number>;
   /** Runs that hit at least one summary-rule block and then recovered (Issue #4234). */
   gateRecoveredRuns: number;
-  /** Recovery turns spent across those runs (Issue #4234). */
+  /** Recovery turns spent, summed across recovered and failed runs alike (Issue #4234). */
   gateRecoveryTurns: number;
 }
 
@@ -207,6 +214,12 @@ export interface GateRecoveryRun {
   /** Recovery turns spent. */
   turns: number;
   recovered: boolean;
+  /**
+   * True when the issue had no earlier failed attempt, i.e. it carried neither
+   * the `failed-once` nor the `failed` label (Issue #4234). Required, so a
+   * caller cannot leave a run out of `gateFirstAttemptFailures` by omission.
+   */
+  firstAttempt: boolean;
 }
 
 /** A well-formed gate id: lower-case letters, digits and hyphens only. */
@@ -377,6 +390,7 @@ function zeroIssuePhaseCounters(): IssuePhaseCounters {
     issuePhaseHaikuUsd: 0,
     gateFirstPassBlocks: {},
     gateRunFailures: {},
+    gateFirstAttemptFailures: {},
     gateRecoveredRuns: 0,
     gateRecoveryTurns: 0,
   };
@@ -690,11 +704,13 @@ function bumpGateCounts(
  *
  * Every distinct gate that blocked in the first gate pass counts once in
  * `gateFirstPassBlocks`. A run that did not recover counts each gate still
- * blocking at the end once in `gateRunFailures`; a recovered run counts in
- * `gateRecoveredRuns` and adds nothing to `gateRunFailures`. Recovery turns
- * accumulate for both.
+ * blocking at the end once in `gateRunFailures`, and, when the issue had no
+ * earlier failed attempt, once more in `gateFirstAttemptFailures`. A recovered
+ * run counts in `gateRecoveredRuns` and adds nothing to either failure map.
+ * Recovery turns accumulate for both recovered and failed runs.
  *
- * @param run - The run's first-pass gates, final gates, turns and outcome
+ * @param run - The run's first-pass gates, final gates, turns, outcome and
+ *   first-attempt flag
  */
 export function recordGateRecoveryRun(run: GateRecoveryRun): void {
   const counters = state.issuePhase;
@@ -703,6 +719,9 @@ export function recordGateRecoveryRun(run: GateRecoveryRun): void {
     counters.gateRecoveredRuns += 1;
   } else {
     bumpGateCounts(counters.gateRunFailures, run.finalGates);
+    if (run.firstAttempt) {
+      bumpGateCounts(counters.gateFirstAttemptFailures, run.finalGates);
+    }
   }
   counters.gateRecoveryTurns += contribution(run.turns);
 }
@@ -903,6 +922,7 @@ export function getFleetTelemetry(
     // Issue #4234 — the gate maps are copied too, not shared with the state.
     gateFirstPassBlocks: { ...state.issuePhase.gateFirstPassBlocks },
     gateRunFailures: { ...state.issuePhase.gateRunFailures },
+    gateFirstAttemptFailures: { ...state.issuePhase.gateFirstAttemptFailures },
     ...state.prOutcomes,
     successRate: completed > 0 ? state.successes / completed : null,
     utilisation,
@@ -916,7 +936,8 @@ export function getFleetTelemetry(
 function hasGateEvents(s: FleetTelemetrySnapshot): boolean {
   return s.gateRecoveredRuns > 0 || s.gateRecoveryTurns > 0 ||
     Object.keys(s.gateFirstPassBlocks).length > 0 ||
-    Object.keys(s.gateRunFailures).length > 0;
+    Object.keys(s.gateRunFailures).length > 0 ||
+    Object.keys(s.gateFirstAttemptFailures).length > 0;
 }
 
 /**
@@ -993,15 +1014,19 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
     `issue_split_runs=${s.issuePhaseSplitRuns}`,
     `issue_usd=${s.issuePhaseUsd.toFixed(4)}`,
     `issue_gate_first_attempt_passes=${s.issuePhaseFirstAttemptGatePasses}`,
-    // Issue #4234: per-gate first-pass blocks and run-ending failures, with
-    // the recovery totals. Shown only once a gate event is recorded, so a
-    // fleet with no gate events keeps its summary line byte-identical. No key
-    // contains TOKEN/SECRET/PASSWORD/KEY, and the gate ids are sanitised to
-    // `[a-z0-9-]`, so the redactor leaves them be.
+    // Issue #4234: per-gate first-pass blocks and run-ending failures (the
+    // latter also split out for first-attempt issues), with the recovery
+    // totals. Shown only once a gate event is recorded, so a fleet with no
+    // gate events keeps its summary line byte-identical. No key contains
+    // TOKEN/SECRET/PASSWORD/KEY, and the gate ids are sanitised to `[a-z0-9-]`,
+    // so the redactor leaves them be.
     ...(hasGateEvents(s)
       ? [
         `gate_first_pass_blocks=${gateCountList(s.gateFirstPassBlocks)}`,
         `gate_run_failures=${gateCountList(s.gateRunFailures)}`,
+        `gate_first_attempt_failures=${
+          gateCountList(s.gateFirstAttemptFailures)
+        }`,
         `gate_recovered_runs=${s.gateRecoveredRuns}`,
         `gate_recovery_turns=${s.gateRecoveryTurns}`,
       ]
@@ -1044,9 +1069,12 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
 }
 
 /**
- * The weekly-trend line for completion-gate failures (Issue #4234): the same
- * per-gate counters as the fleet summary's `gate_*` keys, under their own
- * `[gate-failure-rate]` prefix. The counters are cumulative per host.
+ * The `[gate-failure-rate]` line for completion-gate failures (Issue #4234):
+ * the same per-gate counters as the fleet summary's `gate_*` keys, under their
+ * own prefix. It is NOT a weekly-trend line. Its counters are the CURRENT RUN
+ * window (`getFleetTelemetry`), while the sidecar's `cumulative` totals hold
+ * the host's totals. No calendar-week reset exists, so a weekly figure is the
+ * difference of two sidecar readings taken a week apart.
  *
  * @param nowMs - The reading time, passed to the snapshot as `formatFleetSummary` does
  */
@@ -1056,6 +1084,7 @@ export function formatGateFailureRateLine(nowMs: number = Date.now()): string {
     "[gate-failure-rate]",
     `first_pass_blocks=${gateCountList(s.gateFirstPassBlocks)}`,
     `run_failures=${gateCountList(s.gateRunFailures)}`,
+    `first_attempt_failures=${gateCountList(s.gateFirstAttemptFailures)}`,
     `recovered_runs=${s.gateRecoveredRuns}`,
     `turns=${s.gateRecoveryTurns}`,
   ].join(" ");

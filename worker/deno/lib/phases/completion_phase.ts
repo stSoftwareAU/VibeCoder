@@ -1467,12 +1467,21 @@ export async function workOnIssueCompletion(
       finalGates: recovered ? [] : (last.gates ?? []),
       turns: recoveryTurns,
       recovered,
+      firstAttempt: !ctx.issueLabels.some((l) =>
+        l === "failed-once" || l === "failed"
+      ),
     });
     deps.logger.info(formatGateFailureRateLine());
   }
 
   return result;
 }
+
+/**
+ * The separator `foldInLateSummaryVerdicts` puts between the sections of one
+ * folded gate comment (Issue #4234). A section is one gate's own text.
+ */
+const FOLDED_SECTION_SEPARATOR = "\n\n---\n\n";
 
 /**
  * The findings the pre-PR verifier's next pass must answer (Issue #4234): the
@@ -1488,15 +1497,20 @@ function previousPrePrVerifierFindings(
     return state.prePrVerifierFindings;
   }
   const author = ctx.githubUser.toLowerCase();
-  const ownComment = (ctx.issueCommentRows ?? []).findLast((comment) =>
-    comment.author.toLowerCase() === author &&
-    comment.body.includes(PRE_PR_VERIFIER_COMMENT_HEADING)
-  );
-  if (ownComment === undefined) return [];
-  const body = ownComment.body;
-  return previousFindingsFromGateComment(
-    body.slice(body.indexOf(PRE_PR_VERIFIER_COMMENT_HEADING)),
-  );
+  // Anchored (Issue #4234): the verifier's section is the one that STARTS with
+  // its heading. A folded gate comment can quote model text that contains the
+  // heading earlier in the body, and that quote is not the verifier's section.
+  // The last such section in the author's latest gate comment wins.
+  const comments = ctx.issueCommentRows ?? [];
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const comment = comments[i]!;
+    if (comment.author.toLowerCase() !== author) continue;
+    const section = comment.body
+      .split(FOLDED_SECTION_SEPARATOR)
+      .findLast((part) => part.startsWith(PRE_PR_VERIFIER_COMMENT_HEADING));
+    if (section !== undefined) return previousFindingsFromGateComment(section);
+  }
+  return [];
 }
 
 /**
@@ -3353,6 +3367,8 @@ async function completionBody(
     const isRetry = previousFindings.length > 0;
     const verifierRun = await deps.claude.runPrePrVerifier({
       previousFindings,
+      // The agent's reply to those findings, from the recovery turn (Issue #4234).
+      agentResponse: state.recoveryTurnResponse,
       repo,
       issueNumber,
       issueTitle: ctx.issueTitle,
@@ -3408,12 +3424,22 @@ async function completionBody(
         );
         const advisoryComment = buildAdvisoryFindingsComment(split.advisory);
         if (advisoryComment !== state.prePrVerifierAdvisoryPosted) {
-          await deps.github.createClient(logger).postComment(
-            repo,
-            issueNumber,
-            advisoryComment,
-          );
-          state.prePrVerifierAdvisoryPosted = advisoryComment;
+          // Advisory only: a failed post is logged, never fails the run (Issue #4234).
+          try {
+            await deps.github.createClient(logger).postComment(
+              repo,
+              issueNumber,
+              advisoryComment,
+            );
+            state.prePrVerifierAdvisoryPosted = advisoryComment;
+          } catch (error: unknown) {
+            logger.warn(
+              `Could not post the pre-PR verifier advisory comment on ${repo}#${issueNumber} (non-fatal): ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+              { repo, issueNumber },
+            );
+          }
         }
       }
       state.prePrVerifierFindings = split.blocking.map(findingToEarlierText);
@@ -3445,11 +3471,57 @@ async function completionBody(
      */
     needsTestChanges?: boolean;
     /**
-     * The blocking findings this verdict reports, when it counts more than one
-     * (the pre-PR verifier, Issue #4234). Absent means one.
+     * The blocking findings this verdict reports (Issue #4234): each problem
+     * the gate found, so a turn that fixes some of them shows a falling count.
+     * Absent means one.
      */
     findings?: number;
   }
+  // ---------------------------------------------------------------------
+  // The three summary gates the chain opens with (Issues #518, #663, #521),
+  // computed here with the other late verdicts (Issue #4234), so any one of
+  // them that blocks folds the others' blocks into the same recovery turn.
+  // Their standalone blocks, further down, keep their logs and comments.
+  // ---------------------------------------------------------------------
+  const closure = validateAcceptanceClosure({
+    issueBody: ctx.issueBody,
+    prSummaryContent: prBody,
+  });
+  const closureVerdict: LateSummaryVerdict = {
+    gate: "acceptance-closure",
+    blocked: closure.applicable && !closure.valid,
+    reason: `Acceptance criteria not closed out in the PR summary: ${
+      closure.problems[0] ?? "closure block missing"
+    }`,
+    comment: () => buildClosureGateComment(closure),
+    findings: Math.max(1, closure.problems.length),
+  };
+  const review = validateIndependentReview({
+    issueBody: ctx.issueBody,
+    prSummaryContent: prBody,
+  });
+  const reviewVerdict: LateSummaryVerdict = {
+    gate: "independent-review",
+    blocked: review.applicable && !review.valid,
+    reason: `Independent Spec/Standards review not reported in the PR summary: ${
+      review.problems[0] ?? "review blocks missing"
+    }`,
+    comment: () => buildIndependentReviewComment(review),
+    findings: Math.max(1, review.problems.length),
+  };
+  const reproduction = validateReproductionStatus({
+    issueLabels,
+    prSummaryContent: prBody,
+  });
+  const reproductionVerdict: LateSummaryVerdict = {
+    gate: "reproduction-status",
+    blocked: reproduction.applicable && !reproduction.valid,
+    reason: `Reproduction status not recorded in the PR summary: ${
+      reproduction.problems[0] ?? "`## Reproduction` block missing"
+    }`,
+    comment: () => buildReproductionGateComment(reproduction),
+    findings: Math.max(1, reproduction.problems.length),
+  };
   const docsSweepVerdict: LateSummaryVerdict = {
     gate: "docs-sweep",
     blocked: docsSweepBlocked,
@@ -3458,18 +3530,21 @@ async function completionBody(
     // they are advisory, posted separately via `docsSweepHitsComment`, and
     // never fold into this gate's block.
     comment: () => docsSweepComment,
+    findings: Math.max(1, docsSweep.problems.length),
   };
   const removedAssertionsVerdict: LateSummaryVerdict = {
     gate: "removed-assertions",
     blocked: removedAssertionsBlocked,
     reason: removedAssertionsReason,
     comment: () => buildRemovedAssertionGateComment(removedAssertions),
+    findings: Math.max(1, removedAssertions.unaccounted.length),
   };
   const placeholderVerdict: LateSummaryVerdict = {
     gate: "result-placeholders",
     blocked: placeholderBlocked,
     reason: placeholderReason,
     comment: () => buildResultPlaceholderGateComment(placeholderTokens),
+    findings: Math.max(1, placeholderTokens.length),
   };
   const branchOutcomesVerdict: LateSummaryVerdict = {
     gate: "branch-outcomes",
@@ -3482,6 +3557,11 @@ async function completionBody(
           problems: [branchOutcomesFactsProblem, ...branchOutcomes.problems],
         },
       ),
+    findings: Math.max(
+      1,
+      branchOutcomes.problems.length +
+        (branchOutcomesFactsProblem === null ? 0 : 1),
+    ),
   };
   // ---------------------------------------------------------------------
   // Diff-scoped mutation verdict (Issue #3393), computed once alongside the
@@ -3557,6 +3637,7 @@ async function completionBody(
       reason: gate.reason,
       comment: () => buildMutationGateComment(gate),
       needsTestChanges: true,
+      findings: Math.max(1, gate.survivors.length),
     };
   }
   // ---------------------------------------------------------------------
@@ -3679,6 +3760,7 @@ async function completionBody(
       reason: gate.reason,
       comment: () => buildCoverageCarryOverGateComment(gate),
       needsTestChanges: true,
+      findings: Math.max(1, gate.uncovered.length),
     };
   }
   const claimCheckVerdict: LateSummaryVerdict = {
@@ -3687,6 +3769,13 @@ async function completionBody(
     reason: claimCheck !== null ? summaryClaimBlockReason(claimCheck) : "",
     comment: () =>
       claimCheck !== null ? buildSummaryClaimGateComment(claimCheck) : "",
+    // Every problem the check reports counts: summary findings, manual or
+    // prompt findings, and the deterministic Test Plan problems (Issue #4234).
+    findings: claimCheck === null ? undefined : Math.max(
+      1,
+      claimCheck.findings.length + claimCheck.docFindings.length +
+        claimCheck.testPlanProblems.length,
+    ),
   };
   const prePrVerifierVerdict: LateSummaryVerdict = {
     gate: "pre-pr-verifier",
@@ -3716,6 +3805,7 @@ async function completionBody(
     blocked: scrubProblem !== undefined,
     reason: scrubProblem ?? "",
     comment: () => scrubProblem ?? "",
+    findings: 1,
   };
   // Issue #4146: an unmet criterion blocks the PR like any summary gate, and
   // folds into every other gate's block so a recovery turn always sees it.
@@ -3727,7 +3817,12 @@ async function completionBody(
     reason: unmetCriteria.length > 0 ? unmetCriteriaReason(unmetCriteria) : "",
     comment: () => buildUnmetCriteriaGateComment(unmetCriteria),
   };
+  // Issue #4234: the three opening gates come first, in their original order,
+  // so a fold from any gate reports every blocked gate together.
   const lateSummaryVerdicts: LateSummaryVerdict[] = [
+    closureVerdict,
+    reviewVerdict,
+    reproductionVerdict,
     scrubVerdict,
     docsSweepVerdict,
     removedAssertionsVerdict,
@@ -3797,7 +3892,9 @@ async function completionBody(
           removedAssertions: removedAssertionsBlocked,
         },
         docsMentioning: async (term) => {
-          // The term goes in argv as data, never as a shell string.
+          // Searches the `*.md` files outside docs/archive for the term as a
+          // whole word (Issue #4234). The term goes in argv as data, never as a
+          // shell string.
           const grep = await deps.git.runGitCommand(
             [
               "grep",
@@ -3838,15 +3935,18 @@ async function completionBody(
   }
 
   /**
-   * Fold every blocked late verdict (docs sweep, removed assertions, result
+   * Fold every blocked late verdict (acceptance closure, independent review,
+   * reproduction status, scrub, docs sweep, removed assertions, result
    * placeholder, branch outcomes, mutation check, coverage carry-over, summary
-   * claim check, pre-PR verifier — in that order) other than those in `skip`
-   * into an earlier gate's block.
+   * claim check, pre-PR verifier, unmet criteria — in that order) other than
+   * those in `skip` into an earlier gate's block.
    * `allowsTestChanges` is set on the result when the block, or any verdict
    * folded in, is one that only a test change satisfies (the mutation check
    * or the coverage carry-over check). `baseGate` names the gate whose
    * `reason` and `comment` the block starts from (Issue #4234); `gates` and
-   * `findingCount` cover that gate and every verdict folded in.
+   * `findingCount` cover that gate and every verdict folded in. The base
+   * gate's own count is its verdict's `findings`, so a standalone block counts
+   * its own problems as well as the folded ones.
    */
   function foldInLateSummaryVerdicts(
     reason: string,
@@ -3858,8 +3958,9 @@ async function completionBody(
     let foldedComment = comment;
     const sections = [comment];
     const gates: SummaryGateId[] = [baseGate];
+    const baseVerdict = lateSummaryVerdicts.find((v) => v.gate === baseGate);
     const sectionFindings: { gate: string; findings?: number }[] = [
-      { gate: baseGate },
+      { gate: baseGate, findings: baseVerdict?.findings },
     ];
     const categories = new Set<FailureCategory>(
       skip.length > 0
@@ -3878,7 +3979,7 @@ async function completionBody(
       if (verdict.needsTestChanges) allowsTestChanges = true;
       foldedReason = `${foldedReason}; ${verdict.reason}`;
       const verdictComment = verdict.comment();
-      foldedComment = `${foldedComment}\n\n---\n\n${verdictComment}`;
+      foldedComment = `${foldedComment}${FOLDED_SECTION_SEPARATOR}${verdictComment}`;
       sections.push(verdictComment);
       gates.push(verdict.gate);
       sectionFindings.push({ gate: verdict.gate, findings: verdict.findings });
@@ -3916,21 +4017,16 @@ async function completionBody(
   // with the evidence observed, and explain every gap — an unexplained gap is
   // a failure to surface, not a pass. Issues with no criteria are unaffected.
   // ---------------------------------------------------------------------
-  const closure = validateAcceptanceClosure({
-    issueBody: ctx.issueBody,
-    prSummaryContent: prBody,
-  });
-  if (closure.applicable && !closure.valid) {
+  if (closureVerdict.blocked) {
     logger.warn("Acceptance-criteria closure gate blocked PR creation", {
       criteria: closure.criteria.length,
       problems: closure.problems,
     });
     const folded = foldInLateSummaryVerdicts(
-      `Acceptance criteria not closed out in the PR summary: ${
-        closure.problems[0] ?? "closure block missing"
-      }`,
-      buildClosureGateComment(closure),
+      closureVerdict.reason,
+      closureVerdict.comment(),
       "acceptance-closure",
+      [closureVerdict],
     );
     return await reportSummaryRuleBlock(
       folded,
@@ -3955,22 +4051,17 @@ async function completionBody(
   // An issue with no criteria skips the Spec axis, but a `## Standards Review`
   // the summary carries is still held to the violation rules (Issue #3761).
   // ---------------------------------------------------------------------
-  const review = validateIndependentReview({
-    issueBody: ctx.issueBody,
-    prSummaryContent: prBody,
-  });
-  if (review.applicable && !review.valid) {
+  if (reviewVerdict.blocked) {
     logger.warn("Independent two-axis review gate blocked PR creation", {
       specEntries: review.specEntries.length,
       standardsEntries: review.standardsEntries.length,
       problems: review.problems,
     });
     const folded = foldInLateSummaryVerdicts(
-      `Independent Spec/Standards review not reported in the PR summary: ${
-        review.problems[0] ?? "review blocks missing"
-      }`,
-      buildIndependentReviewComment(review),
+      reviewVerdict.reason,
+      reviewVerdict.comment(),
       "independent-review",
+      [reviewVerdict],
     );
     return await reportSummaryRuleBlock(
       folded,
@@ -3994,21 +4085,16 @@ async function completionBody(
   // after. A not-run reproduction is a legitimate, reportable outcome; the
   // silent over-claim is what is blocked. Non-`bug` issues are unaffected.
   // ---------------------------------------------------------------------
-  const reproduction = validateReproductionStatus({
-    issueLabels,
-    prSummaryContent: prBody,
-  });
-  if (reproduction.applicable && !reproduction.valid) {
+  if (reproductionVerdict.blocked) {
     logger.warn("Reproduction-status gate blocked PR creation", {
       status: reproduction.block.status,
       problems: reproduction.problems,
     });
     const folded = foldInLateSummaryVerdicts(
-      `Reproduction status not recorded in the PR summary: ${
-        reproduction.problems[0] ?? "`## Reproduction` block missing"
-      }`,
-      buildReproductionGateComment(reproduction),
+      reproductionVerdict.reason,
+      reproductionVerdict.comment(),
       "reproduction-status",
+      [reproductionVerdict],
     );
     return await reportSummaryRuleBlock(
       folded,

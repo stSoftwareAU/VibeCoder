@@ -1309,7 +1309,9 @@ checklist and closure verdicts above, is a blocking finding, a late
 summary-rule verdict. It is folded into whichever earlier summary gate blocks
 first, or blocks on its own after the summary claim check. It reaches the run's
 single [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn
-as its own numbered REQUIRED ITEM. That turn may change code for a verifier item
+inside one numbered REQUIRED ITEM: the verifier's findings share that item, and
+a verifier finding folded into an earlier gate's section is part of that
+section's item. That turn may change code for a verifier item
 (the recovery prompt allows it for this item only), and the quality gate re-runs
 afterwards. Findings still present on the re-run are reported like other
 summary-gate blocks: a `failure` with no PR, or `summary_incomplete` over an
@@ -2625,7 +2627,7 @@ flowchart TD
     S["PR summary closure block"] --> U{"Any criterion partial,<br/>missing or unassessed?"}
     U -- no --> P["PR raised; it closes the issue"]
     U -- yes --> R["No PR. The agent is sent back in this run<br/>with each unmet criterion named"]
-    R --> G{"Fewer unmet than last round,<br/>and rounds left?"}
+    R --> G{"Fewer blocking findings than last round,<br/>and rounds left?"}
     G -- yes --> S
     G -- no --> F["Run failure: criteria_unmet.<br/>Branch kept; the next run resumes it.<br/>No PR, no follow-up, no needs-human"]
 ```
@@ -2640,9 +2642,10 @@ flowchart TD
   (`summary_rule_gate_retry.ts`, Issue #2189) with each unmet criterion as an
   UNMET CRITERION item the turn must finish in code and tests. Re-labelling a
   criterion `met` without the work is the over-claim the Spec reviewer exists
-  to catch. Further rounds follow while each one meets more criteria than the
-  last, up to `MAX_UNMET_CRITERIA_ROUNDS`; a round that moves nothing ends the
-  run.
+  to catch. Further rounds follow only while the number of blocking findings
+  (each gate's own problem count) keeps falling, up to
+  `MAX_UNMET_CRITERIA_ROUNDS`. That count includes the unmet criteria, so a
+  round that leaves it level or higher ends the run.
 - **A run that still cannot finish fails** as `criteria_unmet` on the ordinary
   `failed-once` → `failed` ladder. No PR is raised, no follow-up is filed, and
   nothing is labelled `needs-human`. The branch stays pushed, so the next run
@@ -2833,8 +2836,9 @@ now recover the way the security-fix gate does
 1. the verdict is recorded on the run state and the log reads
    `PR-summary rule block — recovering in-run, turn 1 of at most 3`, the turn
    number counting up with each turn (Issue #4234);
-2. the agent is re-invoked with every blocking finding of the gate pass as a
-   numbered `REQUIRED ITEM`. It resumes the run's own session when there is one,
+2. the agent is re-invoked with each blocked gate of the gate pass as one
+   numbered `REQUIRED ITEM`, the pre-PR verifier's several findings sharing one
+   item. It resumes the run's own session when there is one,
    so it keeps the context the work was done in (Issue #4234), and is a fresh
    invocation otherwise; the previous turn's "finished" conclusion is not left
    to stand, because each item still blocking must be fixed. The gate's own
@@ -2864,10 +2868,12 @@ branch already carried a PR from the execute phase, updates and finalises that
 same PR — no second PR is opened.
 
 **The bounded loop (Issue #4234).** Every completion summary gate is evaluated
-in one pass, and every blocking finding from that pass goes to the recovery
-turn together, as a numbered `REQUIRED ITEM`. After each turn the gates run
-again over the changed tree. Another turn is granted only while the number of
-blocking findings strictly falls, up to `OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns`
+in one pass, and every blocked gate from that pass goes to the recovery turn
+together, each as one numbered `REQUIRED ITEM`: a gate block is one item, not
+one item per finding, so the pre-PR verifier's several findings share one
+item. After each turn the gates run again over the changed tree. A further
+turn is granted only while the number of blocking findings (each gate's own
+problem count) strictly falls, up to `OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns`
 turns (3 by default, in `lib/config_defaults.ts`). Each turn's agent timeout is
 clamped to the run's remaining time, against the supervisor hard-cap ceiling in
 `lib/run_hard_cap.ts`; a turn with less than 120 seconds of runway is skipped
@@ -2879,13 +2885,13 @@ one sentence saying why recovery stopped. The stop rule lives in
 
 ```mermaid
 flowchart TD
-    G["Completion summary gates<br/>one pass, every blocking finding listed"] --> B{"Blocked?"}
+    G["Completion summary gates<br/>one pass, every blocked gate listed"] --> B{"Blocked?"}
     B -- "no" --> P["Raise the PR, or finalise the existing one"]
     B -- "yes" --> T["Recovery turn N of at most 3<br/>REQUIRED ITEMs, session resumed where one exists"]
     T --> R["Re-run the quality gate and all summary gates"]
     R --> F{"Blocked again?"}
     F -- "no" --> P
-    F -- "yes, fewer findings and turns left" --> T
+    F -- "yes, fewer blocking findings and turns left" --> T
     F -- "yes, not fewer, or turns spent" --> S["Stop: failure, or summary_incomplete over a PR<br/>latest findings and why recovery stopped"]
 ```
 

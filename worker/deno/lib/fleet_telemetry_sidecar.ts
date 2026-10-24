@@ -111,6 +111,7 @@ export function emptyTotals(): FleetTelemetryTotals {
     // Issue #4234 — completion-gate outcome counters.
     gateFirstPassBlocks: {},
     gateRunFailures: {},
+    gateFirstAttemptFailures: {},
     gateRecoveredRuns: 0,
     gateRecoveryTurns: 0,
     // Issue #3404 — per-tier PR outcome counters.
@@ -206,6 +207,7 @@ function withIssuePhaseCounters<T extends PriorFleetTelemetryTotals>(
     issuePhaseHaikuUsd,
     gateFirstPassBlocks: gateCountsFrom(totals.gateFirstPassBlocks),
     gateRunFailures: gateCountsFrom(totals.gateRunFailures),
+    gateFirstAttemptFailures: gateCountsFrom(totals.gateFirstAttemptFailures),
     gateRecoveredRuns: counterFrom(totals.gateRecoveredRuns),
     gateRecoveryTurns: counterFrom(totals.gateRecoveryTurns),
   };
@@ -320,6 +322,10 @@ export function mergeCumulative(
     gateRunFailures: addGateCounts(
       priorIssuePhase.gateRunFailures,
       run.gateRunFailures,
+    ),
+    gateFirstAttemptFailures: addGateCounts(
+      priorIssuePhase.gateFirstAttemptFailures,
+      run.gateFirstAttemptFailures,
     ),
     gateRecoveredRuns: priorIssuePhase.gateRecoveredRuns +
       run.gateRecoveredRuns,

@@ -127,7 +127,10 @@ Deno.test("slot utilisation - passes through the secret redactor unchanged", () 
   assertEquals(redactSecrets(line), line, line);
 });
 
-/** Two gate runs: one that ended blocked, one that recovered. */
+/**
+ * Two gate runs: a first-attempt run that ended blocked, and a later-attempt
+ * run that recovered.
+ */
 function gateRuns(): void {
   resetFleetTelemetry();
   startFleetTelemetry(0);
@@ -137,12 +140,14 @@ function gateRuns(): void {
     finalGates: ["docs-sweep"],
     turns: 2,
     recovered: false,
+    firstAttempt: true,
   });
   recordGateRecoveryRun({
     firstPassGates: ["pre-pr-verifier"],
     finalGates: [],
     turns: 4,
     recovered: true,
+    firstAttempt: false,
   });
 }
 
@@ -157,6 +162,10 @@ Deno.test("fleet summary - the gate-outcome counters keep their values (Issue #4
     "gate_first_pass_blocks=claim-check:1,docs-sweep:1,pre-pr-verifier:1",
   );
   assertStringIncludes(redacted, "gate_run_failures=docs-sweep:1");
+  assertStringIncludes(
+    redacted,
+    "gate_first_attempt_failures=docs-sweep:1",
+  );
   assertStringIncludes(redacted, "gate_recovered_runs=1 gate_recovery_turns=6");
   assertEquals(redacted.includes("***REDACTED***"), false, redacted);
 });
@@ -170,7 +179,8 @@ Deno.test("gate-failure-rate line - passes through the secret redactor unchanged
   assertStringIncludes(
     redacted,
     "[gate-failure-rate] first_pass_blocks=claim-check:1,docs-sweep:1,pre-pr-verifier:1 " +
-      "run_failures=docs-sweep:1 recovered_runs=1 turns=6",
+      "run_failures=docs-sweep:1 first_attempt_failures=docs-sweep:1 " +
+      "recovered_runs=1 turns=6",
   );
   assertEquals(redacted.includes("***REDACTED***"), false, redacted);
 });

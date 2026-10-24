@@ -3182,8 +3182,11 @@ The completion summary gates are evaluated in one pass, and the run's first
 summary-rule block starts the in-run recovery loop whether or not the agent
 already raised the PR itself from inside the execute phase (Issue #3163): a PR
 the agent raised itself is not finalised or auto-merged until that loop has
-run. The loop takes up to three turns (Issue #4234), each one only while the
-number of blocking findings strictly falls. When it stops with the block still
+run. The loop takes up to three turns (Issue #4234). Each blocked gate becomes
+one numbered REQUIRED ITEM in the recovery prompt, not each finding: the
+pre-PR verifier's several findings share one item. A further turn is granted
+only while the number of blocking findings (each gate's own problem count)
+keeps falling. When it stops with the block still
 standing, an existing PR is finalised as before, unless the claim check alone
 is still blocking on the summary's own sentences (a doc finding never
 qualifies, since that turn can only rewrite the summary): that block first

@@ -11,7 +11,8 @@
  * called from the completion phase before the PR is raised. Its findings are
  * turned into a summary-rule block on the same `recoverFromSummaryRuleBlock`
  * path (`summary_rule_gate_retry.ts`) the completion phase's other gates
- * already use, so a bad claim gets one recovery turn rather than shipping.
+ * already use, so a bad claim is sent back through the bounded recovery loop
+ * (Issue #4234) rather than shipping.
  *
  * Two independent checks feed one result:
  *

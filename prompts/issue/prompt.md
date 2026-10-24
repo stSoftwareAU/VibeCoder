@@ -1312,9 +1312,11 @@ when it raises the PR, and the summary claim check, which is a model call that
 `--verifier` to run the pre-PR verifier too (a model call of up to 30 minutes).
 The mutation check and the coverage carry-over check need the test runner, so
 only the worker runs them. If the gates still block when you finish, the worker
-resumes your session where there is one, with every blocking finding listed as
-a numbered REQUIRED ITEM, up to three times. Fixing everything in one go is therefore cheaper than
-fixing it one finding at a time.
+resumes your session where there is one, with each blocked gate listed as one
+numbered REQUIRED ITEM (the pre-PR verifier's several findings share one item).
+It grants a further turn, up to three turns in all, only while the number of
+blocking findings (each gate's own problem count) keeps falling. Fixing
+everything in one go is therefore cheaper than fixing it one finding at a time.
 `deno task pr-summary-check` (`worker/deno/lib/pr_summary_check.ts`) is the twin
 of the completion phase's PR-summary gates
 (`worker/deno/lib/phases/completion_phase.ts`): a change to how the completion

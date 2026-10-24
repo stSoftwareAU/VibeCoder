@@ -433,3 +433,147 @@ Deno.test("buildSummaryPrefill: a negative issue number throws", async () => {
     RangeError,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Hostile input: one test per regex in the module. Each feeds a run of 200000
+// characters of the shared character, then one the pattern rejects, and checks
+// the result. No timing is asserted: a catastrophic pattern would hang the test.
+// ---------------------------------------------------------------------------
+
+const HOSTILE_RUN = 200_000;
+
+/** A one-file `--unified=0` diff for `lib/widget.ts` that adds one line. */
+function addedLineDiff(added: string): string {
+  return [
+    "diff --git a/lib/widget.ts b/lib/widget.ts",
+    "--- a/lib/widget.ts",
+    "+++ b/lib/widget.ts",
+    "@@ -0,0 +1 @@",
+    `+${added}`,
+    "",
+  ].join("\n");
+}
+
+const NO_TERM_PLACEHOLDER =
+  "grep: <quote each removed or changed name in backticks>";
+
+Deno.test("hostile: HUNK_HEADER_RE, a header of 200000 digits is not read and its body is ignored", async () => {
+  const diff = [
+    "diff --git a/lib/widget.ts b/lib/widget.ts",
+    "--- a/lib/widget.ts",
+    "+++ b/lib/widget.ts",
+    "@@ -" + "1".repeat(HOSTILE_RUN) + "x",
+    "+const hostileName = 1;",
+    "",
+  ].join("\n");
+  const out = await buildSummaryPrefill(input({
+    unifiedDiff: diff,
+    want: { docsSweep: true, branchOutcomes: false, removedAssertions: false },
+  }));
+  assertStringIncludes(out, NO_TERM_PLACEHOLDER);
+  assertEquals(out.includes("hostileName"), false);
+});
+
+Deno.test("hostile: export definition pattern, export then 200000 spaces and no name gives no term", async () => {
+  const out = await buildSummaryPrefill(input({
+    unifiedDiff: addedLineDiff("export" + " ".repeat(HOSTILE_RUN) + "!"),
+    want: { docsSweep: true, branchOutcomes: false, removedAssertions: false },
+  }));
+  assertStringIncludes(out, NO_TERM_PLACEHOLDER);
+});
+
+Deno.test("hostile: function definition pattern, function then 200000 spaces and no name gives no term", async () => {
+  const out = await buildSummaryPrefill(input({
+    unifiedDiff: addedLineDiff("function" + " ".repeat(HOSTILE_RUN) + "!"),
+    want: { docsSweep: true, branchOutcomes: false, removedAssertions: false },
+  }));
+  assertStringIncludes(out, NO_TERM_PLACEHOLDER);
+});
+
+Deno.test("hostile: const definition pattern, a 200000-character name with no equals gives no term", async () => {
+  const out = await buildSummaryPrefill(input({
+    unifiedDiff: addedLineDiff("const " + "a".repeat(HOSTILE_RUN) + "!"),
+    want: { docsSweep: true, branchOutcomes: false, removedAssertions: false },
+  }));
+  assertStringIncludes(out, NO_TERM_PLACEHOLDER);
+});
+
+Deno.test("hostile: BRANCH_CONSTRUCT_RE, if then 200000 spaces and no paren is not a branch line", async () => {
+  const out = await buildSummaryPrefill(input({
+    changedFiles: ["lib/widget.ts"],
+    unifiedDiff: addedLineDiff("if" + " ".repeat(HOSTILE_RUN) + "!"),
+    want: { docsSweep: false, branchOutcomes: true, removedAssertions: false },
+  }));
+  assertStringIncludes(
+    out,
+    "- none: this scan found no branch construct in non-test code.",
+  );
+});
+
+Deno.test("hostile: TEST_NAME_RE, a test name of 200000 characters with no closing quote names no test", async () => {
+  const diff = [
+    "diff --git a/tests/widget_test.ts b/tests/widget_test.ts",
+    "--- a/tests/widget_test.ts",
+    "+++ b/tests/widget_test.ts",
+    "@@ -0,0 +1 @@",
+    `+Deno.test("${"a".repeat(HOSTILE_RUN)}!`,
+    "",
+  ].join("\n");
+  const out = await buildSummaryPrefill(input({
+    changedFiles: ["tests/widget_test.ts"],
+    unifiedDiff: diff,
+    want: { docsSweep: false, branchOutcomes: true, removedAssertions: false },
+  }));
+  assertStringIncludes(
+    out,
+    "- none found in the changed test files: name the test you added.",
+  );
+});
+
+Deno.test("hostile: diffPath tab pattern, a lone CR after the tab does not stop the strip", async () => {
+  // The lone CR sits before the long run, inside the scanned span. `.*$` would
+  // stop at the CR and keep the whole tail as part of the path.
+  const diff = [
+    "diff --git a/lib/widget.ts b/lib/widget.ts",
+    "--- a/lib/widget.ts",
+    "+++ b/lib/widget.ts\tkept\r" + "x".repeat(HOSTILE_RUN),
+    "@@ -0,0 +1 @@",
+    "+if (ready) return;",
+    "",
+  ].join("\n");
+  const out = await buildSummaryPrefill(input({
+    changedFiles: ["lib/widget.ts"],
+    unifiedDiff: diff,
+    want: { docsSweep: false, branchOutcomes: true, removedAssertions: false },
+  }));
+  assertStringIncludes(out, "- lib/widget.ts:1: if (ready) return;");
+});
+
+Deno.test("hostile: backtick pattern, 200000 backticks are neutralised to 200 quotes", async () => {
+  const out = await buildSummaryPrefill(input({
+    unifiedDiff: null,
+    removedUnaccounted: [{
+      file: "tests/widget_test.ts",
+      text: "`".repeat(HOSTILE_RUN) + "!",
+    }],
+    want: { docsSweep: false, branchOutcomes: false, removedAssertions: true },
+  }));
+  assertStringIncludes(
+    out,
+    "- Removed from `tests/widget_test.ts`: " + "'".repeat(200),
+  );
+});
+
+Deno.test("hostile: line-break pattern, a run of CR and LF in removed text collapses to one space", async () => {
+  const out = await buildSummaryPrefill(input({
+    unifiedDiff: null,
+    removedUnaccounted: [{
+      file: "tests/widget_test.ts",
+      text: "a" + "\r\n".repeat(HOSTILE_RUN) + "b",
+    }],
+    want: { docsSweep: false, branchOutcomes: false, removedAssertions: true },
+  }));
+  // The text is clipped to 200 characters before the collapse, so it becomes "a" + one space.
+  assertStringIncludes(out, "- Removed from `tests/widget_test.ts`: a \n");
+  assertEquals(out.includes("\r"), false);
+});

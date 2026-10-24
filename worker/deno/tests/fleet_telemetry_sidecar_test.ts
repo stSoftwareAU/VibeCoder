@@ -752,9 +752,11 @@ Deno.test("fleet_telemetry_sidecar - a legacy sidecar (pre-#4234) loads its gate
     const prior = await readUsable(dir, "host-1");
     assertEquals(prior?.cumulative.gateFirstPassBlocks, {});
     assertEquals(prior?.cumulative.gateRunFailures, {});
+    assertEquals(prior?.cumulative.gateFirstAttemptFailures, {});
     assertEquals(prior?.cumulative.gateRecoveredRuns, 0);
     assertEquals(prior?.cumulative.gateRecoveryTurns, 0);
     assertEquals(prior?.run.gateFirstPassBlocks, {});
+    assertEquals(prior?.run.gateFirstAttemptFailures, {});
     assertEquals(prior?.run.gateRecoveryTurns, 0);
     // The counters the old shape did carry come through untouched.
     assertEquals(prior?.cumulative.issuePhaseRuns, 3);
@@ -768,6 +770,7 @@ Deno.test("fleet_telemetry_sidecar - a legacy sidecar (pre-#4234) loads its gate
       finalGates: ["docs-sweep"],
       turns: 2,
       recovered: false,
+      firstAttempt: true,
     });
     recordIssuePhaseRun({ usd: 0.5, subAgentTier: "sonnet" });
     const written = await writeFleetTelemetryFile(dir, {
@@ -781,8 +784,62 @@ Deno.test("fleet_telemetry_sidecar - a legacy sidecar (pre-#4234) loads its gate
     assertEquals(merged?.cumulative.successes, 3);
     assertEquals(merged?.cumulative.gateFirstPassBlocks, { "docs-sweep": 1 });
     assertEquals(merged?.cumulative.gateRunFailures, { "docs-sweep": 1 });
+    assertEquals(merged?.cumulative.gateFirstAttemptFailures, {
+      "docs-sweep": 1,
+    });
     assertEquals(merged?.cumulative.gateRecoveredRuns, 0);
     assertEquals(merged?.cumulative.gateRecoveryTurns, 2);
+  });
+});
+
+Deno.test("fleet_telemetry_sidecar - a sidecar written before first-attempt failures existed loads them empty and merges", async () => {
+  await withTempDir(async (dir) => {
+    // The shape the gate counters had before `gateFirstAttemptFailures`.
+    await Deno.writeTextFile(
+      fleetTelemetryPath(dir, "host-1"),
+      JSON.stringify({
+        schema: FLEET_TELEMETRY_SCHEMA,
+        host: "host-1",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        run: {},
+        cumulative: {
+          idleSeconds: 0,
+          idleByReason: {},
+          busyByStream: {},
+          failuresByClass: {},
+          gateFirstPassBlocks: { "docs-sweep": 2 },
+          gateRunFailures: { "docs-sweep": 1 },
+          gateRecoveredRuns: 1,
+          gateRecoveryTurns: 4,
+        },
+      }),
+    );
+    const prior = await readUsable(dir, "host-1");
+    assertEquals(prior?.cumulative.gateRunFailures, { "docs-sweep": 1 });
+    assertEquals(prior?.cumulative.gateFirstAttemptFailures, {});
+    assertEquals(prior?.run.gateFirstAttemptFailures, {});
+
+    resetFleetTelemetry();
+    startFleetTelemetry(0);
+    startFleetCycle(0);
+    recordGateRecoveryRun({
+      firstPassGates: ["claim-check"],
+      finalGates: ["claim-check"],
+      turns: 1,
+      recovered: false,
+      firstAttempt: true,
+    });
+    await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 60_000 });
+
+    const merged = await readUsable(dir, "host-1");
+    assertEquals(merged?.cumulative.gateFirstAttemptFailures, {
+      "claim-check": 1,
+    });
+    assertEquals(merged?.cumulative.gateRunFailures, {
+      "claim-check": 1,
+      "docs-sweep": 1,
+    });
+    assertEquals(merged?.cumulative.gateRecoveredRuns, 1);
   });
 });
 
@@ -802,6 +859,7 @@ Deno.test("fleet_telemetry_sidecar - a hand-edited gate key is re-sanitised on l
           failuresByClass: {},
           gateFirstPassBlocks: { "docs sweep\nfail=1": 2, "claim-check": 1 },
           gateRunFailures: { "claim-check": "many" },
+          gateFirstAttemptFailures: { "docs sweep\nfail=1": 3, "ok-gate": "x" },
           gateRecoveredRuns: "two",
         },
       }),
@@ -812,6 +870,7 @@ Deno.test("fleet_telemetry_sidecar - a hand-edited gate key is re-sanitised on l
       other: 2,
       "claim-check": 1,
     });
+    assertEquals(read?.cumulative.gateFirstAttemptFailures, { other: 3 });
     // A non-numeric value reads as absent, not as NaN.
     assertEquals(read?.cumulative.gateRunFailures, {});
     assertEquals(read?.cumulative.gateRecoveredRuns, 0);
@@ -828,6 +887,7 @@ Deno.test("fleet_telemetry_sidecar - gate counters round-trip through the sideca
       finalGates: ["docs-sweep"],
       turns: 2,
       recovered: false,
+      firstAttempt: true,
     });
     await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 60_000 });
 
@@ -839,6 +899,7 @@ Deno.test("fleet_telemetry_sidecar - gate counters round-trip through the sideca
       finalGates: [],
       turns: 3,
       recovered: true,
+      firstAttempt: true,
     });
     await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 60_000 });
 
@@ -851,6 +912,10 @@ Deno.test("fleet_telemetry_sidecar - gate counters round-trip through the sideca
       "docs-sweep": 2,
     });
     assertEquals(read?.cumulative.gateRunFailures, { "docs-sweep": 1 });
+    assertEquals(read?.run.gateFirstAttemptFailures, {});
+    assertEquals(read?.cumulative.gateFirstAttemptFailures, {
+      "docs-sweep": 1,
+    });
     assertEquals(read?.cumulative.gateRecoveredRuns, 1);
     assertEquals(read?.cumulative.gateRecoveryTurns, 5);
   });

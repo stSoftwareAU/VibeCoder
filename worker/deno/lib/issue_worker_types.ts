@@ -409,6 +409,14 @@ export interface PhaseState {
    */
   gateRecoveryRecorded?: boolean;
   /**
+   * The agent's final message from the latest successful summary-rule recovery
+   * turn (Issue #4234), clipped to 6000 characters: its per-item fixes and
+   * disputes. The next pre-PR verifier pass receives it as `agentResponse`, to
+   * verify, never as evidence that a finding is fixed. Absent when no recovery
+   * turn has run successfully.
+   */
+  recoveryTurnResponse?: string;
+  /**
    * The screenshot gate's verdict for THIS run (Issue #2960), when it has
    * blocked. Set by the completion phase on the first block; the in-run
    * recovery reads it, then clears it before the one extra agent turn runs,

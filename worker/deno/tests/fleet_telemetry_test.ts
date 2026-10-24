@@ -1045,12 +1045,14 @@ Deno.test("fleet_telemetry - a gate run reaches the summary tokens after issue_g
     finalGates: ["claim-check"],
     turns: 3,
     recovered: false,
+    firstAttempt: true,
   });
   const line = formatFleetSummary(1_000);
   assertStringIncludes(
     line,
     "issue_gate_first_attempt_passes=0 gate_first_pass_blocks=claim-check:1,docs-sweep:1 " +
-      "gate_run_failures=claim-check:1 gate_recovered_runs=0 gate_recovery_turns=3 " +
+      "gate_run_failures=claim-check:1 gate_first_attempt_failures=claim-check:1 " +
+      "gate_recovered_runs=0 gate_recovery_turns=3 " +
       "issue_duration=",
     line,
   );
@@ -1075,11 +1077,12 @@ Deno.test("fleet_telemetry - a gate event shows the gate_* tokens, none when a m
     finalGates: [],
     turns: 0,
     recovered: true,
+    firstAttempt: true,
   });
   const line = formatFleetSummary(1_000);
   assertStringIncludes(
     line,
-    "gate_first_pass_blocks=claim-check:1 gate_run_failures=none gate_recovered_runs=1 gate_recovery_turns=0",
+    "gate_first_pass_blocks=claim-check:1 gate_run_failures=none gate_first_attempt_failures=none gate_recovered_runs=1 gate_recovery_turns=0",
     line,
   );
 });
@@ -1091,12 +1094,14 @@ Deno.test("fleet_telemetry - two gate runs accumulate per gate and in the recove
     finalGates: ["docs-sweep"],
     turns: 2,
     recovered: false,
+    firstAttempt: true,
   });
   recordGateRecoveryRun({
     firstPassGates: ["docs-sweep", "pre-pr-verifier"],
     finalGates: [],
     turns: 4,
     recovered: true,
+    firstAttempt: true,
   });
   const s = getFleetTelemetry(1_000);
   assertEquals(s.gateFirstPassBlocks, {
@@ -1115,6 +1120,7 @@ Deno.test("fleet_telemetry - a gate id listed twice in one run counts once", () 
     finalGates: ["claim-check", "claim-check"],
     turns: 1,
     recovered: false,
+    firstAttempt: true,
   });
   const s = getFleetTelemetry(1_000);
   assertEquals(s.gateFirstPassBlocks, { "claim-check": 1, "docs-sweep": 1 });
@@ -1128,6 +1134,7 @@ Deno.test("fleet_telemetry - a hostile gate id is sanitised to other, never inje
     finalGates: ["docs sweep\nfail=1"],
     turns: 1,
     recovered: false,
+    firstAttempt: true,
   });
   const s = getFleetTelemetry(1_000);
   assertEquals(s.gateFirstPassBlocks, { other: 1, "ok-gate": 1 });
@@ -1145,6 +1152,7 @@ Deno.test("fleet_telemetry - a gate id naming an Object prototype member counts 
     finalGates: [],
     turns: 0,
     recovered: true,
+    firstAttempt: true,
   });
   assertEquals(getFleetTelemetry(1_000).gateFirstPassBlocks, {
     constructor: 1,
@@ -1158,6 +1166,7 @@ Deno.test("fleet_telemetry - a recovered gate run counts recovery and turns, add
     finalGates: [],
     turns: 5,
     recovered: true,
+    firstAttempt: true,
   });
   const s = getFleetTelemetry(1_000);
   assertEquals(s.gateRecoveredRuns, 1);
@@ -1166,7 +1175,7 @@ Deno.test("fleet_telemetry - a recovered gate run counts recovery and turns, add
   assertEquals(s.gateFirstPassBlocks, { "claim-check": 1 });
   assertStringIncludes(
     formatFleetSummary(1_000),
-    "gate_run_failures=none gate_recovered_runs=1 gate_recovery_turns=5",
+    "gate_run_failures=none gate_first_attempt_failures=none gate_recovered_runs=1 gate_recovery_turns=5",
   );
 });
 
@@ -1177,11 +1186,13 @@ Deno.test("formatGateFailureRateLine - renders the per-gate counters under its o
     finalGates: ["docs-sweep"],
     turns: 2,
     recovered: false,
+    firstAttempt: true,
   });
   assertEquals(
     formatGateFailureRateLine(1_000),
     "[gate-failure-rate] first_pass_blocks=claim-check:1,docs-sweep:1 " +
-      "run_failures=docs-sweep:1 recovered_runs=0 turns=2",
+      "run_failures=docs-sweep:1 first_attempt_failures=docs-sweep:1 " +
+      "recovered_runs=0 turns=2",
   );
 });
 
@@ -1190,6 +1201,105 @@ Deno.test("formatGateFailureRateLine - an empty window reads none and zero", () 
   assertEquals(
     formatGateFailureRateLine(1_000),
     "[gate-failure-rate] first_pass_blocks=none run_failures=none " +
-      "recovered_runs=0 turns=0",
+      "first_attempt_failures=none recovered_runs=0 turns=0",
+  );
+});
+
+Deno.test("fleet_telemetry - first-attempt failures count only not-recovered first-attempt runs, per gate", () => {
+  fresh(0);
+  // First attempt, ended blocked on two gates: counts in both maps.
+  recordGateRecoveryRun({
+    firstPassGates: ["docs-sweep"],
+    finalGates: ["claim-check", "docs-sweep"],
+    turns: 1,
+    recovered: false,
+    firstAttempt: true,
+  });
+  // Not a first attempt, ended blocked: counts in run failures only.
+  recordGateRecoveryRun({
+    firstPassGates: ["docs-sweep"],
+    finalGates: ["docs-sweep"],
+    turns: 2,
+    recovered: false,
+    firstAttempt: false,
+  });
+  // First attempt but recovered: adds to neither failure map.
+  recordGateRecoveryRun({
+    firstPassGates: ["claim-check"],
+    finalGates: [],
+    turns: 3,
+    recovered: true,
+    firstAttempt: true,
+  });
+  const s = getFleetTelemetry(1_000);
+  assertEquals(s.gateRunFailures, { "claim-check": 1, "docs-sweep": 2 });
+  assertEquals(s.gateFirstAttemptFailures, {
+    "claim-check": 1,
+    "docs-sweep": 1,
+  });
+  assertEquals(s.gateRecoveredRuns, 1);
+  assertEquals(s.gateRecoveryTurns, 6);
+});
+
+Deno.test("fleet_telemetry - first-attempt failures de-duplicate and sanitise a hostile gate id", () => {
+  fresh(0);
+  recordGateRecoveryRun({
+    firstPassGates: ["docs-sweep"],
+    finalGates: ["docs sweep\nfail=1", "docs sweep\nfail=1", "claim-check"],
+    turns: 1,
+    recovered: false,
+    firstAttempt: true,
+  });
+  const s = getFleetTelemetry(1_000);
+  assertEquals(s.gateFirstAttemptFailures, { other: 1, "claim-check": 1 });
+  const summary = formatFleetSummary(1_000);
+  assertStringIncludes(
+    summary,
+    "gate_first_attempt_failures=claim-check:1,other:1",
+    summary,
+  );
+  assertEquals(summary.includes("fail=1"), false, summary);
+  const rate = formatGateFailureRateLine(1_000);
+  assertStringIncludes(
+    rate,
+    "first_attempt_failures=claim-check:1,other:1",
+    rate,
+  );
+  assertEquals(rate.includes("fail=1"), false, rate);
+});
+
+Deno.test("fleet_telemetry - a gate id naming an Object prototype member counts from zero in first-attempt failures", () => {
+  fresh(0);
+  recordGateRecoveryRun({
+    firstPassGates: ["constructor"],
+    finalGates: ["constructor"],
+    turns: 0,
+    recovered: false,
+    firstAttempt: true,
+  });
+  assertEquals(getFleetTelemetry(1_000).gateFirstAttemptFailures, {
+    constructor: 1,
+  });
+});
+
+Deno.test("fleet_telemetry - first-attempt failures render none in the summary when only later attempts failed", () => {
+  fresh(0);
+  recordGateRecoveryRun({
+    firstPassGates: ["docs-sweep"],
+    finalGates: ["docs-sweep"],
+    turns: 1,
+    recovered: false,
+    firstAttempt: false,
+  });
+  const summary = formatFleetSummary(1_000);
+  assertStringIncludes(
+    summary,
+    "gate_run_failures=docs-sweep:1 gate_first_attempt_failures=none " +
+      "gate_recovered_runs=0 gate_recovery_turns=1",
+    summary,
+  );
+  assertStringIncludes(
+    formatGateFailureRateLine(1_000),
+    "run_failures=docs-sweep:1 first_attempt_failures=none ",
   );
 });

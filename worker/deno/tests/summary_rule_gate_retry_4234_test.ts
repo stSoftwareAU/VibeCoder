@@ -30,7 +30,7 @@ import type {
 import type { SessionResumeState } from "../lib/session_resume.ts";
 import { createSessionResumeState } from "../lib/session_resume.ts";
 import { MIN_RECOVERY_TURN_SECONDS } from "../lib/gate_recovery_loop.ts";
-import { MAX_UNMET_CRITERIA_ROUNDS } from "../lib/unmet_criteria_gate.ts";
+import { insideFence } from "./support/untrusted_fence.ts";
 
 const REPO = "org/repo";
 const ISSUE = 4234;
@@ -47,21 +47,6 @@ const VERDICT: SummaryRuleRunVerdict = {
 
 const DRAFT_LINE =
   "- **flipWentRed** — `worker/deno/tests/summary_rule_gate_retry_4234_test.ts`: went red on the unfixed code";
-
-/**
- * Whether `needle` sits inside a genuine `BOUNDARY_<id>` fence. Mirrors the
- * helper in `summary_rule_gate_retry_test.ts`, which is not exported.
- */
-function insideFence(prompt: string, needle: string, id: string): boolean {
-  const needleIndex = prompt.indexOf(needle);
-  if (needleIndex < 0) return false;
-  const begin = `---BEGIN UNTRUSTED USER CONTENT BOUNDARY_${id}---`;
-  const end = `---END UNTRUSTED USER CONTENT BOUNDARY_${id}---`;
-  const lastBegin = prompt.lastIndexOf(begin, needleIndex);
-  if (lastBegin < 0) return false;
-  const endAfterBegin = prompt.indexOf(end, lastBegin);
-  return endAfterBegin > needleIndex;
-}
 
 // -----------------------------------------------------------------------------
 // Prompt text
@@ -186,13 +171,6 @@ Deno.test("summary-rule retry draft (Issue #4234) - the boundary-integrity instr
 
 Deno.test("summary-rule retry (Issue #4234) - the summary-gate recovery turn limit defaults to three", () => {
   assertEquals(OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns, 3);
-});
-
-Deno.test("unmet criteria rounds (Issue #4234) - MAX_UNMET_CRITERIA_ROUNDS is the shared recovery turn limit", () => {
-  assertEquals(
-    MAX_UNMET_CRITERIA_ROUNDS,
-    OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns,
-  );
 });
 
 // -----------------------------------------------------------------------------

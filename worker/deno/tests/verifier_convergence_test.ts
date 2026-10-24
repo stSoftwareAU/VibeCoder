@@ -275,6 +275,46 @@ Deno.test("an absolute, drive-letter or .. path blocks on a retry, whatever its 
   assertEquals(split.advisory, []);
 });
 
+Deno.test("a . segment inside or after a path on a changed line blocks on a retry", () => {
+  const inner = finding({
+    file: "worker/deno/./lib/a.ts",
+    line: 11,
+    severity: "medium",
+  });
+  const repeated = finding({
+    file: "./worker/deno/lib/./a.ts",
+    line: 11,
+    severity: "medium",
+  });
+  const trailing = finding({
+    file: "worker/deno/lib/a.ts/.",
+    line: 11,
+    severity: "medium",
+  });
+  const split = splitFindingsForRetry({
+    findings: [inner, repeated, trailing],
+    isRetry: true,
+    changed,
+  });
+  assertEquals(split.blocking, [inner, repeated, trailing]);
+  assertEquals(split.advisory, []);
+});
+
+Deno.test("a . segment in a path on an unchanged line stays advisory on a retry", () => {
+  const unchanged = finding({
+    file: "worker/deno/./lib/a.ts",
+    line: 50,
+    severity: "medium",
+  });
+  const split = splitFindingsForRetry({
+    findings: [unchanged],
+    isRetry: true,
+    changed,
+  });
+  assertEquals(split.advisory, [unchanged]);
+  assertEquals(split.blocking, []);
+});
+
 Deno.test("applyConvergence returns the same object when nothing is demoted", () => {
   const result: PrePrVerifierResult = {
     status: "checked",
@@ -352,6 +392,15 @@ Deno.test("the gate comment round-trips: each finding comes back as its earlier 
   findings.forEach((f, i) => assertStringIncludes(back[i]!, f.problem));
 });
 
+Deno.test("the gate comment round-trip holds for a 900-character problem and fix", () => {
+  const long = finding({ problem: "word".repeat(225), fix: "fix".repeat(300) });
+  const back = previousFindingsFromGateComment(
+    buildPrePrVerifierGateComment(reviewWith([long])),
+  );
+  assertEquals(back, [findingToEarlierText(long)]);
+  assertStringIncludes(back[0]!, "…");
+});
+
 Deno.test("the gate comment round-trip keeps the missing-checklist bullets too", () => {
   const review: ReviewReply = {
     ...reviewWith([finding({ problem: "a finding" })]),
@@ -385,6 +434,55 @@ Deno.test("the advisory comment is empty for no findings and names its heading o
   const comment = buildAdvisoryFindingsComment([UNCHANGED_LINE]);
   assert(comment.startsWith(PRE_PR_VERIFIER_ADVISORY_HEADING));
   assertStringIncludes(comment, "- `worker/deno/lib/a.ts:50` — a problem");
+});
+
+// Hostile file names, one per regex in `normalisedPath`. The run is over the
+// path cap, so the function fails closed without scanning it. No timing is asserted.
+const HOSTILE_RUN = 200_000;
+
+Deno.test("hostile: a backslash run of 200000 characters in a file name blocks on a retry", () => {
+  const hostile = finding({
+    file: "a" + "\\".repeat(HOSTILE_RUN) + "!",
+    line: 50,
+    severity: "medium",
+  });
+  const split = splitFindingsForRetry({
+    findings: [hostile],
+    isRetry: true,
+    changed,
+  });
+  assertEquals(split.blocking, [hostile]);
+  assertEquals(split.advisory, []);
+});
+
+Deno.test("hostile: a slash run of 200000 characters in a file name blocks on a retry", () => {
+  const hostile = finding({
+    file: "worker/deno/lib" + "/".repeat(HOSTILE_RUN) + "!",
+    line: 50,
+    severity: "medium",
+  });
+  const split = splitFindingsForRetry({
+    findings: [hostile],
+    isRetry: true,
+    changed,
+  });
+  assertEquals(split.blocking, [hostile]);
+  assertEquals(split.advisory, []);
+});
+
+Deno.test("hostile: a drive-letter run of 200000 characters in a file name blocks on a retry", () => {
+  const hostile = finding({
+    file: "A".repeat(HOSTILE_RUN) + ":!",
+    line: 50,
+    severity: "medium",
+  });
+  const split = splitFindingsForRetry({
+    findings: [hostile],
+    isRetry: true,
+    changed,
+  });
+  assertEquals(split.blocking, [hostile]);
+  assertEquals(split.advisory, []);
 });
 
 function reviewWith(findings: ReviewFinding[]): ReviewReply {

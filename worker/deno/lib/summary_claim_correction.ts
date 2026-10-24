@@ -3,20 +3,22 @@
  *
  * The first-run PR-summary claim check (`summary_claim_check.ts`, Issue
  * #3257) folds its verdict into whichever summary gate blocks first
- * (`foldInLateSummaryVerdicts` in `completion_phase.ts`), and the run's FIRST
- * summary-rule block gets one recovery turn
- * (`recoverFromSummaryRuleBlock`/`summary_rule_gate_retry.ts`, Issue #2189).
- * A second block goes to `reportSummaryRuleBlock`, which finalises an
- * existing PR as `summary_incomplete` or fails the run outright. Two shapes
- * of a known-wrong sentence slipped past that: the recovery turn got a
- * combined notice and fixed only one of its sections, or the claim check only
- * flagged the sentence on the re-run after the recovery turn had already
- * been spent (VibeCoder#3322). This module is the one extra, narrow turn for
- * the second shape: when every other gate has passed and only the claim
- * check still blocks on the summary's own sentences, after the recovery turn
- * is gone, the worker asks the model to rewrite just the flagged sentences in
- * the summary — no files edited by the model itself, the worker writes the
- * reply to disk — then re-runs completion exactly once more. Manual or
+ * (`foldInLateSummaryVerdicts` in `completion_phase.ts`). Each summary-rule
+ * block gets a recovery turn from the bounded loop in `gate_recovery_loop.ts`
+ * while its blocking-finding count keeps falling
+ * (`recoverFromSummaryRuleBlock`/`summary_rule_gate_retry.ts`, Issues #2189,
+ * #4234); a block the loop will not follow goes to `reportSummaryRuleBlock`,
+ * which finalises an existing PR as `summary_incomplete` or fails the run
+ * outright. Two shapes of a known-wrong sentence slipped past that: the
+ * recovery turn got a combined notice and fixed only one of its sections, or
+ * the claim check only flagged the sentence on the re-run after an earlier
+ * block had already been recovered from (VibeCoder#3322). This module is the
+ * one extra, narrow turn for the second shape: when every other gate has
+ * passed and only the claim check still blocks on the summary's own sentences,
+ * after an earlier summary-rule block on this run, the worker asks the model
+ * to rewrite just the flagged sentences in the summary — no files edited by
+ * the model itself, the worker writes the reply to disk — then re-runs
+ * completion exactly once more. Manual or
  * prompt findings also get this turn (#3865): the model returns
  * indexed replacements and the worker changes only the uniquely located
  * flagged spans, then carries unchanged findings into the recheck. Source
@@ -24,8 +26,8 @@
  *
  * ```mermaid
  * flowchart TD
- *     A["Completion attempt blocks"] --> B{"Recovery turn<br/>already spent?"}
- *     B -- no --> C["recoverFromSummaryRuleBlock<br/>(#2189)"]
+ *     A["Completion attempt blocks"] --> B{"Earlier summary-rule<br/>block on this run?"}
+ *     B -- no --> C["recoverFromSummaryRuleBlock<br/>(#2189, #4234 loop)"]
  *     B -- yes --> D{"Claim check is the<br/>ONLY blocked gate?"}
  *     D -- no --> E["reportSummaryRuleBlock<br/>(failure / summary_incomplete)"]
  *     D -- yes --> F["correctSummaryClaimsInRun:<br/>one narrow claim turn"]
@@ -174,7 +176,7 @@ export function buildSummaryClaimCorrectionPrompt(opts: {
     ? opts.boundaryId
     : generateBoundaryId();
 
-  return `The worker's claim check found sentences in \`${opts.summaryPath}\` that describe named code wrongly, after this run's one recovery turn was already spent on ${opts.repo}#${opts.issueNumber}. This is one narrow correction turn — not a general rewrite.
+  return `The worker's claim check found sentences in \`${opts.summaryPath}\` that describe named code wrongly, after an earlier summary-rule block on this run (${opts.repo}#${opts.issueNumber}). This is one narrow correction turn — not a general rewrite.
 
 ${
     fenceUntrustedIssueText(
@@ -478,7 +480,7 @@ export async function correctSummaryClaimsInRun(
   }
   state.summaryClaimCorrection = { ...pending, status: "used" };
   logger.warn(
-    "Claim check still blocks after recovery; one narrow correction turn",
+    "Claim check still blocks after an earlier summary-rule block; one narrow correction turn",
     { repo, issueNumber, reason: pending.reason },
   );
   try {

@@ -267,7 +267,7 @@ export interface DiffHunk {
 }
 
 /** A `git diff -U0` hunk header, e.g. `@@ -12,3 +12,0 @@`. */
-const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
+export const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
 /** `git diff`'s marker for a file it declines to diff as text. */
 const BINARY_MARKER_RE = /^Binary files .* differ$/m;

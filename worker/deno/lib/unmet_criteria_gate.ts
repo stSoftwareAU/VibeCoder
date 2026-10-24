@@ -13,10 +13,15 @@
  *     S["PR summary closure block"] --> U{"Any criterion<br/>partial, missing<br/>or unassessed?"}
  *     U -- no --> P["PR raised; it closes the issue"]
  *     U -- yes --> R["No PR. The agent is sent back in this run<br/>with the unmet criteria named"]
- *     R --> G{"Progress, and rounds<br/>left?"}
+ *     R --> G{"Progress, and turns left in the<br/>shared recovery loop?<br/>(Issue #4234)"}
  *     G -- yes --> S
  *     G -- no --> F["Run failure: criteria_unmet.<br/>Branch stays pushed; the next run resumes it.<br/>No PR, no follow-up, no needs-human"]
  * ```
+ *
+ * The recovery turns are not counted here: every summary gate, this one
+ * included, shares the bounded loop in `gate_recovery_loop.ts` (Issue #4234),
+ * which grants a turn while the blocking-finding count keeps falling and the
+ * turn limit (`OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns`) is not spent.
  *
  * Whether the run was degraded (served by a fallback model) changes nothing
  * here: the `Degraded:` run-stats line is telemetry, not a delivery decision.
@@ -34,17 +39,6 @@ import {
   isPendingMergeCheck,
   UNSTATED_SCOPE_ITEM,
 } from "./degraded_delivery.ts";
-import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
-
-/**
- * How many in-run rounds a completion summary-gate block gets (Issue #4146,
- * generalised by Issue #4234). Every round of the bounded recovery loop in
- * `gate_recovery_loop.ts` is capped here: the first recovery turn plus further
- * turns while the blocking-finding count keeps falling, never past this number.
- * The count is `OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns`.
- */
-export const MAX_UNMET_CRITERIA_ROUNDS =
-  OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns;
 
 /** Longest criterion text quoted back in the gate comment. */
 const MAX_QUOTED_LENGTH = 300;
