@@ -968,3 +968,44 @@ Deno.test("pacedMilestoneIssueNumbers - returns only the issues in a paced miles
     0,
   );
 });
+
+Deno.test("presyncMilestoneBranchForIssueRun - an unreadable default tip is logged at warn (Issue #4176)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "presync-warn-" });
+  const warnings: string[] = [];
+  const infos: string[] = [];
+  const logger: Logger = {
+    ...silentLogger,
+    info: (message) => infos.push(message),
+    warn: (message) => warnings.push(message),
+  };
+  try {
+    const result = await presyncMilestoneBranchForIssueRun({
+      repo: REPO,
+      milestoneTitle: "#1730 Resolve merge conflicts",
+      milestoneBranch: MILESTONE,
+      defaultBranch: DEFAULT_BRANCH,
+      cwd: workDir,
+      workDir,
+      config: { ...buildDefaultWorkerConfig(), workDir },
+      logger,
+      countCommitsAheadFn: () =>
+        Promise.resolve({
+          ok: false as const,
+          error: new Error("the comparison could not be read"),
+        }),
+    });
+
+    assertEquals(result.status, "deferred");
+    const tipWarning = warnings.find((message) =>
+      message.includes("Could not read the tip")
+    );
+    assert(tipWarning, `expected a warn, got ${JSON.stringify(warnings)}`);
+    assertEquals(
+      infos.some((message) => message.includes("Could not read the tip")),
+      false,
+      "the tip failure must not be logged at info",
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});

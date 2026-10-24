@@ -19,6 +19,7 @@ import {
 } from "../lib/stale_workflow_detector.ts";
 import { createGitHubClient, runGhCommand } from "../lib/github.ts";
 import { createLogger } from "../lib/logger.ts";
+import { bindLogger } from "../lib/log_sink.ts";
 import { fetchCommentBatch } from "../lib/comment_batch.ts";
 import type { GitHubComment, GitHubIssue } from "../types.ts";
 
@@ -181,7 +182,7 @@ export const staleWorkflowDetectorCommand: Command = {
           "",
         ]);
       },
-      log: (msg) => logger.info(msg),
+      log: bindLogger(logger),
       now: () => Date.now(),
       nowSeconds: () => Math.floor(Date.now() / 1000),
       // Standalone command invocation has no main-loop shutdown signal,

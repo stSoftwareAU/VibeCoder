@@ -44,6 +44,21 @@ import { rollbackCloseComment as rollbackCloseCommentForTest } from "../lib/mile
  */
 const VERIFICATION = { authorOptions: { fleetAuthors: ["bot"] } };
 
+/** A log line and the level the call site passed (Issue #4176). */
+type LoggedLine = { message: string; level: string };
+
+function captureLog(
+  lines: LoggedLine[],
+): (message: string, level?: string) => void {
+  return (message, level = "info") => {
+    lines.push({ message, level });
+  };
+}
+
+function logText(lines: LoggedLine[]): string {
+  return lines.map((line) => line.message).join("\n");
+}
+
 // ============================================================================
 // checkMilestoneComplete
 // ============================================================================
@@ -829,7 +844,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body holds on a pendi
     base: string;
     body: string;
   }[] = [];
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
@@ -904,7 +919,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body holds on a pendi
 
   const deps = createMockDeps({
     ghCommandFn: ghFn,
-    log: (msg) => logs.push(msg),
+    log: captureLog(logs),
   });
 
   const result = await checkAndHandleMilestoneCompletions(deps);
@@ -914,9 +929,10 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body holds on a pendi
   assertStringIncludes(createdPrs[0]!.body, "Held: pending dependencies");
   assertStringIncludes(createdPrs[0]!.body, "#10 depends on #20");
   assertEquals(
-    logs.some((msg) =>
-      msg.includes("WARNING") && msg.includes("declared dependencies") &&
-      msg.includes("Issue #3014")
+    logs.some((line) =>
+      line.level === "warn" &&
+      line.message.includes("declared dependencies") &&
+      line.message.includes("Issue #3014")
     ),
     true,
   );
@@ -926,7 +942,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body holds on a pendi
 // swaps in a note, since the merge gate re-checks before merging.
 Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes unverifiable dependencies when the lookup fails", async () => {
   const createdPrs: { body: string }[] = [];
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
@@ -984,7 +1000,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes unverifiab
 
   const deps = createMockDeps({
     ghCommandFn: ghFn,
-    log: (msg) => logs.push(msg),
+    log: captureLog(logs),
   });
 
   const result = await checkAndHandleMilestoneCompletions(deps);
@@ -996,10 +1012,10 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes unverifiab
     "Declared dependencies not verified",
   );
   assertEquals(
-    logs.some((msg) =>
-      msg.includes("WARNING") &&
-      msg.includes("could not verify declared dependencies") &&
-      msg.includes("Issue #3014")
+    logs.some((line) =>
+      line.level === "warn" &&
+      line.message.includes("could not verify declared dependencies") &&
+      line.message.includes("Issue #3014")
     ),
     true,
   );
@@ -1009,7 +1025,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes unverifiab
 // name an issue closed as not planned.
 Deno.test("checkAndHandleMilestoneCompletions - summary PR body cites a doc line naming a not-planned issue", async () => {
   const createdPrs: { body: string }[] = [];
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
@@ -1095,7 +1111,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body cites a doc line
 
   const deps = createMockDeps({
     ghCommandFn: ghFn,
-    log: (msg) => logs.push(msg),
+    log: captureLog(logs),
   });
 
   const result = await checkAndHandleMilestoneCompletions(deps);
@@ -1108,7 +1124,11 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body cites a doc line
   );
   assertStringIncludes(createdPrs[0]!.body, "#10");
   assertEquals(
-    logs.some((msg) => msg.includes("WARNING") && msg.includes("Issue #3223")),
+    logs.some((line) =>
+      line.level === "warn" &&
+      line.message.includes("closed as not planned") &&
+      line.message.includes("Issue #3223")
+    ),
     true,
   );
 });
@@ -1117,7 +1137,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body cites a doc line
 // swaps in the "not checked" note.
 Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes the not-planned scan could not run when compare fails", async () => {
   const createdPrs: { body: string }[] = [];
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
 
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
@@ -1193,7 +1213,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes the not-pl
 
   const deps = createMockDeps({
     ghCommandFn: ghFn,
-    log: (msg) => logs.push(msg),
+    log: captureLog(logs),
   });
 
   const result = await checkAndHandleMilestoneCompletions(deps);
@@ -1205,10 +1225,10 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes the not-pl
     "Docs not checked for issues closed as not planned",
   );
   assertEquals(
-    logs.some((msg) =>
-      msg.includes("WARNING") &&
-      msg.includes("could not check milestone") &&
-      msg.includes("Issue #3223")
+    logs.some((line) =>
+      line.level === "warn" &&
+      line.message.includes("could not check milestone") &&
+      line.message.includes("Issue #3223")
     ),
     true,
   );
@@ -3191,11 +3211,11 @@ Deno.test("closeGitHubMilestone - logs warning on failure without throwing", asy
     throw new Error("Forbidden");
   };
 
-  const logs: string[] = [];
-  await closeGitHubMilestone("owner/repo", 5, ghFn, (msg) => logs.push(msg));
+  const logs: LoggedLine[] = [];
+  await closeGitHubMilestone("owner/repo", 5, ghFn, captureLog(logs));
 
-  const warningLog = logs.find((l) =>
-    l.includes("WARNING") && l.includes("Failed to close milestone")
+  const warningLog = logs.find((line) =>
+    line.level === "warn" && line.message.includes("Failed to close milestone")
   );
   assertEquals(warningLog !== undefined, true);
 });
@@ -4452,11 +4472,11 @@ async function run3474(sc: Scenario3474) {
     if (key.includes("issue close")) return "";
     return "[]";
   };
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
   const result = await checkAndHandleMilestoneCompletions(
     createMockDeps({
       ghCommandFn: ghFn,
-      log: (m) => logs.push(m),
+      log: captureLog(logs),
       authorOptions: { fleetAuthors: sc.fleet ?? ["bot"] },
     }),
   );
@@ -4611,7 +4631,7 @@ Deno.test("close-out - a just-created empty branchless milestone is left for a l
   assertEquals(r.patched, []);
   assertEquals(r.created, []);
   assertEquals(
-    r.logs.some((l) => l.includes("leaving it for a later scan")),
+    r.logs.some((l) => l.message.includes("leaving it for a later scan")),
     true,
   );
 });
@@ -4682,8 +4702,8 @@ Deno.test("close-out - a classification failure falls through to the existing fl
   assertEquals(r.comments, []);
   assertEquals(
     r.logs.some((l) =>
-      l.includes("WARNING") &&
-      l.includes("Failed to classify final PRs for milestone branch")
+      l.level === "warn" &&
+      l.message.includes("Failed to classify final PRs for milestone branch")
     ),
     true,
   );
@@ -4976,7 +4996,7 @@ Deno.test("Issue #3908 - open children per GitHub veto finalisation even when th
   // empty list while 12 children were still open. Fails against the unfixed
   // code, which created a tracker and a summary PR.
   const writes: string[] = [];
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
   const openChildren = [
     3875,
     3876,
@@ -4997,7 +5017,7 @@ Deno.test("Issue #3908 - open children per GitHub veto finalisation even when th
       writes,
       (key) => authoritativeStub(key, openChildren.length, openChildren),
     ),
-    log: (msg) => logs.push(msg),
+    log: captureLog(logs),
   });
 
   const result = await checkAndHandleMilestoneCompletions(deps);
@@ -5007,13 +5027,19 @@ Deno.test("Issue #3908 - open children per GitHub veto finalisation even when th
   // No tracker, no summary PR, no milestone close.
   assertEquals(writes, []);
 
-  const joined = logs.join("\n");
+  const joined = logText(logs);
   assertStringIncludes(joined, "is NOT complete");
   assertStringIncludes(joined, "#3875");
   assertStringIncludes(joined, "#3887");
   // The disagreement between the two sources is logged loudly with both
   // counts and both issue-number sets.
-  assertStringIncludes(joined, "WARNING: Open-children disagreement");
+  assert(
+    logs.some((line) =>
+      line.level === "warn" &&
+      line.message.includes("Open-children disagreement")
+    ),
+    joined,
+  );
   assertStringIncludes(joined, "GitHub reports 12");
   assertStringIncludes(joined, "cached issue list reports 0");
 });
@@ -5356,12 +5382,17 @@ Deno.test("milestone deadlock rollup - a deadlock still present after its partia
 Deno.test("milestone deadlock rollup - a failed partial rollup for one milestone does not abort the scan", async () => {
   _resetBaseProtectionMemo();
   const { gh } = scriptDeadlockGh({ gitRefThrows: true });
-  const logs: string[] = [];
-  const deps = createMockDeps({ ghCommandFn: gh, log: (m) => logs.push(m) });
+  const logs: LoggedLine[] = [];
+  const deps = createMockDeps({ ghCommandFn: gh, log: captureLog(logs) });
 
   const result = await checkAndHandleMilestoneCompletions(deps);
   assertEquals(result.ok, true);
-  assertStringIncludes(logs.join("\n"), "WARNING");
+  assert(
+    logs.some((line) =>
+      line.level === "warn" && line.message.includes("partial rollup")
+    ),
+    logText(logs),
+  );
 });
 
 Deno.test("milestone deadlock rollup - the final rollup still fires after a merged partial rollup, with no new partial rollup", async () => {
@@ -5577,7 +5608,7 @@ Deno.test("close-out - an unresolved fleet set classes a roll-back-commented fin
   );
   assert(
     r.logs.some((l) =>
-      l.includes("WARNING") && l.includes("fleet author set unresolved")
+      l.level === "warn" && l.message.includes("fleet author set unresolved")
     ),
     "the unresolved fleet set is logged loudly",
   );
