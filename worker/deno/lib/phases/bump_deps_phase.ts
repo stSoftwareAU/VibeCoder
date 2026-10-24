@@ -49,9 +49,13 @@ import {
 import { assertNever } from "../assert_never.ts";
 import type { Result } from "../../types.ts";
 import { detectTool } from "../quality_helpers.ts";
+import { commandOutputWithTimeout } from "../subprocess_timeout.ts";
 import { prependExecutableDir } from "../path_bootstrap.ts";
 import { type EnvLookup, processEnvLookup } from "../env_lookup.ts";
 import { buildUntrustedCommandEnv } from "../untrusted_command_env.ts";
+
+/** A repository `bump-deps.sh` gets minutes. A hang is a failed bump, not a pass. */
+const BUMP_SCRIPT_TIMEOUT_MS = 20 * 60 * 1000;
 
 /**
  * Build the subprocess environment for `bump-deps.sh`, guaranteeing the
@@ -94,6 +98,7 @@ export function buildBumpScriptEnv(
 export function createBumpDepsRuntimeDeps(
   deps: WorkerDeps,
   ageDeps: BumpAgeDeps = defaultBumpAgeDeps(),
+  scriptTimeoutMs: number = BUMP_SCRIPT_TIMEOUT_MS,
 ): BumpDepsDeps {
   return {
     fileExists: async (path: string): Promise<boolean> => {
@@ -112,7 +117,7 @@ export function createBumpDepsRuntimeDeps(
         // find it on unattended hosts (Issue #3532).
         const denoResult = await detectTool("deno");
         const denoPath = denoResult.ok ? denoResult.value : undefined;
-        const proc = new Deno.Command("bash", {
+        const result = await commandOutputWithTimeout("bash", {
           args: [scriptPath],
           cwd,
           stdout: "piped",
@@ -126,8 +131,8 @@ export function createBumpDepsRuntimeDeps(
           // credential is in scope for it to echo.
           env: buildBumpScriptEnv(buildUntrustedCommandEnv(), env, denoPath),
           clearEnv: true,
+          timeoutMs: scriptTimeoutMs,
         });
-        const result = await proc.output();
         const stdout = new TextDecoder().decode(result.stdout);
         const stderr = new TextDecoder().decode(result.stderr);
         return { exitCode: result.code, output: stdout + stderr };

@@ -48,6 +48,10 @@
 
 import { formatGb, type HostDiskStatus } from "./host_disk.ts";
 import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+import {
   cargoTargetDirForCheckout,
   EPHEMERAL_CARGO_TARGET_ROOT,
 } from "./ephemeral_build_cache.ts";
@@ -302,17 +306,25 @@ export async function releaseCheckoutTargetDirs(
   return { bytes, errors };
 }
 
-/** `du -sk` of one directory, in bytes; 0 when it cannot be measured. */
-async function duBytes(path: string): Promise<number> {
+/** `du` of one cargo target. Long enough for a large tree, still bounded. */
+const DU_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** `du -sk` of one directory, in bytes; 0 when it cannot be measured. A timeout is a failure. */
+export async function measureDirectoryBytes(
+  path: string,
+  timeoutMs: number = DU_TIMEOUT_MS,
+): Promise<number> {
   try {
-    const out = await new Deno.Command("du", {
+    const out = await commandOutputWithTimeout("du", {
       args: ["-sk", "--", path],
       stdout: "piped",
       stderr: "null",
-    }).output();
+      timeoutMs,
+    });
     const kb = Number.parseInt(new TextDecoder().decode(out.stdout), 10);
     return Number.isFinite(kb) ? kb * 1024 : 0;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return 0;
   }
 }
@@ -343,7 +355,7 @@ export const productionEphemeralRootDeps: EphemeralRootDeps = {
       const path = `${root}/${entry.name}`;
       dirs.push({
         path,
-        bytes: await duBytes(path),
+        bytes: await measureDirectoryBytes(path),
         lastWriteMs: await lastWriteMs(path),
       });
     }
