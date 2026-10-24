@@ -110,6 +110,27 @@ Deno.test("assessScopeShortfalls - matches scope against the closure block", () 
   });
 });
 
+Deno.test("assessScopeShortfalls - a heading ending in acceptance criteria yields the same verdict as the plain heading (Issue #4107)", () => {
+  const scopeHeadingIssue =
+    "## Scope and acceptance criteria\n\n- the export works\n";
+
+  // The plain heading yields a partial shortfall; the new heading must match it.
+  const plainVerdict = assessScopeShortfalls(EXPORT_ISSUE, PARTIAL_SUMMARY);
+  assertEquals(plainVerdict, {
+    delivered: [],
+    shortfalls: [{ criterion: "the export works", status: "partial" }],
+  });
+  assertEquals(
+    assessScopeShortfalls(scopeHeadingIssue, PARTIAL_SUMMARY),
+    plainVerdict,
+  );
+
+  assertEquals(assessScopeShortfalls(scopeHeadingIssue, MET_SUMMARY), {
+    delivered: ["the export works"],
+    shortfalls: [],
+  });
+});
+
 const TWO_CRITERIA_ISSUE =
   "## Acceptance Criteria\n\n- the export works\n- the import works\n";
 const EXPORT_MET_IMPORT_PARTIAL = `## Acceptance Criteria
