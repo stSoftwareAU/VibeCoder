@@ -2420,30 +2420,18 @@ function literalText(argument: string): string | null {
   return null;
 }
 
-/**
- * A slash-delimited literal (`/OLD: 5/`, with optional flags). Static, so
- * the source under scan is never compiled as a pattern.
- */
-const SLASH_LITERAL_RE = /^\/((?:\\.|[^/\n])*)\/[a-z]*/i;
-
-/** Same escape rule as {@link readDelimited}: a backslash keeps the next character. */
-function unescapeSlashBody(raw: string): string {
-  let value = "";
-  for (let i = 0; i < raw.length; i++) {
-    const ch = raw[i]!;
-    if (ch === "\\" && i + 1 < raw.length) {
-      value += raw[++i];
-      continue;
-    }
-    value += ch;
-  }
-  return value;
+/** An ASCII letter, which is the only character a regex flag may be. */
+function isRegexFlag(ch: string): boolean {
+  const code = ch.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
 }
 
 /**
  * Quoted literals and slash-delimited regex bodies. Templates with
  * substitutions are excluded. A regex body is kept so `assertNotMatch` of
  * the old pattern can clear a shortened `assertMatch` (Issue #4163).
+ * The body is read by {@link readDelimited}, the same linear walk as
+ * {@link literalText}, so the source is never compiled as a pattern.
  */
 function quotedLiterals(text: string): string[] {
   const found: string[] = [];
@@ -2457,10 +2445,12 @@ function quotedLiterals(text: string): string[] {
       continue;
     }
     if (ch !== "/") continue;
-    const match = SLASH_LITERAL_RE.exec(text.slice(i));
-    if (!match) continue;
-    found.push(unescapeSlashBody(match[1] ?? ""));
-    i += match[0].length - 1;
+    const read = readDelimited(text, i, "/", false);
+    if (!read) continue;
+    let end = read.end;
+    while (end < text.length && isRegexFlag(text[end]!)) end++;
+    found.push(read.value);
+    i = end - 1;
   }
   return found;
 }

@@ -896,6 +896,14 @@ Deno.test("broadened containment: assertNotMatch of the old regex clears a short
   assert(result.valid, result.problems.join("; "));
 });
 
+Deno.test("broadened containment: assertNotMatch of an escaped old regex clears a shortened assertMatch", () => {
+  const result = formCheck(
+    ["assertMatch(out, /OLD\\/5/);"],
+    ["assertMatch(out, /5/);", "assertNotMatch(out, /OLD\\/5/i);"],
+  );
+  assert(result.valid, result.problems.join("; "));
+});
+
 Deno.test("broadened containment: a substring check in a different test is not the replacement", () => {
   const diff = [
     `diff --git a/${FORM_FILE} b/${FORM_FILE}`,
