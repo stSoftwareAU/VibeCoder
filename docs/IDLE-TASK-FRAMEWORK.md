@@ -1108,6 +1108,11 @@ it later, and the later gate is the more specific one. `quota_idle_deferred`
 (Issue #3628) ranks directly below `pace_suppressed`, its application point in
 `classifyIssues`.
 
+The audit applies the label-author gate as `label_author_not_allowed`, fed
+from the census's untrusted-label set (Issues #4212 and #4213). The idle-task
+filing gate's `classifyIssues` call (`repoHasStartableWork` in
+`repo_busy_for_idle_task.ts`) does not pass the set.
+
 That incident also exposed the other half of the fault, in the scan's own
 reporting: the cooldown filters logged their skip and recorded nothing in
 `blockedDetails`, the field Issue #460 added so the escalation can name the gate
