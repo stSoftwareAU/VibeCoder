@@ -2443,13 +2443,15 @@ Five stages, in the order a claim meets them:
 2. **An in-flight claim keeps its full budget.** The execute phase does **not**
    truncate `claude_timeout` to the runway left (Issue #420). A claim taken at
    any point inside the cycle gets the whole budget, and the cycle overruns to
-   let it finish.
+   let it finish. The one cut is the run's finish deadline (Issue #4244): a
+   session started late in the run is clamped so it ends before that
+   deadline — see [The run hard cap bounds every grant](#the-run-hard-cap-bounds-every-grant).
 3. **Extensions re-arm that budget while the run is progressing.** On by
    default (Issue #422) — see
    [Progress-extended deadline](#-progress-extended-deadline) for the two
    signals and the grant size.
-4. **The supervisor's wall-clock cap is the only place a progressing agent is
-   killed.** `VIBE_RUN_MAX_SECONDS` is the ceiling every grant is measured
+4. **The supervisor's wall-clock cap and the run's finish deadline are the only
+   places a progressing agent is killed.** `VIBE_RUN_MAX_SECONDS` is the ceiling every grant is measured
    against, less a reserve for the kill grace and the WIP commit-and-push, so
    the worker's own kill lands *before* the supervisor's SIGTERM — see
    [The run hard cap bounds every grant](#the-run-hard-cap-bounds-every-grant).

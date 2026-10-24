@@ -1128,7 +1128,9 @@ the supervisor's cap (Issue #421).
 
 ### The hard cap was what stopped it
 
-The cap is the **only** place a still-progressing agent is killed, and it is an
+The cap is, with the run's finish deadline (Issue #4244: a progress extension is
+refused there and released under the same `hard-cap` reason), the **only** place
+a still-progressing agent is killed, and it is an
 orderly stop: the ceiling holds back a reserve for the kill grace and the WIP
 commit-and-push, so the work in progress is committed and pushed before the
 supervisor's SIGTERM and the next cycle resumes it. Three log lines, in the

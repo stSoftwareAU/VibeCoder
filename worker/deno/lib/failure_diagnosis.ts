@@ -182,7 +182,9 @@ export interface DiagnosticContext {
  *
  * - `"cycle-ended"` — the worker's own shutdown ended the agent run.
  * - `"hard-cap"` — the supervisor's wall-clock cap left no runway, so the
- *   worker stopped itself first to preserve the work (Issue #421).
+ *   worker stopped itself first to preserve the work (Issue #421). A progress
+ *   extension refused at the run's finish-deadline ceiling is released under
+ *   the same reason (Issue #4244).
  */
 export type ScheduledReleaseReason = "cycle-ended" | "hard-cap";
 
