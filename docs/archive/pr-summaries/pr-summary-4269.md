@@ -141,4 +141,20 @@ citations.
   none touch these files. Format, lint, type check, semgrep, markdownlint and
   mermaid passed.
 
+
+### CI repair validation
+
+The phase-default failure was reproduced locally. The source scan included
+`phase: "completion"` from outcome metadata in an enclosing function that
+also constructs a prompt. It now inspects a prompt object's own fields and
+retains the checks on real executor calls; it also asserts that completion
+metadata is excluded. No production model defaults changed.
+
+- `phase_executor_tiers_4174_test.ts`: 1 passed, 0 failed after the fix.
+- `deno task check:manifests`: 873 passed, 0 failed, 1 ignored.
+- Deno format, lint and type checks passed. The full local quality run
+  cannot be green in this environment: release-tag ruleset access fails;
+  Semgrep, Checkov and markdownlint are unavailable. GitHub CI validates
+  the pushed branch with its installed tools.
+
 <!-- vibe-branch-outcomes -->
