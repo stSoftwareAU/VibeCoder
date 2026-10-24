@@ -35,8 +35,6 @@ import {
 import { safeGhCommand } from "./gh_wrapper.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import { handleIssueFailure } from "./label_failure.ts";
-import type { HandleFailureOptions, LabelManagerDeps } from "./label_types.ts";
-import { defaultPlanWorkerGateSplit } from "./worker_gate_split_planner.ts";
 import { checkGhAuth } from "./gh_auth.ts";
 import {
   type RepairMilestoneResult,
@@ -683,15 +681,7 @@ export function createDefaultDeps(
       safeGhCommand,
       runGhCommand,
       ensureLabelExists,
-      handleIssueFailure: (
-        options: HandleFailureOptions,
-        deps?: LabelManagerDeps,
-      ) =>
-        handleIssueFailure(options, {
-          ...(deps ?? {}),
-          planWorkerGateSplit: deps?.planWorkerGateSplit ??
-            defaultPlanWorkerGateSplit,
-        }),
+      handleIssueFailure,
       checkGhAuth,
       // Issue #2079: the worker's own identity writes the ruleset. GitHub
       // answers a write from a non-admin with 404, which

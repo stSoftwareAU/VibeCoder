@@ -32,11 +32,6 @@ export interface EchoAllowlistEntry {
  */
 export const ECHO_ALLOWLIST: readonly EchoAllowlistEntry[] = [
   {
-    module: "worker_gate_split.ts",
-    reason:
-      "parseWorkerGatePlan reads newly drafted part titles and scopes. It does not match the reply against fenced gate output or replace an original with a model echo.",
-  },
-  {
     module: "ci_failure_issue.ts",
     reason:
       "parseCiFailureBuildReference reads a build URL or build number from an issue body. createPromptDelimiters fences log text when the issue is filed; the parser does not treat a model's copy of that fence as the original.",

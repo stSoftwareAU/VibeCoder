@@ -51,17 +51,7 @@ to complete that issue; nothing more from a person is needed or wanted.
   human after repeated failures (Issue #4158): the escalating cooldown
   (2 h → 6 h → 24 h) paces the retries, at most one a day, and the issue stays
   queued until it is done. An issue stuck in that loop is a Vibe Coder defect
-  to fix, not an issue to give up on. A second run still blocked by a worker
-  gate is not another retry of that same issue (Issue #4130): the worker files
-  sub-issues that quote the gate and what the branch already did, closes the
-  parent, and deletes the blocked branch and pull request. It does not mark
-  the pull request ready or arm auto-merge while the gate is still failing.
-  When planning publishes nothing, the repeat `failed-once` record stands and
-  the log says why. A child of that split is stamped with a fleet-authored
-  depth. Depth 0 and 1 split again, with children one level deeper. Depth 2
-  does not: the worker comments, applies `failed`, and deletes the branch and
-  pull request, and it files no further issues (Issue #4131). A depth marker
-  whose author is not in the fleet is ignored.
+  to fix, not an issue to give up on.
 
 ### Fully unattended operation and self-healing
 
