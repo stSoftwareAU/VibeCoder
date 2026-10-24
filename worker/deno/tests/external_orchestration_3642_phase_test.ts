@@ -11,6 +11,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import {
+  resetAutomaticProviderState,
+  setAutomaticProviderRoutingActive,
+} from "../lib/provider_auto_state.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type ExecuteClaudePhaseDeps,
@@ -212,4 +216,30 @@ Deno.test("external orchestration - the switch absent is the same as off (Issue 
   assertEquals(observed.externalInput, undefined);
   assert(observed.nativeRunOptions, "the native run must still happen");
   assertEquals(observed.nativeRunOptions.agents, undefined);
+});
+
+Deno.test("automatic Codex issue phase keeps all roles on Codex without native sub-agent definitions", async () => {
+  setAutomaticProviderRoutingActive(true);
+  try {
+    const observed = await observeRun({
+      agentProvider: "codex",
+      issueExecutorSplit: true,
+      issueReviewerAgents: true,
+    }, true);
+    assertEquals(observed.nativeRunOptions, undefined);
+    assert(observed.externalInput);
+    assertEquals(observed.externalInput.claudeOptions.agents, undefined);
+    assertEquals(
+      observed.externalInput.claudeOptions.issueExecutorSplit,
+      undefined,
+    );
+    assertEquals(observed.externalInput.settings.manager?.model, "gpt-6.1-sol");
+    assertEquals(observed.externalInput.settings.executor?.model, "gpt-6-luna");
+    assertEquals(
+      observed.externalInput.settings.reviewer?.model,
+      "gpt-6-astra",
+    );
+  } finally {
+    resetAutomaticProviderState();
+  }
 });

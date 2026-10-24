@@ -339,3 +339,28 @@ Deno.test("parseCodexRolloutLine - a present-but-malformed rate_limits is retain
   assert(reading && !reading.budget.known);
   assertEquals(reading.budget.reason, "no-rate-limit-data");
 });
+
+Deno.test("Codex budget parses current App Server camelCase windows", () => {
+  const budget = parseCodexRateLimitSnapshot({
+    primary: {
+      usedPercent: 15,
+      windowDurationMins: 300,
+      resetsAt: 1_800_000_000,
+    },
+    secondary: {
+      usedPercent: 30,
+      windowDurationMins: 10080,
+      resetsAt: 1_800_600_000,
+    },
+    limitId: "codex",
+    planType: "pro",
+    credits: { hasCredits: false, unlimited: false },
+  });
+  assert(budget.known);
+  assertEquals(budget.remainingFraction, 0.7);
+  assertEquals(budget.windows[0]?.windowMinutes, 300);
+  assertEquals(budget.windows[0]?.resetAt, 1_800_000_000_000);
+  assertEquals(budget.limitId, "codex");
+  assertEquals(budget.planType, "pro");
+  assertEquals(budget.credits, { hasCredits: false, unlimited: false });
+});

@@ -10,6 +10,10 @@
  * Uses Australian English throughout (behaviour, organisation).
  */
 
+import {
+  resetAutomaticProviderState,
+  setAutomaticProviderRoutingActive,
+} from "../lib/provider_auto_state.ts";
 import { assert, assertEquals } from "@std/assert";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -312,4 +316,42 @@ Deno.test("execute_phase assignment - a failed assignment is logged at error lev
       "the agent still runs once when the assignment could not be recorded",
     );
   });
+});
+
+Deno.test("automatic Codex worker dispatch uses Codex role models", async () => {
+  setAutomaticProviderRoutingActive(true);
+  try {
+    await withTempDir(async (dir) => {
+      const config = buildDefaultWorkerConfig();
+      config.repoConfig = { "org/repo": { agentProvider: "codex" } };
+      const { ctx, state } = fixture(config, dir);
+      let calls = 0;
+      const deps = createMockDeps({
+        claude: {
+          runClaudeWithRetry: () => {
+            throw new Error(
+              "automatic Codex must use the external orchestrator",
+            );
+          },
+          runOrchestratedIssueRun: async (input) => {
+            calls++;
+            assertEquals(input.claudeOptions.agents, undefined);
+            assertEquals(input.claudeOptions.issueExecutorSplit, undefined);
+            assertEquals(input.settings.manager?.provider, "codex");
+            assertEquals(input.settings.manager?.model, "gpt-6.1-sol");
+            assertEquals(input.settings.executor?.model, "gpt-6-luna");
+            assertEquals(input.settings.reviewer?.model, "gpt-6-astra");
+            return {
+              ok: true,
+              value: { output: "done", exitCode: 0, timedOut: false },
+            };
+          },
+        },
+      });
+      await workOnIssueExecuteClaude(ctx, state, deps);
+      assertEquals(calls, 1);
+    });
+  } finally {
+    resetAutomaticProviderState();
+  }
 });

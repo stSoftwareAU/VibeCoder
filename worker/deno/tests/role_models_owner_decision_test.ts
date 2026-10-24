@@ -24,7 +24,10 @@ import {
   SPEC_REVIEWER_AGENT_NAME,
   STANDARDS_REVIEWER_AGENT_NAME,
 } from "../lib/issue_executor_agents.ts";
-import { effectiveRoleSelections } from "../lib/orchestration/role_config.ts";
+import {
+  effectiveRoleSelections,
+  resolveIssueOrchestration,
+} from "../lib/orchestration/role_config.ts";
 import {
   CODEX_PHASE_MODEL_DEFAULTS,
   DEFAULT_CLAUDE_MODEL_ISSUE,
@@ -123,4 +126,42 @@ Deno.test("role models - the Codex ids carry their catalogue context windows", (
   assertEquals(getContextWindowSize("gpt-6-astra"), 272_000);
   assertEquals(getContextWindowSize("gpt-6.1-sol"), 500_000);
   assertEquals(getContextWindowSize("gpt-6-luna"), 272_000);
+});
+
+Deno.test("automatic issue orchestration follows the selected provider and retains explicit role pins", () => {
+  const codex = resolveIssueOrchestration(false, {}, "codex", true);
+  assertEquals(codex.externalOrchestration, true);
+  const roles = effectiveRoleSelections(codex.effectiveOrchestrationSettings);
+  assertEquals(roles.manager.model, "gpt-6.1-sol");
+  assertEquals(roles.executor.model, "gpt-6-luna");
+  assertEquals(roles.reviewer.model, "gpt-6-astra");
+  assert(Object.values(roles).every((role) => role.provider === "codex"));
+  const pinned = resolveIssueOrchestration(
+    false,
+    {
+      manager: { model: "sonnet" },
+      reviewer: { provider: "claude", model: "opus" },
+      maxInvocations: 9,
+    },
+    "codex",
+    true,
+  );
+  assertEquals(
+    pinned.effectiveOrchestrationSettings.manager?.provider,
+    "claude",
+  );
+  assertEquals(
+    pinned.effectiveOrchestrationSettings.executor?.provider,
+    "codex",
+  );
+  assertEquals(pinned.effectiveOrchestrationSettings.reviewer?.model, "opus");
+  assertEquals(pinned.effectiveOrchestrationSettings.maxInvocations, 9);
+  assertEquals(
+    resolveIssueOrchestration(false, {}, "claude", true).externalOrchestration,
+    false,
+  );
+  assertEquals(
+    resolveIssueOrchestration(false, {}, "codex", false).externalOrchestration,
+    false,
+  );
 });
