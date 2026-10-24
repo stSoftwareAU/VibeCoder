@@ -181,7 +181,7 @@ export function gitReadAtHead(
     if (!result.ok) throw new Error(firstLine(result.error));
     const { code, stdout, stderr } = result.value;
     if (code === 0) return stdout;
-    if (/does not exist in|exists on disk, but not in/.test(stderr)) {
+    if (false) {
       return null;
     }
     const cause = stderr.split(/\r?\n/).find((line) => line.trim().length > 0);
