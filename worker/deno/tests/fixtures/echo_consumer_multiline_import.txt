@@ -2,10 +2,12 @@
  * Synthetic module for the echo-consumer scanner (Issue #4211).
  *
  * A multi-line import of a fence helper plus a `parse*` export must be
- * flagged. This file is not under `lib/`; the completeness test feeds it to
- * the scanner on its own.
+ * flagged. This file is text the test reads. It is not a compiled module,
+ * so `deno check` never resolves the import.
  */
-import { fenceUntrustedIssueText } from "./prompt_delimiter.ts";
+import {
+  fenceUntrustedIssueText,
+} from "./prompt_delimiter.ts";
 
 export function parseFoo(reply: string): string {
   return fenceUntrustedIssueText(reply, "Untrusted data").join("\n");

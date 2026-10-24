@@ -209,11 +209,17 @@ Deno.test("echo consumers: every scanned lib module is a table row or an allowli
 
 Deno.test("echo consumers: a committed multi-line import with parseFoo is flagged", async () => {
   const path = new URL(
-    "./fixtures/echo_consumer_multiline_import.ts",
+    "./fixtures/echo_consumer_multiline_import.txt",
     import.meta.url,
   );
   const source = await Deno.readTextFile(path);
-  assert(source.includes("\n"), "the fixture import must span lines");
+  const importAt = source.indexOf("import {");
+  const fromAt = source.indexOf('from "./prompt_delimiter.ts"');
+  assert(
+    importAt >= 0 && fromAt > importAt &&
+      source.slice(importAt, fromAt).includes("\n"),
+    "the fixture import must span lines",
+  );
   assertEquals(
     scanEchoConsumers({ "echo_consumer_multiline_import.ts": source }),
     ["echo_consumer_multiline_import.ts"],
