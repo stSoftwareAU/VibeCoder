@@ -1056,12 +1056,30 @@ Deno.test("fleet_telemetry - a gate run reaches the summary tokens after issue_g
   );
 });
 
-Deno.test("fleet_telemetry - an empty gate map reads none in the summary", () => {
+Deno.test("fleet_telemetry - no gate events leaves the summary without gate_* tokens", () => {
   fresh(0);
+  const line = formatFleetSummary(1_000);
+  // Whitespace-anchored: `issue_gate_first_attempt_passes` also contains `gate_`.
+  assertEquals(/\sgate_/.test(line), false, line);
+  assertStringIncludes(
+    line,
+    "issue_gate_first_attempt_passes=0 issue_duration=",
+    line,
+  );
+});
+
+Deno.test("fleet_telemetry - a gate event shows the gate_* tokens, none when a map is empty", () => {
+  fresh(0);
+  recordGateRecoveryRun({
+    firstPassGates: ["claim-check"],
+    finalGates: [],
+    turns: 0,
+    recovered: true,
+  });
   const line = formatFleetSummary(1_000);
   assertStringIncludes(
     line,
-    "gate_first_pass_blocks=none gate_run_failures=none gate_recovered_runs=0 gate_recovery_turns=0",
+    "gate_first_pass_blocks=claim-check:1 gate_run_failures=none gate_recovered_runs=1 gate_recovery_turns=0",
     line,
   );
 });
@@ -1081,7 +1099,10 @@ Deno.test("fleet_telemetry - two gate runs accumulate per gate and in the recove
     recovered: true,
   });
   const s = getFleetTelemetry(1_000);
-  assertEquals(s.gateFirstPassBlocks, { "docs-sweep": 2, "pre-pr-verifier": 1 });
+  assertEquals(s.gateFirstPassBlocks, {
+    "docs-sweep": 2,
+    "pre-pr-verifier": 1,
+  });
   assertEquals(s.gateRunFailures, { "docs-sweep": 1 });
   assertEquals(s.gateRecoveredRuns, 1);
   assertEquals(s.gateRecoveryTurns, 6);

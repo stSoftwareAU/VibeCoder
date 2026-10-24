@@ -24,8 +24,10 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   formatFleetSummary,
+  formatGateFailureRateLine,
   recordBlockedSeconds,
   recordClaim,
+  recordGateRecoveryRun,
   recordIssuePhaseRun,
   recordOutcome,
   resetFleetTelemetry,
@@ -123,4 +125,52 @@ Deno.test("slot utilisation - passes through the secret redactor unchanged", () 
     utilisation: 0.28,
   });
   assertEquals(redactSecrets(line), line, line);
+});
+
+/** Two gate runs: one that ended blocked, one that recovered. */
+function gateRuns(): void {
+  resetFleetTelemetry();
+  startFleetTelemetry(0);
+  startFleetCycle(0);
+  recordGateRecoveryRun({
+    firstPassGates: ["docs-sweep", "claim-check"],
+    finalGates: ["docs-sweep"],
+    turns: 2,
+    recovered: false,
+  });
+  recordGateRecoveryRun({
+    firstPassGates: ["pre-pr-verifier"],
+    finalGates: [],
+    turns: 4,
+    recovered: true,
+  });
+}
+
+Deno.test("fleet summary - the gate-outcome counters keep their values (Issue #4234)", () => {
+  gateRuns();
+  const line = formatFleetSummary(100_000);
+
+  const redacted = redactSecrets(line);
+  assertEquals(redacted, line, line);
+  assertStringIncludes(
+    redacted,
+    "gate_first_pass_blocks=claim-check:1,docs-sweep:1,pre-pr-verifier:1",
+  );
+  assertStringIncludes(redacted, "gate_run_failures=docs-sweep:1");
+  assertStringIncludes(redacted, "gate_recovered_runs=1 gate_recovery_turns=6");
+  assertEquals(redacted.includes("***REDACTED***"), false, redacted);
+});
+
+Deno.test("gate-failure-rate line - passes through the secret redactor unchanged (Issue #4234)", () => {
+  gateRuns();
+  const line = formatGateFailureRateLine(100_000);
+
+  const redacted = redactSecrets(line);
+  assertEquals(redacted, line, line);
+  assertStringIncludes(
+    redacted,
+    "[gate-failure-rate] first_pass_blocks=claim-check:1,docs-sweep:1,pre-pr-verifier:1 " +
+      "run_failures=docs-sweep:1 recovered_runs=1 turns=6",
+  );
+  assertEquals(redacted.includes("***REDACTED***"), false, redacted);
 });

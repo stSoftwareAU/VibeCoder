@@ -62,6 +62,20 @@ export interface ConvergenceSplit {
 }
 
 /**
+ * The repo-relative path a finding names, as `git diff` spells it: backslashes
+ * become `/`, repeated slashes collapse, and a leading `./` is dropped. Null
+ * for an absolute path or one with a `..` segment, which the diff cannot
+ * place, so the finding stays blocking.
+ */
+function normalisedPath(file: string): string | null {
+  const p = file.trim().replace(/\\/g, "/").replace(/\/+/g, "/");
+  if (p === "" || p.startsWith("/") || /^[A-Za-z]:\//.test(p)) return null;
+  if (p.split("/").includes("..")) return null;
+  const relative = p.replace(/^(\.\/)+/, "");
+  return relative === "" ? null : relative;
+}
+
+/**
  * Whether a finding on a retry is advisory: its severity is not `critical` or
  * `high`, it names a real file (not a synthetic `(...)` one), it has a line,
  * and that file:line is not a line the change touches. Anything the diff
@@ -72,10 +86,12 @@ function isAdvisoryOnRetry(
   changed: { files: Map<string, number[]>; unparsed: number } | null,
 ): boolean {
   if (f.severity === "critical" || f.severity === "high") return false;
-  if (f.file.trim() === "" || f.file.startsWith("(")) return false;
+  if (f.file.trim() === "" || f.file.trim().startsWith("(")) return false;
   if (!Number.isInteger(f.line) || f.line <= 0) return false;
   if (changed === null || changed.unparsed > 0) return false;
-  const changedLines = changed.files.get(f.file);
+  const path = normalisedPath(f.file);
+  if (path === null) return false;
+  const changedLines = changed.files.get(path);
   return !(changedLines?.includes(f.line) ?? false);
 }
 

@@ -220,6 +220,61 @@ Deno.test("a file the diff does not touch is advisory on a retry", () => {
   assertEquals(split.blocking, []);
 });
 
+Deno.test("a path spelled with ./ or backslashes is placed as its git spelling", () => {
+  const dotSlash = finding({
+    file: "./worker/deno/lib/a.ts",
+    line: 11,
+    severity: "medium",
+  });
+  const backslash = finding({
+    file: "worker\\deno\\lib\\a.ts",
+    line: 11,
+    severity: "medium",
+  });
+  const unchangedDotSlash = finding({
+    file: "./worker/deno/lib/a.ts",
+    line: 50,
+    severity: "medium",
+  });
+  const split = splitFindingsForRetry({
+    findings: [dotSlash, backslash, unchangedDotSlash],
+    isRetry: true,
+    changed,
+  });
+  assertEquals(split.blocking, [dotSlash, backslash]);
+  assertEquals(split.advisory, [unchangedDotSlash]);
+});
+
+Deno.test("an absolute, drive-letter or .. path blocks on a retry, whatever its line", () => {
+  const absolute = finding({
+    file: "/abs/worker/deno/lib/a.ts",
+    line: 50,
+    severity: "medium",
+  });
+  const parent = finding({
+    file: "../x.ts",
+    line: 50,
+    severity: "medium",
+  });
+  const drive = finding({
+    file: "C:\\repo\\worker\\deno\\lib\\a.ts",
+    line: 50,
+    severity: "medium",
+  });
+  const inside = finding({
+    file: "worker/deno/../lib/other.ts",
+    line: 5,
+    severity: "medium",
+  });
+  const split = splitFindingsForRetry({
+    findings: [absolute, parent, drive, inside],
+    isRetry: true,
+    changed,
+  });
+  assertEquals(split.blocking, [absolute, parent, drive, inside]);
+  assertEquals(split.advisory, []);
+});
+
 Deno.test("applyConvergence returns the same object when nothing is demoted", () => {
   const result: PrePrVerifierResult = {
     status: "checked",

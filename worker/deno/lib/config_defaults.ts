@@ -637,6 +637,13 @@ export const OPERATIONAL_DEFAULTS = {
    * attempt. Per-repo override: `repoConfig[repo].maxAutoFixAttempts`.
    */
   maxAutoFixAttempts: 3,
+  /**
+   * Maximum in-run recovery turns for the completion summary gates (Issue
+   * #4234). The first block always earns a turn; a further turn is granted
+   * only while the blocking-finding count keeps going down, and never past
+   * this number. Read directly from here — there is no config-file key.
+   */
+  summaryGateRecoveryTurns: 3,
 } as const;
 
 /**

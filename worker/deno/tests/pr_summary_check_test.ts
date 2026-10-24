@@ -17,11 +17,17 @@ import {
   issueNumberFromSummaryPath,
   main,
   parseArgs,
+  repoRelativePath,
 } from "../lib/pr_summary_check_cli.ts";
 import {
   BRANCH_OUTCOMES_MARKER,
   prSummaryFactsPath,
 } from "../lib/pr_summary_facts.ts";
+import { OPERATIONAL_DEFAULTS } from "../lib/config_defaults.ts";
+import type {
+  PrePrVerifierInput,
+  PrePrVerifierResult,
+} from "../lib/pre_pr_verifier.ts";
 
 const ROOT = "/repo";
 const TEST_PATH = "worker/deno/tests/foo_test.ts";
@@ -116,13 +122,31 @@ async function run(
     issueNumber: extra.issueNumber ?? null,
     baseBranch: "main",
     issueBody: extra.issueBody ?? null,
+    issueTitle: null,
     issueLabels: extra.issueLabels ?? null,
     runGit: git.runGit,
     repoRoot: extra.repoRoot ?? ROOT,
   });
 }
 
-function deps(summary: string | Error, git = fakeGit()) {
+/** A model reply with no verdict in it: the claim check reads it as not checked. */
+const NO_VERDICT_REPLY = {
+  ok: true as const,
+  value: { output: "" },
+};
+
+/**
+ * CLI deps with fakes for every seam. The model fakes default to a reply that
+ * carries no verdict, so the default-on claim check never blocks on its own.
+ */
+function deps(
+  summary: string | Error,
+  git = fakeGit(),
+  model: {
+    askModel?: CliDeps["askModel"];
+    runVerifier?: CliDeps["runVerifier"];
+  } = {},
+) {
   const out: string[] = [];
   const err: string[] = [];
   const cliDeps: CliDeps = {
@@ -134,6 +158,10 @@ function deps(summary: string | Error, git = fakeGit()) {
     repoRoot: () => Promise.resolve({ ok: true as const, value: ROOT }),
     stdout: (l: string) => out.push(l),
     stderr: (l: string) => err.push(l),
+    cwd: () => ROOT,
+    askModel: model.askModel ?? (() => Promise.resolve(NO_VERDICT_REPLY)),
+    runVerifier: model.runVerifier ??
+      (() => Promise.reject(new Error("the verifier was not expected to run"))),
   };
   return { out, err, deps: cliDeps };
 }
@@ -262,8 +290,46 @@ Deno.test("parseArgs - accepts all flags and one summary file", () => {
     summaryFile: "s.md",
     baseBranch: "main",
     issueBodyFile: "i.md",
+    issueTitle: null,
     labels: "bug,x",
+    claimCheck: true,
+    verifier: false,
   });
+});
+
+Deno.test("parseArgs - the claim check is on by default and --no-claim-check turns it off (Issue #4234)", () => {
+  const on = parseArgs(["--base", "main", "s.md"]);
+  assert(on.ok);
+  assertEquals(on.value.claimCheck, true);
+  const explicit = parseArgs(["--base", "main", "--claim-check", "s.md"]);
+  assert(explicit.ok);
+  assertEquals(explicit.value.claimCheck, true);
+  const off = parseArgs(["--base", "main", "--no-claim-check", "s.md"]);
+  assert(off.ok);
+  assertEquals(off.value.claimCheck, false);
+  assert(
+    !parseArgs(["--base", "main", "--claim-check", "--no-claim-check", "s.md"])
+      .ok,
+  );
+});
+
+Deno.test("parseArgs - --verifier is opt-in and --issue-title takes a value (Issue #4234)", () => {
+  const plain = parseArgs(["--base", "main", "s.md"]);
+  assert(plain.ok);
+  assertEquals(plain.value.verifier, false);
+  const verified = parseArgs(["--base", "main", "--verifier", "s.md"]);
+  assert(verified.ok);
+  assertEquals(verified.value.verifier, true);
+  const titled = parseArgs([
+    "--base",
+    "main",
+    "--issue-title",
+    "Fix x",
+    "s.md",
+  ]);
+  assert(titled.ok);
+  assertEquals(titled.value.issueTitle, "Fix x");
+  assert(!parseArgs(["--base", "main", "s.md", "--issue-title"]).ok);
 });
 
 Deno.test("parseArgs - rejects missing base, missing or extra file, unknown flag, valueless flag", () => {
@@ -272,6 +338,137 @@ Deno.test("parseArgs - rejects missing base, missing or extra file, unknown flag
   assert(!parseArgs(["--base", "main", "a.md", "b.md"]).ok);
   assert(!parseArgs(["--base", "main", "--nope", "s.md"]).ok);
   assert(!parseArgs(["s.md", "--base"]).ok);
+});
+
+Deno.test("repoRelativePath - names the summary by its path under the repo root, or null outside it", () => {
+  assertEquals(repoRelativePath("s.md", "/repo", "/repo"), "s.md");
+  assertEquals(
+    repoRelativePath(
+      "../../docs/archive/pr-summaries/pr-summary-7.md",
+      "/repo",
+      "/repo/worker/deno",
+    ),
+    "docs/archive/pr-summaries/pr-summary-7.md",
+  );
+  assertEquals(
+    repoRelativePath("/repo/docs/x.md", "/repo", "/elsewhere"),
+    "docs/x.md",
+  );
+  assertEquals(
+    repoRelativePath("../../x.md", "/repo", "/repo/worker/deno"),
+    "x.md",
+  );
+  assertEquals(repoRelativePath("/other/x.md", "/repo", "/repo"), null);
+  assertEquals(repoRelativePath("../x.md", "/repo", "/repo"), null);
+});
+
+Deno.test("main - the claim check runs by default with the real model wiring's settings (Issue #4234)", async () => {
+  const calls: Array<Parameters<CliDeps["askModel"]>> = [];
+  const d = deps(GOOD_SUMMARY, fakeGit(), {
+    askModel: (options, retry) => {
+      calls.push([options, retry]);
+      return Promise.resolve(NO_VERDICT_REPLY);
+    },
+  });
+  assertEquals(
+    await main(["--base", "main", "docs/pr-summary-77.md"], d.deps),
+    0,
+  );
+  assertEquals(calls.length, 1);
+  const [options, retry] = calls[0]!;
+  assertEquals(options.phase, "issue");
+  assertEquals(options.issueNumber, 77);
+  assertEquals(options.cwd, ROOT);
+  assertEquals(retry, { maxRetries: OPERATIONAL_DEFAULTS.maxRateLimitRetries });
+  assertStringIncludes(options.prompt, "docs/pr-summary-77.md");
+  assertStringIncludes(
+    d.out.join("\n"),
+    "[NOT_CHECKED] Summary claim check (#3257)",
+  );
+});
+
+Deno.test("main - --no-claim-check never calls the model and reports the claim check not checked (Issue #4234)", async () => {
+  let asked = 0;
+  const d = deps(GOOD_SUMMARY, fakeGit(), {
+    askModel: () => {
+      asked++;
+      return Promise.resolve(NO_VERDICT_REPLY);
+    },
+  });
+  assertEquals(
+    await main(
+      ["--base", "main", "--no-claim-check", "docs/pr-summary-77.md"],
+      d.deps,
+    ),
+    0,
+  );
+  assertEquals(asked, 0);
+  const text = d.out.join("\n");
+  assertStringIncludes(text, "[NOT_CHECKED] Summary claim check (#3257)");
+  assertStringIncludes(text, "not a pass");
+});
+
+Deno.test("main - the verifier is opt-in and a verifier block exits 1 (Issue #4234)", async () => {
+  const runs: PrePrVerifierInput[] = [];
+  const blocking: PrePrVerifierResult = {
+    status: "checked",
+    review: {
+      summary: "",
+      findings: [{
+        file: "worker/deno/lib/foo.ts",
+        line: 3,
+        problem: "wrong",
+      }],
+      testChanges: "none",
+      testChangeNotes: [],
+      unrelatedIssues: [],
+      checklist: [],
+      closure: [],
+    },
+  };
+  const d = deps(GOOD_SUMMARY, fakeGit(), {
+    runVerifier: (input) => {
+      runs.push(input);
+      return Promise.resolve(blocking);
+    },
+  });
+  assertEquals(
+    await main([
+      "--base",
+      "main",
+      "--verifier",
+      "--no-claim-check",
+      "docs/pr-summary-77.md",
+    ], d.deps),
+    1,
+  );
+  assertEquals(runs.length, 1);
+  assertEquals(runs[0]!.issueNumber, 77);
+  assertEquals(runs[0]!.summaryPath, "docs/pr-summary-77.md");
+  assertStringIncludes(d.out.join("\n"), "[BLOCKED] Pre-PR verifier (#3395)");
+
+  const off = deps(GOOD_SUMMARY);
+  assertEquals(
+    await main(["--base", "main", "docs/pr-summary-77.md"], off.deps),
+    0,
+  );
+  assertStringIncludes(
+    off.out.join("\n"),
+    "[NOT_CHECKED] Pre-PR verifier (#3395)",
+  );
+});
+
+Deno.test("main - a summary outside the repo root, or with no issue number, is not checked by the model checks (Issue #4234)", async () => {
+  let asked = 0;
+  const d = deps(GOOD_SUMMARY, fakeGit(), {
+    askModel: () => {
+      asked++;
+      return Promise.resolve(NO_VERDICT_REPLY);
+    },
+  });
+  assertEquals(await main(["--base", "main", "s.md"], d.deps), 0);
+  assertEquals(asked, 0);
+  assertStringIncludes(d.out.join("\n"), "no issue number");
 });
 
 Deno.test("main - bad args and an unreadable summary exit 2", async () => {

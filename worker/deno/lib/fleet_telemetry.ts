@@ -666,7 +666,10 @@ export function recordIssuePhaseRun(run: IssuePhaseRun): void {
  * `Object.hasOwn` so an id such as `constructor` counts from zero rather than
  * from the inherited `Object.prototype` member.
  */
-export function ownGateCount(counts: Record<string, number>, key: string): number {
+export function ownGateCount(
+  counts: Record<string, number>,
+  key: string,
+): number {
   return Object.hasOwn(counts, key) ? (counts[key] ?? 0) : 0;
 }
 
@@ -907,6 +910,16 @@ export function getFleetTelemetry(
 }
 
 /**
+ * Whether any completion-gate event has been recorded in the window (Issue
+ * #4234). Gates the `gate_*` summary tokens, as the haiku tokens are gated.
+ */
+function hasGateEvents(s: FleetTelemetrySnapshot): boolean {
+  return s.gateRecoveredRuns > 0 || s.gateRecoveryTurns > 0 ||
+    Object.keys(s.gateFirstPassBlocks).length > 0 ||
+    Object.keys(s.gateRunFailures).length > 0;
+}
+
+/**
  * A per-gate counter map as `id:n,id:n` in id order, or `none` (Issue #4234).
  * Sorted so the same counters always render the same line.
  */
@@ -981,12 +994,18 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
     `issue_usd=${s.issuePhaseUsd.toFixed(4)}`,
     `issue_gate_first_attempt_passes=${s.issuePhaseFirstAttemptGatePasses}`,
     // Issue #4234: per-gate first-pass blocks and run-ending failures, with
-    // the recovery totals. No key contains TOKEN/SECRET/PASSWORD/KEY, and the
-    // gate ids are sanitised to `[a-z0-9-]`, so the redactor leaves them be.
-    `gate_first_pass_blocks=${gateCountList(s.gateFirstPassBlocks)}`,
-    `gate_run_failures=${gateCountList(s.gateRunFailures)}`,
-    `gate_recovered_runs=${s.gateRecoveredRuns}`,
-    `gate_recovery_turns=${s.gateRecoveryTurns}`,
+    // the recovery totals. Shown only once a gate event is recorded, so a
+    // fleet with no gate events keeps its summary line byte-identical. No key
+    // contains TOKEN/SECRET/PASSWORD/KEY, and the gate ids are sanitised to
+    // `[a-z0-9-]`, so the redactor leaves them be.
+    ...(hasGateEvents(s)
+      ? [
+        `gate_first_pass_blocks=${gateCountList(s.gateFirstPassBlocks)}`,
+        `gate_run_failures=${gateCountList(s.gateRunFailures)}`,
+        `gate_recovered_runs=${s.gateRecoveredRuns}`,
+        `gate_recovery_turns=${s.gateRecoveryTurns}`,
+      ]
+      : []),
     `issue_duration=${s.issuePhaseDurationSeconds}s`,
     // Issues #3403, #3404: shown only once a haiku run is recorded, so a
     // sonnet-only fleet's summary line is unchanged.

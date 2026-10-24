@@ -306,6 +306,7 @@ export async function runPrSummaryCi(
     issueNumber,
     baseBranch,
     issueBody: null,
+    issueTitle: null,
     issueLabels: null,
     runGit,
     repoRoot,

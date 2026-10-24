@@ -1037,10 +1037,14 @@ flowchart LR
   `gate_run_failures`. `gate_recovered_runs` counts the runs that recovered and
   `gate_recovery_turns` sums the recovery turns they spent. Gate ids are
   restricted to `[a-z0-9-]`, and any other id is recorded as `other`, so a
-  hostile id cannot inject a token into the line. An empty map reads `none`.
-  The same counters render as
+  hostile id cannot inject a token into the line. The four `gate_*` tokens
+  appear on the fleet-summary line only once a gate event has been recorded in
+  the window, so a host with no gate events keeps a summary line byte-identical
+  to before; once shown, an empty per-gate map reads `none`. The same counters
+  render as
   `[gate-failure-rate] first_pass_blocks=… run_failures=… recovered_runs=… turns=…`
-  from `formatGateFailureRateLine`, which nothing emits yet.
+  from `formatGateFailureRateLine`, which is unconditional and which nothing
+  emits yet.
 - **Windows.** These counters, like the rest of the `issue_*` set, are held in
   the in-memory telemetry window that `startFleetTelemetry` opens at the start
   of each worker run. The `gate_*` tokens on the log line, and the

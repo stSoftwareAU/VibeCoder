@@ -34,13 +34,17 @@ import {
   isPendingMergeCheck,
   UNSTATED_SCOPE_ITEM,
 } from "./degraded_delivery.ts";
+import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
 
 /**
- * How many in-run rounds an unmet-criteria block gets (Issue #4146): the
- * first recovery turn plus further rounds while each one meets more criteria
- * than the last. A round that makes no progress ends the run sooner.
+ * How many in-run rounds a completion summary-gate block gets (Issue #4146,
+ * generalised by Issue #4234). Every round of the bounded recovery loop in
+ * `gate_recovery_loop.ts` is capped here: the first recovery turn plus further
+ * turns while the blocking-finding count keeps falling, never past this number.
+ * The count is `OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns`.
  */
-export const MAX_UNMET_CRITERIA_ROUNDS = 3;
+export const MAX_UNMET_CRITERIA_ROUNDS =
+  OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns;
 
 /** Longest criterion text quoted back in the gate comment. */
 const MAX_QUOTED_LENGTH = 300;

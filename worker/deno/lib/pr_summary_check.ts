@@ -1,9 +1,14 @@
 /**
- * Local PR-summary gate check (Issue #3423).
+ * Local PR-summary gate check (Issue #3423, extended by Issue #4234).
  *
- * Runs the deterministic PR-summary gates the worker applies when it raises a
- * PR against a draft summary and the branch diff, so an agent can see every
- * block before the worker does. Pure apart from the injected git runner.
+ * Runs the PR-summary gates the worker applies when it raises a PR against a
+ * draft summary and the branch diff, so an agent can see every block before
+ * the worker does. Pure apart from the injected git runner, and the injected
+ * model-backed checks (the claim check and the pre-PR verifier), which the
+ * caller supplies only when it wants a model call made.
+ *
+ * Report names and issue references come from `summary_gate_registry.ts`, the
+ * same registry the drift test holds against the completion phase.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -28,6 +33,27 @@ import {
   applyBranchOutcomesFacts,
   resolveBranchOutcomesFacts,
 } from "./pr_summary_facts.ts";
+import {
+  type RemovedAssertionGateResult,
+  validateRemovedAssertions,
+} from "./removed_assertion_gate.ts";
+import { readRemovedAssertionInput } from "./removed_assertion_input.ts";
+import {
+  assessUnmetCriteria,
+  unmetCriteriaReason,
+} from "./unmet_criteria_gate.ts";
+import type { DegradedShortfall } from "./degraded_delivery.ts";
+import {
+  summaryClaimBlockReason,
+  summaryClaimCheckBlocked,
+  type SummaryClaimCheckResult,
+} from "./summary_claim_check.ts";
+import {
+  prePrVerifierBlocked,
+  prePrVerifierBlockReason,
+  type PrePrVerifierResult,
+} from "./pre_pr_verifier.ts";
+import { gateRef, PR_SUMMARY_GATES } from "./summary_gate_registry.ts";
 
 /** Outcome of one gate. A `not_checked` gate is not a pass. */
 export type GateStatus =
@@ -45,6 +71,17 @@ export interface GateReport {
   note?: string;
 }
 
+/**
+ * What a model-backed check is handed. `summaryPath` is the summary's
+ * repo-relative path, or `null` when the caller does not know it.
+ */
+export interface SummaryGateContext {
+  summaryPath: string | null;
+  summaryContent: string;
+  baseRef: string;
+  changedFiles: readonly string[];
+}
+
 /** Input to {@link runPrSummaryCheck}. */
 export interface PrSummaryCheckInput {
   summaryContent: string;
@@ -54,20 +91,56 @@ export interface PrSummaryCheckInput {
    * facts file.
    */
   issueNumber: number | null;
+  /**
+   * Repo-relative path of the summary, handed to the model-backed checks;
+   * `null` (the default) when unknown.
+   */
+  summaryPath?: string | null;
   baseBranch: string;
   /** The issue body, or `null` when none was supplied. */
   issueBody: string | null;
+  /**
+   * The issue title, or `null` when none was supplied. Only the removed-
+   * assertion gate reads it, and it accepts a `Required by:` quote from the
+   * body alone.
+   */
+  issueTitle: string | null;
   /** Comma-separated issue labels, or `null` when none were supplied. */
   issueLabels: string | null;
   runGit: GitRunner;
   /** Every git call runs here: pathspecs in summaries are root-relative. */
   repoRoot: string;
+  /** Receives the removed-assertion gate's read warnings; optional. */
+  logger?: { warn(message: string): void };
+  /**
+   * The summary claim check (model call). Absent → reported not checked,
+   * never a pass.
+   */
+  claimCheck?: (
+    ctx: SummaryGateContext,
+  ) => Promise<SummaryClaimCheckResult>;
+  /**
+   * The pre-PR verifier (model call, opt-in). Absent → reported not checked,
+   * never a pass.
+   */
+  verifier?: (ctx: SummaryGateContext) => Promise<PrePrVerifierResult>;
 }
+
+/** Note for a model-backed check that was not handed a runner. */
+const CLAIM_CHECK_NOT_RUN =
+  "not run: this check was given no model call (the worker runs it when it raises the PR)";
+/** Note for the opt-in verifier when no runner was handed in. */
+const VERIFIER_NOT_RUN =
+  "opt-in, not run: pass --verifier to run the pre-PR verifier here (the worker runs it when it raises the PR)";
+/** Note for a gate that needs a runner only the worker has. */
+const WORKER_ONLY_NOTE =
+  "needs the worker's test runner, so the local check cannot run it";
+/** Note for a gate that needs the issue body, which was not supplied. */
+const NO_ISSUE_BODY = "no --issue-body-file given";
 
 /** Map a validator verdict onto a report. */
 function fromVerdict(
-  gate: string,
-  issueRef: string,
+  id: string,
   v: { applicable: boolean; valid: boolean; problems: string[] },
 ): GateReport {
   const status: GateStatus = !v.applicable
@@ -75,12 +148,84 @@ function fromVerdict(
     : v.valid
     ? "passed"
     : "blocked";
-  return { gate, issueRef, status, problems: v.valid ? [] : v.problems };
+  return {
+    ...gateRef(id),
+    status,
+    problems: v.valid ? [] : v.problems,
+  };
 }
 
 /** A gate that could not run for want of an input. */
-function notChecked(gate: string, issueRef: string, note: string): GateReport {
-  return { gate, issueRef, status: "not_checked", problems: [], note };
+function notChecked(id: string, note: string): GateReport {
+  return { ...gateRef(id), status: "not_checked", problems: [], note };
+}
+
+/** The removed-assertion gate's verdict as a report. */
+function removedAssertionReport(v: RemovedAssertionGateResult): GateReport {
+  const ref = gateRef("removed-assertions");
+  if (!v.applicable) return { ...ref, status: "not_applicable", problems: [] };
+  if (!v.valid) return { ...ref, status: "blocked", problems: v.problems };
+  if (!v.testDiffKnown) {
+    return {
+      ...ref,
+      status: "not_checked",
+      problems: [],
+      note:
+        "the test-file diff could not be read, so only the Test Plan heading rule was checked",
+    };
+  }
+  return { ...ref, status: "passed", problems: [] };
+}
+
+/** The unmet-criteria gate's verdict as a report. */
+function unmetCriteriaReport(unmet: readonly DegradedShortfall[]): GateReport {
+  const ref = gateRef("unmet-criteria");
+  if (unmet.length === 0) return { ...ref, status: "passed", problems: [] };
+  return {
+    ...ref,
+    status: "blocked",
+    problems: [
+      unmetCriteriaReason(unmet),
+      ...unmet.map((s) => `${s.criterion} (${s.status})`),
+    ],
+  };
+}
+
+/** The summary claim check's verdict as a report (its blocking predicate). */
+function claimCheckReport(r: SummaryClaimCheckResult): GateReport {
+  const ref = gateRef("claim-check");
+  const note = r.notChecked.length > 0 ? r.notChecked.join("; ") : undefined;
+  if (summaryClaimCheckBlocked(r)) {
+    return {
+      ...ref,
+      status: "blocked",
+      problems: [summaryClaimBlockReason(r)],
+      note,
+    };
+  }
+  if (note !== undefined) {
+    return { ...ref, status: "not_checked", problems: [], note };
+  }
+  return { ...ref, status: "passed", problems: [] };
+}
+
+/** The pre-PR verifier's verdict as a report (its blocking predicate). */
+function verifierReport(r: PrePrVerifierResult): GateReport {
+  const ref = gateRef("pre-pr-verifier");
+  if (r.status === "not_checked") {
+    return { ...ref, status: "not_checked", problems: [], note: r.reason };
+  }
+  if (prePrVerifierBlocked(r)) {
+    return {
+      ...ref,
+      status: "blocked",
+      problems: [
+        prePrVerifierBlockReason(r.review),
+        ...r.review.findings.map((f) => `${f.file}:${f.line} — ${f.problem}`),
+      ],
+    };
+  }
+  return { ...ref, status: "passed", problems: [] };
 }
 
 /** Run every local PR-summary gate. Fails loud when git cannot be read. */
@@ -135,22 +280,16 @@ export async function runPrSummaryCheck(
 
   const scrubProblem = summaryScrubProblem(summaryContent);
   const reports: GateReport[] = [{
-    gate: "Prompt-scrubbed Markdown",
-    issueRef: "#3710",
+    ...gateRef("prompt-scrub"),
     status: scrubProblem === undefined ? "passed" : "blocked",
     problems: scrubProblem === undefined ? [] : [scrubProblem],
   }];
 
   reports.push(
     issueBody === null
-      ? notChecked(
-        "Acceptance-criteria closure",
-        "#518",
-        "no --issue-body-file given",
-      )
+      ? notChecked("acceptance-closure", NO_ISSUE_BODY)
       : fromVerdict(
-        "Acceptance-criteria closure",
-        "#518",
+        "acceptance-closure",
         validateAcceptanceClosure({
           issueBody,
           prSummaryContent: summaryContent,
@@ -160,14 +299,9 @@ export async function runPrSummaryCheck(
 
   reports.push(
     issueBody === null
-      ? notChecked(
-        "Independent two-axis review",
-        "#663",
-        "no --issue-body-file given",
-      )
+      ? notChecked("independent-review", NO_ISSUE_BODY)
       : fromVerdict(
-        "Independent two-axis review",
-        "#663",
+        "independent-review",
         validateIndependentReview({
           issueBody,
           prSummaryContent: summaryContent,
@@ -177,10 +311,9 @@ export async function runPrSummaryCheck(
 
   reports.push(
     issueLabels === null
-      ? notChecked("Reproduction status", "#521", "no --labels given")
+      ? notChecked("reproduction-status", "no --labels given")
       : fromVerdict(
-        "Reproduction status",
-        "#521",
+        "reproduction-status",
         validateReproductionStatus({
           issueLabels,
           prSummaryContent: summaryContent,
@@ -189,15 +322,13 @@ export async function runPrSummaryCheck(
   );
 
   reports.push(fromVerdict(
-    "Docs sweep",
-    "#3073",
+    "docs-sweep",
     validateDocsSweep({ changedFiles, prSummaryContent: summaryContent }),
   ));
 
   const placeholders = validateResultPlaceholders(summaryContent);
   reports.push({
-    gate: "Result placeholders",
-    issueRef: "#3124",
+    ...gateRef("result-placeholders"),
     status: placeholders.valid ? "passed" : "blocked",
     problems: placeholders.valid ? [] : [
       `left-over fill-in-later token(s): ${placeholders.tokens.join(", ")}`,
@@ -210,8 +341,7 @@ export async function runPrSummaryCheck(
     (args) => runGit(args, { cwd: repoRoot }),
   );
   const branchOutcomes = fromVerdict(
-    "Branch outcomes",
-    "#3147",
+    "branch-outcomes",
     validateBranchOutcomes({
       changedFiles,
       prSummaryContent: summaryContent,
@@ -224,11 +354,59 @@ export async function runPrSummaryCheck(
   }
   reports.push(branchOutcomes);
 
-  reports.push(notChecked(
-    "Summary claim check",
-    "#3257",
-    "needs a model call; the worker runs it when it raises the PR",
-  ));
+  // The removed-assertion gate needs the issue body: a `Required by:` quote
+  // is checked against it. Without one it is not checked, as the closure
+  // gate is, rather than blocking every quote it cannot verify.
+  if (issueBody === null) {
+    reports.push(notChecked("removed-assertions", NO_ISSUE_BODY));
+  } else {
+    const removedInput = await readRemovedAssertionInput({
+      runGit: (args) => runGit(args, { cwd: repoRoot }),
+      base: base.value,
+      changedFiles,
+      changedFilesKnown: true,
+      logger: input.logger,
+    });
+    reports.push(removedAssertionReport(validateRemovedAssertions({
+      changedFiles: [...changedFiles, ...removedInput.testFiles],
+      testDiff: removedInput.testDiff,
+      prSummaryContent: summaryContent,
+      issueTitle: input.issueTitle ?? "",
+      issueBody,
+    })));
+  }
+
+  const unmetCriteria = issueBody === null
+    ? null
+    : assessUnmetCriteria(issueBody, summaryContent);
+  reports.push(
+    unmetCriteria === null
+      ? notChecked("unmet-criteria", NO_ISSUE_BODY)
+      : unmetCriteriaReport(unmetCriteria),
+  );
+
+  const ctx: SummaryGateContext = {
+    summaryPath: input.summaryPath ?? null,
+    summaryContent,
+    baseRef: base.value,
+    changedFiles,
+  };
+  reports.push(
+    input.claimCheck === undefined
+      ? notChecked("claim-check", CLAIM_CHECK_NOT_RUN)
+      : claimCheckReport(await input.claimCheck(ctx)),
+  );
+  reports.push(
+    input.verifier === undefined
+      ? notChecked("pre-pr-verifier", VERIFIER_NOT_RUN)
+      : verifierReport(await input.verifier(ctx)),
+  );
+
+  for (const gate of PR_SUMMARY_GATES) {
+    if (gate.localCheck === "worker-only") {
+      reports.push(notChecked(gate.id, WORKER_ONLY_NOTE));
+    }
+  }
 
   return { ok: true, value: reports };
 }

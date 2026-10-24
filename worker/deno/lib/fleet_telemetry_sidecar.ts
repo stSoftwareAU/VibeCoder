@@ -27,9 +27,9 @@ import {
   type FleetTelemetryTotals,
   getFleetTelemetry,
   type IssuePhaseCounters,
+  ownGateCount,
   type PriorFleetTelemetryTotals,
   type PrOutcomeCounters,
-  ownGateCount,
   sanitiseGateId,
 } from "./fleet_telemetry.ts";
 import { getHostname } from "./worker_identity.ts";
