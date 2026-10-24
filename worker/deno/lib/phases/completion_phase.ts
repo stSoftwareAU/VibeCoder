@@ -1382,32 +1382,41 @@ export async function workOnIssueCompletion(
   // a turn records no new verdict, so a turn that never reached the gates (not
   // launched, skipped for want of runway, or cut short by the quality gate)
   // cannot spin it. A block the claim check alone raised instead defers to the
-  // one narrow claim correction turn below (Issue #3324).
+  // one narrow claim correction turn below (Issue #3324), after which this loop
+  // resumes if another gate still blocks.
+  //
+  // One loop, run before and after that correction turn, so both share the
+  // turn count and the new-verdict guard: the turns spent here bound the total.
   let recoveryTurns = 0;
   let verdictsAtTurnStart = 0;
-  while (
-    result.status === "failure" &&
-    (state.summaryRuleBlocks?.length ?? 0) > verdictsAtTurnStart &&
-    shouldRunRecoveryTurn(
-      blockingFindingCounts(state.summaryRuleBlocks ?? []),
-      OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns,
-    )
-  ) {
-    verdictsAtTurnStart = state.summaryRuleBlocks?.length ?? 0;
-    recoveryTurns++;
-    result = await recoverFromSummaryRuleBlock(
-      ctx,
-      state,
-      deps,
-      result,
-      () => runCompletionAttempt(ctx, state, deps),
-    );
-  }
+  const recoverWhileCountFalls = async (): Promise<void> => {
+    while (
+      result.status === "failure" &&
+      (state.summaryRuleBlocks?.length ?? 0) > verdictsAtTurnStart &&
+      shouldRunRecoveryTurn(
+        blockingFindingCounts(state.summaryRuleBlocks ?? []),
+        OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns,
+      )
+    ) {
+      verdictsAtTurnStart = state.summaryRuleBlocks?.length ?? 0;
+      recoveryTurns++;
+      result = await recoverFromSummaryRuleBlock(
+        ctx,
+        state,
+        deps,
+        result,
+        () => runCompletionAttempt(ctx, state, deps),
+      );
+    }
+  };
+  await recoverWhileCountFalls();
 
-  // Claim-sentence correction turn (Issue #3324): the recovery turn above
-  // has already been spent, and the completion attempt deferred a
-  // claim-check-only later block here rather than failing or finalising the
-  // PR immediately — see `shouldOfferClaimCorrection`.
+  // Claim-sentence correction turn (Issue #3324): the completion attempt
+  // deferred a claim-check-only later block here rather than failing or
+  // finalising the PR immediately — see `shouldOfferClaimCorrection`. The
+  // correction turn is narrow and unchanged. If the re-run still fails, the
+  // same bounded loop above resumes (Issue #4234) and draws on whatever turns
+  // and verdicts it has left.
   if (
     result.status === "failure" &&
     state.summaryClaimCorrection?.status === "pending"
@@ -1418,6 +1427,7 @@ export async function workOnIssueCompletion(
       deps,
       () => runCompletionAttempt(ctx, state, deps),
     );
+    if (result.status === "failure") await recoverWhileCountFalls();
   }
 
   // Issue #3756 — a `work-on` issue is auto-closed by its merged PR, with no
@@ -1467,9 +1477,7 @@ export async function workOnIssueCompletion(
       finalGates: recovered ? [] : (last.gates ?? []),
       turns: recoveryTurns,
       recovered,
-      firstAttempt: !ctx.issueLabels.some((l) =>
-        l === "failed-once" || l === "failed"
-      ),
+      firstAttempt: !hasFailedAttemptLabel(ctx),
     });
     deps.logger.info(formatGateFailureRateLine());
   }
@@ -1482,6 +1490,17 @@ export async function workOnIssueCompletion(
  * folded gate comment (Issue #4234). A section is one gate's own text.
  */
 const FOLDED_SECTION_SEPARATOR = "\n\n---\n\n";
+
+/**
+ * Whether the issue carries one of the operator's failed-attempt labels, the
+ * configured `failedOnceLabel` or `failedLabel` (Issue #4234). Operators can
+ * rename both, so the literal names are never compared here.
+ */
+function hasFailedAttemptLabel(ctx: IssueContext): boolean {
+  return ctx.issueLabels.some((l) =>
+    l === ctx.config.failedOnceLabel || l === ctx.config.failedLabel
+  );
+}
 
 /**
  * The findings the pre-PR verifier's next pass must answer (Issue #4234): the
@@ -3365,11 +3384,11 @@ async function completionBody(
     // answered one by one (see `splitFindingsForRetry` below).
     const previousFindings = previousPrePrVerifierFindings(ctx, state);
     // A retry is a pass after a recovery turn in this run, a pass on an issue
-    // labelled `failed-once` or `failed`, or a pass with earlier verifier
-    // findings (Issue #4234). Each operand alone makes the pass a retry.
+    // carrying a configured failed-attempt label, or a pass with earlier
+    // verifier findings (Issue #4234). Each operand alone makes the pass a retry.
     const isRetry = previousFindings.length > 0 ||
       (state.summaryRuleBlocks?.length ?? 0) > 0 ||
-      ctx.issueLabels.some((l) => l === "failed-once" || l === "failed");
+      hasFailedAttemptLabel(ctx);
     const verifierRun = await deps.claude.runPrePrVerifier({
       previousFindings,
       // The agent's reply to those findings, from the recovery turn (Issue #4234).
@@ -4378,13 +4397,17 @@ async function completionBody(
     // This gate is reached only when every earlier summary-rule gate has
     // passed, so the claim check and (Issue #3395) the pre-PR verifier are
     // the only verdicts that can block here; the verifier folds into this
-    // gate's block below. A later block of this same gate (the recovery turns
-    // already spent) gets one narrow claim correction turn
+    // gate's block below. A later block of this same gate, where the claim
+    // check alone blocks, gets one narrow claim correction turn
     // (`summary_claim_correction.ts`, Issue #3324) instead of failing the run
-    // immediately: the state is recorded as `pending` and no comment is
-    // posted yet, because the correction turn may yet clear the finding
-    // before anything reaches the thread. The re-run posts the comment via
-    // this same gate if the sentence survives.
+    // immediately. That deferral records no verdict: the state is recorded as
+    // `pending` and no comment is posted yet, because the correction turn may
+    // yet clear the finding before anything reaches the thread.
+    // `workOnIssueCompletion` runs the turn once the recovery loop has stopped,
+    // and if the re-run still fails it re-enters that same loop (Issue #4234),
+    // which shares the turns already spent and the new-verdict guard, so the
+    // two loops together stay within `summaryGateRecoveryTurns`. The re-run
+    // posts the comment via this same gate if the sentence survives.
     //
     // Issue #3865: manual findings get the same bounded turn, using indexed
     // sentence replacements written by the worker rather than full-file edits.

@@ -19,6 +19,10 @@ import type {
 } from "../../lib/coverage_carryover_gate.ts";
 import type { Mutant, MutationCheckResult } from "../../lib/mutation_gate.ts";
 import type { SummaryRuleRunVerdict } from "../../lib/summary_rule_gate_retry.ts";
+import {
+  CORRECTED_SUMMARY_CLOSE,
+  CORRECTED_SUMMARY_OPEN,
+} from "../../lib/summary_claim_correction.ts";
 import { AutoMergeResult } from "../../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../../types.ts";
 import { buildDefaultWorkerConfig } from "../../lib/config_defaults.ts";
@@ -140,6 +144,11 @@ Fixed the fault. Closes #${ISSUE}.
 - \`worker/deno/tests/completion_phase_summary_rule_retry_test.ts\`
 `;
 
+/** Whether a model prompt is the summary claim correction turn's (Issue #3324). */
+export function isClaimCorrectionPrompt(prompt: string): boolean {
+  return prompt.includes("This is one narrow correction turn");
+}
+
 export function stubClient(
   comments: string[],
   failCommentContaining?: string,
@@ -175,9 +184,23 @@ export interface Scenario {
   /**
    * Summary the recovery invocation writes; omitted, it changes nothing. An
    * array (Issue #4234) is consumed in order, one entry per recovery turn: turn
-   * N writes entry N, and a turn past the list writes nothing.
+   * N writes entry N, and a turn past the list writes nothing. Claim-correction
+   * turns are not recovery turns and do not consume an entry.
    */
   retryWrites?: string | readonly string[];
+  /**
+   * The corrected summary each claim-correction turn replies with (Issue #4234),
+   * in order. The harness returns it between the correction markers, and the
+   * worker writes it, as it does for a real turn. Omitted, or past the end of
+   * the list, the turn replies with `retryOutput` (or `done`) and changes nothing.
+   */
+  claimCorrections?: readonly string[];
+  /**
+   * The issue's failed-once and failed label names (Issue #4234), applied to
+   * the run's config in place of the defaults. Omitted, the defaults stand.
+   */
+  failedOnceLabel?: string;
+  failedLabel?: string;
   /**
    * Scripted pre-PR verifier results, one per completion pass (Issue #4234); the
    * last one repeats past the end. Omitted, the verifier is the default stub.
@@ -288,6 +311,7 @@ export async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let finalisePrCalls = 0;
   const finalisedBeforeTurn: number[] = [];
   let retryTurn = 0;
+  let correctionTurn = 0;
   let claimPasses = 0;
   const logs: Outcome["logs"] = [];
   const capture = (level: "info" | "warn" | "error") => (message: string) => {
@@ -297,6 +321,12 @@ export async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const config = buildDefaultWorkerConfig();
   // Never inherit the host's work directory — gate state is persisted under it.
   config.workDir = workDir;
+  if (scenario.failedOnceLabel !== undefined) {
+    config.failedOnceLabel = scenario.failedOnceLabel;
+  }
+  if (scenario.failedLabel !== undefined) {
+    config.failedLabel = scenario.failedLabel;
+  }
 
   const ctx: IssueContext = {
     repo: REPO,
@@ -410,6 +440,20 @@ export async function runCompletion(scenario: Scenario): Promise<Outcome> {
         claudeCalls++;
         claudePrompts.push(options.prompt);
         finalisedBeforeTurn.push(finalisePrCalls);
+        if (isClaimCorrectionPrompt(options.prompt)) {
+          // The worker writes the corrected summary from the reply itself.
+          const reply = scenario.claimCorrections?.[correctionTurn++];
+          return Promise.resolve({
+            ok: true as const,
+            value: {
+              exitCode: 0,
+              output: reply === undefined
+                ? scenario.retryOutput ?? "done"
+                : `${CORRECTED_SUMMARY_OPEN}\n${reply}\n${CORRECTED_SUMMARY_CLOSE}`,
+              timedOut: false,
+            },
+          });
+        }
         const turn = retryTurn++;
         if (scenario.retryInvocationFails) {
           return Promise.resolve({

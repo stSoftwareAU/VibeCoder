@@ -2716,7 +2716,8 @@ existing-PR branch finalises as `summary_incomplete` — except that when the
 claim check alone is still blocking on that second attempt, on summary or
 manual/prompt sentences, it first gets
 one claim correction turn (Issue #3324), and only a block that
-survives *that* turn finalises the PR. Either way the gate's
+survives *that* turn, once the in-run loop below has also stopped, finalises
+the PR. Either way the gate's
 remediation comment is posted, so the shortfall is on the issue thread rather
 than only in one host's log.
 
@@ -2876,8 +2877,11 @@ one item per finding, so the pre-PR verifier's several findings share one
 item. After each turn the gates run again over the changed tree. A further
 turn is granted only while the number of blocking findings (each gate's own
 problem count) strictly falls, up to `OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns`
-turns (3 by default, in `lib/config_defaults.ts`). Each turn's agent timeout is
-clamped to the run's remaining time, against the supervisor hard-cap ceiling in
+turns (3 by default, in `lib/config_defaults.ts`). The one exception is a later block
+the claim check alone raises (Issue #3324): it first gets the narrow summary-only
+claim correction turn, and the same loop then resumes if another gate still
+blocks, drawing on the turns and verdicts it has left. Each turn's agent timeout
+is clamped to the run's remaining time, against the supervisor hard-cap ceiling in
 `lib/run_hard_cap.ts`; a turn with less than 120 seconds of runway is skipped
 rather than started and cut off. When the count stops falling or the turns are
 spent, the block ends the run in the usual summary-rule failure (or
@@ -2894,14 +2898,20 @@ flowchart TD
     R --> F{"Blocked again?"}
     F -- "no" --> P
     F -- "yes, fewer blocking findings and turns left" --> T
-    F -- "yes, not fewer, or turns spent" --> S["Stop: failure, or summary_incomplete over a PR<br/>latest findings and why recovery stopped"]
+    F -- "yes, claim check alone, correction unused" --> C["One narrow claim correction turn<br/>(Issue #3324), not counted in the limit"]
+    C --> R
+    F -- "yes, otherwise: not fewer, or turns spent" --> S["Stop: failure, or summary_incomplete over a PR<br/>latest findings and why recovery stopped"]
 ```
 
 The claim check alone still blocking on summary or manual/prompt sentences,
 with every earlier summary gate having passed, gets one summary-only claim
-correction turn before the run ends (Issue #3324,
+correction turn (Issue #3324,
 [above](#-a-summary-that-describes-named-code-wrongly-blocks-the-pr-issue-3257)).
-Any other block the loop does not clear fails exactly as a block did before,
+That turn is offered once per run, is not one of the counted recovery turns, and
+runs once the recovery loop has stopped, so it is offered even when the loop's
+turns are spent. If the re-run still blocks, the bounded loop above resumes with
+the turns and verdicts it has left. Any other block the loop does not clear fails
+exactly as a block did before,
 with the comment already on the thread; on an existing-PR branch that PR is
 finalised as `summary_incomplete` (Issue #1140). The same verdict is never posted
 twice, so the thread records the shortfall rather than the number of attempts

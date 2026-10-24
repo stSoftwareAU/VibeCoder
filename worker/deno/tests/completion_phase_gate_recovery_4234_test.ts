@@ -28,9 +28,11 @@ import {
   resetFleetTelemetry,
 } from "../lib/fleet_telemetry.ts";
 import {
+  isClaimCorrectionPrompt,
   runCompletion,
   SUMMARY_WITH_BLOCK,
 } from "./support/completion_summary_harness.ts";
+import { OPERATIONAL_DEFAULTS } from "../lib/config_defaults.ts";
 
 /** The words of the pre-PR verifier's comment heading, as the prompt quotes them. */
 const VERIFIER_WORDS = "The pre-PR verifier found blocking problems";
@@ -822,6 +824,225 @@ Deno.test(
       ).length,
       1,
       "the refused post is logged once",
+    );
+  },
+);
+
+// -----------------------------------------------------------------------------
+// Failed-attempt labels come from the operator's config (Issue #4234 review).
+// -----------------------------------------------------------------------------
+
+Deno.test(
+  "retry - a renamed failed-once label marks a failing run as not a first attempt (Issue #4234)",
+  async () => {
+    resetFleetTelemetry();
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      labels: ["enhancement", "work-on", "tried-once"],
+      failedOnceLabel: "tried-once",
+      // High findings block the retry; the repeat on pass 2 keeps the count.
+      verifier: [checked(highFindings("H", 2)), checked(highFindings("H", 2))],
+    });
+
+    assertEquals(outcome.status, "failure");
+    const telemetry = getFleetTelemetry();
+    assertEquals(telemetry.gateRunFailures["pre-pr-verifier"], 1);
+    assertEquals(
+      telemetry.gateFirstAttemptFailures,
+      {},
+      "the configured label makes this a failed attempt",
+    );
+  },
+);
+
+Deno.test(
+  "retry - a renamed failed-once label makes the first pass a retry (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      labels: ["enhancement", "work-on", "tried-once"],
+      failedOnceLabel: "tried-once",
+      verifier: [checked([freshOnUnchangedLine("medium")])],
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+  },
+);
+
+Deno.test(
+  "retry - with failed-once renamed, the old literal is an ordinary label (Issue #4234)",
+  async () => {
+    resetFleetTelemetry();
+    await runCompletion({
+      summary: SUMMARY_CLEAN,
+      labels: ["enhancement", "work-on", "failed-once"],
+      failedOnceLabel: "tried-once",
+      verifier: [checked([F1, F2]), checked([F1, F2])],
+    });
+
+    assertEquals(
+      getFleetTelemetry().gateFirstAttemptFailures["pre-pr-verifier"],
+      1,
+      "the old literal no longer marks a failed attempt",
+    );
+  },
+);
+
+Deno.test(
+  "retry - the default failed label still marks a failing run as not a first attempt (Issue #4234)",
+  async () => {
+    resetFleetTelemetry();
+    await runCompletion({
+      summary: SUMMARY_CLEAN,
+      labels: ["enhancement", "work-on", "failed"],
+      // High findings block the retry; the repeat on pass 2 keeps the count.
+      verifier: [checked(highFindings("H", 2)), checked(highFindings("H", 2))],
+    });
+
+    const telemetry = getFleetTelemetry();
+    assertEquals(telemetry.gateRunFailures["pre-pr-verifier"], 1);
+    assertEquals(telemetry.gateFirstAttemptFailures, {});
+  },
+);
+
+// -----------------------------------------------------------------------------
+// Only the worker's own verifier comment is read back (Issue #4234 review).
+// The heading quoted mid-body by the worker's own comment is covered above.
+// -----------------------------------------------------------------------------
+
+Deno.test(
+  "retry - a verifier-shaped comment is read back only from the worker's own login (Issue #4234)",
+  async () => {
+    // Another user's comment, shaped exactly like the verifier's gate comment.
+    const other = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      issueComments: [{
+        author: "someone-else",
+        body: verifierSectionFor([F2]),
+      }],
+      verifier: [checked([freshOnUnchangedLine("medium")])],
+    });
+
+    assertEquals(
+      other.verifierInputs[0]!.previousFindings,
+      [],
+      "another user's section is not read back",
+    );
+    assertEquals(
+      other.status,
+      "failure",
+      "a fresh medium finding on a first attempt's first pass still blocks",
+    );
+    assertEquals(other.prCreateCalls, 0);
+
+    // The same comment from the worker's own login is read back.
+    const own = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      issueComments: [{ author: "testbot", body: verifierSectionFor([F2]) }],
+      verifier: [checked([freshOnUnchangedLine("medium")])],
+    });
+
+    assertEquals(
+      own.verifierInputs[0]!.previousFindings,
+      [findingToEarlierText(F2)],
+    );
+    assertEquals(own.status, "continue");
+    assertEquals(own.prCreateCalls, 1);
+  },
+);
+
+// -----------------------------------------------------------------------------
+// The claim correction turn does not end the bounded loop (Issue #4234 review).
+// A claim-check-only block after a verdict defers to the narrow correction
+// turn (Issue #3324); the loop then resumes if another gate still blocks.
+// -----------------------------------------------------------------------------
+
+/** The clean summary with the claim sentences in it, as a first recovery turn may leave it. */
+const SUMMARY_CLEAN_WITH_CLAIMS = [
+  SUMMARY_CLEAN.trimEnd(),
+  "",
+  ...CLAIM_SENTENCES,
+  "",
+].join("\n");
+
+/** `count` high-severity findings, so they block on a retry too. */
+function highFindings(prefix: string, count: number): ReviewFinding[] {
+  return findings(prefix, count).map((f) => ({
+    ...f,
+    severity: "high" as const,
+  }));
+}
+
+Deno.test(
+  "gate recovery - a verifier block after the claim correction turn gets another full recovery turn (Issue #4234)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      // Turn 1 fixes the verifier block but leaves the claim sentences in.
+      retryWrites: [SUMMARY_CLEAN_WITH_CLAIMS],
+      // Pass 2's claim check alone blocks; later passes find nothing.
+      claimSentences: [[], CLAIM_SENTENCES, []],
+      // The narrow correction turn removes the sentences.
+      claimCorrections: [SUMMARY_CLEAN],
+      // Pass 1 blocks on two findings; pass 2 is clean; pass 3 blocks on one.
+      verifier: [
+        checked(findings("A", 2)),
+        checked([]),
+        checked(highFindings("B", 1)),
+        checked([]),
+      ],
+    });
+
+    assertEquals(outcome.verifierInputs.length, 4, "four gate passes");
+    assertEquals(
+      outcome.claudePrompts.filter((p) => isClaimCorrectionPrompt(p)).length,
+      1,
+      "one claim correction turn",
+    );
+    assertEquals(
+      outcome.claudePrompts.filter((p) => !isClaimCorrectionPrompt(p)).length,
+      2,
+      "the verifier block after the correction earns a second full turn",
+    );
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+  },
+);
+
+Deno.test(
+  "gate recovery - recovery turns across both loops never exceed the summary-gate turn limit (Issue #4234)",
+  async () => {
+    const limit = OPERATIONAL_DEFAULTS.summaryGateRecoveryTurns;
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      retryWrites: [SUMMARY_CLEAN_WITH_CLAIMS],
+      claimSentences: [[], CLAIM_SENTENCES, []],
+      claimCorrections: [SUMMARY_CLEAN],
+      // Every pass falls by one finding, so only the turn limit can stop the loop.
+      verifier: [
+        checked(highFindings("A", 4)),
+        checked([]),
+        checked(highFindings("B", 3)),
+        checked(highFindings("C", 2)),
+        checked(highFindings("D", 1)),
+      ],
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(
+      outcome.claudePrompts.filter((p) => !isClaimCorrectionPrompt(p)).length,
+      limit,
+      "the full recovery turns, across both loops, are the limit",
+    );
+    assertEquals(
+      outcome.verifierInputs.length,
+      limit + 2,
+      "the scripted passes: the first, the claim-only pass, then one per turn",
+    );
+    assertStringIncludes(
+      outcome.reason ?? "",
+      `recovery stopped at the ${limit}-turn limit`,
     );
   },
 );
