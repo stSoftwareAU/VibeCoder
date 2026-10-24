@@ -30,7 +30,11 @@ import { probeClaudeTokenBudget } from "./claude_token_budget.ts";
 
 import { CodexBudgetAdapter } from "./codex_budget.ts";
 import { classifyProviderBilling } from "./provider_billing.ts";
-import { subscriptionStatusFromCodexSnapshot } from "./codex_quota.ts";
+import {
+  probeCodexSubscriptionQuota,
+  quotaCandidateFromCodexBudget,
+  subscriptionStatusFromCodexSnapshot,
+} from "./codex_quota.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { invalidateHealthCache } from "./health_check_cache.ts";
 import {
@@ -46,6 +50,7 @@ import {
 import {
   type ProviderSubscriptionStatus,
   ProviderSubscriptionStatusCache,
+  subscriptionStatusFromQuotaCandidate,
 } from "./provider_quota.ts";
 import type { RateLimitSignalData } from "./rate_limit_signal.ts";
 import {
@@ -180,11 +185,19 @@ async function readModeConfig(
 /** Status-resolver seam; tests never need real provider credentials/network. */
 export type AutomaticProviderStatusResolver = (
   providerId: string,
-  context: { workDir: string; env: EnvLookup; now: number },
+  context: {
+    workDir: string;
+    env: EnvLookup;
+    now: number;
+    probeCodex?: typeof probeCodexSubscriptionQuota;
+  },
 ) => ProviderSubscriptionStatus | Promise<ProviderSubscriptionStatus>;
 
 const statusCache = new ProviderSubscriptionStatusCache();
-const codexAdapters = new Map<string, CodexBudgetAdapter>();
+const codexAdapters = new Map<
+  string,
+  { adapter: CodexBudgetAdapter; cache: ProviderSubscriptionStatusCache }
+>();
 
 function unavailableStatus(
   provider: string,
@@ -255,6 +268,7 @@ async function claudeStatus(
 async function codexStatus(
   env: EnvLookup,
   now: number,
+  probe = probeCodexSubscriptionQuota,
 ): Promise<ProviderSubscriptionStatus> {
   const home = env("CODEX_HOME")?.trim();
   if (!home) {
@@ -267,15 +281,19 @@ async function codexStatus(
       "codex-home-missing",
     );
   }
-  return await statusCache.get("codex", home, async () => {
-    let adapter = codexAdapters.get(home);
-    if (!adapter) {
-      adapter = new CodexBudgetAdapter({
+  let entry = codexAdapters.get(home);
+  if (!entry) {
+    entry = {
+      adapter: new CodexBudgetAdapter({
         codexHome: home,
         env: () => undefined,
-      });
-      codexAdapters.set(home, adapter);
-    }
+      }),
+      cache: new ProviderSubscriptionStatusCache(),
+    };
+    codexAdapters.set(home, entry);
+  }
+  const { adapter, cache } = entry;
+  return await cache.get("codex", "active", async () => {
     const snapshot = await adapter.refresh();
     const status = subscriptionStatusFromCodexSnapshot("active", snapshot);
     if (snapshot.source === "auth-rejection") {
@@ -286,6 +304,17 @@ async function codexStatus(
         reason: "authentication-rejected",
       };
     }
+    if (snapshot.authMode === "chatgpt") {
+      const budget = await probe({ codexHome: home });
+      if (budget.known) {
+        return subscriptionStatusFromQuotaCandidate(
+          quotaCandidateFromCodexBudget("active", budget),
+          Date.now(),
+          { billingMode: "fixed-subscription", confidence: "authoritative" },
+        );
+      }
+    }
+    // A failed live read keeps the passive observation's original evidenceAt.
     return status;
   });
 }
@@ -322,7 +351,12 @@ function subscriptionAuthEvidence(
 /** Production provider → generic status adapter. */
 export async function resolveAutomaticProviderStatus(
   providerId: string,
-  context: { workDir: string; env: EnvLookup; now: number },
+  context: {
+    workDir: string;
+    env: EnvLookup;
+    now: number;
+    probeCodex?: typeof probeCodexSubscriptionQuota;
+  },
 ): Promise<ProviderSubscriptionStatus> {
   const outage = automaticProviderOutage(providerId, context.now);
   if (outage?.category === "authentication") {
@@ -350,7 +384,7 @@ export async function resolveAutomaticProviderStatus(
     case "claude":
       return await claudeStatus(context.env, context.now);
     case "codex":
-      return await codexStatus(context.env, context.now);
+      return await codexStatus(context.env, context.now, context.probeCodex);
     default:
       return unavailableStatus(
         providerId,

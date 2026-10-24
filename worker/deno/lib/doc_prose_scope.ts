@@ -23,6 +23,8 @@ export interface DocProseScope {
   contents: Map<string, string>;
   ranges: ProseRange[];
   notChecked: string[];
+  /** The `notChecked` entries caused by the file/section caps (a subset of `notChecked`). */
+  capOverflow: string[];
 }
 
 /** Parse head-side changed lines from a zero-context git diff. */
@@ -110,6 +112,7 @@ export async function collectDocProseScope(input: {
     contents: new Map(),
     ranges: [],
     notChecked: [],
+    capOverflow: [],
   };
   const changed = changedLines(input.diff ?? "");
   if (input.diff === null) {
@@ -129,9 +132,10 @@ export async function collectDocProseScope(input: {
   };
   const add = (range: ProseRange, content: string) => {
     if (!scope.contents.has(range.file) && scope.contents.size >= fileCap) {
-      scope.notChecked.push(
-        `${range.file}:${range.start}-${range.end}: over the ${fileCap}-file cap; not checked, never passed`,
-      );
+      const note =
+        `${range.file}:${range.start}-${range.end}: over the ${fileCap}-file cap; not checked, never passed`;
+      scope.notChecked.push(note);
+      scope.capOverflow.push(note);
       return;
     }
     if (
@@ -299,11 +303,11 @@ export async function collectDocProseScope(input: {
           lines.length
         : leafEnd;
       if (sections++ >= sectionCap) {
-        scope.notChecked.push(
-          `${file}:${
-            heading.index + 1
-          }-${end}: over the ${sectionCap}-section cap; not checked, never passed`,
-        );
+        const note = `${file}:${
+          heading.index + 1
+        }-${end}: over the ${sectionCap}-section cap; not checked, never passed`;
+        scope.notChecked.push(note);
+        scope.capOverflow.push(note);
         continue;
       }
       add({

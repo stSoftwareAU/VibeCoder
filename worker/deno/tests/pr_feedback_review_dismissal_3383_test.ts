@@ -14,7 +14,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   type PrFeedbackInput,
   type PrFeedbackProcessorDeps,
@@ -251,6 +256,7 @@ interface RunOptions {
   captured?: CapturedGh;
   feedbackVerifierFn?: PrFeedbackProcessorDeps["feedbackVerifierFn"];
   finaliseError?: string;
+  unpushedState?: number | "error" | "throw";
 }
 
 async function runScenario(options: RunOptions) {
@@ -335,6 +341,26 @@ async function runScenario(options: RunOptions) {
       workDir,
       workRoot: workDir,
       feedbackVerifierFn: options.feedbackVerifierFn,
+      describeUnpushedFn: async () => {
+        options.events.push("measure-unpushed");
+        if (options.unpushedState === "throw") {
+          throw new Error("remote probe unavailable");
+        }
+        return options.unpushedState === "error"
+          ? { ok: false, error: new Error("remote probe unavailable") }
+          : {
+            ok: true,
+            value: {
+              count: options.unpushedState ?? 1,
+              sha: "head",
+              source: "tracking-ref",
+            },
+          };
+      },
+      syncPrBodyFn: async () => {
+        options.events.push("sync-body");
+        return { ok: true, value: { status: "updated", issueNumber: 42 } };
+      },
       ...(options.verifyPushFn ? { verifyPushFn: options.verifyPushFn } : {}),
     };
 
@@ -1101,3 +1127,43 @@ Deno.test("review-fix verifier - a pre-flight failure cannot turn a rebuttal int
     true,
   );
 });
+
+for (const unpushedState of [0, 2, "error", "throw"] as const) {
+  Deno.test(`review-fix hold - body sync requires measured zero unpushed commits: ${unpushedState}`, async () => {
+    const events: string[] = [];
+    const { result, captured } = await runScenario({
+      input: makeInput(),
+      events,
+      unpushedState,
+      feedbackVerifierFn: (input, deps) => {
+        assertEquals(input.branchName, makeInput().branchName);
+        assertEquals(input.workerName, "");
+        assertEquals(typeof input.githubUser, "string");
+        assertEquals(typeof deps.runGitCommand, "function");
+        return Promise.resolve({
+          ok: false,
+          error: new Error("Still a real defect"),
+        });
+      },
+    });
+    assertEquals(
+      events.filter((e) => e === "sync-body").length,
+      unpushedState === 0 ? 1 : 0,
+    );
+    assertEquals(result.ok && result.value.processed, false);
+    assertEquals(result.ok && result.value.changesPushed, false);
+    assertEquals(
+      events.some((e) => e.startsWith("markCommentProcessed:")),
+      false,
+    );
+    const failures = events.filter((e) =>
+      e.startsWith("handlePrCommentFailure:")
+    );
+    assertEquals(failures.length, 1);
+    if (unpushedState === 0) {
+      assert(events.indexOf("sync-body") < events.indexOf(failures[0]!));
+    }
+    assert(captured.calls.some((args) => args.includes("standing-violation")));
+    assert(captured.calls.some((args) => args.includes("--disable-auto")));
+  });
+}

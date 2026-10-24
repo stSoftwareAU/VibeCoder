@@ -1,9 +1,11 @@
+import { isAutomaticProviderRoutingActive } from "../provider_auto_state.ts";
 import {
   AllocationAdmissionError,
   type IssueAllocationSelection,
 } from "../subscription_allocation_runtime.ts";
 import {
   effectiveRoleSelections,
+  resolveIssueOrchestration,
   resolveOrchestrationSettings,
 } from "../orchestration/role_config.ts";
 import { classifyRunFailure } from "../run_outcome_classifier.ts";
@@ -81,7 +83,11 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "../fleet_authors.ts";
 import { issueRunRoleTreatments } from "../issue_assignment.ts";
-import { agentProviderById, selectAgentProvider } from "../agent_provider.ts";
+import {
+  agentProviderById,
+  resolveInvocationAgentProvider,
+  selectAgentProvider,
+} from "../agent_provider.ts";
 import { buildPriorProgressNote } from "../handover_prompt_note.ts";
 import { ensureDraftContinuationPr } from "../draft_continuation_pr.ts";
 import {
@@ -783,14 +789,22 @@ async function executeClaudeBody(
       `Subscription allocation ${allocation.cohort} selected for ${repo}#${issueNumber}`,
     );
   }
-  const externalOrchestration = allocation?.external ??
-    ((config.repoConfig?.[repo]?.externalOrchestration ??
-      config.externalOrchestration) === true);
-  const effectiveOrchestrationSettings = allocation?.settings ??
+  const routing = resolveIssueOrchestration(
+    (config.repoConfig?.[repo]?.externalOrchestration ??
+      config.externalOrchestration) === true,
     resolveOrchestrationSettings(
       config.externalOrchestrationSettings ?? {},
       config.repoConfig?.[repo]?.externalOrchestrationSettings,
-    );
+    ),
+    selectAgentProvider(
+      resolveInvocationAgentProvider(undefined, config.repoConfig?.[repo]),
+    ).id,
+    isAutomaticProviderRoutingActive(),
+  );
+  const externalOrchestration = allocation?.external ??
+    routing.externalOrchestration;
+  const effectiveOrchestrationSettings = allocation?.settings ??
+    routing.effectiveOrchestrationSettings;
   const issueExecutorSplit = !externalOrchestration &&
     isIssueExecutorSplitEnabled(
       "issue",

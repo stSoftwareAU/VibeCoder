@@ -331,14 +331,19 @@ const ROLE_DEFAULTS: Readonly<
 /** The selections recorded and invoked for this issue, with provider-local inheritance. */
 export function effectiveRoleSelections(
   settings: ExternalOrchestrationSettings,
+  defaultProvider: RoleSelection["provider"] = "claude",
 ): Record<OrchestrationRole, RoleSelection> {
   // A role keeps its own default on its own provider; moved to another
   // provider it takes that provider's default for the role rather than none.
   const select = (role: OrchestrationRole): RoleSelection => {
     const override = settings[role];
-    const provider = (override?.provider ?? "claude") as RoleSelection[
-      "provider"
-    ];
+    // Existing model-only settings name Claude models; retain that explicit pin.
+    const provider = (override?.provider ??
+      (override?.model || override?.cliAdapter
+        ? "claude"
+        : defaultProvider)) as RoleSelection[
+        "provider"
+      ];
     const base = ROLE_DEFAULTS[provider]?.[role] ?? { provider };
     return { ...base, ...override, provider };
   };
@@ -346,5 +351,31 @@ export function effectiveRoleSelections(
     manager: select("manager"),
     executor: select("executor"),
     reviewer: select("reviewer"),
+  };
+}
+
+/** Bind automatic issue runs to the selected provider and its role models. */
+export function resolveIssueOrchestration(
+  enabled: boolean,
+  settings: ExternalOrchestrationSettings,
+  provider: string,
+  automatic: boolean,
+): {
+  externalOrchestration: boolean;
+  effectiveOrchestrationSettings: ExternalOrchestrationSettings;
+} {
+  return {
+    // Codex cannot consume Claude's native --agents definitions. The external
+    // orchestrator preserves the manager/executor/reviewer workflow on Codex.
+    externalOrchestration: enabled || (automatic && provider === "codex"),
+    effectiveOrchestrationSettings: automatic
+      ? {
+        ...settings,
+        ...effectiveRoleSelections(
+          settings,
+          provider === "codex" ? "codex" : "claude",
+        ),
+      }
+      : settings,
   };
 }
