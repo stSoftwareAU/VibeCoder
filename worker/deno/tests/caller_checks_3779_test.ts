@@ -20,8 +20,11 @@ import {
   parseDiffChangedLines,
   renderCallerCheckSection,
 } from "../lib/caller_checks.ts";
+import { scrubUntrustedText } from "../lib/prompt_delimiter.ts";
+import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 import { git, gitOk, setupGitRepoFixture } from "./support/git_repo_fixture.ts";
+import { syntheticGithubToken } from "./support/scrub_trigger_corpus.ts";
 
 // ---- definitionName ---------------------------------------------------------
 
@@ -603,6 +606,73 @@ Deno.test("callerGapFindings: unchanged and changed-and-tested verdicts are neve
       verdict: "changed and tested",
       note: "lib/caller_test.ts exercises it",
     }]),
+    [],
+  );
+});
+
+Deno.test("callerGapFindings: a copy of the once-scrubbed symbol matches its entry, and so does the raw copy", () => {
+  const state: CallerCheckState = {
+    expected: [{
+      symbol: "{{X}}",
+      definedAt: "lib/helper.ts:1",
+      caller: "lib/caller.ts:2",
+    }],
+    notes: [],
+  };
+  const fenced = scrubUntrustedText("{{X}}");
+  assertEquals(fenced, "｛｛X｝｝");
+  assertEquals(
+    callerGapFindings(state, [{
+      ...VERDICT,
+      symbol: fenced,
+      caller: "lib/caller.ts:2",
+    }]),
+    [],
+  );
+  assertEquals(
+    callerGapFindings(state, [{
+      ...VERDICT,
+      symbol: "{{X}}",
+      caller: "lib/caller.ts:2",
+    }]),
+    [],
+  );
+});
+
+Deno.test("callerGapFindings: two callers whose symbols scrub to the same placeholder do not match each other's copy", () => {
+  const left = syntheticGithubToken("A");
+  const right = syntheticGithubToken("B");
+  const state: CallerCheckState = {
+    expected: [
+      { symbol: left, definedAt: "lib/helper.ts:1", caller: "lib/caller.ts:2" },
+      {
+        symbol: right,
+        definedAt: "lib/helper.ts:1",
+        caller: "lib/caller.ts:2",
+      },
+    ],
+    notes: [],
+  };
+  const placeholder = scrubUntrustedText(left);
+  assertEquals(placeholder, REDACTION_PLACEHOLDER);
+  assertEquals(scrubUntrustedText(right), placeholder);
+
+  const echoed = callerGapFindings(state, [{
+    ...VERDICT,
+    symbol: placeholder,
+    caller: "lib/caller.ts:2",
+  }]);
+  assertEquals(echoed.length, 1);
+  assertStringIncludes(
+    echoed[0]!.problem,
+    "no verdict was reported for 2 of 2",
+  );
+
+  assertEquals(
+    callerGapFindings(state, [
+      { ...VERDICT, symbol: left, caller: "lib/caller.ts:2" },
+      { ...VERDICT, symbol: right, caller: "lib/caller.ts:2" },
+    ]),
     [],
   );
 });

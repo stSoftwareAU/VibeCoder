@@ -16,7 +16,10 @@
  */
 
 import { isTestFilePath } from "./security_fix_gate.ts";
-import { fenceUntrustedIssueText } from "./prompt_delimiter.ts";
+import {
+  fenceUntrustedIssueText,
+  scrubUntrustedText,
+} from "./prompt_delimiter.ts";
 import { gapText, inlineSafe } from "./review_checklists.ts";
 
 /** Callers listed for one changed function; the rest are counted in a note. */
@@ -414,6 +417,11 @@ export async function collectCallerChecks(
   return { ok: true, state: { expected, notes } };
 }
 
+/** Longest symbol the caller list shows; the match in callerGapFindings uses the same cap. */
+const LISTED_SYMBOL_CHARS = 200;
+/** Longest `path:line` the caller list shows; the match in callerGapFindings uses the same cap. */
+const LISTED_LOCATION_CHARS = 300;
+
 /**
  * The section the verifier brief carries: empty when there is no caller to
  * check and nothing was capped. The list is fenced as untrusted text.
@@ -430,9 +438,9 @@ export function renderCallerCheckSection(
   ];
   const body = [
     ...state.expected.map((e) =>
-      `- \`${inlineSafe(e.symbol, 200)}\` (defined at \`${
-        inlineSafe(e.definedAt, 300)
-      }\`): caller \`${inlineSafe(e.caller, 300)}\``
+      `- \`${inlineSafe(e.symbol, LISTED_SYMBOL_CHARS)}\` (defined at \`${
+        inlineSafe(e.definedAt, LISTED_LOCATION_CHARS)
+      }\`): caller \`${inlineSafe(e.caller, LISTED_LOCATION_CHARS)}\``
     ),
     ...state.notes.map((n) => `- Note: ${inlineSafe(n, 300)}`),
   ];
@@ -488,11 +496,29 @@ export function parseCallerVerdicts(value: unknown): CallerVerdict[] {
   });
 }
 
-/** Same symbol and caller, ignoring backticks, spacing, case and a leading "./". */
+/**
+ * Same symbol and caller, ignoring backticks, spacing, case and a leading "./".
+ * Applied to a verdict exactly as the reply wrote it, and to an entry either raw
+ * or as its once-scrubbed copy (see `listedKey`). Never apply
+ * `scrubUntrustedText` to a verdict: the scrub is not idempotent, so a second
+ * pass changes a copy that is already scrubbed.
+ */
 function callerKey(symbol: string, caller: string): string {
   const flat = (t: string) =>
     t.replace(/`/g, "").replace(/\s+/g, " ").trim().toLowerCase();
   return `${flat(symbol)}\u0000${flat(caller).replace(/^(?:\.\/)+/, "")}`;
+}
+
+/**
+ * The key of an entry as the fence shows it: the symbol and caller capped by
+ * `inlineSafe` and scrubbed once, which is the text the model copies. The caps
+ * are the ones `renderCallerCheckSection` uses.
+ */
+function listedKey(e: CallerExpectation): string {
+  return callerKey(
+    scrubUntrustedText(inlineSafe(e.symbol, LISTED_SYMBOL_CHARS)),
+    scrubUntrustedText(inlineSafe(e.caller, LISTED_LOCATION_CHARS)),
+  );
 }
 
 /** `path:line` split; line 0 when there is no usable line number. */
@@ -511,6 +537,12 @@ const MAX_GAPS_NAMED = 5;
  * Blocking findings decided by the code, not the model: one for every expected
  * caller the reply left without a verdict, and one for each `regressed` verdict.
  * "No verdict" is never read as a pass.
+ *
+ * The reply copies the symbol and caller from the fence, where each is scrubbed
+ * once. So an entry also matches a verdict carrying its once-scrubbed copy, but
+ * only when no other expected entry scrubs to the same key. Distinct secrets
+ * both become the redaction placeholder, and a copy of one must not be read as
+ * the other. The raw copy always matches.
  */
 export function callerGapFindings(
   state: CallerCheckState,
@@ -520,9 +552,23 @@ export function callerGapFindings(
   const reported = new Set(
     verdicts.map((v) => callerKey(v.symbol, v.caller)),
   );
-  const unreported = state.expected.filter((e) =>
-    !reported.has(callerKey(e.symbol, e.caller))
-  );
+  // One raw key and one scrubbed key per entry, each computed once.
+  const keys = state.expected.map((e) => ({
+    raw: callerKey(e.symbol, e.caller),
+    scrubbed: listedKey(e),
+  }));
+  const rawKeysByScrubbed = new Map<string, Set<string>>();
+  for (const { raw, scrubbed } of keys) {
+    const raws = rawKeysByScrubbed.get(scrubbed) ?? new Set<string>();
+    raws.add(raw);
+    rawKeysByScrubbed.set(scrubbed, raws);
+  }
+  const unreported = state.expected.filter((_, i) => {
+    const { raw, scrubbed } = keys[i]!;
+    if (reported.has(raw)) return false;
+    const unambiguous = rawKeysByScrubbed.get(scrubbed)?.size === 1;
+    return !(unambiguous && reported.has(scrubbed));
+  });
   if (unreported.length > 0) {
     const first = splitPathLine(unreported[0]!.definedAt);
     const named = unreported.slice(0, MAX_GAPS_NAMED).map((e) =>
