@@ -68,6 +68,8 @@ interface Scenario {
   /** Overrides a `gh` call; return `undefined` to take the default answer. */
   gh?: (args: string[]) => Promise<string> | undefined;
   createClientThrows?: boolean;
+  /** The parent's number; defaults to PARENT. */
+  parent?: number;
 }
 
 interface Recording {
@@ -231,7 +233,7 @@ async function runSplit(s: Scenario = {}): Promise<Run> {
   const config = buildDefaultWorkerConfig();
   const ctx: IssueContext = {
     repo: REPO,
-    issueNumber: PARENT,
+    issueNumber: s.parent ?? PARENT,
     issueTitle: "Big issue",
     issueBody: "The body of the big issue.",
     issueLabels: ["failed-once"],
@@ -384,6 +386,48 @@ Deno.test("repeat gate split: a Part of line for another issue does not satisfy 
   const edit = rec.edits.find((e) => e.issue === 101);
   assert(edit);
   assertStringIncludes(edit.body, `Part of #${PARENT}`);
+});
+
+/** A body with the other two acceptance sections, so only `Part of` is in question. */
+function bodyWithSections(partOfLine: string): string {
+  return [
+    partOfLine,
+    "",
+    "## Failing gate output",
+    "x",
+    "",
+    "## What the branch got done",
+    "y",
+  ].join("\n");
+}
+
+Deno.test("repeat gate split: Part of #123 does not satisfy parent #12; Part of #12. and #12, do", async () => {
+  const urls = [101, 102, 103, 104].map((n) =>
+    `https://github.com/org/repo/issues/${n}`
+  );
+  const { rec } = await runSplit({
+    parent: 12,
+    subIssueUrls: urls,
+    issues: {
+      101: { body: bodyWithSections("Part of #123") },
+      102: { body: bodyWithSections("Part of #12.") },
+      103: { body: bodyWithSections("Part of #12,") },
+      104: { body: bodyWithSections("Part of #12abc") },
+    },
+  });
+  assertEquals(
+    rec.edits.map((e) => e.issue),
+    [101, 104],
+    "only the sub-issues without a Part of #12 line are edited",
+  );
+  for (const issue of [101, 104]) {
+    const edit = rec.edits.find((e) => e.issue === issue);
+    assert(edit);
+    assert(
+      edit.body.split("\n").includes("Part of #12"),
+      `#${issue} gets a Part of #12 line appended`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -369,6 +369,27 @@ function buildSeedBlock(
 }
 
 /**
+ * `Part of #<n>` with the whole number captured and a word boundary after it,
+ * so `#123` never counts as `#12` (Issue #4130).
+ */
+const PART_OF_RE = /Part of #(\d+)(?!\w)/g;
+
+/**
+ * Whether `body` says `Part of #<parent>`. The captured digit run must equal
+ * the parent's number as written, so `Part of #123` does not satisfy parent 12,
+ * while `Part of #12.` and `Part of #12,` do. It is compared as text, not as a
+ * number, so `Part of #012` does not satisfy it either: the check is the same
+ * as the word-bounded literal it replaces.
+ */
+function hasPartOf(body: string, parentIssueNumber: number): boolean {
+  const wanted = String(parentIssueNumber);
+  for (const match of body.matchAll(PART_OF_RE)) {
+    if (match[1] === wanted) return true;
+  }
+  return false;
+}
+
+/**
  * The issue's body with only its missing acceptance parts appended, or
  * `undefined` when every part is already there (Issue #4130). Nothing else in
  * the body is ever rewritten.
@@ -379,7 +400,7 @@ function appendMissingSections(
   sections: SubIssueSections,
 ): string | undefined {
   const missing: string[] = [];
-  if (!new RegExp(`Part of #${parentIssueNumber}\\b`).test(body)) {
+  if (!hasPartOf(body, parentIssueNumber)) {
     missing.push(`Part of #${parentIssueNumber}`);
   }
   if (!GATE_HEADING_RE.test(body)) {
