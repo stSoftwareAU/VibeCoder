@@ -10,6 +10,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildMilestoneHealthCommandResult,
+  milestoneHealthCommand,
   runMilestoneHealth,
 } from "../commands/milestone_health.ts";
 import { clearDefaultBranchMemoryCache } from "../lib/shell_helpers.ts";
@@ -101,4 +102,55 @@ Deno.test("runMilestoneHealth - an empty healthy repo succeeds with the report (
   assertStringIncludes(result.message, "Repository: org/repo");
   assertStringIncludes(result.message, "No active milestones");
   assertEquals(result.data?.repos.length, 1);
+});
+
+Deno.test("runMilestoneHealth - no configured repos succeeds with an empty report (Issue #4106)", async () => {
+  const result = await runMilestoneHealth(
+    { repos: [] } as unknown as WorkerConfig,
+  );
+  assertEquals(result.success, true);
+  assertEquals(result.message, "No repositories configured");
+  assertEquals(result.data, { repos: [] });
+});
+
+Deno.test("runMilestoneHealth - a malformed gh response fails the command with its message (Issue #4106)", async () => {
+  const result = await executeWithGh((args) => {
+    const key = args.join(" ");
+    if (key.includes(".default_branch")) return Promise.resolve("main");
+    return Promise.resolve("not json");
+  });
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "repos/org/repo/milestones");
+  assertEquals(result.data, undefined);
+});
+
+Deno.test("runMilestoneHealth - the default-branch cache path is passed through (Issue #4106)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "milestone-health-cache-" });
+  clearDefaultBranchMemoryCache();
+  const cachePath = `${dir}/cache.json`;
+  try {
+    await runMilestoneHealth(
+      { repos: ["org/repo"] } as unknown as WorkerConfig,
+      {
+        ghCommandFn: (args) =>
+          Promise.resolve(
+            args.join(" ").includes(".default_branch") ? "main" : "[]",
+          ),
+        defaultBranchCachePath: cachePath,
+      },
+    );
+    assertStringIncludes(await Deno.readTextFile(cachePath), "org/repo");
+  } finally {
+    clearDefaultBranchMemoryCache();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("milestoneHealthCommand.execute - delegates to runMilestoneHealth (Issue #4106)", async () => {
+  const result = await milestoneHealthCommand.execute(
+    {},
+    { repos: [] } as unknown as WorkerConfig,
+  );
+  assertEquals(result.success, true);
+  assertEquals(result.message, "No repositories configured");
 });

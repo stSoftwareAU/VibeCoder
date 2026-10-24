@@ -108,6 +108,10 @@ Tests added in `worker/deno/tests/milestone_health_command_test.ts` (new file):
 - `buildMilestoneHealthCommandResult - a mixed report with one errored repo fails (Issue #4106)`
 - `runMilestoneHealth - a failed milestone list fails the command (Issue #4106)`
 - `runMilestoneHealth - an empty healthy repo succeeds with the report (Issue #4106)`
+- `runMilestoneHealth - no configured repos succeeds with an empty report (Issue #4106)`
+- `runMilestoneHealth - a malformed gh response fails the command with its message (Issue #4106)`
+- `runMilestoneHealth - the default-branch cache path is passed through (Issue #4106)`
+- `milestoneHealthCommand.execute - delegates to runMilestoneHealth (Issue #4106)`
 
 `runMilestoneHealth(config, deps)` is a new exported function in `worker/deno/commands/milestone_health.ts`. `execute` delegates to it, so a test can inject a fake gh and a throwaway default-branch cache path.
 
@@ -133,6 +137,10 @@ Mutation survivors from the gate, each now red (run with `--no-check` so a type 
 
 - `commands/milestone_health.ts:49` (`data: report` deleted on success): red is the clean-report command test, which now asserts `result.data`.
 - `commands/milestone_health.ts:80` (`return buildMilestoneHealthCommandResult(...)` replaced): red is the two `runMilestoneHealth` tests.
+- `commands/milestone_health.ts:66`, `:67`, `:68` (no-repos result `success`, `message`, `data`): red is `runMilestoneHealth - no configured repos succeeds with an empty report (Issue #4106)`, which asserts all three.
+- `commands/milestone_health.ts:75` (`defaultBranchCachePath` deleted): red is `runMilestoneHealth - the default-branch cache path is passed through (Issue #4106)`, which reads the cache file back from the injected path.
+- `commands/milestone_health.ts:79` (`success: false` swapped, or the return replaced with undefined): red is `runMilestoneHealth - a malformed gh response fails the command with its message (Issue #4106)`.
+- `commands/milestone_health.ts:94` (`execute` return replaced with undefined): red is `milestoneHealthCommand.execute - delegates to runMilestoneHealth (Issue #4106)`.
 - `lib/milestone_health.ts:463`, `:506`, `:528` (`repo` deleted from the milestone, closed and open error returns): red is the three "names the repo and keeps the thrown text" tests.
 - `lib/milestone_health.ts:466`, `:509`, `:530` (negated `e instanceof Error` ternary): red is the same three tests, which compare the exact text for an `Error` and for a thrown string.
 - `lib/milestone_health.ts:674` (`lines.push("")` deleted in the formatter error branch): red is the blank-line formatter test.
