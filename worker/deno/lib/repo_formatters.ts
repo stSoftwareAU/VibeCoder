@@ -24,12 +24,15 @@
  * the commits on no remote). A formatter that is missing or fails never fails
  * the run on its own: it is logged, and the gate that follows still runs and
  * reports the problem.
+ *
+ * The formatters run as the WORKER account, not the untrusted `agent` account
+ * (Issue #4113). A formatter writes the tree it formats, and the worktree is
+ * worker-owned, so `agent` could never write it: every fix silently failed.
+ * They get the same credential-free environment the pre-push gate's own format
+ * check already runs with ({@link runFormatterCommand}).
  */
 
-import {
-  createDefaultDeps,
-  type QualityGateDeps,
-} from "./quality_gate_phase.ts";
+import { type QualityGateDeps } from "./quality_gate_phase.ts";
 import {
   type GitCommandOptions,
   type GitCommandOutput,
@@ -37,7 +40,7 @@ import {
 } from "./git_timeout.ts";
 import { defaultLogger } from "./logger.ts";
 import type { Logger, Result } from "../types.ts";
-import { redactedTail } from "./redacted_text.ts";
+import { redactedHeadTail, redactedTail } from "./redacted_text.ts";
 import { appendRunIdTrailer, getRunId } from "./run_id.ts";
 import {
   listPushedFiles,
@@ -45,6 +48,7 @@ import {
   planFormatterFixes,
   type PrePushGit,
 } from "./pre_push_gate.ts";
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 
 export { outermostConfigDirs } from "./pre_push_gate.ts";
 
@@ -68,7 +72,7 @@ export interface FormatterRun {
   exitCode: number;
   /** True when tracked files differ after this formatter ran. */
   changed: boolean;
-  /** Redacted output tail; present only when exitCode !== 0. */
+  /** Redacted output head and tail; present only when exitCode !== 0. */
   excerpt?: string;
 }
 
@@ -84,6 +88,11 @@ export interface RepoFormattersResult {
 
 /** Injectable dependencies for {@link runRepoFormatters}. */
 export interface RepoFormatterDeps {
+  /**
+   * Runs one formatter. Production runs it as the worker account, not the
+   * untrusted `agent` account, because a formatter must write the worker-owned
+   * tree (Issue #4113). See {@link runFormatterCommand}.
+   */
   runCommand: QualityGateDeps["runCommand"];
   runGitCommand: (
     args: string[],
@@ -94,10 +103,54 @@ export interface RepoFormatterDeps {
   runId: () => string;
 }
 
-/** Real dependencies: the worker's own command runner, git and logger. */
+/**
+ * Run a repository formatter as the WORKER account, not the untrusted one
+ * (Issue #4113).
+ *
+ * A formatter writes the tree it formats. The `agent` account cannot write the
+ * worker-owned worktree, so the `sudo -u agent` route the repository's quality
+ * command uses made every `deno fmt` and `cargo fmt` fail to write, and
+ * nothing was ever fixed. So the formatters run here as the worker, with the
+ * same credential-free environment the pre-push gate already gives its own
+ * `deno fmt --check` and `cargo fmt --check` over the same files
+ * (`defaultPreFlightRunner`, `buildUntrustedCommandEnv`). No credential is in
+ * the environment and no sudo is involved, so this adds no exposure beyond that
+ * gate. The isolation of the repository's quality script and tests (Issues #571
+ * and #572) is unchanged: they still run through `createDefaultDeps`.
+ *
+ * Same contract as the runner it replaces: a missing binary or a spawn error
+ * resolves with exit 1 and the error text, so it is recorded as a failure.
+ */
+export const runFormatterCommand: RepoFormatterDeps["runCommand"] = async (
+  cmd,
+  options,
+) => {
+  try {
+    const proc = new Deno.Command(cmd[0]!, {
+      args: cmd.slice(1),
+      env: buildUntrustedCommandEnv({}),
+      clearEnv: true,
+      stdout: "piped",
+      stderr: "piped",
+      stdin: options?.stdin === "inherit" ? "inherit" : "null",
+      cwd: options?.cwd,
+    });
+    const result = await proc.output();
+    const stdout = new TextDecoder().decode(result.stdout);
+    const stderr = new TextDecoder().decode(result.stderr);
+    return { exitCode: result.code, output: stdout + stderr };
+  } catch (err) {
+    return { exitCode: 1, output: String(err) };
+  }
+};
+
+/**
+ * Real dependencies: the formatters run as the worker account
+ * ({@link runFormatterCommand}, Issue #4113), plus git and the logger.
+ */
 export function createRepoFormatterDeps(): RepoFormatterDeps {
   return {
-    runCommand: createDefaultDeps().runCommand,
+    runCommand: runFormatterCommand,
     runGitCommand,
     logger: defaultLogger,
     runId: () => getRunId(),
@@ -207,7 +260,11 @@ export async function runRepoFormatters(
         dir: step.dir,
         exitCode,
         changed,
-        ...(exitCode !== 0 ? { excerpt: redactedTail(output, 500) } : {}),
+        // The head carries the cause ("Permission denied"); the tail alone
+        // hid it behind `cargo fmt`'s usage text (Issue #4113).
+        ...(exitCode !== 0
+          ? { excerpt: redactedHeadTail(output, 400, 300) }
+          : {}),
       };
       runs.push(run);
 

@@ -398,3 +398,23 @@ Deno.test("repo formatters - stages only the files it formatted", async () => {
   ]);
   assertEquals(result.committed, true);
 });
+
+Deno.test("repo formatters - a failing formatter's log line and excerpt keep the head (the cause), not just the usage tail (Issue #4113)", async () => {
+  const output =
+    "Error writing files: failed to write to src/lib.rs: Permission denied (os error 13)\n" +
+    "x".repeat(3000) + "\n-v, --verbose  Print help";
+  const { deps, logger } = makeDeps(["Cargo.toml"], {
+    "cargo fmt --all": { exitCode: 1, output },
+  });
+  const result = await runRepoFormatters(REPO_PATH, ["src/lib.rs"], deps);
+
+  assertEquals(result.failures.length, 1);
+  const excerpt = result.failures[0]?.excerpt ?? "";
+  assertStringIncludes(excerpt, "Permission denied (os error 13)");
+  assertStringIncludes(excerpt, "Print help");
+
+  const warn = logger.warns.find((w) => w.includes("Formatter cargo fmt")) ??
+    "";
+  assertStringIncludes(warn, "Permission denied (os error 13)");
+  assertStringIncludes(warn, "Print help");
+});

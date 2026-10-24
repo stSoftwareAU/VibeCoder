@@ -125,7 +125,15 @@ repository's own formatters over the branch's changed code files and commits
 the result (`formatBeforeGate` in `worker/deno/lib/repo_formatters.ts`), so a
 formatting-only failure does not spend the agent's one remediation round. It
 never touches Markdown, and a formatter that fails is only logged: the gate
-still runs and reports. The completion phase does the same before its pre-push
+still runs and reports. The formatters run as the worker account rather than the
+untrusted `agent` account the quality command uses, because the worktree is
+owned by the worker and `agent` could never write a fix into it; they use the
+same allowlisted, credential-free environment (`buildUntrustedCommandEnv`) as
+the pre-push gate's own format checks on those files, so they add no exposure
+beyond that gate (Issue #4113). A failing formatter's log line and
+`FormatterRun.excerpt` carry the head and tail of its output (400 and 300
+characters) rather than only the last 500, because `cargo fmt` prints its usage
+text after the error. The completion phase does the same before its pre-push
 gate; see "Agent pre-push hook and the changed-files check" in
 [CONFIGURATION.md](CONFIGURATION.md).
 
