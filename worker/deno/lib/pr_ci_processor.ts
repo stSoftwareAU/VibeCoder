@@ -154,6 +154,7 @@ import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders } from "./repo_config.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
   formatPrFailureActionsExcerpt,
@@ -2005,7 +2006,7 @@ async function _processCiWithHeartbeat(
   const finaliseResult = await deps.git.commitAndPushPending(
     pushBranch,
     `Fix CI failure: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
-    { cwd: processorDeps.workDir },
+    { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
     false,
     preFlight,
     undefined,
@@ -2042,7 +2043,7 @@ async function _processCiWithHeartbeat(
       });
       const recoveryResult = await deps.git.recoverFromPushRejection(
         pushBranch,
-        { cwd: processorDeps.workDir },
+        { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
       );
       // Issue #211: keep the reason the recovery failed — it names the step
       // (fetch, merge conflict, rejected retry push, unconfirmed push)
@@ -2054,7 +2055,7 @@ async function _processCiWithHeartbeat(
         const retryFinalise = await deps.git.commitAndPushPending(
           pushBranch,
           `Fix CI failure: ${checkName}\n\nRetry after push recovery for PR #${prNumber} (Issue #1643).`,
-          { cwd: processorDeps.workDir },
+          { cwd: processorDeps.workDir, expectedAncestor: beforeSha },
           false,
           preFlight,
           undefined,
@@ -2100,15 +2101,25 @@ async function _processCiWithHeartbeat(
       { cwd: processorDeps.workDir },
     );
     if (movedResult.ok && movedResult.value) {
-      logger.info("Branch HEAD moved during Claude run", {
-        branchName: pushBranch,
-        beforeSha,
+      const extended = await classifyHeadExtension(beforeSha, {
+        cwd: processorDeps.workDir,
       });
-      hasChanges = true;
-      // A moved HEAD proves a commit exists locally. It proves nothing about
-      // the remote — which is the whole of Issue #579 — so this only
-      // re-opens the question, and the verification below answers it.
-      pushSucceeded = finalUnpushedAfterPush === 0;
+      if (extended.status === "unrelated") {
+        logger.info(
+          "Branch HEAD moved off the starting head during the run; not treating it as this pass's work",
+          { branchName: pushBranch, beforeSha, detail: extended.message },
+        );
+      } else {
+        logger.info("Branch HEAD moved during Claude run", {
+          branchName: pushBranch,
+          beforeSha,
+        });
+        hasChanges = true;
+        // A moved HEAD proves a commit exists locally. It proves nothing about
+        // the remote — which is the whole of Issue #579 — so this only
+        // re-opens the question, and the verification below answers it.
+        pushSucceeded = finalUnpushedAfterPush === 0;
+      }
     }
   }
 
