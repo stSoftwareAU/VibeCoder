@@ -492,6 +492,7 @@ async function runIdleFilerPastTarget(
   );
   const refusals =
     logs.filter((line) => line.includes("reason=past_run_target")).length;
+  if (maxConcurrentIssues === 2) console.error("DEBUG-TMP-ALL\n" + logs.map((l) => l.slice(0, 220)).join("\n"));
   return { filerCalls, claimCalls, refusals };
 }
 

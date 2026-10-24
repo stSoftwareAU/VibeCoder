@@ -60,6 +60,17 @@ function targetLines(log: string[]): string[] {
   return log.filter((l) => l.includes("run target has passed"));
 }
 
+/**
+ * Every line that reports a stopped pass, whichever mechanism stopped it.
+ * With a cursor set, a stop must log exactly one such line in all (Issue #4243).
+ */
+function stopLines(log: string[]): string[] {
+  return log.filter((l) =>
+    l.includes("Milestone sync stopped") ||
+    l.includes("Milestone sync pass incomplete")
+  );
+}
+
 interface FleetOptions {
   dir: string;
   nowMs: number;
@@ -71,12 +82,17 @@ interface FleetOptions {
   ghCalls: string[];
   /** Runs inside a sync, after it was started and before it completes. */
   onSync?: (clock: { ms: number }) => void;
+  /** The handler's deadline (#2215), for a budget stop. */
+  deadlineEpochMs?: number;
 }
 
 /** Deps over the given repositories and milestones, with an injected clock. */
 function fleetDeps(options: FleetOptions): MilestoneBranchSyncDeps {
   const clock = { ms: options.nowMs };
   return {
+    ...(options.deadlineEpochMs !== undefined
+      ? { deadlineEpochMs: options.deadlineEpochMs }
+      : {}),
     repos: Object.keys(options.milestones),
     ghCommandFn: (args: string[]): Promise<string> => {
       const key = args.join(" ");
@@ -149,6 +165,11 @@ Deno.test("syncMilestoneBranches - past the run target no repository is started:
       "the repository gate sits before the milestone listing, so no call is made",
     );
     assertEquals(targetLines(log).length, 1, log.join("\n"));
+    assertEquals(
+      stopLines(log).length,
+      1,
+      `with a cursor set, the stop logs one line in all: ${log.join("\n")}`,
+    );
     assert(
       targetLines(log)[0]!.includes("the milestones of owner/alpha"),
       "the one line names the first repository it refused",
@@ -207,6 +228,11 @@ Deno.test("syncMilestoneBranches - a sync already under way finishes when the ta
     }
     const lines = targetLines(log);
     assertEquals(lines.length, 1, log.join("\n"));
+    assertEquals(
+      stopLines(log).length,
+      1,
+      `with a cursor set, the stop logs one line in all: ${log.join("\n")}`,
+    );
     const notStarted = synced.length === 1 &&
       !lines[0]!.includes(`'${synced[0]!.split("|")[1]}'`);
     assert(
@@ -218,6 +244,54 @@ Deno.test("syncMilestoneBranches - a sync already under way finishes when the ta
       cursor?.repo,
       "owner/alpha",
       "the next pass resumes at this repository",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// Control for the suppression above: a #2215 budget stop, with a cursor set,
+// is not a target stop, so it keeps both its line and the pass-incomplete
+// line. The budget stop itself is covered by milestone_sync_budget_cursor_2215_test.ts.
+Deno.test("syncMilestoneBranches - a budget stop with a cursor still logs the pass-incomplete line, and no target line (Issue #4243 control, Issue #2215)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4243-budget-" });
+  try {
+    const synced: string[] = [];
+    const log: string[] = [];
+    const ghCalls: string[] = [];
+    // The target is an hour off, so only the handler budget can stop the pass.
+    const result = await withRunTarget(() =>
+      syncMilestoneBranches(fleetDeps({
+        dir,
+        nowMs: STARTED_MS,
+        deadlineEpochMs: STARTED_MS + 1000,
+        milestones: {
+          "owner/alpha": ["#1 alpha one"],
+        },
+        synced,
+        log,
+        ghCalls,
+      }))
+    );
+
+    assertEquals(synced.length, 0, synced.join(", "));
+    assertEquals(targetLines(log).length, 0, log.join("\n"));
+    assertEquals(
+      log.filter((l) => l.includes("Milestone sync stopped")).length,
+      1,
+      log.join("\n"),
+    );
+    assertEquals(
+      log.filter((l) => l.includes("Milestone sync pass incomplete")).length,
+      1,
+      log.join("\n"),
+    );
+    assertEquals(result.ok, true);
+    const cursor = await loadSyncCursor(milestoneSyncCursorPath(dir));
+    assertEquals(
+      cursor?.repo,
+      "owner/alpha",
+      "the next pass resumes at the repository the budget stopped",
     );
   } finally {
     await Deno.remove(dir, { recursive: true });

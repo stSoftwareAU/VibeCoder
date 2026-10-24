@@ -1543,13 +1543,14 @@ export async function syncMilestoneBranches(
       );
     }
   };
-  // Issue #2215: resume where the previous pass stopped for lack of budget.
+  // Issue #2215: resume where the previous pass stopped. Issue #4243: the stop
+  // may have been the run target's rather than the budget's.
   const cursor = deps.cursorPath ? await loadSyncCursor(deps.cursorPath) : null;
   const orderedRepos = rotateReposFrom(repos, cursor?.repo);
   if (cursor && orderedRepos[0] === cursor.repo && repos[0] !== cursor.repo) {
     log(
       `Milestone sync resumes from ${cursor.repo}, where the previous pass ` +
-        `stopped for lack of budget (Issue #2215)`,
+        `stopped, out of budget or past the run target (Issue #2215, #4243)`,
     );
   }
   const minMsPerMilestone = deps.minMsPerMilestoneSync ??
@@ -1558,6 +1559,9 @@ export async function syncMilestoneBranches(
   // Issue #4243: a run-target stop uses the same mechanism. It carries no
   // branch when it fires before the repository's milestones are read.
   let stoppedAt: { repo: string; milestoneBranch?: string } | undefined;
+  // Issue #4243: set when the stop is the run target's, which logs its own
+  // line; the cursor is still saved, but the #2215 line is not repeated.
+  let stoppedForTarget = false;
 
   for (const repo of orderedRepos) {
     // Issue #4243: nothing new starts once the run target has passed. This
@@ -1566,6 +1570,7 @@ export async function syncMilestoneBranches(
     // and milestones, so a sync already under way is never interrupted.
     if (pastRunTarget(now())) {
       stoppedAt = { repo };
+      stoppedForTarget = true;
       log(
         `Milestone sync stopped before the milestones of ${repo}: the run ` +
           `target has passed; no new sync attempt starts — resuming here ` +
@@ -1663,6 +1668,7 @@ export async function syncMilestoneBranches(
         // between milestones only, so the sync that ran last was never cut.
         if (pastRunTarget(now())) {
           stoppedAt = { repo, milestoneBranch: milestone.milestoneBranch };
+          stoppedForTarget = true;
           log(
             `Milestone sync stopped before '${milestone.milestoneBranch}' in ` +
               `${repo}: the run target has passed; no new sync attempt ` +
@@ -2565,11 +2571,16 @@ export async function syncMilestoneBranches(
         const unvisited = orderedRepos.length -
           orderedRepos.indexOf(stoppedAt.repo) - 1;
         await saveSyncCursor(deps.cursorPath, stoppedAt);
-        log(
-          `Milestone sync pass incomplete: stopped at ${stoppedAt.repo} with ` +
-            `${unvisited} repositor${unvisited === 1 ? "y" : "ies"} not ` +
-            `reached; the cursor resumes the next pass there (Issue #2215)`,
-        );
+        // Issue #4243: a target stop has already logged one line, which says
+        // the pass resumes there next cycle, so this #2215 line is skipped.
+        // The cursor is saved either way. A #2215 budget stop still logs it.
+        if (!stoppedForTarget) {
+          log(
+            `Milestone sync pass incomplete: stopped at ${stoppedAt.repo} with ` +
+              `${unvisited} repositor${unvisited === 1 ? "y" : "ies"} not ` +
+              `reached; the cursor resumes the next pass there (Issue #2215)`,
+          );
+        }
       } else if (cursor) {
         await clearSyncCursor(deps.cursorPath);
       }
