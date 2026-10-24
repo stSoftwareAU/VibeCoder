@@ -1,168 +1,168 @@
 {
-  "version": 1,
   "branchOutcomes": {
-    "noneAdded": false,
     "entries": [
       {
-        "path": "worker/deno/lib/issue_run_provider_agents.ts",
+        "flipWentRed": "flipped guard off, test went red",
         "line": 88,
         "outcome": "absent: a run that asks for no sub-agents is left unchanged",
+        "path": "worker/deno/lib/issue_run_provider_agents.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
-        "testName": "issue run provider - a run asking for no sub-agent switches is left unchanged (Issue #4109)",
-        "flipWentRed": "flipped guard off, test went red"
+        "testName": "issue run provider - a run asking for no sub-agent switches is left unchanged (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/issue_run_provider_agents.ts",
+        "flipWentRed": "forced to not-carrying, test went red",
         "line": 91,
         "outcome": "success: the provider carries --agents, so the run is left unchanged",
+        "path": "worker/deno/lib/issue_run_provider_agents.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
-        "testName": "issue run provider - a provider whose argv carries --agents is left unchanged even without Claude (Issue #4109)",
-        "flipWentRed": "forced to not-carrying, test went red"
+        "testName": "issue run provider - a provider whose argv carries --agents is left unchanged even without Claude (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/issue_run_provider_agents.ts",
+        "flipWentRed": "inverted condition, 8 tests went red",
         "line": 98,
         "outcome": "reroute: Claude is usable, so the non-Claude run is rerouted to Claude",
+        "path": "worker/deno/lib/issue_run_provider_agents.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
-        "testName": "issue run provider - a non-Claude provider with Claude enabled is rerouted to Claude (Issue #4109)",
-        "flipWentRed": "inverted condition, 8 tests went red"
+        "testName": "issue run provider - a non-Claude provider with Claude enabled is rerouted to Claude (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/issue_run_provider_agents.ts",
+        "flipWentRed": "inverted condition, 8 tests went red",
         "line": 98,
         "outcome": "strip: Claude is not usable, so the non-Claude run has its sub-agents stripped",
+        "path": "worker/deno/lib/issue_run_provider_agents.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
-        "testName": "issue run provider - a non-Claude provider with Claude not enabled has its sub-agents stripped (Issue #4109)",
-        "flipWentRed": "inverted condition, 8 tests went red"
+        "testName": "issue run provider - a non-Claude provider with Claude not enabled has its sub-agents stripped (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/issue_run_provider_agents.ts",
+        "flipWentRed": "removed the stamp check, test went red",
         "line": 65,
         "outcome": "fail-closed: the image stamp lacks Claude, so the run is stripped",
+        "path": "worker/deno/lib/issue_run_provider_agents.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
-        "testName": "issue run provider - Claude enabled but the image stamp lacks Claude strips the run (Issue #4109)",
-        "flipWentRed": "removed the stamp check, test went red"
+        "testName": "issue run provider - Claude enabled but the image stamp lacks Claude strips the run (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/issue_run_provider_agents.ts",
+        "flipWentRed": "forced to true, test went red",
         "line": 68,
         "outcome": "error/absent: Claude is not in the enabled set, so the run is stripped",
+        "path": "worker/deno/lib/issue_run_provider_agents.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
-        "testName": "issue run provider - Claude not enabled strips sub-agents with no image stamp (Issue #4109)",
-        "flipWentRed": "forced to true, test went red"
+        "testName": "issue run provider - Claude not enabled strips sub-agents with no image stamp (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/provider_feasibility.ts",
+        "flipWentRed": "ignored quiet, test went red",
         "line": 224,
         "outcome": "success: the quiet probe builds the argv without printing the provider's own warning",
+        "path": "worker/deno/lib/provider_feasibility.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
-        "testName": "issue run provider - planning probes the argv without printing the provider's own warning (Issue #4109)",
-        "flipWentRed": "ignored quiet, test went red"
+        "testName": "issue run provider - planning probes the argv without printing the provider's own warning (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/provider_feasibility.ts",
+        "flipWentRed": "removed the restore, test went red",
         "line": 244,
         "outcome": "success: console.warn is restored after the quiet probe",
+        "path": "worker/deno/lib/provider_feasibility.ts",
         "test": "worker/deno/tests/issue_run_provider_agents_test.ts",
-        "testName": "issue run provider - planning probes the argv without printing the provider's own warning (Issue #4109)",
-        "flipWentRed": "removed the restore, test went red"
+        "testName": "issue run provider - planning probes the argv without printing the provider's own warning (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/agent_provider.ts",
+        "flipWentRed": "swapped to the asserting resolver, test went red",
         "line": 1572,
         "outcome": "success: an uninstalled provider is not thrown at during planning",
+        "path": "worker/deno/lib/agent_provider.ts",
         "test": "worker/deno/tests/agent_provider_test.ts",
-        "testName": "agent provider - pre-spawn planning reads an uninstalled provider without the install assert (Issue #4109)",
-        "flipWentRed": "swapped to the asserting resolver, test went red"
+        "testName": "agent provider - pre-spawn planning reads an uninstalled provider without the install assert (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/phases/execute_phase.ts",
+        "flipWentRed": "always planned, test went red",
         "line": 835,
         "outcome": "absent: an external-orchestration run is not planned",
+        "path": "worker/deno/lib/phases/execute_phase.ts",
         "test": "worker/deno/tests/issue_4109_callsite_test.ts",
-        "testName": "execute_phase - an external-orchestration run is not planned, so nothing is rerouted (Issue #4109)",
-        "flipWentRed": "always planned, test went red"
+        "testName": "execute_phase - an external-orchestration run is not planned, so nothing is rerouted (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/phases/execute_phase.ts",
+        "flipWentRed": "planned the active provider instead, test went red",
         "line": 839,
         "outcome": "success: a non-external allocation plans the claude provider",
+        "path": "worker/deno/lib/phases/execute_phase.ts",
         "test": "worker/deno/tests/issue_4109_callsite_test.ts",
-        "testName": "execute_phase - a non-external allocation plans the claude provider (Issue #4109)",
-        "flipWentRed": "planned the active provider instead, test went red"
+        "testName": "execute_phase - a non-external allocation plans the claude provider (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/phases/execute_phase.ts",
+        "flipWentRed": "dropped the override, test went red",
         "line": 1241,
         "outcome": "reroute reaches the runner",
+        "path": "worker/deno/lib/phases/execute_phase.ts",
         "test": "worker/deno/tests/issue_4109_callsite_test.ts",
-        "testName": "execute_phase - a run asked for sub-agents on codex is rerouted to claude at the runner (Issue #4109)",
-        "flipWentRed": "dropped the override, test went red"
+        "testName": "execute_phase - a run asked for sub-agents on codex is rerouted to claude at the runner (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/phases/execute_phase.ts",
+        "flipWentRed": "dropped the planned provider, test went red",
         "line": 568,
         "outcome": "reroute reaches the recorded assignment (the runProvider fallback)",
+        "path": "worker/deno/lib/phases/execute_phase.ts",
         "test": "worker/deno/tests/issue_4109_callsite_test.ts",
-        "testName": "execute_phase - the rerouted provider is recorded on the run assignment (Issue #4109)",
-        "flipWentRed": "dropped the planned provider, test went red"
+        "testName": "execute_phase - the rerouted provider is recorded on the run assignment (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/phases/execute_phase.ts",
+        "flipWentRed": "dropped the planned provider, test went red",
         "line": 1303,
         "outcome": "reroute reaches the recorded assignment (the planned provider is passed)",
+        "path": "worker/deno/lib/phases/execute_phase.ts",
         "test": "worker/deno/tests/issue_4109_callsite_test.ts",
-        "testName": "execute_phase - the rerouted provider is recorded on the run assignment (Issue #4109)",
-        "flipWentRed": "dropped the planned provider, test went red"
+        "testName": "execute_phase - the rerouted provider is recorded on the run assignment (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/phases/execute_phase.ts",
+        "flipWentRed": "built agents from the requested switches, test went red",
         "line": 855,
         "outcome": "strip reaches the runner with no agents (agents are built from the plan's switches)",
+        "path": "worker/deno/lib/phases/execute_phase.ts",
         "test": "worker/deno/tests/issue_4109_callsite_test.ts",
-        "testName": "execute_phase - with claude not enabled the run starts on codex without sub-agents (Issue #4109)",
-        "flipWentRed": "built agents from the requested switches, test went red"
+        "testName": "execute_phase - with claude not enabled the run starts on codex without sub-agents (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "flipWentRed": "always planned, test went red",
         "line": 1305,
         "outcome": "absent: an external-orchestration run is not planned",
+        "path": "worker/deno/lib/execute_claude_phase.ts",
         "test": "worker/deno/tests/external_orchestration_3642_phase_test.ts",
-        "testName": "external orchestration - the switch on builds no --agents even with the split and reviewers on (Issue #3642)",
-        "flipWentRed": "always planned, test went red"
+        "testName": "external orchestration - the switch on builds no --agents even with the split and reviewers on (Issue #3642)"
       },
       {
-        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "flipWentRed": "fell back to the invocation provider, all four went red",
         "line": 1327,
         "outcome": "reroute reaches the RTK sink",
+        "path": "worker/deno/lib/execute_claude_phase.ts",
         "test": "worker/deno/tests/issue_4109_callsite_test.ts",
-        "testName": "execute_claude_phase - the rtk sink receives the rerouted provider (Issue #4109)",
-        "flipWentRed": "fell back to the invocation provider, all four went red"
+        "testName": "execute_claude_phase - the rtk sink receives the rerouted provider (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "flipWentRed": "fell back to the invocation provider, all four went red",
         "line": 1327,
         "outcome": "reroute reaches the CodeGraph sink",
+        "path": "worker/deno/lib/execute_claude_phase.ts",
         "test": "worker/deno/tests/issue_4109_callsite_test.ts",
-        "testName": "execute_claude_phase - the codegraph sink receives the rerouted provider (Issue #4109)",
-        "flipWentRed": "fell back to the invocation provider, all four went red"
+        "testName": "execute_claude_phase - the codegraph sink receives the rerouted provider (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "flipWentRed": "fell back to the invocation provider, all four went red",
         "line": 1327,
         "outcome": "reroute reaches the graft sink",
+        "path": "worker/deno/lib/execute_claude_phase.ts",
         "test": "worker/deno/tests/issue_4109_callsite_test.ts",
-        "testName": "execute_claude_phase - the graft sink receives the rerouted provider (Issue #4109)",
-        "flipWentRed": "fell back to the invocation provider, all four went red"
+        "testName": "execute_claude_phase - the graft sink receives the rerouted provider (Issue #4109)"
       },
       {
-        "path": "worker/deno/lib/execute_claude_phase.ts",
+        "flipWentRed": "fell back to the invocation provider, all four went red",
         "line": 1327,
         "outcome": "reroute reaches the runner",
+        "path": "worker/deno/lib/execute_claude_phase.ts",
         "test": "worker/deno/tests/issue_4109_callsite_test.ts",
-        "testName": "execute_claude_phase - the runner receives the rerouted provider (Issue #4109)",
-        "flipWentRed": "fell back to the invocation provider, all four went red"
+        "testName": "execute_claude_phase - the runner receives the rerouted provider (Issue #4109)"
       }
-    ]
-  }
+    ],
+    "noneAdded": false
+  },
+  "version": 1
 }
