@@ -411,6 +411,41 @@ Deno.test("a facts-pointer header followed directly by a non-outcome bullet is r
   }
 });
 
+const BULLETED_FACTS_POINTER =
+  "- **Branch outcomes:** recorded in `docs/archive/pr-summaries/pr-summary-4051.facts.json`";
+
+Deno.test("a bulleted facts-pointer header followed directly by a sibling non-outcome bullet is refused", () => {
+  const owned =
+    `${BRANCH_OUTCOMES_MARKER}\nBranch outcomes: none added\n${BRANCH_OUTCOMES_END_MARKER}\n`;
+  const rendered = "Branch outcomes: none added";
+  assertThrows(
+    () =>
+      applyBranchOutcomesFacts(
+        owned +
+          `\n${BULLETED_FACTS_POINTER}\n- A reviewer finding still needs investigation.\n`,
+        rendered,
+      ),
+    Error,
+    "unowned evidence",
+  );
+});
+
+Deno.test("a bulleted facts-pointer header followed directly by a sibling admission is refused", () => {
+  const owned =
+    `${BRANCH_OUTCOMES_MARKER}\nBranch outcomes: none added\n${BRANCH_OUTCOMES_END_MARKER}\n`;
+  const rendered = "Branch outcomes: none added";
+  assertThrows(
+    () =>
+      applyBranchOutcomesFacts(
+        owned +
+          `\n${BULLETED_FACTS_POINTER}\n- lib/a.ts:1 — outcome — no test reaches it\n`,
+        rendered,
+      ),
+    Error,
+    "admits no test reaches",
+  );
+});
+
 Deno.test("inline unresolved evidence after a facts pointer is refused", () => {
   const owned =
     `${BRANCH_OUTCOMES_MARKER}\nBranch outcomes: none added\n${BRANCH_OUTCOMES_END_MARKER}\n`;

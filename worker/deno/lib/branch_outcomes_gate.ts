@@ -540,7 +540,12 @@ function collectEntries(
   entryLines: number[][];
   bodyExtra: string;
   bodyExtraLines: number[];
-  /** True when a list item was collected before any intervening prose. */
+  /**
+   * True when a list sits directly under the header, before any prose: an
+   * entry collected in this call, or a sibling bullet that ends the scan
+   * (`indent <= headerIndent`) before any entry is collected. A list-item
+   * facts pointer stops on that sibling, and the sibling is still its list.
+   */
   listDirectlyUnder: boolean;
   nextIndex: number;
 } {
@@ -579,7 +584,13 @@ function collectEntries(
 
     const indent = leadingIndent(line);
     if (LIST_MARKER_RE.test(line)) {
-      if (indent <= headerIndent) break;
+      if (indent <= headerIndent) {
+        // A sibling bullet ends the scan before any entry is collected. It
+        // is still a list directly under the header, so a facts-file pointer
+        // must not skip past it and drop the bullet from the scan region.
+        if (!sawProseBeforeList) listDirectlyUnder = true;
+        break;
+      }
       // No MAX_ENTRIES cap here: parseBranchOutcomes' copy loop always
       // trims the merged result to MAX_ENTRIES regardless of how many
       // entries this call collects, so a cap here is never independently
