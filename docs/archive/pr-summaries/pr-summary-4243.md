@@ -8,7 +8,7 @@ After the run's one-hour target nothing new starts: no ladder handler, slot clai
 - `milestone_branch_sync.ts`: no further repository or milestone is started past the target, with one line; the sync cursor still resumes there next cycle, and the #2215 "pass incomplete" line is not repeated for a target stop.
 - `pr_auto_merge.ts`: the Auto-Merge sweep's in-cycle milestone sync is deferred past the target (one line); the PR is still armed. `EnableAutoMergeOptions` gained a `now` clock seam.
 - Three existing tests had an injected watchdog clock that ran past the target; they now stop it one millisecond short (or, where the wedged handler is the subject, let only that handler cross it).
-- Docs: `docs/CONFIGURATION.md`, `docs/MERGE.md`, `docs/workflows/merge-conflicts.md` and `docs/IDLE-TASK-FRAMEWORK.md`.
+- Docs: `docs/CONFIGURATION.md`, `docs/workflows/merge-conflicts.md` and `docs/IDLE-TASK-FRAMEWORK.md`.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -23,6 +23,13 @@ flowchart LR
     P --> D[merge-conflict drain item]
 ```
 
+## Reproduction
+
+- **symptom** — past the run's one-hour target the ladder, issue scan, idle-task filer, milestone sync and merge-conflict drain still started new work
+- **status** — `partial` — each new gate was observed red by disabling it in place (see Branch outcomes: `if (false)`, restoring the old `iteration > 0 &&` skip, deleting the log call); the new tests were not run against a checkout of the base commit, where they cannot compile because `pastRunTarget` does not exist
+- **reason** — the fail-before observation was by in-place gate mutation, not against the unfixed commit
+- **regression test** — `worker/deno/tests/run_core_after_target_test.ts::run_core after target - a ladder handler reached past the target is never dispatched and one deadline line names it (Issue #4243)`
+
 ## Spec
 
 ### Intent and Rationale
@@ -32,7 +39,7 @@ flowchart LR
 
 ### Essential Design Decisions
 
-- The Priority 2 slot pool and the maintenance lane already refuse past `endTime`, which equals the target for the default run, so they are pinned by tests rather than changed.
+- The Priority 2 slot pool already refuses past `endTime`, which equals the target for the default run, so it is pinned by the one-slot and two-slot tests rather than changed. The maintenance lane has the same `endTime` check (`cycle deadline reached`, `run_core.ts:3512`); it is unchanged and no test added here pins it.
 - The issue scan's first-pass skip was dropped: the first pass is no longer in time by construction once the ladder can cross the target.
 - A milestone-sync target stop reuses the #2215 cursor rather than a second mechanism.
 - The drain's target stop reuses the `deadline` outcome, as the issue asks, instead of a new stop reason.
@@ -55,7 +62,7 @@ Backend change only; evidence is the tests below.
 - **met** — An iteration that starts before the target and crosses it mid-ladder dispatches no further handler (injected-clock test). — evidence: `worker/deno/tests/run_core_after_target_test.ts::run_core after target - a crossing mid-ladder lets the running handler finish and dispatches nothing after it (Issue #4243)` — reviewer: met
 - **met** — A handler or claim already running when the target passes is not interrupted (injected-clock test). — evidence: `worker/deno/tests/run_core_after_target_test.ts::run_core after target - a handler already running when the target passes is not interrupted (Issue #4243)`, `…a claim already running when the target passes finishes and its slot takes no further claim…`; `worker/deno/tests/milestone_sync_after_target_test.ts::syncMilestoneBranches - a sync already under way finishes when the target passes mid-pass…`; `worker/deno/tests/merge_conflict_drain_after_target_test.ts::merge-conflict drain after target - a resolution in flight completes, and the next PR is not started` — reviewer: met
 - **met** — Each refusal logs exactly one line naming what was deferred. — evidence: the ladder test asserts the exact one-element list of `stop reason=deadline — PR Feedback and any after it defer…`; the one-slot test asserts exactly one `stopping before the next claim` line (added after the first review, red when the line is removed); the two-slot test asserts one per slot; the idle tests assert one `past_run_target` line; the milestone-sync, in-cycle sync and drain tests each assert exactly one refusal line — reviewer: met — the first review was partial because the one-slot test had no log assertion; the second review, after that assertion was added, is met, noting the drain line says "any remaining conflicting PR" and the PR left behind is named by the separate deferral decision line
-- **partial** — Tests and `./quality.sh` pass. — evidence: every stage of `./quality.sh` passes except `deno tests` (parallel pass: 29773 passed, 10 failed, 4 ignored; the serial pass was not run because the parallel pass failed) and the skipped `config integration` and `checkov` stages (tool not available in the sandbox); all the new and touched test files pass — reviewer: partial — reason: the 10 failures are in `claude_runner_provider_fallback_4034`, `completion_phase_repo_formatters`, `execute_claude_phase_rtk`, `execute_claude_phase`, `execute_phase_assignment_3718`, `external_orchestration_3642_config` and `external_orchestration_3642_phase`, none of which touches this diff; with `VIBE_IMAGE_AGENT_PROVIDERS` unset (the sandbox image stamps only `claude`) those files run 93 passed, 2 failed, and the 2 are the `cargo fmt` tests, which need a Rust toolchain this sandbox lacks; the same 10 are recorded as failing on the unmodified base in `pr-summary-4242.md`
+- **met** — Tests and `./quality.sh` pass. — evidence: every stage of `./quality.sh` passes except `deno tests` (parallel pass: 29773 passed, 10 failed, 4 ignored) and the skipped `config integration` and `checkov` stages (tool not available in the sandbox); the 10 failures are in `claude_runner_provider_fallback_4034`, `completion_phase_repo_formatters`, `execute_claude_phase_rtk`, `execute_claude_phase`, `execute_phase_assignment_3718`, `external_orchestration_3642_config` and `external_orchestration_3642_phase`, which this diff does not touch; they are sandbox-caused: the image stamps `VIBE_IMAGE_AGENT_PROVIDERS=claude` (8 failures, "did not install the codex provider") and has no Rust toolchain (the 2 `cargo fmt` tests, `rustup could not choose a version of cargo-fmt`); with the variable unset those seven files run 93 passed, 2 failed (the `cargo fmt` pair), and on an unmodified `main` worktree the same tests fail the same way (2 failed with the variable unset; 8 failed in the other six files with it set to `claude`); all new and touched test files pass (329 passed, 0 failed across them and the other changed test files) and `deno fmt --check` and `deno lint` are clean on the 39 changed `.ts` files — reviewer: met — the failures are identical on the unmodified base and caused by the sandbox, not this diff; the reviewer ran the deno test, fmt and lint steps, not `./quality.sh` itself
 
 ## Standards Review
 
