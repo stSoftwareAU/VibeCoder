@@ -873,6 +873,29 @@ Deno.test("broadened containment: an exact check on the new value clears a subst
   assert(result.valid, result.problems.join("; "));
 });
 
+Deno.test("broadened containment: an exact check of a new value that contains the fragment clears it", () => {
+  const result = formCheck(
+    ['assert(out.includes("OLD: 5"));'],
+    ['assert(out.includes("5"));', 'assertEquals(out, "NEW: 5");'],
+  );
+  assert(result.valid, result.problems.join("; "));
+});
+
+Deno.test("broadened containment: exact equality on the old literal does not clear a shorter containment", () => {
+  assertBroadened(
+    ['assert(out.includes("OLD: 5"));'],
+    ['assert(out.includes("5"));', 'assertEquals(out, "OLD: 5");'],
+  );
+});
+
+Deno.test("broadened containment: assertNotMatch of the old regex clears a shortened assertMatch", () => {
+  const result = formCheck(
+    ["assertMatch(out, /OLD: 5/);"],
+    ["assertMatch(out, /5/);", "assertNotMatch(out, /OLD: 5/);"],
+  );
+  assert(result.valid, result.problems.join("; "));
+});
+
 Deno.test("broadened containment: a substring check in a different test is not the replacement", () => {
   const diff = [
     `diff --git a/${FORM_FILE} b/${FORM_FILE}`,

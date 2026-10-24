@@ -2420,16 +2420,47 @@ function literalText(argument: string): string | null {
   return null;
 }
 
-/** Every quoted literal in `text`, templates with substitutions excluded. */
+/**
+ * A slash-delimited literal (`/OLD: 5/`, with optional flags). Static, so
+ * the source under scan is never compiled as a pattern.
+ */
+const SLASH_LITERAL_RE = /^\/((?:\\.|[^/\n])*)\/[a-z]*/i;
+
+/** Same escape rule as {@link readDelimited}: a backslash keeps the next character. */
+function unescapeSlashBody(raw: string): string {
+  let value = "";
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (ch === "\\" && i + 1 < raw.length) {
+      value += raw[++i];
+      continue;
+    }
+    value += ch;
+  }
+  return value;
+}
+
+/**
+ * Quoted literals and slash-delimited regex bodies. Templates with
+ * substitutions are excluded. A regex body is kept so `assertNotMatch` of
+ * the old pattern can clear a shortened `assertMatch` (Issue #4163).
+ */
 function quotedLiterals(text: string): string[] {
   const found: string[] = [];
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]!;
-    if (ch !== '"' && ch !== "'" && ch !== "`") continue;
-    const read = readDelimited(text, i, ch, ch === "`");
-    if (!read) continue;
-    if (!(ch === "`" && read.value.includes("${"))) found.push(read.value);
-    i = read.end - 1;
+    if (ch === '"' || ch === "'" || ch === "`") {
+      const read = readDelimited(text, i, ch, ch === "`");
+      if (!read) continue;
+      if (!(ch === "`" && read.value.includes("${"))) found.push(read.value);
+      i = read.end - 1;
+      continue;
+    }
+    if (ch !== "/") continue;
+    const match = SLASH_LITERAL_RE.exec(text.slice(i));
+    if (!match) continue;
+    found.push(unescapeSlashBody(match[1] ?? ""));
+    i += match[0].length - 1;
   }
   return found;
 }
@@ -2538,8 +2569,9 @@ function showLiteral(literal: string): string {
  * One problem when an added containment check in the same test expects a
  * strict substring of a removed assertion's expected literal, so the new
  * check accepts the old output. A Required by quote does not clear it. An
- * added exact-equality assertion on that new literal, or an added negative
- * check naming the old literal, does. Returns null when nothing broadened.
+ * added exact-equality assertion on a new value that contains that literal
+ * and is not the old expected text, or an added negative check naming the
+ * old literal, does. Returns null when nothing broadened.
  */
 function broadenedContainmentProblems(diffText: string): string | null {
   const analysed = analyseTestPatches(diffText);
@@ -2590,8 +2622,17 @@ function broadenedContainmentProblems(diffText: string): string | null {
               : value.length > literal.length && value.includes(literal)
           );
           if (parents.length === 0) continue;
+          // An exact check of the new value pins output the old text cannot
+          // match. Equality with the fragment is that case; so is a longer
+          // new value that contains the fragment, such as "NEW: 5" for "5".
+          // The old expected text itself does not count: it still accepts
+          // the output the containment was broadened away from.
           const exactClears = literal !== "" &&
-            peers.some((item) => item.exactLiterals.includes(literal));
+            peers.some((item) =>
+              item.exactLiterals.some((exact) =>
+                exact.includes(literal) && !parents.includes(exact)
+              )
+            );
           const negativeClears = parents.every((parent) =>
             peers.some((item) =>
               item.negative && item.literals.includes(parent)
