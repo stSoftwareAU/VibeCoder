@@ -369,7 +369,7 @@ Deno.test("syncMilestoneBranches - syncs active milestones across repos", async 
 });
 
 Deno.test("syncMilestoneBranches - handles sync failure gracefully", async () => {
-  const logs: string[] = [];
+  const logs: Array<{ message: string; level: string }> = [];
 
   const deps: MilestoneBranchSyncDeps = {
     repos: ["owner/repo"],
@@ -397,7 +397,7 @@ Deno.test("syncMilestoneBranches - handles sync failure gracefully", async () =>
     syncBranchFn: async () => {
       return { ok: false as const, error: new Error("Merge conflict") };
     },
-    log: (msg: string) => logs.push(msg),
+    log: (msg: string, level = "info") => logs.push({ message: msg, level }),
   };
 
   const result = await syncMilestoneBranches(deps);
@@ -408,7 +408,7 @@ Deno.test("syncMilestoneBranches - handles sync failure gracefully", async () =>
   }
   // Should log a warning about the failure
   const hasWarning = logs.some((l) =>
-    l.includes("Failed to sync milestone branch")
+    l.level === "warn" && l.message.includes("Failed to sync milestone branch")
   );
   assertEquals(hasWarning, true);
 });
@@ -2070,7 +2070,7 @@ Deno.test("syncMilestoneBranches - a measurement that fails or throws still sync
   try {
     const streakPath = milestoneSyncStreakPath(dir);
     const order: string[] = [];
-    const lines: string[] = [];
+    const lines: Array<{ message: string; level: string }> = [];
     const deps = ledgerDeps([], {
       milestones: [
         // Both measurable on paper, so the harness wires a measurement in;
@@ -2091,7 +2091,7 @@ Deno.test("syncMilestoneBranches - a measurement that fails or throws still sync
       streakPath,
       nowMs: 10_000,
       order,
-      log: (message) => lines.push(message),
+      log: (message, level = "info") => lines.push({ message, level }),
     });
     // One branch's count comes back as a failed Result, the other's throws —
     // the two ways a production measurement can refuse to answer.
@@ -2112,15 +2112,16 @@ Deno.test("syncMilestoneBranches - a measurement that fails or throws still sync
     assertEquals(order.includes(LEDGER_BRANCH), true);
     assertEquals(order.includes(SECOND_BRANCH), true);
     const warnings = lines.filter((line) =>
-      line.startsWith("Could not measure how far")
+      line.level === "warn" &&
+      line.message.startsWith("Could not measure how far")
     );
     assertEquals(warnings.length, 2);
     assertEquals(
-      warnings.some((line) => line.includes("no remote-tracking ref")),
+      warnings.some((line) => line.message.includes("no remote-tracking ref")),
       true,
     );
     assertEquals(
-      warnings.some((line) => line.includes("unsafe ref refused")),
+      warnings.some((line) => line.message.includes("unsafe ref refused")),
       true,
     );
   } finally {

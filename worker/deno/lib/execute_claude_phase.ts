@@ -151,7 +151,7 @@ import {
 } from "./security_fix_gate_feedback.ts";
 import { buildFetchArgs } from "./git_ref_args.ts";
 import { runGitCommandChecked } from "./git_timeout.ts";
-import { logAt } from "./log_sink.ts";
+import { bindLogger, logAt, type LogLevelName } from "./log_sink.ts";
 
 // =============================================================================
 // Types
@@ -549,8 +549,11 @@ export interface ExecuteClaudePhaseDeps {
    * omitted, and it spawns nothing while the host switch is off.
    */
   collectGraftContext?: GraftContextCollector;
-  /** Log a message. */
-  log: (message: string) => void;
+  /**
+   * Log a message at the given level. A missing level is info. The level is
+   * the logger's own word, not text inside the message (Issue #4176).
+   */
+  log: (message: string, level?: LogLevelName) => void;
 }
 
 /** Arguments for the context-budget hand-off (Issue #3713). */
@@ -942,6 +945,9 @@ function readCiProviders(
  * Default production dependencies.
  */
 export function createDefaultDeps(): ExecuteClaudePhaseDeps {
+  // One logger so a warn or error keeps the level the phase asked for
+  // (Issue #4176). The marker is the logger's own level word.
+  const phaseLog = bindLogger(createLogger({ host: "" }));
   return {
     escalateContextBudget: defaultEscalateContextBudget,
     runClaudeWithRetry,
@@ -1006,7 +1012,9 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
       value: undefined,
     }),
     getPromptsCommit: async () => await getPromptsCommit(),
-    log: (message: string) => console.log(`[execute-claude-phase] ${message}`),
+    log: (message: string, level?: LogLevelName) => {
+      phaseLog(`[execute-claude-phase] ${message}`, level);
+    },
   };
 }
 

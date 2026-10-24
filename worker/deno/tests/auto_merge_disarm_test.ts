@@ -24,15 +24,16 @@ Deno.test("disarmAutoMerge issues --disable-auto and returns true", async () => 
 });
 
 Deno.test("disarmAutoMerge logs a warning and returns false on failure", async () => {
-  const logs: string[] = [];
+  const logs: Array<{ message: string; level: string }> = [];
   const ok = await disarmAutoMerge(
     "o/r",
     7,
     () => Promise.reject(new Error("boom")),
-    (m) => logs.push(m),
+    (m, level = "info") => logs.push({ message: m, level }),
   );
   assertEquals(ok, false);
-  assertEquals(logs, [
-    "could not disarm auto-merge on o/r#7: boom (Issue #3433)",
-  ]);
+  assertEquals(logs, [{
+    message: "could not disarm auto-merge on o/r#7: boom (Issue #3433)",
+    level: "warn",
+  }]);
 });

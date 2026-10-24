@@ -167,10 +167,11 @@ Deno.test(
   "milestone sync - without a streak file the refusal is logged, not re-commented every cycle (Issue #974)",
   async () => {
     const calls: string[][] = [];
-    const logs: string[] = [];
+    const logs: Array<{ message: string; level: string }> = [];
     for (let cycle = 0; cycle < 3; cycle++) {
       const deps = gateFailingDeps(calls);
-      deps.log = (m: string) => logs.push(m);
+      deps.log = (m: string, level = "info") =>
+        logs.push({ message: m, level });
       await syncMilestoneBranches(deps);
     }
     assertEquals(
@@ -180,8 +181,9 @@ Deno.test(
     );
     assert(
       logs.some((l) =>
-        l.includes("onSlotIdle") &&
-        l.includes(MILESTONE_BRANCH)
+        l.level === "warn" &&
+        l.message.includes("onSlotIdle") &&
+        l.message.includes(MILESTONE_BRANCH)
       ),
       "the refusal is still loud in the log",
     );

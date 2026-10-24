@@ -96,18 +96,18 @@ Deno.test("open_milestone_pages - follows pages until a short page, in order", a
   assertEquals(requestedPages(calls), [1, 2]);
 });
 
-Deno.test("open_milestone_pages - cap stops at MAX_MILESTONE_PAGES and logs one WARNING", async () => {
+Deno.test("open_milestone_pages - cap stops at MAX_MILESTONE_PAGES and logs one warning", async () => {
   const fullPage = milestonePage(MILESTONES_PER_PAGE);
   const calls: string[][] = [];
   const fn = (args: string[]): Promise<string> => {
     calls.push([...args]);
     return Promise.resolve(fullPage);
   };
-  const logs: string[] = [];
+  const logs: Array<{ message: string; level: string }> = [];
   const milestones = await fetchOpenMilestonePages(
     "owner/repo",
     fn,
-    (m) => logs.push(m),
+    (m, level = "info") => logs.push({ message: m, level }),
   );
   assertEquals(milestones.length, MAX_MILESTONE_PAGES * MILESTONES_PER_PAGE);
   assertEquals(
@@ -115,10 +115,12 @@ Deno.test("open_milestone_pages - cap stops at MAX_MILESTONE_PAGES and logs one 
     MAX_MILESTONE_PAGES,
     "must never request page MAX + 1",
   );
-  const warnings = logs.filter((line) => line.includes("open milestones"));
+  const warnings = logs.filter((line) =>
+    line.level === "warn" && line.message.includes("open milestones")
+  );
   assertEquals(warnings.length, 1);
-  assertStringIncludes(warnings[0] ?? "", "owner/repo");
-  assertStringIncludes(warnings[0] ?? "", "Issue #3609");
+  assertStringIncludes(warnings[0]?.message ?? "", "owner/repo");
+  assertStringIncludes(warnings[0]?.message ?? "", "Issue #3609");
 });
 
 Deno.test("open_milestone_pages - empty body on page 1 returns no milestones", async () => {

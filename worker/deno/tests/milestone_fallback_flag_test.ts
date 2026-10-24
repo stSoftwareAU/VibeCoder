@@ -249,7 +249,7 @@ Deno.test("fileFallbackFlag - hands the filer every field the fallback observed 
 });
 
 Deno.test("fileFallbackFlag - a filing that failed is said out loud and reported as unfiled (Issue #2311)", async () => {
-  const logs: string[] = [];
+  const logs: Array<{ message: string; level: string }> = [];
   const events: string[] = [];
   const issue = await fileFallbackFlag({
     repo: REPO,
@@ -259,7 +259,7 @@ Deno.test("fileFallbackFlag - a filing that failed is said out loud and reported
     fallback: {},
     fileMergeFallbackFn: () =>
       Promise.resolve({ ok: false, error: new Error("gh issue create: 403") }),
-    log: (m) => logs.push(m),
+    log: (m, level = "info") => logs.push({ message: m, level }),
     emitSelfHealEvent: (event) => {
       events.push(event.action);
       return Promise.resolve(true);
@@ -273,8 +273,9 @@ Deno.test("fileFallbackFlag - a filing that failed is said out loud and reported
   );
   assert(
     logs.some((l) =>
-      l.includes("Could not file the merge-fallback flag") &&
-      l.includes("gh issue create: 403")
+      l.level === "warn" &&
+      l.message.includes("Could not file the merge-fallback flag") &&
+      l.message.includes("gh issue create: 403")
     ),
     `the failure was swallowed: ${JSON.stringify(logs)}`,
   );
@@ -315,7 +316,7 @@ Deno.test("readBehindSince - reads the first missing commit's date (Issue #2311)
 });
 
 Deno.test("readBehindSince - an unknown tip, an empty answer and a failed compare record nothing (Issue #2311)", async () => {
-  const logs: string[] = [];
+  const logs: Array<{ message: string; level: string }> = [];
   assertEquals(
     await readBehindSince(REPO, undefined, "main", () => {
       throw new Error("gh must not be called without a tip");
@@ -338,13 +339,15 @@ Deno.test("readBehindSince - an unknown tip, an empty answer and a failed compar
       "aaaaaaa",
       "main",
       () => Promise.reject(new Error("compare: 404")),
-      (m) => logs.push(m),
+      (m, level = "info") => logs.push({ message: m, level }),
     ),
     {},
   );
   assert(
     logs.some((l) =>
-      l.includes("Could not read when") && l.includes("compare: 404")
+      l.level === "warn" &&
+      l.message.includes("Could not read when") &&
+      l.message.includes("compare: 404")
     ),
     `the failed compare was swallowed: ${JSON.stringify(logs)}`,
   );
