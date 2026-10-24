@@ -42,7 +42,8 @@ export function workerGatePlanInvocation(
     prompt,
     systemPrompt:
       "You break one blocked issue into pull-request-sized parts. " +
-      "Reply with JSON only. Do not change files, open pull requests, " +
+      "Reply with JSON only. Each part title must differ from the parent " +
+      "issue title. Do not change files, open pull requests, " +
       "mark a pull request ready, or arm auto-merge.",
     timeoutSeconds: 300,
     phase: "planning",

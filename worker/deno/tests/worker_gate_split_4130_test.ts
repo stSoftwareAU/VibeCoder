@@ -14,6 +14,7 @@ import {
 } from "../lib/failure_diagnosis.ts";
 import { handleIssueFailure } from "../lib/label_failure.ts";
 import {
+  buildWorkerGatePlanningPrompt,
   parseWorkerGatePlan,
   planWorkerGateSplitWithModel,
   readIssueBranchProgress,
@@ -496,6 +497,7 @@ Deno.test("workerGatePlanInvocation disables shell and edit tools", () => {
   }
   assertStringIncludes(options.systemPrompt ?? "", "mark a pull request ready");
   assertStringIncludes(options.systemPrompt ?? "", "arm auto-merge");
+  assertStringIncludes(options.systemPrompt ?? "", "differ from the parent");
 });
 
 Deno.test("readIssueBranchProgress summarises the issue branch and skips a longer number", async () => {
@@ -528,4 +530,357 @@ Deno.test("readIssueBranchProgress summarises the issue branch and skips a longe
     calls.some((args) => args.some((arg) => arg.includes("issue-420"))),
     false,
   );
+});
+
+function commentBodies(calls: string[][]): string[] {
+  return calls
+    .filter((args) => args[0] === "issue" && args[1] === "comment")
+    .map((args) => flagValue(args, "--body"));
+}
+
+function parentClosed(calls: string[][]): boolean {
+  return calls.some((args) =>
+    args[0] === "issue" && args[1] === "close" && args.includes("42")
+  );
+}
+
+/** An open fleet issue that carries the routing marker, so filing can reuse it. */
+function ownedIssue(number: number, title: string, body: string): string {
+  return JSON.stringify([{
+    number,
+    title,
+    body:
+      `<!-- issue-routing owner=org/repo subject=org/repo kind=implementation -->\n${body}`,
+    author: { login: "vibe-worker" },
+    url: `https://github.com/org/repo/issues/${number}`,
+    state: "OPEN",
+  }]);
+}
+
+Deno.test("#4130 - a part titled like the parent is not filed as its own sub-issue", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "gate-split-parent-title-" });
+  const calls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "issue" && args[1] === "view" && args.includes("labels")) {
+      return Promise.resolve("failed-once");
+    }
+    if (args.includes("title,body,author")) {
+      return Promise.resolve(JSON.stringify({
+        title: "Blocked gate",
+        body: "parent body",
+        author: { login: "vibe-worker" },
+      }));
+    }
+    if (args.includes("comments")) {
+      return Promise.resolve(JSON.stringify({ comments: [] }));
+    }
+    if (args[0] === "label" && args[1] === "list") {
+      return Promise.resolve("failed\nfailed-once\nenhancement\n");
+    }
+    if (args[0] === "search" && args.includes("open")) {
+      const query = args[2] ?? "";
+      if (query.includes("blocked gate")) {
+        return Promise.resolve(JSON.stringify([{
+          number: 42,
+          title: "Blocked gate",
+          closedAt: null,
+        }]));
+      }
+    }
+    if (args[0] === "search") return Promise.resolve("[]");
+    if (args[0] === "issue" && args[1] === "list") {
+      return Promise.resolve(ownedIssue(42, "Blocked gate", "parent body"));
+    }
+    if (args[0] === "issue" && args[1] === "create") {
+      return Promise.resolve("https://github.com/org/repo/issues/101\n");
+    }
+    return Promise.resolve("");
+  };
+  const seeds: WorkerGateSplitSeed[] = [];
+  try {
+    const result = await handleIssueFailure({
+      repo: "org/repo",
+      issueNumber: 42,
+      githubUser: "worker-user",
+      failureMessage: GATE_OUTPUT,
+      category: "quality_check",
+    }, {
+      ghCommandFn: gh,
+      cacheDir: dir,
+      planWorkerGateSplit: (seed) => {
+        seeds.push(seed);
+        return Promise.resolve({
+          parts: [{ title: "Blocked gate", scope: "Finish the same issue." }],
+        });
+      },
+      readBranchProgress: () => Promise.resolve(PROGRESS),
+      fleetAuthors: ["vibe-worker"],
+    });
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.workerGateSplit, "fallback");
+      assertEquals(result.value.markedAsFailedOnce, true);
+    }
+    assertEquals(createdBodies(calls).length, 0);
+    assertEquals(parentClosed(calls), false);
+    assertEquals(
+      commentBodies(calls).some((body) => body.includes("reused #42")),
+      true,
+    );
+    assertEquals(seeds.length, 1);
+    assertStringIncludes(
+      buildWorkerGatePlanningPrompt(seeds[0]!),
+      "differ from the parent",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("#4130 - a reused issue that is not Part of the parent is skipped", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "gate-split-reused-other-" });
+  const calls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "issue" && args[1] === "view" && args.includes("labels")) {
+      return Promise.resolve("failed-once");
+    }
+    if (args.includes("title,body,author")) {
+      return Promise.resolve(JSON.stringify({
+        title: "Blocked gate",
+        body: "parent body",
+        author: { login: "vibe-worker" },
+      }));
+    }
+    if (args.includes("comments")) {
+      return Promise.resolve(JSON.stringify({ comments: [] }));
+    }
+    if (args[0] === "label" && args[1] === "list") {
+      return Promise.resolve("failed\nfailed-once\nenhancement\n");
+    }
+    if (
+      args[0] === "issue" && args[1] === "view" && args.includes("body") &&
+      args.includes("77")
+    ) {
+      return Promise.resolve(JSON.stringify({ body: "Part of #420" }));
+    }
+    if (args[0] === "search" && args.includes("open")) {
+      return Promise.resolve(JSON.stringify([{
+        number: 77,
+        title: "Repair the failing check",
+        closedAt: null,
+      }]));
+    }
+    if (args[0] === "search") return Promise.resolve("[]");
+    if (args[0] === "issue" && args[1] === "list") {
+      return Promise.resolve(
+        ownedIssue(77, "Repair the failing check", "Part of #420"),
+      );
+    }
+    return Promise.resolve("");
+  };
+  try {
+    const result = await handleIssueFailure({
+      repo: "org/repo",
+      issueNumber: 42,
+      githubUser: "worker-user",
+      failureMessage: GATE_OUTPUT,
+      category: "pre_push_gate",
+    }, {
+      ghCommandFn: gh,
+      cacheDir: dir,
+      planWorkerGateSplit: () =>
+        Promise.resolve({
+          parts: [{
+            title: "Repair the failing check",
+            scope: "Make the quoted check pass.",
+          }],
+        }),
+      readBranchProgress: () => Promise.resolve(PROGRESS),
+      fleetAuthors: ["vibe-worker"],
+    });
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.workerGateSplit, "fallback");
+      assertEquals(result.value.markedAsFailedOnce, true);
+    }
+    assertEquals(parentClosed(calls), false);
+    assertEquals(
+      commentBodies(calls).some((body) => body.includes("reused #77")),
+      true,
+    );
+    assertEquals(
+      commentBodies(calls).some((body) => body.includes("#77 —")),
+      false,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("#4130 - a throwing issue read keeps the repeat record and says why", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "gate-split-read-throw-" });
+  const calls: string[][] = [];
+  const logs: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args.includes("title,body,author")) {
+      return Promise.reject(new Error("could not read the issue"));
+    }
+    if (args[0] === "issue" && args[1] === "view" && args.includes("labels")) {
+      return Promise.resolve("failed-once");
+    }
+    if (args[0] === "label" && args[1] === "list") {
+      return Promise.resolve("failed\nfailed-once\nenhancement\n");
+    }
+    return Promise.resolve("");
+  };
+  try {
+    const result = await handleIssueFailure({
+      repo: "org/repo",
+      issueNumber: 42,
+      githubUser: "worker-user",
+      failureMessage: GATE_OUTPUT,
+      category: "quality_check",
+    }, {
+      ghCommandFn: gh,
+      cacheDir: dir,
+      planWorkerGateSplit: () =>
+        Promise.reject(new Error("planning must not run")),
+      readBranchProgress: () => Promise.resolve(PROGRESS),
+    });
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.workerGateSplit, "fallback");
+      assertEquals(result.value.markedAsFailedOnce, true);
+    }
+    assertEquals(createdBodies(calls).length, 0);
+    assertEquals(parentClosed(calls), false);
+    assertEquals(
+      commentBodies(calls).some((body) =>
+        body.includes("could not read the issue")
+      ),
+      true,
+    );
+    assertEquals(labelsAdded(calls).includes("failed"), false);
+    for (const line of logs) {
+      assertEquals(line.includes("WARNING:"), false);
+      assertEquals(line.includes("ERROR:"), false);
+    }
+  } finally {
+    console.log = original;
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("#4130 - a suppressed filing is skipped and the repeat record stands", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "gate-split-suppressed-" });
+  const calls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "issue" && args[1] === "view" && args.includes("labels")) {
+      return Promise.resolve("failed-once");
+    }
+    if (args.includes("title,body,author")) {
+      return Promise.resolve(JSON.stringify({
+        title: "Blocked gate",
+        body: "parent body",
+        author: { login: "vibe-worker" },
+      }));
+    }
+    if (args.includes("comments")) {
+      return Promise.resolve(JSON.stringify({ comments: [] }));
+    }
+    if (args[0] === "label" && args[1] === "list") {
+      return Promise.resolve("failed\nfailed-once\nenhancement\n");
+    }
+    if (args[0] === "search" && args.includes("open")) {
+      return Promise.resolve(JSON.stringify([{
+        number: 55,
+        title: "Repair the failing check",
+        closedAt: null,
+      }]));
+    }
+    if (args[0] === "search") return Promise.resolve("[]");
+    if (args[0] === "issue" && args[1] === "list") return Promise.resolve("[]");
+    if (args[0] === "issue" && args[1] === "create") {
+      return Promise.resolve("https://github.com/org/repo/issues/101\n");
+    }
+    return Promise.resolve("");
+  };
+  try {
+    const result = await handleIssueFailure({
+      repo: "org/repo",
+      issueNumber: 42,
+      githubUser: "worker-user",
+      failureMessage: GATE_OUTPUT,
+      category: "security_fix_gate",
+    }, {
+      ghCommandFn: gh,
+      cacheDir: dir,
+      planWorkerGateSplit: () =>
+        Promise.resolve({
+          parts: [{
+            title: "Repair the failing check",
+            scope: "Make the quoted check pass.",
+          }],
+        }),
+      readBranchProgress: () => Promise.resolve(PROGRESS),
+      fleetAuthors: ["vibe-worker"],
+    });
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.workerGateSplit, "fallback");
+      assertEquals(result.value.markedAsFailedOnce, true);
+    }
+    assertEquals(createdBodies(calls).length, 0);
+    assertEquals(parentClosed(calls), false);
+    assertEquals(
+      commentBodies(calls).some((body) => body.includes("suppressed")),
+      true,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("#4130 - a failure after filing still records the sub-issues", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "gate-split-partial-" });
+  const { gh, calls, planner } = harness("failed-once");
+  const wrapped = (args: string[]): Promise<string> => {
+    if (args.includes("DELETE")) {
+      return Promise.reject(new Error("permission denied"));
+    }
+    return gh(args);
+  };
+  try {
+    const result = await handleIssueFailure({
+      repo: "org/repo",
+      issueNumber: 42,
+      githubUser: "worker-user",
+      failureMessage: GATE_OUTPUT,
+      category: "quality_check",
+    }, {
+      ghCommandFn: wrapped,
+      cacheDir: dir,
+      planWorkerGateSplit: planner,
+      readBranchProgress: () => Promise.resolve(PROGRESS),
+    });
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.workerGateSplit, "fallback");
+      assertEquals(result.value.markedAsFailedOnce, true);
+    }
+    assertEquals(parentClosed(calls), false);
+    const note = commentBodies(calls).find((body) =>
+      body.includes("permission denied")
+    ) ?? "";
+    assertStringIncludes(note, "#101");
+    assertStringIncludes(note, "#102");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

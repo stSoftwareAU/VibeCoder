@@ -314,7 +314,10 @@ retried as the same blocked issue (Issue #4130). Each sub-issue is
 did. The parent is closed, and the blocked run's remote branch and pull
 request are removed. The worker does not mark that pull request ready or
 arm auto-merge while the gate is still failing. If planning publishes
-nothing, the repeat `failed-once` record stands and the log says why. A
+nothing, a part is suppressed or only reuses this issue, or the split stops
+after filing some parts, the repeat `failed-once` record stands and the log
+says why. A reused issue counts as a sub-issue only when its body is already
+`Part of #N` and it is not this issue. A
 first blocked run still adds `failed-once`. A second run that is a timeout,
 a provider error, or a merge conflict keeps the repeat record. Split depth
 is a fleet-authored `vibe-split-depth` marker with a `depth="N"` attribute.

@@ -426,6 +426,7 @@ export async function handleIssueFailure(
     repeat && isWorkerGateSplitCategory(failureCategory) &&
     deps.planWorkerGateSplit
   ) {
+    let fallbackReason = "";
     try {
       const outcome = await runWorkerGateSplit({
         repo: options.repo,
@@ -493,32 +494,33 @@ export async function handleIssueFailure(
           },
         };
       }
-      workerGateSplit = "fallback";
-      console.log(
-        `[worker-gate-split] ${options.repo}#${options.issueNumber}: ${outcome.reason}`,
-      );
-      await ghCommandFn([
-        "issue",
-        "comment",
-        String(options.issueNumber),
-        "--repo",
-        options.repo,
-        "--body",
-        [
-          "## Worker-gate split published nothing",
-          "",
-          outcome.reason,
-          "",
-          `The repeat failure record stands and this issue keeps \`${labels.failedOnceLabel}\`.`,
-        ].join("\n"),
-      ]);
+      fallbackReason = outcome.reason;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      console.log(
-        `[worker-gate-split] ${options.repo}#${options.issueNumber}: split stopped: ${error.message}`,
-      );
-      return { ok: false, error };
+      fallbackReason = `the split stopped: ${error.message}`;
     }
+    workerGateSplit = "fallback";
+    const heading = fallbackReason.startsWith("sub-issues ")
+      ? "## Worker-gate split stopped after filing sub-issues"
+      : "## Worker-gate split published nothing";
+    console.log(
+      `[worker-gate-split] ${options.repo}#${options.issueNumber}: ${fallbackReason}`,
+    );
+    await ghCommandFn([
+      "issue",
+      "comment",
+      String(options.issueNumber),
+      "--repo",
+      options.repo,
+      "--body",
+      [
+        heading,
+        "",
+        fallbackReason,
+        "",
+        `The repeat failure record stands and this issue keeps \`${labels.failedOnceLabel}\`.`,
+      ].join("\n"),
+    ]);
   }
 
   await markIssueAsFailedOnce({ ...options, repeat }, deps);
