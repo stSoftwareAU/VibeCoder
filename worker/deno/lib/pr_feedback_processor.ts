@@ -27,6 +27,10 @@ import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
+import {
+  commentCarriesOpenPreprReview,
+  renderPreprReviewResolved,
+} from "./prepr_review_record.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
   type CommentType,
@@ -2219,6 +2223,35 @@ async function _processFeedbackWithHeartbeat(
   // must not be reported as pushed even though the fix branch itself is fine.
   const actuallyPushed = hasChanges && pushSucceeded &&
     !(fixBranch && fixPrError);
+
+  // Issue #4236: answering the worker's own change-request record posts a
+  // resolved marker so auto-merge can arm. A failed post leaves the record
+  // open, which keeps the merge held.
+  if (
+    commentCarriesOpenPreprReview(input.commentBody) &&
+    (actuallyPushed || rebuttalPosted)
+  ) {
+    try {
+      await deps.github.runGhCommand([
+        "pr",
+        "comment",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--body",
+        renderPreprReviewResolved(),
+      ]);
+    } catch (err) {
+      logger.error(
+        "Pre-PR review resolution comment failed to post — auto-merge stays blocked",
+        {
+          repo,
+          prNumber,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+    }
+  }
 
   logger.info("PR feedback processing complete", {
     repo,
