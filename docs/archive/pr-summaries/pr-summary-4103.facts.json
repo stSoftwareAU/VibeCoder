@@ -126,7 +126,7 @@
       {
         "path": "worker/deno/lib/secret_redaction.ts",
         "line": 495,
-        "outcome": "a candidate beginning with equals is rejected so separator lines survive",
+        "outcome": "a candidate beginning with equals that holds an alphanumeric is rejected so such a line survives (all-= separator lines survive through the punctuation-only guard instead)",
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - a line starting with equals after an AWS key stays intact (Issue #4103)",
         "flipWentRed": "deleting only (?!=) and keeping (?![/+=]{40}) turned it red: a 40-character line starting with = and holding alphanumerics was replaced by the redaction placeholder"

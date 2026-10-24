@@ -43,8 +43,10 @@ The secret must satisfy five context conditions:
   a git commit SHA beside a key is left alone. The trailing guard already
   rejects a SHA with a class character after it, so no inner trailing `\b` is
   needed.
-- No leading equals: `(?!=)` rejects a candidate starting with `=`, preserving
-  40-, 70- and 120-character separator lines after the key ID.
+- No leading equals: `(?!=)` rejects a candidate starting with `=` that holds an
+  alphanumeric, such as `=` followed by 39 letters. All-`=` separator lines
+  (40, 70 and 120 characters) are rejected first by the punctuation-only guard
+  below, not by `(?!=)`.
 - No punctuation-only candidate: `(?![/+=]{40})` rejects a candidate made only
   of `/`, `+` and `=`, so a `+====` border, a `//====` banner or a run of 40 `/`
   or `+` after the key ID is left alone. Real secrets contain an alphanumeric.
@@ -53,8 +55,8 @@ The secret must satisfy five context conditions:
 
 `=` is not in either context class, so `id=secret` and `secret=…` behave as they
 did under `\b` when the adjacent character was a word character. The
-leading-equals and punctuation-only guards preserve separator lines that `\b`
-never matched. Every lookaround is constant width, and the `[\s\S]{0,120}?`
+leading-equals and punctuation-only guards preserve separator and banner lines
+that `\b` never matched; the punctuation-only guard covers the all-`=` lines. Every lookaround is constant width, and the `[\s\S]{0,120}?`
 window is bounded, so the regex stays linear (the Issue #3942 rule).
 
 ## Evidence
@@ -107,10 +109,11 @@ window is bounded, so the regex stays linear (the Issue #3942 rule).
 
 - Callers checked: the rule is one entry in the RULES table applied by
   `redactSecrets`; no caller passes it a pattern. Other tests that touch
-  `redactSecrets` were run and are green: `worker/deno/tests/secret_redaction_bounds_test.ts` (11 tests at head),
-  `worker/deno/tests/secret_redaction_markdown_1727_test.ts` (17 tests at head)
-  and `worker/deno/tests/secret_redaction_boolean_setting_test.ts` (10 tests at
-  head); these are unchanged by this PR and all passed when re-run on the head.
+  `redactSecrets` were re-run on the head and all passed (38 tests in total, 0
+  failed); this PR does not change them:
+  - `worker/deno/tests/secret_redaction_bounds_test.ts` (11 tests at head)
+  - `worker/deno/tests/secret_redaction_markdown_1727_test.ts` (17 tests at head)
+  - `worker/deno/tests/secret_redaction_boolean_setting_test.ts` (10 tests at head)
 - Twinned-rule search: none found.
   `worker/deno/lib/secret_transform_redaction.ts` exists and was grepped for
   `aws-secret-access-key` and `aws-access-key-id`; it has no matching rule.
