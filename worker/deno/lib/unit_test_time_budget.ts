@@ -182,7 +182,7 @@ export function unitTestTimeBudget(
   const slow = timings.filter((t) => t.ms > budgetMs)
     .sort((a, b) => b.ms - a.ms);
   const warnings = slow.filter((t) => !exempt.has(t.file)).map((t) =>
-    `WARNING: slow unit test (${seconds(t.ms)} > ${budget}): ` +
+    `slow unit test (${seconds(t.ms)} > ${budget}): ` +
     `${t.file} — ${t.name}`
   );
   const exemptCounts = new Map<string, number>();

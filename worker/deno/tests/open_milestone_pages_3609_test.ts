@@ -115,7 +115,7 @@ Deno.test("open_milestone_pages - cap stops at MAX_MILESTONE_PAGES and logs one 
     MAX_MILESTONE_PAGES,
     "must never request page MAX + 1",
   );
-  const warnings = logs.filter((line) => line.includes("WARNING"));
+  const warnings = logs.filter((line) => line.includes("open milestones"));
   assertEquals(warnings.length, 1);
   assertStringIncludes(warnings[0] ?? "", "owner/repo");
   assertStringIncludes(warnings[0] ?? "", "Issue #3609");

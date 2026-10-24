@@ -36,6 +36,7 @@ import {
   parseIssueViewCommentRows,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
+import { logAt } from "./log_sink.ts";
 
 // ---------------------------------------------------------------------------
 // Key
@@ -171,8 +172,10 @@ export async function hasConflictEscalationComment(
     );
     return fleetMatches.length > 0;
   } catch (err) {
-    log(
-      `WARNING: Could not tell whether the milestone sync conflict for ` +
+    logAt(
+      log,
+      "warn",
+      `Could not tell whether the milestone sync conflict for ` +
         `${repo}#${issueNumber} was already escalated, so it is reported ` +
         `again: ${err instanceof Error ? err.message : String(err)}`,
     );

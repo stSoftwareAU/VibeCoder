@@ -189,6 +189,7 @@ import {
   formatRootFilesystemFault,
   type RootFilesystemFault,
 } from "./root_filesystem_fault.ts";
+import { logAt } from "./log_sink.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -541,7 +542,7 @@ export function refreshesRepoLive(
 function warnOf(
   deps: { log: (m: string) => void; logWarn?: (m: string) => void },
 ): (message: string) => void {
-  return deps.logWarn ?? ((message) => deps.log(`WARNING: ${message}`));
+  return deps.logWarn ?? ((message) => logAt(deps.log, "warn", `${message}`));
 }
 
 export interface RunCoreDeps {
@@ -552,7 +553,7 @@ export interface RunCoreDeps {
    * A condition that is degraded but continuing, and that someone should
    * act on before it gets worse — the host disk below the floor while the
    * pool drains. Optional so every existing test harness still compiles;
-   * absent, it falls back to `log` with a `WARNING:` prefix. ERROR is kept
+   * absent, it falls back to `log` at warning level. ERROR is kept
    * for what cannot continue (CODING-STANDARDS.md, "Log Levels Are a
    * Promise About What the Reader Must Do").
    */

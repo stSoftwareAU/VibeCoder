@@ -180,7 +180,7 @@ Deno.test(
     );
     assert(
       logs.some((l) =>
-        l.includes("WARNING") && l.includes("onSlotIdle") &&
+        l.includes("onSlotIdle") &&
         l.includes(MILESTONE_BRANCH)
       ),
       "the refusal is still loud in the log",

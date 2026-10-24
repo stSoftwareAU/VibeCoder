@@ -211,7 +211,7 @@ Deno.test("summary PR arming - a refused --auto call yields exactly one reason c
   assertStringIncludes(body, "Auto-Merge sweep retries");
   assertEquals(
     logs.some((l) =>
-      l.includes("WARNING") && l.includes("was not armed") &&
+      l.includes("was not armed") &&
       l.includes(`${REPO}#${PR_NUMBER}`)
     ),
     true,
@@ -244,9 +244,7 @@ Deno.test("summary PR arming - an unreadable PR URL fails loud and arms nothing"
   assertEquals(armingCalls(calls).length, 0);
   assertEquals(commentCalls(calls).length, 0);
   assertEquals(
-    logs.some((l) =>
-      l.includes("WARNING") && l.includes("could not read a PR number")
-    ),
+    logs.some((l) => l.includes("could not read a PR number")),
     true,
   );
 });

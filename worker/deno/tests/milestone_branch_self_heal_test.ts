@@ -373,9 +373,7 @@ Deno.test("selfHealMilestoneBranches - counts a failed branch recreation and doe
   assertEquals(result.value.prsRetargeted, 0);
   assertEquals(result.value.failures, 1);
   assert(
-    harness.logs.some((l) =>
-      l.includes("WARNING") && l.includes("branch protection")
-    ),
+    harness.logs.some((l) => l.includes("branch protection")),
     `expected a loud warning, got: ${harness.logs.join(" | ")}`,
   );
 });
@@ -394,7 +392,7 @@ Deno.test("selfHealMilestoneBranches - fails loud when the open-children count c
   assert(result.ok);
   assertEquals(result.value.branchesRecreated, 0);
   assertEquals(result.value.failures, 1);
-  assert(harness.logs.some((l) => l.includes("WARNING")));
+  assert(harness.logs.some((l) => l.includes("(Issue #3912)")));
 });
 
 Deno.test("selfHealMilestoneBranches - skips a repo with no local clone", async () => {
@@ -548,7 +546,7 @@ Deno.test("selfHealMilestoneBranches - does not retarget when existing comments 
   assert(result.ok);
   assertEquals(result.value.prsRetargeted, 0);
   assertEquals(world.prs[0]!.baseRefName, "main");
-  assert(harness.logs.some((l) => l.includes("WARNING")));
+  assert(harness.logs.some((l) => l.includes("could not read comments")));
 });
 
 Deno.test("selfHealMilestoneBranches - retargets a PR onto a branch it has just recreated", async () => {

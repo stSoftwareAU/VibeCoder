@@ -53,6 +53,7 @@ import {
   type PendingDependency,
   renderPendingDependenciesBlockComment,
 } from "./milestone_dependency_hold.ts";
+import { logAt } from "./log_sink.ts";
 
 // ---------------------------------------------------------------------------
 // Types and constants
@@ -666,8 +667,10 @@ async function postMarkerDedupedBlockComment(
       log,
     );
   } catch (err) {
-    log(
-      `WARNING: could not read comments on ${repo}#${prNumber} to de-duplicate ` +
+    logAt(
+      log,
+      "warn",
+      `could not read comments on ${repo}#${prNumber} to de-duplicate ` +
         `the ${description} block comment: ` +
         `${err instanceof Error ? err.message : String(err)} (${issueRef})`,
     );
@@ -690,8 +693,10 @@ async function postMarkerDedupedBlockComment(
     ]);
     return "posted";
   } catch (err) {
-    log(
-      `WARNING: failed to post the ${description} block comment on ` +
+    logAt(
+      log,
+      "warn",
+      `failed to post the ${description} block comment on ` +
         `${repo}#${prNumber}: ` +
         `${err instanceof Error ? err.message : String(err)} (${issueRef})`,
     );
@@ -1307,8 +1312,10 @@ export async function holdOrphanBoundPr(
   options: HoldOrphanBoundPrOptions,
 ): Promise<void> {
   const { repo, prNumber, gate, ghCommandFn, log } = options;
-  log(
-    `WARNING: refusing to merge ${repo}#${prNumber} into ${gate.milestoneBranch}: ${gate.detail} ` +
+  logAt(
+    log,
+    "warn",
+    `refusing to merge ${repo}#${prNumber} into ${gate.milestoneBranch}: ${gate.detail} ` +
       "(Issue #3433) — holding it on its base, not retargeting; auto-merge disarmed",
   );
   await disarmAutoMerge(repo, prNumber, ghCommandFn, log);
@@ -1337,8 +1344,10 @@ export async function holdOrphanBoundPr(
       renderRouteClosedHoldComment(gate, repo),
     ]);
   } catch (err) {
-    log(
-      `WARNING: could not post the hold comment on ${repo}#${prNumber}: ${
+    logAt(
+      log,
+      "warn",
+      `could not post the hold comment on ${repo}#${prNumber}: ${
         err instanceof Error ? err.message : String(err)
       }`,
     );

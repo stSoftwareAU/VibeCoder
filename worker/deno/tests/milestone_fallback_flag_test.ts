@@ -273,7 +273,8 @@ Deno.test("fileFallbackFlag - a filing that failed is said out loud and reported
   );
   assert(
     logs.some((l) =>
-      l.startsWith("WARNING:") && l.includes("gh issue create: 403")
+      l.includes("Could not file the merge-fallback flag") &&
+      l.includes("gh issue create: 403")
     ),
     `the failure was swallowed: ${JSON.stringify(logs)}`,
   );
@@ -342,7 +343,9 @@ Deno.test("readBehindSince - an unknown tip, an empty answer and a failed compar
     {},
   );
   assert(
-    logs.some((l) => l.startsWith("WARNING:") && l.includes("compare: 404")),
+    logs.some((l) =>
+      l.includes("Could not read when") && l.includes("compare: 404")
+    ),
     `the failed compare was swallowed: ${JSON.stringify(logs)}`,
   );
 });

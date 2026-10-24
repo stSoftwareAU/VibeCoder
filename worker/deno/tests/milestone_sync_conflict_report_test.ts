@@ -644,7 +644,7 @@ Deno.test(
 
       assert(
         logs.some((line) =>
-          line.startsWith("WARNING:") && line.includes(MERGE_SHA)
+          line.includes("Milestone sync conflict") && line.includes(MERGE_SHA)
         ),
         `expected a WARNING log naming ${MERGE_SHA}, got: ${
           JSON.stringify(logs)

@@ -36,6 +36,7 @@ import {
   isMilestoneSyncBranch,
   syncBranchFor,
 } from "./milestone_sync_branch.ts";
+import { logAt } from "./log_sink.ts";
 
 export {
   isMilestoneSyncBranch,
@@ -124,7 +125,7 @@ export function forkSyncDowngradeWarning(
   prNumber: number,
   headRefName: string,
 ): string {
-  return `WARNING: ${repo}#${prNumber} has a milestone-sync-shaped head ` +
+  return `${repo}#${prNumber} has a milestone-sync-shaped head ` +
     `'${headRefName}' whose repository could not be confirmed as ${repo}, so ` +
     `it is armed as a SQUASH rather than a merge commit. A fork may name its ` +
     `branch anything, so the name alone cannot select the merge-commit ` +
@@ -162,7 +163,7 @@ export function squashedSyncWarning(
   milestoneBranch: string,
   detail: string,
 ): string {
-  return `WARNING: the sync PR for '${milestoneBranch}' in ${repo} had to be ` +
+  return `the sync PR for '${milestoneBranch}' in ${repo} had to be ` +
     `armed as a SQUASH — ${repo} does not permit merge commits (${detail}). ` +
     `The default branch will not be an ancestor of '${milestoneBranch}', so ` +
     `its deletions can return as modify/delete conflicts. Enable merge ` +
@@ -292,8 +293,10 @@ async function armSyncPrAutoMerge(
     deps.gh(["pr", "merge", prNumber, "--repo", repo, "--auto", method]);
 
   const report = async (message: string): Promise<void> => {
-    deps.log?.(
-      `WARNING: the sync PR ${repo}#${prNumber} was not armed for auto-merge: ` +
+    logAt(
+      deps.log,
+      "warn",
+      `the sync PR ${repo}#${prNumber} was not armed for auto-merge: ` +
         message.trim(),
     );
     const retryLine = message.includes(PRIMARY_QUOTA_SKIP_PREFIX)
@@ -316,8 +319,10 @@ async function armSyncPrAutoMerge(
       // Fail loud: the refusal must never become silent because the comment
       // could not be posted. The warning above named the reason; this names
       // the lost comment too.
-      deps.log?.(
-        `WARNING: could not post the auto-merge reason comment on ${repo}#${prNumber}: ${
+      logAt(
+        deps.log,
+        "warn",
+        `could not post the auto-merge reason comment on ${repo}#${prNumber}: ${
           commentError instanceof Error
             ? commentError.message
             : String(commentError)

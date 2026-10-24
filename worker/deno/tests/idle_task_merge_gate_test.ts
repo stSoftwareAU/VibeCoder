@@ -348,7 +348,9 @@ Deno.test("postNoIssuesFoundComments - logs and continues on individual failures
     ghCommandFn: ghFn,
     log: (m) => logs.push(m),
   });
-  const failed = logs.find((l) => l.includes("WARNING") && l.includes("2694"));
+  const failed = logs.find((l) =>
+    l.includes("failed to post no-issues-found comment") && l.includes("2694")
+  );
   const succeeded = logs.find((l) =>
     l.includes("Posted") && l.includes("2703")
   );
