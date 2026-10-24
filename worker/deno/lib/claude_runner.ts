@@ -1203,7 +1203,7 @@ async function runClaudeWithTimeoutBody(
   // outlive the finish (less the kill grace and the WIP checkpoint reserve),
   // and told the deadline on the last line of its user prompt. The system
   // prompt is never touched: the prompt cache keys on its bytes.
-  const timeline = options.runTimeline ?? getRunTimeline();
+  const timeline = getRunTimeline();
   const budget = timeline
     ? planAgentSessionBudget({
       timeline,
@@ -2728,7 +2728,7 @@ async function runClaudeWithTimeoutBody(
         timeoutReason,
         // Issue #4244: the watchdog stopped a session clamped to the finish
         // deadline, so this is not the session's own requested timeout.
-        ...(budget?.kind === "run" && budget.clamped && timedOut &&
+        ...(budget?.kind === "run" && budget.clamped &&
             timeoutReason === "hard-timeout"
           ? { finishDeadline: true }
           : {}),

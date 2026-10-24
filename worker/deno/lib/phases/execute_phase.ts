@@ -1407,7 +1407,7 @@ async function executeClaudeBody(
     const scheduled = claudeResult.value.scheduledRelease;
     if (scheduled) {
       logger.warn(
-        "Claude released on schedule — the supervisor's run hard cap was " +
+        "Claude released on schedule — the supervisor's run hard cap or the run's finish deadline was " +
           "reached while the run was still progressing; preserving its work " +
           "for the next claim (Issue #424)",
         { exitCode: claudeResult.value.exitCode },
