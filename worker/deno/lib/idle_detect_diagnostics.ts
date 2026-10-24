@@ -26,6 +26,9 @@
  *   2. Carries no blocking label (`failed`, `needs-revision`,
  *      `refine-issue`, `planning`, `question`, `needs-human`).
  *   3. Has no assignees (`filterByAssignee` in `issue_filter.ts`).
+ *   3a. Its priority label was added by a trusted author — the claim scan's
+ *      `label-author-not-allowed` refusal (Issue #4212). Requires the caller to
+ *      supply `untrustedLabelIssuesFn`; without it this gate is skipped.
  *   3b. Is not a milestone-tracking issue — `filterAndSort` drops those
  *      in the same pass (Issue #1134, gate added by Issue #1050).
  *   4. Its work stream — the milestone title, or `""` for default
@@ -173,6 +176,8 @@ export type ClaimableSkipReason =
   | "no_open"
   | "label_filter"
   | "assignee_filter"
+  /** Every candidate's priority label was added by an untrusted author (Issue #4212). */
+  | "label_author_not_allowed"
   | "blocking_label"
   /** Every candidate is a milestone-tracking issue (Issue #1050). */
   | "milestone_tracker"
@@ -389,6 +394,8 @@ function isMergedPrBlocked(
 export type IssueExclusionReason =
   | "label_filter"
   | "assignee_filter"
+  /** Every candidate's priority label was added by an untrusted author (Issue #4212). */
+  | "label_author_not_allowed"
   | "blocking_label"
   /** A milestone-tracking issue `filterAndSort` drops (Issue #1050). */
   | "milestone_tracker"
@@ -552,6 +559,15 @@ export interface ClassifyOptions {
    * the same fail-safe as `openPRs`.
    */
   openMilestones?: ReadonlySet<string>;
+  /**
+   * Issue numbers whose priority label was added by an untrusted author. This
+   * models the claim scan's `label-author-not-allowed` refusal
+   * (collect_label_candidates.ts, right after the blocked/assignee skip).
+   *
+   * Omitted or empty means "no data" and no issue is excluded by this gate —
+   * the same fail-safe as `openPRs`. Issue #4212.
+   */
+  untrustedLabelIssues?: ReadonlySet<number>;
 }
 
 /**
@@ -648,6 +664,7 @@ export function classifyIssues(
   const runLocalHolds = opts.runLocalHolds ?? new Set<number>();
   const openIssueNumbers = opts.openIssueNumbers ?? new Set<number>();
   const openMilestones = opts.openMilestones ?? new Set<string>();
+  const untrustedLabelIssues = opts.untrustedLabelIssues ?? new Set<number>();
   const knownRepos = new Set(
     (opts.knownRepos ?? [])
       .filter((r) => typeof r === "string" && r.trim().length > 0)
@@ -728,6 +745,17 @@ export function classifyIssues(
         number: issue.number,
         claimable: false,
         excludedBy: "assignee_filter",
+        milestone: issue.milestone,
+      });
+      continue;
+    }
+    // Issue #4212: gate order mirrors the scan. The label-author refusal sits
+    // right after the blocked and assignee skips, and before the tracker gate.
+    if (untrustedLabelIssues.has(issue.number)) {
+      result.push({
+        number: issue.number,
+        claimable: false,
+        excludedBy: "label_author_not_allowed",
         milestone: issue.milestone,
       });
       continue;
@@ -921,7 +949,8 @@ export function classifyIssues(
  * Specificity order (most → least specific):
  *   merged_pr_blocked > pr_blocked > pace_suppressed > run_local_hold >
  *   dependency_blocked > time_deferred > stream_occupied >
- *   milestone_tracker > assignee_filter > blocking_label > label_filter.
+ *   milestone_tracker > label_author_not_allowed > assignee_filter >
+ *   blocking_label > label_filter.
  * The two PR gates rank first because they describe fleet state that may
  * need a human to resolve. Below them, each later gate in `classifyIssues`
  * ranks above the ones it follows, because a later gate only ever refuses
@@ -970,9 +999,15 @@ export function pickDominantReason(
   if (seen.has("time_deferred")) return "time_deferred";
   if (seen.has("stream_occupied")) return "stream_occupied";
   // Issue #1050: below stream occupancy — a tracker is only ever refused
-  // after the label, blocking-label and assignee gates have passed it, but
+  // after the label, blocking-label, assignee and label-author gates have
+  // passed it, but
   // "the stream is busy" is the more actionable answer when both apply.
   if (seen.has("milestone_tracker")) return "milestone_tracker";
+  // Issue #4212: the label-author refusal is applied after the blocked and
+  // assignee skips and before the tracker gate, so it outranks assignee_filter.
+  if (seen.has("label_author_not_allowed")) {
+    return "label_author_not_allowed";
+  }
   if (seen.has("assignee_filter")) return "assignee_filter";
   if (seen.has("blocking_label")) return "blocking_label";
   if (seen.has("label_filter")) return "label_filter";
@@ -1148,6 +1183,20 @@ export interface AuditClaimableStateOptions {
    * same fail-open contract as `openPRsFn`.
    */
   openMilestonesFn?: (repo: string) => Promise<ReadonlySet<string>>;
+  /**
+   * Supplies the issue numbers in a repo whose priority label was added by an
+   * untrusted author, so the audit can model the claim scan's
+   * `label-author-not-allowed` refusal (Issue #4212). `issues` is the repo's
+   * open issues, each with its number and labels.
+   *
+   * Best-effort: a rejection logs an `untrusted_label_lookup_failed` warning
+   * and falls back to an empty set, restoring the old over-count rather than
+   * hiding a fault.
+   */
+  untrustedLabelIssuesFn?: (
+    repo: string,
+    issues: readonly { number: number; labels: readonly string[] }[],
+  ) => Promise<ReadonlySet<number>>;
   /**
    * True when this run is holding `issueNumber` in `repo` back regardless of
    * what GitHub says (Issue #655) — the same `isIssueInCooldown` predicate
@@ -1332,6 +1381,25 @@ export async function auditClaimableState(
       }
     }
 
+    // Issue #4212: the issues whose priority label an untrusted author added,
+    // so the claim scan's `label-author-not-allowed` refusal is modelled rather
+    // than counted as claimable. Best-effort: a failure logs a warning and
+    // leaves the set empty, restoring the old over-count.
+    let untrustedLabelIssues: ReadonlySet<number> = new Set<number>();
+    if (opts.untrustedLabelIssuesFn) {
+      try {
+        untrustedLabelIssues = await opts.untrustedLabelIssuesFn(
+          repo,
+          issues.map((i) => ({ number: i.number, labels: i.labels })),
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log(
+          `[idle-detect] tick=${opts.tick} host=${host} repo=${repo} action=warn reason=untrusted_label_lookup_failed message=${message}`,
+        );
+      }
+    }
+
     // Issue #655: resolve this run's own holds for the repo, so work the
     // claim scan is silently and correctly refusing is not counted as
     // claimable for the life of the process. Best-effort by the same rule as
@@ -1367,6 +1435,8 @@ export async function auditClaimableState(
       // Issue #2533: a dependency closed inside another open milestone is
       // held by the scan until that milestone merges.
       openMilestones,
+      // Issue #4212: the claim scan's label-author refusal.
+      untrustedLabelIssues,
       // Issue #1249: the audit already knows which repositories the fleet
       // monitors, so a dependency on anything else is not a blocker it can
       // be silenced by.
