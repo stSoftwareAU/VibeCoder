@@ -7,32 +7,49 @@
  * issue. The gate was right and the code was not finished, so instead of
  * recording a third failure the hook:
  *
- *   1. seeds the planner's comment thread with this run's gate output, the
- *      previous run's gate output, and a summary of what the branch already
- *      got done;
- *   2. runs one planning round for the held issue ({@link planHeldIssue});
+ *   1. checks that the `failed-once` label is backed by a fleet-authored
+ *      failure record, and refuses the split when it is not;
+ *   2. seeds the planner's comment thread with this run's gate output, the
+ *      previous run's gate output and a summary of what the branch already got
+ *      done, then runs one planning round for the held issue
+ *      ({@link planHeldIssue});
  *   3. makes each published sub-issue carry the sections the planner was asked
  *      for, and the `enhancement` label, whether or not the planner wrote them;
- *   4. closes the open pull requests on the run branch and deletes the remote
- *      branch, so the next scan does not resume the failing work;
- *   5. closes the parent if planning left it open, and clears `failed-once`.
+ *   4. when at least one sub-issue in the parent's repository is complete,
+ *      closes the open pull requests on the run branch and then deletes the
+ *      remote branch;
+ *   5. closes the parent with a comment that links the sub-issues, and clears
+ *      `failed-once` only once the parent is confirmed closed.
  *
- * Only steps 1 and 2 can refuse the split. Once sub-issues exist, every later
- * step is best-effort: it logs a warning, adds a note and never throws, so a
- * failed clean-up cannot turn a split into a recorded repeat.
+ * REFUSALS (`split: false`, nothing destructive done): no GitHub client; the
+ * `failed-once` label has no fleet-authored failure record behind it, or the
+ * comment thread cannot be read to tell; planning fails or throws; planning
+ * publishes no sub-issue; or the parent cannot be closed after sub-issues were
+ * published. In that last case the sub-issues stay, `failed-once` stays, and
+ * the caller records the repeat with its cooldown. A later run's planning
+ * pre-check finds the existing sub-issues and closes the parent.
+ *
+ * Once planning has published sub-issues, every later step is best-effort: a
+ * failure is a note, a warning where it happens, and never a throw.
+ *
+ * PROOF BEFORE DESTRUCTION: the pull request closes and the branch delete run
+ * only when at least one sub-issue in the parent's repository was completed (its
+ * body carries the sections, and it has the label). Otherwise both are skipped,
+ * with a warning, and the rest of the split still runs.
+ *
+ * BRANCH GUARD: {@link branchRefusal} covers both PR closing and the remote
+ * branch delete. The delete also needs `assessRemoteBranchDeletion` to say
+ * `safe`, which refuses an open PR with the branch as head or base. So a PR that
+ * a failed close left open blocks the delete.
  *
  * INVARIANT: this path never marks a pull request ready, merges one, or arms
  * auto-merge. It only ever closes pull requests.
  *
- * BRANCH GUARD: the guard (`branchDeleteRefusal`) covers both PR closing and
- * the remote branch delete. An empty name, the base branch, the default branch
- * and every `milestone/` branch are never touched: their pull requests are not
- * closed and the remote branch is not deleted. Each refusal is a note.
- *
  * WHAT THIS DESTROYS: the remote run branch and its commits (the tip is removed
- * with `git push --delete`). The work survives only as the summary in each
- * sub-issue and in the local clone, which this path does not touch. That is
- * accepted: the issue requires the split (Issue #4130).
+ * with `git push --delete`), and the open pull requests on it are closed. The
+ * work survives as the summary in each sub-issue and in the local clone, which
+ * this path does not touch. That is accepted: the issue requires the split
+ * (Issue #4130), and the proof step above runs first.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -58,6 +75,8 @@ import { CARRIER_SUB_ISSUE_LABEL } from "./planning_carrier.ts";
 import { codeFenceFor } from "./prompt_delimiter.ts";
 import { redactedHeadTail } from "./redacted_text.ts";
 import { getFailureCategoryDisplay } from "./failure_diagnosis.ts";
+import { isProtectedBranch } from "./git_branch.ts";
+import { assessRemoteBranchDeletion } from "./remote_branch_delete.ts";
 import type {
   RepeatGateSplitHook,
   RepeatGateSplitOutcome,
@@ -98,11 +117,12 @@ const FILE_NAME_LIMIT = 100;
 /** The heading a failure record opens with (`markIssueAsFailedOnce`). */
 const FAILED_RECORD_PREFIX = "## Automated Processing Failed";
 const ERROR_OUTPUT_HEADING = "### Error Output";
+const DETAILS_OPEN = "<details>";
+const SUMMARY_CLOSE = "</summary>";
+const DETAILS_CLOSE = "</details>";
 /** The placeholder `buildErrorSection` quotes when no key line was found. */
 const NO_ERROR_LINES_NOTE =
   "No specific error lines detected — see full output below.";
-const DETAILS_RE =
-  /<details>\s*<summary>[\s\S]*?<\/summary>([\s\S]*?)<\/details>/;
 
 const SEED_HEADING =
   "### Worker split context (Issue #4130) — written by the worker";
@@ -110,6 +130,8 @@ const GATE_SECTION_HEADING = "## Failing gate output";
 const BRANCH_SECTION_HEADING = "## What the branch got done";
 const GATE_HEADING_RE = /^## Failing gate output\s*$/m;
 const BRANCH_HEADING_RE = /^## What the branch got done\s*$/m;
+/** `Part of #<n>`, the whole number captured, with a word boundary after it. */
+const PART_OF_RE = /Part of #(\d+)(?!\w)/g;
 const ISSUE_URL_RE =
   /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/issues\/(\d+)(?!\d)/;
 const UNAVAILABLE = "unavailable";
@@ -124,6 +146,14 @@ interface SubIssueSections {
   branchText: string;
 }
 
+/** The parent's previous failure record, read for the planner (Issue #4130). */
+type PreviousRun =
+  | { ok: true; output: string | undefined }
+  | { ok: false; reason: string };
+
+/** Whether the parent is closed after a split, and why not when it is not. */
+type ParentClose = { closed: true } | { closed: false; cause: string };
+
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -134,6 +164,12 @@ function firstLine(text: string): string {
     .split("\n")
     .map((line) => line.trim())
     .find((line) => line !== "") ?? "";
+}
+
+/** Record a note and warn about it at the point it happens. */
+function noteAndWarn(notes: string[], logger: Logger, text: string): void {
+  notes.push(text);
+  logger.warn(`Repeat-gate split: ${text}`);
 }
 
 /** Redact gate text in full, then keep its head and tail. */
@@ -148,6 +184,25 @@ function fenced(text: string): string {
 }
 
 /**
+ * The text of the first `<details>` block in `text`: from the first
+ * `</summary>` after its `<details>` to the first `</details>` after that,
+ * trimmed. Each search is a plain `indexOf` from the previous hit, so the cost
+ * is linear in the input whatever it holds. A `</details>` quoted inside the
+ * output ends the block early. That is accepted, and the quoted key lines stay
+ * the fallback.
+ */
+function detailsBody(text: string): string | undefined {
+  const open = text.indexOf(DETAILS_OPEN);
+  if (open < 0) return undefined;
+  const summaryEnd = text.indexOf(SUMMARY_CLOSE, open);
+  if (summaryEnd < 0) return undefined;
+  const bodyStart = summaryEnd + SUMMARY_CLOSE.length;
+  const close = text.indexOf(DETAILS_CLOSE, bodyStart);
+  if (close < 0) return undefined;
+  return text.slice(bodyStart, close).trim();
+}
+
+/**
  * The error output a failure record quotes: the `<details>` full output when
  * present, otherwise the quoted key lines. The layout is written by
  * `buildErrorSection` in `label_failure.ts`.
@@ -156,7 +211,7 @@ function extractErrorOutput(body: string): string | undefined {
   const start = body.indexOf(ERROR_OUTPUT_HEADING);
   if (start < 0) return undefined;
   const rest = body.slice(start + ERROR_OUTPUT_HEADING.length);
-  const full = DETAILS_RE.exec(rest)?.[1]?.trim();
+  const full = detailsBody(rest);
   if (full) return full;
   const section = rest.split(/\n(?=### )/)[0] ?? "";
   const quoted = section
@@ -168,22 +223,32 @@ function extractErrorOutput(body: string): string | undefined {
 }
 
 /**
- * The error output of the parent's latest failure record, or `undefined` when
- * none is readable. Only comments a fleet account authored count (Issue
- * #1352): the thread is open to anybody. A fetch error is logged and
- * tolerated, so it omits the section rather than refusing the split.
+ * Whether the parent carries a fleet-authored failure record, and that record's
+ * error output when one can be quoted. Only comments a fleet account authored
+ * count (Issue #1352): the thread is open to anybody. A `failed-once` label
+ * with no such record behind it was applied by hand, so the split is refused
+ * rather than removing a label this worker cannot prove it added. A thread that
+ * cannot be read is a refusal too: the record cannot be verified.
  */
-async function readPreviousRunOutput(
+async function readPreviousRun(
   ghClient: GitHubClient,
   ctx: IssueContext,
   logger: Logger,
-): Promise<string | undefined> {
+): Promise<PreviousRun> {
   const where = { repo: ctx.repo, issueNumber: ctx.issueNumber };
+  let comments: GitHubComment[];
   try {
-    const comments: GitHubComment[] = await ghClient.getIssueComments(
-      ctx.repo,
-      ctx.issueNumber,
-    );
+    comments = await ghClient.getIssueComments(ctx.repo, ctx.issueNumber);
+  } catch (err) {
+    return {
+      ok: false,
+      reason:
+        `could not verify failed-once: the comment thread could not be read (${
+          messageOf(err)
+        })`,
+    };
+  }
+  try {
     const records = comments
       .filter((comment) =>
         comment.body.trimStart().startsWith(FAILED_RECORD_PREFIX)
@@ -196,13 +261,18 @@ async function readPreviousRunOutput(
       (message) => logger.warn(message, where),
     );
     const latest = fleet.at(-1);
-    return latest ? extractErrorOutput(latest.body) : undefined;
+    if (latest === undefined) {
+      return {
+        ok: false,
+        reason: "failed-once is not backed by a fleet-authored failure record",
+      };
+    }
+    return { ok: true, output: extractErrorOutput(latest.body) };
   } catch (err) {
-    logger.warn(
-      "Repeat-gate split: could not read the previous run's output — omitting it",
-      { ...where, error: messageOf(err) },
-    );
-    return undefined;
+    return {
+      ok: false,
+      reason: `could not verify failed-once: ${messageOf(err)}`,
+    };
   }
 }
 
@@ -337,7 +407,7 @@ function buildSeedBlock(
   previousText: string | undefined,
 ): string {
   const previous = previousText === undefined
-    ? "Previous run's output unavailable: no fleet-authored failure record with an error output could be read."
+    ? "Previous run's output unavailable: the latest fleet-authored failure record has no error output to quote."
     : fenced(previousText);
   return [
     SEED_HEADING,
@@ -367,12 +437,6 @@ function buildSeedBlock(
     fenced(sections.branchText),
   ].join("\n");
 }
-
-/**
- * `Part of #<n>` with the whole number captured and a word boundary after it,
- * so `#123` never counts as `#12` (Issue #4130).
- */
-const PART_OF_RE = /Part of #(\d+)(?!\w)/g;
 
 /**
  * Whether `body` says `Part of #<parent>`. The captured digit run must equal
@@ -434,52 +498,85 @@ function parseIssueUrl(
 }
 
 /**
- * Make one sub-issue carry the sections and the label (Issue #4130). A body
- * that already has them is not edited at all.
+ * Make one sub-issue carry the sections and the label (Issue #4130). Returns
+ * whether it is complete: the body carries every section and it has the label.
+ * A body that already has them is not edited at all. A failed read, edit or
+ * label is a warning and a note, and the sub-issue is not counted.
  */
 async function completeSubIssue(
   ghClient: GitHubClient,
+  logger: Logger,
+  notes: string[],
   repo: string,
   parentIssueNumber: number,
   issueNumber: number,
   sections: SubIssueSections,
-): Promise<string[]> {
-  const notes: string[] = [];
-  const issue: GitHubIssue = await ghClient.getIssue(repo, issueNumber);
+): Promise<boolean> {
+  let issue: GitHubIssue;
+  try {
+    issue = await ghClient.getIssue(repo, issueNumber);
+  } catch (err) {
+    noteAndWarn(
+      notes,
+      logger,
+      `could not read sub-issue #${issueNumber}: ${messageOf(err)}`,
+    );
+    return false;
+  }
   const updated = appendMissingSections(
     issue.body ?? "",
     parentIssueNumber,
     sections,
   );
   if (updated !== undefined) {
-    await ghClient.editIssue(repo, issueNumber, { body: updated });
-    notes.push(`added the missing sections to sub-issue #${issueNumber}`);
+    try {
+      await ghClient.editIssue(repo, issueNumber, { body: updated });
+      notes.push(`added the missing sections to sub-issue #${issueNumber}`);
+    } catch (err) {
+      noteAndWarn(
+        notes,
+        logger,
+        `could not edit sub-issue #${issueNumber}: ${messageOf(err)}`,
+      );
+      return false;
+    }
   }
   if (!(issue.labels ?? []).includes(CARRIER_SUB_ISSUE_LABEL)) {
-    await ghClient.addLabel(repo, issueNumber, CARRIER_SUB_ISSUE_LABEL);
-    notes.push(
-      `added the ${CARRIER_SUB_ISSUE_LABEL} label to sub-issue #${issueNumber}`,
-    );
+    try {
+      await ghClient.addLabel(repo, issueNumber, CARRIER_SUB_ISSUE_LABEL);
+      notes.push(
+        `added the ${CARRIER_SUB_ISSUE_LABEL} label to sub-issue #${issueNumber}`,
+      );
+    } catch (err) {
+      noteAndWarn(
+        notes,
+        logger,
+        `could not label sub-issue #${issueNumber}: ${messageOf(err)}`,
+      );
+      return false;
+    }
   }
-  return notes;
+  return true;
 }
 
 /**
  * Why the run branch must not be touched, or `undefined` when it may be
- * (Issue #4130). The guard covers both steps: closing its open pull requests
- * and deleting the remote branch. An empty name, the base branch, the default
- * branch and every `milestone/` branch are shared work, so none of their pull
- * requests are closed and none of them is deleted.
+ * (Issue #4130). It covers both steps: closing the branch's open pull requests
+ * and deleting the remote branch. An empty name, a name that starts with `-`,
+ * the base branch, the default branch and every protected branch
+ * (`isProtectedBranch`, which includes any `milestone/` branch, in any case)
+ * are shared work, so none of them is touched.
  */
-function branchDeleteRefusal(branch: RepeatGateBranch): string | undefined {
+function branchRefusal(branch: RepeatGateBranch): string | undefined {
   const name = branch.branchName.trim();
   if (name === "") return "the branch name is empty";
+  if (name.startsWith("-")) {
+    return `'${name}' starts with '-' and could be read as an option`;
+  }
   if (name === branch.baseBranch || name === branch.defaultBranch) {
     return `'${name}' is the base or default branch`;
   }
-  if (name.startsWith("milestone/")) {
-    return "milestone branches are never deleted";
-  }
+  if (isProtectedBranch(name)) return `'${name}' is a protected branch`;
   return undefined;
 }
 
@@ -491,9 +588,10 @@ interface OpenPullRequest {
 }
 
 /**
- * The open pull requests in `gh pr list --json number,isDraft,isCrossRepository`
+ * The open pull requests in `gh pr list --json number,isCrossRepository`
  * output. `--head` matches the head branch name, so a fork's PR with the same
- * name is listed too; the caller must check `isCrossRepository`.
+ * name is listed too; the caller must check `isCrossRepository`. A row without
+ * a PR number is an error: the list cannot be trusted, so the step fails.
  */
 function openPullRequests(raw: string): OpenPullRequest[] {
   if (raw.trim() === "") return [];
@@ -501,15 +599,17 @@ function openPullRequests(raw: string): OpenPullRequest[] {
   if (!Array.isArray(parsed)) {
     throw new Error("gh pr list did not return an array");
   }
-  return parsed.flatMap((row: unknown): OpenPullRequest[] => {
-    if (typeof row !== "object" || row === null || !("number" in row)) {
-      return [];
+  return parsed.map((row: unknown): OpenPullRequest => {
+    const number = typeof row === "object" && row !== null && "number" in row
+      ? row.number
+      : undefined;
+    if (typeof number !== "number" || !Number.isInteger(number)) {
+      throw new Error("gh pr list returned a row without a PR number");
     }
-    const number = row.number;
-    if (typeof number !== "number" || !Number.isInteger(number)) return [];
-    const isCrossRepository = "isCrossRepository" in row &&
+    const isCrossRepository = typeof row === "object" && row !== null &&
+      "isCrossRepository" in row &&
       row.isCrossRepository === true;
-    return [{ number, isCrossRepository }];
+    return { number, isCrossRepository };
   });
 }
 
@@ -523,8 +623,8 @@ function splitLinks(subIssueUrls: string[]): string {
  * close is independent: one refusal does not stop the others. `--delete-branch`
  * is never passed, so the branch is removed only by the deletion step.
  *
- * The branch guard ({@link branchDeleteRefusal}) runs first: a refused branch
- * has no `gh pr list` and no `gh pr close` at all, and a note says why.
+ * The branch guard ({@link branchRefusal}) runs first: a refused branch has no
+ * `gh pr list` and no `gh pr close` at all, and a note and a warning say why.
  */
 async function closeRunPullRequests(
   deps: WorkerDeps,
@@ -533,10 +633,11 @@ async function closeRunPullRequests(
   display: string,
   subIssueUrls: string[],
   notes: string[],
+  logger: Logger,
 ): Promise<void> {
-  const refusal = branchDeleteRefusal(branch);
+  const refusal = branchRefusal(branch);
   if (refusal !== undefined) {
-    notes.push(`left the pull requests in place: ${refusal}`);
+    noteAndWarn(notes, logger, `left the pull requests in place: ${refusal}`);
     return;
   }
   const raw = await deps.github.runGhCommand([
@@ -549,7 +650,7 @@ async function closeRunPullRequests(
     "--state",
     "open",
     "--json",
-    "number,isDraft,isCrossRepository",
+    "number,isCrossRepository",
   ]);
   const message =
     `Closed by the worker: this branch hit the \`${display}\` gate on two consecutive runs, so the issue was split into sub-issues instead. The work is summarised in ${
@@ -574,25 +675,46 @@ async function closeRunPullRequests(
       ]);
       notes.push(`closed pull request #${number}`);
     } catch (err) {
-      notes.push(`could not close pull request #${number}: ${messageOf(err)}`);
+      noteAndWarn(
+        notes,
+        logger,
+        `could not close pull request #${number}: ${messageOf(err)}`,
+      );
     }
   }
 }
 
 /**
- * Delete the remote run branch with argv only (Issue #4130). "The remote ref
- * does not exist" counts as already deleted. The local branch and worktree
- * are never touched.
+ * Delete the remote run branch with argv only (Issue #4130). The branch guard
+ * runs first, then `assessRemoteBranchDeletion` (the repository's owner of this
+ * decision): the branch is deleted only on `safe: true`. "The remote ref does
+ * not exist" counts as already deleted. The local branch and worktree are never
+ * touched.
  */
 async function deleteRemoteBranch(
   deps: WorkerDeps,
+  repo: string,
   branch: RepeatGateBranch,
   notes: string[],
+  logger: Logger,
 ): Promise<void> {
   const name = branch.branchName.trim();
-  const refusal = branchDeleteRefusal(branch);
+  const refusal = branchRefusal(branch);
   if (refusal !== undefined) {
-    notes.push(`left the remote branch in place: ${refusal}`);
+    noteAndWarn(notes, logger, `left the remote branch in place: ${refusal}`);
+    return;
+  }
+  const assessment = await assessRemoteBranchDeletion(
+    repo,
+    name,
+    deps.github.runGhCommand,
+  );
+  if (!assessment.safe) {
+    noteAndWarn(
+      notes,
+      logger,
+      `left the remote branch in place: ${assessment.reason}`,
+    );
     return;
   }
   const res = await deps.git.runGitCommand(
@@ -600,7 +722,11 @@ async function deleteRemoteBranch(
     { cwd: branch.repoPath },
   );
   if (!res.ok) {
-    notes.push(`could not delete remote branch ${name}: ${res.error.message}`);
+    noteAndWarn(
+      notes,
+      logger,
+      `could not delete remote branch ${name}: ${res.error.message}`,
+    );
     return;
   }
   if (res.value.code === 0) {
@@ -611,53 +737,93 @@ async function deleteRemoteBranch(
     notes.push(`remote branch ${name} was already deleted`);
     return;
   }
-  notes.push(
-    `could not delete remote branch ${name}: ${firstLine(res.value.stderr)}`,
+  noteAndWarn(
+    notes,
+    logger,
+    `could not delete remote branch ${name}: ${
+      firstLine(res.value.stderr) ||
+      `git exited with code ${res.value.code}`
+    }`,
   );
 }
 
+/** Whether the parent is open now. A failed read counts as open (Issue #2465). */
+async function parentIsOpen(
+  deps: WorkerDeps,
+  ctx: IssueContext,
+): Promise<boolean> {
+  return !(await isIssueClosed(
+    ctx.repo,
+    ctx.issueNumber,
+    deps.github.runGhCommand,
+    deps.logger,
+  ));
+}
+
+/** What planning could not clear, for the parent's closing comment. */
+function heldOpenReasons(planned: PlanningResult): string[] {
+  const reasons: string[] = [];
+  const uncovered = planned.uncoveredAsks?.length ?? 0;
+  if (uncovered > 0) {
+    reasons.push(`the coverage gate found ${uncovered} uncovered ask(s)`);
+  }
+  const repairs = planned.pendingFailureDetectionRepair?.length ?? 0;
+  if (repairs > 0) {
+    reasons.push(
+      `the failure-detection gate still needs a repair on ${repairs} sub-issue(s)`,
+    );
+  }
+  return reasons;
+}
+
 /**
- * Close the parent if planning left it open (Issue #4130). A parent that the
- * coverage or failure-detection gate deliberately kept open stays open.
+ * Close the parent with a comment that links the sub-issues, and name what
+ * planning could not clear when it reported any (Issue #4130). The parent is
+ * re-read after the close: only a parent confirmed closed counts as closed.
  */
-async function closeParentIfOpen(
+async function closeParent(
   deps: WorkerDeps,
   ctx: IssueContext,
   planned: PlanningResult,
   subIssueUrls: string[],
   notes: string[],
-): Promise<void> {
-  const repo = ctx.repo;
+  logger: Logger,
+): Promise<ParentClose> {
   const number = ctx.issueNumber;
-  const open = !(await isIssueClosed(
-    repo,
-    number,
-    deps.github.runGhCommand,
-    deps.logger,
-  ));
-  if (!open) return;
-  const heldOpen = (planned.uncoveredAsks?.length ?? 0) > 0 ||
-    (planned.pendingFailureDetectionRepair?.length ?? 0) > 0;
-  if (heldOpen) {
-    notes.push(
-      `left parent #${number} open: planning's coverage or failure-detection gate holds it open`,
-    );
-    return;
+  if (!(await parentIsOpen(deps, ctx))) {
+    notes.push(`parent #${number} was already closed`);
+    return { closed: true };
   }
-  await deps.github.runGhCommand([
-    "issue",
-    "close",
-    String(number),
-    "--repo",
-    repo,
-    "--reason",
-    "completed",
-    "--comment",
-    `Split into sub-issues by the worker after a repeat gate failure: ${
-      splitLinks(subIssueUrls)
-    }.`,
-  ]);
+  const held = heldOpenReasons(planned);
+  const why = held.length > 0
+    ? ` Planning could not clear: ${held.join("; ")}.`
+    : "";
+  try {
+    await deps.github.runGhCommand([
+      "issue",
+      "close",
+      String(number),
+      "--repo",
+      ctx.repo,
+      "--reason",
+      "completed",
+      "--comment",
+      `Split into sub-issues by the worker after a repeat gate failure: ${
+        splitLinks(subIssueUrls)
+      }.${why}`,
+    ]);
+  } catch (err) {
+    const cause = messageOf(err);
+    noteAndWarn(notes, logger, `could not close parent #${number}: ${cause}`);
+    return { closed: false, cause };
+  }
+  if (await parentIsOpen(deps, ctx)) {
+    const cause = "the close was accepted but the parent still reads as open";
+    noteAndWarn(notes, logger, `parent #${number} is still open: ${cause}`);
+    return { closed: false, cause };
+  }
   notes.push(`closed parent #${number}`);
+  return { closed: true };
 }
 
 /** Run one best-effort step: a throw becomes a note and a warning, never a rejection. */
@@ -670,16 +836,15 @@ async function bestEffort(
   try {
     await run();
   } catch (err) {
-    notes.push(`${step} failed: ${messageOf(err)}`);
-    logger.warn(`Repeat-gate split: ${step} failed (best-effort)`, {
-      error: messageOf(err),
-    });
+    noteAndWarn(notes, logger, `${step} failed: ${messageOf(err)}`);
   }
 }
 
 /**
- * Every step after planning. Each one is best-effort, so nothing here can
- * turn a published split into a recorded repeat.
+ * Every step after planning, in the order that makes destruction safe: the
+ * sub-issues first, then the pull requests and the branch only when a
+ * sub-issue is complete, then the parent. `failed-once` is cleared only when
+ * the parent is confirmed closed.
  */
 async function finishSplit(
   args: RepeatGateSplitArgs,
@@ -688,80 +853,99 @@ async function finishSplit(
   subIssueUrls: string[],
   sections: SubIssueSections,
   notes: string[],
-): Promise<void> {
+): Promise<ParentClose> {
   const { ctx, deps, branch } = args;
   const { logger } = deps;
+  let completed = 0;
   for (const url of subIssueUrls) {
     const parsed = parseIssueUrl(url);
     if (parsed === undefined) {
-      notes.push(`skipped ${url}: not a GitHub issue URL`);
+      noteAndWarn(notes, logger, `skipped ${url}: not a GitHub issue URL`);
       continue;
     }
     if (parsed.repo.toLowerCase() !== ctx.repo.toLowerCase()) {
-      notes.push(`skipped ${url}: filed in another repository`);
+      noteAndWarn(
+        notes,
+        logger,
+        `skipped ${url}: filed in another repository`,
+      );
       continue;
     }
+    if (
+      await completeSubIssue(
+        ghClient,
+        logger,
+        notes,
+        ctx.repo,
+        ctx.issueNumber,
+        parsed.number,
+        sections,
+      )
+    ) {
+      completed++;
+    }
+  }
+  if (completed === 0) {
+    noteAndWarn(
+      notes,
+      logger,
+      "left the pull requests and the remote branch in place: no sub-issue in this repository was completed, so the run's work is not yet saved as sub-issues",
+    );
+  } else {
     await bestEffort(
       notes,
       logger,
-      `completing sub-issue #${parsed.number}`,
-      async () => {
-        notes.push(
-          ...await completeSubIssue(
-            ghClient,
-            ctx.repo,
-            ctx.issueNumber,
-            parsed.number,
-            sections,
-          ),
-        );
-      },
+      "closing the run's pull requests",
+      () =>
+        closeRunPullRequests(
+          deps,
+          ctx.repo,
+          branch,
+          sections.gateDisplay,
+          subIssueUrls,
+          notes,
+          logger,
+        ),
+    );
+    await bestEffort(
+      notes,
+      logger,
+      "deleting the remote branch",
+      () => deleteRemoteBranch(deps, ctx.repo, branch, notes, logger),
     );
   }
-  await bestEffort(
+  const parent = await closeParent(
+    deps,
+    ctx,
+    planned,
+    subIssueUrls,
     notes,
     logger,
-    "closing the run's pull requests",
-    () =>
-      closeRunPullRequests(
-        deps,
-        ctx.repo,
-        branch,
-        sections.gateDisplay,
-        subIssueUrls,
-        notes,
-      ),
   );
-  await bestEffort(
-    notes,
-    logger,
-    "deleting the remote branch",
-    () => deleteRemoteBranch(deps, branch, notes),
-  );
-  await bestEffort(
-    notes,
-    logger,
-    "closing the parent",
-    () => closeParentIfOpen(deps, ctx, planned, subIssueUrls, notes),
-  );
-  await bestEffort(
-    notes,
-    logger,
-    "clearing failed-once",
-    () =>
-      ghClient.removeLabel(
-        ctx.repo,
-        ctx.issueNumber,
-        ctx.config.failedOnceLabel,
-      ),
-  );
+  if (parent.closed) {
+    await bestEffort(
+      notes,
+      logger,
+      "clearing failed-once",
+      () =>
+        ghClient.removeLabel(
+          ctx.repo,
+          ctx.issueNumber,
+          ctx.config.failedOnceLabel,
+        ),
+    );
+  }
+  return parent;
 }
 
 /**
  * Build the repeat-gate split hook for one failing coding run (Issue #4130).
  *
  * The hook never throws. Before planning, a failure is a refusal, so the
- * caller records the repeat as before. After planning, a failure is a note.
+ * caller records the repeat as before. After planning, the outcome is
+ * `split: true` once the parent is confirmed closed; otherwise it is a refusal
+ * that keeps `failed-once`. Every outcome after planning logs one `info` line
+ * with all the notes.
  *
  * @param args - The failing run's context, dependencies and branch
  * @returns The hook `handleIssueFailure` calls on a repeat worker-gate failure
@@ -787,12 +971,14 @@ export function createRepeatGateSplitHook(
       return refuse(`could not create the GitHub client: ${messageOf(err)}`);
     }
 
+    const previous = await readPreviousRun(ghClient, ctx, logger);
+    if (!previous.ok) return refuse(previous.reason);
+
     const gateDisplay = getFailureCategoryDisplay(req.category);
     const gateText = capGateText(req.gateOutput || NO_GATE_OUTPUT);
-    const previous = await readPreviousRunOutput(ghClient, ctx, logger);
-    const previousText = previous === undefined
+    const previousText = previous.output === undefined
       ? undefined
-      : capGateText(previous);
+      : capGateText(previous.output);
     const branchText = await summariseBranch(deps, branch);
     const sections: SubIssueSections = { gateDisplay, gateText, branchText };
 
@@ -829,7 +1015,7 @@ export function createRepeatGateSplitHook(
     const notes: string[] = [
       `planning published ${subIssueUrls.length} sub-issue(s)`,
     ];
-    await finishSplit(
+    const parent = await finishSplit(
       args,
       ghClient,
       planned.value,
@@ -837,9 +1023,26 @@ export function createRepeatGateSplitHook(
       sections,
       notes,
     );
+    const context = {
+      repo: ctx.repo,
+      issueNumber: ctx.issueNumber,
+      subIssueUrls,
+      notes,
+    };
+    if (!parent.closed) {
+      logger.info(
+        `Repeat-gate split for ${ctx.repo}#${ctx.issueNumber} published sub-issues but the parent is open`,
+        context,
+      );
+      return refuse(
+        `${subIssueUrls.length} sub-issue(s) were published (${
+          subIssueUrls.join(", ")
+        }) but parent #${ctx.issueNumber} could not be closed: ${parent.cause}`,
+      );
+    }
     logger.info(
-      `Repeat-gate split for ${ctx.repo}#${ctx.issueNumber}: ${subIssueUrls.length} sub-issue(s)`,
-      { repo: ctx.repo, issueNumber: ctx.issueNumber },
+      `Repeat-gate split for ${ctx.repo}#${ctx.issueNumber} published ${subIssueUrls.length} sub-issue(s)`,
+      context,
     );
     return { split: true, subIssueUrls, notes };
   };

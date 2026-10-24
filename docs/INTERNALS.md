@@ -5305,6 +5305,13 @@ The callers that build the hook are the quality-gate remediation phase
 recorded as before. The engine is `createRepeatGateSplitHook` in
 `worker/deno/lib/repeat_gate_split.ts`. Its steps, in order:
 
+0. **Provenance first (refuses).** `failed-once` is removed after a split, so the
+   hook removes only a label it can prove this worker added: the parent must
+   carry a fleet-authored `## Automated Processing Failed` record. A label with no
+   such record (applied by hand, or a thread with no comments) refuses the split
+   with `failed-once is not backed by a fleet-authored failure record`. A thread
+   that cannot be read refuses it as `could not verify failed-once`. Both happen
+   before planning or any clean-up.
 1. **Seed and plan (can refuse).** The planner's comment thread is prefixed with
    a context block holding this run's gate output (redacted, then cut to 2,000
    head and 2,000 tail characters), the previous run's output (the
@@ -5329,40 +5336,68 @@ recorded as before. The engine is `createRepeatGateSplitHook` in
    falls through to `markIssueAsFailedOnce` with the repeat flag. The branch is
    left as it is.
 3. **Top up each sub-issue (best-effort).** Only sub-issues in the parent's
-   repository are touched; a URL in another repository is noted and skipped. The
-   body gets only the missing parts appended: `Part of #N`, a
-   `## Failing gate output` section and a `## What the branch got done` section.
-   Nothing else in the body is rewritten. The `enhancement` label is added if
-   missing.
-4. **Close the run's pull requests (best-effort).** `gh pr list --head <branch>
-   --state open --json number,isDraft,isCrossRepository` lists the open PRs.
-   Each same-repository PR, drafts included, is closed with `gh pr close
-   --comment`. A cross-repository PR with the same head name is left open and
-   noted. `--delete-branch` is never passed. Each close is independent.
-5. **Delete the remote branch (best-effort).** `git push --delete
-   --end-of-options origin <branch>` removes the remote run branch. It is refused
-   for an empty name, the base branch, the default branch and any `milestone/*`
-   branch. A remote ref that is already gone counts as deleted. The local branch
-   and worktree are never touched.
-6. **Close the parent (best-effort).** If the parent is still open, it is closed
-   as `completed` with a comment linking the sub-issues. The close is skipped,
-   and noted, when planning's coverage gate (`uncoveredAsks`) or its
-   failure-detection gate (`pendingFailureDetectionRepair`) holds the parent open.
-7. **Remove `failed-once` (best-effort).** The label is removed from the parent.
+   repository are touched; a URL in another repository is noted and skipped, and
+   a URL that is not a GitHub issue is noted and skipped. The body gets only the
+   missing parts appended: `Part of #N`, a `## Failing gate output` section and a
+   `## What the branch got done` section. Nothing else in the body is rewritten.
+   The `enhancement` label is added if missing. A sub-issue counts as
+   **completed** only when it can be read, its body carries every part, and it
+   has the label. A failed read, edit or label is a warning and a note, and the
+   sub-issue does not count.
+4. **Proof before destruction.** The pull request closes and the branch delete
+   run only when at least one sub-issue in the parent's repository is completed.
+   Otherwise both are skipped with a loud warning, and the split continues to
+   step 7.
+5. **Close the run's pull requests (best-effort).** `gh pr list --head <branch>
+   --state open --json number,isCrossRepository` lists the open PRs. Each
+   same-repository PR, drafts included, is closed with `gh pr close --comment`. A
+   cross-repository PR with the same head name is left open and noted. A failed
+   close is a warning, and the other closes still run. `--delete-branch` is never
+   passed. The branch guard (below) runs first.
+6. **Delete the remote branch (best-effort, after step 5).** The branch guard
+   runs first. Then `assessRemoteBranchDeletion`
+   (`worker/deno/lib/remote_branch_delete.ts`) must return `safe: true`. It
+   refuses an open PR with the branch as head or base, so a PR that a failed close
+   left open blocks the delete. Only then does `git push --delete
+   --end-of-options origin <branch>` run, with argv only. A remote ref that is
+   already gone counts as deleted. A refusal or a failed push is a warning and a
+   note. The local branch and worktree are never touched.
 
-Once planning has published sub-issues, nothing afterwards can refuse the split.
-Each later step is wrapped in `bestEffort`: a throw becomes a note and a warning,
-never a rejection, so a failed clean-up cannot turn a split into a recorded
-repeat. The hook returns `split: true` with the sub-issue URLs and notes.
+   **Branch guard (steps 5 and 6).** `branchRefusal` refuses an empty name, a name
+   that starts with `-`, the base branch, the default branch and every protected
+   branch (`isProtectedBranch`, which covers any `milestone/` branch in any case).
+   A refusal is a note and a warning, and no `gh pr` call is made for it.
+7. **Close the parent (best-effort, always).** If the parent is still open, it is
+   closed as `completed` with a comment linking the sub-issues. When planning's
+   coverage gate (`uncoveredAsks`) or its failure-detection gate
+   (`pendingFailureDetectionRepair`) held the parent open, the comment names
+   those gates. The parent is re-read after the close.
+8. **Clear `failed-once` only when the parent is confirmed closed.** If the parent
+   is still open after the close attempt, the hook refuses with the reason
+   "N sub-issue(s) were published (URLs) but parent #N could not be closed:
+   cause". `failed-once` stays, and the caller records the repeat with its
+   cooldown. A later run's planning pre-check finds the existing sub-issues and
+   closes the parent. When the parent is closed, the label is removed from it.
+
+Once planning has published sub-issues, each later step is wrapped in
+`bestEffort`: a throw becomes a note and a warning, never a rejection, so a
+failed clean-up cannot hide a published split. The one refusal after planning is
+an open parent (step 8), and it keeps the repeat record. Every outcome after
+planning logs one `info` line with all the notes. When the parent is closed the
+hook returns `split: true` with the sub-issue URLs and notes.
 `handleIssueFailure` then returns early with `split` set. It writes no failure
 record, adds no label and removes no assignee. The quality-gate phase sets
-`state.issueSplit`, and the main loop passes the split to `failureKind`, which is
-`undefined` for a split. So a split run records no cooldown.
+`state.issueSplit`, logs the sub-issue URLs and notes at `info`, and the main loop
+passes the split to `failureKind`, which is `undefined` for a split. So a split
+run records no cooldown.
 
 **What it destroys.** The remote run branch and its commits go, and so do the
-branch's open pull requests (closed, not merged). What survives is the summary in
-each sub-issue (the gate output and the branch summary, both redacted and capped)
-and the local clone, which this path does not touch.
+branch's open pull requests (closed, not merged). That happens only when a
+sub-issue in the parent's repository was completed (step 4), and only when no
+open PR still uses the branch as head or base once the closes are done. What
+survives is the summary in each sub-issue (the gate output and the branch
+summary, both redacted and capped) and the local clone, which this path does not
+touch.
 
 **Invariant.** This path never marks a pull request ready, merges one or arms
 auto-merge. Its only pull request operation is `gh pr close`. The fallback when

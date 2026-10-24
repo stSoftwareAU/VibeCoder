@@ -109,8 +109,9 @@ export interface FailureOptions {
    * Optional on purpose: only a caller that holds a branch to clean up and can
    * run planning supplies it. The coding-run callers supply it — the
    * quality-gate remediation phase and the main loop's
-   * `applyCodingFailureLadder`. Planning, question and other callers never see
-   * a worker-gate category, so they leave it unset.
+   * `applyCodingFailureLadder`. Planning and question callers leave it unset. The
+   * manual label_manager CLI can compute a worker-gate category from its message
+   * but supplies no hook, so it never splits.
    */
   splitOnRepeatGate?: RepeatGateSplitHook;
 }

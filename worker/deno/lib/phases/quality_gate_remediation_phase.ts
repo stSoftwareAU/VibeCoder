@@ -228,7 +228,7 @@ export async function workOnIssueQualityGate(
     } else {
       // Issue #4130: a repeat quality-gate failure splits the parent issue into
       // sub-issues instead of being recorded again. The hook needs the branch
-      // this run pushed; without one, a repeat is recorded as before.
+      // this run worked on; without one, a repeat is recorded as before.
       const splitOnRepeatGate = state.repoPath && state.branchName
         ? createRepeatGateSplitHook({
           ctx,
@@ -264,6 +264,12 @@ export async function workOnIssueQualityGate(
       // wrote nothing for the main loop to step again.
       if (failureRecord.ok && failureRecord.value.split) {
         state.issueSplit = true;
+        deps.logger.info("Repeat worker-gate failure split into sub-issues", {
+          repo: ctx.repo,
+          issueNumber: ctx.issueNumber,
+          subIssueUrls: failureRecord.value.split.subIssueUrls,
+          notes: failureRecord.value.split.notes,
+        });
       }
       // Issue #1949: the main loop now applies the same ladder to every
       // non-transient coding failure. Tell it this one is already done, so a

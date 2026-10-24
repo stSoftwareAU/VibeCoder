@@ -1379,9 +1379,14 @@ export async function processIssuePlanning(
  * second time, and its `stopHeartbeat` would clear the live heartbeat, so this
  * entry point runs the same round with neither: no claim, no heartbeat.
  *
- * Errors propagate to the caller, including {@link AgentTurnLimitError}. They
- * are not handed to `handlePlanningFailure`, which would post a planning
- * failure against an issue whose coding run owns the outcome.
+ * Errors, exactly: only an {@link AgentTurnLimitError} escapes this function.
+ * A Claude error or a timeout is handled inside the round, which is shared with
+ * {@link processIssuePlanning}: the round calls `handlePlanningFailure`, which
+ * posts a "Planning failed" failure record through `handleIssueFailure`, and
+ * returns `{ ok: false }`. The turn-limit error is not handled here, so it
+ * reaches the caller, and the repeat-gate split then refuses. The coding path
+ * writes its own repeat record, so an issue can carry two records; that is
+ * accepted (Issue #4130).
  *
  * @param ctx - The held issue's context
  * @param processorDeps - The planning processor's dependencies

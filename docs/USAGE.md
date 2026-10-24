@@ -375,33 +375,42 @@ worker splits the issue into sub-issues instead of recording another repeat.
 The first failure still adds `failed-once`. The gate was right and the code was
 not finished, so the worker:
 
+- checks first that `failed-once` is backed by a fleet-authored failure record
+  on the issue. A label applied by hand, with no such record, is never removed
+  by a split, and the split is refused;
 - runs one planning round on the parent, seeded with this run's gate output,
   the previous run's gate output and a summary of what the branch already did
   (commits, diff stat and files touched; `unavailable: …` on a shallow clone);
 - tops each published sub-issue up with `Part of #N`, a `## Failing gate
   output` section, a `## What the branch got done` section and the
-  `enhancement` label, where any of them is missing;
-- closes every open pull request on the run branch, drafts included (a
-  cross-repository pull request is left open), and deletes the remote run
-  branch. It never marks a pull request ready, merges one or arms auto-merge.
-  The base, default and `milestone/*` branches are never deleted;
-- closes the parent with links to the sub-issues if planning left it open
-  (unless planning's coverage or failure-detection gate holds it open), and
-  removes `failed-once`.
+  `enhancement` label, where any of them is missing. A sub-issue counts as done
+  only once all of that is in place;
+- when at least one sub-issue is done, closes every open pull request on the run
+  branch, drafts included (a cross-repository pull request is left open), and
+  deletes the remote run branch, unless a pull request is still open on it. It
+  never marks a pull request ready, merges one or arms auto-merge. The base,
+  default and protected (`milestone/*`) branches are never touched;
+- closes the parent with links to the sub-issues, and says which gate held it
+  open if planning's coverage or failure-detection gate did, and removes
+  `failed-once` once the parent is confirmed closed.
 
-The clean-up steps are best-effort: a failure is logged and reported as a note,
-never recorded as a repeat. A split run records no cooldown. Only the four
-worker gates split. Every other category, including `criteria_unmet`, is handled
-as before, under the rules in the sections above. If planning publishes no
-sub-issues, fails or throws, the run falls back to the ordinary repeat record,
-with a warning that names the reason, and the branch is left as it is.
+The clean-up steps are best-effort: a failure is logged where it happens and
+reported as a note, never recorded as a repeat. A split run records no cooldown.
+Only the four worker gates split. Every other category, including
+`criteria_unmet`, is handled as before, under the rules in the sections above.
+If planning publishes no sub-issues, fails or throws, or the fleet record is
+missing, the run falls back to the ordinary repeat record, with a warning that
+names the reason, and the branch is left as it is. If the parent cannot be
+closed after sub-issues were published, the sub-issues stay, `failed-once`
+stays, and the run records the repeat with its cooldown; the next run finds the
+sub-issues and closes the parent.
 
 ```mermaid
 flowchart TD
     T["Repeat worker-gate failure<br/>failed-once present, gate is summary,<br/>quality, pre-push or security-fix"] --> P["Planning round on the parent<br/>(held claim, branch summary seeded)"]
     P -->|"sub-issues published"| S["Sub-issues topped up:<br/>Part of #N, gate and branch sections,<br/>enhancement label"]
-    S --> X["Open PRs on run branch closed<br/>remote run branch deleted"]
-    X --> Y["Parent closed with links if left open<br/>failed-once removed, no cooldown"]
+    S --> X["Open PRs on run branch closed, then remote branch deleted<br/>(only when a sub-issue is complete and no PR is left open)"]
+    X --> Y["Parent closed with links, failed-once removed once it is closed<br/>(still open: refused, repeat record kept)"]
     P -->|"none published, fails or throws"| R["Repeat record<br/>+ 2 h / 6 h / 24 h cooldown"]
 
     style T fill:#ef476f,stroke:#c5233c,color:#fff

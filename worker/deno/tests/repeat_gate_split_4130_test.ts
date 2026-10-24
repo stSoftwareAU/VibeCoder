@@ -4,7 +4,8 @@
  *
  * Every GitHub and git call is recorded, so each test can say what the hook
  * did and, as importantly, what it did not do. The planning round is replaced
- * by the `planHeldIssue` seam.
+ * by the `planHeldIssue` seam. The fake GitHub keeps the state a real one would:
+ * a closed PR leaves the open set, and a closed parent reads as CLOSED.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -38,6 +39,8 @@ const SEED_HEADING =
   "### Worker split context (Issue #4130) — written by the worker";
 const GATE_OUTPUT = "GATE-MARKER: quality check failed in foo_test.ts";
 const PREV_OUTPUT = "PREV-MARKER: the earlier assertion mismatch";
+const REFUSED_NOT_BACKED =
+  "failed-once is not backed by a fleet-authored failure record";
 const ALL_CATEGORIES: FailureCategory[] = [
   "summary_incomplete",
   "quality_check",
@@ -49,16 +52,27 @@ type GitResponder = (
   args: string[],
 ) => Promise<Result<GitCommandOutput>>;
 
+/** A pull request as the fake `gh pr list` knows it. */
+interface FakePr {
+  number: number;
+  isDraft?: boolean;
+  isCrossRepository?: boolean;
+}
+
 /** What a scenario can change. Anything left out takes the default. */
 interface Scenario {
   category?: FailureCategory;
   gateOutput?: string;
+  /** The parent's comments; defaults to one fleet-authored failure record. */
   comments?: GitHubComment[];
+  /** Makes reading the parent's comments fail. */
+  commentsUnreadable?: boolean;
   issueComments?: string;
   issues?: Record<number, { body: string; labels?: string[] }>;
   planned?: Result<PlanningResult> | "throw";
   subIssueUrls?: string[];
   uncoveredAsks?: string[];
+  /** JSON array of the open PRs on the run branch. */
   prs?: string;
   parentState?: "OPEN" | "CLOSED";
   branchName?: string;
@@ -79,6 +93,11 @@ interface Recording {
   labelsAdded: { issue: number; label: string }[];
   labelsRemoved: { issue: number; label: string }[];
   planningContexts: IssueContext[];
+  /** Every warning the hook logged, in order. */
+  warns: string[];
+  /** Every `info` line the hook logged, and its context. */
+  infos: string[];
+  infoContexts: unknown[];
 }
 
 interface Run {
@@ -90,7 +109,7 @@ function okGit(stdout = "", code = 0, stderr = ""): Result<GitCommandOutput> {
   return { ok: true, value: { code, stdout, stderr } };
 }
 
-/** A shallow-free branch: ref resolves, log, stat and names all answer. */
+/** A branch whose ref resolves, and whose log, stat and names all answer. */
 function defaultGit(args: string[]): Promise<Result<GitCommandOutput>> {
   if (args[0] === "rev-parse") return Promise.resolve(okGit("", 0));
   if (args[0] === "log") {
@@ -105,14 +124,6 @@ function defaultGit(args: string[]): Promise<Result<GitCommandOutput>> {
     return Promise.resolve(okGit("src/a.ts\nsrc/b.ts\n"));
   }
   return Promise.resolve(okGit());
-}
-
-function defaultGh(s: Scenario, args: string[]): string {
-  if (args[0] === "pr" && args[1] === "list") return s.prs ?? "[]";
-  if (args[0] === "issue" && args[1] === "view" && args.includes("state")) {
-    return JSON.stringify({ state: s.parentState ?? "OPEN" });
-  }
-  return "";
 }
 
 function comment(author: string, body: string, id = 1): GitHubComment {
@@ -148,6 +159,31 @@ function failureRecord(attempt: string, output: string): string {
   ].join("\n");
 }
 
+/** A failure record whose body is `raw`, placed after its quoted key line. */
+function recordWithRawBody(raw: string): string {
+  return [
+    "## Automated Processing Failed (First Attempt)",
+    "",
+    "### Error Output",
+    "> key error line",
+    "",
+    raw,
+  ].join("\n");
+}
+
+/** A body that carries the other two acceptance sections. */
+function bodyWithSections(partOfLine: string): string {
+  return [
+    partOfLine,
+    "",
+    "## Failing gate output",
+    "x",
+    "",
+    "## What the branch got done",
+    "y",
+  ].join("\n");
+}
+
 /** Every recorded `pr` sub-command, `pr list` included. */
 function prCommands(rec: Recording): string[][] {
   return rec.gh.filter((args) => args[0] === "pr");
@@ -164,6 +200,17 @@ function mutations(rec: Recording): string[] {
   return [...gh, ...removals];
 }
 
+/** The `issue close` call the hook made, if any. */
+function parentCloseCall(rec: Recording): string[] | undefined {
+  return rec.gh.find((args) => args[0] === "issue" && args[1] === "close");
+}
+
+/** The value after `--comment` in a recorded call. */
+function commentArg(args: string[]): string {
+  const at = args.indexOf("--comment");
+  return at < 0 ? "" : (args[at + 1] ?? "");
+}
+
 async function runSplit(s: Scenario = {}): Promise<Run> {
   const rec: Recording = {
     gh: [],
@@ -172,8 +219,17 @@ async function runSplit(s: Scenario = {}): Promise<Run> {
     labelsAdded: [],
     labelsRemoved: [],
     planningContexts: [],
+    warns: [],
+    infos: [],
+    infoContexts: [],
   };
   const issues = s.issues ?? { 101: { body: "" }, 102: { body: "" } };
+  const comments = s.comments ??
+    [comment(FLEET, failureRecord("First Attempt", PREV_OUTPUT))];
+  const prs: FakePr[] = JSON.parse(s.prs ?? "[]");
+  const openPrs = new Set(prs.map((pr) => pr.number));
+  let parentState: "OPEN" | "CLOSED" = s.parentState ?? "OPEN";
+
   const client: GitHubClient = {
     getIssue: (_repo, number) => {
       const issue = issues[number];
@@ -192,7 +248,10 @@ async function runSplit(s: Scenario = {}): Promise<Run> {
         state: "OPEN",
       });
     },
-    getIssueComments: () => Promise.resolve(s.comments ?? []),
+    getIssueComments: () =>
+      s.commentsUnreadable
+        ? Promise.reject(new Error("gh timed out reading comments"))
+        : Promise.resolve(comments),
     addLabel: (_repo, number, label) => {
       rec.labelsAdded.push({ issue: number, label });
       return Promise.resolve();
@@ -211,7 +270,48 @@ async function runSplit(s: Scenario = {}): Promise<Run> {
     closeIssue: () => Promise.resolve(),
   };
 
+  /** The default answers, with the open PRs and the parent's state kept. */
+  const ghDefault = (args: string[]): string => {
+    if (args[0] === "pr" && args[1] === "list") {
+      if (args.includes("--jq")) {
+        // The branch-deletion assessment: the first open PR by head name.
+        if (!args.includes("--head")) return "";
+        const first = [...openPrs].sort((a, b) => a - b)[0];
+        return first === undefined ? "" : String(first);
+      }
+      return JSON.stringify(
+        prs
+          .filter((pr) => openPrs.has(pr.number))
+          .map((pr) => ({
+            number: pr.number,
+            isCrossRepository: pr.isCrossRepository ?? false,
+          })),
+      );
+    }
+    if (args[0] === "pr" && args[1] === "close") {
+      openPrs.delete(Number(args[2]));
+      return "";
+    }
+    if (args[0] === "issue" && args[1] === "view" && args.includes("state")) {
+      return JSON.stringify({ state: parentState });
+    }
+    if (args[0] === "issue" && args[1] === "close") {
+      parentState = "CLOSED";
+      return "";
+    }
+    return "";
+  };
+
   const deps = createMockDeps({
+    logger: {
+      warn: (message) => {
+        rec.warns.push(message);
+      },
+      info: (message, context) => {
+        rec.infos.push(message);
+        rec.infoContexts.push(context);
+      },
+    },
     github: {
       createClient: () => {
         if (s.createClientThrows) throw new Error("no GitHub client");
@@ -219,7 +319,7 @@ async function runSplit(s: Scenario = {}): Promise<Run> {
       },
       runGhCommand: (args: string[]) => {
         rec.gh.push(args);
-        return s.gh?.(args) ?? Promise.resolve(defaultGh(s, args));
+        return s.gh?.(args) ?? Promise.resolve(ghDefault(args));
       },
     },
     git: {
@@ -305,8 +405,15 @@ for (const category of ALL_CATEGORIES) {
   });
 }
 
-Deno.test("repeat gate split: says the previous run's output is unavailable when none is recorded", async () => {
-  const { outcome, rec } = await runSplit({ comments: [] });
+Deno.test("repeat gate split: says the previous run's output is unavailable when the fleet record quotes none", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: [
+      comment(
+        FLEET,
+        "## Automated Processing Failed (First Attempt)\n\nNo error output here.",
+      ),
+    ],
+  });
   assert(outcome.split);
   assert(
     /Previous run's output unavailable/.test(seedOf(rec)),
@@ -318,6 +425,47 @@ Deno.test("repeat gate split: the seed is prepended and keeps the existing comme
   const { rec } = await runSplit({ issueComments: "EXISTING-COMMENT-TEXT" });
   const seed = seedOf(rec);
   assert(seed.indexOf(SEED_HEADING) < seed.indexOf("EXISTING-COMMENT-TEXT"));
+});
+
+// ---------------------------------------------------------------------------
+// (p) provenance: failed-once must be backed by a fleet-authored record
+// ---------------------------------------------------------------------------
+
+Deno.test("repeat gate split: a failed-once label with only a human-authored record is refused, with no planning and no mutation", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: [comment("outsider", failureRecord("First Attempt", "X"))],
+    prs: JSON.stringify([{ number: 201 }]),
+  });
+  assertEquals(outcome, { split: false, reason: REFUSED_NOT_BACKED });
+  assertEquals(rec.planningContexts, [], "the planner never runs");
+  assertEquals(rec.gh, [], "no GitHub call beyond reading the comments");
+  assertEquals(rec.git, [], "no git call");
+  assertEquals(mutations(rec), []);
+  assertEquals(rec.labelsRemoved, []);
+  assertEquals(rec.edits, []);
+});
+
+Deno.test("repeat gate split: a failed-once label with zero comments is refused, with no planning and no mutation", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: [],
+    prs: JSON.stringify([{ number: 201 }]),
+  });
+  assertEquals(outcome, { split: false, reason: REFUSED_NOT_BACKED });
+  assertEquals(rec.planningContexts, []);
+  assertEquals(mutations(rec), []);
+  assertEquals(rec.labelsRemoved, []);
+});
+
+Deno.test("repeat gate split: an unreadable comment thread refuses the split as unverified", async () => {
+  const { outcome, rec } = await runSplit({ commentsUnreadable: true });
+  assertEquals(outcome.split, false);
+  assertStringIncludes(
+    outcome.split ? "" : outcome.reason,
+    "could not verify failed-once",
+  );
+  assertEquals(rec.planningContexts, []);
+  assertEquals(mutations(rec), []);
+  assertEquals(rec.labelsRemoved, []);
 });
 
 // ---------------------------------------------------------------------------
@@ -388,19 +536,6 @@ Deno.test("repeat gate split: a Part of line for another issue does not satisfy 
   assertStringIncludes(edit.body, `Part of #${PARENT}`);
 });
 
-/** A body with the other two acceptance sections, so only `Part of` is in question. */
-function bodyWithSections(partOfLine: string): string {
-  return [
-    partOfLine,
-    "",
-    "## Failing gate output",
-    "x",
-    "",
-    "## What the branch got done",
-    "y",
-  ].join("\n");
-}
-
 Deno.test("repeat gate split: Part of #123 does not satisfy parent #12; Part of #12. and #12, do", async () => {
   const urls = [101, 102, 103, 104].map((n) =>
     `https://github.com/org/repo/issues/${n}`
@@ -430,6 +565,65 @@ Deno.test("repeat gate split: Part of #123 does not satisfy parent #12; Part of 
   }
 });
 
+Deno.test("repeat gate split: a failed read of one sub-issue is a warning, and the rest still count", async () => {
+  const { outcome, rec } = await runSplit({
+    issues: { 101: { body: "" } },
+    prs: JSON.stringify([{ number: 201 }]),
+  });
+  assert(outcome.split, "the split still stands");
+  assert(
+    rec.warns.some((w) => w.includes("could not read sub-issue #102")),
+    "the failed read is warned at the point it happens",
+  );
+  assert(
+    rec.gh.some((a) => a[0] === "pr" && a[1] === "close" && a[2] === "201"),
+    "the PR is closed, because sub-issue #101 was completed",
+  );
+});
+
+Deno.test("repeat gate split: no completed sub-issue means no PR close and no branch delete, with a warning", async () => {
+  const { outcome, rec } = await runSplit({
+    issues: {},
+    prs: JSON.stringify([{ number: 201 }]),
+  });
+  assert(outcome.split, "the parent still closes and the split stands");
+  assertEquals(mutations(rec), [], "no PR close and no branch delete");
+  assert(
+    !rec.gh.some((a) => a[0] === "pr"),
+    "not even a pr list is issued",
+  );
+  assert(
+    rec.warns.some((w) =>
+      w.includes("no sub-issue in this repository was completed")
+    ),
+    "a loud warning says why",
+  );
+  assertEquals(rec.labelsRemoved, [{ issue: PARENT, label: "failed-once" }]);
+});
+
+Deno.test("repeat gate split: a sub-issue in another repository does not count as completed", async () => {
+  const other = "https://github.com/other/thing/issues/9";
+  const { outcome, rec } = await runSplit({
+    subIssueUrls: [other],
+    issues: {},
+    prs: JSON.stringify([{ number: 201 }]),
+  });
+  assert(outcome.split);
+  assertEquals(mutations(rec), []);
+});
+
+Deno.test("repeat gate split: an invalid sub-issue URL is skipped with a note and a warning", async () => {
+  const bad = "https://example.com/not-an-issue";
+  const { outcome, rec } = await runSplit({ subIssueUrls: [SUB_1, bad] });
+  assert(outcome.split);
+  assert(
+    outcome.notes.some((n) =>
+      n.includes(`skipped ${bad}: not a GitHub issue URL`)
+    ),
+  );
+  assert(rec.warns.some((w) => w.includes(bad)));
+});
+
 // ---------------------------------------------------------------------------
 // (c) clean-up: PRs closed, remote branch deleted, failed-once removed
 // ---------------------------------------------------------------------------
@@ -445,9 +639,9 @@ Deno.test("repeat gate split: closes every open PR including a draft, deletes th
   assert(
     rec.gh.some((a) =>
       a.join(" ") ===
-        "pr list --repo org/repo --head issue-4130-run-2 --state open --json number,isDraft,isCrossRepository"
+        "pr list --repo org/repo --head issue-4130-run-2 --state open --json number,isCrossRepository"
     ),
-    "lists open PRs on the run branch",
+    "lists open PRs on the run branch, with only the fields it reads",
   );
   for (const number of ["201", "202"]) {
     assert(
@@ -457,25 +651,19 @@ Deno.test("repeat gate split: closes every open PR including a draft, deletes th
   }
   assert(
     rec.git.some((a) =>
-      a.join(" ") ===
-        `push --delete --end-of-options origin ${BRANCH}`
+      a.join(" ") === `push --delete --end-of-options origin ${BRANCH}`
     ),
-    "deletes the remote branch",
+    "deletes the remote branch once no open PR is left on it",
   );
   assertEquals(rec.labelsRemoved, [{ issue: PARENT, label: "failed-once" }]);
-  assert(
-    rec.gh.some((a) =>
-      a[0] === "issue" && a[1] === "close" && a[2] === String(PARENT)
-    ),
-    "closes the parent that planning left open",
-  );
+  assert(parentCloseCall(rec), "closes the parent that planning left open");
 });
 
 Deno.test("repeat gate split: a cross-repository PR with the same head name is NOT closed, a same-repo one is", async () => {
   const { outcome, rec } = await runSplit({
     prs: JSON.stringify([
-      { number: 301, isDraft: false, isCrossRepository: true },
-      { number: 302, isDraft: false, isCrossRepository: false },
+      { number: 301, isCrossRepository: true },
+      { number: 302, isCrossRepository: false },
     ]),
   });
   assert(outcome.split, "the split still stands");
@@ -495,12 +683,22 @@ Deno.test("repeat gate split: a cross-repository PR with the same head name is N
   );
 });
 
-Deno.test("repeat gate split: the parent left open by an uncovered ask stays open", async () => {
+Deno.test("repeat gate split: the parent is closed even though planning reported open items, and the comment names them", async () => {
   const { outcome, rec } = await runSplit({ uncoveredAsks: ["the migration"] });
   assert(outcome.split);
+  const close = parentCloseCall(rec);
+  assert(close, "the parent is closed");
+  assertStringIncludes(commentArg(close), "uncovered ask(s)");
+  assertStringIncludes(commentArg(close), SUB_1);
+  assertEquals(rec.labelsRemoved, [{ issue: PARENT, label: "failed-once" }]);
+});
+
+Deno.test("repeat gate split: an already-closed parent is not closed again, and failed-once is still cleared", async () => {
+  const { outcome, rec } = await runSplit({ parentState: "CLOSED" });
+  assert(outcome.split);
+  assertEquals(parentCloseCall(rec), undefined, "no issue close call");
   assert(
-    !rec.gh.some((a) => a[0] === "issue" && a[1] === "close"),
-    "no close for the parent",
+    outcome.notes.some((n) => n.includes("was already closed")),
   );
   assertEquals(rec.labelsRemoved, [{ issue: PARENT, label: "failed-once" }]);
 });
@@ -512,7 +710,7 @@ Deno.test("repeat gate split: the parent left open by an uncovered ask stays ope
 Deno.test("repeat gate split: zero published sub-issues refuses and cleans up nothing", async () => {
   const { outcome, rec } = await runSplit({
     subIssueUrls: [],
-    prs: JSON.stringify([{ number: 201, isDraft: false }]),
+    prs: JSON.stringify([{ number: 201 }]),
   });
   assertEquals(outcome, {
     split: false,
@@ -526,7 +724,7 @@ Deno.test("repeat gate split: zero published sub-issues refuses and cleans up no
 Deno.test("repeat gate split: a planning result that is not ok refuses and cleans up nothing", async () => {
   const { outcome, rec } = await runSplit({
     planned: { ok: false, error: new Error("claude exploded") },
-    prs: JSON.stringify([{ number: 201, isDraft: false }]),
+    prs: JSON.stringify([{ number: 201 }]),
   });
   assertEquals(outcome.split, false);
   assertStringIncludes(
@@ -540,7 +738,7 @@ Deno.test("repeat gate split: a planning result that is not ok refuses and clean
 Deno.test("repeat gate split: a thrown planning round refuses and cleans up nothing", async () => {
   const { outcome, rec } = await runSplit({
     planned: "throw",
-    prs: JSON.stringify([{ number: 201, isDraft: false }]),
+    prs: JSON.stringify([{ number: 201 }]),
   });
   assertEquals(outcome.split, false);
   assertStringIncludes(
@@ -573,14 +771,17 @@ Deno.test("repeat gate split: a sub-issue in another repository is skipped and n
 });
 
 // ---------------------------------------------------------------------------
-// (e) branch guard: the base, the default and milestone branches are never
-// deleted, and the split still stands
+// (e) branch guard: refused branches have no PR closed and no branch deleted,
+// and the split still stands
 // ---------------------------------------------------------------------------
 
 const GUARDED: { name: string; base: string; defaultBranch: string }[] = [
   { name: "main", base: "main", defaultBranch: "main" },
   { name: "milestone/x", base: "main", defaultBranch: "main" },
+  { name: "Milestone/X", base: "main", defaultBranch: "main" },
   { name: "milestone/x", base: "milestone/x", defaultBranch: "main" },
+  { name: "feature/base-x", base: "feature/base-x", defaultBranch: "main" },
+  { name: "-oops", base: "main", defaultBranch: "main" },
   { name: "", base: "main", defaultBranch: "main" },
 ];
 
@@ -609,11 +810,7 @@ for (const g of GUARDED) {
       branchName: g.name,
       baseBranch: g.base,
       defaultBranch: g.defaultBranch,
-      prs: JSON.stringify([{
-        number: 401,
-        isDraft: false,
-        isCrossRepository: false,
-      }]),
+      prs: JSON.stringify([{ number: 401, isCrossRepository: false }]),
     });
     assert(outcome.split, "the split still stands");
     assert(
@@ -628,61 +825,204 @@ for (const g of GUARDED) {
 }
 
 // ---------------------------------------------------------------------------
-// (f) a failing PR close or branch delete does not stop the rest
+// (f) failures in clean-up are notes and warnings, and the rest still runs
 // ---------------------------------------------------------------------------
 
-Deno.test("repeat gate split: a failing PR close and a failing branch delete do not stop the rest", async () => {
+Deno.test("repeat gate split: a failed PR close leaves its head PR open, which blocks the branch delete, and the rest still runs", async () => {
   const { outcome, rec } = await runSplit({
-    prs: JSON.stringify([
-      { number: 201, isDraft: false },
-      { number: 202, isDraft: false },
-    ]),
+    prs: JSON.stringify([{ number: 201 }, { number: 202 }]),
     gh: (args) =>
       args[0] === "pr" && args[1] === "close" && args[2] === "201"
         ? Promise.reject(new Error("GraphQL: pull request is locked"))
         : undefined,
-    git: (args) =>
-      args[0] === "push"
-        ? Promise.resolve({
-          ok: false,
-          error: new Error("network down"),
-        })
-        : defaultGit(args),
   });
   assert(outcome.split, "a failed clean-up does not flip the result");
   assert(
     rec.gh.some((a) => a[0] === "pr" && a[1] === "close" && a[2] === "202"),
     "PR #202 is still closed",
   );
-  assertEquals(rec.labelsRemoved, [{ issue: PARENT, label: "failed-once" }]);
+  assert(
+    !rec.git.some((a) => a[0] === "push"),
+    "no remote delete while PR #201 is still open on the branch",
+  );
+  assert(
+    outcome.notes.some((n) =>
+      n.includes("left the remote branch in place: open PR #201")
+    ),
+  );
   assert(
     outcome.notes.some((n) => n.includes("could not close pull request #201")),
   );
+  assertEquals(rec.labelsRemoved, [{ issue: PARENT, label: "failed-once" }]);
+});
+
+Deno.test("repeat gate split: a failed remote delete is a note and a warning", async () => {
+  const { outcome, rec } = await runSplit({
+    git: (args) =>
+      args[0] === "push"
+        ? Promise.resolve(okGit("", 1, "fatal: unable to access 'remote'\n"))
+        : defaultGit(args),
+  });
+  assert(outcome.split);
   assert(
-    outcome.notes.some((n) => n.includes("could not delete remote branch")),
+    outcome.notes.some((n) =>
+      n ===
+        `could not delete remote branch ${BRANCH}: fatal: unable to access 'remote'`
+    ),
+  );
+  assert(
+    rec.warns.some((w) => w.includes("could not delete remote branch")),
+  );
+});
+
+Deno.test("repeat gate split: a remote ref that is already gone counts as deleted", async () => {
+  const { outcome, rec } = await runSplit({
+    git: (args) =>
+      args[0] === "push"
+        ? Promise.resolve(
+          okGit(
+            "",
+            1,
+            `error: unable to delete '${BRANCH}': remote ref does not exist\n`,
+          ),
+        )
+        : defaultGit(args),
+  });
+  assert(outcome.split);
+  assert(
+    outcome.notes.some((n) =>
+      n === `remote branch ${BRANCH} was already deleted`
+    ),
+  );
+  assert(!rec.warns.some((w) => w.includes("could not delete remote branch")));
+});
+
+Deno.test("repeat gate split: a PR list that is not an array fails its step with a note and a warning, and the split proceeds", async () => {
+  const { outcome, rec } = await runSplit({
+    gh: (args) =>
+      args[0] === "pr" && args[1] === "list" && !args.includes("--jq")
+        ? Promise.resolve("{}")
+        : undefined,
+  });
+  assert(outcome.split, "the split proceeds");
+  assert(
+    outcome.notes.some((n) =>
+      n ===
+        "closing the run's pull requests failed: gh pr list did not return an array"
+    ),
+  );
+  assert(
+    rec.warns.some((w) => w.includes("gh pr list did not return an array")),
+  );
+  assertEquals(rec.labelsRemoved, [{ issue: PARENT, label: "failed-once" }]);
+});
+
+Deno.test("repeat gate split: a PR row without a number fails its step with a note and a warning", async () => {
+  const { outcome, rec } = await runSplit({
+    gh: (args) =>
+      args[0] === "pr" && args[1] === "list" && !args.includes("--jq")
+        ? Promise.resolve('[{"isCrossRepository":false}]')
+        : undefined,
+  });
+  assert(outcome.split);
+  assert(
+    outcome.notes.some((n) =>
+      n ===
+        "closing the run's pull requests failed: gh pr list returned a row without a PR number"
+    ),
+  );
+  assertEquals(
+    mutations(rec).filter((m) => m.startsWith("gh ")),
+    [],
+    "no PR is closed on a list that cannot be trusted",
   );
 });
 
 // ---------------------------------------------------------------------------
-// (g) shallow or no-merge-base history is reported, never as an empty branch
+// (g) parent closure: a split stands only when the parent is confirmed closed
 // ---------------------------------------------------------------------------
 
-Deno.test("repeat gate split: a shallow clone with no merge base says the summary is unavailable", async () => {
+Deno.test("repeat gate split: a parent that cannot be closed refuses the split, keeps failed-once, and says what was published", async () => {
   const { outcome, rec } = await runSplit({
+    prs: JSON.stringify([{ number: 201 }]),
+    gh: (args) =>
+      args[0] === "issue" && args[1] === "close"
+        ? Promise.reject(new Error("GraphQL: not permitted"))
+        : undefined,
+  });
+  assertEquals(outcome.split, false);
+  assertEquals(
+    outcome.split ? "" : outcome.reason,
+    `2 sub-issue(s) were published (${SUB_1}, ${SUB_2}) but parent #${PARENT} could not be closed: GraphQL: not permitted`,
+  );
+  assertEquals(rec.labelsRemoved, [], "failed-once is kept");
+  assert(
+    rec.gh.some((a) => a[0] === "pr" && a[1] === "close" && a[2] === "201"),
+    "the clean-up that did not depend on the parent still ran",
+  );
+  assert(rec.warns.some((w) => w.includes("could not close parent")));
+});
+
+Deno.test("repeat gate split: a close that is accepted but reads back open refuses the split as still open", async () => {
+  const { outcome, rec } = await runSplit({
+    gh: (args) =>
+      args[0] === "issue" && args[1] === "close"
+        ? Promise.resolve("")
+        : undefined,
+  });
+  assertEquals(outcome.split, false);
+  assertStringIncludes(
+    outcome.split ? "" : outcome.reason,
+    "still reads as open",
+  );
+  assertEquals(rec.labelsRemoved, [], "failed-once is kept");
+});
+
+// ---------------------------------------------------------------------------
+// (h) shallow or no-merge-base history is reported, never as an empty branch
+// ---------------------------------------------------------------------------
+
+Deno.test("repeat gate split: a shallow clone where log succeeds and diff fails with no merge base reports the summary unavailable", async () => {
+  const { outcome, rec } = await runSplit({
+    branchName: "issue-1-x",
     git: (args) =>
-      args[0] === "log"
+      args[0] === "diff" && args[1] === "--stat"
         ? Promise.resolve(
-          okGit("", 128, "fatal: no merge base\nsecond line of stderr\n"),
+          okGit(
+            "",
+            128,
+            "fatal: origin/main...issue-1-x: no merge base\n",
+          ),
         )
         : defaultGit(args),
   });
   assert(outcome.split, "the split is not refused over the summary");
   const seed = seedOf(rec);
-  assertStringIncludes(seed, "unavailable: fatal: no merge base");
+  assertStringIncludes(
+    seed,
+    "unavailable: fatal: origin/main...issue-1-x: no merge base",
+  );
   assert(!seed.includes("Commits on"), "no empty branch is claimed");
   const edit = rec.edits.find((e) => e.issue === 101);
   assert(edit);
-  assertStringIncludes(edit.body, "unavailable: fatal: no merge base");
+  assertStringIncludes(
+    edit.body,
+    "unavailable: fatal: origin/main...issue-1-x: no merge base",
+  );
+});
+
+Deno.test("repeat gate split: a branch in neither the local nor the remote ref is reported unavailable", async () => {
+  const { outcome, rec } = await runSplit({
+    git: (args) =>
+      args[0] === "rev-parse"
+        ? Promise.resolve(okGit("", 1))
+        : defaultGit(args),
+  });
+  assert(outcome.split);
+  assertStringIncludes(
+    seedOf(rec),
+    "unavailable: branch not found locally or on origin",
+  );
 });
 
 Deno.test("repeat gate split: a git call that throws reports the summary unavailable and does not throw", async () => {
@@ -703,7 +1043,16 @@ Deno.test("repeat gate split: a git call that throws reports the summary unavail
 Deno.test("repeat gate split: a previous-run record from a non-fleet account is ignored", async () => {
   const { outcome, rec } = await runSplit({
     comments: [
-      comment("outsider", failureRecord("First Attempt", "OUTSIDER-MARKER")),
+      comment(
+        FLEET,
+        "## Automated Processing Failed (First Attempt)\n\nNo output quoted.",
+        1,
+      ),
+      comment(
+        "outsider",
+        failureRecord("Repeat Attempt", "OUTSIDER-MARKER"),
+        2,
+      ),
     ],
   });
   assert(outcome.split);
@@ -792,4 +1141,128 @@ Deno.test("repeat gate split: a full successful split never readies, merges or a
   assert(!everything.includes("merge"), "no pr merge");
   assert(!everything.includes("--auto"), "no --auto");
   assert(!everything.includes("--delete-branch"), "no gh --delete-branch");
+});
+
+// ---------------------------------------------------------------------------
+// (k) logging: each failure warns where it happens; one info line at the end
+// ---------------------------------------------------------------------------
+
+Deno.test("repeat gate split: a failed PR close warns at the failure, and the hook logs one info line with all the notes", async () => {
+  const { outcome, rec } = await runSplit({
+    prs: JSON.stringify([{ number: 201 }, { number: 202 }]),
+    gh: (args) =>
+      args[0] === "pr" && args[1] === "close" && args[2] === "201"
+        ? Promise.reject(new Error("GraphQL: locked"))
+        : undefined,
+  });
+  assert(outcome.split);
+  assert(
+    rec.warns.some((w) =>
+      w.includes("could not close pull request #201: GraphQL: locked")
+    ),
+    "the failed close is warned",
+  );
+  assertEquals(rec.infos.length, 1, "exactly one info line");
+  const context = rec.infoContexts[0] as { notes: string[] };
+  assertEquals(context.notes, outcome.split ? outcome.notes : []);
+  assert(
+    context.notes.some((n) => n === "closed pull request #202"),
+  );
+});
+
+Deno.test("repeat gate split: a refused branch delete warns, naming the refusal", async () => {
+  const { rec } = await runSplit({
+    branchName: "milestone/x",
+    baseBranch: "main",
+  });
+  assert(
+    rec.warns.some((w) =>
+      w.includes("left the remote branch in place: 'milestone/x'")
+    ),
+  );
+  assert(
+    rec.warns.some((w) => w.includes("left the pull requests in place")),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// (l) hostile input: the extraction and the marker search finish, linearly,
+// on inputs that backtracking would never return on
+// ---------------------------------------------------------------------------
+
+/**
+ * A hostile-input test must finish well inside this budget. The linear scan
+ * takes milliseconds; a quadratic pattern takes seconds on these inputs.
+ */
+const LINEAR_BUDGET_MS = 1000;
+
+function assertWithinBudget(startedAt: number): void {
+  const elapsed = performance.now() - startedAt;
+  assert(
+    elapsed < LINEAR_BUDGET_MS,
+    `finished in ${
+      Math.round(elapsed)
+    }ms, over the ${LINEAR_BUDGET_MS}ms linear budget`,
+  );
+}
+
+Deno.test("repeat gate split: 50 000 unclosed <details><summary> openers do not hang extraction", async () => {
+  const started = performance.now();
+  const { outcome, rec } = await runSplit({
+    comments: [
+      comment(
+        FLEET,
+        recordWithRawBody("<details><summary>".repeat(50_000)),
+      ),
+    ],
+  });
+  assert(outcome.split);
+  assertStringIncludes(seedOf(rec), "key error line");
+  assertWithinBudget(started);
+});
+
+Deno.test("repeat gate split: 50 000 </summary> closers with no <details> do not hang extraction", async () => {
+  const started = performance.now();
+  const { outcome, rec } = await runSplit({
+    comments: [
+      comment(FLEET, recordWithRawBody("</summary>".repeat(50_000))),
+    ],
+  });
+  assert(outcome.split);
+  assertStringIncludes(seedOf(rec), "key error line");
+  assertWithinBudget(started);
+});
+
+Deno.test("repeat gate split: a long Part of # digit run with no match is appended, not hung on", async () => {
+  const started = performance.now();
+  const body = "Part of #" + "1".repeat(50_000) + "x";
+  const { rec } = await runSplit({
+    issues: { 101: { body } },
+    subIssueUrls: [SUB_1],
+  });
+  const edit = rec.edits.find((e) => e.issue === 101);
+  assert(edit);
+  assert(
+    edit.body.split("\n").includes(`Part of #${PARENT}`),
+    "the parent's Part of line is appended",
+  );
+  assertWithinBudget(started);
+});
+
+Deno.test("repeat gate split: 50 000 '## Failing gate output' lines are scanned without a hang", async () => {
+  const started = performance.now();
+  const body = Array.from({ length: 50_000 }, () => "## Failing gate output ")
+    .join("\n");
+  const { rec } = await runSplit({
+    issues: { 101: { body } },
+    subIssueUrls: [SUB_1],
+  });
+  const edit = rec.edits.find((e) => e.issue === 101);
+  assert(edit);
+  assert(
+    edit.body.startsWith(body.trimEnd()),
+    "the planner's body is kept as it was, trailing blanks aside",
+  );
+  assertStringIncludes(edit.body, "## What the branch got done");
+  assertWithinBudget(started);
 });
