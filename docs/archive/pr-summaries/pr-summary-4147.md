@@ -131,4 +131,7 @@ were skipped because their local prerequisites are absent. Required CI and the
 repository's approving review must pass before merge; local skips do not
 replace required CI checks.
 
-Final clarity and main-integration validation is pending.
+The final implementation at `894ecb5c` passed all GitHub CI jobs, including
+all four unit-test shards, the container and no-runtime jobs, integration tests,
+PR-summary checks and security scans. The focused local run passed 368 tests.
+The approving review remains required; auto-merge is enabled.
