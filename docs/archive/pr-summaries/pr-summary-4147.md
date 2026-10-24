@@ -109,7 +109,9 @@ no-PR retry behaviour.
 
 ## Merge verification
 
-Run the complete `./quality.sh < /dev/null` gate before publishing this PR.
-Required CI and the repository's approving review must pass before merge.
-Config integration requires a local configuration; Checkov requires its scanner
-or a container runtime. Their local skips do not replace required CI checks.
+The complete local quality gate passed with one test worker and sequential
+checks: both unit passes, timing limits, lint, type checking, formatting,
+Markdown, Semgrep and repository policy checks. Config integration and Checkov
+were skipped because their local prerequisites are absent. Required CI and the
+repository's approving review must pass before merge; local skips do not
+replace required CI checks.
