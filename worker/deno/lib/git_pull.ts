@@ -18,6 +18,7 @@ import {
   raiseMilestoneSyncPr,
   syncPrLandingNote,
 } from "./milestone_sync_pr.ts";
+import { restoreClosedMilestoneRoute } from "./milestone_route_restore.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { ensureDefaultBranchCurrent } from "./git_push.ts";
 import {
@@ -262,6 +263,37 @@ async function pushSyncedMilestoneBranch(
     };
   }
 
+  const gh = async (args: string[]): Promise<string> => {
+    const result = await spawnGh(args);
+    if (!result.success) {
+      throw new Error(result.stderr.trim() || `gh exited ${result.code}`);
+    }
+    return result.stdout;
+  };
+  // Issue #4175: do not open a sync PR into a route that is still closed.
+  // An open milestone is restored first (a fresh rollup when the branch is
+  // ahead). A closed milestone, or one with no open work, is left alone.
+  const restored = await restoreClosedMilestoneRoute({
+    repo,
+    milestoneBranch,
+    defaultBranch,
+    ghCommandFn: gh,
+  });
+  if (restored.action === "failed") {
+    return {
+      ok: false,
+      error: new Error(
+        `sync PR not opened into '${milestoneBranch}': the route could not be restored (${restored.reason})`,
+      ),
+    };
+  }
+  if (restored.action === "left-closed") {
+    return {
+      ok: true,
+      value:
+        `sync PR not opened into '${milestoneBranch}': ${restored.detail} (Issue #4175) — `,
+    };
+  }
   const raised = await raiseMilestoneSyncPr(
     repo,
     milestoneBranch,
@@ -277,13 +309,7 @@ async function pushSyncedMilestoneBranch(
           }
           : { code: 1, stderr: result.error.message, stdout: "" };
       },
-      gh: async (args) => {
-        const result = await spawnGh(args);
-        if (!result.success) {
-          throw new Error(result.stderr.trim() || `gh exited ${result.code}`);
-        }
-        return result.stdout;
-      },
+      gh,
     },
   );
   if (!raised.ok) {

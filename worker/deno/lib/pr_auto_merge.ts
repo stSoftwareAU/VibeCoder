@@ -37,6 +37,7 @@ import {
   type SummaryPrMergeDecision,
 } from "./milestone_children_gate.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import { restoreClosedMilestoneRoute } from "./milestone_route_restore.ts";
 import { getRepoDefaultBranch } from "./shell_helpers.ts";
 import {
   forkSyncDowngradeWarning,
@@ -99,9 +100,10 @@ export enum AutoMergeResult {
   MergedDirectly = "merged_directly",
   /**
    * Refused to merge into a milestone branch whose route closed (rollup PR
-   * merged, or milestone closed). The PR is left on its base, auto-merge is
-   * disarmed, a comment is posted and a human decides (Issue #4396 gate,
-   * Issue #3433 hold).
+   * merged and the milestone is closed or has no open work). The PR is left
+   * on its base, auto-merge is disarmed, and a comment is posted. It is not
+   * retargeted (Issue #4396 gate, Issue #3433 hold). An open milestone with
+   * open work is given a fresh rollup instead (Issue #4175).
    */
   HeldRouteClosed = "held_route_closed",
   /**
@@ -875,11 +877,39 @@ export async function enableAutoMerge(
     );
   }
 
+  // Issue #4175: an open milestone whose rollup has merged gets a fresh
+  // rollup from the milestone branch before the gate is asked, so a held
+  // child can be armed onto that branch. A milestone-fix pull request is
+  // not moved onto the default branch (Issue #3433). A failed restore is
+  // not armed and not held — the next scan reads it again.
+  if (
+    !options.decideMilestoneBaseFn && options.baseRefName &&
+    isMilestoneBranch(options.baseRefName)
+  ) {
+    const restored = await restoreClosedMilestoneRoute({
+      repo,
+      milestoneBranch: options.baseRefName,
+      ghCommandFn,
+      log,
+      ...(options.getDefaultBranchFn
+        ? { getDefaultBranchFn: options.getDefaultBranchFn }
+        : {}),
+    });
+    if (restored.action === "failed") {
+      return {
+        result: AutoMergeResult.Deferred,
+        message:
+          `PR #${prNumber} left on ${options.baseRefName}: fresh rollup was not opened (${restored.reason}) — retrying next scan (Issue #4175)`,
+      };
+    }
+  }
+
   // Issue #4396: the mirror image — never merge INTO a milestone branch
   // whose route to the default branch has closed (rollup PR merged, or
   // milestone closed). Seven fixes were lost that way with their issues
   // reading COMPLETED. Refuse loud and hold the PR where it is: the fleet never
-  // moves it to the default branch (Issue #3433).
+  // moves it to the default branch (Issue #3433). An open milestone with
+  // open work is armed instead, onto the milestone branch (Issue #4175).
   // Issue #1779: `requireSyncedBase` adds the second half — it reports a
   // milestone tip that is behind the default branch, which drives the
   // in-cycle sync below. Issue #2460: being behind no longer withholds
