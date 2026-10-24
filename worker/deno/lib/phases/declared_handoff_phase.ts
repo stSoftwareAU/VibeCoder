@@ -14,8 +14,8 @@
  * `bump_deps`, applying the same `handOffDeclaredOutcome` detection/apply
  * logic used by the no-changes phase. A detected-but-unhandled signal (a
  * guard — repeat deferral, repeat planning request, missing anchor label,
- * image gate — fell through) is handed to a human via `handOffAnalysisOnly`
- * rather than allowed to continue to completion.
+ * image gate — fell through) is retried with its branch pushed (Issue
+ * #4227), rather than allowed to continue to completion or handed to a human.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -26,7 +26,8 @@ import type {
   PhaseState,
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
-import { handOffAnalysisOnly } from "../analysis_only_handoff.ts";
+import { retryUnfinishedIssue } from "../unfinished_issue_retry.ts";
+import { redactedTail } from "../redacted_text.ts";
 import {
   handOffDeclaredOutcome,
   pushCommittedBranchForHandoff,
@@ -48,22 +49,22 @@ export async function workOnIssueDeclaredHandoff(
   if (outcome.declared) {
     const failed = await pushCommittedBranchForHandoff(state, deps);
     if (failed) return failed;
-    const logger = deps.logger;
-    await handOffAnalysisOnly({
-      ghClient: deps.github.createClient(logger),
+    // Issue #4227: the branch is pushed, so the retry resumes the committed
+    // work; the approved issue is never handed to a human.
+    return await retryUnfinishedIssue({
+      ghClient: deps.github.createClient(deps.logger),
       repo: ctx.repo,
       issueNumber: ctx.issueNumber,
-      needsHumanLabel: ctx.config.needsHumanLabel,
-      githubUser: ctx.githubUser,
-      trigger: "declared_handoff",
-      logger,
-      deps: { ensureLabelExists: deps.github.ensureLabelExists },
+      why:
+        "it committed work but declared a hand-off the worker could not honour",
+      agentOutput: state.claudeOutput,
+      diagnostics: {
+        clarityStatus: state.clarityStatus,
+        outputSize: state.claudeOutput.length,
+        lastOutputSnippet: redactedTail(state.claudeOutput, 500) || undefined,
+      },
+      logger: deps.logger,
     });
-    return {
-      category: "unknown",
-      status: "early_exit",
-      reason: "analysis_only_handed_off",
-    };
   }
 
   return { status: "continue" };

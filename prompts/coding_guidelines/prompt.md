@@ -919,6 +919,14 @@ deferral: fix the root cause, or use the escape hatch below.
 
 ## Human Escalation
 
+**Never in an issue run.** An issue you were given to implement is approved,
+and an approved issue is completed, never handed back (owner, 23–24 October
+2026). An issue run does not apply `needs-human`, does not ask a person to take
+over, and does not file a follow-up issue for the remainder. A run that stops
+short is retried with its output, and an issue too large for one PR goes to
+planning through the issue prompt's planning marker. This section, and the
+escape hatch below, apply only to the PR-feedback and CI-fix routes.
+
 Any time you apply the `needs-human` label — for any reason — you must on the
 same run post a comment that (a) explains why you applied the label and (b)
 tells the human exactly what to do next. The label and the comment must always
@@ -998,8 +1006,9 @@ from _bumping_ deps to _fixing their root causes_.
   treat it as external for this decision; deferring via the escape hatch below
   is then legitimate.
 
-Deferral via a follow-up issue + `needs-human` (the escape hatch below) is
-acceptable **only** for:
+In a PR-feedback or CI-fix run, deferral via a follow-up issue + `needs-human`
+(the escape hatch below) is acceptable **only** for (an issue run never defers
+this way — see **Human Escalation**):
 
 1. **external** (non-`stSoftwareAU/*`) dependencies,
 2. genuine **human-only decisions**, or
@@ -1062,6 +1071,9 @@ two boundaries must hold before that fix reaches the **consuming** repo:
 
 ## Escape Hatch — Hand Off When Genuinely Out of Scope
 
+**PR-feedback and CI-fix runs only** — an issue run has no escape hatch (see
+**Human Escalation** above).
+
 Use this when the task is genuinely too large or out of scope to complete in
 this run — a PR review comment requesting a multi-day change, a CI failure
 caused by missing infrastructure, or an issue whose scope exploded after
@@ -1114,28 +1126,9 @@ this **instead of looping**:
      nothing; the label belongs on an issue that already exists, which is the
      escalation the message is asking a human to make.
 
-   For PR feedback or CI fix work, write the message to `.pr_response_message`
-   in the working directory — the worker posts it as the PR reply. For issue
-   work, post the message as a comment on the current issue — and stop there.
-   In an issue run, this free-text hand-off is honoured only when the run
-   leaves no commit and no uncommitted change. Decide before you edit any
-   file, because the worker commits and pushes the working tree periodically
-   and again at the end of the run. Once a file has changed, a free-text
-   hand-off is not read. In an issue run, if no open issue already blocks
-   the work, this is not a deferral. Do not file a follow-up and name it on
-   a `Depends on` line: that hands the issue to a human instead of deferring,
-   whether or not the branch has commits. A
-   bare `## Blocked:` heading does not defer, and the worker raises a PR
-   that closes the issue. A PR-feedback or CI-fix run
-   keeps using the `.pr_response_message` escape hatch above, including on a
-   branch that already has commits.
-   **Do not close the issue yourself**: the `gh` guard refuses
-   `gh issue close|reopen|delete|transfer|lock` on the issue you are working.
-   In an issue run, the worker releases its claim and hands the issue to a
-   human (`needs-human`) only while the branch has no commits and no
-   uncommitted changes against the base; once work is committed, an
-   issue-comment hand-off is not read. A human decides whether to close the
-   issue.
+   Write the message to `.pr_response_message` in the working directory —
+   the worker posts it as the PR reply, including on a branch that already
+   has commits.
 4. Exit cleanly. Do not retry the original change.
 
 **Do not invoke this lightly.** Make a serious attempt first. Use the escape
