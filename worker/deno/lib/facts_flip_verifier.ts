@@ -9,7 +9,12 @@
  * Deno entries reuse `generateDenoMutantsDetailed` and the mutation runner's
  * seams: a green baseline, then each mutant written and restored in `finally`.
  * The named test is selected with `deno test --filter`. An unparsable mutant
- * is not a kill. Rust entries are a separate path (Issue #4187).
+ * is not a kill.
+ *
+ * Rust entries reuse `findCargoPackageDir`, `rustTestArgs` and
+ * `namedRustTestOutcome`. Mutants come from `cargo mutants` (the runner's
+ * existing Rust mutator), limited to a diff of the cited lines and to the
+ * named test. This module does not generate Rust mutants of its own.
  *
  * An outcome is two-sided when its text says the claim holds both ways: it
  * contains `true/false` or `false/true` (spaces around the slash allowed), or
@@ -34,13 +39,19 @@ import {
 } from "./mutation_gate.ts";
 import { resolveMutationBudgetSeconds } from "./mutation_check_invocation.ts";
 import {
+  allowListedCargoPackageName,
   confinePath,
+  findCargoPackageDir,
   findDenoConfigDir,
   isParseFailure,
   type MutationRunnerSeams,
   type ProcessResult,
 } from "./mutation_runner.ts";
-import { namedTestOutcome } from "./security_fix_discrimination.ts";
+import {
+  namedRustTestOutcome,
+  namedTestOutcome,
+  rustTestArgs,
+} from "./security_fix_discrimination.ts";
 import type {
   BranchOutcomeEntry,
   SummaryFacts,
@@ -362,13 +373,295 @@ async function verifyDenoEntry(
   return notChecked("no_viable_mutant");
 }
 
+interface RustMutantView {
+  file: string;
+  line: number;
+  name: string;
+  genre: string;
+  replacement: string;
+  summary: "CaughtMutant" | "MissedMutant" | "Unviable" | "Timeout";
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/**
+ * Mutants in cargo-mutants `outcomes.json`. The field names are the ones
+ * `parseOutcomes` in `mutation_runner.ts` already reads. Null when the
+ * document is not that shape.
+ */
+function parseRustMutants(text: string): RustMutantView[] | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const root = asRecord(data);
+  if (!root || !Array.isArray(root.outcomes)) return null;
+  const out: RustMutantView[] = [];
+  const summaries = ["CaughtMutant", "MissedMutant", "Unviable", "Timeout"];
+  for (const item of root.outcomes) {
+    const outcome = asRecord(item);
+    if (!outcome) return null;
+    if (typeof outcome.scenario === "string") continue;
+    const scenario = asRecord(outcome.scenario);
+    if (!scenario) return null;
+    const mutant = asRecord(scenario.Mutant);
+    if (!mutant) continue;
+    const summary = outcome.summary;
+    if (typeof summary !== "string" || !summaries.includes(summary)) continue;
+    const line = Number(asRecord(asRecord(mutant.span)?.start)?.line);
+    const file = typeof mutant.file === "string" ? mutant.file : null;
+    if (file === null || !Number.isFinite(line)) return null;
+    out.push({
+      file,
+      line,
+      name: typeof mutant.name === "string" ? mutant.name : "",
+      genre: typeof mutant.genre === "string" ? mutant.genre : "",
+      replacement: typeof mutant.replacement === "string"
+        ? mutant.replacement
+        : "",
+      summary: summary as RustMutantView["summary"],
+    });
+  }
+  return out;
+}
+
+/** A condition flip, or a boolean / return swap, in a cargo-mutants name. */
+function rustForcing(mutant: RustMutantView): "negation" | "swap" | null {
+  const replacement = mutant.replacement.trim();
+  if (replacement === "true" || replacement === "false") return "swap";
+  if (/\breturn\b/i.test(mutant.name) || /\breturn\b/i.test(mutant.genre)) {
+    return "swap";
+  }
+  if (
+    replacement === "!" || replacement === "!=" || replacement === "==" ||
+    replacement === "&&" || replacement === "||" ||
+    /==|!=|&&|\|\|/.test(mutant.name) || /\bnegate\b/i.test(mutant.name)
+  ) return "negation";
+  return null;
+}
+
+function inSpan(line: number, entry: TestedEntry): boolean {
+  const end = entry.endLine ?? entry.line;
+  return line >= entry.line && line <= end;
+}
+
+function citedDiff(
+  relFile: string,
+  source: string,
+  start: number,
+  end: number,
+): string {
+  const lines = source.split("\n");
+  const added: string[] = [];
+  for (let n = start; n <= end; n++) {
+    let line = lines[n - 1] ?? "";
+    if (line.endsWith("\r")) line = line.slice(0, -1);
+    added.push(`+${line}`);
+  }
+  return [
+    `diff --git a/${relFile} b/${relFile}`,
+    `--- a/${relFile}`,
+    `+++ b/${relFile}`,
+    `@@ -${start},0 +${start},${added.length} @@`,
+    ...added,
+    "",
+  ].join("\n");
+}
+
+function classifyRustBaseline(
+  res: ProcessResult,
+  testName: string,
+): FlipStatus | null {
+  if (res.timedOut) return notChecked("timeout");
+  if (isMissingTool(res)) return notChecked("missing_tool");
+  const outcome = namedRustTestOutcome(res.stdout, testName);
+  if (outcome === "fail") return notChecked("baseline_failure");
+  if (outcome === null) return notChecked("zero_matched_tests");
+  return null;
+}
+
+function rustForcingResult(
+  group: readonly RustMutantView[],
+): ForcingOutcome | FlipStatus {
+  if (group.some((m) => m.summary === "CaughtMutant")) return "killed";
+  if (group.some((m) => m.summary === "Timeout")) return notChecked("timeout");
+  if (group.some((m) => m.summary === "MissedMutant")) return "green";
+  return "unviable";
+}
+
+function judgeRust(
+  entry: TestedEntry,
+  mutants: readonly RustMutantView[],
+): FlipStatus {
+  const cited = mutants.filter((m) =>
+    normalise(m.file) === normalise(entry.path) && inSpan(m.line, entry)
+  );
+  if (!isTwoSidedOutcome(entry.outcome)) {
+    if (cited.some((m) => m.summary === "CaughtMutant")) {
+      return { kind: "verified" };
+    }
+    if (cited.some((m) => m.summary === "Timeout")) {
+      return notChecked("timeout");
+    }
+    if (cited.some((m) => m.summary === "MissedMutant")) {
+      return { kind: "refused", message: refusalMessage(entry) };
+    }
+    return notChecked("no_viable_mutant");
+  }
+  const negation = cited.filter((m) => rustForcing(m) === "negation");
+  const swap = cited.filter((m) => rustForcing(m) === "swap");
+  if (negation.length === 0 || swap.length === 0) {
+    return notChecked(SPLIT_REASON);
+  }
+  const neg = rustForcingResult(negation);
+  if (typeof neg !== "string") return neg;
+  const swapped = rustForcingResult(swap);
+  if (typeof swapped !== "string") return swapped;
+  return finishTwoSided(entry, neg, swapped, 0);
+}
+
+async function cargoPackage(
+  seams: FactsFlipSeams,
+  file: string,
+): Promise<{ dir: string; name: string } | null> {
+  const dir = await findCargoPackageDir(seams.repoPath, file, seams);
+  if (dir === null) return null;
+  const manifest = dir === "" ? "Cargo.toml" : `${dir}/Cargo.toml`;
+  const abs = await confinePath(seams.repoPath, manifest, seams);
+  if (abs === null) return null;
+  let toml: string;
+  try {
+    toml = await seams.readTextFile(abs);
+  } catch {
+    return null;
+  }
+  const name = allowListedCargoPackageName(toml);
+  if (name === null) return null;
+  return { dir, name };
+}
+
+const CARGO_MUTANTS_MISSING = /no such command: `?mutants/i;
+
+async function verifyRustEntry(
+  entry: TestedEntry,
+  seams: FactsFlipSeams,
+  remaining: () => number,
+): Promise<FlipStatus> {
+  const testPkg = await cargoPackage(seams, entry.test);
+  const sourcePkg = await cargoPackage(seams, entry.path);
+  if (
+    testPkg === null || sourcePkg === null || testPkg.dir !== sourcePkg.dir
+  ) {
+    return notChecked("no_cargo_package");
+  }
+  const relTest = relativeTo(testPkg.dir, entry.test);
+  if (relTest === null || relTest === "") return notChecked("no_cargo_package");
+
+  const abs = await confinePath(seams.repoPath, entry.path, seams);
+  if (abs === null) return notChecked("source_unreadable");
+  let source: string;
+  try {
+    source = await seams.readTextFile(abs);
+  } catch {
+    return notChecked("source_unreadable");
+  }
+
+  const cwd = testPkg.dir === ""
+    ? seams.repoPath
+    : `${seams.repoPath}/${testPkg.dir}`;
+  const testArgs = rustTestArgs(relTest, entry.testName);
+  const baselineBudget = remaining();
+  if (baselineBudget <= 0) return notChecked("budget_exhausted");
+  const baseline = await seams.runProcess("cargo", testArgs, {
+    cwd,
+    timeoutMs: baselineBudget,
+  });
+  const baselineStatus = classifyRustBaseline(baseline, entry.testName);
+  if (baselineStatus !== null) return baselineStatus;
+
+  const outDir = await seams.makeTempDir();
+  try {
+    const mutantBudget = remaining();
+    if (mutantBudget <= 0) return notChecked("budget_exhausted");
+    const repoSource = normalise(entry.path);
+    const diffPath = `${outDir}/cited.diff`;
+    await seams.writeTextFile(
+      diffPath,
+      citedDiff(
+        repoSource,
+        source,
+        entry.line,
+        entry.endLine ?? entry.line,
+      ),
+    );
+    const proc = await seams.runProcess(
+      "cargo",
+      [
+        "mutants",
+        "--package",
+        testPkg.name,
+        "--file",
+        repoSource,
+        "--in-diff",
+        diffPath,
+        "--output",
+        outDir,
+        "--no-shuffle",
+        "--jobs",
+        "1",
+        "--",
+        ...testArgs.slice(1),
+      ],
+      {
+        cwd: seams.repoPath,
+        timeoutMs: mutantBudget,
+        env: { TMPDIR: outDir },
+      },
+    );
+    if (proc.timedOut) return notChecked("timeout");
+    if (proc.code === 127 || CARGO_MUTANTS_MISSING.test(proc.stderr)) {
+      return notChecked("missing_tool");
+    }
+    if (proc.code === 4) return notChecked("baseline_failure");
+    if (![0, 2, 3].includes(proc.code)) {
+      return notChecked("cargo_mutants_failed");
+    }
+    const outcomesPath = `${outDir}/mutants.out/outcomes.json`;
+    let text: string | null = null;
+    if (await seams.exists(outcomesPath)) {
+      text = await seams.readTextFile(outcomesPath);
+    }
+    if (
+      text === null && proc.code === 0 &&
+      /no mutants/i.test(`${proc.stdout}\n${proc.stderr}`)
+    ) {
+      return notChecked("no_viable_mutant");
+    }
+    if (text === null) return notChecked("outcomes_unreadable");
+    const parsed = parseRustMutants(text);
+    if (parsed === null) return notChecked("outcomes_unreadable");
+    return judgeRust(entry, parsed);
+  } finally {
+    await seams.removeDir(outDir);
+  }
+}
+
 async function verifyTested(
   entry: TestedEntry,
   seams: FactsFlipSeams,
   remaining: () => number,
 ): Promise<FlipStatus> {
-  if (entry.test.endsWith(".rs")) {
-    return notChecked("unsupported_test");
+  if (entry.test.endsWith(".rs") || entry.path.endsWith(".rs")) {
+    if (!entry.test.endsWith(".rs") || !entry.path.endsWith(".rs")) {
+      return notChecked("unsupported_test");
+    }
+    return await verifyRustEntry(entry, seams, remaining);
   }
   if (!isDenoTest(entry.test)) return notChecked("unsupported_test");
   return await verifyDenoEntry(entry, seams, remaining);
