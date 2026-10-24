@@ -1,0 +1,12 @@
+{
+  "issue": 4248,
+  "chunk": "top-up-4248",
+  "title": "top-up: spawn timeout check fails a subprocess with no explicit timeout",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4248",
+  "definition": "module added after the lib sweep slices were closed: worker/deno/lib/spawn_timeout_check.ts (quality-gate check that fails a Deno.Command with no signal, or a runWithTimeout call with no timeoutMs, against a shrink-only baseline) (#4248)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/spawn_timeout_check.ts"
+  ],
+  "sweptAt": "b0e04b1d6243b0d76be84266ab18b0364e91e321"
+}

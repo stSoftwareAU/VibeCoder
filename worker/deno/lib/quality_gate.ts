@@ -37,6 +37,12 @@ import {
   GIT_SPAWN_SCAN_DIRS,
   scanDirectoriesForGitSpawn,
 } from "./git_spawn_chokepoint_check.ts";
+import {
+  diffSpawnTimeoutBaseline,
+  scanDirectoriesForSpawnTimeout,
+  SPAWN_TIMEOUT_BASELINE,
+  SPAWN_TIMEOUT_SCAN_DIRS,
+} from "./spawn_timeout_check.ts";
 import { scanDirectoriesForRedactInversion } from "./redact_truncate_order_check.ts";
 import { scanDirectoriesForSharedTmpPath } from "./tmp_state_dir_check.ts";
 import { scanDirectoriesForHomeWorkDir } from "./home_workdir_check.ts";
@@ -702,6 +708,76 @@ async function runGitSpawnChokepointCheck(
     name,
     status: "FAILED",
     output: `git spawn chokepoint: FAILED\n${output}`,
+  };
+}
+
+/**
+ * Run the spawn-timeout check (Issue #4248).
+ *
+ * A `new Deno.Command` with no `signal`, outside the chokepoint modules, or a
+ * `runWithTimeout` call with no `timeoutMs`, fails the gate. Files already
+ * offending are named in the baseline; that list may only shrink, so a stale
+ * entry fails until it is removed.
+ */
+async function runSpawnTimeoutCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const name = "spawn timeout";
+  const relDirs = SPAWN_TIMEOUT_SCAN_DIRS;
+
+  let hasDirs = false;
+  for (const relDir of relDirs) {
+    try {
+      const stat = await Deno.stat(`${config.scriptDir}/${relDir}`);
+      if (stat.isDirectory) hasDirs = true;
+    } catch { /* directory doesn't exist */ }
+  }
+
+  if (!hasDirs) {
+    return {
+      name,
+      status: "SKIPPED",
+      output: "deno source directories not found",
+    };
+  }
+
+  const result = await scanDirectoriesForSpawnTimeout(
+    config.scriptDir,
+    relDirs,
+  );
+  const diff = diffSpawnTimeoutBaseline(
+    result.offences,
+    SPAWN_TIMEOUT_BASELINE,
+  );
+
+  if (diff.newOffences.length === 0 && diff.staleBaseline.length === 0) {
+    return {
+      name,
+      status: "PASSED",
+      output: `spawn timeout: PASSED (${result.filesScanned} files scanned)`,
+    };
+  }
+
+  const output = [
+    ...diff.newOffences.map(
+      (offence) =>
+        `VIOLATION: ${offence.file}:${offence.line}: ${offence.text}`,
+    ),
+    ...diff.staleBaseline.map(
+      (file) =>
+        `STALE BASELINE: ${file} no longer spawns without a timeout — remove it`,
+    ),
+    "",
+    "A subprocess spawn has no explicit timeout (Issue #4248). Pass `signal`",
+    "to `new Deno.Command`, or `timeoutMs` to `runWithTimeout`. The baseline",
+    "in `spawn_timeout_check.ts` lists today's gaps and may only shrink: delete",
+    "an entry once its file is clean, and do not add one.",
+  ].join("\n");
+
+  return {
+    name,
+    status: "FAILED",
+    output: `spawn timeout: FAILED\n${output}`,
   };
 }
 
@@ -1709,6 +1785,10 @@ export async function runQualityGate(
   // spawned by `git_timeout.ts` so the timeout and the audit journal are
   // unavoidable.
   note(await runGitSpawnChokepointCheck(config));
+
+  // spawn timeout (Issue #4248) — a subprocess with no explicit timeout, and
+  // a baseline entry that no longer offends, both fail the gate.
+  note(await runSpawnTimeoutCheck(config));
 
   // redact before truncate (Issue #1257) — a size cap may not run inside a
   // redaction call, or the cut splits the credential the rules key on.
