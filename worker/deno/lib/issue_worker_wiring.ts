@@ -35,8 +35,6 @@ import {
 import { safeGhCommand } from "./gh_wrapper.ts";
 import { ensureLabelExists } from "./label_operations.ts";
 import { handleIssueFailure } from "./label_failure.ts";
-import type { HandleFailureOptions, LabelManagerDeps } from "./label_types.ts";
-import { defaultPlanWorkerGateSplit } from "./worker_gate_split_planner.ts";
 import { checkGhAuth } from "./gh_auth.ts";
 import {
   type RepairMilestoneResult,
@@ -222,6 +220,12 @@ import {
   runSecurityFixDiscrimination,
   type SecurityFixDiscrimination,
 } from "./security_fix_discrimination.ts";
+import {
+  type FactsFlipSeams,
+  type FactsFlipVerdict,
+  verifyFactsFlips,
+} from "./facts_flip_verifier.ts";
+import type { SummaryFacts } from "./summary_facts.ts";
 import {
   fileBaselineCarryoverTracker,
   fileRedCheckTracker,
@@ -564,6 +568,16 @@ export interface QualityDeps {
   runSecurityFixDiscrimination?: (
     input: DiscriminationRunInput,
   ) => Promise<SecurityFixDiscrimination>;
+  /**
+   * Re-run each tested facts entry's named test under a mutant of the cited
+   * line (Issues #4186, #4188). Optional: when absent, or when it throws, the
+   * completion phase records a loud `not_checked` and never treats that as a
+   * pass. A `refused` verdict blocks the raise.
+   */
+  verifyFactsFlips?: (
+    facts: SummaryFacts,
+    seams: FactsFlipSeams,
+  ) => Promise<FactsFlipVerdict[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -683,15 +697,7 @@ export function createDefaultDeps(
       safeGhCommand,
       runGhCommand,
       ensureLabelExists,
-      handleIssueFailure: (
-        options: HandleFailureOptions,
-        deps?: LabelManagerDeps,
-      ) =>
-        handleIssueFailure(options, {
-          ...(deps ?? {}),
-          planWorkerGateSplit: deps?.planWorkerGateSplit ??
-            defaultPlanWorkerGateSplit,
-        }),
+      handleIssueFailure,
       checkGhAuth,
       // Issue #2079: the worker's own identity writes the ruleset. GitHub
       // answers a write from a non-admin with 404, which
@@ -856,6 +862,7 @@ export function createDefaultDeps(
         runCoverageCarryOverCheck(input, defaultMutationRunnerSeams()),
       runSecurityFixDiscrimination: (input) =>
         runSecurityFixDiscrimination(input, defaultMutationRunnerSeams()),
+      verifyFactsFlips,
     },
   };
 }

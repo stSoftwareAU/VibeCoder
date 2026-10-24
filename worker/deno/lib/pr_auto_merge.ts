@@ -12,11 +12,6 @@ import type { Logger, Result } from "../types.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { directMergePr } from "./direct_merge.ts";
-import {
-  fetchIssueCommentBodies,
-  fleetMarkerBodies,
-  preprReviewBlocksArm,
-} from "./prepr_review_record.ts";
 import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { isMilestoneFixBranch } from "./milestone_branch_names.ts";
 import {
@@ -823,36 +818,9 @@ export async function enableAutoMerge(
     };
   }
 
-  // Issue #4236: a missing fleet set is not "no record". Without the
-  // logins the worker's marker cannot be told from a stranger's, so
-  // arming would guess. An unreadable comment list is the same refusal.
-  const fleet = options.fleetAuthors ?? [];
-  if (fleet.length === 0) {
-    return {
-      result: AutoMergeResult.Deferred,
-      message:
-        `PR #${prNumber} fleet logins were not supplied — not arming until a pre-PR review record can be ruled out (Issue #4236)`,
-    };
-  }
-  const review = await fetchIssueCommentBodies(
-    repo,
-    prNumber,
-    ghCommandFn,
-  );
-  if (!review.ok) {
-    return {
-      result: AutoMergeResult.Deferred,
-      message:
-        `PR #${prNumber} pre-PR review record could not be read (${review.error.message}) — not arming until it can be (Issue #4236)`,
-    };
-  }
-  if (preprReviewBlocksArm(fleetMarkerBodies(review.value, fleet))) {
-    return {
-      result: AutoMergeResult.Deferred,
-      message:
-        `PR #${prNumber} has an unresolved pre-PR review record — not arming until it is resolved (Issue #4236)`,
-    };
-  }
+  // Issue #4291: PRs do not merge until they have a review approval and CI
+  // is green, and GitHub enforces both, so nothing here withholds arming for
+  // a review, a finding or a label. Only the routing holds below remain.
 
   // Issue #3909: the milestone summary PR is the irreversible step — merging
   // it deletes the milestone branch and GitHub auto-closes every PR based on

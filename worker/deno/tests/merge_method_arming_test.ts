@@ -15,17 +15,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import {
-  AutoMergeResult,
-  enableAutoMerge as enableAutoMergeReal,
-} from "../lib/pr_auto_merge.ts";
-import { armWithNoReviewRecord } from "./support/arm_with_no_review_record.ts";
-
-function enableAutoMerge(
-  options: Parameters<typeof enableAutoMergeReal>[0],
-): ReturnType<typeof enableAutoMergeReal> {
-  return armWithNoReviewRecord(enableAutoMergeReal, options);
-}
+import { AutoMergeResult, enableAutoMerge } from "../lib/pr_auto_merge.ts";
 import { directMergePr } from "../lib/direct_merge.ts";
 import {
   isMergeCommitNotAllowed,

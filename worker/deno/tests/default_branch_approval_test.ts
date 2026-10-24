@@ -14,14 +14,10 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { directMergePr, type PreMergeGateFn } from "../lib/direct_merge.ts";
 import {
-  defaultBranchMergeAllowed,
   hasNonFleetApproval,
   type PrReview,
 } from "../lib/default_branch_approval.ts";
-import {
-  renderPreprReviewRequest,
-  renderPreprReviewResolved,
-} from "../lib/prepr_review_record.ts";
+import { renderPreprReviewRequest } from "../lib/prepr_review_record.ts";
 import {
   _resetBaseProtectionMemo,
   AutoMergeResult,
@@ -362,26 +358,26 @@ Deno.test("enableAutoMerge defers an unapproved default-branch PR and says why",
   assertStringIncludes(outcome.message, "#305");
 });
 
-Deno.test("enableAutoMerge does not arm when no fleet authors are supplied (Issue #4236)", async () => {
+Deno.test("enableAutoMerge without fleet authors hands the direct merge no approval policy (Issue #4291)", async () => {
   _resetBaseProtectionMemo();
-  let directCalls = 0;
+  const policies: unknown[] = [];
 
-  const outcome = await enableAutoMerge({
+  await enableAutoMerge({
     repo: REPO,
     prNumber: 116,
     baseRefName: DEFAULT_BRANCH,
     ghCommandFn: ghForSweep(),
     isBaseProtectedFn: () => Promise.resolve(false),
     log: () => {},
-    directMergeFn: () => {
-      directCalls++;
-      return Promise.resolve({ ok: true, value: { merged: true } });
+    directMergeFn: (_repo, _pr, _gh, _gate, options) => {
+      policies.push(options?.approvedDefaultBranch);
+      return Promise.resolve({ ok: true, value: { merged: false } });
     },
   });
 
-  assertEquals(outcome.result, AutoMergeResult.Deferred);
-  assertStringIncludes(outcome.message, "fleet logins were not supplied");
-  assertEquals(directCalls, 0, "a missing fleet set must not reach the merge");
+  // The merge is attempted, so the Issue #2416 refusal inside the direct
+  // merge decides it; nothing upstream withholds the attempt.
+  assertEquals(policies, [undefined]);
 });
 
 Deno.test("a protected base still goes through native auto-merge, never the direct path", async () => {
@@ -419,65 +415,23 @@ Deno.test("a protected base still goes through native auto-merge, never the dire
   );
 });
 
-const REVIEW_FINDING = {
-  file: "src/balance.ts",
-  line: 42,
-  problem: "rounding drops the final cent",
-};
+const OPEN_RECORD = JSON.stringify([{
+  author: "VibeCoderST",
+  body: renderPreprReviewRequest([{
+    file: "src/balance.ts",
+    line: 42,
+    problem: "rounding drops the final cent",
+  }]),
+}]);
 
-Deno.test("an unresolved pre-PR review record holds an approved default-branch PR (Issue #4236)", async () => {
+Deno.test("an approved default-branch PR merges whatever its pre-PR review record says (Issue #4291)", async () => {
   const calls: string[][] = [];
   const result = await directMergePr(
     REPO,
     116,
     (args) => {
-      const joined = args.join(" ");
-      if (joined.includes("/comments")) {
-        return Promise.resolve(JSON.stringify([{
-          author: "VibeCoderST",
-          body: renderPreprReviewRequest([REVIEW_FINDING]),
-        }]));
-      }
-      return ghForDefaultBranchPr(calls)(args);
-    },
-    allowingGate,
-    {
-      approvedDefaultBranch: {
-        fleetAuthors: FLEET,
-        fetchReviewsFn: () =>
-          Promise.resolve([{ author: "nleck", state: "APPROVED" }]),
-      },
-    },
-  );
-
-  assert(result.ok, "a hold is a typed deferral, not an error");
-  assertEquals(result.value.merged, false);
-  assertEquals(merged(calls), false);
-  assertEquals(
-    defaultBranchMergeAllowed(
-      [{ author: "nleck", state: "APPROVED" }],
-      FLEET,
-      [renderPreprReviewRequest([REVIEW_FINDING])],
-    ),
-    false,
-  );
-});
-
-Deno.test("a resolved pre-PR review record lets an approved default-branch PR merge (Issue #4236)", async () => {
-  const calls: string[][] = [];
-  const result = await directMergePr(
-    REPO,
-    116,
-    (args) => {
-      const joined = args.join(" ");
-      if (joined.includes("/comments")) {
-        return Promise.resolve(JSON.stringify([
-          {
-            author: "VibeCoderST",
-            body: renderPreprReviewRequest([REVIEW_FINDING]),
-          },
-          { author: "VibeCoderST", body: renderPreprReviewResolved() },
-        ]));
+      if (args.join(" ").includes("/comments")) {
+        return Promise.resolve(OPEN_RECORD);
       }
       return ghForDefaultBranchPr(calls)(args);
     },
@@ -493,111 +447,10 @@ Deno.test("a resolved pre-PR review record lets an approved default-branch PR me
 
   assert(result.ok, "expected the merge to be attempted");
   assertEquals(result.value.merged, true);
-  assert(merged(calls), "expected a `gh pr merge` call");
-  assertEquals(
-    defaultBranchMergeAllowed(
-      [{ author: "nleck", state: "APPROVED" }],
-      FLEET,
-      [
-        renderPreprReviewRequest([REVIEW_FINDING]),
-        renderPreprReviewResolved(),
-      ],
-    ),
-    true,
-  );
+  assert(merged(calls), "the CI quality gate and the approval are the gates");
 });
 
-const REQUEST = renderPreprReviewRequest([REVIEW_FINDING]);
-const RESOLVED = renderPreprReviewResolved();
-
-function commentsThen(
-  calls: string[][],
-  pages: string[],
-): (args: string[]) => Promise<string> {
-  return (args) => {
-    if (args.join(" ").includes("/comments")) {
-      // Without --paginate only the first page is visible, which is the
-      // bug: a resolved marker past page one would never clear the hold.
-      if (!args.includes("--paginate")) {
-        return Promise.resolve(pages[0] ?? "[]");
-      }
-      return Promise.resolve(pages.join("\n"));
-    }
-    return ghForDefaultBranchPr(calls)(args);
-  };
-}
-
-Deno.test("a resolved marker past the first comment page clears the hold (Issue #4236)", async () => {
-  const calls: string[][] = [];
-  const page1 = JSON.stringify([{ author: "VibeCoderST", body: REQUEST }]);
-  const page2 = JSON.stringify([{ author: "stservice", body: RESOLVED }]);
-  const result = await directMergePr(
-    REPO,
-    116,
-    commentsThen(calls, [page1, page2]),
-    allowingGate,
-    {
-      approvedDefaultBranch: {
-        fleetAuthors: FLEET,
-        fetchReviewsFn: () =>
-          Promise.resolve([{ author: "nleck", state: "APPROVED" }]),
-      },
-    },
-  );
-
-  assert(result.ok, "expected the merge to be attempted");
-  assertEquals(result.value.merged, true);
-  assert(merged(calls), "the resolved marker on page two must clear the hold");
-});
-
-Deno.test("a resolved marker from outside the fleet does not clear the hold (Issue #4236)", async () => {
-  const calls: string[][] = [];
-  const page = JSON.stringify([
-    { author: "VibeCoderST", body: REQUEST },
-    { author: "mallory", body: RESOLVED },
-  ]);
-  const result = await directMergePr(
-    REPO,
-    116,
-    commentsThen(calls, [page]),
-    allowingGate,
-    {
-      approvedDefaultBranch: {
-        fleetAuthors: FLEET,
-        fetchReviewsFn: () =>
-          Promise.resolve([{ author: "nleck", state: "APPROVED" }]),
-      },
-    },
-  );
-
-  assert(result.ok, "a hold is a typed deferral, not an error");
-  assertEquals(result.value.merged, false);
-  assertEquals(merged(calls), false);
-});
-
-Deno.test("a changes-requested marker from outside the fleet does not block (Issue #4236)", async () => {
-  const calls: string[][] = [];
-  const page = JSON.stringify([{ author: "mallory", body: REQUEST }]);
-  const result = await directMergePr(
-    REPO,
-    116,
-    commentsThen(calls, [page]),
-    allowingGate,
-    {
-      approvedDefaultBranch: {
-        fleetAuthors: FLEET,
-        fetchReviewsFn: () =>
-          Promise.resolve([{ author: "nleck", state: "APPROVED" }]),
-      },
-    },
-  );
-
-  assert(result.ok, "expected the merge to be attempted");
-  assertEquals(result.value.merged, true);
-  assert(merged(calls));
-});
-
-Deno.test("enableAutoMerge does not arm while a fleet pre-PR review record is unresolved (Issue #4236)", async () => {
+Deno.test("enableAutoMerge arms a protected PR while a fleet pre-PR review record is unresolved (Issue #4291)", async () => {
   _resetBaseProtectionMemo();
   const issued: string[][] = [];
   const outcome = await enableAutoMerge({
@@ -609,12 +462,7 @@ Deno.test("enableAutoMerge does not arm while a fleet pre-PR review record is un
     ghCommandFn: (args: string[]) => {
       issued.push(args);
       const joined = args.join(" ");
-      if (joined.includes("/comments")) {
-        return Promise.resolve(JSON.stringify([{
-          author: "VibeCoderST",
-          body: REQUEST,
-        }]));
-      }
+      if (joined.includes("/comments")) return Promise.resolve(OPEN_RECORD);
       if (joined.includes("pr view")) return Promise.resolve("{}");
       if (joined.includes("pr merge")) return Promise.resolve("");
       if (joined.startsWith("api repos/")) return Promise.resolve("");
@@ -624,9 +472,6 @@ Deno.test("enableAutoMerge does not arm while a fleet pre-PR review record is un
     log: () => {},
   });
 
-  assertEquals(outcome.result, AutoMergeResult.Deferred);
-  assertEquals(issued.some((call) => call.includes("--auto")), false);
-  assertStringIncludes(outcome.message, "unresolved");
-  assertEquals(outcome.message.includes("WARNING:"), false);
-  assertEquals(outcome.message.includes("ERROR:"), false);
+  assertEquals(outcome.result, AutoMergeResult.Enabled, outcome.message);
+  assert(issued.some((call) => call.includes("--auto")));
 });

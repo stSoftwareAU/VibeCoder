@@ -24,7 +24,7 @@ import { recordPrRejection } from "./fleet_telemetry.ts";
 import { PRE_PR_VERIFIER_HOLD_MARKER } from "./standing_violation_routing.ts";
 import {
   commentCarriesOpenPreprReview,
-  preprReviewBlocksArm,
+  preprReviewIsOpen,
 } from "./prepr_review_record.ts";
 import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
@@ -1227,7 +1227,7 @@ async function findActionableComment(
     const isPreprReview = commentType === "issue" &&
       isFleetAuthor(comment.login, [...fleetAuthors]) &&
       commentCarriesOpenPreprReview(comment.body) &&
-      preprReviewBlocksArm(
+      preprReviewIsOpen(
         comments
           .filter((entry) => isFleetAuthor(entry.login, [...fleetAuthors]))
           .map((entry) => entry.body),
