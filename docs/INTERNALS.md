@@ -963,7 +963,9 @@ fleet-summary: wall=92520s idle=39600s idle_pct=42.8 occupied=52920s
   rate_limit_waits=0 claims=32 successes=17 failures=13 skips=2
   hook_failures=0 success_rate=0.57
   issue_runs=12 issue_split_runs=12 issue_usd=3.9120
-  issue_gate_first_attempt_passes=9 issue_duration=18400s
+  issue_gate_first_attempt_passes=9 gate_first_pass_blocks=claim-check:2,docs-sweep:3
+  gate_run_failures=pre-pr-verifier:1 gate_recovered_runs=4 gate_recovery_turns=6
+  issue_duration=18400s
   issue_tier_runs=sonnet=10,haiku=2 issue_tier_usd=sonnet=3.4120,haiku=0.5000
   pr_tier_rejections=sonnet=3,haiku=1 ci_fix_tier_runs=sonnet=4,haiku=1
   ci_fix_tier_usd=sonnet=0.9000,haiku=0.1500 pr_feedback_tier_usd=sonnet=0.6000,haiku=0.2000
@@ -1026,6 +1028,29 @@ flowchart LR
   beside the cost and gates nothing. The counters accumulate into the same
   sidecar as the rest; a sidecar written before they existed loads with them at
   zero.
+- **`gate_first_pass_blocks`, `gate_run_failures`, `gate_recovered_runs` and
+  `gate_recovery_turns`** (Issue #4234) count the completion-gate outcomes of
+  issue runs that hit at least one summary-rule block. Per gate id,
+  `gate_first_pass_blocks` counts the runs that blocked on it in their first
+  gate pass (once per gate per run), and `gate_run_failures` counts the runs
+  that ended still blocked on it; a recovered run adds nothing to
+  `gate_run_failures`. `gate_recovered_runs` counts the runs that recovered and
+  `gate_recovery_turns` sums the recovery turns they spent. Gate ids are
+  restricted to `[a-z0-9-]`, and any other id is recorded as `other`, so a
+  hostile id cannot inject a token into the line. An empty map reads `none`.
+  The same counters render as
+  `[gate-failure-rate] first_pass_blocks=… run_failures=… recovered_runs=… turns=…`
+  from `formatGateFailureRateLine`, which nothing emits yet.
+- **Windows.** These counters, like the rest of the `issue_*` set, are held in
+  the in-memory telemetry window that `startFleetTelemetry` opens at the start
+  of each worker run. The `gate_*` tokens on the log line, and the
+  `[gate-failure-rate]` line, therefore cover the current run so far. The
+  sidecar's `cumulative` totals are the only cross-run figures: each write adds
+  the run's window to the host's prior totals, so they are cumulative per host.
+  Nothing in the code resets them on a calendar basis, so there is **no weekly
+  reset**. A weekly figure is the difference between two `cumulative` readings
+  taken a week apart. A sidecar written before these counters existed loads
+  them at zero, the per-gate maps empty.
 - **`issue_tier_runs` / `issue_tier_usd`** split the same runs and spend by the
   resolved `issue_sub_agent_tier` — `sonnet` or `haiku` (Issue #3403) — so a
   tier migration's cost and volume are visible without reading every run-stats

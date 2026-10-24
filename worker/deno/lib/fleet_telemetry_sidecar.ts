@@ -29,6 +29,8 @@ import {
   type IssuePhaseCounters,
   type PriorFleetTelemetryTotals,
   type PrOutcomeCounters,
+  ownGateCount,
+  sanitiseGateId,
 } from "./fleet_telemetry.ts";
 import { getHostname } from "./worker_identity.ts";
 
@@ -106,6 +108,11 @@ export function emptyTotals(): FleetTelemetryTotals {
     issuePhaseSonnetUsd: 0,
     issuePhaseHaikuRuns: 0,
     issuePhaseHaikuUsd: 0,
+    // Issue #4234 — completion-gate outcome counters.
+    gateFirstPassBlocks: {},
+    gateRunFailures: {},
+    gateRecoveredRuns: 0,
+    gateRecoveryTurns: 0,
     // Issue #3404 — per-tier PR outcome counters.
     prRejectionsSonnet: 0,
     prRejectionsHaiku: 0,
@@ -128,9 +135,31 @@ function counterFrom(value: unknown): number {
 }
 
 /**
+ * A persisted per-gate counter map (Issue #4234), read tolerantly. A missing,
+ * non-object or non-numeric value reads as empty, so a sidecar written before
+ * the gate counters existed loads with none. Each key is re-sanitised, so a
+ * hand-edited key cannot reach the summary line unsanitised.
+ */
+function gateCountsFrom(value: unknown): Record<string, number> {
+  const counts: Record<string, number> = {};
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return counts;
+  }
+  for (const [key, count] of Object.entries(value)) {
+    if (typeof count !== "number" || !Number.isFinite(count) || count < 0) {
+      continue;
+    }
+    const gate = sanitiseGateId(key);
+    counts[gate] = ownGateCount(counts, gate) + count;
+  }
+  return counts;
+}
+
+/**
  * Fill the issue-phase counters a sidecar written before they existed does not
  * carry (Issue #2347), and the per-tier split a sidecar written before that
- * existed does not carry either (Issue #3403).
+ * existed does not carry either (Issue #3403). The completion-gate counters
+ * (Issue #4234) follow the same rule: absent reads as zero or empty.
  *
  * A missing — or unusable — counter reads as zero, so the host's accumulated
  * history survives the upgrade instead of the merge producing `NaN` totals.
@@ -175,6 +204,10 @@ function withIssuePhaseCounters<T extends PriorFleetTelemetryTotals>(
       : Math.max(0, issuePhaseUsd - issuePhaseHaikuUsd),
     issuePhaseHaikuRuns,
     issuePhaseHaikuUsd,
+    gateFirstPassBlocks: gateCountsFrom(totals.gateFirstPassBlocks),
+    gateRunFailures: gateCountsFrom(totals.gateRunFailures),
+    gateRecoveredRuns: counterFrom(totals.gateRecoveredRuns),
+    gateRecoveryTurns: counterFrom(totals.gateRecoveryTurns),
   };
 }
 
@@ -201,6 +234,23 @@ function withPrOutcomeCounters<T extends PriorFleetTelemetryTotals>(
     mergedPrsSonnet: counterFrom(totals.mergedPrsSonnet),
     mergedPrsHaiku: counterFrom(totals.mergedPrsHaiku),
   };
+}
+
+/**
+ * Sum two per-gate counter maps (Issue #4234). Uses `Object.hasOwn` so a gate
+ * id that names an `Object.prototype` member still counts from zero.
+ */
+function addGateCounts(
+  a: Record<string, number>,
+  b: Record<string, number>,
+): Record<string, number> {
+  const merged: Record<string, number> = {};
+  for (const source of [a, b]) {
+    for (const [gate, count] of Object.entries(source)) {
+      merged[gate] = ownGateCount(merged, gate) + count;
+    }
+  }
+  return merged;
 }
 
 function addMaps(
@@ -262,6 +312,19 @@ export function mergeCumulative(
       run.issuePhaseHaikuRuns,
     issuePhaseHaikuUsd: priorIssuePhase.issuePhaseHaikuUsd +
       run.issuePhaseHaikuUsd,
+    // Issue #4234 — completion-gate outcome counters.
+    gateFirstPassBlocks: addGateCounts(
+      priorIssuePhase.gateFirstPassBlocks,
+      run.gateFirstPassBlocks,
+    ),
+    gateRunFailures: addGateCounts(
+      priorIssuePhase.gateRunFailures,
+      run.gateRunFailures,
+    ),
+    gateRecoveredRuns: priorIssuePhase.gateRecoveredRuns +
+      run.gateRecoveredRuns,
+    gateRecoveryTurns: priorIssuePhase.gateRecoveryTurns +
+      run.gateRecoveryTurns,
     // Issue #3404 — per-tier PR outcome counters.
     prRejectionsSonnet: priorPrOutcomes.prRejectionsSonnet +
       run.prRejectionsSonnet,

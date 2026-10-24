@@ -121,9 +121,24 @@ export function renderReviewBrief(
   });
 }
 
+/**
+ * How serious a finding is (Issue #4234). Absent on an older reply. Only a
+ * retry reads it: a `critical` or `high` finding always blocks, a lower one
+ * on a line the change does not touch may be advisory (see
+ * `verifier_convergence.ts`).
+ */
+export type ReviewSeverity = "critical" | "high" | "medium" | "low";
+const REVIEW_SEVERITIES: readonly string[] = [
+  "critical",
+  "high",
+  "medium",
+  "low",
+];
+
 export interface ReviewFinding {
   /** Diagnostic only: every finding still blocks; omissions are substantive. */
   category?: "summary_incomplete" | "quality_check";
+  severity?: ReviewSeverity;
   file: string;
   line: number;
   problem: string;
@@ -218,12 +233,19 @@ function parseFinding(raw: unknown): ReviewFinding {
     ? Number(f.line)
     : f.line;
   const line = typeof n === "number" && Number.isFinite(n) ? n : 0;
+  // An unknown or non-string severity is dropped, never an error (Issue #4234).
+  const severity = typeof f.severity === "string"
+    ? f.severity.toLowerCase()
+    : undefined;
   return {
     file: f.file,
     line,
     problem: f.problem,
     ...(f.category === "summary_incomplete" || f.category === "quality_check"
       ? { category: f.category }
+      : {}),
+    ...(severity !== undefined && REVIEW_SEVERITIES.includes(severity)
+      ? { severity: severity as ReviewSeverity }
       : {}),
     ...(typeof f.fix === "string" ? { fix: f.fix } : {}),
   };
@@ -450,7 +472,8 @@ async function snapshotCheckout(
   return { status: status.stdout, head: head.stdout.trim() };
 }
 
-function clip(text: string, max: number): string {
+/** Flatten whitespace and cap at `max` characters, ending with an ellipsis. */
+export function clip(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }

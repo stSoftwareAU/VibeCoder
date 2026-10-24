@@ -131,6 +131,20 @@ export interface IssuePhaseCounters {
   issuePhaseHaikuRuns: number;
   /** Summed estimated spend, in USD, across the `haiku`-tier runs. */
   issuePhaseHaikuUsd: number;
+  /**
+   * Per gate id, the runs that blocked on it in their FIRST gate pass (Issue
+   * #4234). De-duplicated within a run; ids are `[a-z0-9-]`, else `other`.
+   */
+  gateFirstPassBlocks: Record<string, number>;
+  /**
+   * Per gate id, the runs that ended still blocked on it (Issue #4234). Only
+   * counted for runs that did not recover.
+   */
+  gateRunFailures: Record<string, number>;
+  /** Runs that hit at least one summary-rule block and then recovered (Issue #4234). */
+  gateRecoveredRuns: number;
+  /** Recovery turns spent across those runs (Issue #4234). */
+  gateRecoveryTurns: number;
 }
 
 /**
@@ -182,6 +196,33 @@ export interface IssuePhaseRun {
   split?: boolean;
   /** The sub-agent tier the run resolved (Issue #3403). */
   subAgentTier: IssueSubAgentTier;
+}
+
+/** Completion-gate outcome of one issue run that hit at least one summary-rule block (Issue #4234). */
+export interface GateRecoveryRun {
+  /** Gate ids that blocked in the run's FIRST gate pass (e.g. "docs-sweep", "claim-check", "pre-pr-verifier"). */
+  firstPassGates: readonly string[];
+  /** Gate ids still blocking when the run ended; [] when recovered. */
+  finalGates: readonly string[];
+  /** Recovery turns spent. */
+  turns: number;
+  recovered: boolean;
+}
+
+/** A well-formed gate id: lower-case letters, digits and hyphens only. */
+const GATE_ID_PATTERN = /^[a-z0-9-]+$/;
+
+/**
+ * Sanitise a gate id for the counters and the summary line (Issue #4234).
+ *
+ * An id outside `[a-z0-9-]` is replaced whole with `other`, so a hostile id
+ * such as `docs sweep\nfail=1` can never inject a token or a line break into
+ * the fleet summary.
+ *
+ * @param id - The gate id as the completion gate named it
+ */
+export function sanitiseGateId(id: string): string {
+  return GATE_ID_PATTERN.test(id) ? id : "other";
 }
 
 /** Additive totals — the fields that can be summed across runs. */
@@ -334,6 +375,10 @@ function zeroIssuePhaseCounters(): IssuePhaseCounters {
     issuePhaseSonnetUsd: 0,
     issuePhaseHaikuRuns: 0,
     issuePhaseHaikuUsd: 0,
+    gateFirstPassBlocks: {},
+    gateRunFailures: {},
+    gateRecoveredRuns: 0,
+    gateRecoveryTurns: 0,
   };
 }
 
@@ -617,6 +662,49 @@ export function recordIssuePhaseRun(run: IssuePhaseRun): void {
 }
 
 /**
+ * The count held for `key` in a per-gate map, or 0 (Issue #4234). Uses
+ * `Object.hasOwn` so an id such as `constructor` counts from zero rather than
+ * from the inherited `Object.prototype` member.
+ */
+export function ownGateCount(counts: Record<string, number>, key: string): number {
+  return Object.hasOwn(counts, key) ? (counts[key] ?? 0) : 0;
+}
+
+/**
+ * Add one to each distinct sanitised gate id in `gates` (Issue #4234).
+ */
+function bumpGateCounts(
+  counts: Record<string, number>,
+  gates: readonly string[],
+): void {
+  for (const gate of new Set(gates.map(sanitiseGateId))) {
+    counts[gate] = ownGateCount(counts, gate) + 1;
+  }
+}
+
+/**
+ * Record one issue run's completion-gate outcome (Issue #4234).
+ *
+ * Every distinct gate that blocked in the first gate pass counts once in
+ * `gateFirstPassBlocks`. A run that did not recover counts each gate still
+ * blocking at the end once in `gateRunFailures`; a recovered run counts in
+ * `gateRecoveredRuns` and adds nothing to `gateRunFailures`. Recovery turns
+ * accumulate for both.
+ *
+ * @param run - The run's first-pass gates, final gates, turns and outcome
+ */
+export function recordGateRecoveryRun(run: GateRecoveryRun): void {
+  const counters = state.issuePhase;
+  bumpGateCounts(counters.gateFirstPassBlocks, run.firstPassGates);
+  if (run.recovered) {
+    counters.gateRecoveredRuns += 1;
+  } else {
+    bumpGateCounts(counters.gateRunFailures, run.finalGates);
+  }
+  counters.gateRecoveryTurns += contribution(run.turns);
+}
+
+/**
  * Record an authorised CHANGES_REQUESTED review on a PR (Issue #3404).
  *
  * Counted once per `repo#prNumber#reviewId` within the telemetry window, and
@@ -809,10 +897,24 @@ export function getFleetTelemetry(
     // Issue #2347 — spread copies the counters, so a later record cannot
     // mutate a snapshot a caller already holds (the sidecar serialises one).
     ...state.issuePhase,
+    // Issue #4234 — the gate maps are copied too, not shared with the state.
+    gateFirstPassBlocks: { ...state.issuePhase.gateFirstPassBlocks },
+    gateRunFailures: { ...state.issuePhase.gateRunFailures },
     ...state.prOutcomes,
     successRate: completed > 0 ? state.successes / completed : null,
     utilisation,
   };
+}
+
+/**
+ * A per-gate counter map as `id:n,id:n` in id order, or `none` (Issue #4234).
+ * Sorted so the same counters always render the same line.
+ */
+function gateCountList(counts: Record<string, number>): string {
+  const parts = Object.keys(counts).sort().map(
+    (gate) => `${gate}:${counts[gate]}`,
+  );
+  return parts.length > 0 ? parts.join(",") : "none";
 }
 
 function joinCounts(
@@ -878,6 +980,13 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
     `issue_split_runs=${s.issuePhaseSplitRuns}`,
     `issue_usd=${s.issuePhaseUsd.toFixed(4)}`,
     `issue_gate_first_attempt_passes=${s.issuePhaseFirstAttemptGatePasses}`,
+    // Issue #4234: per-gate first-pass blocks and run-ending failures, with
+    // the recovery totals. No key contains TOKEN/SECRET/PASSWORD/KEY, and the
+    // gate ids are sanitised to `[a-z0-9-]`, so the redactor leaves them be.
+    `gate_first_pass_blocks=${gateCountList(s.gateFirstPassBlocks)}`,
+    `gate_run_failures=${gateCountList(s.gateRunFailures)}`,
+    `gate_recovered_runs=${s.gateRecoveredRuns}`,
+    `gate_recovery_turns=${s.gateRecoveryTurns}`,
     `issue_duration=${s.issuePhaseDurationSeconds}s`,
     // Issues #3403, #3404: shown only once a haiku run is recorded, so a
     // sonnet-only fleet's summary line is unchanged.
@@ -912,6 +1021,24 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
     `idle_by_reason=${joinCounts(s.idleByReason, "s")}`,
     `failures_by_class=${joinCounts(s.failuresByClass, "")}`,
     `utilisation=${utilisation.length > 0 ? utilisation.join(",") : "none"}`,
+  ].join(" ");
+}
+
+/**
+ * The weekly-trend line for completion-gate failures (Issue #4234): the same
+ * per-gate counters as the fleet summary's `gate_*` keys, under their own
+ * `[gate-failure-rate]` prefix. The counters are cumulative per host.
+ *
+ * @param nowMs - The reading time, passed to the snapshot as `formatFleetSummary` does
+ */
+export function formatGateFailureRateLine(nowMs: number = Date.now()): string {
+  const s = getFleetTelemetry(nowMs);
+  return [
+    "[gate-failure-rate]",
+    `first_pass_blocks=${gateCountList(s.gateFirstPassBlocks)}`,
+    `run_failures=${gateCountList(s.gateRunFailures)}`,
+    `recovered_runs=${s.gateRecoveredRuns}`,
+    `turns=${s.gateRecoveryTurns}`,
   ].join(" ");
 }
 

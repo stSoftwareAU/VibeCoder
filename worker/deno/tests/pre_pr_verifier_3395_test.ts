@@ -88,6 +88,31 @@ Deno.test("parseReviewReply accepts the reply JSON wrapped in prose and rejects 
   );
 });
 
+Deno.test("parseReviewReply reads a finding's severity case-insensitively and drops an unknown one (Issue #4234)", () => {
+  const reply = parseReviewReply(JSON.stringify({
+    summary: "ok",
+    findings: [
+      { file: "a.ts", line: 1, problem: "p1", severity: "High" },
+      { file: "a.ts", line: 2, problem: "p2", severity: "critical" },
+      { file: "a.ts", line: 3, problem: "p3", severity: "severe" },
+      { file: "a.ts", line: 4, problem: "p4", severity: 3 },
+      { file: "a.ts", line: 5, problem: "p5" },
+    ],
+    testChanges: "none",
+  }));
+  assertEquals(
+    reply.findings.map((f) => "severity" in f ? f.severity : "absent"),
+    ["high", "critical", "absent", "absent", "absent"],
+  );
+  assertEquals(reply.findings.map((f) => f.problem), [
+    "p1",
+    "p2",
+    "p3",
+    "p4",
+    "p5",
+  ]);
+});
+
 Deno.test("parseReviewReply caps unrelatedIssues at three and drops malformed ones", () => {
   const good = (n: number) => ({ title: `t${n}`, body: `b${n}` });
   const r = parseReviewReply(JSON.stringify({

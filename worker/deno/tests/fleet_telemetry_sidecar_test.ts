@@ -26,6 +26,7 @@ import {
   recordCiFixRun,
   recordClaim,
   recordCycleIdle,
+  recordGateRecoveryRun,
   recordIssuePhaseRun,
   recordMergedPr,
   recordOutcome,
@@ -701,5 +702,156 @@ Deno.test("fleet_telemetry_sidecar - PR outcome fields round-trip through the fi
     const read = await readUsable(dir, "host-1");
     assertEquals(read?.run.mergedPrsHaiku, 1);
     assertEquals(read?.cumulative.mergedPrsHaiku, 2);
+  });
+});
+
+// --- completion-gate counters (Issue #4234) ---------------------------
+
+Deno.test("fleet_telemetry_sidecar - a legacy sidecar (pre-#4234) loads its gate counters empty and accumulates", async () => {
+  await withTempDir(async (dir) => {
+    // Exactly the shape a pre-#4234 worker wrote: the issue-phase and PR
+    // outcome counters are present, but there are no gate fields at all. The
+    // reader reads this old shape rather than refusing it.
+    await Deno.writeTextFile(
+      fleetTelemetryPath(dir, "host-1"),
+      JSON.stringify({
+        schema: FLEET_TELEMETRY_SCHEMA,
+        host: "host-1",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        run: { idleSeconds: 30, successes: 1 },
+        cumulative: {
+          wallSeconds: 100,
+          idleSeconds: 90,
+          idleByReason: { served: 90 },
+          occupiedSeconds: 10,
+          busySeconds: 10,
+          busyByStream: { serial: 10 },
+          tokenBlockedSeconds: 0,
+          rateLimitedSeconds: 0,
+          rateLimitWaits: 0,
+          tokenBlockedWaits: 0,
+          claims: 3,
+          successes: 3,
+          failures: 0,
+          skips: 0,
+          failuresByClass: {},
+          issuePhaseRuns: 3,
+          issuePhaseUsd: 2.5,
+          issuePhaseFirstAttemptGatePasses: 2,
+          issuePhaseDurationSeconds: 900,
+          issuePhaseSplitRuns: 1,
+          issuePhaseSonnetRuns: 2,
+          issuePhaseSonnetUsd: 2,
+          issuePhaseHaikuRuns: 1,
+          issuePhaseHaikuUsd: 0.5,
+          mergedPrsSonnet: 1,
+        },
+      }),
+    );
+
+    const prior = await readUsable(dir, "host-1");
+    assertEquals(prior?.cumulative.gateFirstPassBlocks, {});
+    assertEquals(prior?.cumulative.gateRunFailures, {});
+    assertEquals(prior?.cumulative.gateRecoveredRuns, 0);
+    assertEquals(prior?.cumulative.gateRecoveryTurns, 0);
+    assertEquals(prior?.run.gateFirstPassBlocks, {});
+    assertEquals(prior?.run.gateRecoveryTurns, 0);
+    // The counters the old shape did carry come through untouched.
+    assertEquals(prior?.cumulative.issuePhaseRuns, 3);
+
+    // This run's gate outcome merges onto the legacy history without NaN.
+    resetFleetTelemetry();
+    startFleetTelemetry(0);
+    startFleetCycle(0);
+    recordGateRecoveryRun({
+      firstPassGates: ["docs-sweep"],
+      finalGates: ["docs-sweep"],
+      turns: 2,
+      recovered: false,
+    });
+    recordIssuePhaseRun({ usd: 0.5, subAgentTier: "sonnet" });
+    const written = await writeFleetTelemetryFile(dir, {
+      hostname: "host-1",
+      nowMs: 60_000,
+    });
+    assertEquals(written.ok, true);
+
+    const merged = await readUsable(dir, "host-1");
+    assertEquals(merged?.cumulative.issuePhaseRuns, 4);
+    assertEquals(merged?.cumulative.successes, 3);
+    assertEquals(merged?.cumulative.gateFirstPassBlocks, { "docs-sweep": 1 });
+    assertEquals(merged?.cumulative.gateRunFailures, { "docs-sweep": 1 });
+    assertEquals(merged?.cumulative.gateRecoveredRuns, 0);
+    assertEquals(merged?.cumulative.gateRecoveryTurns, 2);
+  });
+});
+
+Deno.test("fleet_telemetry_sidecar - a hand-edited gate key is re-sanitised on load", async () => {
+  await withTempDir(async (dir) => {
+    await Deno.writeTextFile(
+      fleetTelemetryPath(dir, "host-1"),
+      JSON.stringify({
+        schema: FLEET_TELEMETRY_SCHEMA,
+        host: "host-1",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        run: {},
+        cumulative: {
+          idleSeconds: 0,
+          idleByReason: {},
+          busyByStream: {},
+          failuresByClass: {},
+          gateFirstPassBlocks: { "docs sweep\nfail=1": 2, "claim-check": 1 },
+          gateRunFailures: { "claim-check": "many" },
+          gateRecoveredRuns: "two",
+        },
+      }),
+    );
+    const read = await readUsable(dir, "host-1");
+    // The hostile key cannot reach the summary line as written.
+    assertEquals(read?.cumulative.gateFirstPassBlocks, {
+      other: 2,
+      "claim-check": 1,
+    });
+    // A non-numeric value reads as absent, not as NaN.
+    assertEquals(read?.cumulative.gateRunFailures, {});
+    assertEquals(read?.cumulative.gateRecoveredRuns, 0);
+  });
+});
+
+Deno.test("fleet_telemetry_sidecar - gate counters round-trip through the sidecar and merge across runs", async () => {
+  await withTempDir(async (dir) => {
+    resetFleetTelemetry();
+    startFleetTelemetry(0);
+    startFleetCycle(0);
+    recordGateRecoveryRun({
+      firstPassGates: ["docs-sweep", "claim-check"],
+      finalGates: ["docs-sweep"],
+      turns: 2,
+      recovered: false,
+    });
+    await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 60_000 });
+
+    resetFleetTelemetry();
+    startFleetTelemetry(0);
+    startFleetCycle(0);
+    recordGateRecoveryRun({
+      firstPassGates: ["docs-sweep"],
+      finalGates: [],
+      turns: 3,
+      recovered: true,
+    });
+    await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 60_000 });
+
+    const read = await readUsable(dir, "host-1");
+    assertEquals(read?.run.gateFirstPassBlocks, { "docs-sweep": 1 });
+    assertEquals(read?.run.gateRunFailures, {});
+    assertEquals(read?.run.gateRecoveredRuns, 1);
+    assertEquals(read?.cumulative.gateFirstPassBlocks, {
+      "claim-check": 1,
+      "docs-sweep": 2,
+    });
+    assertEquals(read?.cumulative.gateRunFailures, { "docs-sweep": 1 });
+    assertEquals(read?.cumulative.gateRecoveredRuns, 1);
+    assertEquals(read?.cumulative.gateRecoveryTurns, 5);
   });
 });
