@@ -459,7 +459,8 @@ invocation (mode `0600`) and removed after it exits:
     "savedTokens": 12840
   },
   "workerVersion": "1.4.2",
-  "workerCommit": "0123456789abcdef0123456789abcdef01234567"
+  "workerCommit": "0123456789abcdef0123456789abcdef01234567",
+  "updateMode": "dynamic"
 }
 ```
 
@@ -517,6 +518,8 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_RTK_SAVED_TOKENS`             | `rtk.savedTokens`               | no             | RTK's own indicative count of tokens its filtering saved during the run                                              |
 | `VIBECODER_WORKER_VERSION`               | `workerVersion`                 | no             | Worker binary version that produced this run                                                                         |
 | `VIBECODER_WORKER_COMMIT`                | `workerCommit`                  | no             | Git commit SHA of the worker code that produced this run                                                              |
+| `VIBECODER_UPDATE_MODE`                  | `updateMode`                    | no             | `dynamic` or `frozen` (Issue #4120). Omitted when the checkout could not be read                                      |
+| `VIBECODER_PINNED_REF`                   | `pinnedRef`                     | no             | The ref a frozen checkout is held at. Omitted unless `updateMode` is `frozen`                                         |
 
 A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
 `VIBECODER_CLAIMS_ATTEMPTED`, `VIBECODER_CLAIMS_TAKEN` and
@@ -643,8 +646,23 @@ These fields enable audit trails that name the worker version responsible for
 each run's outcome — essential for investigating regressions and correlating
 worker changes with productivity or fault rates. The fields are exported to
 `VIBECODER_WORKER_VERSION` and `VIBECODER_WORKER_COMMIT` environment scalars
-respectively. Nothing else in the contract moved: `schemaVersion` stays at 2,
-and a hook that knows nothing about worker identity ignores these fields.
+respectively.
+
+`updateMode` and `pinnedRef` are **additive** scalars on the same contract
+(Issue #4120). `schemaVersion` stays at 2. `updateMode` is `"dynamic"` when
+the checkout tracks its branch, including a checkout with no `.config.json`,
+and `"frozen"` when the checkout is pinned. `pinnedRef` is the tag or SHA
+that pin names, and it is **omitted** unless the mode is `frozen`. A checkout
+git cannot describe omits `workerVersion` and `workerCommit` rather than
+publishing a blank; a config that is present but unreadable, malformed, or
+frozen without a usable pin fails the run instead of being reported as
+dynamic. The run-stats comment carries the same identity on one line,
+`- **Worker:** 1.10.124 (abc1234), dynamic`, or
+`- **Worker:** 1.10.124 (abc1234), frozen at <ref>` when frozen. The comment's
+commit is the first seven characters of the 40-character `workerCommit`.
+`updateMode` is exported as `VIBECODER_UPDATE_MODE` and `pinnedRef` as
+`VIBECODER_PINNED_REF`. A hook that knows nothing about these fields ignores
+them.
 
 Every run context has either `telemetry` or `telemetryAbsentReason`, and either
 `sessionLogPath` or `sessionLogAbsentReason` — never neither (Issue #1948).

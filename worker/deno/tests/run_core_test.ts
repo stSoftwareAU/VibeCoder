@@ -16,7 +16,7 @@ import {
   runCoreLoop,
   sleepWithJitter,
 } from "../lib/run_core.ts";
-import { MAX_PACED_SLEEP_SECONDS } from "../lib/budget_pacing.ts";
+import { OPERATIONAL_DEFAULTS } from "../lib/config_defaults.ts";
 import {
   recordRepoProbe,
   resetRepoAccessState,
@@ -1972,8 +1972,8 @@ Deno.test(
         Promise.resolve({ ok: true as const, value: { success: true } }),
       readGraphqlQuota: () => {
         // used climbs as remaining falls: 5000-3200 = 1800, then 5000-1500 =
-        // 3500 — a 1700-point cycle, far past the ~27 points 40 minutes left
-        // can afford, so the second sleep is capped at 300 s.
+        // 3500 — a 1700-point cycle, far past what 40 minutes left can
+        // afford, so the second sleep hits three times its jittered base.
         const remaining = cycle === 0 ? 3200 : 1500;
         return Promise.resolve({
           limit: 5000,
@@ -1988,20 +1988,34 @@ Deno.test(
 
     const config = createDefaultRunCoreConfig();
     config.runDurationSeconds = 3600;
-    // Pinned below the cap. The default (300 s since Issue #2446) equals
-    // MAX_PACED_SLEEP_SECONDS, so a jittered base of exactly 300 s left
-    // pacing nothing to move and no log line: a 1-in-150 flake.
-    config.sleepInterval = 120;
+    // The real default, not a pinned 120 s. Jitter is ±25%, and the paced
+    // ceiling is three times that jittered base, so every paced sleep is
+    // longer than any jittered default base.
+    assertEquals(config.sleepInterval, OPERATIONAL_DEFAULTS.sleepInterval);
     await runCoreLoop(config, deps);
 
-    assert(
-      sleeps.includes(MAX_PACED_SLEEP_SECONDS * 1000),
-      `expected a 300 s paced sleep, got [${sleeps}]`,
+    const base = OPERATIONAL_DEFAULTS.sleepInterval;
+    const minJitter = Math.round(base * 0.75);
+    const maxJitter = Math.round(base * 1.25);
+    const paced = sleeps.filter((ms) =>
+      ms >= minJitter * 3 * 1000 && ms <= maxJitter * 3 * 1000
     );
+    assert(
+      paced.length >= 1,
+      `expected a 3× paced sleep, got [${sleeps}]`,
+    );
+    for (const ms of paced) {
+      assert(
+        ms > maxJitter * 1000,
+        `paced sleep ${ms} ms is not longer than the jittered default base`,
+      );
+    }
     const pacingLine = logs.find((line) => line.startsWith("budget-pacing:"));
     assert(pacingLine, "expected a budget-pacing log line");
     assertStringIncludes(pacingLine, "last cycle's spend exceeds");
-    assertStringIncludes(pacingLine, "sleep=300s");
+    const logged = Number(pacingLine.match(/sleep=(\d+)s/)?.[1]);
+    assert(logged >= minJitter * 3 && logged <= maxJitter * 3);
+    assert(logged > maxJitter);
   },
 );
 

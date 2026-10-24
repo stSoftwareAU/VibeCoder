@@ -245,9 +245,11 @@ availability.
 | ci_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | pr_feedback | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | quality_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
+| merge_conflict | Sonnet | high | unchanged — the engineer resolving the merge, same tier as the reactive code phases (Issue #4174) |
 | spelling_fix | Haiku | low | unchanged |
 | summarise | Haiku | low | unchanged (large-input escalation still applies if pinned to a Haiku 4.x id) |
 | health | Haiku | low | unchanged — runs the Fable probe only while a phase routes to Fable |
+| compaction | Haiku | low | unchanged — a summarising turn, same tier as summarise (Issue #4174) |
 
 These defaults are defined in `PHASE_MODEL_DEFAULTS` and `PHASE_EFFORT_DEFAULTS`
 in [`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts);
@@ -1072,8 +1074,8 @@ phases top out at `high`):
 |-------|-------------|--------------|
 | `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gpt-6-astra` (top tier) | `high` |
 | `issue` (implementation) | `gpt-6.1-sol` (base tier) | `high` |
-| `ci_fix`, `pr_feedback`, `quality_fix` | `gpt-6.1-sol` (base tier) | `medium` |
-| `spelling_fix`, `summarise`, `health` | `gpt-6-luna` (cheap tier) | `low` |
+| `ci_fix`, `pr_feedback`, `quality_fix`, `merge_conflict` | `gpt-6.1-sol` (base tier) | `medium` |
+| `spelling_fix`, `summarise`, `health`, `compaction` | `gpt-6-luna` (cheap tier) | `low` |
 
 The three tiers are the Codex counterparts of Claude's (owner decision
 2026-10-22): `gpt-6-astra` ("frontier intelligence for the most demanding
@@ -1173,8 +1175,8 @@ It covers the same phase keys as the Claude table, with Gemini model ids:
 |-------|--------------|
 | `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gemini-2.5-pro` (top tier) |
 | `issue` (implementation) | `gemini-2.5-flash` (base tier) |
-| `ci_fix`, `pr_feedback`, `quality_fix` | `gemini-2.5-flash` (base tier) |
-| `spelling_fix`, `summarise`, `health` | `gemini-2.5-flash-lite` (cheap tier) |
+| `ci_fix`, `pr_feedback`, `quality_fix`, `merge_conflict` | `gemini-2.5-flash` (base tier) |
+| `spelling_fix`, `summarise`, `health`, `compaction` | `gemini-2.5-flash-lite` (cheap tier) |
 
 The model ids are an implementation choice over the current Gemini line-up, not
 a fixed contract: a deployment on a different line-up re-pins a tier through
@@ -1252,8 +1254,8 @@ model ids:
 |-------|----------------|
 | `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `deepseek-v4-pro` (top tier) |
 | `issue` (implementation) | `deepseek-flash` (base tier) |
-| `ci_fix`, `pr_feedback`, `quality_fix` | `deepseek-flash` (base tier) |
-| `spelling_fix`, `summarise`, `health` | `deepseek-flash` (base tier) |
+| `ci_fix`, `pr_feedback`, `quality_fix`, `merge_conflict` | `deepseek-flash` (base tier) |
+| `spelling_fix`, `summarise`, `health`, `compaction` | `deepseek-flash` (base tier) |
 
 **There is no cheap rung, and that is deliberate.** Claude, Codex and Gemini
 each drop the trivial trio (`spelling_fix`, `summarise`, `health`) onto a third,
