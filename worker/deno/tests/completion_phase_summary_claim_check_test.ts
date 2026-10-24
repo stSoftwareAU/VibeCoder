@@ -1064,8 +1064,11 @@ Deno.test(
     assertEquals(outcome.status, "early_exit");
     assertEquals(outcome.outcomeKind, "summary_incomplete");
     assertEquals(outcome.claudeCalls, 2, "recovery then one narrow correction");
-    assertEquals(outcome.finalisePrCalls, 0, "must not arm auto-merge");
-    assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+    assertEquals(
+      outcome.finalisePrCalls,
+      1,
+      "the findings comment never withholds arming (Issue #4291)",
+    );
     assertEquals(
       outcome.comments.some((c) =>
         c.startsWith("<!-- vibe-pre-pr-verifier-hold -->") &&
@@ -1253,10 +1256,9 @@ Deno.test("completion - a manual finding beside another gate is held without an 
   );
   assertEquals(
     outcome.finalisePrCalls,
-    0,
-    "manual findings must hold even in a mixed block",
+    1,
+    "manual findings are posted, never a merge hold (Issue #4291)",
   );
-  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
   assertEquals(
     outcome.comments.some((c) =>
       c.startsWith("<!-- vibe-pre-pr-verifier-hold -->") &&
@@ -1285,8 +1287,7 @@ Deno.test("completion - an unchanged manual finding cannot disappear in a flaky 
   });
   assertEquals(outcome.status, "early_exit");
   assertEquals(outcome.finalRepoFiles[MANUAL_PATH], MANUAL_WITH_CLAIM);
-  assertEquals(outcome.finalisePrCalls, 0);
-  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assertEquals(outcome.finalisePrCalls, 1);
   assertEquals(
     outcome.comments.some((c) =>
       c.startsWith("<!-- vibe-pre-pr-verifier-hold -->") &&
@@ -1314,8 +1315,7 @@ Deno.test("completion - a timed-out correction reply cannot write manual text", 
     ],
   });
   assertEquals(outcome.finalRepoFiles[MANUAL_PATH], MANUAL_WITH_CLAIM);
-  assertEquals(outcome.finalisePrCalls, 0);
-  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assertEquals(outcome.finalisePrCalls, 1);
 });
 
 Deno.test("completion - scrubbed manual replacement leaves the original intact and held", async () => {
@@ -1340,8 +1340,7 @@ Deno.test("completion - scrubbed manual replacement leaves the original intact a
   assertEquals(outcome.claudeCalls, 2);
   assertEquals(outcome.finalRepoFiles[MANUAL_PATH], original);
   assertEquals(outcome.status, "early_exit");
-  assertEquals(outcome.finalisePrCalls, 0);
-  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assertEquals(outcome.finalisePrCalls, 1);
   assertStringIncludes(
     outcome.claudeCallDetails[1]!.prompt,
     "Read the original files by path",
@@ -1368,7 +1367,6 @@ Deno.test("completion - surviving source comment findings are held without a Mar
   assertEquals(outcome.questionCalls.length, 2);
   assertEquals(outcome.claudeCalls, 1);
   assertEquals(outcome.finalRepoFiles[file], original);
-  assertEquals(outcome.finalisePrCalls, 0);
-  assertEquals(outcome.heldLabels.includes("standing-violation"), true);
+  assertEquals(outcome.finalisePrCalls, 1);
   assert(outcome.comments.some((c) => c.includes(sentence)));
 });

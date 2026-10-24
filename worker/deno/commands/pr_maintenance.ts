@@ -617,7 +617,7 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
             headRefName,
             ghCommandFn: runGhCommand,
             log: (message: string) => logger.warn(message),
-            // Issue #4236: arming without the fleet set is refused.
+            // Issue #1082: tells a genuine review from a sibling's approval.
             fleetAuthors: resolveFleetMaintenanceAuthorSet({
               githubUser,
               fleetPrAuthors: config.fleetPrAuthors ?? [],
