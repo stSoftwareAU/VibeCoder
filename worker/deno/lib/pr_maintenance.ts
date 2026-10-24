@@ -1200,7 +1200,11 @@ async function findActionableComment(
     const isPreprReview = commentType === "issue" &&
       isFleetAuthor(comment.login, [...fleetAuthors]) &&
       commentCarriesOpenPreprReview(comment.body) &&
-      preprReviewBlocksArm(comments.map((entry) => entry.body));
+      preprReviewBlocksArm(
+        comments
+          .filter((entry) => isFleetAuthor(entry.login, [...fleetAuthors]))
+          .map((entry) => entry.body),
+      );
     if (comment.login === githubUser && !isVerifierHold && !isPreprReview) {
       continue;
     }

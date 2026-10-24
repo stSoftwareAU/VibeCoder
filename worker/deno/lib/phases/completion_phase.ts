@@ -1842,6 +1842,11 @@ async function completionBody(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
+  // Issue #4236: a later round in the same run (the unmet-criteria loop,
+  // or the one infrastructure retry) must record only the findings that
+  // survive this attempt. Findings remembered and then not raised would
+  // otherwise be posted again, or posted after the verifier had cleared them.
+  state.preprReviewFindings = undefined;
   const alreadyLanded = await alreadyLandedPhaseResult(
     ctx,
     state,

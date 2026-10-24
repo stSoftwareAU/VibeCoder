@@ -1146,3 +1146,30 @@ Deno.test("Issue #4236: a resolved pre-PR review record can be armed", async () 
   assert(result.ok);
   assertEquals(state.attempted, [{ repo: VC, prNumber: 78 }]);
 });
+
+Deno.test("Issue #4236: an armed PR with an unresolved pre-PR review record is disarmed", async () => {
+  const { state, options } = harness({
+    [VC]: [{ number: 79, baseRefName: "main" }],
+  }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: false,
+        labels: [],
+      }),
+    prCommentBodies: () =>
+      Promise.resolve({
+        ok: true,
+        value: [renderPreprReviewRequest([REVIEW_FINDING])],
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.attempted, []);
+  assertEquals(state.updated, []);
+  assertEquals(state.disarmed, [{ repo: VC, prNumber: 79 }]);
+});

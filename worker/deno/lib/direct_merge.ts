@@ -33,7 +33,10 @@ import {
   fetchPrReviews,
   type PrReview,
 } from "./default_branch_approval.ts";
-import { fetchIssueCommentBodies } from "./prepr_review_record.ts";
+import {
+  fetchIssueCommentBodies,
+  fleetMarkerBodies,
+} from "./prepr_review_record.ts";
 
 export type { ApprovedDefaultBranchPolicy, PrReview };
 
@@ -961,7 +964,7 @@ export async function directMergePr(
       !defaultBranchMergeAllowed(
         reviews,
         policy.fleetAuthors,
-        comments.value,
+        fleetMarkerBodies(comments.value, policy.fleetAuthors),
       )
     ) {
       // A deliberate hold, not a fault — leave the PR open and say why.

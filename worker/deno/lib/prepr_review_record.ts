@@ -11,6 +11,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 
 /** Marker states the record can carry. */
 export type PreprReviewMarkerState = "changes_requested" | "resolved";
@@ -133,9 +134,33 @@ export function collectPreprReviewFindings(input: {
   return findings;
 }
 
+/** One issue comment, with the login GitHub authenticated. */
+export interface IssueCommentRecord {
+  author: string;
+  body: string;
+}
+
 /**
- * Read issue-comment bodies for the auto-merge guards.
+ * Bodies whose author is this host or another fleet login.
  *
+ * A marker from anyone else does not count: they can neither lift a hold
+ * the worker placed nor place one of their own (Issue #4236).
+ */
+export function fleetMarkerBodies(
+  comments: readonly IssueCommentRecord[],
+  fleetAuthors: readonly string[],
+): string[] {
+  const fleet = [...fleetAuthors];
+  return comments
+    .filter((comment) => isFleetAuthor(comment.author, fleet))
+    .map((comment) => comment.body);
+}
+
+/**
+ * Read every issue comment on the pull request, with its author.
+ *
+ * `--paginate` is required. GitHub returns thirty comments per page, and
+ * the resolved marker on a busy pull request sits past the first page.
  * A failed or unreadable read is an error. Callers must not arm when they
  * cannot tell whether a record is still open.
  */
@@ -143,31 +168,95 @@ export async function fetchIssueCommentBodies(
   repo: string,
   prNumber: number,
   gh: (args: string[]) => Promise<string>,
-): Promise<Result<readonly string[]>> {
+): Promise<Result<readonly IssueCommentRecord[]>> {
   try {
     const output = await gh([
       "api",
+      "--paginate",
       `repos/${repo}/issues/${prNumber}/comments`,
       "--jq",
-      "[.[].body]",
+      "[.[] | {author: .user.login, body: .body}]",
     ]);
-    const parsed: unknown = JSON.parse(output);
-    if (
-      !Array.isArray(parsed) ||
-      parsed.some((body) => typeof body !== "string")
-    ) {
-      return {
-        ok: false,
-        error: new Error(
-          `PR #${prNumber} comment bodies were not a list of strings`,
-        ),
-      };
-    }
-    return { ok: true, value: parsed };
+    return parseIssueCommentPages(output, prNumber);
   } catch (err) {
     return {
       ok: false,
       error: err instanceof Error ? err : new Error(String(err)),
     };
   }
+}
+
+/**
+ * One JSON array per page. `gh api --paginate --jq` prints each page on
+ * its own line; a single page is one JSON value and may contain newlines.
+ */
+function parseIssueCommentPages(
+  output: string,
+  prNumber: number,
+): Result<IssueCommentRecord[]> {
+  const trimmed = output.trim();
+  if (trimmed === "") {
+    return {
+      ok: false,
+      error: new Error(`PR #${prNumber} comments came back empty`),
+    };
+  }
+  let pages: unknown[];
+  try {
+    pages = [JSON.parse(trimmed)];
+  } catch {
+    pages = [];
+    for (const line of trimmed.split("\n")) {
+      const piece = line.trim();
+      if (piece === "") continue;
+      try {
+        pages.push(JSON.parse(piece));
+      } catch {
+        return {
+          ok: false,
+          error: new Error(`PR #${prNumber} comments page was not JSON`),
+        };
+      }
+    }
+    if (pages.length === 0) {
+      return {
+        ok: false,
+        error: new Error(`PR #${prNumber} comments came back empty`),
+      };
+    }
+  }
+  const comments: IssueCommentRecord[] = [];
+  for (const page of pages) {
+    if (!Array.isArray(page)) {
+      return {
+        ok: false,
+        error: new Error(`PR #${prNumber} comments page was not a list`),
+      };
+    }
+    for (const item of page) {
+      if (typeof item !== "object" || item === null) {
+        return {
+          ok: false,
+          error: new Error(
+            `PR #${prNumber} comment was missing an author or body`,
+          ),
+        };
+      }
+      const record = item as { author?: unknown; body?: unknown };
+      if (typeof record.body !== "string") {
+        return {
+          ok: false,
+          error: new Error(
+            `PR #${prNumber} comment was missing an author or body`,
+          ),
+        };
+      }
+      // A missing login cannot be a fleet account, so it cannot count.
+      if (typeof record.author !== "string" || record.author.trim() === "") {
+        continue;
+      }
+      comments.push({ author: record.author, body: record.body });
+    }
+  }
+  return { ok: true, value: comments };
 }

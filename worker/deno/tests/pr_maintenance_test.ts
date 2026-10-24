@@ -725,6 +725,52 @@ Deno.test("findPrCommentsToFix - a resolved pre-PR review record is not actionab
   assertEquals(result.value, null);
 });
 
+Deno.test("findPrCommentsToFix - a resolved marker from outside the fleet leaves the record open (Issue #4236)", async () => {
+  const open = renderPreprReviewRequest([{
+    file: "src/balance.ts",
+    line: 42,
+    problem: "rounding drops the final cent",
+  }]);
+  const result = await findPrCommentsToFix(makeBaseScanOptions({
+    isAuthorisedCommenter: () => false,
+    ghCommandFn: (args) => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) {
+        return Promise.resolve(JSON.stringify([{
+          number: 10,
+          headRefName: "issue-10-fix",
+          headRefOid: "abc123",
+        }]));
+      }
+      if (key.includes("issues/10/comments")) {
+        return Promise.resolve(JSON.stringify([
+          {
+            login: "testbot",
+            id: 200,
+            body: open,
+            eyes: 0,
+            thumbs_up: 0,
+          },
+          {
+            login: "mallory",
+            id: 201,
+            body: renderPreprReviewResolved(),
+            eyes: 0,
+            thumbs_up: 0,
+          },
+        ]));
+      }
+      return Promise.resolve("[]");
+    },
+  }));
+  assertEquals(result.ok, true);
+  if (!result.ok || !result.value) {
+    throw new Error("a stranger's resolved marker must not close the record");
+  }
+  assertEquals(result.value.commentType, "pr_review");
+  assertEquals(result.value.commentId, "200");
+});
+
 Deno.test("findPrCommentsToFix - ignores thumbs-up comment when reactor is not authorised (Issue #2484)", async () => {
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");

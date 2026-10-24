@@ -12,6 +12,11 @@ import type { Logger, Result } from "../types.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { directMergePr } from "./direct_merge.ts";
+import {
+  fetchIssueCommentBodies,
+  fleetMarkerBodies,
+  preprReviewBlocksArm,
+} from "./prepr_review_record.ts";
 import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { isMilestoneFixBranch } from "./milestone_branch_names.ts";
 import {
@@ -809,6 +814,37 @@ export async function enableAutoMerge(
       result: AutoMergeResult.Skipped,
       message: `Auto-merge disabled for ${repo} (skip_auto_merge=true)`,
     };
+  }
+
+  // Issue #4236: every caller that knows the fleet must refuse while a
+  // pre-PR review record is unresolved. A comment list that cannot be
+  // read is the same refusal. Callers that omit the fleet set cannot
+  // tell a worker marker from a stranger's, so they do not consult it
+  // here — the CI-fix pass supplies the set and also checks before calling.
+  if (options.fleetAuthors && options.fleetAuthors.length > 0) {
+    const review = await fetchIssueCommentBodies(
+      repo,
+      prNumber,
+      ghCommandFn,
+    );
+    if (!review.ok) {
+      return {
+        result: AutoMergeResult.Deferred,
+        message:
+          `PR #${prNumber} pre-PR review record could not be read (${review.error.message}) — not arming until it can be (Issue #4236)`,
+      };
+    }
+    if (
+      preprReviewBlocksArm(
+        fleetMarkerBodies(review.value, options.fleetAuthors),
+      )
+    ) {
+      return {
+        result: AutoMergeResult.Deferred,
+        message:
+          `PR #${prNumber} has an unresolved pre-PR review record — not arming until it is resolved (Issue #4236)`,
+      };
+    }
   }
 
   // Issue #3909: the milestone summary PR is the irreversible step — merging

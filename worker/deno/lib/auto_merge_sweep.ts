@@ -35,6 +35,7 @@
 import { runGhCommand } from "./github.ts";
 import {
   fetchIssueCommentBodies,
+  fleetMarkerBodies,
   preprReviewBlocksArm,
 } from "./prepr_review_record.ts";
 import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
@@ -319,11 +320,22 @@ export async function sweepAutoMerge(
 
         // Issue #4236: an unresolved pre-PR review record is the worker's
         // own change request. Do not arm, and do not move the branch, until
-        // a later comment resolves it. A comment list that cannot be read
-        // is the same hold — arming would guess.
+        // a later comment resolves it. One that is already armed is
+        // disarmed, the same way a standing violation is. A comment list
+        // that cannot be read is the same hold — arming would guess.
         const readBodies = prCommentBodies ??
-          ((repoName, prNumber) =>
-            fetchIssueCommentBodies(repoName, prNumber, runGhCommand));
+          (async (repoName, prNumber) => {
+            const comments = await fetchIssueCommentBodies(
+              repoName,
+              prNumber,
+              runGhCommand,
+            );
+            if (!comments.ok) return comments;
+            return {
+              ok: true as const,
+              value: fleetMarkerBodies(comments.value, fleetAuthors),
+            };
+          });
         const bodies = await readBodies(repo, pr.number);
         if (!bodies.ok) {
           logger.info(
@@ -333,10 +345,16 @@ export async function sweepAutoMerge(
           continue;
         }
         if (preprReviewBlocksArm(bodies.value)) {
+          const armedHold = reading.armed === true;
           logger.info(
-            "Auto-merge sweep: pre-PR review requested changes — not arming until the record is resolved (Issue #4236)",
+            "Auto-merge sweep: pre-PR review requested changes — not arming" +
+              (armedHold ? ", disarming auto-merge" : "") +
+              " until the record is resolved (Issue #4236)",
             { repo, prNumber: pr.number },
           );
+          if (armedHold && await disarmAutoMerge(repo, pr.number)) {
+            mutated = true;
+          }
           continue;
         }
 

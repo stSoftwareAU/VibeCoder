@@ -167,6 +167,13 @@ interface Scenario {
   claudeModel?: string;
   /** When true, the pre-push gate returns a verdict failure. */
   prePushBlocked?: boolean;
+  /** Issue body for this run. Omitted, the fixture has no acceptance criteria. */
+  issueBody?: string;
+  /**
+   * Summary written by each recovery turn, in order. Omitted, `retryWrites`
+   * is written on every turn.
+   */
+  summaryWrites?: string[];
 }
 
 interface Outcome {
@@ -221,7 +228,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     repo: REPO,
     issueNumber: ISSUE,
     issueTitle: "Run a pre-PR verifier",
-    issueBody: ISSUE_BODY,
+    issueBody: scenario.issueBody ?? ISSUE_BODY,
     issueLabels: ["enhancement", "work-on"],
     issueComments: "",
     githubUser: "testbot",
@@ -280,7 +287,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     claude: {
       runClaudeWithRetry: (options: { prompt: string }) => {
         claudePrompts.push(options.prompt);
-        if (scenario.retryWrites !== undefined) {
+        const scripted = scenario.summaryWrites?.shift();
+        if (scripted !== undefined) {
+          Deno.writeTextFileSync(summaryPath, scripted);
+        } else if (scenario.retryWrites !== undefined) {
           Deno.writeTextFileSync(summaryPath, scenario.retryWrites);
         }
         return Promise.resolve({
@@ -794,4 +804,77 @@ Deno.test("existing PR outcomes retain evidence and substantive verifier causes 
     assert(o.labels.includes("standing-violation"));
     assertEquals(o.prCreateCalls, 0);
   }
+});
+
+const CRITERION = "The router sends planning to opus.";
+const ISSUE_WITH_CRITERION = `## Problem
+
+Route planning to opus.
+
+## Acceptance criteria
+
+- [ ] ${CRITERION}
+`;
+const CLOSURE_TAIL = `## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — Australian English, TDD, fail-loud error handling
+`;
+const SUMMARY_MET = `${SUMMARY_CLEAN}
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — the router sends planning to opus — evidence: \`lib/config_defaults.ts\` — reviewer: met
+
+${CLOSURE_TAIL}`;
+const SUMMARY_UNMET = `${SUMMARY_CLEAN}
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — the router sends planning to opus — evidence: \`lib/config_defaults.ts\` — reviewer: partial — reason: ran out of turns
+
+${CLOSURE_TAIL}`;
+
+Deno.test("completion - findings remembered on one attempt are not posted after a clean re-run (Issue #4236)", async () => {
+  const writes = [SUMMARY_UNMET, SUMMARY_MET];
+  const outcome = await runCompletion({
+    summary: SUMMARY_MET,
+    issueBody: ISSUE_WITH_CRITERION,
+    summaryWrites: writes,
+    verifier: [checked([FINDING]), checked([FINDING]), checked([])],
+  });
+
+  assertEquals(
+    {
+      status: outcome.status,
+      verifiers: outcome.verifierInputs.length,
+      prs: outcome.prCreateCalls,
+      armed: outcome.armed,
+      prompts: outcome.claudePrompts.length,
+      reason: outcome.reason,
+    },
+    {
+      status: "continue",
+      verifiers: 3,
+      prs: 1,
+      armed: 1,
+      prompts: 2,
+      reason: undefined,
+    },
+  );
+  assertEquals(
+    outcome.posted.some((posted) =>
+      posted.body.includes(preprReviewMarker("changes_requested"))
+    ),
+    false,
+  );
+  assertEquals(
+    outcome.prBodies.some((body) =>
+      body.includes("pre-PR review requested changes")
+    ),
+    false,
+  );
 });

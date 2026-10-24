@@ -28,6 +28,7 @@ import type {
   PrDeps,
 } from "../lib/issue_worker_wiring.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
+import { renderPreprReviewRequest } from "../lib/prepr_review_record.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -117,6 +118,8 @@ function makeDeps(
   labels: string[],
   arms: ArmCall[],
   armThrows = false,
+  comments = "[]",
+  commentsThrows = false,
 ): ReturnType<typeof createMockDeps> {
   const payload = JSON.stringify({
     autoMergeRequest: null,
@@ -133,8 +136,16 @@ function makeDeps(
       })) as unknown as ClaudeDeps["runClaudeWithRetry"],
   };
   const mockGithub: Partial<GitHubDeps> = {
-    runGhCommand: (args: string[]) =>
-      Promise.resolve(isPrLiveStateRead(args) ? payload : ""),
+    runGhCommand: (args: string[]) => {
+      if (isPrLiveStateRead(args)) return Promise.resolve(payload);
+      if (args.some((arg) => arg.includes("/comments"))) {
+        if (commentsThrows) {
+          return Promise.reject(new Error("comments unreadable"));
+        }
+        return Promise.resolve(comments);
+      }
+      return Promise.resolve("");
+    },
   };
   return createMockDeps({
     claude: mockClaude,
@@ -332,6 +343,93 @@ Deno.test("processCiFailure - a failed re-arm on an unlabelled PR is warned, not
       }],
       "a failed re-arm must be warned once, naming the repo and PR",
     );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+const OPEN_RECORD = JSON.stringify([{
+  author: "testbot",
+  body: renderPreprReviewRequest([{
+    file: "src/balance.ts",
+    line: 42,
+    problem: "rounding drops the final cent",
+  }]),
+}]);
+
+Deno.test("processCiFailure - a CI-fix push does not arm auto-merge while a pre-PR review record is open (Issue #4236)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-prepr-rearm-" });
+  try {
+    const arms: ArmCall[] = [];
+    const infoLines: string[] = [];
+    const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeRecordingLogger(infoLines),
+      deps: makeDeps(["bug"], arms, false, OPEN_RECORD),
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      githubUser: "testbot",
+      fleetLogins: ["testbot"],
+    };
+
+    const result = await processCiFailure(makeInput(), processorDeps);
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.changesPushed, true);
+    }
+    assertEquals(
+      arms.length,
+      0,
+      "an unresolved pre-PR review record must not be re-armed",
+    );
+    const holdLine = infoLines.find((line) => line.includes("unresolved"));
+    if (holdLine === undefined) {
+      throw new Error("the unresolved-record hold was not logged");
+    }
+    assertEquals(holdLine.includes("WARNING:"), false);
+    assertEquals(holdLine.includes("ERROR:"), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a CI-fix push does not arm auto-merge when the review record cannot be read (Issue #4236)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-prepr-rearm-" });
+  try {
+    const arms: ArmCall[] = [];
+    const infoLines: string[] = [];
+    const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeRecordingLogger(infoLines),
+      deps: makeDeps(["bug"], arms, false, "[]", true),
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      githubUser: "testbot",
+    };
+
+    const result = await processCiFailure(makeInput(), processorDeps);
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.changesPushed, true);
+    }
+    assertEquals(
+      arms.length,
+      0,
+      "an unreadable comment list must not be treated as a clear record",
+    );
+    const holdLine = infoLines.find((line) =>
+      line.includes("could not be read")
+    );
+    if (holdLine === undefined) {
+      throw new Error("the unreadable-record hold was not logged");
+    }
+    assertEquals(holdLine.includes("WARNING:"), false);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

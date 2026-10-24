@@ -149,6 +149,11 @@ import { escalateToHuman } from "./needs_human_escalation.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import { STANDING_VIOLATION_LABEL } from "./standing_violation_routing.ts";
+import {
+  fetchIssueCommentBodies,
+  fleetMarkerBodies,
+  preprReviewBlocksArm,
+} from "./prepr_review_record.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip.ts";
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
@@ -2269,7 +2274,10 @@ async function _processCiWithHeartbeat(
   // arming it against a head that did not change. The fix PR's own
   // auto-merge is armed separately, inside `raiseMilestoneFixPr`. A
   // standing-violation PR is held and not re-armed (Issue #3685); the
-  // auto-merge sweep disarms one already armed.
+  // auto-merge sweep disarms one already armed. An unresolved pre-PR
+  // review record is the same hold (Issue #4236): the CI fix must not
+  // arm a pull request whose findings have not been answered, and a
+  // comment list that cannot be read is not treated as clear.
   if (hasChanges && pushSucceeded && fixBranch === undefined) {
     // Refresh the PR body from a rewritten summary file (Issue #3089),
     // before auto-merge is re-armed — a failed sync must never block it.
@@ -2300,16 +2308,47 @@ async function _processCiWithHeartbeat(
         { repo, prNumber },
       );
     } else {
-      try {
-        // Issue #3909: pass the head branch so the milestone open-children
-        // gate needs no extra lookup.
-        await deps.pr.enableAutoMerge({
-          repo,
-          prNumber,
-          headRefName: input.branchName,
-        });
-      } catch {
-        logger.warn("Could not re-enable auto-merge", { repo, prNumber });
+      const gh = processorDeps.ghCommandFn ?? deps.github.runGhCommand;
+      const fleet = [...(processorDeps.fleetLogins ?? [])];
+      const login = (processorDeps.githubUser ??
+        Deno.env.get("GITHUB_USER") ?? "").trim();
+      if (
+        login !== "" &&
+        !fleet.some((name) => name.toLowerCase() === login.toLowerCase())
+      ) {
+        fleet.push(login);
+      }
+      const review = await fetchIssueCommentBodies(repo, prNumber, gh);
+      let reviewHold = false;
+      if (!review.ok) {
+        reviewHold = true;
+        logger.info(
+          `CI fix: ${repo}#${prNumber} pre-PR review record could not be read — not re-arming auto-merge (Issue #4236)`,
+          { repo, prNumber, detail: review.error.message },
+        );
+      } else if (
+        preprReviewBlocksArm(fleetMarkerBodies(review.value, fleet))
+      ) {
+        reviewHold = true;
+        logger.info(
+          `CI fix: ${repo}#${prNumber} has an unresolved pre-PR review record — not re-arming auto-merge (Issue #4236)`,
+          { repo, prNumber },
+        );
+      }
+      if (!reviewHold) {
+        try {
+          // Issue #3909: pass the head branch so the milestone open-children
+          // gate needs no extra lookup. The same fleet set lets
+          // `enableAutoMerge` refuse if this check is ever skipped.
+          await deps.pr.enableAutoMerge({
+            repo,
+            prNumber,
+            headRefName: input.branchName,
+            ...(fleet.length > 0 ? { fleetAuthors: fleet } : {}),
+          });
+        } catch {
+          logger.warn("Could not re-enable auto-merge", { repo, prNumber });
+        }
       }
     }
   }
