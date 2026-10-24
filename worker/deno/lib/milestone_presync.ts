@@ -77,7 +77,7 @@ import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.t
 import { runClaudeWithRetry } from "./claude_runner.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import { assertSafeGitRef } from "./git_ref_args.ts";
-import { logAt } from "./log_sink.ts";
+import { bindLogger, logAt } from "./log_sink.ts";
 
 /**
  * What is wrong, in the words the log line and the deferral reason share
@@ -819,7 +819,7 @@ export async function presyncMilestoneBranchForIssueRun(
               },
               conflict,
               ghFn,
-              (message: string) => logger.info(message),
+              bindLogger(logger),
             ).then((report) => report.posted),
           reportGateWedge: (entry, conflict, tipSha) =>
             concludeGateRefusal(
@@ -828,7 +828,7 @@ export async function presyncMilestoneBranchForIssueRun(
               conflict,
               tipSha,
               nowMs,
-              { ghCommandFn: ghFn, log: (m: string) => logger.info(m) },
+              { ghCommandFn: ghFn, log: bindLogger(logger) },
             ),
         }
         : {}),
@@ -854,6 +854,6 @@ export async function presyncMilestoneBranchForIssueRun(
           }),
           logger,
         ),
-      log: (message: string) => logger.info(message),
+      log: bindLogger(logger),
     }));
 }
