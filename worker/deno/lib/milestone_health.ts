@@ -99,6 +99,11 @@ export interface MilestoneStatus {
 export interface RepoMilestoneHealth {
   repo: string;
   milestones: MilestoneStatus[];
+  /**
+   * Set when the milestone listing or an issue list could not be read (Issue
+   * #4106). `milestones` is then empty and must not be read as "no milestones".
+   */
+  error?: string;
 }
 
 /** Top-level milestone health report across all repositories. */
@@ -445,17 +450,24 @@ async function getRepoMilestoneHealth(
   }
 
   // List open milestones
+  const milestonesContext = `gh api repos/${repo}/milestones`;
   let msOutput: string;
   try {
     msOutput = await ghCommandFn([
       "api",
       `repos/${repo}/milestones`,
     ]);
-  } catch {
-    return { repo, milestones: [] };
+  } catch (e) {
+    // Issue #4106: a failed listing is a failed repo, never "no milestones".
+    return {
+      repo,
+      milestones: [],
+      error: `${milestonesContext} failed: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    };
   }
 
-  const milestonesContext = `gh api repos/${repo}/milestones`;
   let msParsed: unknown;
   try {
     msParsed = JSON.parse(msOutput);
@@ -479,7 +491,8 @@ async function getRepoMilestoneHealth(
   const milestoneStatuses: MilestoneStatus[] = [];
 
   for (const milestone of milestones) {
-    // Fetch closed issues (Issue #1786: cached per-milestone).
+    // Fetch closed issues (Issue #1786: cached per-milestone). The batches
+    // are repo-wide, so a failed read fails the whole repo (Issue #4106).
     let closedIssues: ClosedIssueApi[] = [];
     try {
       closedIssues = await fetchClosedIssuesByMilestone(
@@ -488,8 +501,14 @@ async function getRepoMilestoneHealth(
         cache,
         ghCommandFn,
       );
-    } catch {
-      // Continue with empty list
+    } catch (e) {
+      return {
+        repo,
+        milestones: [],
+        error: `closed issues for ${repo} could not be read: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      };
     }
 
     // Fetch open issues via the shared `issues_all` cache (Issue #1805).
@@ -503,8 +522,14 @@ async function getRepoMilestoneHealth(
         cache,
         ghCommandFn,
       );
-    } catch {
-      // Continue with empty list
+    } catch (e) {
+      return {
+        repo,
+        milestones: [],
+        error: `open issues for ${repo} could not be read: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      };
     }
 
     // Build set of open issue numbers for dependency checking
@@ -562,10 +587,12 @@ async function getRepoMilestoneHealth(
  *
  * A repo is skipped only when its health lookup throws something other than a
  * MalformedGhResponseError, e.g. its default branch cannot be resolved. A
- * failed milestone-list call still reports the repo with no milestones, and a
- * failed issue fetch or REST branch call leaves that milestone's issues or
- * branch out. Non-JSON GraphQL output falls back to REST; valid JSON of an
- * invalid shape fails the report (#3856).
+ * failed milestone-list call, or a failed closed or open issue list, reports
+ * the repo with `error` set and no milestones (Issue #4106): the lists are
+ * repo-wide, so the repo is never shown as "No active milestones" or
+ * "Complete". A failed REST branch call still leaves that milestone's branch
+ * out. Non-JSON GraphQL output falls back to REST; valid JSON of an invalid
+ * shape fails the report (#3856).
  *
  * @param deps - Injected dependencies
  * @returns Result with the milestone health report
@@ -614,9 +641,21 @@ const STATE_EMOJI: Record<MilestoneIssueStatus["state"], string> = {
 };
 
 /**
+ * Repos whose milestones or issue lists could not be read (Issue #4106).
+ *
+ * The command treats any such repo as a failure.
+ */
+export function milestoneHealthFailedRepos(
+  report: MilestoneHealthReport,
+): string[] {
+  return report.repos.filter((r) => r.error !== undefined).map((r) => r.repo);
+}
+
+/**
  * Format a milestone health report as human-readable text.
  *
- * Matches the output format specified in Issue #1239.
+ * Matches the output format specified in Issue #1239. A repo with `error` is
+ * shown as failed, never as "No active milestones" (Issue #4106).
  */
 export function formatMilestoneHealthReport(
   report: MilestoneHealthReport,
@@ -629,6 +668,12 @@ export function formatMilestoneHealthReport(
 
   for (const repoReport of report.repos) {
     lines.push(`Repository: ${repoReport.repo}`);
+
+    if (repoReport.error !== undefined) {
+      lines.push(`  Failed to read milestones: ${repoReport.error}`);
+      lines.push("");
+      continue;
+    }
 
     if (repoReport.milestones.length === 0) {
       lines.push("  No active milestones");

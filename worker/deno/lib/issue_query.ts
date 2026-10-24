@@ -847,8 +847,9 @@ export async function fetchClosedIssuesByMilestone(
  * fallen out of the newest-first batch still reads in full. Pull requests are
  * dropped by the `--jq` filter.
  *
- * Failure throws, unlike `fetchClosedIssuesByMilestone` which swallows gh
- * failures into an uncached []. A failed read must not look like "no closed
+ * Failure throws, as `fetchClosedIssuesByMilestone` does too: it reads through
+ * `fetchAllClosedIssues`, which propagates gh failures (Issue #4124). A failed
+ * read must not look like "no closed
  * issues", so a blank or unparseable page, or a gh error, propagates to the
  * caller. Nothing is cached on a failure.
  *

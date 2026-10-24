@@ -3981,6 +3981,10 @@ The `milestone-health` Deno command diagnoses milestone configuration and
 processing issues, helping operators identify and fix problems with milestone
 workflows.
 
+A repo whose milestone list or issue lists cannot be read is reported as
+`Failed to read milestones: …` and the command returns failure. It is never
+shown as `No active milestones` or `Complete` (Issue #4106).
+
 ### 🧹 Milestone-close housekeeping
 
 When a milestone closes its stream is over, so every host drops the local

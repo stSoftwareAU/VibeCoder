@@ -863,7 +863,7 @@ Deno.test("getMilestoneHealth - GraphQL compare with null compare payload falls 
   assertEquals(branch?.behindBy, 1);
 });
 
-Deno.test("getMilestoneHealth - failed milestone list transport still gives an empty repo (Issue #3856)", async () => {
+Deno.test("getMilestoneHealth - failed milestone list transport marks the repo as failed (Issue #4106)", async () => {
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
     if (key.includes("repos/org/repo/milestones")) {
@@ -874,8 +874,199 @@ Deno.test("getMilestoneHealth - failed milestone list transport still gives an e
   };
   const result = await healthWithGh(ghFn);
   assertEquals(result.ok, true);
-  if (result.ok) {
-    assertEquals(result.value.repos.length, 1);
-    assertEquals(result.value.repos[0]!.milestones.length, 0);
-  }
+  if (!result.ok) throw new Error("unreachable");
+  assertEquals(result.value.repos.length, 1);
+  const repo = result.value.repos[0]!;
+  assertEquals(repo.milestones.length, 0);
+  assertStringIncludes(repo.error ?? "", "repos/org/repo/milestones");
+  assertStringIncludes(repo.error ?? "", "HTTP 500");
+});
+
+// ============================================================================
+// Failed issue lists mark the repo as failed (Issue #4106)
+// ============================================================================
+
+/**
+ * Fake gh for the milestone-health lists (Issue #4106). The open and closed
+ * issue lists are told apart by their `--state` argument. A `string | Error`
+ * list result either returns that payload or throws that error.
+ */
+function buildListGhFn(opts: {
+  milestones: string;
+  openList: string | Error;
+  closedList: string | Error;
+}): (args: string[]) => Promise<string> {
+  const settle = (value: string | Error): Promise<string> =>
+    value instanceof Error ? Promise.reject(value) : Promise.resolve(value);
+  return (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("repos/org/repo/milestones")) {
+      return Promise.resolve(opts.milestones);
+    }
+    if (key.includes(".default_branch")) return Promise.resolve("main");
+    if (key.includes("graphql")) {
+      return Promise.resolve(buildGraphQLBranchResponse(null));
+    }
+    if (key.includes("issue list") && key.includes("--state open")) {
+      return settle(opts.openList);
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return settle(opts.closedList);
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+const ONE_MILESTONE_JSON = JSON.stringify([{ title: "OIDC", number: 1 }]);
+
+Deno.test("getMilestoneHealth - failed open issue list marks the repo as failed, not complete (Issue #4106)", async () => {
+  const result = await healthWithGh(buildListGhFn({
+    milestones: ONE_MILESTONE_JSON,
+    openList: new Error("HTTP 502"),
+    closedList: "[]",
+  }));
+  assertEquals(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+  const repo = result.value.repos[0]!;
+  assertEquals(repo.milestones.length, 0);
+  assertStringIncludes(repo.error ?? "", "open issues");
+  assertStringIncludes(repo.error ?? "", "HTTP 502");
+
+  const output = formatMilestoneHealthReport(result.value);
+  assertStringIncludes(output, "Failed to read milestones");
+  assertEquals(output.includes("Complete"), false);
+  assertEquals(output.includes("No active milestones"), false);
+});
+
+Deno.test("getMilestoneHealth - failed closed issue list marks the repo as failed, not complete (Issue #4106)", async () => {
+  const result = await healthWithGh(buildListGhFn({
+    milestones: ONE_MILESTONE_JSON,
+    openList: "[]",
+    closedList: new Error("HTTP 503"),
+  }));
+  assertEquals(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+  const repo = result.value.repos[0]!;
+  assertEquals(repo.milestones.length, 0);
+  assertStringIncludes(repo.error ?? "", "closed issues");
+  assertStringIncludes(repo.error ?? "", "HTTP 503");
+
+  const output = formatMilestoneHealthReport(result.value);
+  assertStringIncludes(output, "Failed to read milestones");
+  assertEquals(output.includes("Complete"), false);
+  assertEquals(output.includes("No active milestones"), false);
+});
+
+Deno.test("getMilestoneHealth - non-JSON closed issue list marks the repo as failed, not complete (Issue #4106)", async () => {
+  const result = await healthWithGh(buildListGhFn({
+    milestones: ONE_MILESTONE_JSON,
+    openList: "[]",
+    closedList: `<html>${RAW_MARKER}</html>`,
+  }));
+  assertEquals(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+  const repo = result.value.repos[0]!;
+  assertEquals(repo.milestones.length, 0);
+  assertStringIncludes(repo.error ?? "", "closed issues");
+
+  const output = formatMilestoneHealthReport(result.value);
+  assertStringIncludes(output, "Failed to read milestones");
+  assertEquals(output.includes("Complete"), false);
+  assertEquals(output.includes("No active milestones"), false);
+});
+
+Deno.test("getMilestoneHealth - healthy empty milestone reports complete with no error (Issue #4106)", async () => {
+  // Positive control: both lists succeed, so the fixture reaches the happy path.
+  const result = await healthWithGh(buildListGhFn({
+    milestones: ONE_MILESTONE_JSON,
+    openList: "[]",
+    closedList: "[]",
+  }));
+  assertEquals(result.ok, true);
+  if (!result.ok) throw new Error("unreachable");
+  const repo = result.value.repos[0]!;
+  assertEquals(repo.error, undefined);
+  assertEquals(repo.milestones.length, 1);
+  assertEquals(
+    repo.milestones[0]!.statusSummary,
+    "Complete — all issues closed",
+  );
+
+  const output = formatMilestoneHealthReport(result.value);
+  assertStringIncludes(output, "Complete — all issues closed");
+  assertEquals(output.includes("Failed to read milestones"), false);
+});
+
+Deno.test("formatMilestoneHealthReport - a repo with an error prints the failure, not no milestones (Issue #4106)", () => {
+  const report: MilestoneHealthReport = {
+    repos: [{
+      repo: "owner/repo",
+      milestones: [],
+      error: "gh api repos/owner/repo/milestones failed: HTTP 500",
+    }],
+  };
+  const output = formatMilestoneHealthReport(report);
+  assertStringIncludes(
+    output,
+    "  Failed to read milestones: gh api repos/owner/repo/milestones failed: HTTP 500",
+  );
+  assertEquals(output.includes("No active milestones"), false);
+});
+
+Deno.test("getMilestoneHealth - a failing repo is reported with error while a healthy repo is reported normally (Issue #4106)", async () => {
+  await withFreshCaches(async (cachePath) => {
+    const ghFn = async (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("repos/org/bad/milestones")) {
+        return ONE_MILESTONE_JSON;
+      }
+      if (key.includes("repos/org/good/milestones")) {
+        return JSON.stringify([{ title: "M2", number: 2 }]);
+      }
+      if (key.includes(".default_branch")) return "main";
+      if (key.includes("graphql")) {
+        return buildGraphQLBranchResponse(null);
+      }
+      if (key.includes("issue list") && key.includes("--state open")) {
+        if (key.includes("--repo org/bad")) {
+          throw new Error("HTTP 502");
+        }
+        return JSON.stringify([
+          buildAllIssuesItem({
+            number: 7,
+            title: "Open task",
+            milestone: "M2",
+          }),
+        ]);
+      }
+      return "[]";
+    };
+
+    const result = await getMilestoneHealth({
+      defaultBranchCachePath: cachePath,
+      repos: ["org/bad", "org/good"],
+      ghCommandFn: ghFn,
+    });
+    assertEquals(result.ok, true);
+    if (!result.ok) throw new Error("unreachable");
+    assertEquals(result.value.repos.length, 2);
+
+    const bad = result.value.repos[0]!;
+    assertEquals(bad.repo, "org/bad");
+    assertEquals(bad.milestones.length, 0);
+    assertStringIncludes(bad.error ?? "", "HTTP 502");
+
+    const good = result.value.repos[1]!;
+    assertEquals(good.repo, "org/good");
+    assertEquals(good.error, undefined);
+    assertEquals(good.milestones.length, 1);
+    assertEquals(good.milestones[0]!.title, "M2");
+    assertEquals(good.milestones[0]!.statusSummary, "In progress — 1 pending");
+
+    const output = formatMilestoneHealthReport(result.value);
+    assertStringIncludes(output, "Repository: org/bad");
+    assertStringIncludes(output, "Failed to read milestones");
+    assertStringIncludes(output, "Repository: org/good");
+    assertStringIncludes(output, "Milestone: M2 (0/1 issues complete)");
+  });
 });
