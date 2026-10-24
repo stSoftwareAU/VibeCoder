@@ -138,6 +138,30 @@
         "test": "worker/deno/tests/secret_redaction_test.ts",
         "testName": "redactSecrets - punctuation-only lines after an AWS key stay intact (Issue #4103)",
         "flipWentRed": "removing (?![/+=]{40}) turned the punctuation-only test red: a candidate line was replaced by the redaction placeholder"
+      },
+      {
+        "path": "worker/deno/lib/secret_redaction.ts",
+        "line": 495,
+        "outcome": "leading class: + in the leading lookbehind keeps a secret preceded by + unmasked",
+        "test": "worker/deno/tests/secret_redaction_test.ts",
+        "testName": "redactSecrets - an AWS-alphabet run glued to the secret is not masked (Issue #4103)",
+        "flipWentRed": "removing + from the leading lookbehind class turned it red on the fixture `id +secret`"
+      },
+      {
+        "path": "worker/deno/lib/secret_redaction.ts",
+        "line": 495,
+        "outcome": "trailing class: + in the trailing lookahead keeps a secret followed by + unmasked",
+        "test": "worker/deno/tests/secret_redaction_test.ts",
+        "testName": "redactSecrets - an AWS-alphabet run glued to the secret is not masked (Issue #4103)",
+        "flipWentRed": "removing + from the trailing lookahead class turned it red on the fixture `id secret+`"
+      },
+      {
+        "path": "worker/deno/lib/secret_redaction.ts",
+        "line": 495,
+        "outcome": "leading class: / in the leading lookbehind keeps a secret preceded by / unmasked",
+        "test": "worker/deno/tests/secret_redaction_test.ts",
+        "testName": "redactSecrets - an AWS-alphabet run glued to the secret is not masked (Issue #4103)",
+        "flipWentRed": "removing / from the leading lookbehind class turned it red on the fixture `id /secret`"
       }
     ]
   }

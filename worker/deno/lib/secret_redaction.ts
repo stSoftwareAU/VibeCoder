@@ -486,9 +486,9 @@ const RULES: readonly RedactionRule[] = [
   //
   // `_` is in both context classes because `\b` treated it as a word
   // character, so a secret glued to `_` stays unmasked as it did for letters
-  // and digits. The hex guard needs no inner lookahead: the trailing guard
-  // already rejects a SHA with a class character after it, so
-  // `(?![0-9a-f]{40})` alone is equivalent.
+  // and digits. The hex guard needs no inner `\b`: a hex candidate with a
+  // class character after it is rejected by the hex guard or the trailing
+  // guard alike, so `(?![0-9a-f]{40})` alone gives the same outcome.
   {
     name: "aws-secret-access-key",
     pattern:

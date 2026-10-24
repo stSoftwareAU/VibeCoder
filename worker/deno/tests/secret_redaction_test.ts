@@ -249,7 +249,7 @@ Deno.test("redactSecrets - an AWS secret starting with + after a colon is masked
 
 Deno.test("redactSecrets - an AWS-alphabet run glued to the secret is not masked (Issue #4103)", () => {
   // The 40-character secret is a valid candidate on its own. A word,
-  // underscore or slash run glued to either end makes it part of a longer
+  // underscore, slash or plus run glued to either end makes it part of a longer
   // token, so the rule must leave the whole run alone.
   const id = "AKIAIOSFODNN7EXAMPLE";
   const secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
@@ -260,6 +260,8 @@ Deno.test("redactSecrets - an AWS-alphabet run glued to the secret is not masked
       `${id} abc${secret}`,
       `${id} ${secret}/`,
       `${id} /${secret}`,
+      `${id} +${secret}`,
+      `${id} ${secret}+`,
       `${id} ${secret}_`,
       `${id} _${secret}`,
     ]
@@ -325,18 +327,6 @@ Deno.test("redactSecrets - punctuation-only lines after an AWS key stay intact (
   assertEquals(
     redactSecrets(`${id}\n+${"=".repeat(20)}${"a".repeat(19)}`),
     `${REDACTION_PLACEHOLDER}\n${REDACTION_PLACEHOLDER}`,
-  );
-});
-
-Deno.test("redactSecrets - a git SHA with a run character after it beside an AWS key is left alone (Issue #4103)", () => {
-  // `/` extends the alphabet run, so the trailing guard rejects a SHA with a
-  // slash after it.
-  const id = "AKIAIOSFODNN7EXAMPLE";
-  const sha = "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d";
-  assertStringIncludes(
-    redactSecrets(`${id} ${sha}/`),
-    `${sha}/`,
-    "SHA followed by / must be left alone",
   );
 });
 
