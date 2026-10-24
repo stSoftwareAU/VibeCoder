@@ -32,7 +32,7 @@
  * gate's own format check uses ({@link runFormatterCommand}).
  */
 
-import { createDefaultDeps, type QualityGateDeps } from "./quality_gate_phase.ts";
+import { type QualityGateDeps } from "./quality_gate_phase.ts";
 import {
   type GitCommandOptions,
   type GitCommandOutput,
@@ -153,7 +153,7 @@ export const runFormatterCommand: RepoFormatterDeps["runCommand"] = async (
  */
 export function createRepoFormatterDeps(): RepoFormatterDeps {
   return {
-    runCommand: createDefaultDeps().runCommand,
+    runCommand: runFormatterCommand,
     runGitCommand,
     logger: defaultLogger,
     runId: () => getRunId(),
