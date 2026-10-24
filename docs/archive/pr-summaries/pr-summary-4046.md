@@ -22,8 +22,8 @@ final version.
   `git@github.com:` to `https://github.com/`, so a CONNECT-only proxy covers
   git, `gh`, the provider CLIs, Deno and the package managers without a new
   third-party binary or image.
-- The refusal names the host and the reason class in the 403 body, so a
-  refused tool shows why in its own output rather than an opaque timeout.
+- The refusal names the host and the reason class in the 403 body, so a refused
+  tool shows why in its own output rather than an opaque timeout.
 
 ### Essential Design Decisions
 
@@ -75,10 +75,10 @@ flowchart TD
     R -->|yes| T["Dial the checked address and tunnel"]
 ```
 
-Issue numbers cited as provenance (each looked up with `gh issue view`):
-#3699: Remove readable provider and gh credentials from the agent subprocess
-(open); #4047: Docker/Podman: run the agent container on an internal network
-behind the egress proxy (open).
+Issue numbers cited as provenance (each looked up with `gh issue view`): #3699:
+Remove readable provider and gh credentials from the agent subprocess (open);
+#4047: Docker/Podman: run the agent container on an internal network behind the
+egress proxy (open).
 
 Fakes: tests use an injectable resolver and connector with real localhost
 sockets and a local echo upstream. The production resolver (`Deno.resolveDns`)
@@ -89,30 +89,38 @@ recorded dial.
 
 Regex vetting: the new patterns (`IPV4_PATTERN`, `HTTP_VERSION_PATTERN`,
 `DIGITS_PATTERN`, `WHITESPACE_OR_CONTROL`, `CONTROL_OR_FORMAT`, and the two in
-the command) are anchored single-quantifier or single-class patterns with no
-two quantifiers over the same characters, and the request head is capped at
-`maxHeaderBytes` before any of them runs, so none can backtrack
-super-linearly.
+the command) are anchored single-quantifier or single-class patterns with no two
+quantifiers over the same characters, and the request head is capped at
+`maxHeaderBytes` before any of them runs, so none can backtrack super-linearly.
 
-**Docs sweep** — grep: `egress proxy`, `egress-proxy`, `EGRESS_DENIED`, `#4046`, `nothing enforces`, `read-only root`, `reads no files`; section: `docs/CONTAINMENT.md#egress-proxy`; siblings: `egress_allow_hosts`, `toolchain-selfcheck`; updated: `docs/CONTAINMENT.md`, `docs/CONFIGURATION.md`, `worker/deno/lib/egress_allowlist.ts`, `worker/deno/lib/config.ts`, `worker/deno/lib/vibe_env_registry.ts`; `docs/CONTAINMENT.md:335` and `docs/CONTAINMENT.md:345` — still true because they say the container is not routed through the proxy until #4047.
+**Docs sweep** — grep: `egress proxy`, `egress-proxy`, `EGRESS_DENIED`, `#4046`,
+`nothing enforces`, `read-only root`, `reads no files`; section:
+`docs/CONTAINMENT.md#egress-proxy`; siblings: `egress_allow_hosts`,
+`toolchain-selfcheck`; updated: `docs/CONTAINMENT.md`, `docs/CONFIGURATION.md`,
+`worker/deno/lib/egress_allowlist.ts`, `worker/deno/lib/config.ts`,
+`worker/deno/lib/vibe_env_registry.ts`; `docs/CONTAINMENT.md:335` and
+`docs/CONTAINMENT.md:345` — still true because they say the container is not
+routed through the proxy until #4047.
 
 Security fix, original trigger: the container's outbound traffic is unfiltered
 and a name on the allowlist could be made to resolve to a private, loopback or
 metadata address (DNS rebinding), reaching internal services.
 
-Test: `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses allowlisted names resolving to private addresses`
-(also `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses a non-allowlisted host with 403 and opens no upstream connection`).
+Test:
+`worker/deno/tests/egress_proxy_test.ts::egress proxy refuses allowlisted names resolving to private addresses`
+(also
+`worker/deno/tests/egress_proxy_test.ts::egress proxy refuses a non-allowlisted host with 403 and opens no upstream connection`).
 It fails against the base branch's non-test files, where
 `worker/deno/lib/egress_proxy.ts` does not exist, and passes at head.
 
-Static reasoning: the original trigger is closed with no trivial bypass.
-A CONNECT can reach upstream only after `isAllowlisted` passes, so an
-unlisted name, an IP literal (refused as `ip-literal` before the allowlist),
-another method, another port, and a trailing-dot host variant are all refused
-before any lookup. For a listed name, the single resolver result is checked
-address by address with `isPrivateAddress`, which fails closed on anything it
-cannot parse and covers loopback, RFC 1918, 169.254/16, CGNAT 100.64/10, IPv6
-ULA, IPv6 link-local and IPv4-mapped IPv6; one private answer refuses the whole
+Static reasoning: the original trigger is closed with no trivial bypass. A
+CONNECT can reach upstream only after `isAllowlisted` passes, so an unlisted
+name, an IP literal (refused as `ip-literal` before the allowlist), another
+method, another port, and a trailing-dot host variant are all refused before any
+lookup. For a listed name, the single resolver result is checked address by
+address with `isPrivateAddress`, which fails closed on anything it cannot parse
+and covers loopback, RFC 1918, 169.254/16, CGNAT 100.64/10, IPv6 ULA, IPv6
+link-local and IPv4-mapped IPv6; one private answer refuses the whole
 connection. The dial then uses the same checked address string, never the
 hostname, so a second lookup cannot return a different answer (rebinding). The
 residual that this PR does not close is that the container is not yet forced
@@ -122,33 +130,106 @@ through the proxy, which is #4047.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Real-socket tests on localhost, with an injectable resolver and a local upstream, prove: an allowlisted CONNECT is tunnelled byte-for-byte — evidence: `worker/deno/tests/egress_proxy_test.ts::egress proxy tunnels an allowlisted CONNECT byte-for-byte` — reviewer: met
-- **met** — a non-allowlisted host gets `403` and no upstream connection is opened — evidence: `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses a non-allowlisted host with 403 and opens no upstream connection` — reviewer: met
-- **met** — an IP-literal target is refused — evidence: `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses an IP-literal target` — reviewer: met
-- **met** — a host resolving to `127.0.0.1`, `10.0.0.1` or `169.254.169.254` is refused — evidence: `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses allowlisted names resolving to private addresses` — reviewer: met
-- **met** — a non-CONNECT request is refused — evidence: `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses a non-CONNECT request` — reviewer: met
-- **met** — each refusal writes exactly one `[EGRESS_DENIED]` stderr line — evidence: `worker/deno/tests/egress_proxy_test.ts::egress proxy writes exactly one denial line per refusal` — reviewer: met
-- **met** — A hostname carrying a newline or control characters is refused and appears sanitised in the log line (test) — evidence: `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses and sanitises a hostname carrying control characters` — reviewer: met
-- **met** — An over-long request header and an idle client are cut off within their bounds (test) — evidence: `worker/deno/tests/egress_proxy_test.ts::egress proxy cuts off an over-long request header` and `worker/deno/tests/egress_proxy_test.ts::egress proxy cuts off an idle client` — reviewer: met
-- **met** — The interface section exists in `docs/CONTAINMENT.md` and names #3699 as the extension point — evidence: `worker/deno/tests/containment_docs_test.ts::CONTAINMENT.md documents the egress proxy as the one outbound proxy #3699 will extend` — reviewer: met
-- **partial** — The repository quality gate passes — evidence: `./quality.sh` run on the final head; every stage passed except `deno tests`, where the only 5 failures are `claude_runner_provider_fallback_4034_test.ts`, `completion_phase_repo_formatters_test.ts` and `external_orchestration_3642_config_test.ts`, which fail identically on the base branch in this container — reviewer: partial — reason: CI not yet verified — remaining: merge-verification-only
-- **unrequested** — a ` detail=<text>` suffix on the denial line for `resolve-failed` and `connect-failed` — reviewer: unrequested — reason: the issue asks for the refused tool and the log to show why; the detail names the resolver or connector cause, is sanitised, capped and redacted, and never enters the 403 body
-- **unrequested** — a `[EGRESS_PROXY] listening on … hosts=N` startup line — reviewer: unrequested — reason: an operator needs the bound address, and the command logs it so a started proxy is observable
-- **unrequested** — references to #4047 in `docs/CONTAINMENT.md`, `docs/CONFIGURATION.md`, two source comments and the renamed docs test — reviewer: unrequested — reason: the existing docs said #4046 would enforce the allowlist; this PR adds the proxy but not the routing, so those sentences had to stop being true-by-promise
-- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-4046.json` — reviewer: unrequested — reason: the lib-sweep ledger needs an entry for a new `lib/` module
-- **unrequested** — trailing-dot host refusal, `bad-request` class for malformed heads, and a docs test pinning the footprint wording — reviewer: unrequested — reason: each follows from the stated policy (strict allowlist match, sanitised hostname) and from the issue's assumption to confirm the read-only footprint
+- **met** — Real-socket tests on localhost, with an injectable resolver and a
+  local upstream, prove: an allowlisted CONNECT is tunnelled byte-for-byte —
+  evidence:
+  `worker/deno/tests/egress_proxy_test.ts::egress proxy tunnels an allowlisted CONNECT byte-for-byte`
+  — reviewer: met
+- **met** — a non-allowlisted host gets `403` and no upstream connection is
+  opened — evidence:
+  `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses a non-allowlisted host with 403 and opens no upstream connection`
+  — reviewer: met
+- **met** — an IP-literal target is refused — evidence:
+  `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses an IP-literal target`
+  — reviewer: met
+- **met** — a host resolving to `127.0.0.1`, `10.0.0.1` or `169.254.169.254` is
+  refused — evidence:
+  `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses allowlisted names resolving to private addresses`
+  — reviewer: met
+- **met** — a non-CONNECT request is refused — evidence:
+  `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses a non-CONNECT request`
+  — reviewer: met
+- **met** — each refusal writes exactly one `[EGRESS_DENIED]` stderr line —
+  evidence:
+  `worker/deno/tests/egress_proxy_test.ts::egress proxy writes exactly one denial line per refusal`
+  — reviewer: met
+- **met** — A hostname carrying a newline or control characters is refused and
+  appears sanitised in the log line (test) — evidence:
+  `worker/deno/tests/egress_proxy_test.ts::egress proxy refuses and sanitises a hostname carrying control characters`
+  — reviewer: met
+- **met** — An over-long request header and an idle client are cut off within
+  their bounds (test) — evidence:
+  `worker/deno/tests/egress_proxy_test.ts::egress proxy cuts off an over-long request header`
+  and
+  `worker/deno/tests/egress_proxy_test.ts::egress proxy cuts off an idle client`
+  — reviewer: met
+- **met** — The interface section exists in `docs/CONTAINMENT.md` and names
+  #3699 as the extension point — evidence:
+  `worker/deno/tests/containment_docs_test.ts::CONTAINMENT.md documents the egress proxy as the one outbound proxy #3699 will extend`
+  — reviewer: met
+- **partial** — The repository quality gate passes — evidence: `./quality.sh`
+  run on the final head; every stage passed except `deno tests`, where the only
+  5 failures are `claude_runner_provider_fallback_4034_test.ts`,
+  `completion_phase_repo_formatters_test.ts` and
+  `external_orchestration_3642_config_test.ts`, which fail identically on the
+  base branch in this container — reviewer: partial — reason: CI not yet
+  verified — remaining: merge-verification-only
+- **unrequested** — a `detail=<text>` suffix on the denial line for
+  `resolve-failed` and `connect-failed` — reviewer: unrequested — reason: the
+  issue asks for the refused tool and the log to show why; the detail names the
+  resolver or connector cause, is sanitised, capped and redacted, and never
+  enters the 403 body
+- **unrequested** — a `[EGRESS_PROXY] listening on … hosts=N` startup line —
+  reviewer: unrequested — reason: an operator needs the bound address, and the
+  command logs it so a started proxy is observable
+- **unrequested** — references to #4047 in `docs/CONTAINMENT.md`,
+  `docs/CONFIGURATION.md`, two source comments and the renamed docs test —
+  reviewer: unrequested — reason: the existing docs said #4046 would enforce the
+  allowlist; this PR adds the proxy but not the routing, so those sentences had
+  to stop being true-by-promise
+- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-4046.json` —
+  reviewer: unrequested — reason: the lib-sweep ledger needs an entry for a new
+  `lib/` module
+- **unrequested** — trailing-dot host refusal, `bad-request` class for malformed
+  heads, and a docs test pinning the footprint wording — reviewer: unrequested —
+  reason: each follows from the stated policy (strict allowlist match, sanitised
+  hostname) and from the issue's assumption to confirm the read-only footprint
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — Secret Redaction, every outbound sink: the denial line went to stderr without `redactSecrets` — evidence: `worker/deno/lib/egress_proxy.ts:184` — reason: fixed in this diff (`formatEgressDenial` now returns `redactSecrets(...)`; test `egress proxy redacts a token carried in the hostname from the denial line`)
-- **violation** — docs claimed `idle-timeout` happens while tunnelling and that every refusal gets a 403 — evidence: `docs/CONTAINMENT.md:455` — reason: fixed in this diff (Refusals, reason table and Bounds reworded; table gained a `403 sent?` column)
-- **violation** — #3699 described as already extending the proxy — evidence: `docs/CONTAINMENT.md:476` and `worker/deno/lib/egress_proxy.ts:10` — reason: fixed in this diff (reworded to "will extend … not yet delivered")
-- **violation** — drift-test pins typed in values the modules hold — evidence: `worker/deno/tests/containment_docs_test.ts:307` — reason: fixed in this diff (pins built from `EGRESS_ALLOW_HOSTS_ENV` and `formatEgressDenial`)
-- **violation** — a wall-clock `setTimeout` in the idle-race scenario — evidence: `worker/deno/tests/support/egress_proxy_socket_scenarios.ts:798` — reason: fixed in this diff (the resolver is gated on a promise released after the cut-off is observed)
-- **violation** — no test covered the no-config entry for `egress-proxy` — evidence: `worker/deno/mod.ts:775` — reason: fixed in this diff (two subprocess tests in `worker/deno/tests/mod_test.ts`; the try-path list at `worker/deno/mod.ts:641` has no observable effect and is recorded as `exempt (untestable)`)
-- **clean** — Australian English, no hidden paths staged, no `git add -f`, `isPrivateAddress` and `validateEgressHost` reused rather than rewritten, both config-optional lists in `mod.ts` updated, removed assertion `body.includes("#4046")` in `worker/deno/tests/containment_docs_test.ts` is replaced by `#4047` because the issue split enforcement across #4046 and #4047, review-enforced rules checked: drift-test scoping (`section()` in use) and named-test existence
+- **violation** — Secret Redaction, every outbound sink: the denial line went to
+  stderr without `redactSecrets` — evidence:
+  `worker/deno/lib/egress_proxy.ts:184` — reason: fixed in this diff
+  (`formatEgressDenial` now returns `redactSecrets(...)`; test
+  `egress proxy redacts a token carried in the hostname from the denial line`)
+- **violation** — docs claimed `idle-timeout` happens while tunnelling and that
+  every refusal gets a 403 — evidence: `docs/CONTAINMENT.md:455` — reason: fixed
+  in this diff (Refusals, reason table and Bounds reworded; table gained a
+  `403 sent?` column)
+- **violation** — #3699 described as already extending the proxy — evidence:
+  `docs/CONTAINMENT.md:476` and `worker/deno/lib/egress_proxy.ts:10` — reason:
+  fixed in this diff (reworded to "will extend … not yet delivered")
+- **violation** — drift-test pins typed in values the modules hold — evidence:
+  `worker/deno/tests/containment_docs_test.ts:307` — reason: fixed in this diff
+  (pins built from `EGRESS_ALLOW_HOSTS_ENV` and `formatEgressDenial`)
+- **violation** — a wall-clock `setTimeout` in the idle-race scenario —
+  evidence: `worker/deno/tests/support/egress_proxy_socket_scenarios.ts:798` —
+  reason: fixed in this diff (the resolver is gated on a promise released after
+  the cut-off is observed)
+- **violation** — no test covered the no-config entry for `egress-proxy` —
+  evidence: `worker/deno/mod.ts:775` — reason: fixed in this diff (two
+  subprocess tests in `worker/deno/tests/mod_test.ts`; the try-path list at
+  `worker/deno/mod.ts:641` has no observable effect and is recorded as
+  `exempt (untestable)`)
+- **clean** — Australian English, no hidden paths staged, no `git add -f`,
+  `isPrivateAddress` and `validateEgressHost` reused rather than rewritten, both
+  config-optional lists in `mod.ts` updated, removed assertion
+  `body.includes("#4046")` in `worker/deno/tests/containment_docs_test.ts` is
+  replaced by `#4047` because the issue split enforcement across #4046 and
+  #4047, review-enforced rules checked: drift-test scoping (`section()` in use)
+  and named-test existence
 
 ## Merge verification
 
@@ -156,15 +237,47 @@ through the proxy, which is #4047.
 
 ## Test Plan
 
-- Added: `worker/deno/tests/egress_proxy_test.ts` (27 tests, real sockets with an injected resolver and connector via `worker/deno/tests/support/egress_proxy_socket_scenarios.ts`), `worker/deno/tests/egress_proxy_command_test.ts` (14 tests), three egress-proxy tests in `worker/deno/tests/containment_docs_test.ts` plus a path-exists test, and two `main()` subprocess tests in `worker/deno/tests/mod_test.ts`.
-- Edited: `worker/deno/tests/mod_test.ts` command count 156 to 157 (still red without the registration: the count and the `includes("egress-proxy")` check both fail); `worker/deno/tests/containment_docs_test.ts` renamed test.
-- Removed from `worker/deno/tests/containment_docs_test.ts`: `body.includes("#4046")` with message "the egress-allowlist section must name #4046 as the issue that enforces the list"
-  - Required by: "Enforce at the network layer through one proxy interface" — this PR adds the proxy only, so enforcement for the container is #4047 and the section must name #4047
+- Added: `worker/deno/tests/egress_proxy_test.ts` (27 tests, real sockets with
+  an injected resolver and connector via
+  `worker/deno/tests/support/egress_proxy_socket_scenarios.ts`),
+  `worker/deno/tests/egress_proxy_command_test.ts` (14 tests), three
+  egress-proxy tests in `worker/deno/tests/containment_docs_test.ts` plus a
+  path-exists test, and two `main()` subprocess tests in
+  `worker/deno/tests/mod_test.ts`.
+- Edited: `worker/deno/tests/mod_test.ts` command count 156 to 157 (still red
+  without the registration: the count and the `includes("egress-proxy")` check
+  both fail); `worker/deno/tests/containment_docs_test.ts` renamed test.
+- Removed from `worker/deno/tests/containment_docs_test.ts`:
+  `body.includes("#4046")` with message "the egress-allowlist section must name
+  #4046 as the issue that enforces the list"
+  - Required by: "Enforce at the network layer through one proxy interface" —
+    this PR adds the proxy only, so enforcement for the container is #4047 and
+    the section must name #4047
   - Replaced by: `body.includes("#4047")`
-- Results on the final head: `deno test --allow-all` on `egress_proxy_test.ts`, `egress_proxy_command_test.ts`, `containment_docs_test.ts`, `mod_test.ts` and `vibe_env_registry_test.ts`: 82 passed, 0 failed; fmt, lint and type check pass. `./quality.sh`: every stage passed except `deno tests`, which reports 5 failures in `claude_runner_provider_fallback_4034_test.ts`, `completion_phase_repo_formatters_test.ts` and `external_orchestration_3642_config_test.ts`; run on a clean checkout of the base branch they fail the same way (5 failed, 20 passed), because the image has only the `claude` provider and no `rustfmt`.
-- Red-checks (each break made on purpose, test seen red, change restored) are listed per outcome in the facts file. Drift pins: the pinned phrases are new with the section, so they are absent from the base section; `EGRESS_ALLOW_HOSTS_ENV` changed at its source turned the docs test red, and the `[EGRESS_DENIED]` marker changed in a copy of the module turned it red.
-- Callers and siblings checked: the `routes`, `resolve`, `connect` and `logDenied` seams are each passed by a test; `formatEgressDenial` is the only producer of the log line, called from `refuse` and the idle callback and `refuseAtCapacity`, all of which go through `redactSecrets`.
-- Entry points checked: the `egress-proxy` command (`egress_proxy_command_test.ts`, `mod_test.ts` subprocess tests), the registration in `worker/deno/mod.ts`, and the proxy listener (socket scenarios).
-- Not checked: the full `./quality.sh` deno-test stage on an image with the `codex` provider and `rustfmt`; a read-only root filesystem (only a read-only Deno cache was exercised).
+- Results on the final head: `deno test --allow-all` on `egress_proxy_test.ts`,
+  `egress_proxy_command_test.ts`, `containment_docs_test.ts`, `mod_test.ts` and
+  `vibe_env_registry_test.ts`: 82 passed, 0 failed; fmt, lint and type check
+  pass. `./quality.sh`: every stage passed except `deno tests`, which reports 5
+  failures in `claude_runner_provider_fallback_4034_test.ts`,
+  `completion_phase_repo_formatters_test.ts` and
+  `external_orchestration_3642_config_test.ts`; run on a clean checkout of the
+  base branch they fail the same way (5 failed, 20 passed), because the image
+  has only the `claude` provider and no `rustfmt`.
+- Red-checks (each break made on purpose, test seen red, change restored) are
+  listed per outcome in the facts file. Drift pins: the pinned phrases are new
+  with the section, so they are absent from the base section;
+  `EGRESS_ALLOW_HOSTS_ENV` changed at its source turned the docs test red, and
+  the `[EGRESS_DENIED]` marker changed in a copy of the module turned it red.
+- Callers and siblings checked: the `routes`, `resolve`, `connect` and
+  `logDenied` seams are each passed by a test; `formatEgressDenial` is the only
+  producer of the log line, called from `refuse` and the idle callback and
+  `refuseAtCapacity`, all of which go through `redactSecrets`.
+- Entry points checked: the `egress-proxy` command
+  (`egress_proxy_command_test.ts`, `mod_test.ts` subprocess tests), the
+  registration in `worker/deno/mod.ts`, and the proxy listener (socket
+  scenarios).
+- Not checked: the full `./quality.sh` deno-test stage on an image with the
+  `codex` provider and `rustfmt`; a read-only root filesystem (only a read-only
+  Deno cache was exercised).
 
 <!-- vibe-branch-outcomes -->
