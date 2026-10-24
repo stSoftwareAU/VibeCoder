@@ -156,6 +156,8 @@ for (const category of GATE_CATEGORIES) {
     if (!result.ok) throw result.error;
     assertEquals(requests, [{ category, gateOutput: FAILURE_MESSAGE }]);
     assertEquals(result.value.markedAsFailedOnce, false);
+    assertEquals(result.value.isInfrastructure, false);
+    assertEquals(result.value.failureCategory, category);
     assertEquals(result.value.split, {
       subIssueUrls: SUB_ISSUE_URLS,
       notes: SPLIT_NOTES,
@@ -274,6 +276,27 @@ Deno.test("handleIssueFailure - a split that throws records the repeat and warns
   assertStringIncludes(
     splitWarnings[0] ?? "",
     "split threw: planning exploded",
+  );
+});
+
+Deno.test("handleIssueFailure - a split that throws a non-Error records the repeat and warns with the thrown text (Issue #4130)", async () => {
+  const gh = ghStub("failed-once");
+  const hook: RepeatGateSplitHook = () => Promise.reject("plain string thrown");
+
+  const { value: result, warnings } = await captureWarnings(() =>
+    handle(gh.ghCommandFn, {
+      category: "quality_check",
+      splitOnRepeatGate: hook,
+    })
+  );
+
+  if (!result.ok) throw result.error;
+  assertEquals(result.value.markedAsFailedOnce, true);
+  const splitWarnings = warnings.filter((w) => w.includes("(Issue #4130)"));
+  assertEquals(splitWarnings.length, 1);
+  assertStringIncludes(
+    splitWarnings[0] ?? "",
+    "split threw: plain string thrown",
   );
 });
 

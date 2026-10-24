@@ -79,12 +79,13 @@ const PRE_EXISTING_MERMAID: GenericFinding = mermaidFinding({
 /** Runs the failing gate through the phase, with `handleIssueFailure` stubbed. */
 async function runFailingGate(
   state: PhaseState,
-  handleOutcome: { split: boolean },
+  handleOutcome: { split: boolean; failed?: boolean; invokeHook?: boolean },
 ) {
   const seen: Array<{
     category?: string;
     splitOnRepeatGate?: unknown;
   }> = [];
+  const gitCalls: string[][] = [];
   const deps = createMockDeps({
     quality: {
       runQualityGate: () =>
@@ -99,12 +100,45 @@ async function runFailingGate(
       runClaudeWithRetry: (() =>
         Promise.resolve({ ok: true, value: { output: "" } })) as never,
     },
+    git: {
+      runGitCommand: ((args: string[]) => {
+        gitCalls.push(args);
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }) as never,
+    },
     github: {
-      handleIssueFailure: ((options: {
+      // A client whose thread holds a fleet-authored failure record, so the
+      // hook gets as far as summarising the branch.
+      createClient: (() => ({
+        getIssueComments: () =>
+          Promise.resolve([{
+            id: 1,
+            body: "## Automated Processing Failed (First Attempt)",
+            author: "testbot",
+            createdAt: "2026-10-01T00:00:00Z",
+            reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
+          }]),
+      })) as never,
+      handleIssueFailure: (async (options: {
         category?: string;
-        splitOnRepeatGate?: unknown;
+        splitOnRepeatGate?: (
+          req: { category: string; gateOutput: string },
+        ) => Promise<unknown>;
       }) => {
         seen.push(options);
+        if (handleOutcome.failed) {
+          return { ok: false, error: new Error("label write failed") };
+        }
+        // Run the real hook, so the branch it was built for is observable.
+        if (handleOutcome.invokeHook) {
+          await options.splitOnRepeatGate?.({
+            category: "quality_check",
+            gateOutput: "quality.sh: 2 tests failed",
+          });
+        }
         const value = handleOutcome.split
           ? {
             markedAsFailedOnce: false,
@@ -117,13 +151,13 @@ async function runFailingGate(
             failureCategory: "quality_check",
             isInfrastructure: false,
           };
-        return Promise.resolve({ ok: true, value });
+        return { ok: true, value };
       }) as never,
     },
   });
 
   const result = await workOnIssueQualityGate(makeContext(), state, deps);
-  return { result, seen };
+  return { result, seen, gitCalls };
 }
 
 Deno.test(
@@ -186,3 +220,63 @@ Deno.test(
     assertEquals(seen[0]?.splitOnRepeatGate, undefined);
   },
 );
+
+Deno.test(
+  "quality gate split - a state with no branch name supplies no hook (Issue #4130)",
+  async () => {
+    const state = makeState({
+      baselineGateFindings: [PRE_EXISTING_MERMAID],
+      branchName: "",
+    });
+    const { seen } = await runFailingGate(state, { split: false });
+
+    assertEquals(seen.length, 1, "handleIssueFailure must be reached");
+    assertEquals(seen[0]?.splitOnRepeatGate, undefined);
+  },
+);
+
+Deno.test(
+  "quality gate split - a failed failure record leaves issueSplit unset and does not throw (Issue #4130)",
+  async () => {
+    const state = makeState({ baselineGateFindings: [PRE_EXISTING_MERMAID] });
+    const { seen } = await runFailingGate(state, {
+      split: false,
+      failed: true,
+    });
+
+    assertEquals(seen.length, 1, "handleIssueFailure must be reached");
+    assertEquals(state.issueSplit, undefined);
+    assertEquals(state.failureLadderApplied, true);
+  },
+);
+
+for (
+  const c of [
+    {
+      name: "a milestone branch",
+      milestone: "milestone/m1",
+      base: "milestone/m1",
+    },
+    { name: "no milestone branch", milestone: undefined, base: "main" },
+  ]
+) {
+  Deno.test(
+    `quality gate split - the hook compares the branch with ${c.name} as its base (Issue #4130)`,
+    async () => {
+      const state = makeState({
+        baselineGateFindings: [PRE_EXISTING_MERMAID],
+        ...(c.milestone ? { milestoneBranch: c.milestone } : {}),
+      });
+      const { gitCalls } = await runFailingGate(state, {
+        split: false,
+        invokeHook: true,
+      });
+
+      const log = gitCalls.find((args) => args[0] === "log");
+      assertEquals(
+        log?.at(-1),
+        `origin/${c.base}..refs/heads/issue-4130-repeat-gate`,
+      );
+    },
+  );
+}

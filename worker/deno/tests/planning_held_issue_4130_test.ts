@@ -20,6 +20,8 @@ import {
   processIssuePlanning,
 } from "../lib/planning_processor.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
+import type { GraftContextResult } from "../lib/graft_context.ts";
+import type { CodegraphContextResult } from "../lib/codegraph_context.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const FLEET_LOGIN = "testbot";
@@ -118,7 +120,14 @@ function makeContext(): IssueContext {
 
 function countingDeps(
   counters: Counters,
-  options: { subIssuesExist: boolean; claudeFails?: boolean },
+  options: {
+    subIssuesExist: boolean;
+    claudeFails?: boolean;
+    /** Makes Claude fail with an ordinary error, which the round handles. */
+    claudeErrors?: boolean;
+    codegraph?: CodegraphContextResult;
+    graft?: GraftContextResult;
+  },
 ): PlanningProcessorDeps {
   const deps = createMockDeps({
     issues: {
@@ -143,6 +152,12 @@ function countingDeps(
     claude: {
       runClaudeWithRetry: (() => {
         counters.claudeCalls++;
+        if (options.claudeErrors) {
+          return Promise.resolve({
+            ok: false,
+            error: new Error("claude exited 1"),
+          });
+        }
         if (options.claudeFails) {
           return Promise.resolve({
             ok: false,
@@ -158,6 +173,12 @@ function countingDeps(
           },
         });
       }) as never,
+      ...(options.codegraph
+        ? {
+          prepareCodegraphContext: (() =>
+            Promise.resolve(options.codegraph)) as never,
+        }
+        : {}),
     },
     github: {
       runGhCommand: (args: string[]) => {
@@ -171,6 +192,9 @@ function countingDeps(
     ghClient: stubGhClient(),
     logger: deps.logger,
     deps,
+    ...(options.graft
+      ? { collectGraftContext: () => Promise.resolve(options.graft!) }
+      : {}),
   };
 }
 
@@ -227,5 +251,63 @@ Deno.test("planHeldIssue: an AgentTurnLimitError propagates instead of being han
     counters.gh.filter((args) => args[0] === "issue" && args[1] === "comment"),
     [],
     "no failure comment is posted by planHeldIssue",
+  );
+});
+
+const OK_GRAFT: GraftContextResult = {
+  status: "ok",
+  enabled: true,
+  buildSeconds: 1,
+  bundleChars: 10,
+  nodeCount: 3,
+  callEdgeCount: 2,
+  bundle: "export function f() {}",
+};
+const OK_CODEGRAPH: CodegraphContextResult = {
+  status: "ok",
+  enabled: true,
+  nodeCount: 500,
+};
+
+function codegraphContext(): IssueContext {
+  const ctx = makeContext();
+  ctx.config = { ...ctx.config, codegraphContext: { enabled: true } };
+  return ctx;
+}
+
+Deno.test("planHeldIssue: attaches the Graft facts to a successful round", async () => {
+  const processorDeps = countingDeps(freshCounters(), {
+    subIssuesExist: false,
+    graft: OK_GRAFT,
+  });
+  const result = await planHeldIssue(makeContext(), processorDeps);
+
+  assert(result.ok, "the held round completes");
+  assertEquals(result.value.graftContext?.status, "ok");
+});
+
+Deno.test("planHeldIssue: attaches the CodeGraph facts to a successful round", async () => {
+  const processorDeps = countingDeps(freshCounters(), {
+    subIssuesExist: false,
+    codegraph: OK_CODEGRAPH,
+  });
+  const result = await planHeldIssue(codegraphContext(), processorDeps);
+
+  assert(result.ok, "the held round completes");
+  assertEquals(result.value.codegraphContext?.status, "ok");
+});
+
+Deno.test("planHeldIssue: a failed round stays failed when it collected CodeGraph facts", async () => {
+  const processorDeps = countingDeps(freshCounters(), {
+    subIssuesExist: false,
+    claudeErrors: true,
+    codegraph: OK_CODEGRAPH,
+  });
+  const result = await planHeldIssue(codegraphContext(), processorDeps);
+
+  assertEquals(
+    result.ok,
+    false,
+    "facts must not turn a failure into a success",
   );
 });

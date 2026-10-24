@@ -75,9 +75,25 @@ function silentLogger(): Logger {
   };
 }
 
+/** A logger that keeps every `info` line and its context. */
+function capturingLogger(
+  infos: Array<{ message: string; context: unknown }>,
+): Logger {
+  return {
+    ...silentLogger(),
+    info: (message: string, context?: unknown) => {
+      infos.push({ message, context });
+    },
+  };
+}
+
 interface FailedRun {
   /** Every options object `handleIssueFailure` received. */
   handled: HandleFailureOptions[];
+  /** Every `info` line the main loop logged, and its context. */
+  infos: Array<{ message: string; context: unknown }>;
+  /** Every git command the split hook ran, when `invokeHook` is set. */
+  gitCalls: string[][];
   /** The cooldown kind the main loop recorded for the run, if any. */
   failureKind: string | undefined;
 }
@@ -89,10 +105,21 @@ interface FailedRun {
 async function runFailedIssue(
   category: FailureCategory,
   reason: string,
-  opts: { withBranch: boolean; split: boolean },
+  opts: {
+    withBranch: boolean;
+    split: boolean;
+    /** The run's milestone branch, when it is on one. */
+    milestoneBranch?: string;
+    /** A phase already stepped the ladder and split: the loop steps nothing. */
+    phaseSplit?: boolean;
+    /** Runs the real split hook from the stubbed handler. */
+    invokeHook?: boolean;
+  },
 ): Promise<FailedRun> {
   const root = await Deno.makeTempDir();
   const handled: HandleFailureOptions[] = [];
+  const infos: Array<{ message: string; context: unknown }> = [];
+  const gitCalls: string[][] = [];
   const config = {
     ...buildDefaultWorkerConfig(),
     workDir: root,
@@ -111,7 +138,28 @@ async function runFailedIssue(
   assert(snapshot.ok);
   const worker = createMockDeps({
     logger: silentLogger(),
+    git: {
+      runGitCommand: ((args: string[]) => {
+        gitCalls.push(args);
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }) as never,
+    },
     github: {
+      // A thread with a fleet-authored failure record, so the real hook gets
+      // as far as summarising the branch.
+      createClient: (() => ({
+        getIssueComments: () =>
+          Promise.resolve([{
+            id: 1,
+            body: "## Automated Processing Failed (First Attempt)",
+            author: USER,
+            createdAt: "2026-10-01T00:00:00Z",
+            reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
+          }]),
+      })) as never,
       runGhCommand: (args: string[]) =>
         Promise.resolve(
           args[0] === "issue"
@@ -125,8 +173,11 @@ async function runFailedIssue(
             })
             : "",
         ),
-      handleIssueFailure: ((options: HandleFailureOptions) => {
+      handleIssueFailure: (async (options: HandleFailureOptions) => {
         handled.push(options);
+        if (opts.invokeHook) {
+          await options.splitOnRepeatGate?.({ category, gateOutput: reason });
+        }
         const value: HandleFailureResult = opts.split
           ? {
             markedAsFailedOnce: false,
@@ -139,7 +190,7 @@ async function runFailedIssue(
             failureCategory: category,
             isInfrastructure: false,
           };
-        return Promise.resolve({ ok: true as const, value });
+        return { ok: true as const, value };
       }) as never,
     },
   });
@@ -147,7 +198,7 @@ async function runFailedIssue(
     repoDir: root,
     workDir: root,
     githubUser: USER,
-    logger: silentLogger(),
+    logger: capturingLogger(infos),
     config,
     workerDeps: worker,
     env: envFrom({ HOME: root }),
@@ -159,12 +210,16 @@ async function runFailedIssue(
         phase: "completion",
         reason,
         timings: {},
+        ...(opts.phaseSplit ? { ladderApplied: true, issueSplit: true } : {}),
         ...(opts.withBranch
           ? {
             branchContext: {
               branchName: BRANCH,
               repoPath: root,
               defaultBranch: "main",
+              ...(opts.milestoneBranch
+                ? { milestoneBranch: opts.milestoneBranch }
+                : {}),
               reapproved: false,
             },
           }
@@ -179,7 +234,12 @@ async function runFailedIssue(
       milestoneTitle: "",
     });
     assert(processed.ok, "processIssue must complete");
-    return { handled, failureKind: processed.value.failureKind };
+    return {
+      handled,
+      infos,
+      gitCalls,
+      failureKind: processed.value.failureKind,
+    };
   } finally {
     production.cleanup();
     await Deno.remove(root, { recursive: true });
@@ -234,4 +294,84 @@ for (const gate of GATE_CASES) {
       assertEquals(failureKind, "non_transient");
     },
   );
+}
+
+const SPLIT_LOG = "Repeat worker-gate failure split into sub-issues";
+const DISPOSITION_LOG = "Coding-run failure disposition";
+
+Deno.test("main loop - a ladder split logs the split with its sub-issues and not a disposition (Issue #4130)", async () => {
+  const gate = GATE_CASES[0]!;
+  const { infos } = await runFailedIssue(gate.category, gate.reason, {
+    withBranch: true,
+    split: true,
+  });
+
+  const splitLogs = infos.filter((line) => line.message === SPLIT_LOG);
+  assertEquals(splitLogs.length, 1, "the split is logged once");
+  assertEquals(
+    (splitLogs[0]?.context as { subIssueUrls?: string[] }).subIssueUrls,
+    [SUB_ISSUE_URL],
+  );
+  assertEquals(
+    infos.filter((line) => line.message === DISPOSITION_LOG),
+    [],
+    "a split has no failure disposition to report",
+  );
+});
+
+Deno.test("main loop - a recorded repeat logs its disposition and no split (Issue #4130)", async () => {
+  const gate = GATE_CASES[0]!;
+  const { infos } = await runFailedIssue(gate.category, gate.reason, {
+    withBranch: true,
+    split: false,
+  });
+
+  assertEquals(infos.filter((line) => line.message === SPLIT_LOG), []);
+  assertEquals(
+    infos.filter((line) => line.message === DISPOSITION_LOG).length,
+    1,
+  );
+});
+
+Deno.test("main loop - a split a phase already made records no cooldown kind and is logged (Issue #4130)", async () => {
+  const gate = GATE_CASES[0]!;
+  const { handled, infos, failureKind } = await runFailedIssue(
+    gate.category,
+    gate.reason,
+    { withBranch: true, split: false, phaseSplit: true },
+  );
+
+  assertEquals(handled.length, 0, "the phase already stepped the ladder");
+  assertEquals(failureKind, undefined);
+  const splitLogs = infos.filter((line) => line.message === SPLIT_LOG);
+  assertEquals(splitLogs.length, 1);
+  assertEquals(
+    (splitLogs[0]?.context as { subIssueUrls?: string[] }).subIssueUrls,
+    undefined,
+    "the phase's hook logged the sub-issues; the loop has none to add",
+  );
+});
+
+for (
+  const c of [
+    {
+      name: "a milestone branch",
+      milestone: "milestone/m1",
+      base: "milestone/m1",
+    },
+    { name: "no milestone branch", milestone: undefined, base: "main" },
+  ]
+) {
+  Deno.test(`main loop - the split hook compares the run branch with ${c.name} as its base (Issue #4130)`, async () => {
+    const gate = GATE_CASES[0]!;
+    const { gitCalls } = await runFailedIssue(gate.category, gate.reason, {
+      withBranch: true,
+      split: false,
+      invokeHook: true,
+      ...(c.milestone ? { milestoneBranch: c.milestone } : {}),
+    });
+
+    const log = gitCalls.find((args) => args[0] === "log");
+    assertEquals(log?.at(-1), `origin/${c.base}..refs/heads/${BRANCH}`);
+  });
 }

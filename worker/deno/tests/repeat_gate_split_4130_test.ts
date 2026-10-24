@@ -89,6 +89,14 @@ interface Scenario {
   /** Overrides a `gh` call; return `undefined` to take the default answer. */
   gh?: (args: string[]) => Promise<string> | undefined;
   createClientThrows?: boolean;
+  /** Sub-issues whose `body` and `labels` read back as null (a bare `gh` row). */
+  nullIssueFields?: boolean;
+  /** Makes every sub-issue edit fail. */
+  editThrows?: boolean;
+  /** Makes every sub-issue label call fail. */
+  labelThrows?: boolean;
+  /** The failure-detection repairs planning reports as still pending. */
+  pendingRepairs?: number[];
   /** The parent's number; defaults to PARENT. */
   parent?: number;
 }
@@ -249,8 +257,8 @@ function setupSplit(
       return Promise.resolve({
         number,
         title: `Sub-issue ${number}`,
-        body: issue.body,
-        labels: issue.labels ?? [],
+        body: s.nullIssueFields ? (null as never) : issue.body,
+        labels: s.nullIssueFields ? (null as never) : issue.labels ?? [],
         author: FLEET,
         assignees: [],
         createdAt: "",
@@ -263,6 +271,9 @@ function setupSplit(
         ? Promise.reject(new Error("gh timed out reading comments"))
         : Promise.resolve(comments),
     addLabel: (_repo, number, label) => {
+      if (s.labelThrows && number !== PARENT) {
+        return Promise.reject(new Error("label denied"));
+      }
       rec.labelsAdded.push({ issue: number, label });
       return Promise.resolve();
     },
@@ -272,6 +283,7 @@ function setupSplit(
     },
     postComment: () => Promise.resolve(undefined),
     editIssue: (_repo, number, updates) => {
+      if (s.editThrows) return Promise.reject(new Error("edit denied"));
       rec.edits.push({ issue: number, body: updates.body ?? "" });
       return Promise.resolve();
     },
@@ -374,6 +386,9 @@ function setupSplit(
           subIssueUrls: urls,
           summary: "planned",
           ...(s.uncoveredAsks ? { uncoveredAsks: s.uncoveredAsks } : {}),
+          ...(s.pendingRepairs
+            ? { pendingFailureDetectionRepair: s.pendingRepairs }
+            : {}),
         },
       };
     },
@@ -798,6 +813,7 @@ const GUARDED: { name: string; base: string; defaultBranch: string }[] = [
   { name: "feature/base-x", base: "feature/base-x", defaultBranch: "main" },
   { name: "-oops", base: "main", defaultBranch: "main" },
   { name: "", base: "main", defaultBranch: "main" },
+  { name: "trunk-line", base: "main", defaultBranch: "trunk-line" },
 ];
 
 for (const g of GUARDED) {
@@ -1409,3 +1425,397 @@ for (
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// (j) every branch of the previous-run extraction, the branch summary and the
+// sub-issue completion is pinned by an observable difference
+// ---------------------------------------------------------------------------
+
+/** A failure record whose body is exactly `lines`, headed as the worker writes it. */
+function recordOf(...lines: string[]): GitHubComment[] {
+  return [comment(FLEET, lines.join("\n"))];
+}
+
+const RECORD_HEAD = "## Automated Processing Failed (First Attempt)";
+
+Deno.test("repeat gate split: a </summary>...</details> pair with no <details> opener is not a details block", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: recordOf(
+      RECORD_HEAD,
+      "### Error Output",
+      "> key error line",
+      "</summary>STRAY-BLOCK</details>",
+    ),
+  });
+  assert(outcome.split);
+  const seed = seedOf(rec);
+  assertStringIncludes(seed, "key error line");
+  assert(!seed.includes("STRAY-BLOCK"), "the stray pair is not quoted");
+});
+
+Deno.test("repeat gate split: a <details> block with no </summary> falls back to the quoted key lines", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: recordOf(
+      RECORD_HEAD,
+      "### Error Output",
+      "> key error line",
+      "<details>",
+      "NO-SUMMARY-BODY",
+      "</details>",
+    ),
+  });
+  assert(outcome.split);
+  const seed = seedOf(rec);
+  assertStringIncludes(seed, "key error line");
+  assert(!seed.includes("NO-SUMMARY-BODY"));
+});
+
+Deno.test("repeat gate split: a <details> block that never closes falls back to the quoted key lines", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: recordOf(
+      RECORD_HEAD,
+      "### Error Output",
+      "> key error line",
+      "<details>",
+      "<summary>Full output (click to expand)</summary>",
+      "UNCLOSED-BODY",
+    ),
+  });
+  assert(outcome.split);
+  const seed = seedOf(rec);
+  assertStringIncludes(seed, "key error line");
+  assert(!seed.includes("UNCLOSED-BODY"));
+});
+
+Deno.test("repeat gate split: a record with no Error Output heading quotes nothing, whatever else it holds", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: recordOf(
+      RECORD_HEAD,
+      "",
+      "<details>",
+      "<summary>Full output (click to expand)</summary>",
+      "HEADINGLESS-BODY",
+      "</details>",
+      "> headingless quote",
+    ),
+  });
+  assert(outcome.split);
+  const seed = seedOf(rec);
+  assert(/Previous run's output unavailable/.test(seed));
+  assert(!seed.includes("HEADINGLESS-BODY"));
+  assert(!seed.includes("headingless quote"));
+});
+
+Deno.test("repeat gate split: only the quoted lines of the Error Output section are the key lines", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: recordOf(
+      RECORD_HEAD,
+      "### Error Output",
+      "> quoted error line",
+      "PLAIN-UNQUOTED-LINE",
+      "",
+      "### What this means",
+      "> a quote in another section",
+    ),
+  });
+  assert(outcome.split);
+  const seed = seedOf(rec);
+  assertStringIncludes(seed, "quoted error line");
+  assert(!seed.includes("PLAIN-UNQUOTED-LINE"));
+  assert(!seed.includes("a quote in another section"));
+});
+
+Deno.test("repeat gate split: the no-key-lines placeholder is not a quotable error line", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: recordOf(
+      RECORD_HEAD,
+      "### Error Output",
+      "> No specific error lines detected \u2014 see full output below.",
+    ),
+  });
+  assert(outcome.split);
+  const seed = seedOf(rec);
+  assert(/Previous run's output unavailable/.test(seed));
+  assert(!seed.includes("No specific error lines detected"));
+});
+
+Deno.test("repeat gate split: an Error Output section that quotes nothing is reported unavailable", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: recordOf(RECORD_HEAD, "### Error Output", "", "just prose"),
+  });
+  assert(outcome.split);
+  assert(/Previous run's output unavailable/.test(seedOf(rec)));
+});
+
+Deno.test("repeat gate split: a comment that cannot be examined refuses the split as unverified, never throws", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: [{ ...comment(FLEET, "x"), body: undefined as never }],
+  });
+  assertEquals(outcome.split, false);
+  assert(
+    !outcome.split &&
+      outcome.reason.startsWith("could not verify failed-once: "),
+  );
+  assertEquals(rec.planningContexts, []);
+});
+
+Deno.test("repeat gate split: an empty branch summary says (none) for the commits and the diff stat", async () => {
+  const { outcome, rec } = await runSplit({
+    git: (args) =>
+      args[0] === "rev-parse" ? Promise.resolve(okGit("", 0)) : Promise.resolve(
+        okGit(""),
+      ),
+  });
+  assert(outcome.split);
+  assertStringIncludes(
+    seedOf(rec),
+    "(newest first, up to 50):\n(none)\n\nDiff stat:\n(none)\n\nFiles touched (0):",
+  );
+});
+
+function manyFiles(count: number): GitResponder {
+  const names = Array.from({ length: count }, (_, i) => `src/f${i}.ts`)
+    .join("\n");
+  return (args) =>
+    args[0] === "diff" && args[1] === "--name-only"
+      ? Promise.resolve(okGit(`${names}\n`))
+      : defaultGit(args);
+}
+
+Deno.test("repeat gate split: a branch summary of exactly 100 files lists them all and no overflow line", async () => {
+  const { rec } = await runSplit({ git: manyFiles(100) });
+  const seed = seedOf(rec);
+  assertStringIncludes(seed, "Files touched (100):");
+  assertStringIncludes(seed, "src/f99.ts");
+  assert(!/\+\d+ more/.test(seed), "no overflow line at the limit");
+});
+
+Deno.test("repeat gate split: a branch summary of 103 files lists 100 and counts the other 3", async () => {
+  const { rec } = await runSplit({ git: manyFiles(103) });
+  const seed = seedOf(rec);
+  assertStringIncludes(seed, "Files touched (103):");
+  assertStringIncludes(seed, "src/f99.ts");
+  assert(!seed.includes("src/f100.ts"));
+  assertStringIncludes(seed, "+3 more");
+});
+
+Deno.test("repeat gate split: a failure with no recorded gate output seeds a placeholder", async () => {
+  const { outcome, rec } = await runSplit({ gateOutput: "" });
+  assert(outcome.split);
+  assertStringIncludes(seedOf(rec), "(no gate output was recorded)");
+});
+
+Deno.test("repeat gate split: a sub-issue whose body and labels read back null is completed", async () => {
+  const { outcome, rec } = await runSplit({ nullIssueFields: true });
+  assert(outcome.split);
+  assertEquals(rec.edits.map((e) => e.issue).sort(), [101, 102]);
+  for (const edit of rec.edits) {
+    assertStringIncludes(edit.body, `Part of #${PARENT}`);
+  }
+  assertEquals(
+    rec.labelsAdded.map((l) => `${l.issue}:${l.label}`).sort(),
+    ["101:enhancement", "102:enhancement"],
+  );
+});
+
+Deno.test("repeat gate split: a failed sub-issue edit is a note and a warning, the sub-issue is not completed and nothing is destroyed", async () => {
+  const { outcome, rec } = await runSplit({
+    editThrows: true,
+    prs: JSON.stringify([{ number: 201 }]),
+  });
+  assert(outcome.split, "the parent still closes");
+  assert(outcome.notes.includes("could not edit sub-issue #101: edit denied"));
+  assert(rec.warns.some((w) => w.includes("could not edit sub-issue #101")));
+  assertEquals(mutations(rec), [], "no sub-issue was completed");
+});
+
+Deno.test("repeat gate split: a failed sub-issue label is a note and a warning, the sub-issue is not completed and nothing is destroyed", async () => {
+  const { outcome, rec } = await runSplit({
+    labelThrows: true,
+    prs: JSON.stringify([{ number: 201 }]),
+  });
+  assert(outcome.split, "the parent still closes");
+  assert(
+    outcome.notes.includes("could not label sub-issue #101: label denied"),
+  );
+  assert(rec.warns.some((w) => w.includes("could not label sub-issue #101")));
+  assertEquals(mutations(rec), [], "no sub-issue was completed");
+});
+
+Deno.test("repeat gate split: an empty pull request list closes nothing and is not an error", async () => {
+  const { outcome, rec } = await runSplit({
+    gh: (args) =>
+      args[0] === "pr" && args[1] === "list" && !args.includes("--jq")
+        ? Promise.resolve("")
+        : undefined,
+  });
+  assert(outcome.split);
+  assertEquals(
+    mutations(rec).filter((m) => m.startsWith("gh ")),
+    [],
+  );
+  assert(!outcome.notes.some((n) => n.includes("failed")));
+  assert(!rec.warns.some((w) => w.includes("closing the run's pull requests")));
+});
+
+Deno.test("repeat gate split: a pull request number that is not an integer fails the list step", async () => {
+  const { outcome, rec } = await runSplit({
+    gh: (args) =>
+      args[0] === "pr" && args[1] === "list" && !args.includes("--jq")
+        ? Promise.resolve('[{"number":1.5}]')
+        : undefined,
+  });
+  assert(outcome.split);
+  assert(
+    outcome.notes.includes(
+      "closing the run's pull requests failed: gh pr list returned a row without a PR number",
+    ),
+  );
+  assertEquals(mutations(rec).filter((m) => m.startsWith("gh ")), []);
+});
+
+Deno.test("repeat gate split: a remote delete that fails with no stderr reports the exit code", async () => {
+  const { outcome } = await runSplit({
+    git: (args) =>
+      args[0] === "push" ? Promise.resolve(okGit("", 7, "")) : defaultGit(args),
+  });
+  assert(outcome.split);
+  assert(
+    outcome.notes.includes(
+      `could not delete remote branch ${BRANCH}: git exited with code 7`,
+    ),
+  );
+});
+
+Deno.test("repeat gate split: a git read that fails with no stderr reports the exit code", async () => {
+  const { outcome, rec } = await runSplit({
+    git: (args) =>
+      args[0] === "log" ? Promise.resolve(okGit("", 3, "")) : defaultGit(args),
+  });
+  assert(outcome.split);
+  assertStringIncludes(seedOf(rec), "unavailable: git exited with code 3");
+});
+
+Deno.test("repeat gate split: pending failure-detection repairs are named in the parent's closing comment", async () => {
+  const { outcome, rec } = await runSplit({ pendingRepairs: [101, 102] });
+  assert(outcome.split);
+  const close = parentCloseCall(rec);
+  assert(close);
+  assertStringIncludes(
+    commentArg(close),
+    "the failure-detection gate still needs a repair on 2 sub-issue(s)",
+  );
+});
+
+Deno.test("repeat gate split: a closing comment names nothing when planning reported nothing pending", async () => {
+  const { rec } = await runSplit();
+  const close = parentCloseCall(rec);
+  assert(close);
+  assert(!commentArg(close).includes("Planning could not clear"));
+});
+
+Deno.test("repeat gate split: a sub-issue URL in a different letter case still names this repository", async () => {
+  const mixed = "https://github.com/Org/Repo/issues/101";
+  const { outcome, rec } = await runSplit({
+    subIssueUrls: [mixed],
+    issues: { 101: { body: "" } },
+    prs: JSON.stringify([{ number: 201 }]),
+  });
+  assert(outcome.split);
+  assert(rec.edits.some((e) => e.issue === 101), "the sub-issue is completed");
+  assert(
+    rec.gh.some((a) => a[0] === "pr" && a[1] === "close" && a[2] === "201"),
+    "so the pull request is closed",
+  );
+});
+
+Deno.test("repeat gate split: the parent is dropped from the sub-issues in any letter case, an issue of the same number elsewhere is kept", async () => {
+  const parentMixed = `https://github.com/Org/Repo/issues/${PARENT}`;
+  const elsewhere = `https://github.com/other/thing/issues/${PARENT}`;
+  const { outcome } = await runSplit({
+    subIssueUrls: [parentMixed, elsewhere, SUB_1],
+  });
+  assert(outcome.split);
+  assertEquals(outcome.subIssueUrls, [elsewhere, SUB_1]);
+});
+
+Deno.test("repeat gate split: a sub-issue URL planning reports twice is published once", async () => {
+  const { outcome } = await runSplit({ subIssueUrls: [SUB_1, SUB_2, SUB_1] });
+  assert(outcome.split);
+  assertEquals(outcome.subIssueUrls, [SUB_1, SUB_2]);
+});
+
+Deno.test("repeat gate split: a refused split with an open parent logs one info line with the notes", async () => {
+  const { outcome, rec } = await runSplit({
+    gh: (args) =>
+      args[0] === "issue" && args[1] === "close"
+        ? Promise.reject(new Error("GraphQL: not permitted"))
+        : undefined,
+  });
+  assertEquals(outcome.split, false);
+  assertEquals(
+    rec.infos.filter((m) => m.includes("but the parent is open")).length,
+    1,
+  );
+});
+
+Deno.test("repeat gate split: a later fleet comment that is not a failure record does not replace the record", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: [
+      comment(FLEET, failureRecord("First Attempt", "RECORD-MARKER"), 1),
+      comment(FLEET, "Planning round posted: nothing to see here.", 2),
+    ],
+  });
+  assert(outcome.split);
+  assertStringIncludes(seedOf(rec), "RECORD-MARKER");
+});
+
+Deno.test("repeat gate split: fleet comments that are not failure records do not back failed-once", async () => {
+  const { outcome, rec } = await runSplit({
+    comments: [comment(FLEET, "Planning round posted: nothing to see here.")],
+  });
+  assertEquals(outcome, { split: false, reason: REFUSED_NOT_BACKED });
+  assertEquals(rec.planningContexts, []);
+});
+
+Deno.test("repeat gate split: a branch that exists only as a remote-tracking ref is summarised from that ref", async () => {
+  const { outcome, rec } = await runSplit({
+    git: (args) =>
+      args[0] === "rev-parse" && args.at(-1) === `refs/heads/${BRANCH}`
+        ? Promise.resolve(okGit("", 1))
+        : defaultGit(args),
+  });
+  assert(outcome.split);
+  const log = rec.git.find((args) => args[0] === "log");
+  assertEquals(log?.at(-1), `origin/main..refs/remotes/origin/${BRANCH}`);
+  assertStringIncludes(seedOf(rec), "abc1234 Add the thing");
+});
+
+for (const row of ["null", "7", '"text"']) {
+  Deno.test(`repeat gate split: a pull request list row of ${row} is a row without a number`, async () => {
+    const { outcome, rec } = await runSplit({
+      gh: (args) =>
+        args[0] === "pr" && args[1] === "list" && !args.includes("--jq")
+          ? Promise.resolve(`[${row}]`)
+          : undefined,
+    });
+    assert(outcome.split);
+    assert(
+      outcome.notes.includes(
+        "closing the run's pull requests failed: gh pr list returned a row without a PR number",
+      ),
+    );
+    assertEquals(mutations(rec).filter((m) => m.startsWith("gh ")), []);
+  });
+}
+
+Deno.test("repeat gate split: a git call that throws a non-Error reports its text as the reason", async () => {
+  const { outcome, rec } = await runSplit({
+    git: (args) =>
+      args[0] === "rev-parse"
+        ? Promise.reject("plain string thrown")
+        : defaultGit(args),
+  });
+  assert(outcome.split);
+  assertStringIncludes(seedOf(rec), "unavailable: plain string thrown");
+});
