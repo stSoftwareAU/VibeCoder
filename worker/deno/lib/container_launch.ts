@@ -1195,9 +1195,13 @@ export function buildContainerLaunchPlan(
           "proxy would refuse every host the worker needs (Issue #4047).",
       );
     }
-    // The checkout's worker code, mounted read-only into the proxy so it runs
-    // the same egress-proxy command the tests exercise (Issue #4046).
-    const checkoutSource = normalise(joinPath(base, "worker/deno", style), style);
+    // The proxy runs the #4046 egress-proxy command from the checkout's worker
+    // code, mounted read-only, in the same image the worker runs, so the code
+    // it enforces is the code this checkout ships (Issue #4047).
+    const checkoutSource = normalise(
+      joinPath(base, "worker/deno", style),
+      style,
+    );
     assertMountSourcePermitted(checkoutSource, home, style);
     egress = buildEgressSidecarPlan({
       dialect,

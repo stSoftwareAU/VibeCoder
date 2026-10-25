@@ -22,13 +22,17 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { buildAgentChildEnv } from "../lib/agent_env.ts";
+import {
+  buildAgentChildEnv,
+  WORKER_ONLY_SECRET_ENV_VARS,
+} from "../lib/agent_env.ts";
 import { isAuditJournalEnabled } from "../lib/audit_hook.ts";
 import { resolveBaseDir } from "../lib/audit_journal.ts";
 import { buildClaudeChildEnv } from "../lib/claude_env.ts";
 import { buildCodexChildEnv } from "../lib/codex_env.ts";
 import { buildDeepSeekChildEnv } from "../lib/deepseek_env.ts";
 import { buildGeminiChildEnv } from "../lib/gemini_env.ts";
+import { EGRESS_PROXY_ENV_NAMES } from "../lib/container_egress.ts";
 
 /** The worker container's environment, as far as the journal reads it. */
 const WORKER_ENV: Record<string, string> = {
@@ -40,6 +44,28 @@ const WORKER_ENV: Record<string, string> = {
 };
 
 const lookup = (env: Record<string, string>) => (name: string) => env[name];
+
+/** The four providers' child-environment builders, each on its real default. */
+const PROVIDER_CHILD_ENV: Record<
+  string,
+  (env: Record<string, string>) => Record<string, string>
+> = {
+  claude: (env) => buildClaudeChildEnv(env),
+  codex: (env) => buildCodexChildEnv(env),
+  deepseek: (env) => buildDeepSeekChildEnv(env),
+  gemini: (env) => buildGeminiChildEnv(env),
+};
+
+/** The egress proxy variables, each valued by its own name so a swap shows. */
+const PROXY_ENV: Record<string, string> = Object.fromEntries(
+  EGRESS_PROXY_ENV_NAMES.map((name) => [name, `value-of-${name}`]),
+);
+
+/** Secrets no provider's child may inherit, whatever its own allowlist says. */
+const SECRET_ENV: Record<string, string> = {
+  GITHUB_APP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
+  ACME_SERVICE_TOKEN: "acme-live-token",
+};
 
 Deno.test("the worker's own journal is on — the fixture is a production-shaped environment", () => {
   assertEquals(isAuditJournalEnabled(lookup(WORKER_ENV)), true);
@@ -77,21 +103,45 @@ Deno.test("buildAgentChildEnv - does not mutate the worker's environment", () =>
 });
 
 Deno.test("every provider's child environment has the journal off", () => {
-  const builders: Record<
-    string,
-    (env: Record<string, string>) => Record<string, string>
-  > = {
-    claude: (env) => buildClaudeChildEnv(env),
-    codex: (env) => buildCodexChildEnv(env),
-    deepseek: (env) => buildDeepSeekChildEnv(env),
-    gemini: (env) => buildGeminiChildEnv(env),
-  };
-  for (const [provider, build] of Object.entries(builders)) {
+  for (const [provider, build] of Object.entries(PROVIDER_CHILD_ENV)) {
     const child = build({ ...WORKER_ENV });
     assertEquals(
       isAuditJournalEnabled(lookup(child)),
       false,
       `${provider}: a test the agent runs would journal into production`,
     );
+  }
+});
+
+Deno.test("buildAgentChildEnv - the egress proxy variables survive the generic policy, and secrets do not", () => {
+  const child = buildAgentChildEnv(
+    { ...WORKER_ENV, ...PROXY_ENV, ...SECRET_ENV },
+    { denylist: [...WORKER_ONLY_SECRET_ENV_VARS], secretAllowlist: [] },
+  );
+  for (const name of EGRESS_PROXY_ENV_NAMES) {
+    assertEquals(child[name], PROXY_ENV[name], `${name} must reach the child`);
+  }
+  for (const name of Object.keys(SECRET_ENV)) {
+    assertEquals(child[name], undefined, `${name} must not reach the child`);
+  }
+});
+
+Deno.test("every provider's child keeps the egress proxy variables unchanged and still loses its secrets", () => {
+  for (const [provider, build] of Object.entries(PROVIDER_CHILD_ENV)) {
+    const child = build({ ...WORKER_ENV, ...PROXY_ENV, ...SECRET_ENV });
+    for (const name of EGRESS_PROXY_ENV_NAMES) {
+      assertEquals(
+        child[name],
+        PROXY_ENV[name],
+        `${provider}: ${name} must reach the child unchanged`,
+      );
+    }
+    for (const name of Object.keys(SECRET_ENV)) {
+      assertEquals(
+        child[name],
+        undefined,
+        `${provider}: ${name} must not reach the child`,
+      );
+    }
   }
 });

@@ -40,11 +40,46 @@ export const DEFAULT_EGRESS_PROXY_NAME = "vibe-coder-egress-proxy";
 /** Deno cache the image pre-seeds (container/Containerfile VIBE_DENO_SEED_DIR). */
 export const EGRESS_PROXY_DENO_DIR = "/opt/deno-seed";
 
-/** How many times the launcher polls the sidecar's logs for readiness. */
-const DEFAULT_READY_TRIES = 30;
+/**
+ * Environment variable that overrides how many readiness polls the launcher
+ * makes for the egress-proxy sidecar's listening line. Read by run.sh and
+ * run.ps1, not by this module. Must be a positive integer; the default is
+ * {@link EGRESS_PROXY_READY_DEFAULT_TRIES}. It is the test override of the
+ * readiness wait: production never sets it.
+ */
+export const EGRESS_PROXY_READY_TRIES_ENV = "VIBE_EGRESS_PROXY_READY_TRIES";
 
-/** Pause between readiness polls. */
-const READY_POLL_INTERVAL_MS = 1000;
+/**
+ * Environment variable that overrides the seconds between those readiness
+ * polls. Read by run.sh and run.ps1, not by this module. Must be a positive
+ * integer; the default is {@link EGRESS_PROXY_READY_DEFAULT_INTERVAL_SECONDS}.
+ * It is the test override of the readiness wait: production never sets it.
+ */
+export const EGRESS_PROXY_READY_INTERVAL_ENV =
+  "VIBE_EGRESS_PROXY_READY_INTERVAL";
+
+/** How many times the launcher polls the sidecar's logs for readiness. */
+export const EGRESS_PROXY_READY_DEFAULT_TRIES = 30;
+
+/** Seconds between readiness polls when no override is set. */
+export const EGRESS_PROXY_READY_DEFAULT_INTERVAL_SECONDS = 1;
+
+/**
+ * The proxy variables the worker's child processes carry, by exact spelling.
+ *
+ * Both the upper- and lower-case forms are set, because tools disagree on
+ * which they read. The first four point at the sidecar; the last two are the
+ * loopback bypass. Order matches the worker's `--env` list in
+ * {@link buildEgressSidecarPlan}.
+ */
+export const EGRESS_PROXY_ENV_NAMES: readonly string[] = [
+  "HTTPS_PROXY",
+  "https_proxy",
+  "HTTP_PROXY",
+  "http_proxy",
+  "NO_PROXY",
+  "no_proxy",
+];
 
 /** Most log text quoted in a readiness failure. */
 const MAX_LOG_EXCERPT_CHARS = 600;
@@ -189,14 +224,13 @@ export function buildEgressSidecarPlan(input: {
 
   return {
     internalNetwork: networkName,
-    workerEnv: [
-      `HTTPS_PROXY=${proxyUrl}`,
-      `https_proxy=${proxyUrl}`,
-      `HTTP_PROXY=${proxyUrl}`,
-      `http_proxy=${proxyUrl}`,
-      `NO_PROXY=${LOOPBACK_NO_PROXY}`,
-      `no_proxy=${LOOPBACK_NO_PROXY}`,
-    ],
+    // The two NO_PROXY spellings carry the loopback bypass; the rest point at
+    // the sidecar.
+    workerEnv: EGRESS_PROXY_ENV_NAMES.map((name) =>
+      `${name}=${
+        name.toUpperCase() === "NO_PROXY" ? LOOPBACK_NO_PROXY : proxyUrl
+      }`
+    ),
     networkCreateArgs: [...dialect.networkCreateArgs, networkName],
     networkRemoveArgs: [...dialect.networkRemoveArgs, networkName],
     proxyRunArgs: [
@@ -293,7 +327,7 @@ export async function startEgressSidecar(
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<void> {
-  const readyTries = options.readyTries ?? DEFAULT_READY_TRIES;
+  const readyTries = options.readyTries ?? EGRESS_PROXY_READY_DEFAULT_TRIES;
   const sleep = options.sleep ?? defaultSleep;
 
   // Leftovers from an earlier launch are expected to be absent; their results
@@ -345,7 +379,9 @@ async function waitForReady(
     const result = await run(sidecar.proxyLogsArgs);
     lastLog = `${result.stdout}${result.stderr}`;
     if (lastLog.includes(sidecar.proxyReadyMarker)) return;
-    if (attempt < readyTries) await sleep(READY_POLL_INTERVAL_MS);
+    if (attempt < readyTries) {
+      await sleep(EGRESS_PROXY_READY_DEFAULT_INTERVAL_SECONDS * 1000);
+    }
   }
   throw new Error(
     `egress sidecar: ${sidecar.proxyLogsArgs.at(-1)} never reported ready ` +

@@ -1110,6 +1110,9 @@ The worker machine should be secured as it has significant privileges:
   - `api.anthropic.com` (Claude API)
 - No inbound connections are required
 - Consider using a firewall to restrict outbound access to these hosts only
+- On Docker and Podman the launcher already restricts the worker container to
+  the resolved allowlist, through an egress proxy sidecar. Apple `container` does
+  not filter outbound traffic. See [CONTAINMENT.md](docs/CONTAINMENT.md#the-network-boundary).
 
 ### ⚙️ Running as a Service
 

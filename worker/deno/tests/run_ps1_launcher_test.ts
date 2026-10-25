@@ -1884,7 +1884,14 @@ Deno.test({
     "run.ps1 - refuses to launch, and tears down what it started, when the egress sidecar cannot come up (Issue #4047)",
   ignore,
   fn: async () => {
-    const cases = [
+    const cases: {
+      step: string;
+      env: Record<string, string>;
+      line: string;
+      proxyRuns: number;
+      connects: number;
+      torn: boolean;
+    }[] = [
       {
         step: "network create",
         env: {

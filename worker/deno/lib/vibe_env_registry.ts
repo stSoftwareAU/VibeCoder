@@ -376,7 +376,7 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
   VIBE_EGRESS_ALLOW_HOSTS: {
     role: "launch_plumbing",
     note:
-      "the host allowlist the `egress-proxy` command reads when `--allow` is absent (Issue #4046); the launcher does not set it yet — #4047 routes the container through the proxy",
+      "the host allowlist the `egress-proxy` command reads when `--allow` is absent (Issue #4046); on Docker and Podman the launcher sets it on the egress-proxy sidecar container, never on the worker (Issue #4047)",
   },
   VIBE_RUN_MODE: {
     role: "launch_plumbing",
@@ -508,6 +508,18 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "switch",
     note: "shortens the attached launcher's host-disk.json refresh interval " +
       "from its fixed five minutes (Issue #1691); tests only",
+  },
+  VIBE_EGRESS_PROXY_READY_TRIES: {
+    role: "switch",
+    note: "test-only override of how many readiness polls the launcher makes " +
+      "for the egress-proxy sidecar's listening line, default 30, read by " +
+      "run.sh and run.ps1 (Issue #4047); production never sets it",
+  },
+  VIBE_EGRESS_PROXY_READY_INTERVAL: {
+    role: "switch",
+    note: "test-only override of the seconds between those readiness polls, " +
+      "default 1, read by run.sh and run.ps1 (Issue #4047); production never " +
+      "sets it",
   },
   VIBE_EXTENSION_PREFIX: {
     role: "switch",

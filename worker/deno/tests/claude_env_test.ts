@@ -11,6 +11,7 @@
 
 import { assertEquals } from "@std/assert";
 import { resolveAgentStateDir } from "../lib/agent_state_dir.ts";
+import { EGRESS_PROXY_ENV_NAMES } from "../lib/container_egress.ts";
 import {
   buildClaudeChildEnv,
   CLAUDE_ENV_DENYLIST,
@@ -234,4 +235,21 @@ Deno.test("buildClaudeChildEnv - an API-key-only host is unchanged (Issue #1923)
   const child = buildClaudeChildEnv(parent);
   assertEquals(child.ANTHROPIC_API_KEY, "sk-ant-metered");
   assertEquals(child.ANTHROPIC_AUTH_TOKEN, "bearer-for-a-proxy");
+});
+
+Deno.test("buildClaudeChildEnv - the egress proxy variables reach the child unchanged, and secrets do not", () => {
+  const proxy: Record<string, string> = Object.fromEntries(
+    EGRESS_PROXY_ENV_NAMES.map((name) => [name, `value-of-${name}`]),
+  );
+  const child = buildClaudeChildEnv({
+    PATH: "/usr/bin",
+    ...proxy,
+    GITHUB_APP_PRIVATE_KEY_PATH: "/secrets/app.pem",
+    ACME_SERVICE_TOKEN: "acme-live-token",
+  });
+  for (const name of EGRESS_PROXY_ENV_NAMES) {
+    assertEquals(child[name], proxy[name], `${name} must reach the child`);
+  }
+  assertEquals(child.GITHUB_APP_PRIVATE_KEY_PATH, undefined);
+  assertEquals(child.ACME_SERVICE_TOKEN, undefined);
 });

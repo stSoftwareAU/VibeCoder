@@ -981,8 +981,11 @@ sub-directory is mounted read-only into the container, so a process with
 filesystem read access inside the container can read every token file there,
 selected or not — recorded as residual risk R9 in
 [the threat model](THREAT-MODEL.md#%EF%B8%8F-residual-risks), where it is an open
-gap: the container's outbound network is not restricted, so a token read there
-can leave the container until egress is default-deny (#3698). Add a second
+gap: on Apple `container` the outbound network is not restricted, and on Docker
+and Podman it is restricted only to the allowlisted hosts
+([CONTAINMENT.md](CONTAINMENT.md#the-network-boundary)), so a token read there
+can still leave the container through an allowlisted host until egress is
+default-deny (#3698). Add a second
 subscription knowing that every token file in `claude/` carries that exposure,
 whatever the environment policy selected.
 

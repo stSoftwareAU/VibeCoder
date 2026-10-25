@@ -20,6 +20,7 @@ import {
   UNTRUSTED_USER,
 } from "../lib/untrusted_command_env.ts";
 import { untrustedQualityCommandEnv } from "../lib/quality_gate_phase.ts";
+import { EGRESS_PROXY_ENV_NAMES } from "../lib/container_egress.ts";
 
 /** The environment a worker actually carries, credentials included. */
 const WORKER_ENV: Record<string, string> = {
@@ -177,4 +178,38 @@ Deno.test("quality_gate_phase - spawns with a built environment, never an inheri
   assertEquals(env["CLAUDE_CODE_OAUTH_TOKEN"], undefined);
   assertEquals(env["DECLARED_TOKEN"], "declared");
   assertEquals(env["PATH"], "/usr/bin");
+});
+
+Deno.test("buildUntrustedCommandEnv - the egress proxy variables reach the build unchanged, and credentials do not", () => {
+  // The repository's own command needs the proxy to reach a registry at all
+  // (Issue #4047); the credentials beside it must still be absent.
+  const proxy: Record<string, string> = Object.fromEntries(
+    EGRESS_PROXY_ENV_NAMES.map((name) => [name, `value-of-${name}`]),
+  );
+  const env = buildUntrustedCommandEnv({
+    source: { ...WORKER_ENV, ...proxy },
+  });
+  for (const name of EGRESS_PROXY_ENV_NAMES) {
+    assertEquals(env[name], proxy[name], `${name} must reach the build`);
+  }
+  assertEquals(env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+  assertEquals(env.GH_TOKEN, undefined);
+  assertEquals(env.AWS_SECRET_ACCESS_KEY, undefined);
+});
+
+Deno.test("untrustedQualityCommandEnv - the spawn the quality gate makes keeps the egress proxy variables", () => {
+  const proxy: Record<string, string> = Object.fromEntries(
+    EGRESS_PROXY_ENV_NAMES.map((name) => [name, `value-of-${name}`]),
+  );
+  const env = untrustedQualityCommandEnv({
+    spawnable: ["bash", "-c", "./quality.sh"],
+    cwd: "/home/vibe/auto-issue-work/GRQ-tax",
+    repoCredentialEnv: {},
+    trimRefused: false,
+    source: { PATH: "/usr/bin", ...proxy, CLAUDE_CODE_OAUTH_TOKEN: "secret" },
+  });
+  for (const name of EGRESS_PROXY_ENV_NAMES) {
+    assertEquals(env[name], proxy[name], `${name} must reach the spawn`);
+  }
+  assertEquals(env["CLAUDE_CODE_OAUTH_TOKEN"], undefined);
 });

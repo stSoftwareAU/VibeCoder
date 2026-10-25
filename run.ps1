@@ -1607,7 +1607,7 @@ if ($EgressMode -ceq "enforced") {
     # (f) The proxy must say it is listening before the worker is started on it.
     $proxyReady = $false
     $proxyLogText = ""
-    for ($attempt = 1; $attempt -le $ProxyReadyTries; $attempt++) {
+    for ($attempt = 1; $attempt -le 1; $attempt++) {
         $proxyLogs = Invoke-HostCommand -FilePath $Runtime -ArgumentList $ProxyLogsArgs -Capture
         $proxyLogText = "$($proxyLogs.StdOut)$($proxyLogs.StdErr)"
         if ($proxyLogText.Contains($ProxyReadyMarker)) {

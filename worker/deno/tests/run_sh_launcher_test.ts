@@ -234,7 +234,7 @@ function denoStubSource(sharedStub: string): string {
     '    if [[ "${s%%=*}" == "${key}" ]]; then drop=1; fi',
     "  done",
     '  if [[ "${drop}" == 0 ]]; then printf "%s\\0" "${token}" >> "${edited}"; fi',
-    "done < \"${plan_out}\"",
+    'done < "${plan_out}"',
     'for s in ${STUB_PLAN_SET:-}; do printf "%s\\0" "${s}" >> "${edited}"; done',
     'mv -f "${edited}" "${plan_out}"',
     "exit 0",
@@ -264,7 +264,10 @@ function installEgressStubs(harness: Harness): void {
     );
   }
   Deno.renameSync(`${stubDir}/deno`, `${stubDir}/deno.harness`);
-  writeExecutableSync(`${stubDir}/deno`, denoStubSource(`${stubDir}/deno.harness`));
+  writeExecutableSync(
+    `${stubDir}/deno`,
+    denoStubSource(`${stubDir}/deno.harness`),
+  );
 }
 
 /** Write a script and make it executable. */
@@ -3686,7 +3689,9 @@ Deno.test("run.sh - an enforced plan brings the sidecar up in order and starts t
     assert(
       create >= 0 && proxyRun >= 0 && connect >= 0 && ready >= 0 &&
         worker >= 0,
-      `expected every sidecar step and the worker run, got: ${calls.join(" | ")}`,
+      `expected every sidecar step and the worker run, got: ${
+        calls.join(" | ")
+      }`,
     );
     assert(
       create < proxyRun,
@@ -3698,7 +3703,9 @@ Deno.test("run.sh - an enforced plan brings the sidecar up in order and starts t
     );
     assert(
       connect < ready && ready < worker,
-      `the proxy is attached and ready before the worker starts: ${calls.join(" | ")}`,
+      `the proxy is attached and ready before the worker starts: ${
+        calls.join(" | ")
+      }`,
     );
     assertEquals(
       lastCall(calls, isWorkerRun),
@@ -3734,7 +3741,9 @@ Deno.test("run.sh - a stale sidecar from a crashed launch is removed before the 
     );
     assert(
       proxyRemove < networkRemove && networkRemove < create,
-      `the stale proxy and network must go before the network is created: ${calls.join(" | ")}`,
+      `the stale proxy and network must go before the network is created: ${
+        calls.join(" | ")
+      }`,
     );
     assert(
       proxyRemove < proxyRun,
@@ -3766,7 +3775,9 @@ Deno.test("run.sh - on success the proxy's logs are kept, then the proxy and net
     const networkRemove = lastCall(calls, isNetworkRemove);
     assert(
       worker < logs && logs < proxyRemove && proxyRemove < networkRemove,
-      `teardown must keep the logs, then remove the proxy, then the network: ${calls.join(" | ")}`,
+      `teardown must keep the logs, then remove the proxy, then the network: ${
+        calls.join(" | ")
+      }`,
     );
   } finally {
     await harness.cleanup();
@@ -3793,7 +3804,9 @@ Deno.test("run.sh - when the worker fails the sidecar is still kept and removed,
     const networkRemove = lastCall(calls, isNetworkRemove);
     assert(
       worker < logs && logs < proxyRemove && proxyRemove < networkRemove,
-      `teardown after a failed worker must keep the logs, then remove the proxy, then the network: ${calls.join(" | ")}`,
+      `teardown after a failed worker must keep the logs, then remove the proxy, then the network: ${
+        calls.join(" | ")
+      }`,
     );
   } finally {
     await harness.cleanup();
@@ -3836,7 +3849,10 @@ Deno.test("run.sh - a refused proxy start refuses the launch and removes the net
 
     const calls = await runtimeCalls(harness);
     const proxyRun = firstCall(calls, isProxyRun);
-    assert(proxyRun >= 0, `the proxy start was never attempted: ${calls.join(" | ")}`);
+    assert(
+      proxyRun >= 0,
+      `the proxy start was never attempted: ${calls.join(" | ")}`,
+    );
     assert(
       lastCall(calls, isNetworkRemove) > proxyRun,
       `the network made for the sidecar must be removed: ${calls.join(" | ")}`,
@@ -3860,7 +3876,10 @@ Deno.test("run.sh - a refused proxy attach refuses the launch and removes the ne
 
     const calls = await runtimeCalls(harness);
     const connect = firstCall(calls, isProxyConnect);
-    assert(connect >= 0, `the proxy attach was never attempted: ${calls.join(" | ")}`);
+    assert(
+      connect >= 0,
+      `the proxy attach was never attempted: ${calls.join(" | ")}`,
+    );
     assert(
       lastCall(calls, isNetworkRemove) > connect,
       `the network made for the sidecar must be removed: ${calls.join(" | ")}`,

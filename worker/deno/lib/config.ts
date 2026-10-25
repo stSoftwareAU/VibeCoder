@@ -629,8 +629,8 @@ export async function loadConfig(
   setConfiguredEnabledAgentProviderIds(enabledAgentProviderIds);
 
   // Egress allowlist (Issue #4045): validation only. The CONNECT proxy (#4046)
-  // takes its list from --allow or VIBE_EGRESS_ALLOW_HOSTS. Not yet: #4047
-  // will feed this list to the proxy.
+  // takes its list from --allow or VIBE_EGRESS_ALLOW_HOSTS; the launch plan
+  // (#4047) resolves the list again and passes it to the proxy sidecar.
   try {
     resolveEgressAllowlist({
       enabledProviderIds: enabledAgentProviderIds,

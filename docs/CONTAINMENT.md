@@ -39,7 +39,7 @@ flowchart LR
     H1 -. never mounted .-x W
     H2 -. never mounted .-x W
     H3 -. never mounted .-x W
-    W -->|outbound only| N["🌐 GitHub, agent APIs, registries"]
+    W -->|"outbound; Docker and Podman via the egress proxy only"| N["🌐 GitHub, agent APIs, registries"]
     style M fill:#2d6a4f,stroke:#1b4332,color:#fff
     style W fill:#40916c,stroke:#2d6a4f,color:#fff
 ```
@@ -138,6 +138,11 @@ worker actually uses: `gh`, and one per *enabled* coding-agent provider:
   the custom prompt map: the staged `.config.json` still names the operator's
   *host* paths, so one file works in both modes, and `VIBE_CUSTOM_PROMPT_PATHS`
   carries the host → in-container translation the config loader applies.
+
+The egress-proxy sidecar is the only other container the launcher starts on
+Docker and Podman. Its one host mount is a read-only mount of the `worker/deno`
+checkout, and nothing else from the host; the worker's mount set above is
+unchanged (see [the egress proxy](#egress-proxy)).
 
 Building a plan **fails loud** rather than emitting a broadened
 one when a mount source is the host home directory or an ancestor of it, a
@@ -324,28 +329,59 @@ leaves `${HOME}` untouched.
 
 ## The network boundary
 
-- **Outbound is allowed** — GitHub, the coding-agent APIs and package/tool
-  registries are reachable on the runtime's own bridge network.
+- **Docker and Podman: the worker has no direct route out.** Each launch
+  creates a per-launch internal network, `vibe-coder-egress`
+  (`<runtime> network create --internal`), and the worker container joins that
+  network alone. An internal network has no default gateway, so the worker
+  reaches nothing outside it directly.
+- **The only way out is the egress proxy.** The launcher starts the
+  `egress-proxy` command from the worker image as a sidecar container named
+  `vibe-coder-egress-proxy`, on the runtime's outbound `bridge` network, and
+  then connects it to the internal network. The worker's `HTTPS_PROXY`,
+  `https_proxy`, `HTTP_PROXY` and `http_proxy` point at
+  `http://vibe-coder-egress-proxy:3128`; `NO_PROXY` and `no_proxy` name only
+  loopback (`localhost,127.0.0.1,::1`). A tool that ignores the proxy variables
+  fails to connect rather than reaching the network.
+- **Apple `container` is not enforced.** It has no internal network and no
+  proxy in this launch path, so its worker container keeps the runtime's
+  default network and its outbound traffic is not filtered.
+- **Launch failures close, never open.** A failed network create, proxy start,
+  connect or readiness wait makes `run.sh` and `run.ps1` exit non-zero. The
+  launcher waits up to 30 seconds for the sidecar's `[EGRESS_PROXY] listening`
+  line and never falls back to an open network.
+
+```mermaid
+flowchart LR
+    subgraph internal ["vibe-coder-egress (internal, no default gateway)"]
+        W["worker container"]
+        P["vibe-coder-egress-proxy<br/>egress-proxy command, port 3128"]
+        W -->|"HTTPS_PROXY"| P
+    end
+    P -->|"bridge network<br/>CONNECT host:443 on the allowlist"| N["🌐 allowlisted hosts"]
+    W -. "no direct route" .-x N
+```
+
 - **No inbound ports.** The launch plan publishes nothing, and the containment
   suite asks the runtime (`inspect`) for the running container rather than
   inferring it from the launcher's arguments.
 - **Never host networking.** `--network host` (and any host namespace) is
   rejected by the plan builder before the arguments are returned.
-- The network boundary itself does not filter hosts. The
-  [egress proxy](#egress-proxy) now exists (#4046), but the container is not
-  routed through it until #4047, so the network boundary still does not filter
-  which hosts the container reaches. Per-host allowlisting is the job of the
-  [egress allowlist](#egress-allowlist) below.
+- The internal network does not filter hosts by itself. Per-host filtering is
+  done by the [egress proxy](#egress-proxy), which is the only member of the
+  internal network with a route out, and by the
+  [egress allowlist](#egress-allowlist) it enforces.
+- Credentials are not isolated by this change. That is tracked in #3699.
 
 ## Egress allowlist
 
 The agent container may reach outbound only the hosts in one list, defined in
-`worker/deno/lib/egress_allowlist.ts`. The list is accepted and validated when
-the config loads today, but **nothing enforces it yet**. The
-[egress proxy](#egress-proxy) (#4046) can enforce it, but the container is not
-routed through the proxy until #4047. Until then nothing enforces the list for
-the container, and the network boundary above does not restrict which hosts it
-reaches.
+`worker/deno/lib/egress_allowlist.ts`. The list is validated when the config
+loads. On Docker and Podman the launcher resolves it and passes it to the
+[egress proxy](#egress-proxy) sidecar in `VIBE_EGRESS_ALLOW_HOSTS`. The proxy
+enforces it for the worker, because the worker's only route out is through that
+proxy (see [the network boundary](#the-network-boundary)). On Apple `container`
+the list is validated but **not enforced**: that runtime has no internal network,
+so outbound traffic is not filtered.
 
 | Host | Purpose | Included when | Reason |
 | --- | --- | --- | --- |
@@ -398,9 +434,32 @@ ships, run by the `egress-proxy` command. It is a CONNECT proxy: it accepts
 only `CONNECT host:443` for an allowlisted host, and it dials that host itself
 after checking where the name resolves.
 
-**The container is not routed through it yet.** Issue #4046 adds the proxy
-only. Routing the agent container through it is #4047, so until then the
-container reaches the network directly and the proxy enforces nothing for it.
+**The launcher runs it as the worker's only route out (Docker and Podman).**
+Issue #4046 added the command; Issue #4047 starts it from the worker image as
+the `vibe-coder-egress-proxy` sidecar described in
+[the network boundary](#the-network-boundary). The sidecar listens on
+`0.0.0.0:3128` inside the internal network, publishes no ports, and takes the
+resolved allowlist in `VIBE_EGRESS_ALLOW_HOSTS`. Apple `container` does not use
+the proxy.
+
+The sidecar's code is the bind-mounted `worker/deno` checkout, not the image,
+because the image holds only dependencies. The sidecar gets exactly one
+**read-only** `--mount` of that directory, and nothing else from the host: no
+credentials, configuration, state or log directory. This is the one mount the
+launch adds beyond [the mount set](#the-mount-set) below.
+
+```mermaid
+flowchart LR
+    W["worker container"] -->|"CONNECT host:443"| S["vibe-coder-egress-proxy"]
+    S -->|"allowlisted, dialled after the DNS check"| I["🌐 internet"]
+    S -. "[EGRESS_DENIED] lines" .-> L["egress-proxy.log"]
+```
+
+**Logs and teardown.** On exit the launcher appends the sidecar's logs to
+`egress-proxy.log` in the worker log directory, including every
+`[EGRESS_DENIED]` line. It then removes the sidecar container and the internal
+network. A sidecar or network left over from a crashed launch is removed before
+the next one starts.
 
 ```bash
 deno run --allow-read --allow-env --allow-net worker/deno/mod.ts egress-proxy \

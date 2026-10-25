@@ -16,7 +16,12 @@ import {
   buildEgressSidecarPlan,
   DEFAULT_EGRESS_NETWORK_NAME,
   DEFAULT_EGRESS_PROXY_NAME,
+  EGRESS_PROXY_ENV_NAMES,
   EGRESS_PROXY_PORT,
+  EGRESS_PROXY_READY_DEFAULT_INTERVAL_SECONDS,
+  EGRESS_PROXY_READY_DEFAULT_TRIES,
+  EGRESS_PROXY_READY_INTERVAL_ENV,
+  EGRESS_PROXY_READY_TRIES_ENV,
   type RuntimeRunner,
   type RuntimeRunResult,
   startEgressSidecar,
@@ -137,6 +142,14 @@ for (
     }
     assertEquals(plan.internalNetwork, DEFAULT_EGRESS_NETWORK_NAME);
     assertEquals(plan.proxyReadyMarker, EGRESS_PROXY_READY_MARKER);
+  });
+
+  Deno.test(`buildEgressSidecarPlan (${label}) - the worker env names are the shared proxy names, in order`, () => {
+    const plan = buildEgressSidecarPlan({ ...BASE, dialect });
+    assertEquals(
+      plan.workerEnv.map((entry) => entry.split("=")[0]),
+      [...EGRESS_PROXY_ENV_NAMES],
+    );
   });
 
   Deno.test(`buildEgressSidecarPlan (${label}) - the argv is the documented runtime invocation`, () => {
@@ -516,6 +529,47 @@ Deno.test("stopEgressSidecar - a failing proxy removal still attempts the networ
     "egress sidecar teardown failed: remove the egress proxy (exit 1): no such container",
   );
   assert(calls.some((args) => sameArgs(args, plan.networkRemoveArgs)));
+});
+
+Deno.test("egress readiness - the defaults are the documented 30 tries and 1 second, under the documented names", () => {
+  assertEquals(EGRESS_PROXY_READY_DEFAULT_TRIES, 30);
+  assertEquals(EGRESS_PROXY_READY_DEFAULT_INTERVAL_SECONDS, 1);
+  assertEquals(EGRESS_PROXY_READY_TRIES_ENV, "VIBE_EGRESS_PROXY_READY_TRIES");
+  assertEquals(
+    EGRESS_PROXY_READY_INTERVAL_ENV,
+    "VIBE_EGRESS_PROXY_READY_INTERVAL",
+  );
+});
+
+Deno.test("startEgressSidecar - with no options it polls the default 30 times, one second apart", async () => {
+  const plan = buildEgressSidecarPlan(BASE);
+  const sleeps: number[] = [];
+  const { calls, run } = fakeRunner((args) =>
+    args[0] === "logs" ? { code: 0, stdout: "booting\n", stderr: "" } : OK
+  );
+
+  await assertRejects(
+    () =>
+      startEgressSidecar(plan, run, {
+        sleep: (ms) => {
+          sleeps.push(ms);
+          return Promise.resolve();
+        },
+      }),
+    Error,
+    `never reported ready after ${EGRESS_PROXY_READY_DEFAULT_TRIES} tries`,
+  );
+
+  // Thirty polls during start, one more in teardown; a pause between each
+  // pair of start polls and none after the last.
+  const polls = calls.filter((args) => sameArgs(args, plan.proxyLogsArgs));
+  assertEquals(polls.length, EGRESS_PROXY_READY_DEFAULT_TRIES + 1);
+  assertEquals(
+    sleeps,
+    Array(EGRESS_PROXY_READY_DEFAULT_TRIES - 1).fill(
+      EGRESS_PROXY_READY_DEFAULT_INTERVAL_SECONDS * 1000,
+    ),
+  );
 });
 
 // ---------------------------------------------------------------------------

@@ -474,7 +474,10 @@ Deno.test("buildContainerLaunchPlan - starts the container with least privilege"
   assertEquals(plan.runArgs.includes("no-new-privileges"), true);
   // The worker joins the per-launch internal network, never the bridge: the
   // egress sidecar is the only member that reaches out (Issue #4047).
-  assertEquals(plan.runArgs[plan.runArgs.indexOf("--network") + 1], "vibe-coder-egress");
+  assertEquals(
+    plan.runArgs[plan.runArgs.indexOf("--network") + 1],
+    "vibe-coder-egress",
+  );
   assertEquals(plan.runArgs.includes("bridge"), false);
   assertEquals(
     plan.runArgs.some((arg) => arg.startsWith("/tmp:")),
@@ -1991,7 +1994,7 @@ Deno.test("buildContainerLaunchPlan - an enforcing launch refuses an empty egres
   assertThrows(
     () => buildContainerLaunchPlan(inputs({ egressAllowlist: [] })),
     Error,
-    "Refusing to launch: the egress allowlist is empty",
+    "the egress proxy would refuse every host the worker needs",
   );
   // The same launch with one host is accepted.
   const plan = buildContainerLaunchPlan(
@@ -2000,7 +2003,10 @@ Deno.test("buildContainerLaunchPlan - an enforcing launch refuses an empty egres
   assertEquals(plan.egress !== undefined, true);
   // Apple container does not enforce, so it never reads the list.
   buildContainerLaunchPlan(
-    inputs({ descriptor: descriptorFor("apple-container"), egressAllowlist: [] }),
+    inputs({
+      descriptor: descriptorFor("apple-container"),
+      egressAllowlist: [],
+    }),
   );
 });
 

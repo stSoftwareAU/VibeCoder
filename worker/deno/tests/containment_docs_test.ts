@@ -50,9 +50,18 @@ import {
   PROVIDER_EGRESS_RULES,
 } from "../lib/egress_allowlist.ts";
 import { EGRESS_ALLOW_HOSTS_ENV } from "../commands/egress_proxy.ts";
-import { formatEgressDenial } from "../lib/egress_proxy.ts";
+import {
+  EGRESS_PROXY_READY_MARKER,
+  formatEgressDenial,
+} from "../lib/egress_proxy.ts";
+import {
+  DEFAULT_EGRESS_NETWORK_NAME,
+  DEFAULT_EGRESS_PROXY_NAME,
+  EGRESS_PROXY_PORT,
+} from "../lib/container_egress.ts";
 import {
   assertPins,
+  type DocSection,
   flat,
   readRepoDoc,
   section as docSection,
@@ -287,16 +296,59 @@ Deno.test("CONTAINMENT.md's egress allowlist lists exactly the module's hosts", 
   );
 });
 
-Deno.test("CONTAINMENT.md says the egress allowlist is not enforced for the container until #4047", () => {
-  const body = section(read("docs/CONTAINMENT.md"), "Egress allowlist");
-  assert(
-    body.includes("nothing enforces it yet"),
-    "the egress-allowlist section must say nothing enforces the list yet",
+/**
+ * The log file the launcher appends the egress sidecar's logs to. run.sh and
+ * run.ps1 write it in the worker log directory (Issue #4047); the docs name it,
+ * so this test pins the same spelling.
+ */
+const EGRESS_PROXY_LOG_FILE = "egress-proxy.log";
+
+/** Wording the #4047 change made false: the container was not routed through the proxy. */
+const STALE_EGRESS_WORDING = [
+  "not routed",
+  "until #4047",
+  "nothing enforces",
+  "reaches the network directly",
+];
+
+/** Fails when a section still carries the pre-#4047 egress wording. */
+function assertNoStaleEgressWording(body: DocSection, label: string): void {
+  const text = flat(body);
+  for (const phrase of STALE_EGRESS_WORDING) {
+    assert(!text.includes(phrase), `${label} must not say "${phrase}"`);
+  }
+}
+
+Deno.test("CONTAINMENT.md's network boundary names the internal network and the proxy sidecar, and says Apple is not enforced", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "The network boundary",
   );
-  assert(
-    body.includes("#4047"),
-    "the egress-allowlist section must name #4047 as the issue that routes the container through the proxy",
+  assertPins(body, [
+    `\`${DEFAULT_EGRESS_NETWORK_NAME}\``,
+    "--internal",
+    `\`${DEFAULT_EGRESS_PROXY_NAME}\``,
+    `\`http://${DEFAULT_EGRESS_PROXY_NAME}:${EGRESS_PROXY_PORT}\``,
+    `\`${EGRESS_PROXY_READY_MARKER}\``,
+    "makes `run.sh` and `run.ps1` exit non-zero",
+    "never falls back to an open network",
+    "Apple `container` is not enforced.",
+  ]);
+  assertNoStaleEgressWording(body, "the network-boundary section");
+});
+
+Deno.test("CONTAINMENT.md's egress allowlist section says the proxy enforces it on Docker and Podman and not on Apple", async () => {
+  const body = docSection(
+    await readRepoDoc("docs/CONTAINMENT.md"),
+    "Egress allowlist",
   );
+  assertPins(body, [
+    `sidecar in \`${EGRESS_ALLOW_HOSTS_ENV}\``,
+    "the worker's only route out is through that proxy",
+    "On Apple `container`",
+    "**not enforced**",
+  ]);
+  assertNoStaleEgressWording(body, "the egress-allowlist section");
 });
 
 // ---------------------------------------------------------------------------
@@ -336,19 +388,21 @@ Deno.test("CONTAINMENT.md documents the egress proxy as the one outbound proxy #
   }
 });
 
-Deno.test("CONTAINMENT.md's egress proxy section does not claim the container is routed through it yet", async () => {
+Deno.test("CONTAINMENT.md's egress proxy section says the launcher routes Docker and Podman through the sidecar, with its log file and read-only mount", async () => {
   const body = docSection(
     await readRepoDoc("docs/CONTAINMENT.md"),
     "Egress proxy",
   );
-  for (
-    const phrase of ["#4047", "The container is not routed through it yet"]
-  ) {
-    assert(
-      body.includes(phrase),
-      `the egress-proxy section must say the container is not routed through the proxy until #4047 (missing "${phrase}")`,
-    );
-  }
+  assertPins(body, [
+    `\`${DEFAULT_EGRESS_PROXY_NAME}\``,
+    `\`0.0.0.0:${EGRESS_PROXY_PORT}\``,
+    `\`${EGRESS_ALLOW_HOSTS_ENV}\``,
+    "exactly one **read-only** `--mount`",
+    `\`${EGRESS_PROXY_LOG_FILE}\``,
+    "including every `[EGRESS_DENIED]` line",
+    "Apple `container` does not use the proxy.",
+  ]);
+  assertNoStaleEgressWording(body, "the egress-proxy section");
 });
 
 Deno.test("CONTAINMENT.md's egress proxy section states the proxy opens no files, keeps no cache and needs --allow-read --allow-env --allow-net", async () => {

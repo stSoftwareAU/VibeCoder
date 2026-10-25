@@ -209,9 +209,10 @@ Deno.test("the operator's egress_allow_hosts reach the egress proxy's allowlist 
       });
       const egress = plan.egress;
       assert(egress !== undefined);
-      const hosts = egress.proxyRunArgs.find((arg) =>
-        arg.startsWith("VIBE_EGRESS_ALLOW_HOSTS=")
-      ) ?? "";
+      const hosts =
+        egress.proxyRunArgs.find((arg) =>
+          arg.startsWith("VIBE_EGRESS_ALLOW_HOSTS=")
+        ) ?? "";
       assertStringIncludes(hosts, "registry.example.com");
     },
   );
