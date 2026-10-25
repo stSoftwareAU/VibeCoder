@@ -742,6 +742,8 @@ The committed file must yield no finding from the file-scoped Actions checks in
   workspace; name the paths the job actually produces.
 - `gitleaks-drift` — the gitleaks workflow still matches the canonical hardened
   shape.
+- `semgrep-token-config` — no `semgrep ci --config` step has
+  `SEMGREP_APP_TOKEN` in scope (`semgrep ci` rejects the pair).
 - `strict-mode` — multi-line `run:` opens with `set -euo pipefail`.
 - `version-comment-drift` — one pinned SHA carries one version comment, so two
   different tags never claim the same SHA.

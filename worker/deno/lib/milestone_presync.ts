@@ -43,6 +43,7 @@ import { currentHost } from "./conflict_stage_timer.ts";
 import { describeConflictAnalyses } from "./milestone_fallback_flag.ts";
 import {
   conflictAttemptDue,
+  escalateRepeatedRefusal,
   escalateSyncConflict,
   type GhCommandFn,
   grantAgentRun,
@@ -533,7 +534,12 @@ export async function presyncMilestoneBranch(
   // The sweep's own judgement, so a child run and the sweep charge the same
   // failures. Only a conflict every rung the attempt was granted left
   // undecided is the branch's to answer for.
-  const verdict = judgeSyncFailure(sync.error, grant.agentAllowed);
+  // A refusal that has repeated to the ceiling climbs to the roll-back
+  // (Issue #4328), exactly as the sweep's verdict does.
+  const verdict = escalateRepeatedRefusal(
+    judgeSyncFailure(sync.error, grant.agentAllowed),
+    entry.refusedCycles ?? 0,
+  );
   const conflict = isConflictEscalation(sync.error) ? sync.error : undefined;
   // The same record the sweep writes (Issue #2311): a run charged here is a
   // run the `merge-fallback` flag reports, so it carries its host, its stage
@@ -548,6 +554,8 @@ export async function presyncMilestoneBranch(
       host: currentHost(),
       ...(conflict?.timings ? { timings: conflict.timings } : {}),
       ...(conflict ? { analysis: describeConflictAnalyses(conflict) } : {}),
+      refusal: verdict.refusal === true,
+      exhaust: verdict.exhaust === true,
     },
   );
   // Issue #2388: a gate refusal concludes `not-charged`, so the budget never

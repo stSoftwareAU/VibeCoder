@@ -30,6 +30,7 @@ import {
 
 const CI_PATH = ".github/workflows/ci.yml";
 const GITLEAKS_PATH = ".github/workflows/gitleaks.yml";
+const SEMGREP_PATH = ".github/workflows/semgrep.yml";
 
 /** A workflow that passes every check in the table. */
 const CLEAN = `name: Unit Tests
@@ -96,6 +97,13 @@ jobs:
       - name: Gitleaks
         uses: gitleaks/gitleaks-action@v2
 `;
+
+/** A semgrep workflow whose step passes the token beside `--config`. */
+const SEMGREP_TOKEN_CONFIG = seed(
+  "          deno test --allow-none\n          echo done\n",
+  "          semgrep ci --config p/default\n        env:\n" +
+    "          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}\n",
+);
 
 /**
  * Run the gate over an in-memory file set.
@@ -257,6 +265,12 @@ const SEEDED: readonly {
     path: GITLEAKS_PATH,
     text: GITLEAKS_DRIFTED,
     idPrefix: "BP-GITLEAKS-",
+  },
+  {
+    family: "semgrep-token-config",
+    path: SEMGREP_PATH,
+    text: SEMGREP_TOKEN_CONFIG,
+    idPrefix: "BP-SEMGREP-TOKEN-CONFIG-",
   },
   {
     family: "strict-mode",

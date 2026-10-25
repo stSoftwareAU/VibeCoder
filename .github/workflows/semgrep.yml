@@ -1,9 +1,9 @@
 name: Semgrep
 
 # Third-party actions are pinned to 40-character commit SHAs (Issue
-# #2123) so a hijacked tag cannot exfiltrate CI secrets such as
-# SEMGREP_APP_TOKEN. The version tag each SHA corresponds to is
-# captured in the leading comment for human readability.
+# #2123) so a hijacked tag cannot exfiltrate CI secrets. The version tag
+# each SHA corresponds to is captured in the leading comment for human
+# readability.
 
 on:
   # Called by quality.yml, whose `gate` job is the one required check: on a
@@ -11,9 +11,6 @@ on:
   # filter it used to carry (Develop, main, milestone/* — Issues #3360,
   # #3940) is quality.yml's now.
   workflow_call:
-    secrets:
-      SEMGREP_APP_TOKEN:
-        required: false
 
 permissions:
   contents: read
@@ -29,17 +26,11 @@ jobs:
   semgrep:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Issue #4404 (GHA-SECRETS-012): the job that consumes SEMGREP_APP_TOKEN
-    # targets a GitHub Environment so the secret can be moved there and
-    # gated (required reviewers / deployment branches) by an admin.
-    # Repository-level secrets keep working meanwhile — the environment is
-    # created on first use and adds gating, never removes access.
-    environment: scanning-secrets
     container:
-      # Pinned to an immutable digest so a hijacked tag cannot run with
-      # SEMGREP_APP_TOKEN in scope, AND carrying the release tag so an updater
-      # can resolve a bump against it (Issue #4403, GHA-SUPPLY-011): a bare
-      # digest froze at `latest`-of-2026-06-20 with nothing able to move it.
+      # Pinned to an immutable digest so a hijacked tag cannot run in CI,
+      # AND carrying the release tag so an updater can resolve a bump against
+      # it (Issue #4403, GHA-SUPPLY-011): a bare digest froze at
+      # `latest`-of-2026-06-20 with nothing able to move it.
       # Manifest-list digest of semgrep/semgrep:1.182.1 (released 2026-10-22).
       image: semgrep/semgrep:1.182.1@sha256:451b3d875c00dac7ed5db5293e584a07de11449a409c10b3c2d2652f429630b6
     steps:
@@ -47,6 +38,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      # No token: `semgrep ci` refuses a token combined with --config (Issue #4341).
       - run: semgrep ci --config p/default
-        env:
-          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}

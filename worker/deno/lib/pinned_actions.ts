@@ -147,8 +147,8 @@ export const PINNED_ACTIONS: Readonly<Record<string, ActionPin>> = {
  * Semgrep container image digest.
  *
  * Kept identical to `.github/workflows/semgrep.yml` in this repository so a
- * hijacked `latest` tag cannot run with `SEMGREP_APP_TOKEN` in scope. A
- * test asserts the two references stay in lock-step.
+ * hijacked `latest` tag cannot run in CI. No secret is passed to the Semgrep
+ * job (Issue #4341). A test asserts the two references stay in lock-step.
  */
 export const SEMGREP_IMAGE_DIGEST =
   "sha256:451b3d875c00dac7ed5db5293e584a07de11449a409c10b3c2d2652f429630b6";

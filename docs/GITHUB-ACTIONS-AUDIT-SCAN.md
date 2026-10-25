@@ -497,6 +497,11 @@ not by Claude:
   `NO-PR-TRIGGER` (e.g. `BP-GITLEAKS-ACTION-STALE-gitleaks` for
   `gitleaks.yml`). The `<workflow-basename>` is lower-cased with
   non-alphanumeric runs collapsed to a single hyphen.
+- `BP-SEMGREP-TOKEN-CONFIG-<workflow-basename>` — the native semgrep-token
+  drift pre-filer (Issue #4341): a workflow that passes `SEMGREP_APP_TOKEN`
+  to `semgrep ci --config`, which `semgrep ci` rejects as fatal. Reported by
+  [`semgrep_token_drift_scanner.ts`](../worker/deno/lib/semgrep_token_drift_scanner.ts);
+  no network.
 - `BP-GITLEAKS-NOT-OBSERVED` — the native gitleaks PR-coverage pre-filer
   (Issue #601). One id per repository, not per workflow: the claim is about
   the repo's observed pull-request coverage, not about a particular file.
