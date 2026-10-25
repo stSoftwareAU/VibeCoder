@@ -75,3 +75,5 @@ the archived summary required by the PR summary freshness gate.
 ## Milestone merge validation
 
 Reconciled PR #4382 with current main. Retained the one-hour start gate, two-hour session and extension bounds, and bounded drain, along with the milestone's security-sweep cleanups. Retained main's repository provider pins, container sandbox policy, typed disk admissions, nested Deno discovery and later-session infrastructure-fault handling. Validation: 301 focused tests and all 857 manifest checks passed (one ignored); all 22 conflicted TypeScript files pass formatting and lint.
+
+The milestone resurrection gate found `codex_resume_sandbox_4333_test.ts`, which main deliberately deleted in #4363 when the container became the sandbox for orchestrated roles. Retained that deletion instead of restoring obsolete CLI-sandbox expectations; the current role-configuration tests remain in place. All 43 current orchestration, role-configuration and environment tests pass.
