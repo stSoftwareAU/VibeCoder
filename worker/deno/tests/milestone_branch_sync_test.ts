@@ -10,12 +10,12 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   CONFLICT_RESOLVER_DECLINED,
-  MERGE_GATE_REFUSED_TREE,
   conflictAttemptDue,
   failedConflictRung,
   findActiveMilestoneBranches,
   grantAgentRun,
   judgeSyncFailure,
+  MERGE_GATE_REFUSED_TREE,
   type MilestoneBranchSyncDeps,
   orderMilestonesByBehind,
   shouldSyncMilestone,

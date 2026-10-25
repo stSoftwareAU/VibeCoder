@@ -793,8 +793,7 @@ export function isConflictResolverRefusal(error: Error): boolean {
 export const CONFLICT_RESOLVER_DECLINED = "the conflict resolver declined";
 
 /** Ledger reason once the merged tree fails the repository check. */
-export const MERGE_GATE_REFUSED_TREE =
-  "the merge gate refused the merged tree";
+export const MERGE_GATE_REFUSED_TREE = "the merge gate refused the merged tree";
 
 /**
  * A charged refusal the recovery ladder owns (Issue #4328).
@@ -2733,7 +2732,14 @@ export async function syncMilestoneBranches(
                   const exhausted = headPr
                     ? attempts >= CONFLICT_RESOLUTION_BUDGET
                     : isConflictBudgetExhausted(entry);
-                  if (exhausted && climbsRecoveryLadder(verdict.reason)) {
+                  if (
+                    exhausted && climbsRecoveryLadder(verdict.reason) &&
+                    verdict.reason !== MERGE_GATE_REFUSED_TREE
+                  ) {
+                    // A resolver decline waits one cycle (Issue #4328). A
+                    // merged-tree check failure that fills the budget rolls
+                    // back now, as any other exhausted conflict does
+                    // (Issue #4304).
                     log(
                       `Milestone branch '${milestone.milestoneBranch}' in ` +
                         `${repo}: conflict resolver refusal ${attempts} of ` +
