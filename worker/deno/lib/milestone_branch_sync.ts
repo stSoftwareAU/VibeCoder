@@ -28,6 +28,7 @@
 
 import type { Result } from "../types.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
+import type { HeavyBuildAdmission } from "./heavy_build_gate.ts";
 import { isIdleTaskMilestone } from "./idle_task_merge_gate.ts";
 import {
   type AlertDedupAuthorOptions,
@@ -198,6 +199,12 @@ export interface SyncBranchOptions {
    * shape this whole bound exists to stop repeating.
    */
   agentTimeoutSeconds?: number;
+  /**
+   * Set when the host disk budget cannot afford the repository's build this
+   * cycle (Issue #4326). The value is the reason. The sync must merge without
+   * the build (see milestone_merge_only.ts).
+   */
+  mergeOnly?: string;
 }
 
 /** What a branch that has spent its conflict budget is handed to. */
@@ -411,12 +418,14 @@ export interface MilestoneBranchSyncDeps {
   hostFn?: () => string;
   /**
    * Ask whether a sync that would merge — and so run the repository's own
-   * build and test to verify it — must wait for host disk (Issue #3178).
-   * A reason defers the branch this cycle with that reason in the log; null
-   * proceeds. Omitted: nothing is gated. Production wires
-   * `heavyBuildDeferral` against the repository's shared clone.
+   * build and test to verify it — may run its build this cycle (Issue #3178,
+   * Issue #4326). `defer`: the branch waits this cycle, with the reason in the
+   * log. `merge-only`: the sync lands without the build, and the reason is
+   * passed on as {@link SyncBranchOptions.mergeOnly}. `build`: proceed.
+   * Omitted: nothing is gated. Production wires `heavyBuildAdmission` against
+   * the repository's shared clone.
    */
-  heavyBuildGateFn?: (repo: string) => Promise<string | null>;
+  heavyBuildGateFn?: (repo: string) => Promise<HeavyBuildAdmission>;
   /**
    * Release the build artefacts a repository's pass left in the ephemeral
    * cargo root once the pass is over, rather than leaving them to the
@@ -1728,16 +1737,27 @@ export async function syncMilestoneBranches(
         // Below the host floor that build is what tips the host over, so the
         // branch waits — a deferral, not a failure, and charged nothing. A
         // branch measured level has nothing to merge and nothing to build.
+        // Issue #4326: over the ephemeral cargo budget the sync lands without
+        // the build instead, and the reason travels with it as `mergeOnly`.
+        let mergeOnly: string | undefined;
         if (deps.heavyBuildGateFn && behindBy !== 0) {
-          const deferral = await deps.heavyBuildGateFn(repo);
-          if (deferral !== null) {
+          const admission = await deps.heavyBuildGateFn(repo);
+          if (admission.mode === "defer") {
             log(
               `[HOST_DISK_LOW] Milestone sync for ` +
                 `'${milestone.milestoneTitle}' in ${repo} deferred to a ` +
-                `later cycle: ${deferral}`,
+                `later cycle: ${admission.reason}`,
             );
             skipped++;
             continue;
+          }
+          if (admission.mode === "merge-only") {
+            log(
+              `[HOST_DISK_BUDGET] Milestone sync for ` +
+                `'${milestone.milestoneTitle}' in ${repo} lands without the ` +
+                `repository's build this cycle: ${admission.reason}`,
+            );
+            mergeOnly = admission.reason;
           }
         }
 
@@ -2110,13 +2130,19 @@ export async function syncMilestoneBranches(
               milestone.defaultBranch,
               // Issue #2309: an offered rung carries the announcement, which
               // the rung's own binding fires if and when it is entered.
+              // Issue #4326: a merge-only sync carries the disk-budget reason,
+              // so the sync lands without the repository's build.
               agentAllowed
                 ? {
                   ...grant,
+                  ...(mergeOnly !== undefined ? { mergeOnly } : {}),
                   onAgentRungEntered: () =>
                     announceAgentRung(repo, milestone, streakKey),
                 }
-                : grant,
+                : {
+                  ...grant,
+                  ...(mergeOnly !== undefined ? { mergeOnly } : {}),
+                },
             );
           } finally {
             // The claim guards the sync, not the outcome: it is released on

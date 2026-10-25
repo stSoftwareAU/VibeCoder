@@ -26,8 +26,18 @@
  *   `/var/tmp/vibe-cargo-target`, a build starts only when the host has the
  *   floor **plus** {@link EPHEMERAL_CARGO_HEADROOM_BYTES} free — room for one
  *   build of the size that took GRQ-23 down. Short of that, idle checkouts'
- *   target directories are pruned (largest first); a build that is still not
- *   covered is refused ({@link enforceEphemeralCargoBudget}).
+ *   target directories are pruned (largest first). A build still not covered
+ *   after pruning is not run, but the sync is not deferred either: a
+ *   conflict-free merge lands without the repository's build, which its CI
+ *   builds on the milestone's PR, and a conflicted one waits for a cycle with
+ *   budget ({@link heavyBuildAdmission}, Issue #4326). So the floor is never
+ *   approached, and a milestone never waits on disk budget alone.
+ *
+ *   No further reclaim step exists. On a runtime that refuses the trim,
+ *   deleting artefacts inside the guest returns nothing to the host
+ *   (`ephemeral_build_cache.ts`, `judgeGuestReclaim` in
+ *   `work_volume_ratchet.ts`), so the ephemeral root's idle target directories
+ *   are the only space the worker can hand back.
  * - **A pass cleans up after itself.** {@link releaseCheckoutTargetDirs}
  *   removes a checkout's target directories when the maintenance pass that
  *   built in it finishes, rather than leaving them to the relaunch.
@@ -142,9 +152,10 @@ export interface CargoBudgetVerdict {
  * The bound is tied to host free space: a build may start when
  * `free − headroom ≥ floor`. Short of that, other checkouts' idle target
  * directories are removed, largest first, until the shortfall is covered;
- * still short, the build is refused. The checkout's own directories (its
- * incremental cache) and any written to recently (another slot's build in
- * progress) are never pruned.
+ * still short, `proceed` is false and {@link heavyBuildAdmission} turns the
+ * sync into a merge-only one (Issue #4326). The checkout's own directories
+ * (its incremental cache) and any written to recently (another slot's build
+ * in progress) are never pruned.
  */
 export async function enforceEphemeralCargoBudget(
   input: {
@@ -238,31 +249,53 @@ export function registerHeavyBuildDiskProbe(
 }
 
 /**
+ * What a maintenance pass does with a repository build or test (Issue #4326).
+ *
+ * - `build` — run it as usual.
+ * - `defer` — the host is below its floor: no build and no merge this cycle
+ *   (Issue #3178).
+ * - `merge-only` — the ephemeral root is still short of budget after pruning:
+ *   the merge lands without the build. The repository's CI builds the merged
+ *   tree on the milestone's PR instead. The reason names the budget verdict.
+ */
+export type HeavyBuildAdmission =
+  | { mode: "build" }
+  | { mode: "defer"; reason: string }
+  | { mode: "merge-only"; reason: string };
+
+/**
  * The one call a maintenance pass makes before it runs a repository build or
  * test in `checkoutPath`.
  *
- * @returns Why the build must wait, or null to proceed.
+ * @returns How the pass proceeds; see {@link HeavyBuildAdmission}
  */
-export async function heavyBuildDeferral(
+export async function heavyBuildAdmission(
   checkoutPath: string,
   deps: EphemeralRootDeps = productionEphemeralRootDeps,
-): Promise<string | null> {
-  if (probe === undefined) return null;
+): Promise<HeavyBuildAdmission> {
+  if (probe === undefined) return { mode: "build" };
   const reading = await probe();
   const low = judgeHostDiskForBuild(reading);
-  if (low !== null) return low;
+  if (low !== null) return { mode: "defer", reason: low };
   // The budget is about the ephemeral root, which builds use only where the
   // runtime refuses the trim (Issue #2247).
-  if (!reading.trimRefused) return null;
+  if (!reading.trimRefused) return { mode: "build" };
   const free = reading.status.availableBytes;
-  if (reading.status.level !== "ok" || free === undefined) return null;
-  if (reading.floorBytes === undefined) return null;
+  if (reading.status.level !== "ok" || free === undefined) {
+    return { mode: "build" };
+  }
+  if (reading.floorBytes === undefined) return { mode: "build" };
   const verdict = await enforceEphemeralCargoBudget({
     checkoutPath,
     hostFreeBytes: free,
     floorBytes: reading.floorBytes,
   }, deps);
-  return verdict.proceed ? null : verdict.detail;
+  if (verdict.proceed) return { mode: "build" };
+  return {
+    mode: "merge-only",
+    reason: `${verdict.detail}; the merge lands without the repository's ` +
+      `build and the repository's CI builds it (Issue #4326)`,
+  };
 }
 
 /** What {@link releaseCheckoutTargetDirs} removed. */

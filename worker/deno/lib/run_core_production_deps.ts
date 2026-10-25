@@ -532,10 +532,11 @@ import {
 } from "./host_disk.ts";
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
 import {
-  heavyBuildDeferral,
+  heavyBuildAdmission,
   registerHeavyBuildDiskProbe,
   releaseCheckoutTargetDirs,
 } from "./heavy_build_gate.ts";
+import { mergeOnlyBindings } from "./milestone_merge_only.ts";
 import { workVolumeTrimRefusedForLaunch } from "./ephemeral_build_cache.ts";
 import {
   reclaimWorkVolumeTiers,
@@ -6730,11 +6731,11 @@ async function syncMilestoneBranchesFn(
     ghCommandFn: runGhCommand,
     defaultBranchFn: getRepoDefaultBranch,
     // Issue #3178: a sync that merges is verified by the repository's own
-    // build and test; below the host floor, or over the ephemeral cargo
-    // budget, it waits. The clone's ephemeral target dirs go when the pass
-    // ends rather than at the relaunch.
+    // build and test; below the host floor it waits. The clone's ephemeral
+    // target dirs go when the pass ends rather than at the relaunch. Issue
+    // #4326: over the ephemeral cargo budget the sync lands without the build.
     heavyBuildGateFn: (repo) =>
-      heavyBuildDeferral(`${workDir}/${repo.split("/")[1]}`),
+      heavyBuildAdmission(`${workDir}/${repo.split("/")[1]}`),
     releaseBuildArtefactsFn: async (repo) => {
       if (!workVolumeTrimRefusedForLaunch()) return;
       const released = await releaseCheckoutTargetDirs(
@@ -6763,6 +6764,9 @@ async function syncMilestoneBranchesFn(
         logger,
         runAgent: runClaudeWithRetry,
       });
+      // Issue #4326: a merge-only sync swaps in the gates and agent that land
+      // the merge without the repository's build.
+      const mergeOnly = mergeOnlyBindings(syncOptions.mergeOnly);
       return await syncMilestoneBranchWithDefault(
         milestoneBranch,
         defaultBranch,
@@ -6771,12 +6775,14 @@ async function syncMilestoneBranchesFn(
         // rule refuses the direct push.
         repo,
         // The default gates: the repository's own type check, and the
-        // stricter resolution gate derived from it.
-        undefined,
-        undefined,
+        // stricter resolution gate derived from it. A merge-only sync has its
+        // own gates (Issue #4326).
+        mergeOnly?.mergeGate,
+        mergeOnly?.resolutionGate,
         // Issue #1777: the last rung before a human. It runs in the very
-        // clone the merge conflicted in, against a branch target.
-        agentFn,
+        // clone the merge conflicted in, against a branch target. A merge-only
+        // sync binds its own agent (Issue #4326).
+        mergeOnly?.agentFn ?? agentFn,
         logger,
       );
     },

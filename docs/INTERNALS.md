@@ -3073,6 +3073,10 @@ pass, lane or serial, keeps running because those passes land the PRs already
 open (Issue #226) — but a milestone sync that would run the repository's own
 build or test defers that branch until the host recovers (Issue #3178, see
 [HOST_DISK_LOW defers maintenance builds](CONTAINER.md#host_disk_low-defers-maintenance-builds-issue-3178)).
+A build refused by the ephemeral cargo root's budget is a different case: with
+the host above its floor, the sync lands its merge without the build instead
+(Issue #4326, see
+[HOST_DISK_BUDGET merges without the build](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326)).
 See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
 in CONTAINER.md.
 
@@ -4423,6 +4427,8 @@ Three properties matter:
 - **Nothing unverified is published.** A check that cannot be run — a spawn
   failure, a timeout past `MERGE_GATE_TIMEOUT_MS`, a working tree that cannot be
   read — counts as a failure, not a pass: absence of a failure is not success.
+  The one deliberate exception is the merge-only cycle of Issue #4326, described
+  after this list.
 - **The refusal leaves no residue.** The local branch is reset to the commit it
   stood at before the merge, so the next cycle starts from the remote head
   rather than a half-merged tree. The pre-merge SHA is read *before* merging and
@@ -4440,6 +4446,13 @@ Three properties matter:
 
 A repository with no Deno project is still synced, but the outcome says
 `UNGATED` so an unchecked push never reads like a checked one.
+
+When the ephemeral cargo root is over its budget (Issue #4326), the sync runs
+in merge-only mode for that cycle and skips the type-check. A conflict-free
+merge is pushed with the same `UNGATED` note, and the milestone PR's own CI
+builds it. A merge that conflicts is left for a later cycle, uncharged, because
+resolving it needs the check. See
+[HOST_DISK_BUDGET](CONTAINER.md#host_disk_budget-merges-without-the-build-issue-4326).
 
 #### 🪦 The sync never resurrects a deleted file
 

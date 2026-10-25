@@ -10,7 +10,9 @@
  * These tests pin the two halves of the fix: below the floor a maintenance
  * build is deferred with a line naming the floor, and the ephemeral cargo
  * root has a budget tied to host free space that is enforced — prune first,
- * refuse if still short — before a build starts.
+ * refuse if still short — before a build starts. A build still short after
+ * pruning no longer defers the sync: the sync lands merge-only, without the
+ * build (Issue #4326).
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -18,8 +20,10 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   enforceEphemeralCargoBudget,
+  type EphemeralRootDeps,
   type EphemeralTargetDir,
-  heavyBuildDeferral,
+  type HeavyBuildAdmission,
+  heavyBuildAdmission,
   type HeavyBuildDiskReading,
   judgeHostDiskForBuild,
   registerHeavyBuildDiskProbe,
@@ -28,6 +32,7 @@ import {
 import { cargoTargetDirForCheckout } from "../lib/ephemeral_build_cache.ts";
 import {
   type MilestoneBranchSyncDeps,
+  type SyncBranchOptions,
   syncMilestoneBranches,
 } from "../lib/milestone_branch_sync.ts";
 import {
@@ -44,6 +49,10 @@ const NOW = Date.parse("2026-10-03T22:30:00Z");
 /** The GRQ-23 reading from the incident log. */
 const LOW_DETAIL =
   "host (estimated from the launcher's reading 1 min ago) 38.8 GB free (8.4%) of 460.4 GB, floor 46.0 GB — below the floor";
+
+/** A merge-only reason as `heavyBuildAdmission` builds it (Issue #4326). */
+const BUDGET_REASON =
+  "ephemeral cargo root over budget (test reading) (Issue #3178); the merge lands without the repository's build and the repository's CI builds it (Issue #4326)";
 
 function reading(
   overrides: Partial<HeavyBuildDiskReading> & {
@@ -81,6 +90,35 @@ function fakeRoot(dirs: EphemeralTargetDir[]) {
       nowMs: () => NOW,
     },
   };
+}
+
+/** The reason of an admission that is not a plain build. */
+function reasonOf(admission: HeavyBuildAdmission): string {
+  assert(
+    admission.mode !== "build",
+    `expected a deferral or merge-only admission, got ${admission.mode}`,
+  );
+  return admission.reason;
+}
+
+/** A defer admission for a reading below the floor. */
+function deferAdmission(r: HeavyBuildDiskReading): HeavyBuildAdmission {
+  const reason = judgeHostDiskForBuild(r);
+  assert(reason !== null, "a reading below the floor must defer");
+  return { mode: "defer", reason };
+}
+
+/** Admit a build in CHECKOUT against host reading `r` and ephemeral root `root`. */
+async function admitWith(
+  r: HeavyBuildDiskReading,
+  root: EphemeralRootDeps,
+): Promise<HeavyBuildAdmission> {
+  registerHeavyBuildDiskProbe(() => Promise.resolve(r));
+  try {
+    return await heavyBuildAdmission(CHECKOUT, root);
+  } finally {
+    registerHeavyBuildDiskProbe(undefined);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -200,19 +238,19 @@ Deno.test("enforceEphemeralCargoBudget - an unreadable root refuses rather than 
 });
 
 // ---------------------------------------------------------------------------
-// heavyBuildDeferral — the one call a maintenance pass makes
+// heavyBuildAdmission — the one call a maintenance pass makes (Issue #4326)
 // ---------------------------------------------------------------------------
 
-Deno.test("heavyBuildDeferral - no registered probe (tests, ad hoc callers) never defers", async () => {
+Deno.test("heavyBuildAdmission - no registered probe (tests, ad hoc callers) never defers", async () => {
   registerHeavyBuildDiskProbe(undefined);
-  assertEquals(await heavyBuildDeferral(CHECKOUT), null);
+  assertEquals(await heavyBuildAdmission(CHECKOUT), { mode: "build" });
 });
 
-Deno.test("heavyBuildDeferral - below the floor defers without touching the root", async () => {
+Deno.test("heavyBuildAdmission - below the floor defers without touching the root", async () => {
   let listed = 0;
   registerHeavyBuildDiskProbe(() => Promise.resolve(reading({ level: "low" })));
   try {
-    const reason = await heavyBuildDeferral(CHECKOUT, {
+    const admission = await heavyBuildAdmission(CHECKOUT, {
       listTargetDirs: () => {
         listed++;
         return Promise.resolve([]);
@@ -220,7 +258,8 @@ Deno.test("heavyBuildDeferral - below the floor defers without touching the root
       removeDir: () => Promise.resolve(),
       nowMs: () => NOW,
     });
-    assert(reason !== null);
+    assertEquals(admission.mode, "defer");
+    const reason = reasonOf(admission);
     assertStringIncludes(reason, "floor 46.0 GB");
     assertEquals(listed, 0);
   } finally {
@@ -228,35 +267,107 @@ Deno.test("heavyBuildDeferral - below the floor defers without touching the root
   }
 });
 
-Deno.test("heavyBuildDeferral - on a trimming runtime the budget is not consulted", async () => {
+Deno.test("heavyBuildAdmission - on a trimming runtime the budget is not consulted", async () => {
+  let listed = 0;
   registerHeavyBuildDiskProbe(() =>
     Promise.resolve(reading({ free: 47 * GB, trimRefused: false }))
   );
   try {
     assertEquals(
-      await heavyBuildDeferral(CHECKOUT, {
-        listTargetDirs: () => Promise.reject(new Error("must not be read")),
+      await heavyBuildAdmission(CHECKOUT, {
+        listTargetDirs: () => {
+          listed++;
+          return Promise.reject(new Error("must not be read"));
+        },
         removeDir: () => Promise.resolve(),
         nowMs: () => NOW,
       }),
-      null,
+      { mode: "build" },
     );
+    assertEquals(listed, 0, "the ephemeral root must be left alone");
   } finally {
     registerHeavyBuildDiskProbe(undefined);
   }
 });
 
-Deno.test("heavyBuildDeferral - above the floor but over the cargo budget defers", async () => {
+Deno.test("heavyBuildAdmission - above the floor but over the cargo budget lands merge-only, not deferred (Issue #4326)", async () => {
   registerHeavyBuildDiskProbe(() =>
     Promise.resolve(reading({ free: 48 * GB }))
   );
   try {
-    const reason = await heavyBuildDeferral(CHECKOUT, fakeRoot([]).deps);
-    assert(reason !== null, "2 GB above the floor cannot hold a build");
+    const admission = await heavyBuildAdmission(CHECKOUT, fakeRoot([]).deps);
+    assert(
+      admission.mode !== "build",
+      "2 GB above the floor cannot hold a build",
+    );
+    assertEquals(admission.mode, "merge-only");
+    const reason = reasonOf(admission);
     assertStringIncludes(reason, "ephemeral cargo root");
+    assertStringIncludes(reason, "floor 46.0 GB");
+    assertStringIncludes(reason, "headroom 25.0 GB");
+    assertStringIncludes(reason, "still short");
+    assertStringIncludes(reason, "Issue #3178");
+    assertStringIncludes(reason, "Issue #4326");
   } finally {
     registerHeavyBuildDiskProbe(undefined);
   }
+});
+
+// Issue #4326 acceptance: the host is above its floor, but a build would need
+// 25 GB of headroom on top of it and nothing can be pruned to make room. The
+// sync must land merge-only, and nothing may be removed to make room for it.
+for (const freeGb of [50.9, 55.3, 55.8]) {
+  Deno.test(`heavyBuildAdmission - ${freeGb} GB free against a 46 GB floor with nothing prunable lands merge-only (Issue #4326)`, async () => {
+    const free = freeGb * GB;
+    const floor = 46 * GB;
+    // The host is above its floor, so this is the budget refusing, not the
+    // floor deferring.
+    assert(free - floor > 0, "the host must sit above its floor");
+    const root = fakeRoot([]);
+    const admission = await admitWith(reading({ free }), root.deps);
+    assertEquals(admission.mode, "merge-only");
+    assertStringIncludes(reasonOf(admission), "Issue #4326");
+    assertEquals(root.removed, [], "nothing may be removed for the build");
+  });
+}
+
+for (const freeGb of [50.9, 55.3, 55.8]) {
+  Deno.test(`heavyBuildAdmission - ${freeGb} GB free with only this checkout's own and a recently written dir lands merge-only (Issue #4326)`, async () => {
+    const own = cargoTargetDirForCheckout(CHECKOUT, { root: ROOT });
+    const busy = cargoTargetDirForCheckout(OTHER, { root: ROOT });
+    const root = fakeRoot([
+      { path: own, bytes: 15 * GB, lastWriteMs: NOW - 3_600_000 },
+      { path: busy, bytes: 12 * GB, lastWriteMs: NOW - 60_000 },
+    ]);
+    const admission = await admitWith(
+      reading({ free: freeGb * GB }),
+      root.deps,
+    );
+    assertEquals(admission.mode, "merge-only");
+    assertStringIncludes(reasonOf(admission), "Issue #4326");
+    assertEquals(root.removed, [], "neither dir may be pruned");
+  });
+}
+
+Deno.test("heavyBuildAdmission - 55.3 GB free with an idle dir that covers the shortfall builds, pruning first (Issue #4326)", async () => {
+  // 55.3 GB free against 46 + 25 GB needs 15.7 GB more; the idle dir covers it.
+  const big = `${ROOT}/old-big-3333`;
+  const root = fakeRoot([
+    { path: big, bytes: 20 * GB, lastWriteMs: NOW - 7_200_000 },
+  ]);
+  const admission = await admitWith(reading({ free: 55.3 * GB }), root.deps);
+  assertEquals(admission, { mode: "build" });
+  assertEquals(root.removed, [big]);
+});
+
+Deno.test("heavyBuildAdmission - an unreadable root lands merge-only, neither deferred nor built blind (Issue #4326)", async () => {
+  const admission = await admitWith(reading({ free: 50 * GB }), {
+    listTargetDirs: () => Promise.reject(new Error("EACCES")),
+    removeDir: () => Promise.resolve(),
+    nowMs: () => NOW,
+  });
+  assertEquals(admission.mode, "merge-only");
+  assertStringIncludes(reasonOf(admission), "EACCES");
 });
 
 // ---------------------------------------------------------------------------
@@ -309,6 +420,7 @@ function sweepDeps(
   overrides: Partial<MilestoneBranchSyncDeps>,
   synced: string[],
   logs: string[],
+  grants: SyncBranchOptions[] = [],
 ): MilestoneBranchSyncDeps {
   return {
     repos: ["stSoftwareAU/GRQ-AutoTrader"],
@@ -325,8 +437,14 @@ function sweepDeps(
       }
       return Promise.resolve("[]");
     },
-    syncBranchFn: (_repo: string, milestoneBranch: string) => {
+    syncBranchFn: (
+      _repo: string,
+      milestoneBranch: string,
+      _defaultBranch: string,
+      options: SyncBranchOptions,
+    ) => {
       synced.push(milestoneBranch);
+      grants.push(options);
       return Promise.resolve({
         ok: true as const,
         value: { message: `Synced ${milestoneBranch}` },
@@ -346,7 +464,7 @@ Deno.test("syncMilestoneBranches - below the host floor a sync needing verificat
       heavyBuildGateFn: (repo: string) => {
         gateAsked.push(repo);
         return Promise.resolve(
-          judgeHostDiskForBuild(reading({ level: "low" })),
+          deferAdmission(reading({ level: "low" })),
         );
       },
     },
@@ -371,7 +489,10 @@ Deno.test("syncMilestoneBranches - a host above its floor syncs as before, then 
   const released: string[] = [];
   const result = await syncMilestoneBranches(sweepDeps(
     {
-      heavyBuildGateFn: () => Promise.resolve(null),
+      heavyBuildGateFn: () =>
+        Promise.resolve<HeavyBuildAdmission>({
+          mode: "build",
+        }),
       releaseBuildArtefactsFn: (repo: string) => {
         released.push(repo);
         return Promise.resolve();
@@ -408,7 +529,10 @@ Deno.test("syncMilestoneBranches - a level branch is not deferred: there is noth
       behindCountFn: () => Promise.resolve({ ok: true as const, value: 0 }),
       heavyBuildGateFn: () => {
         asked++;
-        return Promise.resolve("below the floor");
+        return Promise.resolve<HeavyBuildAdmission>({
+          mode: "defer",
+          reason: "below the floor",
+        });
       },
     },
     synced,
@@ -418,13 +542,84 @@ Deno.test("syncMilestoneBranches - a level branch is not deferred: there is noth
   assertEquals(synced.length, 2);
 });
 
+Deno.test("syncMilestoneBranches - over the cargo budget the sync lands without its build, carrying the reason (Issue #4326)", async () => {
+  const synced: string[] = [];
+  const logs: string[] = [];
+  const grants: SyncBranchOptions[] = [];
+  const result = await syncMilestoneBranches(sweepDeps(
+    {
+      heavyBuildGateFn: () =>
+        Promise.resolve<HeavyBuildAdmission>({
+          mode: "merge-only",
+          reason: BUDGET_REASON,
+        }),
+    },
+    synced,
+    logs,
+    grants,
+  ));
+  assert(result.ok);
+  assertEquals(synced.length, 1, "the merge runs, without its build");
+  assertEquals(result.value.synced, 1);
+  assertEquals(result.value.skipped, 0);
+  assertEquals(grants.map((g) => g.mergeOnly), [BUDGET_REASON]);
+  const line = logs.find((l) => l.includes("[HOST_DISK_BUDGET]"));
+  assert(line !== undefined, `no budget line in ${logs.join("\n")}`);
+  assertStringIncludes(line, BUDGET_REASON);
+});
+
+Deno.test("syncMilestoneBranches - a build admission grants the sync with no merge-only reason (Issue #4326)", async () => {
+  const synced: string[] = [];
+  const logs: string[] = [];
+  const grants: SyncBranchOptions[] = [];
+  const result = await syncMilestoneBranches(sweepDeps(
+    {
+      heavyBuildGateFn: () =>
+        Promise.resolve<HeavyBuildAdmission>({ mode: "build" }),
+    },
+    synced,
+    logs,
+    grants,
+  ));
+  assert(result.ok);
+  assertEquals(synced.length, 1);
+  assertEquals(grants.map((g) => "mergeOnly" in g), [false]);
+});
+
+Deno.test("syncMilestoneBranches - a merge-only sync keeps its reason when the agent rung is not offered (Issue #4326)", async () => {
+  const synced: string[] = [];
+  const logs: string[] = [];
+  const grants: SyncBranchOptions[] = [];
+  // Ten minutes of handler budget: enough to start the sync, too little for an
+  // agent attempt after the default overhead and minimum (Issue #2215).
+  const result = await syncMilestoneBranches(sweepDeps(
+    {
+      heavyBuildGateFn: () =>
+        Promise.resolve<HeavyBuildAdmission>({
+          mode: "merge-only",
+          reason: BUDGET_REASON,
+        }),
+      deadlineEpochMs: Date.now() + 10 * 60_000,
+      minMsPerMilestoneSync: 0,
+    },
+    synced,
+    logs,
+    grants,
+  ));
+  assert(result.ok);
+  assertEquals(grants.map((g) => g.agentAllowed), [false]);
+  assertEquals(grants.map((g) => g.mergeOnly), [BUDGET_REASON]);
+  assertEquals(synced.length, 1);
+});
+
 // ---------------------------------------------------------------------------
 // The pre-cut sync takes the same gate
 // ---------------------------------------------------------------------------
 
 function presyncDeps(
   overrides: Partial<MilestonePresyncDeps>,
-  synced: { count: number },
+  synced: { count: number; grants?: SyncBranchOptions[] },
+  logs: string[] = [],
 ): MilestonePresyncDeps {
   return {
     countBehind: () => Promise.resolve({ ok: true as const, value: 3 }),
@@ -432,11 +627,12 @@ function presyncDeps(
       Promise.resolve({ ok: true as const, value: "d".repeat(40) }),
     milestoneTipSha: () =>
       Promise.resolve({ ok: true as const, value: "m".repeat(40) }),
-    syncBranch: () => {
+    syncBranch: (grant: SyncBranchOptions) => {
       synced.count++;
+      synced.grants?.push(grant);
       return Promise.resolve({ ok: true as const, value: { message: "ok" } });
     },
-    log: () => {},
+    log: (msg: string) => logs.push(msg),
     ...overrides,
   };
 }
@@ -452,8 +648,8 @@ Deno.test("presyncMilestoneBranch - below the host floor a behind branch is defe
       nowMs: NOW,
     },
     presyncDeps({
-      heavyBuildDeferral: () =>
-        Promise.resolve(judgeHostDiskForBuild(reading({ level: "low" }))),
+      heavyBuildAdmission: () =>
+        Promise.resolve(deferAdmission(reading({ level: "low" }))),
     }, synced),
   );
   assertEquals(result.status, "deferred");
@@ -463,13 +659,70 @@ Deno.test("presyncMilestoneBranch - below the host floor a behind branch is defe
 
 Deno.test("presyncMilestoneBranch - a clear gate merges as before", async () => {
   const synced = { count: 0 };
-  const result = await presyncMilestoneBranch({
-    repo: "owner/repo",
-    milestoneBranch: "milestone/1-x",
-    defaultBranch: "main",
-    grant: { agentAllowed: true },
-    nowMs: NOW,
-  }, presyncDeps({ heavyBuildDeferral: () => Promise.resolve(null) }, synced));
+  const result = await presyncMilestoneBranch(
+    {
+      repo: "owner/repo",
+      milestoneBranch: "milestone/1-x",
+      defaultBranch: "main",
+      grant: { agentAllowed: true },
+      nowMs: NOW,
+    },
+    presyncDeps({
+      heavyBuildAdmission: () =>
+        Promise.resolve<HeavyBuildAdmission>({ mode: "build" }),
+    }, synced),
+  );
   assertEquals(synced.count, 1);
   assertEquals(result.status, "synced");
+});
+
+Deno.test("presyncMilestoneBranch - over the cargo budget the merge lands without its build, carrying the reason (Issue #4326)", async () => {
+  const synced = { count: 0, grants: [] as SyncBranchOptions[] };
+  const logs: string[] = [];
+  const result = await presyncMilestoneBranch(
+    {
+      repo: "owner/repo",
+      milestoneBranch: "milestone/1-x",
+      defaultBranch: "main",
+      grant: { agentAllowed: true },
+      nowMs: NOW,
+    },
+    presyncDeps(
+      {
+        heavyBuildAdmission: () =>
+          Promise.resolve<HeavyBuildAdmission>({
+            mode: "merge-only",
+            reason: BUDGET_REASON,
+          }),
+      },
+      synced,
+      logs,
+    ),
+  );
+  assertEquals(result.status, "synced");
+  assertEquals(synced.count, 1);
+  assertEquals(synced.grants.map((g) => g.mergeOnly), [BUDGET_REASON]);
+  assert(
+    logs.some((l) => l.includes("[HOST_DISK_BUDGET]")),
+    `no budget line in ${logs.join("\n")}`,
+  );
+});
+
+Deno.test("presyncMilestoneBranch - a build admission grants the merge with no merge-only reason (Issue #4326)", async () => {
+  const synced = { count: 0, grants: [] as SyncBranchOptions[] };
+  const result = await presyncMilestoneBranch(
+    {
+      repo: "owner/repo",
+      milestoneBranch: "milestone/1-x",
+      defaultBranch: "main",
+      grant: { agentAllowed: true },
+      nowMs: NOW,
+    },
+    presyncDeps({
+      heavyBuildAdmission: () =>
+        Promise.resolve<HeavyBuildAdmission>({ mode: "build" }),
+    }, synced),
+  );
+  assertEquals(result.status, "synced");
+  assertEquals(synced.grants.map((g) => "mergeOnly" in g), [false]);
 });
