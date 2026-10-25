@@ -317,9 +317,24 @@ const LEAK_PHRASES: readonly LeakPhrase[] = RAW_LEAK_PHRASES.map((phrase) => ({
     : new Set(contentTokens(phrase)),
 }));
 
+/**
+ * Counts window steps a leak scan examines.
+ *
+ * Tests pass one so linear growth is a step ratio. The count does not move
+ * when other tests are running (Issue #4312).
+ */
+export interface ScanMeter {
+  steps: number;
+}
+
+function tick(meter: ScanMeter | undefined): void {
+  if (meter) meter.steps++;
+}
+
 function matchesParaphrase(
   blockTokens: readonly string[],
   phrase: LeakPhrase,
+  meter?: ScanMeter,
 ): boolean {
   const size = phrase.tokens.size;
   if (size < PARAPHRASE_MIN_TOKENS) return false;
@@ -333,6 +348,7 @@ function matchesParaphrase(
   let distinct = 0;
 
   for (let i = 0; i < blockTokens.length; i++) {
+    tick(meter);
     const token = blockTokens[i]!;
     if (phrase.tokens.has(token)) {
       const seen = counts.get(token) ?? 0;
@@ -356,7 +372,7 @@ function markerCount(block: string): number {
   return block.match(BOUNDARY_MARKER_RE)?.length ?? 0;
 }
 
-function blockRules(block: string): string[] {
+function blockRules(block: string, meter?: ScanMeter): string[] {
   const rules: string[] = [];
   const squashed = squash(block);
   if (squashed.length === 0) return rules;
@@ -365,7 +381,7 @@ function blockRules(block: string): string[] {
     rules.push("instruction-phrase");
   }
   const tokens = contentTokens(block);
-  if (LEAK_PHRASES.some((phrase) => matchesParaphrase(tokens, phrase))) {
+  if (LEAK_PHRASES.some((phrase) => matchesParaphrase(tokens, phrase, meter))) {
     rules.push("instruction-paraphrase");
   }
   if (markerCount(block) >= MARKER_DENSITY_THRESHOLD) {
@@ -374,8 +390,8 @@ function blockRules(block: string): string[] {
   return rules;
 }
 
-function containsLeakPhrase(block: string): boolean {
-  return blockRules(block).length > 0;
+function containsLeakPhrase(block: string, meter?: ScanMeter): boolean {
+  return blockRules(block, meter).length > 0;
 }
 
 interface Block {
@@ -426,7 +442,7 @@ export function detectPromptLeakage(text: string): string[] {
   return [...rules];
 }
 
-export function redactPromptLeakage(text: string): string {
+export function redactPromptLeakage(text: string, meter?: ScanMeter): string {
   if (!text) return "";
 
   // Security matching must see through zero-width/format interleaving
@@ -439,7 +455,7 @@ export function redactPromptLeakage(text: string): string {
     .replace(GUIDELINES_CLOSE_RE, PROMPT_LEAK_PLACEHOLDER);
 
   const rebuilt = splitBlocks(masked).map((block) =>
-    !block.blank && containsLeakPhrase(block.lines.join("\n"))
+    !block.blank && containsLeakPhrase(block.lines.join("\n"), meter)
       ? PROMPT_LEAK_PLACEHOLDER
       : block.lines.join("\n")
   );

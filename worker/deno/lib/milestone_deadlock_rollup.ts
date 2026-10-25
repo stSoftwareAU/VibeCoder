@@ -54,10 +54,12 @@ const OPEN_ISSUES_LIMIT = 200;
  *
  * Closed issues are fetched only when at least one open issue depends on a
  * number that is not itself open — a repo with no such candidate never pays
- * for the extra `gh` call. Any candidate resolved in neither listing is
- * named in one WARNING log line: deadlock detection could not tell whether
- * it holds anything, and staying silent about that would be worse than
- * noisy.
+ * for the extra `gh` call. A number in neither listing is read with
+ * `gh api repos/<owner>/<repo>/issues/<n>`, which answers for pull requests
+ * too. A merged or closed pull request has landed (`landedDependencies`)
+ * and is not warned about. A number that does not exist is still named,
+ * once, in one warn log line for the cycle. Any other lookup failure is
+ * thrown.
  */
 export async function buildMilestoneDependencyGraph(
   repo: string,
@@ -99,6 +101,7 @@ export async function buildMilestoneDependencyGraph(
       openIssues,
       closedDependencies: [],
       openMilestones: new Set(openMilestones),
+      landedDependencies: [],
     };
   }
 
@@ -120,21 +123,175 @@ export async function buildMilestoneDependencyGraph(
 
   const unresolved = [...candidates].filter((n) => !closedByNumber.has(n))
     .sort((a, b) => a - b);
-  if (unresolved.length > 0) {
+  const landedDependencies: number[] = [];
+  const lookedUpClosed: { number: number; milestone: string | null }[] = [];
+  const missing: number[] = [];
+  for (const number of unresolved) {
+    let raw: string;
+    try {
+      raw = await ghCommandFn(["api", `repos/${repo}/issues/${number}`]);
+    } catch (err) {
+      if (isMissingIssue(err)) {
+        missing.push(number);
+        continue;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw lookupFailure(repo, number, `failed: ${message}`);
+    }
+    const looked = parseDirectIssueLookup(raw, repo, number);
+    if (isLandedPullRequest(looked)) {
+      landedDependencies.push(number);
+      continue;
+    }
+    if (looked.state === "closed") {
+      lookedUpClosed.push({ number, milestone: looked.milestone });
+    }
+  }
+
+  // One line per cycle, not one line per number.
+  if (missing.length > 0) {
     logAt(
       log,
       "warn",
       `milestone deadlock detection could not resolve ` +
-        `${unresolved.map((n) => `#${n}`).join(", ")} in ${repo} — not in ` +
-        `the open listing or the recent closed listing`,
+        `${missing.map((n) => `#${n}`).join(", ")} in ${repo} — not in ` +
+        `the open listing, the recent closed listing, or a direct issue lookup`,
     );
   }
 
   return {
     openIssues,
-    closedDependencies,
+    closedDependencies: [...closedDependencies, ...lookedUpClosed],
     openMilestones: new Set(openMilestones),
+    landedDependencies,
   };
+}
+
+/** A `GET /repos/{owner}/{repo}/issues/{n}` body. Pull requests carry `pull_request`. */
+interface DirectIssueLookup {
+  state: "open" | "closed";
+  pullRequest: boolean;
+  /** True when `pull_request.merged_at` is a timestamp. */
+  merged: boolean;
+  milestone: string | null;
+}
+
+function lookupFailure(repo: string, number: number, detail: string): Error {
+  return new Error(
+    `milestone deadlock detection: direct lookup of #${number} in ${repo} ${detail}`,
+  );
+}
+
+/** True when this issue-number lookup 404s. Any other failure must be thrown. */
+function isMissingIssue(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.includes("404") || message.includes("Not Found");
+}
+
+function isLandedPullRequest(looked: DirectIssueLookup): boolean {
+  return looked.pullRequest && (looked.state === "closed" || looked.merged);
+}
+
+function parseDirectIssueLookup(
+  raw: string,
+  repo: string,
+  number: number,
+): DirectIssueLookup {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw lookupFailure(repo, number, `returned invalid JSON: ${message}`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw lookupFailure(
+      repo,
+      number,
+      "returned a payload that was not an object",
+    );
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record.number !== number) {
+    throw lookupFailure(
+      repo,
+      number,
+      `returned number ${JSON.stringify(record.number)}, expected ${number}`,
+    );
+  }
+  if (!Object.hasOwn(record, "state")) {
+    throw lookupFailure(repo, number, "returned no 'state' field");
+  }
+  const state = record.state;
+  if (state !== "open" && state !== "closed") {
+    throw lookupFailure(
+      repo,
+      number,
+      `returned state ${JSON.stringify(state)}`,
+    );
+  }
+  if (!Object.hasOwn(record, "milestone")) {
+    throw lookupFailure(repo, number, "returned no 'milestone' field");
+  }
+  const pullRequest = Object.hasOwn(record, "pull_request") &&
+    record.pull_request != null;
+  let merged = false;
+  if (pullRequest) {
+    if (
+      typeof record.pull_request !== "object" ||
+      Array.isArray(record.pull_request)
+    ) {
+      throw lookupFailure(
+        repo,
+        number,
+        "returned 'pull_request' that was not an object",
+      );
+    }
+    const pull = record.pull_request as Record<string, unknown>;
+    if (!Object.hasOwn(pull, "merged_at")) {
+      throw lookupFailure(
+        repo,
+        number,
+        "returned no 'pull_request.merged_at' field",
+      );
+    }
+    if (pull.merged_at !== null) {
+      if (typeof pull.merged_at !== "string" || pull.merged_at === "") {
+        throw lookupFailure(
+          repo,
+          number,
+          "returned 'pull_request.merged_at' that was not a timestamp or null",
+        );
+      }
+      merged = true;
+    }
+  }
+  return {
+    state,
+    pullRequest,
+    merged,
+    milestone: milestoneTitle(record.milestone, repo, number),
+  };
+}
+
+function milestoneTitle(
+  milestone: unknown,
+  repo: string,
+  number: number,
+): string | null {
+  if (milestone === null) return null;
+  if (typeof milestone !== "object" || Array.isArray(milestone)) {
+    throw lookupFailure(
+      repo,
+      number,
+      "returned 'milestone' that was not an object or null",
+    );
+  }
+  const title = (milestone as Record<string, unknown>).title;
+  if (typeof title !== "string" || title === "") {
+    throw lookupFailure(repo, number, "returned a milestone with no title");
+  }
+  return title;
 }
 
 /** Inputs for {@link raiseDeadlockPartialRollups}. */
