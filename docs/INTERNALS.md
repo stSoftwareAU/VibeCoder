@@ -4182,7 +4182,7 @@ Only a file **every** rung leaves undecided aborts the merge; since
 Issue #1778 that abortion reaches nobody while the branch's conflict budget
 still has an attempt in it — it is charged to the ledger, named in one log line
 `conflict attempt n of 3 failed at rung <rung>`, and the exhausted budget is
-what reaches for the roll-back. An
+what reaches for the hand-off: a rebuild first when a roll-back was already spent on the branch (Issue #4328), otherwise the roll-back. An
 agent that fails, is ended by the worker (Issue #1693), leaves a path unmerged
 or leaves a conflict marker behind is a failed rung: the merge is aborted and
 the branch stands exactly at its pre-merge SHA. Only the agent's own paths are
@@ -4642,8 +4642,10 @@ Three rules decide what the ledger does, and each is a pure helper:
   A moved tip never refills `conflictAttempts` **while the ladder still has
   somewhere to go**: resetting on every tip move would refill the budget faster
   than a busy default branch could let the ladder spend it. The one exception
-  is a branch whose roll-back **could not merge** (Issue #2311), which is the
-  end of the automatic ladder and no longer asks a human to release it. That
+  is a branch whose roll-back **could not merge** (Issue #2311), which parks the
+  ladder until the default tip moves instead of asking a human to release it;
+  the next spent budget on that branch is then offered a rebuild first (Issue
+  #4328). That
   fallback records the tip it answered for in `fallbackDefaultSha`, and a
   default tip that has moved past it re-arms the three runs — new commits are a
   different merge, and the same `merge-fallback` flag collects what they find.
@@ -4732,8 +4734,9 @@ rule with **both** halves:
   has room to conclude. Gating on the *configured* `claudeTimeout` instead
   would refuse the rung on every cycle whose remaining budget is shorter than
   an hour — almost all of them — and silently disable the ladder's last rung
-  while making every conflict `not-charged`, so the budget would never exhaust
-  and an unresolvable conflict would reach nobody at all.
+  while making every conflict `not-charged`, so the budget would never be spent
+  by a conflict nobody had judged. The refusal ceiling (Issue #4328) now bounds
+  that, but the gate was still the wrong place to decide it.
 
 The rung used to be latched: the first branch to hold it spent the cycle's one
 grant, and every other conflicting branch that cycle was refused a rung the
@@ -4772,7 +4775,9 @@ anyone.
 
 **A branch past its budget is not merged again.** It is the roll-back's, so the
 pre-merge guard skips it with `the conflict budget is spent` rather than
-charging a third attempt and re-entering the hand-off every cycle.
+charging a third attempt and re-entering the hand-off every cycle. For a branch
+with no open PR, the skip site also runs the hand-off (Issue #4328), unless a
+roll-back that could not merge is already waiting for the default tip.
 
 ##### Sync before new work — the child run's own pre-cut sync
 
@@ -4838,7 +4843,9 @@ consequences are worth naming:
   (Issue #4304: it is a conflict git could not see, answered by the same
   roll-back and `merge-fallback` flag); a ruleset-refused push or any other
   `not-charged` verdict is not — charging the branch for a fault that
-  is not its own is what Issues #1772 and #1778 removed. Those deferrals are
+  is not its own is what Issues #1772 and #1778 removed. The one exception is a refusal that has
+  repeated `MILESTONE_REFUSAL_CEILING` cycles in a row, which is charged on the
+  next refusal (Issue #4328). Those deferrals are
   bounded by the per-issue expected-skip cooldown instead: one bounce per
   issue, then the issue is in cooldown.
 
@@ -4880,7 +4887,7 @@ flowchart TD
     E -- "no" --> X["early exit<br/>deferred: milestone behind<br/>default branch"]
     E -- "yes" --> F["open attempt, merge default down<br/>(ladder + agent rung)"]
     F -- "landed" --> G["reset budget,<br/>record tip"] --> D
-    F -- "conflict unresolved" --> H["charge 1 attempt<br/>(2 spends the budget)"] --> X
+    F -- "conflict unresolved" --> H["charge 1 attempt<br/>(3 spends the budget)"] --> X
     X --> Y["selector skips the milestone's issues<br/>while an attempt is open<br/>or the budget is spent"]
     style D fill:#2d6a4f,stroke:#1b4332,color:#fff
     style X fill:#9d4e15,stroke:#6b3410,color:#fff
@@ -4890,7 +4897,11 @@ flowchart TD
 
 A branch that has spent that budget is **rolled back**, not escalated and not
 restarted from the default-branch tip — restarting is dramatic, and a human who
-wrote none of the code cannot untangle the merge either.
+wrote none of the code cannot untangle the merge either. The one exception is
+the rebuild rung (Issue #4328): once a roll-back has already been spent on the
+branch, a spent budget is first rebuilt from the base tip with its merged
+sub-PRs replayed; a rebuild that fails, or has no git runner to run in, falls
+through to the roll-back.
 [milestone_rollback.ts](../worker/deno/lib/milestone_rollback.ts) reverts the
 merged child PRs that touch the conflicting files, newest first, until
 `git merge origin/<default>` succeeds (Issue #1771). Only those children then
@@ -4957,7 +4968,8 @@ the reopened issues, the running roll-back count and the checklist. Untouched
 children stay closed. Self-heal events `rolled_back` / `rollback_failed`
 record each outcome, and `fallback_flagged` carries the flag's issue number
 (Issue #2311) — a `sync_failed` with a roll-back and no `fallback_flagged`
-beside it means the record was never written.
+beside it means the record was never written. A rebuild (Issue #4328) emits
+`rebuilt` on success or `rebuild_failed` when it fails, and files no flag.
 
 ```mermaid
 flowchart TD

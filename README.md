@@ -183,8 +183,9 @@ host builds and runs a Codex image rather than reusing the default one.
 - **Milestone enhancements** — Progress notifications, configurable issue
   ordering within milestones, periodic branch sync with the default branch,
   automatic roll-back of a stuck milestone branch (reverted children are
-  reopened and re-queued; a roll-back with nothing left escalates once), and
-  milestone health diagnostics.
+  reopened and re-queued; a roll-back with nothing left escalates once), with a
+  rebuild from the base tip first once a roll-back has already been spent on the
+  branch (Issue #4328), and milestone health diagnostics.
 - **Self-healing** — Shadow-copy execution, automatic repo resets, disk cleanup,
   failure recovery, rate-limit handling, and crash resilience keep the worker
   running unattended. See
