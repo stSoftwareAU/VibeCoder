@@ -485,10 +485,10 @@ export async function recoverFromSummaryRuleBlock(
  * **error** with the consequence named, because a silent warning is how this
  * exact loss went unnoticed in the first place.
  *
- * Also called by the summary-only claim correction turn
- * (a removed summary gate, Issue #3324) after it writes the corrected
- * summary, for the same reason: a correction left untracked on a detached
- * checkout would vanish before the next completion attempt could see it.
+ * The removed claim-correction turn used to call this after it wrote a
+ * corrected summary (Issue #3324). That turn is gone (Issue #4234). A
+ * summary left untracked on a detached checkout would still vanish before
+ * the next completion attempt could see it, which is why this commit remains.
  */
 export async function commitRecoveredSummary(
   ctx: IssueContext,

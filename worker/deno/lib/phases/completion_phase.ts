@@ -986,10 +986,9 @@ export async function workOnIssueCompletion(
 
   // In-run recovery from the first PR-summary rule block (Issue #2189): a
   // documentation shortfall on a pushed, quality-gated branch used to cost the
-  // whole run. Entered once per run — a block on the re-run is the second. A
-  // second block the standalone claim-check gate alone raised instead defers
-  // to the one narrow claim correction turn below (Issue #3324); any other
-  // second block fails as before.
+  // whole run. Entered once per run. A later report is one comment on the
+  // pull request, which is still raised (Issue #4234). There is no
+  // claim-correction turn.
   if (
     result.status === "failure" && (state.summaryRuleBlocks?.length ?? 0) === 1
   ) {
@@ -2090,8 +2089,8 @@ async function completionBody(
   const summaryResult = await loadPrSummary(state.repoPath, issueNumber);
   let summaryContent: string;
   // The summary file's repo-relative path, set only when a summary with
-  // content was actually loaded — used by the claim check below to name the
-  // file it questions the model about (Issue #3257).
+  // content was actually loaded — the pre-PR verifier names this file
+  // (Issue #3395).
   let summarySource: string | null = null;
   if (summaryResult.ok && summaryResult.value.content) {
     logger.info("Loaded PR summary file", {

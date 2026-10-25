@@ -1117,7 +1117,7 @@ export interface RepoConfig {
    * use an empty array to configure no repo commands. That does NOT switch the
    * changed-file checks off: Step 1b (for callers that pass a pre-flight spec)
    * and the completion phase's gate still run deno/cargo fmt, markdownlint,
-   * cspell and `sweptAt` ancestry over the files the branch changes, and can
+   * cspell and the Floci deploy test over the files the branch changes, and can
    * fail the run, for a repo with no entry too.
    *
    * When set, every command runs in listed order at the same chokepoint as

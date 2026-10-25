@@ -1232,8 +1232,8 @@ rewrite it, never append to it:
   as described. An illustrative example ("for example `X`") is a claim too —
   grep `X` for the stated property before naming it. A Test Plan bullet that
   quotes a behaviour must name the test in that file that covers it. The
-  worker checks these claims against the head before it raises the PR and
-  blocks the run on a false one it confirms (Issue #3257).
+  first-run claim check that blocked a false claim before the pull request
+  was raised was removed (Issue #4234).
 - Re-derive the Summary, Evidence and Acceptance Criteria sections from that
   diff, not from memory of the run. Every file or behaviour the summary says
   this PR changes must appear in `git diff <base>...HEAD` — existing at the

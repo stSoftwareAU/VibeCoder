@@ -3,8 +3,7 @@
  *
  * A model's copy of fenced text is the bytes between the fence markers. It
  * is never stored as the raw original. The closure-met check and the caller
- * check must accept that copy and the raw copy alike. Summary claim correction
- * must accept a verbatim raw reply and refuse a reply that adds scrub artefacts.
+ * check must accept that copy and the raw copy alike.
  *
  * Uses Australian English throughout (behaviour, artefact).
  */

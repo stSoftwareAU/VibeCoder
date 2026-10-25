@@ -370,8 +370,9 @@ export interface PhaseState {
    */
   screenshotAdvisoryComment?: string;
   /**
-   * Review-style findings (pre-PR verifier or summary claim check) that
-   * survived the in-run recovery (Issue #4236). The completion phase raises
+   * Review-style findings from the pre-PR verifier that
+   * survived the in-run recovery (Issue #4236). The summary claim check
+   * was removed (Issue #4234). The completion phase raises
    * the pull request and posts these as a change-request record instead of
    * failing the run. Absent when this run is not on that path.
    */

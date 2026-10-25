@@ -1938,9 +1938,9 @@ CI runs the same gates on every push to a pull request: the `PR summary
 freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
 `deno task pr-summary-ci --base <base-branch> --head-branch <head-branch>`
 (Issue #3768). On an `issue-<N>-…` head branch whose diff carries
-`pr-summary-<N>.md` (or its facts file), it fails when the PR's newest non-merge
+`pr-summary-<N>.md`, it fails when the PR's newest non-merge
 commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
-commit changing that summary or its facts file. Rewrite the summary for the head
+commit changing that summary. The digest is of the summary alone. Rewrite the summary for the head
 in that push, whoever makes it. The step then runs the `pr-summary-check` gates
 and fails on a blocked one; gates needing the issue body or labels are reported
 as not checked. A PR carrying no summary passes with a log line. On a head
@@ -1952,9 +1952,8 @@ run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
 it names, and rewrite — never append to — the summary so every claim
 (reproduction status, test results, "known defect" notes, named functions and
 files) matches the head — an illustrative example ("for example `X`") is a
-claim too. The worker also checks this named-code rule on the first-run
-summary before the PR is raised, and blocks a false claim it confirms
-(Issue #3257).
+claim too. The first-run claim check that blocked a false claim before the
+pull request was raised was removed (Issue #4234).
 Every file or behaviour the summary says the PR changes
 must appear in `git diff <base>...HEAD`, not merely exist at the head — a merge
 from the base branch can supersede the change — and an abandoned iteration's
