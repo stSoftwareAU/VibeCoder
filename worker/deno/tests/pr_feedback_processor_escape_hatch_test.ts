@@ -370,9 +370,9 @@ Deno.test("processPrFeedback - escape hatch strips an allowlisted cross-repo fol
   ]);
 });
 
-Deno.test("processPrFeedback - non-escape-hatch no-changes still uses neutral reply", async () => {
-  // A regular .pr_response_message that just acknowledges the comment but
-  // doesn't open a follow-up — must still go through the no-changes path.
+Deno.test("processPrFeedback - non-escape-hatch no-changes posts the agent's own reply (Issue #4304)", async () => {
+  // A regular .pr_response_message that explains why the code is already
+  // correct — that reasoned reply is the answer, not the stock text.
   const message = "I reviewed the comment and the existing code is correct.";
 
   const { captured, result } = await runWithResponseMessage(message);
@@ -381,12 +381,7 @@ Deno.test("processPrFeedback - non-escape-hatch no-changes still uses neutral re
   if (!result.ok) return;
   // Summary should NOT mention escape hatch.
   assertEquals(result.value.summary.includes("escape hatch"), false);
-  // Reply should be the neutral "could not identify a code change" message.
-  assertEquals(captured.comments.length, 1);
-  assertStringIncludes(
-    captured.comments[0]!,
-    "could not identify a code change",
-  );
+  assertEquals(captured.comments, [message]);
 });
 
 // ---------------------------------------------------------------------------

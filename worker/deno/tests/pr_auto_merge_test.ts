@@ -115,20 +115,48 @@ Deno.test("pr_auto_merge - enableAutoMerge returns Enabled on success", async ()
   assertEquals(result.result, AutoMergeResult.Enabled);
 });
 
-Deno.test("pr_auto_merge - enableAutoMerge returns NotEnabledOnRepo when not enabled", async () => {
-  let commentPosted = false;
+Deno.test("pr_auto_merge - auto-merge switched off on the repo takes the gated direct merge, and asks nobody to merge by hand (Issue #4304)", async () => {
+  const comments: string[] = [];
+  let directCalls = 0;
   const result = await enableAutoMerge({
     repo: "owner/repo",
     prNumber: 1,
     ghCommandFn: async () => {
       throw new Error("auto-merge is not enabled on this repository");
     },
-    commentFn: async () => {
-      commentPosted = true;
+    commentFn: async (_repo, _pr, body) => {
+      comments.push(body);
+    },
+    directMergeFn: async () => {
+      directCalls++;
+      return { ok: true, value: { merged: true } };
     },
   });
+  assertEquals(result.result, AutoMergeResult.MergedDirectly);
+  assertEquals(directCalls, 1);
+  assertEquals(comments, []);
+});
+
+Deno.test("pr_auto_merge - auto-merge switched off and the gate defers: retried next scan, no manual-merge note (Issue #4304)", async () => {
+  const comments: string[] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1,
+    ghCommandFn: async () => {
+      throw new Error("auto-merge is not enabled on this repository");
+    },
+    commentFn: async (_repo, _pr, body) => {
+      comments.push(body);
+    },
+    directMergeFn: async () => ({
+      ok: true,
+      value: { merged: false, blocked: "checks_pending" },
+    }),
+  });
   assertEquals(result.result, AutoMergeResult.NotEnabledOnRepo);
-  assertEquals(commentPosted, true);
+  assertEquals(comments, []);
+  assert(!/manual/i.test(result.message), result.message);
+  assertStringIncludes(result.message, "checks_pending");
 });
 
 Deno.test("pr_auto_merge - enableAutoMerge returns NotAllowed for unprotected branch", async () => {

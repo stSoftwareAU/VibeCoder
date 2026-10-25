@@ -14,9 +14,10 @@
  * module is the pure judgement both sides share:
  *
  *  - the **filer** (`gh_body_redaction.ts`) uses it to notice that a body it
- *    is about to publish carries a masked instruction, and says so;
- *  - the **pickup path** (`clarity_phase.ts`) uses it to ask, through the
- *    existing `## Clarification Needed` route, before any agent is invoked.
+ *    is about to publish carries a masked instruction, and says so.
+ *
+ * (A pickup-side check lived in the `clarity-phase` CLI, which nothing in
+ * production ran; it went with the clarification hand-off in Issue #4298.)
  *
  * ## What counts as an instruction
  *

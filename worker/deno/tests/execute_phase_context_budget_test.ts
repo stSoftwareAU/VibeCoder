@@ -5,7 +5,9 @@
  * Before this change the budget check was purely observational, so an issue
  * whose prompt kept growing was bounded only by wall-clock while `loop.sh`
  * restarted the worker forever. The phase must now stop *before* the billed
- * Claude invocation and hand the issue to a human.
+ * Claude invocation. It never hands the issue to a human (Issue #4298): it
+ * trims the comment history and retries, and an issue that still does not fit
+ * goes to planning to be split.
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -18,6 +20,7 @@ import type { GitHubClient, WorkerConfig } from "../types.ts";
 interface StubGhCalls {
   addLabel: Array<{ label: string }>;
   postComment: Array<{ body: string }>;
+  unassignIssue?: number;
 }
 
 function makeStubGhClient(calls: StubGhCalls): GitHubClient {
@@ -37,7 +40,10 @@ function makeStubGhClient(calls: StubGhCalls): GitHubClient {
     },
     editIssue: () => Promise.resolve(),
     assignIssue: () => Promise.resolve(),
-    unassignIssue: () => Promise.resolve(),
+    unassignIssue: () => {
+      calls.unassignIssue = (calls.unassignIssue ?? 0) + 1;
+      return Promise.resolve();
+    },
     closeIssue: () => Promise.resolve(),
   };
 }
@@ -73,49 +79,127 @@ function makeState(): PhaseState {
   };
 }
 
+/** A Claude stub that counts its billed invocations. */
+function countingClaude(counter: { calls: number }) {
+  return {
+    runClaudeWithRetry: (() => {
+      counter.calls++;
+      return Promise.resolve({
+        ok: true,
+        value: { output: "done", exitCode: 0, timedOut: false },
+      });
+    }) as never,
+  };
+}
+
+/** A git runner reporting a changed file, so a run that executes continues. */
+const CHANGED_TREE = {
+  runGitCommand: (() =>
+    Promise.resolve({
+      ok: true,
+      value: { stdout: "M src/main.ts", stderr: "", code: 0 },
+    })) as never,
+};
+
+/**
+ * A prompt builder whose output is oversized only while the comment history
+ * is in it: the shape of an issue whose thread outgrew the window.
+ */
+function commentHeavyPromptBuilder(seen: Array<string | undefined>) {
+  return ((input: { issueComments?: string }) => {
+    seen.push(input.issueComments);
+    return Promise.resolve({
+      ok: true,
+      value: {
+        systemPrompt: "mock system",
+        prompt: input.issueComments ? "C".repeat(400_000) : "mock prompt",
+      },
+    });
+  }) as never;
+}
+
 Deno.test(
-  "execute_phase - context budget ceiling stops the phase before invoking Claude (Issue #3713)",
+  "execute_phase - an oversized comment history is trimmed and the run proceeds (Issue #4298)",
+  async () => {
+    const calls: StubGhCalls = { addLabel: [], postComment: [] };
+    const config = makeConfig({ contextBudgetBlockPercent: 5 });
+    const ctx = {
+      ...makeContext(config),
+      issueLabels: ["work-on"],
+      issueComments: "a long comment thread",
+    };
+    const seen: Array<string | undefined> = [];
+    const claude = { calls: 0 };
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+      claude: countingClaude(claude),
+      git: CHANGED_TREE,
+      infrastructure: { buildPrompt: commentHeavyPromptBuilder(seen) },
+    });
+
+    const result = await workOnIssueExecuteClaude(ctx, makeState(), deps);
+
+    assertEquals(result.status, "continue");
+    assertEquals(claude.calls, 1, "the trimmed prompt is sent");
+    assertEquals(seen, ["a long comment thread", undefined]);
+    assertEquals(calls.addLabel, [], "nothing is labelled");
+    assertEquals(calls.postComment, [], "nobody is asked to trim it");
+  },
+);
+
+Deno.test(
+  "execute_phase - a prompt still over the ceiling goes to planning, never to a human (Issue #4298)",
   async () => {
     const calls: StubGhCalls = { addLabel: [], postComment: [] };
     // A 0.01% ceiling on a 1M window blocks any realistic prompt.
     const config = makeConfig({ contextBudgetBlockPercent: 0.01 });
-    const ctx = makeContext(config);
-    const state = makeState();
-
-    let claudeCalls = 0;
+    const ctx = { ...makeContext(config), issueLabels: ["work-on"] };
+    const claude = { calls: 0 };
     const deps = createMockDeps({
       github: { createClient: () => makeStubGhClient(calls) },
-      claude: {
-        runClaudeWithRetry: (() => {
-          claudeCalls++;
-          return Promise.resolve({
-            ok: true,
-            value: { output: "done", exitCode: 0, timedOut: false },
-          });
-        }) as never,
-      },
+      claude: countingClaude(claude),
     });
 
-    const result = await workOnIssueExecuteClaude(ctx, state, deps);
+    const result = await workOnIssueExecuteClaude(ctx, makeState(), deps);
 
     assertEquals(result.status, "early_exit");
     assertEquals(
       (result as { reason: string }).reason,
       "context_budget_exceeded",
     );
-    assertEquals(claudeCalls, 0, "no billed invocation past the ceiling");
-    assert(
-      calls.addLabel.some((c) => c.label === config.needsHumanLabel),
-      "issue marked for human triage",
+    assertEquals(claude.calls, 0, "no billed invocation past the ceiling");
+    assertEquals(calls.addLabel.map((c) => c.label), [config.planningLabel]);
+    assertEquals(calls.postComment.length, 1, "the planning hand-off comment");
+    assertStringIncludes(
+      calls.postComment[0]!.body,
+      "## Handed off to planning",
     );
-    assertEquals(calls.postComment.length, 1, "escalation comment posted");
+    assertEquals(calls.unassignIssue, 1, "the claim is released");
+  },
+);
+
+Deno.test(
+  "execute_phase - an oversized prompt that planning cannot take is retried, never handed back (Issue #4298)",
+  async () => {
+    const calls: StubGhCalls = { addLabel: [], postComment: [] };
+    const config = makeConfig({ contextBudgetBlockPercent: 0.01 });
+    // No `work-on` anchor: label security would not trust the worker's own
+    // `planning`, so the hand-off is not attempted.
+    const ctx = makeContext(config);
+    const claude = { calls: 0 };
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+      claude: countingClaude(claude),
+    });
+
+    const result = await workOnIssueExecuteClaude(ctx, makeState(), deps);
+
+    assertEquals(result.status, "failure");
+    assertEquals(claude.calls, 0);
+    assertEquals(calls.addLabel, [], "no `needs-human`, no stray label");
     assert(
-      calls.postComment[0]!.body.includes("Context budget ceiling reached"),
-      "comment explains why the phase stopped",
-    );
-    assert(
-      calls.postComment[0]!.body.includes("Next step:"),
-      "comment tells the human what to do next",
+      !calls.postComment.some((c) => c.body.includes("needs-human")),
+      "nobody is asked to step in",
     );
   },
 );

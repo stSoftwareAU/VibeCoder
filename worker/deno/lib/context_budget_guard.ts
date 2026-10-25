@@ -8,8 +8,14 @@
  *
  * 1. `buildContextComponents` — one assembly of the prompt component
  *    breakdown, so both phases measure the same thing.
- * 2. The escalation copy — a single wording for the `needs-human` hand-off
- *    that fires when the ceiling blocks a phase.
+ * 2. `handOffOversizedIssueToPlanning` — what happens when the prompt still
+ *    does not fit after the phase trimmed the comment and CI-log history.
+ *
+ * The ceiling never hands the issue to a human (Issue #4298). It used to add
+ * `needs-human` and ask a person to split the issue or trim its thread; both
+ * are work the worker can do. A phase first retries with the history trimmed,
+ * and an issue that still does not fit goes through the same planning hand-off
+ * the `vibe-needs-planning` marker uses, which splits it into sub-issues.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -19,6 +25,13 @@ import {
   type ContextComponent,
   estimateComponentTokens,
 } from "./context_budget.ts";
+import {
+  handOffToPlanning,
+  hasPriorPlanningHandoffOnThread,
+  type PlanningHandoffResult,
+} from "./planning_handoff.ts";
+import { PLANNING_HANDOFF_ANCHOR } from "./planning_handoff_trust.ts";
+import type { GitHubClient, Logger, Result } from "../types.ts";
 
 /** Raw prompt texts measured by the budget guard. */
 export interface ContextBudgetComponentTexts {
@@ -35,14 +48,6 @@ export interface ContextBudgetComponentTexts {
   /** CI failure log context. Omitted when empty. */
   ciFailureContext?: string;
 }
-
-/** What a human must do when the ceiling blocks a phase. */
-export const CONTEXT_BUDGET_NEXT_STEP =
-  "Shrink what this issue drags into the prompt — split it into smaller " +
-  "issues, trim the issue body, or cut the CI log / comment history it " +
-  "pulls in — then remove `needs-human` and re-apply `work-on`. Raising " +
-  "`context_budget_block_percent` only defers the truncation; it does not " +
-  "make the prompt fit.";
 
 /**
  * Build the prompt component breakdown for a budget check.
@@ -93,9 +98,10 @@ export function buildContextComponents(
 }
 
 /**
- * Build the `**Why:**` line for the `needs-human` escalation.
+ * Explain why the ceiling stopped the phase.
  *
- * Names the largest component so the human can see what to trim.
+ * Names the largest component, so the planning hand-off comment and the run
+ * log both say what made the prompt too big.
  */
 export function buildContextBudgetEscalationReason(
   result: ContextBudgetResult,
@@ -113,6 +119,75 @@ export function buildContextBudgetEscalationReason(
     : "";
 
   return `${reason} The worker stopped before invoking Claude rather than ` +
-    `sending a prompt the model would truncate, so this issue cannot make ` +
-    `progress on its own.${largestNote}`;
+    `sending a prompt the model would truncate, even with the comment and ` +
+    `CI-log history trimmed.${largestNote}`;
+}
+
+/** Options for {@link handOffOversizedIssueToPlanning}. */
+export interface OversizedIssueHandoff {
+  ghClient: GitHubClient;
+  repo: string;
+  issueNumber: number;
+  githubUser: string;
+  issueLabels: readonly string[];
+  /** {@link buildContextBudgetEscalationReason} for the blocked check. */
+  reason: string;
+  logger: Logger;
+  ensureLabelExists?: (
+    repo: string,
+    labelName: string,
+    colour?: string,
+    description?: string,
+  ) => Promise<Result<void>>;
+}
+
+/**
+ * Send an issue whose prompt cannot fit the window to planning (Issue #4298).
+ *
+ * Reuses the `vibe-needs-planning` hand-off (Issue #2688) and its two trust
+ * conditions: the `work-on` anchor that lets label security trust the
+ * worker's own `planning`, and no earlier hand-off on the thread. When either
+ * fails, nothing is applied and `applied: false` is returned, so the phase
+ * fails and the issue walks the normal `failed-once` ladder — it is never
+ * handed to a human.
+ */
+export async function handOffOversizedIssueToPlanning(
+  opts: OversizedIssueHandoff,
+): Promise<PlanningHandoffResult> {
+  const { ghClient, repo, issueNumber, logger } = opts;
+  if (!opts.issueLabels.includes(PLANNING_HANDOFF_ANCHOR)) {
+    logger.warn(
+      `Context budget ceiling: no \`${PLANNING_HANDOFF_ANCHOR}\` anchor, so ` +
+        "the planning hand-off is not trusted — retrying instead",
+      { repo, issueNumber },
+    );
+    return { applied: false };
+  }
+  const repeat = await hasPriorPlanningHandoffOnThread({
+    ghClient,
+    repo,
+    issueNumber,
+    fallbackComments: "",
+    logger,
+  });
+  if (repeat) {
+    logger.warn(
+      "Context budget ceiling: the issue was already handed to planning " +
+        "once — retrying instead",
+      { repo, issueNumber },
+    );
+    return { applied: false };
+  }
+  return await handOffToPlanning({
+    ghClient,
+    repo,
+    issueNumber,
+    githubUser: opts.githubUser,
+    reason: opts.reason,
+    outputSnippet: "",
+    logger,
+    ...(opts.ensureLabelExists
+      ? { deps: { ensureLabelExists: opts.ensureLabelExists } }
+      : {}),
+  });
 }

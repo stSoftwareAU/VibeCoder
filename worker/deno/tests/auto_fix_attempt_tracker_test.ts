@@ -1,8 +1,9 @@
 /**
  * Tests for auto_fix_attempt_tracker.ts (Issues #3582, #1879).
  *
- * Covers the stable failure signature, the cap decision and the
- * consolidated escalation summary. The persisted attempt counter and its
+ * Covers the stable failure signature and the cap decision (the
+ * consolidated hand-over summary went with the needs-human cap escalation,
+ * Issue #4304). The persisted attempt counter and its
  * green-build reset are gone: the tally lives on the pull request as
  * fleet-authored markers (Issue #1879), so this module performs no I/O and
  * the tests here need no state directory.
@@ -12,8 +13,6 @@
 
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import {
-  type AutoFixCapAttempt,
-  buildAutoFixCapSummary,
   computeFailureSignature,
   consumesAutoFixAttempt,
   DEFAULT_MAX_AUTO_FIX_ATTEMPTS,
@@ -24,17 +23,6 @@ import {
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 const LOCUS = { kind: "pr" as const, number: 42 };
-
-function attempt(
-  overrides: Partial<AutoFixCapAttempt> = {},
-): AutoFixCapAttempt {
-  return {
-    attempt: 1,
-    diagnosis: "compilation error in Foo.java",
-    outcome: "pushed a fix; the build was still not green",
-    ...overrides,
-  };
-}
 
 // ---------------------------------------------------------------------------
 // normaliseLogExcerpt
@@ -161,49 +149,7 @@ Deno.test("auto_fix_attempt_tracker - human-gate failures do not consume an atte
 });
 
 // ---------------------------------------------------------------------------
-// Consolidated summary
-// ---------------------------------------------------------------------------
-
-Deno.test("auto_fix_attempt_tracker - summary covers every attempt in one comment", () => {
-  const attempts: AutoFixCapAttempt[] = [
-    attempt({ attempt: 1, diagnosis: "missing import", outcome: "still red" }),
-    attempt({ attempt: 2, diagnosis: "wrong package", outcome: "still red" }),
-    attempt({
-      attempt: 3,
-      diagnosis: "API removed upstream",
-      outcome: "still red",
-    }),
-  ];
-
-  const summary = buildAutoFixCapSummary({
-    checkName: "build",
-    signature: "abc123",
-    maxAttempts: 3,
-    attempts,
-  });
-
-  assert(summary.includes("3 automatic fix attempts"));
-  for (const a of attempts) {
-    assert(summary.includes(a.diagnosis), `missing diagnosis: ${a.diagnosis}`);
-    assert(summary.includes(`| ${a.attempt} |`), `missing row ${a.attempt}`);
-  }
-  assert(summary.includes("abc123"));
-  assert(summary.includes("build"));
-});
-
-Deno.test("auto_fix_attempt_tracker - summary tolerates missing attempt detail", () => {
-  const summary = buildAutoFixCapSummary({
-    checkName: "build",
-    signature: "abc123",
-    maxAttempts: 3,
-    attempts: [],
-  });
-  assert(summary.includes("build"));
-  assert(summary.toLowerCase().includes("no attempt detail"));
-});
-
-// ---------------------------------------------------------------------------
-// Configuration
+// Attempt budget
 // ---------------------------------------------------------------------------
 
 Deno.test("auto_fix_attempt_tracker - maxAutoFixAttempts defaults to 3", () => {

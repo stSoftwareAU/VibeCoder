@@ -586,6 +586,39 @@ Deno.test("abandonAndRestart - a stalled request with no failures is not decline
   assertEquals(callsMatching(fake, "pr", "close").length, 1);
 });
 
+Deno.test("abandonAndRestart - a spent CI-fix cap abandons and says the CI-fix lane tried, not the stall pass (Issue #4304)", async () => {
+  const fake = makeFake();
+
+  const outcome = await abandonAndRestart(
+    makeRequest({
+      prComments: [],
+      reason: {
+        kind: "stalled",
+        detail: "has a failing `build` check that 3 automatic fix attempts " +
+          "did not clear",
+        tried: "ci-fix-cap",
+      },
+    }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  assertEquals(outcome.outcome, "abandoned");
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+  for (
+    const body of [
+      bodyOfCall(fake, "pr", "comment"),
+      bodyOfCall(fake, "issue", "comment"),
+    ]
+  ) {
+    assertStringIncludes(
+      body,
+      "The CI-fix lane already spent every automatic fix attempt",
+    );
+    assertEquals(body.includes("stall-repair pass"), false, body);
+    assertEquals(body.includes("needs-human"), false, body);
+  }
+});
+
 Deno.test("renderAttemptTable - rows, unknown time, and a zero-attempt PR", () => {
   const chain: RestartChainLink[] = [
     {

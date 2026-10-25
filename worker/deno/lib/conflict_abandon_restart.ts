@@ -794,11 +794,14 @@ export function exhaustedEscalationDedupKey(
  * What a stall-repair first trip tried before the second trip abandoned
  * (Issues #2802, #2803). The comments state it as fact, so each route names
  * its own: the blocking-PR route synced the branch and reran its owning lane;
- * the conflict-queue route only cleared the ladder's wait so it ran again.
+ * the conflict-queue route only cleared the ladder's wait so it ran again;
+ * the CI-fix lane spent its whole attempt budget on one failure (Issue #4304)
+ * and abandons here rather than handing the PR to a human.
  */
 export type StallRepairTried =
   | "sync-and-lane-rerun"
   | "ladder-rerun"
+  | "ci-fix-cap"
   /**
    * A PR whose base was moved after it was opened: the worker tried to move
    * it back onto the base it was opened against and could not (Issue #4304).
@@ -841,6 +844,9 @@ function describeStallRepair(tried: StallRepairTried, base: string): string {
     case "sync-and-lane-rerun":
       return `The stall-repair pass already synced it with \`${base}\` and ` +
         "reran its owning lane once";
+    case "ci-fix-cap":
+      return "The CI-fix lane already spent every automatic fix attempt on " +
+        "this same failure";
     case "retarget-back":
       return "The worker already tried to move it back onto the base it was " +
         "opened against, and could not";
