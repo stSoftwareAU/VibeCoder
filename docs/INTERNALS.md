@@ -2098,10 +2098,23 @@ flowchart LR
 All GitHub CLI and git operations are wrapped with configurable timeouts to
 prevent indefinite hangs:
 
-| Wrapper           | Default timeout             | Source                                              |
-| ----------------- | --------------------------- | --------------------------------------------------- |
-| `runGitCommand()` | 60s (120s for merge/rebase) | [git_timeout.ts](../worker/deno/lib/git_timeout.ts) |
-| `safeGhCommand`   | 60s                         | [gh_wrapper.ts](../worker/deno/lib/gh_wrapper.ts)   |
+| Wrapper           | Default timeout                                | Source                                              |
+| ----------------- | ---------------------------------------------- | --------------------------------------------------- |
+| `runGitCommand()` | 60s (120s for merge/rebase)                    | [git_timeout.ts](../worker/deno/lib/git_timeout.ts) |
+| `spawnGh()`       | 60s (`api`, `issue view`); 600s (`repo clone`) | [gh_timeout.ts](../worker/deno/lib/gh_timeout.ts)   |
+| `safeGhCommand`   | 60s                                            | [gh_wrapper.ts](../worker/deno/lib/gh_wrapper.ts)   |
+
+`spawnGh` applies that table when the caller passes no timeout and no signal.
+`runGitCommand`, `spawnGh` and `runWithTimeout` then clamp the budget to the
+time left before the run timeline's finish. Once the finish has passed and a
+hard kill is known, the budget is clamped to 300 s before that kill so wrap-up
+can still run. With no hard kill known, the requested budget is kept, because
+refusing the spawn would stop the WIP push, the claim release and the hooks.
+A budget that clamps to nothing is refused before the process starts. After a
+timeout, the child has a capped grace to exit on SIGTERM; if it does not, the
+chokepoint logs `kill of <command> did not complete within <N>s` and returns
+a timed-out result (Issue #4247). With no timeline set, the budgets stay the
+values in the table.
 
 Helper functions let callers distinguish timeouts from other failures. This
 prevents a single hung `git push` or `gh api` call from blocking the entire
