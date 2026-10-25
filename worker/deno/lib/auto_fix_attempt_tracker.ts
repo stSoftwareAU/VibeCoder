@@ -15,8 +15,10 @@
  * diagnosis — nine comments in 76 minutes on one pull request. The record
  * is now the fleet-authored marker `ci_fix_attempt_markers.ts` writes into
  * the comment each attempt posts, which every host reads. This module is
- * therefore pure: it composes the signature, decides whether the cap binds,
- * and renders the consolidated summary; it performs no I/O at all.
+ * therefore pure: it composes the signature and decides whether the cap
+ * binds; it performs no I/O at all. A bound cap abandons the PR and redoes
+ * its issue (Issue #4304) — the consolidated hand-over summary it used to
+ * render for a human is gone.
  *
  * Design decisions worth stating explicitly:
  *
@@ -33,10 +35,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { escapeTableCell } from "./markdown_table.ts";
 import type { WorkerConfig } from "../types.ts";
 import type { CiFailureCategory } from "./ci_failure_classifier.ts";
-import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 
 /** Default attempt budget per failure signature. */
 export const DEFAULT_MAX_AUTO_FIX_ATTEMPTS = 3;
@@ -210,90 +210,4 @@ function positiveIntegerOr(value: unknown, fallback: number): number {
     return fallback;
   }
   return value;
-}
-
-// ---------------------------------------------------------------------------
-// Consolidated escalation summary
-// ---------------------------------------------------------------------------
-
-/**
- * One attempt as the consolidated summary renders it (Issue #1879).
- *
- * Every field is read straight off a fleet-authored attempt marker and the
- * comment that carried it, so the summary is assembled from what the pull
- * request itself records rather than from a host-local file.
- */
-export interface AutoFixCapAttempt {
-  /** 1-based attempt number the marker stated. */
-  attempt: number;
-  /** What the attempt did, in prose ("pushed a fix; still not green"). */
-  outcome: string;
-  /**
-   * The attempt comment's own first line — the agent's diagnosis.
-   *
-   * Comment prose, so it is escaped for the Markdown table cell it lands in
-   * rather than trusted.
-   */
-  diagnosis: string;
-}
-
-/** Inputs for {@link buildAutoFixCapSummary}. */
-export interface AutoFixCapSummaryInput {
-  /** Name of the failing check. */
-  checkName: string;
-  /** The failure signature — printed so the sequence is auditable. */
-  signature: string;
-  /** Configured attempt budget. */
-  maxAttempts: number;
-  /** Every attempt the pull request records for this signature. */
-  attempts: readonly AutoFixCapAttempt[];
-}
-
-/**
- * Build the single consolidated summary posted when the cap binds.
- *
- * One comment covering every attempt — deliberately not a fourth
- * "I tried again" note.
- *
- * Issue #2260: the fleet account posts this body, and its markers are the
- * fleet-wide CI-fix record. Two of the values rendered here are outside the
- * worker's control — the check name (fork-chosen on a `pull_request`-triggered
- * workflow) and each attempt's `diagnosis`, lifted from a comment body — so the
- * finished summary is made inert as a whole by construction. It carries no
- * marker of the worker's own; the escalation's marker is added afterwards.
- */
-export function buildAutoFixCapSummary(
-  input: AutoFixCapSummaryInput,
-): string {
-  const { checkName, signature, maxAttempts, attempts } = input;
-  const lines: string[] = [
-    `The worker has spent its ${maxAttempts} automatic fix attempts on the failing check **${checkName}** without reaching a green build, so it has stopped and is handing over.`,
-    "",
-    `Failure signature: \`${signature}\` (stable across pushes — every attempt below is the same underlying failure).`,
-    "",
-  ];
-
-  if (attempts.length === 0) {
-    lines.push(
-      "No attempt detail was recorded — see the worker log for the attempt history.",
-    );
-    return neutraliseAgentMarkers(lines.join("\n")).text;
-  }
-
-  lines.push("| Attempt | Outcome | Diagnosed |");
-  lines.push("| ------- | ------- | --------- |");
-  for (const [index, attempt] of attempts.entries()) {
-    lines.push(
-      `| ${attempt.attempt || index + 1} | ${cell(attempt.outcome)} | ${
-        cell(attempt.diagnosis)
-      } |`,
-    );
-  }
-  return neutraliseAgentMarkers(lines.join("\n")).text;
-}
-
-/** Escape a value for safe inclusion in a Markdown table cell. */
-function cell(value: string): string {
-  const text = escapeTableCell(value.trim()).replace(/\r?\n/g, " ");
-  return text.length > 0 ? text : "_not recorded_";
 }

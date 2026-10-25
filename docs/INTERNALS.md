@@ -2405,7 +2405,7 @@ attempt.
 The **scan** and the **processor** must resolve the same directory: the scan
 reads the retry counters the processor writes, and while it kept a relative
 default it addressed a different store, so the cap was never observed and the
-lane escalated red checks to a human rather than fixing them.
+lane gave up on red checks rather than fixing them.
 
 **The auto-fix attempt cap is not in that directory** (Issue #1879). It is
 counted from fleet-authored `<!-- vibe-ci-fix-attempt … -->` markers in the
@@ -2414,8 +2414,9 @@ pull request's own comments
 read by [ci_fix_pr_markers.ts](../worker/deno/lib/ci_fix_pr_markers.ts)), so
 every host in the fleet shares one budget of three attempts per failure
 signature and posts one comment per signature. Nothing reads or writes
-`*.autofix.json` any more; a repeat "no change required" on a new head is
-appended to the existing comment via `GitHubClient.updateComment`.
+`*.autofix.json` any more; a repeat "no change required" is appended to the
+existing comment via `GitHubClient.updateComment`. A spent budget closes the
+PR and redoes its issue (Issue #4304).
 
 Because those comment bodies carry the agent's own `.pr_response_message`
 verbatim, marker syntax in agent-authored text is neutralised at the

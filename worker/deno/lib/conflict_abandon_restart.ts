@@ -794,9 +794,14 @@ export function exhaustedEscalationDedupKey(
  * What a stall-repair first trip tried before the second trip abandoned
  * (Issues #2802, #2803). The comments state it as fact, so each route names
  * its own: the blocking-PR route synced the branch and reran its owning lane;
- * the conflict-queue route only cleared the ladder's wait so it ran again.
+ * the conflict-queue route only cleared the ladder's wait so it ran again;
+ * the CI-fix lane spent its whole attempt budget on one failure (Issue #4304)
+ * and abandons here rather than handing the PR to a human.
  */
-export type StallRepairTried = "sync-and-lane-rerun" | "ladder-rerun";
+export type StallRepairTried =
+  | "sync-and-lane-rerun"
+  | "ladder-rerun"
+  | "ci-fix-cap";
 
 /**
  * Why a PR is being abandoned (Issue #2802). Omitted means a merge conflict,
@@ -817,11 +822,18 @@ export type AbandonReason =
     tried: StallRepairTried;
   };
 
-/** The repair a first trip made, as a clause after "The stall-repair pass". */
+/** What was tried before the abandon, as a sentence's subject and verb. */
 function describeStallRepair(tried: StallRepairTried, base: string): string {
-  return tried === "ladder-rerun"
-    ? "reran the merge-conflict ladder once"
-    : `synced it with \`${base}\` and reran its owning lane once`;
+  switch (tried) {
+    case "ladder-rerun":
+      return "The stall-repair pass already reran the merge-conflict ladder once";
+    case "sync-and-lane-rerun":
+      return `The stall-repair pass already synced it with \`${base}\` and ` +
+        "reran its owning lane once";
+    case "ci-fix-cap":
+      return "The CI-fix lane already spent every automatic fix attempt on " +
+        "this same failure";
+  }
 }
 
 /** The exhausted PR to abandon. */
@@ -1298,8 +1310,8 @@ export function buildStalledAbandonPrComment(args: {
   return [
     "♻️ **Abandoning this stalled PR and restarting the work**",
     "",
-    `This PR ${sanitiseIssueText(args.detail)}. The stall-repair pass ` +
-    `already ${describeStallRepair(args.tried, base)}, and it is still ` +
+    `This PR ${sanitiseIssueText(args.detail)}. ` +
+    `${describeStallRepair(args.tried, base)}, and it is still ` +
     "stalled, so the work is redone rather than nursed further.",
     "",
     `This PR is being **closed** — not merged — and issue ` +
@@ -1330,7 +1342,7 @@ export function buildStalledRestartIssueComment(args: {
     "♻️ **Re-queued: the PR for this issue stalled**",
     "",
     `${request.repo}#${request.prNumber} ${sanitiseIssueText(args.detail)}. ` +
-    `The stall-repair pass ${
+    `${
       describeStallRepair(args.tried, sanitiseIssueText(request.baseBranch))
     }, and it is still stalled.`,
     "",
@@ -1357,8 +1369,7 @@ export function buildStalledNoIssueClosePrComment(args: {
   return [
     "♻️ **Closing this stalled PR**",
     "",
-    `This PR ${sanitiseIssueText(args.detail)}. The stall-repair pass ` +
-    `already ${
+    `This PR ${sanitiseIssueText(args.detail)}. ${
       describeStallRepair(
         args.tried,
         sanitiseIssueText(args.request.baseBranch),

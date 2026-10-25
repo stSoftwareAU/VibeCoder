@@ -322,9 +322,12 @@ against that case by escalating to a human rather than looping silently:
   single claimed review.
 
 This only changes behaviour for a claimed request-changes review. A
-no-change run against an inline review comment or a top-level PR comment is
-unaffected: it still gets the neutral "could not identify a code change"
-reply.
+no-change run against an inline review comment or a top-level PR comment
+posts the agent's own `.pr_response_message` — its reasoned account of why
+the code is already correct — and only a run that wrote nothing gets the
+stock "could not identify a code change" reply. Neither ever asks the reviewer to clarify
+(Issue #4304; GRQ-AutoTrader#4261 was asked "Please clarify if a change is
+required.").
 
 ```mermaid
 flowchart TD

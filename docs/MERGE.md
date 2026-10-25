@@ -641,7 +641,7 @@ which maps it to exactly one of four dispositions:
 | Outcome                                                | Disposition     | Worker behaviour                                                                                 |
 | ------------------------------------------------------ | --------------- | ------------------------------------------------------------------------------------------------ |
 | Merged, or native auto-merge armed                     | `landed`        | Nothing — the PR will land unattended                                                            |
-| Checks pending or failed                               | `await_checks`  | Log and wait; the CI-fix loop owns a red check and escalates on its own 3-attempt cap            |
+| Checks pending or failed                               | `await_checks`  | Log and wait; the CI-fix loop owns a red check; its 3-attempt cap closes the PR and redoes its issue (Issue #4304)           |
 | Branch behind its base                                 | `update_branch` | `PUT .../update-branch` so the checks re-run against the merged state                            |
 | No checks at all on the head commit                    | `escalate`      | Explanatory PR comment **and** `needs-human` — nothing verified the head, and no check is coming |
 | Head moved after its checks were read                  | `await_checks`  | Log and wait; the new head's checks are on their way and the next cycle re-evaluates             |

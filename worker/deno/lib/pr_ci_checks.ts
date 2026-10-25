@@ -2,15 +2,14 @@
  * PR CI check monitoring for the Vibe Coder worker (Issue #915).
  *
  * Handles finding failed CI checks on open PRs, tracking retry counts,
- * and posting max-retry comments.
+ * and re-running a spent check run (Issue #4304).
  *
  * Replaces the CI check functions from worker/shared/pr_manager.sh.
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Logger, Result } from "../types.ts";
+import type { Logger } from "../types.ts";
 import { resolveFailedStepName } from "./github_actions_log_fetcher.ts";
-import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 
 /** Information about a failed CI check. */
 export interface FailedCiCheck {
@@ -141,73 +140,6 @@ export async function getCiCheckRetryCount(
     return parseInt(content.trim(), 10) || 0;
   } catch {
     return 0;
-  }
-}
-
-/**
- * Build the comment body for max-retries notification (Issue #563).
- *
- * Issue #2260: the check name is fork-chosen on a `pull_request`-triggered
- * workflow and this body is posted by the fleet account, whose markers are the
- * fleet-wide CI-fix record — so its HTML-comment delimiters are made inert by
- * construction before it is interpolated.
- *
- * @param checkName - Name of the failed CI check
- * @param checkId - The GitHub check run ID
- * @param maxRetries - Maximum retry count
- * @returns Comment body markdown
- */
-export function buildMaxRetriesComment(
-  checkName: string,
-  checkId: string,
-  maxRetries: number,
-): string {
-  const name = neutraliseAgentMarkers(checkName).text;
-  return `**Automated CI fix failed** — The worker attempted to fix the failing CI check **${name}** (ID: ${checkId}) ${maxRetries} times but was unable to resolve the issue.
-
-Manual intervention is required to fix this CI failure. The worker will skip this check on future runs.
-
-_Posted by auto-issue-worker (Issue #563)_`;
-}
-
-/**
- * Post a max-retries comment on a PR (Issue #563).
- *
- * @param repo - Repository in "owner/repo" format
- * @param prNumber - PR number
- * @param checkName - Name of the failed CI check
- * @param checkId - The GitHub check run ID
- * @param maxRetries - Maximum retry count
- * @param ghCommandFn - Function to run gh commands
- * @returns Result indicating success or failure
- */
-export async function postCiFixMaxRetriesComment(
-  repo: string,
-  prNumber: number,
-  checkName: string,
-  checkId: string,
-  maxRetries: number,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<Result<void, Error>> {
-  const body = buildMaxRetriesComment(checkName, checkId, maxRetries);
-
-  try {
-    await ghCommandFn([
-      "pr",
-      "comment",
-      String(prNumber),
-      "--repo",
-      repo,
-      "--body",
-      body,
-    ]);
-    return { ok: true, value: undefined };
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    return {
-      ok: false,
-      error: new Error(`Failed to post max-retries comment: ${msg}`),
-    };
   }
 }
 

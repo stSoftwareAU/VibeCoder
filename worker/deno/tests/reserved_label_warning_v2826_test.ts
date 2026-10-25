@@ -111,9 +111,10 @@ Deno.test("RESERVED_LABEL_PROHIBITION - bundles every reserved label", () => {
 /**
  * Every prompt whose escape-hatch section opens a follow-up issue. The issue
  * prompt has no escape hatch since Issue #4227: an approved issue is never
- * handed back and no follow-up is filed for it.
+ * handed back and no follow-up is filed for it. The ci_fix prompt lost its
+ * escape hatch in Issue #4304 for the same reason.
  */
-const PROMPTS = ["pr_feedback", "ci_fix"] as const;
+const PROMPTS = ["pr_feedback"] as const;
 
 for (const name of PROMPTS) {
   Deno.test(`${name} - loads via loadPrompt`, async () => {
