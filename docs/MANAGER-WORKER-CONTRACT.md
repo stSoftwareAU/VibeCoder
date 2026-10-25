@@ -394,7 +394,7 @@ provider. Both phase paths call it with no provider argument
 `worker/deno/lib/phases/execute_phase.ts:816-821`). What reaches `buildPrompt`
 is the planner's `executorSplit` (`execute_claude_phase.ts:1335-1337`,
 `phases/execute_phase.ts:850-852`, passed at `execute_claude_phase.ts:1468` and
-`phases/execute_phase.ts:911`). On the strip path the planner sets it to `false`
+`phases/execute_phase.ts:918`). On the strip path the planner sets it to `false`
 (`worker/deno/lib/issue_run_provider_agents.ts:118-124`), so no advisor/executor
 block renders there. The block renders on the unchanged and rerouted-to-Claude
 outcomes. `prompt_builder.ts:832-834` splices the block whenever it is true. The

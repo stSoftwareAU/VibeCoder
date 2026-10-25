@@ -15,7 +15,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  createDefaultDeps,
+  createMockDeps,
+} from "../lib/issue_worker_wiring.ts";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import {
@@ -247,6 +250,152 @@ Deno.test("execute_phase - a non-external allocation plans the claude provider (
   } finally {
     resetProviderConfig();
   }
+});
+
+Deno.test("execute_phase - the graft sink receives the rerouted provider on a gemini host (Issue #4109)", async () => {
+  // Gemini has no MCP transport, so a gemini run is never handed graft. The
+  // planner reroutes it to Claude, which takes the graft MCP server.
+  configureHost("gemini");
+  try {
+    const logs: string[] = [];
+    const { ctx, state } = executePhaseFixture(logs);
+    const graftContext: GraftContextResult = {
+      status: "ok",
+      enabled: true,
+      graphDir: "/tmp/issue-4109-work/.graft",
+    };
+    const deps = createMockDeps({
+      infrastructure: {
+        collectGraftContext: (() => Promise.resolve(graftContext)) as never,
+      },
+      claude: {
+        env: hostEnv("gemini"),
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "done", exitCode: 0, timedOut: false },
+          })) as never,
+      },
+      pr: {
+        findExistingPrForIssue: (() =>
+          Promise.resolve({ ok: true, value: null })) as never,
+      },
+      logger: {
+        info: (message: string) => {
+          logs.push(message);
+        },
+        warn: (message: string) => {
+          logs.push(message);
+        },
+      },
+    });
+
+    await workOnIssueExecuteClaude(ctx, state, deps);
+
+    assert(
+      logs.some((line) => line.includes("handed to the agent as MCP server")),
+      `the graft sink must hand the rerouted run its MCP server, saw: ${
+        JSON.stringify(logs)
+      }`,
+    );
+  } finally {
+    resetProviderConfig();
+  }
+});
+
+Deno.test("execute_phase - the rtk and codegraph sinks receive the rerouted provider (Issue #4109)", async () => {
+  configureCodexWithClaude();
+  try {
+    const logs: string[] = [];
+    const { ctx, state } = executePhaseFixture(logs);
+    const rtkProviderIds: Array<string | undefined> = [];
+    const codegraphProviderIds: string[] = [];
+    ctx.config.codegraphContext.enabled = true;
+    const deps = createMockDeps({
+      claude: {
+        env: hostEnv("codex"),
+        rtkProviderId: ((selector: string | undefined) => {
+          rtkProviderIds.push(selector);
+          return selector;
+        }) as never,
+        prepareCodegraphContext: ((options: { providerId: string }) => {
+          codegraphProviderIds.push(options.providerId);
+          return Promise.resolve({ status: "failed", enabled: true });
+        }) as never,
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "done", exitCode: 0, timedOut: false },
+          })) as never,
+      },
+      pr: {
+        findExistingPrForIssue: (() =>
+          Promise.resolve({ ok: true, value: null })) as never,
+      },
+    });
+
+    await workOnIssueExecuteClaude(ctx, state, deps);
+
+    assertEquals(rtkProviderIds[0], CLAUDE_PROVIDER_ID);
+    assertEquals(codegraphProviderIds[0], CLAUDE_PROVIDER_ID);
+  } finally {
+    resetProviderConfig();
+  }
+});
+
+Deno.test("execute_phase - auth errors are classified with the rerouted provider (Issue #4109)", async () => {
+  configureCodexWithClaude();
+  try {
+    const logs: string[] = [];
+    const { ctx, state } = executePhaseFixture(logs);
+    const classifiedWith: Array<string | undefined> = [];
+    const deps = createMockDeps({
+      claude: {
+        env: hostEnv("codex"),
+        isClaudeAuthError: ((_output: string, providerId?: string) => {
+          classifiedWith.push(providerId);
+          return true;
+        }) as never,
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "boom", exitCode: 1, timedOut: false },
+          })) as never,
+      },
+      git: {
+        runGitCommand: () =>
+          Promise.resolve({
+            ok: true,
+            value: { code: 0, stdout: "", stderr: "" },
+          }),
+      },
+      pr: {
+        findExistingPrForIssue: (() =>
+          Promise.resolve({ ok: true, value: null })) as never,
+      },
+    });
+
+    await workOnIssueExecuteClaude(ctx, state, deps);
+
+    assertEquals(
+      classifiedWith[0],
+      CLAUDE_PROVIDER_ID,
+      "a rerouted run's output must be classified by claude, not codex",
+    );
+  } finally {
+    resetProviderConfig();
+  }
+});
+
+Deno.test("createDefaultDeps - isClaudeAuthError classifies with the named provider (Issue #4109)", () => {
+  const { isClaudeAuthError } = createDefaultDeps().claude;
+  // A phrase only codex's classifier matches: it is an auth error when codex
+  // is named, and not when claude is, whatever the host's active provider.
+  const codexOnly = "Please run codex login";
+  assertEquals(isClaudeAuthError(codexOnly, "codex"), true);
+  assertEquals(isClaudeAuthError(codexOnly, CLAUDE_PROVIDER_ID), false);
+  // Claude's own phrasing is still classified by claude when it is named.
+  assertEquals(isClaudeAuthError("not logged in", CLAUDE_PROVIDER_ID), true);
 });
 
 Deno.test("execute_phase - with claude not enabled the run starts on codex without sub-agents (Issue #4109)", async () => {

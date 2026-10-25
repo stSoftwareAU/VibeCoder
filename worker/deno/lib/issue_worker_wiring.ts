@@ -139,8 +139,7 @@ import { prepareCodegraphContext } from "./codegraph_context.ts";
 import { prepareRtkRun, rtkProviderId } from "./rtk_output.ts";
 import { primeStreamCompaction } from "./stream_compaction.ts";
 import { buildClaudeModelArgs } from "./claude_executor.ts";
-import { isClaudeAuthError } from "./claude_auth.ts";
-import { activeAgentProvider } from "./agent_provider.ts";
+import { activeAgentProvider, agentProviderById } from "./agent_provider.ts";
 import {
   isHealthCacheValid,
   recordHealthCheckSuccess,
@@ -425,7 +424,12 @@ export interface ClaudeDeps {
    */
   primeStreamCompaction: typeof primeStreamCompaction;
   runHealthCheck: typeof checkClaudeHealth;
-  isClaudeAuthError: typeof isClaudeAuthError;
+  /**
+   * Classify a failure as the provider's auth error. `providerId` names the
+   * provider the run actually spawned when the pre-spawn planner rerouted it
+   * (Issue #4109); absent, the active provider classifies, as before.
+   */
+  isClaudeAuthError: (output: string, providerId?: string) => boolean;
   buildClaudeModelArgs: typeof buildClaudeModelArgs;
   isHealthCacheValid: typeof isHealthCacheValid;
   recordHealthCheckSuccess: typeof recordHealthCheckSuccess;
@@ -802,8 +806,9 @@ export function createDefaultDeps(
       runHealthCheck: checkClaudeHealth,
       // Provider-auth classification goes through the seam (Issue #4067),
       // so a different provider classifies its own auth failures.
-      isClaudeAuthError: (output: string) =>
-        activeAgentProvider().isAuthError(output),
+      isClaudeAuthError: (output: string, providerId?: string) =>
+        (providerId ? agentProviderById(providerId) : undefined)
+          ?.isAuthError(output) ?? activeAgentProvider().isAuthError(output),
       buildClaudeModelArgs,
       isHealthCacheValid,
       recordHealthCheckSuccess,

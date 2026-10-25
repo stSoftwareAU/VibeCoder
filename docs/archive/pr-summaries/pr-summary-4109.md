@@ -15,10 +15,16 @@ through a new planner, `planIssueRunProvider`
   Claude in both call sites (each passes the rerouted provider to the runner).
   Only `lib/phases/execute_phase.ts` records a run assignment, and it records
   the planned provider (`recordRunAssignment` takes `issueRunPlan?.provider`).
-  Only `lib/execute_claude_phase.ts` hands the rerouted provider to its
-  CodeGraph / RTK / graft sinks. In `lib/phases/execute_phase.ts` the sinks
-  (`prepareCodegraphRun`, `bindGraftRun`, `rtkProviderId(undefined, logger)`)
-  pass no planned provider and still follow the active provider;
+  Both call sites hand the rerouted provider to their CodeGraph / RTK / graft
+  sinks: `lib/execute_claude_phase.ts` through `effectiveAgentProvider`, and
+  `lib/phases/execute_phase.ts` through `reroutedProviderId`
+  (`prepareCodegraphRun`, `bindGraftRun` and `rtkProviderId` all receive it). A
+  Gemini host therefore keeps Graft and RTK on its rerouted Claude run.
+  `lib/phases/execute_phase.ts` also classifies the run's auth failure with the
+  rerouted provider: `deps.claude.isClaudeAuthError(output, providerId?)` takes
+  an optional provider id, and `createDefaultDeps` resolves it with
+  `agentProviderById`, falling back to the active provider when none is named,
+  so the one other caller shape (no id) keeps its old result;
 - **agents-stripped** — Claude is not usable: the run starts on its own provider
   with the split and reviewers off and the sub-agent tier set to `sonnet`, and a
   warning says so;
@@ -108,7 +114,7 @@ the external-orchestration test (`execute_claude_phase.ts:1298-1307`,
 `execute_phase.ts:799-815`), the `isIssueExecutorSplitEnabled` calls
 (`execute_claude_phase.ts:1308-1313`, `execute_phase.ts:816-821`), the planner's
 `executorSplit` and `buildPrompt` inputs (`execute_claude_phase.ts:1335-1337`,
-`:1468`; `execute_phase.ts:850-852`, `:911`), the planner and its strip return
+`:1468`; `execute_phase.ts:850-852`, `:918`), the planner and its strip return
 (`issue_run_provider_agents.ts:75-125`, `:118-124`), the retry ladder
 (`claude_runner.ts:2938`, `:3496-3516`), the provider-table cites
 (`agent_provider.ts:646-648`, `:653-655`, `:737`, `:861`, `:900`, `:926`,
@@ -184,7 +190,7 @@ Provenance: the issue numbers this diff cites.
   That file does not type-check against `origin/main` (`TS2353`: `env` is not a
   member of `ExecuteClaudePhaseDeps`), so this observation used
   `deno test --no-check`. On the branch the same file gives
-  `ok | 10 passed | 0 failed`
+  `ok | 14 passed | 0 failed`
 - **regression test** —
   `worker/deno/tests/issue_4109_callsite_test.ts::execute_phase - a run asked for sub-agents on codex is rerouted to claude at the runner (Issue #4109)`
 
@@ -204,7 +210,7 @@ overwritten with `git show origin/main:<path>` and
 `env -u VIBE_IMAGE_AGENT_PROVIDERS deno test -A --no-check`:
 `FAILED | 2 passed | 8 failed` (the failing and passing names are in
 Reproduction). Both files were then restored with `git checkout HEAD --` and the
-file re-run with type-checking on: `ok | 10 passed | 0 failed (69ms)`.
+file re-run with type-checking on: `ok | 14 passed | 0 failed`.
 
 Mutation-gate follow-up: the facts flip verifier found no flip of the last
 statement of `claudeUsable` (`return enabled.includes(claude)`), because its
@@ -218,12 +224,25 @@ red; returning `false` at line 71 turns
 `issue run provider - a non-Claude provider with Claude enabled is rerouted to Claude (Issue #4109)`
 red.
 
+Red check for the `execute_phase.ts` sink and auth fixes (verifier finding on
+`execute_phase.ts:985`): with the `agentProvider` spreads on
+`prepareCodegraphRun` and `bindGraftRun`, the
+`rtkProviderId(reroutedProviderId, …)` argument and the
+`isClaudeAuthError(authSurface, reroutedProviderId)` argument reverted to the
+earlier shape (no provider), the file gave `FAILED | 11 passed | 3 failed`: the
+graft, rtk-and-codegraph and auth-classification `execute_phase` tests above
+went red, and they pass again on the head.
+
 Tests added on this branch, all passing at the head:
 
-- `worker/deno/tests/issue_4109_callsite_test.ts` (10 tests):
+- `worker/deno/tests/issue_4109_callsite_test.ts` (14 tests):
   - `execute_phase - a run asked for sub-agents on codex is rerouted to claude at the runner (Issue #4109)`
   - `execute_phase - the rerouted provider is recorded on the run assignment (Issue #4109)`
   - `execute_phase - a non-external allocation plans the claude provider (Issue #4109)`
+  - `execute_phase - the graft sink receives the rerouted provider on a gemini host (Issue #4109)`
+  - `execute_phase - the rtk and codegraph sinks receive the rerouted provider (Issue #4109)`
+  - `execute_phase - auth errors are classified with the rerouted provider (Issue #4109)`
+  - `createDefaultDeps - isClaudeAuthError classifies with the named provider (Issue #4109)`
   - `execute_phase - with claude not enabled the run starts on codex without sub-agents (Issue #4109)`
   - `execute_phase - an external-orchestration run is not planned, so nothing is rerouted (Issue #4109)`
   - `execute_claude_phase - the rtk sink receives the rerouted provider (Issue #4109)`
@@ -273,15 +292,15 @@ pre-existing `selectAgentProvider` calls that decide external orchestration
 (`lib/execute_claude_phase.ts:1305` with `deps.env`,
 `lib/phases/execute_phase.ts:806-809` with `deps.claude.env`); with no lookup
 injected they read the process environment as before.
-`tests/issue_4109_callsite_test.ts` alone gives `ok | 10 passed | 0 failed` with
+`tests/issue_4109_callsite_test.ts` alone gives `ok | 14 passed | 0 failed` with
 the container's `VIBE_IMAGE_AGENT_PROVIDERS=claude` set.
 
 Head run, with the five named files
 (`env -u VIBE_IMAGE_AGENT_PROVIDERS deno test -A` from `worker/deno`,
 `< /dev/null`):
 `tests/issue_4109_callsite_test.ts tests/issue_run_provider_agents_test.ts tests/agent_provider_test.ts tests/external_orchestration_3642_phase_test.ts tests/manager_worker_contract_3641_test.ts`
-gives `ok | 76 passed | 0 failed`. With the stamp set to `claude`, the same five
-files give `75 passed | 1 failed`: the failure is the existing
+gives `ok | 80 passed | 0 failed`. With the stamp set to `claude`, the same five
+files give `79 passed | 1 failed`: the failure is the existing
 `automatic Codex issue phase keeps all roles on Codex without native sub-agent definitions`,
 which also fails on the base without this change when the stamp is `claude`.
 
