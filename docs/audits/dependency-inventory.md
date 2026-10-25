@@ -85,5 +85,5 @@ Top-level imports of `container/deno-seed/deno.json` resolved through `container
 
 | Tool | Version | Source | Verdict |
 | --- | --- | --- | --- |
-| Deno | 2.9.6 | .deno-version | exact version |
-| Node.js | 24.19.0 | .node-version | exact version |
+| Deno | 2.9.8 | .deno-version | exact version |
+| Node.js | 24.22.1 | .node-version | exact version |
