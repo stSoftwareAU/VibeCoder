@@ -84,6 +84,7 @@ import { readWorkflowFiles } from "./workflow_scan_common.ts";
 import {
   classifyRedChecks,
   RED_CHECK_CONCLUSIONS,
+  rerunFailedJobsOfCheck,
   rerunInfrastructureChecks,
 } from "./ci_infrastructure_rerun.ts";
 import {
@@ -1783,12 +1784,21 @@ export async function findFailedCiChecks(
           String(check.id),
         );
         if (retryCount >= maxRetries) {
-          logger.warn("CI check exceeded max retries — skipping", {
+          // Issue #4304: a spent check run is re-run rather than left red
+          // for a person. The fresh run has a fresh retry budget and is
+          // picked up next scan; the fleet-wide auto-fix cap bounds it.
+          logger.warn("CI check exceeded max retries — re-running it", {
             repo,
             prNumber,
             checkName: check.name,
             retries: retryCount,
             maxRetries,
+          });
+          await rerunFailedJobsOfCheck({
+            repo,
+            checkId: String(check.id),
+            ghCommandFn,
+            logger,
           });
           continue;
         }

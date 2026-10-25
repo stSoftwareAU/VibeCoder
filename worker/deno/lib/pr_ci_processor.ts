@@ -37,11 +37,7 @@ import {
   withGraftContext,
 } from "./graft_context.ts";
 import { prTitleForGraftQuery } from "./pr_title_read.ts";
-import {
-  getCiCheckRetryCount,
-  postCiFixMaxRetriesComment,
-  recordCiCheckRetry,
-} from "./pr_ci_checks.ts";
+import { getCiCheckRetryCount, recordCiCheckRetry } from "./pr_ci_checks.ts";
 import {
   type CheckAnnotation,
   decodeAnnotations,
@@ -858,17 +854,16 @@ async function _processCiFailureLocked(
       maxRetries: maxCiRetries,
     });
 
-    // Post max-retries comment. The name is defused before it reaches that
-    // fleet-authored body, and the defusal is logged here rather than
-    // swallowed inside the pure builder (Issue #2260).
-    await postCiFixMaxRetriesComment(
+    // Issue #4304: no "manual intervention is required" comment. The failed
+    // jobs are re-run, so a fresh check run with a fresh retry budget comes
+    // back to the lane; the fleet-wide auto-fix cap, which abandons the PR
+    // and redoes its issue, bounds the whole loop.
+    await rerunFailedJobsOfCheck({
       repo,
-      prNumber,
-      inertCheckName(checkName, logger),
-      checkRunId,
-      maxCiRetries,
-      ghFn,
-    );
+      checkId: checkRunId,
+      ghCommandFn: ghFn,
+      logger,
+    });
 
     return {
       ok: true,
@@ -2591,6 +2586,9 @@ async function _processCiWithHeartbeat(
         // credential" guidance must survive an agent message replacing the
         // reason.
         nextStep: response.nextStep ?? PR_ESCALATION_NEXT_STEP,
+        // Issue #4304: stall repair lifts every other `needs-human`; this
+        // marker is how it recognises the credential rotation it must not.
+        dedupKey: `history-rewrite:${signature}`,
         ensureLabelColour: "d4c5f9",
         ensureLabelDescription:
           "Worker could not produce a fix; human review required",

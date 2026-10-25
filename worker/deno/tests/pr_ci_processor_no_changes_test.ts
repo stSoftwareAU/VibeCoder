@@ -31,6 +31,7 @@ import type {
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
+import { HISTORY_REWRITE_ESCALATION_MARKER_PREFIX } from "../lib/blocking_pr_stall_detector.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -437,6 +438,8 @@ Deno.test("processCiFailure no-changes - a history-rewrite escalation keeps the 
   assertEquals(captured.labelsAdded.includes("needs-human"), true);
   // A re-run cannot clear a finding in the base branch's history.
   assertEquals(captured.reruns, []);
+  // Issue #4304: the marker stall repair reads to leave this one PR alone.
+  assertStringIncludes(body, HISTORY_REWRITE_ESCALATION_MARKER_PREFIX);
 });
 
 // ---------------------------------------------------------------------------

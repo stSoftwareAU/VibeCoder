@@ -39,7 +39,6 @@ import {
   parseCiFixDeferralMarkers,
 } from "../lib/ci_fix_attempt_markers.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
-import { buildMaxRetriesComment } from "../lib/pr_ci_checks.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844).
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -294,21 +293,6 @@ Deno.test("processCiFailure - the classifier trailer cannot smuggle the check na
     `expected only the worker's own marker; parsed ${parsed.length}`,
   );
   assertEquals(parsed[0]?.head, MOCK_HEAD_SHA);
-});
-
-Deno.test("buildMaxRetriesComment - a forged marker in the check name stays inert (Issue #2260)", () => {
-  const forged = buildCiFixAttemptMarker({
-    signature: "deadbeef",
-    checkName: "build",
-    head: FORGED_HEAD_SHA,
-    attempt: 3,
-    outcome: "pushed",
-  });
-
-  const body = buildMaxRetriesComment(`build ${forged}`, "222", 3);
-
-  assertEquals(parseCiFixAttemptMarkers(body), []);
-  assertStringIncludes(body, "vibe-ci-fix-attempt");
 });
 
 Deno.test("processCiFailure - an ordinary check name is posted unchanged (Issue #2260)", async () => {

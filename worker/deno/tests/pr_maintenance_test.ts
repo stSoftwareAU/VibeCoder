@@ -1356,15 +1356,28 @@ Deno.test("findFailedCiChecks - prioritises default branch failures", async () =
   }
 });
 
-Deno.test("findFailedCiChecks - skips checks exceeding max retries", async () => {
+Deno.test("findFailedCiChecks - a check past max retries is re-run, not left red (Issue #4304)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const stateDir = `${tmpDir}/.ci_state`;
     await Deno.mkdir(stateDir, { recursive: true });
     await Deno.writeTextFile(`${stateDir}/org_repo_101.retries`, "3");
 
+    const reruns: string[][] = [];
     const ghFn = async (args: string[]): Promise<string> => {
       const key = args.join(" ");
+      if (key === "api repos/org/repo/actions/jobs/101") {
+        // A job that ran (one failed step), so it is a code failure rather
+        // than the never-started infrastructure shape.
+        return JSON.stringify({
+          run_id: 909,
+          steps: [{ name: "test", conclusion: "failure" }],
+        });
+      }
+      if (args[0] === "run" && args[1] === "rerun") {
+        reruns.push(args);
+        return "";
+      }
       if (key.includes("pr list")) {
         return JSON.stringify([
           { number: 10, headRefName: "issue-10-fix", baseRefName: "main" },
@@ -1392,8 +1405,18 @@ Deno.test("findFailedCiChecks - skips checks exceeding max retries", async () =>
     const result = await findFailedCiChecks(options);
     assertEquals(result.ok, true);
     if (result.ok) {
+      // Not handed to the fix lane this cycle: the spent check run is
+      // re-run, and the fresh run it produces is picked up next scan.
       assertEquals(result.value, null);
     }
+    assertEquals(reruns, [[
+      "run",
+      "rerun",
+      "909",
+      "--failed",
+      "--repo",
+      "org/repo",
+    ]]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

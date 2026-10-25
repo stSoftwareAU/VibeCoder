@@ -5259,12 +5259,14 @@ the next cycle — and climbs a two-trip ladder:
   is written.
 - **Human-authored PRs** — only a PR a push-capable fleet login authored is
   repaired or abandoned. Anyone else's stalled PR is logged and left alone.
-- **A `needs-human` PR is left alone.** Before the lease is even taken, a
-  fleet PR carrying `needs_human_label` — hand-applied by a reviewer, or
-  applied by a lane's own remaining escalation (a secret already in the base
-  branch's history) — is skipped with no comment, no sync and no lane
-  rerun. A human already owns the PR; the same veto the merge-conflict
-  watchdog applies (`docs/workflows/merge-conflicts.md`).
+- **A `needs-human` PR is repaired, not parked (Issue #4304).** A fleet PR
+  carrying `needs_human_label` — a legacy escalation, or one hand-applied —
+  has the label removed under the lease and then takes the same two-trip
+  repair as any other stalled PR. The one exception is a PR held for a
+  credential rotation: when its thread carries the fleet's
+  `history-rewrite:` escalation marker (a secret already in the base
+  branch's history), it is skipped with no comment, no sync and no lane
+  rerun, because no repair can clear it.
 
 Only fleet-authored marker comments count, so an outsider cannot trip the
 ladder by pasting a marker.
