@@ -38,7 +38,6 @@ import {
   HARD_KILL_EVIDENCE_VERSION,
   type HardKillEvidence,
 } from "./hard_kill_evidence.ts";
-import { PHASE_MODEL_TIERS } from "./phase_routing.ts";
 import {
   DEFAULT_TRANSCRIPT_HARD_CAP_COUNT,
   DEFAULT_TRANSCRIPT_MAX_AGE_DAYS,
@@ -63,24 +62,13 @@ export const HARD_KILL_FILE_PATTERN = /^hard-kill-.+\.json$/;
 const UNKNOWN_RUN_ID = "unknown";
 /** Where a reported evidence file is kept, inside the evidence directory. */
 export const HARD_KILL_ARCHIVE_DIR = "hard-kill-archive";
-/** Only known phases can appear in a public signature. Log text is untrusted. */
-const KNOWN_PHASES = new Set([
-  ...Object.keys(PHASE_MODEL_TIERS),
-  "unknown",
-  "setup",
-  "clarity",
-  "baseline_quality",
-  "execute",
-  "handle_no_changes",
-  "declared_handoff",
-  "bump_deps",
-  "quality_gate",
-  "quality_gate_remediation",
-  "completion",
-  "merged_pr_precheck",
-  "idle_task_guard",
-  "admin_only_repair",
-]);
+/**
+ * A phase name the public signature may carry: a lower-case identifier, as
+ * every phase the worker logs is. Log text is untrusted, so anything else is
+ * `unknown`. A shape rather than a list, so a new phase keeps its name with
+ * nothing to register (Issue #4315 review).
+ */
+const PHASE_NAME = /^[a-z][a-z0-9_]{0,39}$/;
 
 /** Fixed public explanations; never publish the evidence file's free text. */
 function publicReason(trigger: string): string {
@@ -374,7 +362,7 @@ export function hardKillSignature(
   for (const line of candidates) {
     phase = phaseOnLine(line);
     if (phase !== null) {
-      if (!KNOWN_PHASES.has(phase)) phase = "unknown";
+      if (!PHASE_NAME.test(phase)) phase = "unknown";
       break;
     }
   }
