@@ -269,6 +269,41 @@ function baseOpts(ghFn: (args: string[]) => Promise<string>) {
 // Tally and back-off behaviour.
 // ---------------------------------------------------------------------------
 
+Deno.test("recordRepoFastFailureTally - an ordinary owner comment is not a forged marker; a non-fleet marker still is (Issue #4357)", async () => {
+  const stub = createGhStub();
+  stub.seedIssue(77, formatRepoFastFailureTallyMarker(REPO) + "\ntally");
+  const issue = stub.issues.get(77)!;
+  issue.comments.push(
+    {
+      author: "nleck",
+      body: "I'll take a look at this.",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      author: "drive-by-account",
+      body: formatFastFailureCommentMarker({
+        host: "host-x",
+        at: "2026-01-01T00:00:00.000Z",
+        issue: `${REPO}#1`,
+      }),
+      createdAt: "2026-01-01T00:00:01.000Z",
+    },
+  );
+  const log: string[] = [];
+  await recordRepoFastFailureTally({
+    ...baseOpts(stub.ghFn),
+    machineId: "host-a",
+    nowSeconds: () => 1_700_000_000,
+    log: (line) => log.push(line),
+  });
+
+  const markerWarnings = log.filter((line) =>
+    line.includes("ignored") && line.includes("marker match")
+  );
+  assertEquals(markerWarnings.length, 1, markerWarnings.join(" | "));
+  assertStringIncludes(markerWarnings[0] ?? "", "ignored 1 marker match");
+});
+
 Deno.test("recordRepoFastFailureTally - three fast failures from three hosts within 24h backs off on the third", async () => {
   const stub = createGhStub();
   const base = 1_700_000_000;
