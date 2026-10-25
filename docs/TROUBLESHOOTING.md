@@ -233,6 +233,9 @@ first leaves a `hard-kill-<container>-<epoch>.json` record in `${LOG_DIR}` with
 the last worker log lines and the runtime's boot logs, so the wedge can be read
 after the container is gone (see
 [Resilience & Concurrency](workflows/resilience-and-concurrency.md#-wedged-container-watchdog)).
+The next worker start files that record as a `bug` issue and deletes the file
+once it is filed, so the issue, not the file, is the lasting record (see
+[a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)).
 Check whether the host is wedging repeatedly — a chronic offender needs the
 runtime itself looked at:
 

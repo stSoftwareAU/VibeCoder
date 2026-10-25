@@ -341,7 +341,11 @@ import {
 } from "./rate_limit_signal.ts";
 import { isHostRateLimitPauseActive } from "./provider_quota_scope.ts";
 import { fallbackPolicyFromWorkerConfig } from "./provider_fallback_policy.ts";
-import { deriveIdleReason, recordHookFailure } from "./fleet_telemetry.ts";
+import {
+  deriveIdleReason,
+  recordHookFailure,
+  recordOutcome,
+} from "./fleet_telemetry.ts";
 import { writeFleetTelemetryFile } from "./fleet_telemetry_sidecar.ts";
 import { preflightGitHubRateLimit } from "./github_rate_limit_preflight.ts";
 import { heldProviderCredentialLabel } from "./credential_preflight.ts";
@@ -492,6 +496,10 @@ import {
   terminateActiveAgentRuns,
 } from "./claude_runner.ts";
 import { fileRunFailureIssue } from "./run_failure_issue.ts";
+import {
+  HARD_KILL_FAILURE_CLASS,
+  reportPendingHardKills,
+} from "./hard_kill_report.ts";
 import { setMarkerReleaseHook } from "./claim_release.ts";
 import { readMarkerState } from "./heartbeat_storage.ts";
 import { probeHostMemoryPressure } from "./memory_pressure.ts";
@@ -5388,7 +5396,9 @@ export async function createProductionRunCoreDeps(
           // `enabled: false`.
           rtk: run.rtk ?? rtkNotRun(config.rtkOutput.enabled),
         }, {
-          runId: getRunId(),
+          // Issue #4254: a hard-kill report names the killed run's id; every
+          // other caller reports the current run.
+          runId: run.runId ?? getRunId(),
           host: Deno.hostname(),
           ...(config.workerName ? { workerName: config.workerName } : {}),
           ...(config.agentProvider ? { provider: config.agentProvider } : {}),
@@ -5444,6 +5454,40 @@ export async function createProductionRunCoreDeps(
         log: (message) => logger.info(message),
         logError: (message) => logger.error(message),
       });
+    },
+    /**
+     * Report the hard-kill evidence files the launcher watchdog left in the
+     * host log directory (Issue #4254). Each signature is filed once, its
+     * failure callback runs through the same `runIssueCallbacks` path as any
+     * other run, and the kill is counted for the next cycle's fleet summary.
+     * Never throws.
+     */
+    async reportHardKills() {
+      const evidenceDir = hostLogDirectory(env);
+      if (evidenceDir === null) {
+        logger.info(
+          "Hard-kill reporting skipped: no HOME, so no host log directory (Issue #4254).",
+        );
+        return;
+      }
+      try {
+        await reportPendingHardKills({
+          evidenceDir,
+          ghFn: runGhCommandRaw,
+          runFailureCallback: async (run) => {
+            await deps.runIssueCallbacks?.(run);
+          },
+          countFailure: () => recordOutcome("failure", HARD_KILL_FAILURE_CLASS),
+          log: (message) => logger.info(message),
+          logError: (message) => logger.error(message),
+        });
+      } catch (error) {
+        logger.error(
+          `Hard-kill reporting faulted: ${
+            error instanceof Error ? error.message : String(error)
+          }. The scan cycle continues.`,
+        );
+      }
     },
     async cleanupInProgressIssue() {
       try {

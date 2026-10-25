@@ -263,6 +263,106 @@ function formatOccurrenceLine(report: RunFailureReport, epoch: number): string {
   return `- ${when} \`${report.machineId}\` — ${report.sourceRepo}#${report.sourceIssueNumber}, phase \`${report.outcome.phase}\` after ${report.outcome.elapsedSeconds}s`;
 }
 
+/** Inputs to {@link postRunFailureFollowUp}. */
+export interface RunFailureFollowUpOptions {
+  ghFn: (args: string[]) => Promise<string>;
+  targetRepo: string;
+  /** The open issue carrying the class marker. */
+  issueNumber: number;
+  failureClass: string;
+  /** Injected clock (epoch seconds): stamps the follow-up and the window. */
+  nowSeconds: number;
+  /** One follow-up per window; later occurrences update it in place. */
+  windowSeconds: number;
+  /** The occurrence line appended to the follow-up. */
+  occurrenceLine: string;
+  /** The parenthetical that explains a recurrence, e.g. the rationale. */
+  recurrenceText: string;
+  log?: (message: string) => void;
+  /** Fleet logins whose follow-up markers are trusted (see FileRunFailureIssueOptions). */
+  fleetAuthors?: readonly string[];
+}
+
+/**
+ * Step 3 of {@link fileRunFailureIssue} (Issue #4254 extracted it so the
+ * hard-kill reporter shares the one-follow-up-per-window rule): at most one
+ * follow-up per window; later occurrences update it in place.
+ *
+ * Throws when GitHub refuses a call; the caller keeps its own catch and
+ * decides what the failure means for its decision.
+ */
+export async function postRunFailureFollowUp(
+  opts: RunFailureFollowUpOptions,
+): Promise<{ updated: boolean }> {
+  const log = opts.log ?? (() => {});
+  const t = opts.nowSeconds;
+  // Issue #1216: the follow-up marker carries an attacker-choosable
+  // epoch and lives in a comment body anyone may write, so the author
+  // is asked for and checked exactly as step 1 checks the issue's. An
+  // unverified match let one planted comment absorb every later
+  // occurrence of the class — or, when the edit was refused, suppress
+  // the class outright.
+  const rawComments = await opts.ghFn([
+    "api",
+    `repos/${opts.targetRepo}/issues/${opts.issueNumber}/comments`,
+    "--jq",
+    "[.[] | {id: .id, body: .body, author: .user.login}]",
+  ]);
+  const comments = JSON.parse(rawComments || "[]") as {
+    id: number;
+    body?: string;
+    author?: string | null;
+  }[];
+  const fleetComments = await selectFleetAuthoredComments(
+    comments.filter((c) =>
+      parseRunFailureFollowUpMarker(c.body ?? "") !== null
+    ),
+    `run-failure follow-up ${opts.failureClass}`,
+    { fleetAuthors: opts.fleetAuthors },
+    log,
+    "none counts as an existing follow-up and a fresh comment is " +
+      "posted. A duplicate follow-up is noise; a suppressed one hides " +
+      "a recurring worker fault",
+  );
+  const inWindow = fleetComments
+    .map((c) => ({ c, m: parseRunFailureFollowUpMarker(c.body ?? "") }))
+    .filter((x) =>
+      x.m !== null && x.m.failureClass === opts.failureClass &&
+      t - x.m.epoch < opts.windowSeconds
+    )
+    .sort((a, b) => b.m!.epoch - a.m!.epoch)[0];
+  if (inWindow) {
+    const body = (inWindow.c.body ?? "").trimEnd() + "\n" +
+      opts.occurrenceLine;
+    await opts.ghFn([
+      "api",
+      "--method",
+      "PATCH",
+      `repos/${opts.targetRepo}/issues/comments/${inWindow.c.id}`,
+      "-f",
+      `body=${body}`,
+    ]);
+    return { updated: true };
+  }
+  const body = [
+    formatRunFailureFollowUpMarker(opts.failureClass, t),
+    "",
+    `Recurred (class \`${opts.failureClass}\`, ${opts.recurrenceText})`,
+    "",
+    opts.occurrenceLine,
+  ].join("\n");
+  await opts.ghFn([
+    "issue",
+    "comment",
+    String(opts.issueNumber),
+    "--repo",
+    opts.targetRepo,
+    "--body",
+    body,
+  ]);
+  return { updated: false };
+}
+
 /**
  * File, comment or suppress. Never throws; every decision is returned (and
  * logged when `log` is supplied) so worker logs can be reconciled with the
@@ -419,80 +519,18 @@ export async function fileRunFailureIssue(
 
       // 3. Exists → at most one follow-up per window; update it in place.
       try {
-        // Issue #1216: the follow-up marker carries an attacker-choosable
-        // epoch and lives in a comment body anyone may write, so the author
-        // is asked for and checked exactly as step 1 checks the issue's. An
-        // unverified match let one planted comment absorb every later
-        // occurrence of the class — or, when the edit was refused, suppress
-        // the class outright.
-        const rawComments = await opts.ghFn([
-          "api",
-          `repos/${targetRepo}/issues/${existing.number}/comments`,
-          "--jq",
-          "[.[] | {id: .id, body: .body, author: .user.login}]",
-        ]);
-        const comments = JSON.parse(rawComments || "[]") as {
-          id: number;
-          body?: string;
-          author?: string | null;
-        }[];
-        const fleetComments = await selectFleetAuthoredComments(
-          comments.filter((c) =>
-            parseRunFailureFollowUpMarker(c.body ?? "") !== null
-          ),
-          `run-failure follow-up ${failureClass}`,
-          opts,
-          log,
-          "none counts as an existing follow-up and a fresh comment is " +
-            "posted. A duplicate follow-up is noise; a suppressed one hides " +
-            "a recurring worker fault",
-        );
-        const inWindow = fleetComments
-          .map((c) => ({ c, m: parseRunFailureFollowUpMarker(c.body ?? "") }))
-          .filter((x) =>
-            x.m !== null && x.m.failureClass === failureClass &&
-            t - x.m.epoch < window
-          )
-          .sort((a, b) => b.m!.epoch - a.m!.epoch)[0];
-        if (inWindow) {
-          const body = (inWindow.c.body ?? "").trimEnd() + "\n" +
-            formatOccurrenceLine(opts.report, t);
-          await opts.ghFn([
-            "api",
-            "--method",
-            "PATCH",
-            `repos/${targetRepo}/issues/comments/${inWindow.c.id}`,
-            "-f",
-            `body=${body}`,
-          ]);
-          state.classes[failureClass] = {
-            lastWriteEpoch: t,
-            issueNumber: existing.number,
-          };
-          await writeState(statePath, state);
-          return decide({
-            action: "commented",
-            issueNumber: existing.number,
-            failureClass,
-            updated: true,
-          });
-        }
-        const body = [
-          formatRunFailureFollowUpMarker(failureClass, t),
-          "",
-          `Recurred (class \`${failureClass}\`, ${classification.rationale})`,
-          "",
-          formatOccurrenceLine(opts.report, t),
-        ].join("\n");
-        await opts.ghFn([
-          "issue",
-          "comment",
-          String(existing.number),
-          "--repo",
+        const { updated } = await postRunFailureFollowUp({
+          ghFn: opts.ghFn,
           targetRepo,
-          "--body",
-          body,
-        ]);
+          issueNumber: existing.number,
+          failureClass,
+          nowSeconds: t,
+          windowSeconds: window,
+          occurrenceLine: formatOccurrenceLine(opts.report, t),
+          recurrenceText: classification.rationale,
+          log,
+          fleetAuthors: opts.fleetAuthors,
+        });
         state.classes[failureClass] = {
           lastWriteEpoch: t,
           issueNumber: existing.number,
@@ -502,7 +540,7 @@ export async function fileRunFailureIssue(
           action: "commented",
           issueNumber: existing.number,
           failureClass,
-          updated: false,
+          updated,
         });
       } catch (err) {
         recordFaultEvent(

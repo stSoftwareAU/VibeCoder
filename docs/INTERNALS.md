@@ -1081,7 +1081,10 @@ flowchart LR
   Each carries a wait count alongside the total backoff.
 - **Failure classes** are the phase a run died at (`setup`, `execute`,
   `quality_gate`, …), with `timeout` taking precedence — so "13 failures" says
-  where. Skips (claim rejected, expected bounce) are excluded from
+  where. A run killed by the launcher watchdog is counted under the class
+  `hard_kill`, not a phase, and is reported at the next worker start (see
+  [A hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)).
+  Skips (claim rejected, expected bounce) are excluded from
   `success_rate`, which is `successes / (successes + failures)`.
 - **Utilisation** is `busy / wall` per work stream (`serial`, or `slot-N` in
   the issue pool), so "idle should be near zero" is directly checkable.
