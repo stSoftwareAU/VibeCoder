@@ -323,6 +323,27 @@ Deno.test("handle_no_changes_phase - an untrusted image withholds the planning h
   assertRetried(result, calls);
 });
 
+Deno.test("handle_no_changes_phase - a withheld planning hand-off does not close a marked analysis-only issue either (#1385, #4298)", async () => {
+  // The image gate withholds the planning hand-off because it retires the
+  // issue with no reviewable artefact. Closing the issue as a finished
+  // analysis would hand the same image the same power, so it is retried.
+  const calls = makeCalls();
+  const deps = createMockDeps({
+    github: { createClient: () => makeClient(calls) },
+  });
+
+  const result = await workOnIssueHandleNoChanges(
+    makeContext({
+      issueBody: "Audit the scheduler.\n\n<!-- analysis-only -->",
+      untrustedImages: findImageReferences("![a](https://evil.test/a.png)"),
+    }),
+    makeState(PLANNING_OUTPUT),
+    deps,
+  );
+
+  assertRetried(result, calls);
+});
+
 Deno.test("handle_no_changes_phase - a non-work-on pickup tier is not handed to planning, and retries (#4227)", async () => {
   const calls = makeCalls();
   const deps = createMockDeps({

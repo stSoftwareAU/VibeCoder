@@ -429,7 +429,9 @@ For each monitored repository, in order:
      and writes nothing for it. Each change is named on the repository's
      line.
 3. **Audit issues** — fleet-filed `BP-REPO-*` audit issues whose finding the
-   run fixed are commented on and closed.
+   run fixed are commented on and closed. The issue lane does the same for a
+   single finding someone labels `work-on`: it applies that finding's step
+   with the worker's token and closes the issue (Issue #4298).
 
 What it **never** changes: it never lowers an approval count, never adds a
 `pull_request` rule to a direct-push default branch or a milestone branch,

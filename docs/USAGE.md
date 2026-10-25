@@ -484,6 +484,14 @@ subsequent scan until a human removes the label.
 - The issue raises a product or architectural question that only a human
   stakeholder can resolve.
 
+**What is never escalated (Issue #4298):** an approved issue the worker can
+resolve itself. An analysis-only issue is closed with its analysis; a
+repository-admin finding is applied with the worker's token (or retried on the
+`failed-once` ladder when the token cannot); a dependency cycle is worked in
+issue-number order; a dead `work-on` label on a milestone tracker is stripped;
+a re-approved issue a merged PR already satisfies, and a worker diagnostic a
+merged PR fixed, are closed as completed.
+
 **To resume work:**
 
 1. Read the worker's comment to understand the blocker.

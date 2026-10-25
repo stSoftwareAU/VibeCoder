@@ -1731,7 +1731,9 @@ label the worker may apply, and it is narrowed five ways:
   no human step, so, like the already-resolved close, it is withheld when an
   untrusted author's body carried an image. `gatePlanningHandoff`
   (`image_conclusion_gate.ts`) logs a `[SECURITY]` audit line with the image
-  count, and the run falls through to the analysis-only hand-off.
+  count, and the run is retried as not finished. A withheld hand-off also
+  withholds the analysis-only close (Issue #4298), so a marked issue stays
+  open too.
 
 ```mermaid
 flowchart TD

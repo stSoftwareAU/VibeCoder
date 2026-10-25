@@ -722,7 +722,7 @@ gitGraph
 - **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
 - **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
 - **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat returns a not-finished failure on the retry ladder rather than deferring again (Issue #4227). A dependency this fleet filed during the same run (fleet author, `createdAt` at or after the run start) is not deferred either; the run retries as not finished rather than waiting on a dependency the run itself just created — bypassing the usage-limit and interrupted-run retries, the described-code-change retry, and the short-output failure on the no-changes path, each of which would otherwise return a `failure` with no `needs-human` and leave the next run to defer onto a follow-up nothing picks up (Issue #3146). See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
-- **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now only an issue whose body declares itself analysis-only via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker is handed off: the worker posts the analysis once, applies `needs-human`, unassigns, and stops. **Any other approved issue is never handed back (Issue #4227):** a run that ends with no PR posts one `## Not finished — retrying` comment carrying its output and returns a `no_changes` failure, so the issue is retried on the `failed-once` ladder with its escalating cooldown, keeping `work-on` and `top-priority`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. An explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins over this retry. A `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run instead takes the not-finished retry above (Issues #3146, #4227). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
+- **Analysis-only / no-PR issues:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now an issue whose body declares itself analysis-only via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker is finished by its analysis: the worker posts it and closes the issue as completed (Issue #4298), never handing it to a human. **Any other approved issue is never handed back (Issue #4227):** a run that ends with no PR posts one `## Not finished — retrying` comment carrying its output and returns a `no_changes` failure, so the issue is retried on the `failed-once` ladder with its escalating cooldown, keeping `work-on` and `top-priority`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. An explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins over this retry. A `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run instead takes the not-finished retry above (Issues #3146, #4227). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
 - **A crashed run is never analysis-only (Issue #4147):** a run whose agent exited non-zero, reported a failed or unfinished structured result, or completed zero model turns is a run failure. With no recoverable local changes, commits or PR, both execution entry points reject it through the shared `emptyRunFailureReason` check: the standalone command reports `execution_error`; the fleet phase reports `interrupted` and takes its bounded infrastructure retry on a fresh session. A failed run hands no session on to its stream, including a structured failure reported with exit code zero. Providers without structured metadata retain their exit-code rule. On 2026-10-22 46 implementation issues were handed to a human as "analysis-only" by runs in which no model ran. The runner also retries an unusable resumed session once without `--resume` (the #204 path). See [`execute_claude_phase.ts`](../../worker/deno/lib/execute_claude_phase.ts), [`phases/execute_phase.ts`](../../worker/deno/lib/phases/execute_phase.ts) and `detectResumedSessionUnusable` in [`claude_executor.ts`](../../worker/deno/lib/claude_executor.ts).
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
@@ -794,7 +794,7 @@ flowchart TD
 
 For user-facing guidance, see [USAGE.md — Worker escalation via `needs-human`](../USAGE.md#-worker-escalation-via-needs-human). For the config key, see [CONFIGURATION.md — `needs_human_label`](../CONFIGURATION.md#-configuration-defaults).
 
-## 🧭 Analysis-only / no-PR hand-off
+## 🧭 Analysis-only / no-PR issues
 
 `work-on` treats a raised PR as its completion signal. An issue whose only
 deliverable is analysis — a gap analysis, coverage matrix, or
@@ -834,47 +834,37 @@ checkpoint already pushed. A failed push applies no hand-off and posts no
 comment naming the branch. The phase raises no PR. See
 [`lib/phases/declared_handoff.ts`](../../worker/deno/lib/phases/declared_handoff.ts).
 
-The worker now detects an analysis-only / no-PR issue from **two signals** and
-hands it off cleanly to `needs-human` (the only operational label the worker may
-apply, routed through the [escalation chokepoint](../../worker/deno/lib/needs_human_escalation.ts)):
+An author, grill-me, or planning declares an issue analysis-only by adding the
+HTML-comment marker `<!-- analysis-only -->` (or `<!-- no-pr -->`) to the issue
+body. The worker runs Claude on it like any other issue — the analysis is the
+deliverable, so it has to be produced. When the run finishes with **no code
+changes** but useful text, the worker posts the analysis and **closes the issue
+as completed** (Issue #4298). It is never handed to a human, and the closed
+issue cannot loop. A run that does commit code on a marked issue raises its PR
+as normal.
 
-- **(a) Up-front body marker.** An author, grill-me, or planning can declare an
-  issue analysis-only by adding the HTML-comment marker `<!-- analysis-only -->`
-  to the issue body. The worker hands off **before** cloning the repo or running
-  Claude — no wasted run.
-- **(b) Post-run signal, on a marked issue only.** Claude finishes with **no
-  code changes** but useful text on an issue that carries the marker. The
-  worker posts the partial answer (the analysis is the deliverable) and then
-  hands off. On an approved issue without the marker the same outcome is
-  **not finished** and is retried, never handed back (Issue #4227,
-  [`unfinished_issue_retry.ts`](../../worker/deno/lib/unfinished_issue_retry.ts)).
-  The same applies to every guard that used to fall through to a human: a
-  repeat deferral or planning request, a self-filed or closed dependency, an
-  exhausted time deferral, and an unhonoured declared hand-off on committed
-  work.
-
-Both marker paths apply `needs-human` plus a paired explanation comment,
-which drops the issue from discovery and triggers
-[`stripDiscoveryLabelsOnEscalation`](../../worker/deno/lib/escalation_cleanup.ts)
-to remove `work-on` server-side, so the issue never loops. A clean hand-off is
-**not** a `failed` outcome — the task did its job.
+On an approved issue without the marker the same outcome is **not finished**
+and is retried, never handed back (Issue #4227,
+[`unfinished_issue_retry.ts`](../../worker/deno/lib/unfinished_issue_retry.ts)).
+The same applies to every guard that used to fall through to a human: a repeat
+deferral or planning request, a self-filed or closed dependency, an exhausted
+time deferral, and an unhonoured declared hand-off on committed work. One case
+keeps even a marked issue open: when an untrusted author's image sat in front of
+an agent that then reported the issue already fixed, nothing the agent said may
+close it (Issue #1385), so the run is retried.
 
 ```mermaid
 flowchart TD
-  Pick["work-on issue picked up"] --> Marker{"Body has<br/><!-- analysis-only --> ?"}
-  Marker -->|Yes| HandOff["Hand off to needs-human<br/>(before running Claude)"]
-  Marker -->|No| Run["Run Claude"]
+  Pick["work-on issue picked up"] --> Run["Run Claude"]
   Run --> Changes{"Code changes<br/>produced?"}
   Changes -->|Yes| PR["Quality gate → PR"]
   Changes -->|"No, blocked on another issue"| Defer["Defer: record Depends on owner/repo#N,<br/>keep the discovery label, release the claim"]
   Changes -->|"No, verified already resolved<br/>(commit / PR cited)"| Close["Close with the evidence<br/>in the comment"]
-  Changes -->|"No, useful text, marked analysis-only"| Partial["Post partial answer"] --> HandOff
+  Changes -->|"No, useful text, marked analysis-only"| Done["Post the analysis,<br/>close as completed (#4298)"]
   Changes -->|"No, anything else"| Retry["Not finished: comment + no_changes failure,<br/>retried on the failed-once ladder (#4227)"]
   Changes -->|"No, no output"| Guard["Fallback loop guard:<br/>failed-once + escalating cooldown"]
-  HandOff --> Stop["Apply needs-human + comment,<br/>release claim, stop"]
   style Pick fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-  style HandOff fill:#e0a050,stroke:#8b4500,color:#1a1a1a
-  style Stop fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style Done fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Guard fill:#c45858,stroke:#6b2020,color:#fff
   style Defer fill:#5a86b0,stroke:#1d3a5a,color:#fff
@@ -889,11 +879,12 @@ The agent declares it with
 (`prompts/issue/prompt.md`); a broadened keyword list remains as a
 fallback for output that carries no marker. A claim with no commit or PR behind
 it is *not* enough to close a live issue — an unmarked approved issue is
-retried as not finished; a marked analysis-only issue keeps its hand-off. See
+retried as not finished; a marked analysis-only issue is closed with its
+analysis. See
 [already_resolved_outcome.ts](../../worker/deno/lib/already_resolved_outcome.ts).
 
 **A blocked run is checked first.** "Blocked on another issue" is a deferral, not
-an analysis-only hand-off — and it is decided before the already-complete check,
+an analysis-only answer — and it is decided before the already-complete check,
 because a blocked answer routinely contains phrases such as "no changes needed"
 and closing a live task is the one outcome the next scan cannot undo. The agent
 cannot make that call itself either: the `gh` guard refuses
@@ -971,17 +962,15 @@ flowchart TD
 **Implementation:** [`worker_record_block.ts`](../../worker/deno/lib/worker_record_block.ts)
 (shared grammar for the `Depends on` and `Deferred until` lines).
 
-**Fallback loop guard.** When neither clean signal fires — Claude produces no
-changes **and** no useful output — the run returns a failure and the existing
-`failed-once` → `failed` / `needs-human` ladder
-([label_failure.ts](../../worker/deno/lib/label_failure.ts)) ensures the issue is
-never re-run indefinitely.
+**Fallback loop guard.** When Claude produces no changes **and** no useful
+output, the run returns a failure and the `failed-once` record and its
+escalating cooldown ([label_failure.ts](../../worker/deno/lib/label_failure.ts))
+keep the issue from being re-run back to back.
 
-**Implementation:** [analysis_only_handoff.ts](../../worker/deno/lib/analysis_only_handoff.ts)
-(marker detection + hand-off), wired into
-[issue_worker.ts](../../worker/deno/lib/issue_worker.ts) (signal a) and
+**Implementation:** [analysis_only.ts](../../worker/deno/lib/analysis_only.ts)
+(marker detection) and
 [handle_no_changes_phase.ts](../../worker/deno/lib/phases/handle_no_changes_phase.ts)
-(signal b).
+(`finishOrRetry`: close with the analysis, or retry).
 
 ## ✅ Acceptance-criteria closure before the PR
 
@@ -3160,14 +3149,14 @@ an orphaned merge too:
   that PR already satisfied, the level branch released as superseded, a success
   with no output and the label untouched, so the next scan claimed it again —
   three Opus invocations in four hours. The pre-check now records the
-  re-approval on the phase state, and a run that **then** ends superseded is
-  handed to a human: one marker-deduped comment naming the PR that resolved the
-  issue and asking what the re-approval should change, `needs-human` applied
-  through the shared escalation chokepoint, and the discovery labels stripped by
-  `stripDiscoveryLabelsOnEscalation` — so the issue is not re-claimed until
-  someone answers. Both facts are required: a re-approved run that raised a PR
-  was worked normally, and a superseded release with no re-approval is the
-  ordinary #218 stop.
+  re-approval on the phase state, and a run that **then** ends superseded has
+  shown the merged PR already does what the issue asks, so the worker closes
+  the issue as completed by that PR, with a comment naming it (Issue #4298 — it
+  is never handed to a human). Anything the re-approval wanted beyond that PR
+  belongs in a new issue. Both facts are required: a re-approved run that
+  raised a PR was worked normally, and a superseded release with no
+  re-approval is the ordinary #218 stop. See
+  [`reapproval_superseded_close.ts`](../../worker/deno/lib/reapproval_superseded_close.ts).
 
 ```mermaid
 flowchart TD
@@ -3175,8 +3164,7 @@ flowchart TD
   Reapp -->|"Yes — re-approved"| Work["Continue the run:<br/>WARNING, no close"]
   Work --> Sup{"Run ended superseded?<br/>(nothing left to change)"}
   Sup -->|No| Pr["Ordinary outcome:<br/>the re-approved scope's PR"]
-  Sup -->|Yes| Hand["Hand off (Issue #1862):<br/>one deduped comment +<br/>needs-human, labels stripped"]
-  Hand --> Wait["Not re-claimed until<br/>a human answers"]
+  Sup -->|Yes| Hand["Close as completed by the merged PR<br/>(Issues #1862, #4298)"]
   Reapp -->|No| Landed{"Merge reachable from<br/>the default branch?"}
   Landed -->|Yes| Close["Close the issue<br/>(success)"]
   Landed -->|"No — orphaned"| Heal["Raise / confirm a rollup PR<br/>milestone branch → default"]
@@ -3189,15 +3177,14 @@ flowchart TD
   style Bounce fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
   style Work fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Pr fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-  style Hand fill:#e0a050,stroke:#8b4500,color:#1a1a1a
-  style Wait fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
+  style Hand fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
 
 **Implementation:** [orphaned_rollup.ts](../../worker/deno/lib/orphaned_rollup.ts)
 (the repair), [phases/merged_pr_precheck_phase.ts](../../worker/deno/lib/phases/merged_pr_precheck_phase.ts)
 (detect → self-heal → bounce, and the re-approval skip),
-[reapproval_superseded_handoff.ts](../../worker/deno/lib/reapproval_superseded_handoff.ts)
-(the re-approved-then-superseded hand-off), `isExpectedSkipResult` in
+[reapproval_superseded_close.ts](../../worker/deno/lib/reapproval_superseded_close.ts)
+(the re-approved-then-superseded close), `isExpectedSkipResult` in
 [issue_worker_types.ts](../../worker/deno/lib/issue_worker_types.ts) (the main
 loop's skip-versus-failure classification).
 

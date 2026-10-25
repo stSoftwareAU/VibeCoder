@@ -3325,12 +3325,12 @@ hasCycle(node):
 Issues detected as circular are reported separately and excluded from the
 ready/blocked classification.
 
-#### 🚨 Escalating unworkable `work-on` issues
+#### 🔧 Unworkable `work-on` issues are resolved by the worker
 
-A `work-on` issue that can never be progressed is escalated rather than left to
-dangle. `collectWorkOnCandidates`
+A `work-on` issue that could never be progressed is not left to dangle, and is
+never handed to a human (Issue #4298). `collectWorkOnCandidates`
 ([collect_work_on_candidates.ts](../worker/deno/lib/collect_work_on_candidates.ts))
-detects two classes and routes both through one shared action:
+detects two classes and resolves both itself:
 
 - **Dependency cycle** — an issue that (transitively) blocks itself (A→B→A).
   Every cycle member is, by definition, dependency-blocked, so the cycle is
@@ -3339,29 +3339,22 @@ detects two classes and routes both through one shared action:
   `memoiseIssueFetcher`), adding no extra `gh` calls. `detectDependencyCycles` /
   `findCyclePath`
   ([issue_dependencies.ts](../worker/deno/lib/issue_dependencies.ts)) flag the
-  members and render the loop.
+  members. The cycle is broken in **issue-number order**: the lowest-numbered
+  member becomes a candidate, and the rest wait on it as ordinary dependencies,
+  clearing as it closes. A member that also waits on an open issue outside its
+  cycle is a real wait and stays blocked.
 - **Self-suppressing dead label** — a milestone-tracking issue carrying the
   `work-on` label, which the worker never actions (`filterAndSort` drops it).
-
-The shared action (`escalateUnworkableWorkOn` in
-[escalate_unworkable_work_on.ts](../worker/deno/lib/escalate_unworkable_work_on.ts))
-applies `needs-human` and posts exactly one explanatory comment naming the
-blocker, routed through the `escalateToHuman` chokepoint, then drops the issue
-and continues — escalate, don't stall. Idempotence comes from two independent
-mechanisms: the applied `needs-human` label drops the issue from `filterAndSort`
-on the next scan, and a stable per-issue dedup key suppresses a duplicate
-comment within 24 hours.
+  The worker strips the dead label.
 
 ```mermaid
 flowchart TD
     A[work-on issue] --> B{progressable?}
     B -->|yes| C[normal candidate]
-    B -->|dependency cycle A→B→A| E[escalate]
-    B -->|dead-label milestone-tracker| E
-    E --> F[apply needs-human]
-    F --> G[post ONE comment naming blocker]
-    G --> H[drop from candidates + continue]
-    H -. idempotent re-scan: no-op .-> H
+    B -->|dependency cycle A→B→A| E{lowest-numbered member,<br/>no wait outside the cycle?}
+    E -->|yes| C
+    E -->|no| W[ordinary dependency wait]
+    B -->|dead-label milestone-tracker| S[strip work-on]
 ```
 
 #### 💬 Naming the gate on a held issue
