@@ -1,33 +1,21 @@
 /**
- * Unmet acceptance criteria block the PR, and the run keeps working until
- * they are met (Issue #4146).
+ * Unmet acceptance criteria are told to the agent once, then the pull
+ * request is raised and armed (Issues #4146, #4234).
  *
- * The owner's ruling: "If the criteria is not met then don't raise a PR, just
- * complete the job." A run whose PR summary closes a criterion out `partial`
- * or `missing` used to raise a PR that closed the issue on merge and file a
- * `Finish #N` follow-up for the rest (Issues #2562, #3506). These tests drive
- * the LIVE completion phase (`workOnIssueCompletion`) and assert on what
- * reaches `gh` and the agent: no PR while a criterion is unmet, the agent sent
- * back in the same run with the unmet criteria named, exactly one PR once
- * every criterion is met, and a run failure — never a follow-up issue, never
- * `needs-human` — when the bounded rounds run out.
+ * A run whose summary closes a criterion out `partial` or `missing`, or never
+ * assesses one, used to raise no pull request. It now names the criterion in
+ * one in-session note and, if it is still unmet, on the pull request. No
+ * follow-up issue is filed and nothing is labelled `needs-human`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import {
-  assert,
-  assertEquals,
-  assertFalse,
-  assertStringIncludes,
-} from "@std/assert";
+import { assertEquals, assertFalse, assertStringIncludes } from "@std/assert";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
-import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
-import { MAX_UNMET_CRITERIA_ROUNDS } from "../lib/unmet_criteria_gate.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
@@ -322,23 +310,21 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 const TWO = CRITERIA.slice(0, 2);
 
 Deno.test(
-  "#4146 - a missing criterion raises no PR and sends the agent back with that criterion named",
+  "#4146 - a missing criterion is named once and the PR is still raised",
   async () => {
     const out = await runCompletion({
       criteria: TWO,
       summary: summaryWith(TWO, ["met", "missing"]),
     });
 
-    assertEquals(
-      out.prCreateArgs.length,
-      0,
-      "no PR while a criterion is unmet",
-    );
-    assert(out.claudePrompts.length >= 1, "the agent is sent back in-run");
+    assertEquals(out.status, "continue");
+    assertEquals(out.prCreateArgs.length, 1);
+    assertEquals(out.claudePrompts.length, 1);
     const prompt = out.claudePrompts[0]!;
     assertStringIncludes(prompt, "The docs table lists opus for planning.");
     assertStringIncludes(prompt, "UNMET CRITERION");
     assertEquals(out.issueCreates, [], "no follow-up issue is filed");
+    assertStringIncludes(out.comments[0] ?? "", "auto-merge stays armed");
   },
 );
 
@@ -364,7 +350,7 @@ Deno.test(
 );
 
 Deno.test(
-  "#4146 - unmet criteria that no round can move fail the run: no PR, no follow-up, no needs-human",
+  "#4146 - unmet criteria that stay unmet still raise the PR: no follow-up, no needs-human",
   async () => {
     const stuck = summaryWith(TWO, ["met", "partial"]);
     const out = await runCompletion({
@@ -373,46 +359,40 @@ Deno.test(
       roundsWrite: [stuck, stuck, stuck, stuck],
     });
 
-    assertEquals(out.status, "failure");
-    assertEquals(out.category, "criteria_unmet");
-    assertEquals(detectFailureCategory(out.reason ?? ""), "criteria_unmet");
-    assertEquals(out.prCreateArgs.length, 0);
+    assertEquals(out.status, "continue");
+    assertEquals(out.prCreateArgs.length, 1);
     assertEquals(out.issueCreates, []);
     assertFalse(out.labelsAdded.includes("needs-human"));
     assertFalse(
       out.ghLabelEdits.some((args) => args.join(" ").includes("needs-human")),
     );
-    // A round that makes no progress ends the run: the first block plus one
-    // recovery round, not the whole budget.
     assertEquals(out.claudePrompts.length, 1);
+    assertStringIncludes(out.comments[0] ?? "", "auto-merge stays armed");
   },
 );
 
 Deno.test(
-  "#4146 - rounds continue while each makes progress, up to the bound",
+  "#4146 - one note names the unmet criteria, then the PR is raised",
   async () => {
     const statuses = (metCount: number): ("met" | "missing")[] =>
       CRITERIA.map((_, i) => i < metCount ? "met" : "missing");
     const out = await runCompletion({
       criteria: CRITERIA,
       summary: summaryWith(CRITERIA, statuses(0)),
-      // Each round meets one more criterion — progress every time, but five
-      // criteria cannot all land inside the bound.
       roundsWrite: [1, 2, 3, 4, 5].map((n) =>
         summaryWith(CRITERIA, statuses(n))
       ),
     });
 
-    assertEquals(out.claudePrompts.length, MAX_UNMET_CRITERIA_ROUNDS);
-    assertEquals(out.status, "failure");
-    assertEquals(out.category, "criteria_unmet");
-    assertEquals(out.prCreateArgs.length, 0);
+    assertEquals(out.claudePrompts.length, 1);
+    assertEquals(out.status, "continue");
+    assertEquals(out.prCreateArgs.length, 1);
     assertEquals(out.issueCreates, []);
   },
 );
 
 Deno.test(
-  "#4146 - a degraded run follows the same rules: no PR and no follow-up for a partial criterion",
+  "#4146 - a degraded run still raises the PR and files no follow-up",
   async () => {
     const out = await runCompletion({
       criteria: TWO,
@@ -420,15 +400,14 @@ Deno.test(
       claudeRunStats: [{ fallbackModel: "haiku" }],
     });
 
-    assertEquals(out.prCreateArgs.length, 0);
+    assertEquals(out.prCreateArgs.length, 1);
     assertEquals(out.issueCreates, []);
-    assertEquals(out.status, "failure");
-    assertEquals(out.category, "criteria_unmet");
+    assertEquals(out.status, "continue");
   },
 );
 
 Deno.test(
-  "#4146 - a PR the agent raised itself becomes a draft, not finalised or closed, while a criterion is unmet",
+  "#4146 - an existing PR is finalised and armed while a criterion is unmet",
   async () => {
     const stuck = summaryWith(TWO, ["met", "missing"]);
     const out = await runCompletion({
@@ -438,28 +417,21 @@ Deno.test(
       prExistsForBranch: true,
     });
 
-    assertEquals(out.status, "failure");
-    assertEquals(out.category, "criteria_unmet");
-    assertEquals(out.finaliseCalls, 0, "auto-merge is never armed");
-    assertEquals(out.recoverCalls, 0, "the PR body is not finalised");
-    // Owner (Issue #4146): an incomplete PR is a draft, not closed, so CI
-    // and review are not spent on it and the next run continues the branch.
+    assertEquals(out.status, "continue");
+    assertEquals(out.finaliseCalls, 1, "auto-merge is armed");
+    assertEquals(out.recoverCalls, 1, "the PR body is finalised");
     assertEquals(out.prCloseArgs, [], "the PR is never closed");
-    assert(
+    assertEquals(
       out.prReadyArgs.some((a) => a.includes("--undo")),
-      "converted back to a draft",
+      false,
     );
-    const body =
-      out.prEditArgs.at(-1)?.[out.prEditArgs.at(-1)!.indexOf("--body") + 1] ??
-        "";
-    assertStringIncludes(body, `Part of #${ISSUE}`);
-    assertFalse(/\bcloses\s+#4146\b/i.test(body), "no closing keyword");
     assertEquals(out.issueCreates, []);
+    assertStringIncludes(out.comments[0] ?? "", "auto-merge stays armed");
   },
 );
 
 Deno.test(
-  "#4146 - criteria the summary never assesses are not met: no PR is finalised",
+  "#4146 - criteria the summary never assesses are noted and the PR is finalised",
   async () => {
     const silent = `## Summary\n\nRouted planning. Closes #${ISSUE}.\n`;
     const out = await runCompletion({
@@ -469,11 +441,10 @@ Deno.test(
       prExistsForBranch: true,
     });
 
-    assertEquals(out.status, "failure");
-    assertEquals(out.category, "criteria_unmet");
-    assertEquals(out.finaliseCalls, 0);
+    assertEquals(out.status, "continue");
+    assertEquals(out.finaliseCalls, 1);
     assertEquals(out.prCloseArgs, []);
-    assert(out.prReadyArgs.some((a) => a.includes("--undo")));
+    assertEquals(out.prReadyArgs.some((a) => a.includes("--undo")), false);
     assertEquals(out.issueCreates, []);
   },
 );

@@ -6,12 +6,20 @@ import {
 } from "../provider_billing.ts";
 import { resolveAutomaticProviderStatus } from "../provider_auto_runtime.ts";
 import type { RoleSelection } from "./types.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "../subprocess_timeout.ts";
+
+/** A `--version` probe. Seconds. */
+const PREFLIGHT_PROBE_TIMEOUT_MS = 15_000;
 
 /** Refuse a missing CLI, unproved entitlement, or observed exhausted quota. */
 export async function preflightRole(
   selection: RoleSelection,
   workDir: string,
   environment: Record<string, string | undefined>,
+  timeoutMs: number = PREFLIGHT_PROBE_TIMEOUT_MS,
 ): Promise<void> {
   const env = (key: string) => environment[key];
   const billing = classifyProviderBilling(selection.provider, { workDir, env });
@@ -32,18 +40,19 @@ export async function preflightRole(
       `external orchestration: ${selection.provider} child has metered credentials`,
     );
   }
-  const command = new Deno.Command(descriptor.binary, {
-    args: ["--version"],
-    env: child,
-    clearEnv: true,
-    stdin: "null",
-    stdout: "null",
-    stderr: "null",
-  });
   try {
-    const result = await command.output();
+    const result = await commandOutputWithTimeout(descriptor.binary, {
+      args: ["--version"],
+      env: child,
+      clearEnv: true,
+      stdin: "null",
+      stdout: "null",
+      stderr: "null",
+      timeoutMs,
+    });
     if (!result.success) throw new Error(`exit ${result.code}`);
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     throw new Error(
       `external orchestration: ${descriptor.binary} CLI is not runnable; provision its subscription login and CLI on this host`,
     );

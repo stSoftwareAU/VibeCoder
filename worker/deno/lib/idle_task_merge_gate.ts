@@ -24,6 +24,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { logAt } from "./log_sink.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -279,8 +280,10 @@ export async function postNoIssuesFoundComments(
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      opts.log(
-        `WARNING: failed to post no-issues-found comment on ` +
+      logAt(
+        opts.log,
+        "warn",
+        `failed to post no-issues-found comment on ` +
           `${opts.repo}#${issueNumber}: ${message}`,
       );
     }

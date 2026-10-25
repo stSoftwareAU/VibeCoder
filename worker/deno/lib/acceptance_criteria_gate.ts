@@ -60,12 +60,21 @@ export interface AcceptanceClosureResult {
   problems: string[];
 }
 
-// A markdown heading reading "Acceptance Criteria" (any heading level).
+// A heading reading exactly "Acceptance Criteria". Used for the PR summary's
+// closure block (`parseClosureEntries`), where a wider heading earlier in the
+// summary must not shadow the real block (Issue #4107).
 // Every heading tail here is `\s*(?::\s*)?$`, not `\s*:?\s*$`: two whitespace
 // runs with only an optional `:` between them backtrack quadratically on a
 // heading padded with spaces and then any other character (Issue #3164).
 const ACCEPTANCE_HEADING_RE =
   /^\s{0,3}#{1,6}\s+acceptance\s+criteria\s*(?::\s*)?$/i;
+
+// The same heading in an issue body, optionally preceded by up to five words
+// (e.g. "Scope and acceptance criteria", Issue #4107). The prefix words
+// (`[...]+\s+`) are non-whitespace runs separated by whitespace, so the pattern
+// is bounded and has no overlapping quantifiers.
+const ISSUE_ACCEPTANCE_HEADING_RE =
+  /^\s{0,3}#{1,6}\s+(?:[a-z0-9&,/'.-]+\s+){0,5}acceptance\s+criteria\s*(?::\s*)?$/i;
 
 // A grill-me "Accepted scope so far" heading (Issue #2562). Grill-me states the
 // scope it settled under this heading rather than "Acceptance Criteria", so an
@@ -99,7 +108,7 @@ const CHECKBOX_RE = /^\[[ xX~]?\]\s*/;
 
 /**
  * Extract a section body from a markdown document — by default the
- * `## Acceptance Criteria` section.
+ * `## Acceptance Criteria` section, matched strictly (no prefix words).
  *
  * @param heading - The heading that opens the section.
  * @returns the raw lines of the section, or `null` when no such heading exists.
@@ -158,8 +167,10 @@ function collectListItems(sectionLines: string[]): string[] {
  * Extract the acceptance criteria stated in an issue body.
  *
  * Reads the list items under the `## Acceptance Criteria` heading, with any
- * task-list checkbox stripped. When that heading carries no list items, it
- * falls back to the list under a `## Definition of done` heading (Issue #3761).
+ * task-list checkbox stripped. A heading ending in "acceptance criteria"
+ * (e.g. `## Scope and acceptance criteria`) also counts (Issue #4107). When
+ * that heading carries no list items, it falls back to the list under a
+ * `## Definition of done` heading (Issue #3761).
  * An issue with neither — or with headings that carry no list items — has no
  * criteria, and the gate does not apply.
  *
@@ -167,8 +178,13 @@ function collectListItems(sectionLines: string[]): string[] {
  * @returns The criterion texts, in body order (empty when there are none).
  */
 export function extractAcceptanceCriteria(issueBody: string): string[] {
-  const criteria = listItemsUnder(issueBody, ACCEPTANCE_HEADING_RE);
-  if (criteria.length > 0) return criteria;
+  // The exact heading wins, as before; the wider heading is only a fallback,
+  // and an earlier prose heading that merely ends in the phrase must not hide
+  // a later list, so every wider match is tried (Issue #4107).
+  const exact = listItemsUnder(issueBody, ACCEPTANCE_HEADING_RE);
+  if (exact.length > 0) return exact;
+  const wider = firstListUnderAny(issueBody, ISSUE_ACCEPTANCE_HEADING_RE);
+  if (wider.length > 0) return wider;
   return listItemsUnder(issueBody, DEFINITION_OF_DONE_HEADING_RE);
 }
 
@@ -195,32 +211,46 @@ export function extractAcceptedScope(issueBody: string): string[] {
   return listItemsUnder(issueBody, DONE_WHEN_HEADING_RE);
 }
 
+/**
+ * The checkbox-stripped list items under the first `heading` match that
+ * carries any, or none. Unlike {@link listItemsUnder}, a matching heading with
+ * no list items does not stop the search.
+ */
+function firstListUnderAny(markdown: string, heading: RegExp): string[] {
+  const lines = markdown.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    if (!heading.test(lines[i]!)) continue;
+    const section: string[] = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      if (ANY_HEADING_RE.test(lines[j]!)) break;
+      section.push(lines[j]!);
+    }
+    const items = stripCheckboxes(collectListItems(section));
+    if (items.length > 0) return items;
+  }
+  return [];
+}
+
+function stripCheckboxes(items: string[]): string[] {
+  return items.map((item) => item.replace(CHECKBOX_RE, "").trim())
+    .filter((item) => item !== "");
+}
+
 /** The checkbox-stripped list items under `heading`, or none. */
 function listItemsUnder(markdown: string, heading: RegExp): string[] {
   const section = extractSection(markdown, heading);
   if (section === null) return [];
-  return collectListItems(section)
-    .map((item) => item.replace(CHECKBOX_RE, "").trim())
-    .filter((item) => item !== "");
+  return stripCheckboxes(collectListItems(section));
 }
 
 /**
- * Match the entry's status word — the earliest standalone status token in the
- * text, so a criterion that merely mentions another status word in its prose
- * ("the block is not missing") is still classified by its own leading status.
+ * Match the entry's leading status, allowing Markdown emphasis/code markers.
+ * Status words inside criterion prose or nested test descriptions are not an
+ * assessment (for example, "a missing or unreadable value" in a negative test).
  */
 function statusOf(entry: string): ClosureEntry["status"] | null {
-  const normalised = entry.toLowerCase();
-  let best: { status: ClosureEntry["status"]; index: number } | null = null;
-  for (const status of ["unrequested", "partial", "missing", "met"] as const) {
-    const match = normalised.match(
-      new RegExp(`(?:^|[^a-z])(${status})(?:[^a-z]|$)`),
-    );
-    if (!match) continue;
-    const index = match.index! + match[0].indexOf(status);
-    if (!best || index < best.index) best = { status, index };
-  }
-  return best?.status ?? null;
+  const match = entry.match(/^[\s*_`]*(unrequested|partial|missing|met)\b/i);
+  return match ? match[1]!.toLowerCase() as ClosureEntry["status"] : null;
 }
 
 // Hardcoded per-label patterns — a `new RegExp(label…)` built from an argument
@@ -246,7 +276,7 @@ function hasFilledLabel(
 /**
  * Parse the `## Acceptance Criteria` closure block out of a PR summary.
  *
- * Only list items carrying a recognised status word are treated as assessment
+ * Only list items starting with a recognised status are treated as assessment
  * entries, so a prose lead-in above the list is ignored rather than mis-counted.
  *
  * @param prSummaryContent - The PR summary (or assembled PR body).

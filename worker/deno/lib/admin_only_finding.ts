@@ -11,15 +11,20 @@
  * still-`work-on` issue goes straight back into the pool: a permanent, futile
  * loop burning agent minutes every cycle for an issue no worker can close.
  *
- * This is the pure detection used by the up-front hand-off in `issue_worker.ts`
- * — recognise the finding from its body and hand it to a human before cloning
- * the repo or running Claude.
+ * This is the detection used up front in `issue_worker.ts` — recognise the
+ * finding from its body before cloning the repo or running Claude — and the
+ * repair that follows it: the worker applies the setting itself through
+ * `repo_settings_harden.ts` and closes the finding, or records the refusal on
+ * the normal `failed-once` ladder when its token cannot (Issue #4298). It never
+ * hands the finding to a human.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { Result } from "../types.ts";
 import { escapeRegExp } from "./regexp_escape.ts";
 import { REPO_ADMIN_ACTION } from "./repo_settings_scanner.ts";
+import type { HardenRepoOutcome, HardenStep } from "./repo_settings_harden.ts";
 
 /**
  * The `BP-REPO-*` finding-id marker every repo-settings finding body carries.
@@ -140,4 +145,82 @@ export function isAdminOnlyRepoSettingsIssue(issueBody: string): boolean {
     !WORKER_FIXABLE_REPO_FINDINGS.has(findingId);
   return markerIsAdminOnly ||
     REPO_ADMIN_ACTION_PROSE.test(stripQuotedMarkdown(issueBody));
+}
+
+/**
+ * The hardening step kind that fixes each `BP-REPO-*` finding the scanner
+ * files. A finding id absent from this map has no automatic fix: setup never
+ * closes it (Issue #2629), and the issue lane cannot apply it (Issue #4298).
+ */
+export const FINDING_STEP_KIND: Readonly<Record<string, HardenStep["kind"]>> = {
+  "BP-REPO-DEFAULT-TOKEN-WRITE": "workflow-token",
+  "BP-REPO-ACTIONS-MAY-APPROVE-PRS": "workflow-token",
+  "BP-REPO-ACTIONS-ALLOW-ALL": "actions-allow-list",
+  "BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE": "actions-allow-list",
+  "BP-REPO-SHA-PIN-NOT-ENFORCED": "sha-pinning-required",
+  "BP-REPO-RULESET-NO-REVIEW": "default-branch-approval",
+  "BP-REPO-SECRET-SCANNING-OFF": "secret-scanning",
+  "BP-REPO-PUSH-PROTECTION-OFF": "secret-scanning",
+  "BP-REPO-PVR-OFF": "private-vulnerability-reporting",
+};
+
+/**
+ * Apply the setting a repository-admin finding asks for (Issue #4298).
+ *
+ * Only the finding's own steps are run, so fixing one finding never rewrites
+ * an unrelated setting. Success — every step applied, or none needed because
+ * the setting already holds — returns the applied steps for the closing
+ * comment. Anything else is an error naming what was refused, for the caller
+ * to record on the normal `failed-once` ladder: a token without admin rights,
+ * an unreadable surface, or a finding with no automatic fix.
+ *
+ * @param harden - Runs `hardenRepo` with `apply` for the given step kinds.
+ */
+export async function repairAdminOnlyFinding(
+  repo: string,
+  issueBody: string,
+  harden: (
+    repo: string,
+    kinds: readonly HardenStep["kind"][],
+  ) => Promise<HardenRepoOutcome>,
+): Promise<Result<string>> {
+  const findingId = parseRepoSettingsFindingId(issueBody);
+  const kind = findingId ? FINDING_STEP_KIND[findingId] : undefined;
+  if (!kind) {
+    return {
+      ok: false,
+      error: new Error(
+        `no automatic fix is mapped for ${
+          findingId ?? "this repository-admin finding"
+        } — add it to FINDING_STEP_KIND in admin_only_finding.ts`,
+      ),
+    };
+  }
+  const kinds = [kind];
+  const outcome = await harden(repo, kinds);
+  // A failure on any surface means the plan may have been built blind, so
+  // "nothing to do" cannot be trusted; a skip of the finding's own step means
+  // the setting was not written.
+  const refused = outcome.results.filter((r) =>
+    r.status === "failed" ||
+    (r.status === "skipped" && kinds.includes(r.step.kind))
+  );
+  if (refused.length > 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `could not apply ${findingId}: ` +
+          refused.map((r) =>
+            `${r.step.kind}: ${r.step.title}${r.detail ? ` — ${r.detail}` : ""}`
+          ).join("; "),
+      ),
+    };
+  }
+  const applied = outcome.results.filter((r) => kinds.includes(r.step.kind));
+  return {
+    ok: true,
+    value: applied.length === 0
+      ? `The setting ${findingId} reports already holds — nothing to change.`
+      : applied.map((r) => `- [${r.status}] ${r.step.title}`).join("\n"),
+  };
 }

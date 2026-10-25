@@ -5,7 +5,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { sourceProseLines } from "../lib/removed_assertion_gate.ts";
+import { sourceProseLines } from "../lib/doc_prose_scope.ts";
 import {
   assert,
   assertEquals,

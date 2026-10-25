@@ -248,7 +248,7 @@ async function scan(
 // findFailedCiChecks — scan-level tests
 // ---------------------------------------------------------------------------
 
-Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to CI-fix, bounded once per head fleet-wide", async () => {
+Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to CI-fix, one marker per head fleet-wide (Issue #4304)", async () => {
   const stateDir = await Deno.makeTempDir({ prefix: "ci-infra-" });
   try {
     const reruns: string[][] = [];
@@ -286,8 +286,9 @@ Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to C
       "the marker must ride in a PR comment",
     );
 
-    // Second scan, a different host (fresh state directory), same head —
-    // the bound still holds, because the record lives on the PR.
+    // Second scan, a different host (fresh state directory), same head and
+    // still cancelled. Issue #4304: it is re-run again rather than left for a
+    // person, and the marker already on the PR is not posted a second time.
     const stateDir2 = await Deno.makeTempDir({ prefix: "ci-infra-host2-" });
     try {
       const reruns2: string[][] = [];
@@ -308,10 +309,11 @@ Deno.test("findFailedCiChecks - all cancelled checks are re-run, not handed to C
       });
       const found2 = await scan(ghFn2, logger2, stateDir2);
       assertEquals(found2, null);
-      assertEquals(reruns2.length, 0);
-      assert(
-        logger2.warns.some((w) => w.includes("already re-run once")),
-        "the second host must say why it skipped",
+      assertEquals(reruns2.map((r) => r[2]).sort(), ["900", "901"]);
+      assertEquals(posted.length, 1, "one marker per head, never a second");
+      assertEquals(
+        logger2.warns.filter((w) => w.includes("a human needs")),
+        [],
       );
     } finally {
       await Deno.remove(stateDir2, { recursive: true });

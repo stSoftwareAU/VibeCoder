@@ -62,7 +62,8 @@ const TEMPLATES = [
   "coding_guidelines",
   "issue",
   "ci_fix",
-  "pr_feedback",
+  // `pr_feedback` published the list only in its escape hatch, which
+  // Issue #4304 removed; its runs get the list from the coding guidelines.
   "grill-me",
   "planning",
   "planning_critique",

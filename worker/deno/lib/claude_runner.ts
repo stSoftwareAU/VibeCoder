@@ -27,6 +27,11 @@ import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+  spawnCommandWithTimeout,
+} from "./subprocess_timeout.ts";
 import { formatCoarseDuration } from "./rate_limit_wait.ts";
 import {
   describeMemoryPressure,
@@ -649,16 +654,6 @@ export interface RunClaudeOptions {
   /** Session resume state for multi-phase continuity (Issue #1324). */
   sessionResumeState?: SessionResumeState;
   /**
-   * Context window (in tokens) at which the CLI compacts on its own
-   * (Issue #2337) — `--autocompact`.
-   *
-   * Set by a run whose stream conversation could not be verifiably compacted
-   * before the issue started (`stream_compaction.ts`), so every phase run of
-   * that issue carries it. Omitted, no flag is emitted and the CLI's default
-   * window stands.
-   */
-  autocompactTokens?: number;
-  /**
    * Claude Code settings for this one spawn, already serialised (Issue #2383).
    *
    * Forwarded unchanged as `--settings`, which is how a run installs its hooks
@@ -1235,11 +1230,6 @@ async function runClaudeWithTimeoutBody(
     // absent value emits no `--agents` argument.
     ...(options.agents ? { agents: options.agents } : {}),
     sessionResumeState: options.sessionResumeState,
-    // The pulled-forward autocompaction window (Issue #2337), when the
-    // stream's conversation could not be compacted before the issue started.
-    ...(options.autocompactTokens
-      ? { autocompactTokens: options.autocompactTokens }
-      : {}),
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
     // Issue #2344's advisor edit guard, merged with this spawn's own hooks
     // (Issue #2383's RTK settings) rather than one silently replacing the
@@ -1261,7 +1251,13 @@ async function runClaudeWithTimeoutBody(
   // Haiku-tier explorer). A provider whose argv cannot carry them drops them —
   // Codex and Gemini silently, DeepSeek with a warning — so the advisor would
   // be told to dispatch sub-agents the CLI never defines. Refuse before spawn
-  // instead. `invocationRequest.agents` is present only when the run's flags
+  // instead. This is a backstop: the issue-run planner
+  // (lib/issue_run_provider_agents.ts) normally reroutes or strips such a run
+  // before it reaches here, but the retry loop switches `agentProvider` to
+  // `agent_provider_fallback` after a model refusal and keeps `agents`, so this
+  // guard can still refuse a fallback provider such as Codex, as well as any
+  // caller that bypasses the planner.
+  // `invocationRequest.agents` is present only when the run's flags
   // resolved some definition, and the check asks the provider's own argv rather
   // than a provider-id table.
   if (invocationRequest.agents && !args.includes("--agents")) {
@@ -1423,16 +1419,6 @@ async function runClaudeWithTimeoutBody(
       ? ["-n", String(agentNice), agentBinary, ...args]
       : args;
 
-    const command = new Deno.Command(spawnBinary, {
-      args: spawnArgs,
-      cwd,
-      clearEnv: true,
-      env: prePushHook.env,
-      stdout: "piped",
-      stderr: "piped",
-      stdin: promptViaStdin ? "piped" : "null",
-    });
-
     logger?.info(
       // Name the provider that is about to run (Issue #4109) so a Quorum
       // run's interleaved log lines attribute to the agent that produced them.
@@ -1486,7 +1472,27 @@ async function runClaudeWithTimeoutBody(
       );
     }
     const startMs = clock.now();
-    const child = command.spawn();
+    const child = spawnCommandWithTimeout(spawnBinary, {
+      args: spawnArgs,
+      cwd,
+      clearEnv: true,
+      env: prePushHook.env,
+      stdout: "piped",
+      stderr: "piped",
+      stdin: promptViaStdin ? "piped" : "null",
+      // Backstop past the latest deadline the watchdog can reach. The
+      // watchdog still kills the tree at its deadline; this signal fires only
+      // if that child is still alive.
+      timeoutMs: agentSpawnBackstopMs(
+        timeoutSeconds,
+        killAfterSeconds,
+        options.progressExtension === undefined ? undefined : {
+          enabled: options.progressExtension.policy.enabled === true,
+          ceilingMs: options.progressExtension.ceilingMs,
+        },
+        clock.now(),
+      ),
+    });
     const childPid = child.pid;
     if (promptViaStdin && promptFilePath) {
       // Stream the file into stdin and close it at EOF (pipeTo closes the
@@ -2796,15 +2802,51 @@ export async function killClaudeProcessTree(
 /** Default gap between two memory-pressure evidence lines (Issue #4384). */
 export const DEFAULT_MEMORY_WATCH_MIN_INTERVAL_MS = 60_000;
 
+/** The longest delay `setTimeout` honours; a longer one fires at once. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * The agent spawn's backstop timeout, in milliseconds (Issue #4251).
+ *
+ * It must not fire before the watchdog's own deadline plus its grace. With
+ * the progress extension on (Issue #4296) that deadline moves: up to the
+ * supervisor's ceiling when there is one, and without limit when there is
+ * not, so the backstop is then the longest timer there is.
+ */
+export function agentSpawnBackstopMs(
+  timeoutSeconds: number,
+  killAfterSeconds: number,
+  extension: { enabled: boolean; ceilingMs?: number } | undefined,
+  nowMs: number,
+): number {
+  let budgetMs = timeoutSeconds * 1000;
+  if (extension?.enabled === true) {
+    if (extension.ceilingMs === undefined) return MAX_TIMER_DELAY_MS;
+    budgetMs = Math.max(budgetMs, extension.ceilingMs - nowMs);
+  }
+  return Math.min(budgetMs + killAfterSeconds * 1000, MAX_TIMER_DELAY_MS);
+}
+
+/** `ps` for the memory watch. Seconds. A timeout is not an empty table. */
+const AGENT_PS_TIMEOUT_MS = 10_000;
+
 /** `ps -eo pid,ppid,rss,etime,args` for the memory watch. */
-async function defaultRunPs(): Promise<string> {
-  const out = await new Deno.Command("ps", {
+export async function readAgentProcessTable(
+  timeoutMs: number = AGENT_PS_TIMEOUT_MS,
+): Promise<string> {
+  const out = await commandOutputWithTimeout("ps", {
     args: ["-eo", "pid,ppid,rss,etime,args"],
     stdout: "piped",
     stderr: "null",
-  }).output();
+    timeoutMs,
+  });
   if (!out.success) throw new Error("ps failed");
   return new TextDecoder().decode(out.stdout);
+}
+
+/** `ps -eo pid,ppid,rss,etime,args` for the memory watch. */
+async function defaultRunPs(): Promise<string> {
+  return await readAgentProcessTable();
 }
 
 /**
@@ -3419,18 +3461,43 @@ async function runRetryLadder(
           continue;
         }
 
-        // No cheaper model on this provider. A refusal is terminal for the
-        // provider — a ChatGPT login that does not offer a model never will
-        // (Issue #4019) — so the configured `agent_provider_fallback` is the
-        // remaining remedy (Issue #4034). Only the health gate consulted it
-        // before, and a phase whose model the provider refused gave up every
-        // cycle while a healthy alternative stood idle. The fallback resolves
-        // its own model: the refused id names the old provider's catalogue,
-        // and a session id belongs to the CLI that recorded it.
-        const refusingProvider = selectAgentProvider(
+        // No cheaper model on this provider. A Codex built-in default that a
+        // ChatGPT login refused is first retried once without --model
+        // (Issue #4221). Otherwise a refusal is terminal for the provider — a
+        // ChatGPT login that does not offer a model never will (Issue #4019) —
+        // so the configured `agent_provider_fallback` is the remedy (Issue
+        // #4034). Only the health gate consulted it before, and a phase whose
+        // model the provider refused gave up every cycle while a healthy
+        // alternative stood idle. The fallback resolves its own model: the
+        // refused id names the old provider's catalogue, and a session id
+        // belongs to the CLI that recorded it.
+        const refusingDescriptor = selectAgentProvider(
           currentOptions.agentProvider,
           currentOptions.env ? { env: currentOptions.env } : {},
-        ).id;
+        );
+        // (Issue #4221) A ChatGPT login refused a built-in default: retry once
+        // on the same provider with the CLI's own default, before any switch.
+        // A second refusal falls through to the switch: the refused default now
+        // resolves to no model, so adaptAfterModelRefusal returns false.
+        // An explicit request model is never dropped: only a routed default.
+        if (
+          !currentOptions.model &&
+          refusingDescriptor.adaptAfterModelRefusal?.(
+            currentModel,
+            currentOptions.phase,
+            currentOptions.env,
+          )
+        ) {
+          currentOptions.logger?.info(
+            `[model-adaptation] ${refusingDescriptor.id} refused built-in default model "${currentModel}" — retrying once with the CLI default model (Issue #4221).`,
+          );
+          currentOptions = { ...currentOptions, model: undefined };
+          retryCount = 0;
+          totalWaitTime = 0;
+          waitInterval = initialWaitInterval;
+          continue;
+        }
+        const refusingProvider = refusingDescriptor.id;
         const nextProvider = providerAfterModelRefusal(
           configuredProviderFallbackPolicy(),
           refusingProvider,
@@ -4302,6 +4369,9 @@ function requiredTools(agentBinaryPath?: string): string[] {
   ];
 }
 
+/** `which` probe. Seconds. A timeout is not "tool missing". */
+const WHICH_TIMEOUT_MS = 10_000;
+
 /**
  * Check whether a CLI tool is available.
  *
@@ -4309,7 +4379,10 @@ function requiredTools(agentBinaryPath?: string): string[] {
  *   the tool (Issue #959).
  * @returns true if the tool is found
  */
-async function isCommandAvailable(tool: string): Promise<boolean> {
+export async function isCommandAvailable(
+  tool: string,
+  timeoutMs: number = WHICH_TIMEOUT_MS,
+): Promise<boolean> {
   // An explicit path is checked where it is, not searched for (Issue #959):
   // `PATH` has nothing to say about a binary the caller already located, and
   // a `which` probe here is what forced a test holding a stub agent to
@@ -4323,14 +4396,15 @@ async function isCommandAvailable(tool: string): Promise<boolean> {
     }
   }
   try {
-    const command = new Deno.Command("which", {
+    const output = await commandOutputWithTimeout("which", {
       args: [tool],
       stdout: "piped",
       stderr: "piped",
+      timeoutMs,
     });
-    const output = await command.output();
     return output.success;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return false;
   }
 }

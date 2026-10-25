@@ -1,0 +1,12 @@
+{
+  "issue": 4176,
+  "chunk": "top-up-4176",
+  "title": "top-up: log at the named level",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4176",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/log_sink.ts (a log callback takes a level so WARNING and ERROR are not written into the message text) (#4176)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/log_sink.ts"
+  ],
+  "sweptAt": "8795277ca6606470f9bb65af1e216fcdfa2b80cd"
+}

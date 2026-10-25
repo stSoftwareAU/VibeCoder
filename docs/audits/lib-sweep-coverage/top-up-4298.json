@@ -1,0 +1,12 @@
+{
+  "issue": 4298,
+  "chunk": "top-up-4298",
+  "title": "top-up: negative-result close",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4298",
+  "definition": "worker/deno/lib/negative_result_close.ts: closes a no-change issue the run labelled negative-result; reads labels fresh via the worker's GitHub client, writes only the close comment and unassign",
+  "status": "claimed",
+  "sweptAt": "ef7e6197bb6e4ecf43cde039c06df3056afd6067",
+  "paths": [
+    "worker/deno/lib/negative_result_close.ts"
+  ]
+}

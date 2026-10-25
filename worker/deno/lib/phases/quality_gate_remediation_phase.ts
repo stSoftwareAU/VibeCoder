@@ -487,9 +487,10 @@ async function runQualityGateBody(
 
   // The repo's own formatters first, before every attempt (part of #2932):
   // a formatting-only miss is fixed and committed rather than spending the
-  // agent's remediation round on it. Same files the pre-push gate checks,
-  // never Markdown; a formatter that fails or throws is logged and the gate
-  // still reports the problem.
+  // agent's remediation round on it. Same files the pre-push gate checks.
+  // Agent-authored Markdown stays unformatted; the worker's archive notes are
+  // formatted afterwards. A formatter that fails or throws is logged and the
+  // gate still reports the problem.
   const formatBase = await resolveFormatBase(state, deps);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {

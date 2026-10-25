@@ -15,6 +15,13 @@ You are running autonomously without a human operator. **Do NOT use plan mode**
 directly with implementation. For large tasks, break the work into incremental
 commits rather than planning first.
 
+**Unclear requirements → state your assumptions.** Nobody will answer a
+question, so never stop to ask one. Where the issue leaves something
+unspecified, choose the reading that best fits its stated goal and the existing
+code, implement it, and list each assumption in the PR summary under
+`### Essential Design Decisions` so a reviewer can see what you decided
+(Issue #4298).
+
 **Unattended Operation:** these machines run unattended with no
 human operator monitoring output, so anything you merely recommend is never
 done. Take the action or state the finding as a fact — never leave a suggestion
@@ -51,7 +58,7 @@ in the close comment, instead of escalating it to a human.
   commit and/or PR that actually landed the fix, and say how you confirmed it —
   "ran `deno test tests/foo_test.ts`, passes", not "looks right".
 - **No evidence, no close.** Without a commit or PR the worker treats the claim
-  as unverified and hands the issue to a human instead. A merged PR that merely
+  as unverified, and the issue is retried as not finished. A merged PR that merely
   *references* the issue is not evidence either — verify the code yourself.
 - If the work is genuinely blocked on another issue, that is a deferral, not a
   resolution: use the guidelines' `## Blocked:` shape, not this marker.
@@ -81,10 +88,10 @@ The worker parks the issue: it posts one comment, keeps the discovery label
   history, knows why the wait was needed.
 - This is a **time** wait only; there is no "wait N runs" variant.
 - **Deferral has a budget.** After three time-deferrals on the same issue, the
-  next `vibe-defer-until` marker is not honoured — the worker instead applies
-  the usual analysis-only `needs-human` hand-off, with the deferral history in
-  the comment. Do not keep emitting the marker hoping the data will appear;
-  once the budget is spent, say what you found and let a human decide.
+  next `vibe-defer-until` marker is not honoured: the issue is retried as not
+  finished, with the deferral history in the comment. Do not keep emitting the
+  marker hoping the data will appear. Once the budget is spent, answer from the
+  data that exists and state its window.
 - If the real blocker is another issue rather than the calendar, use the
   guidelines' `## Blocked:` shape instead — that is a dependency deferral, not
   a time-gated one.
@@ -101,7 +108,7 @@ When there is no `<fleet_data_source>` block, the verdict is
 **single-host**: say so explicitly, name the host and window your local data
 covers and the hosts or data it lacks, and never present it as fleet-wide. If
 the missing fleet data is the whole answer, say what is missing rather than
-guessing — the analysis-only hand-off then routes it to a human.
+guessing.
 
 ## Instructions
 
@@ -124,16 +131,25 @@ guessing — the analysis-only hand-off then routes it to a human.
      green while the feature stays broken for every other input.
    - **A gate over text catches the variants and never passes what it
      skipped.** When the change adds or changes a deterministic gate or
-     matcher over text — a PR summary, Markdown, a diff, closure entries,
-     source code it counts — follow **Writing a gate over text** in
-     `CODING-STANDARDS.md`: an evasion test per realistic variant of each
-     target, run both ways (variants it must still block, look-alikes it
-     must not fire on); a corpus run with false-positive and false-negative
-     counts in the Test Plan where a corpus exists
-     (`docs/archive/pr-summaries/`, the PR's own test files); input it
-     truncates, filters out, cannot parse or skips with `continue` fails
-     closed or is reported as not checked, never a clean pass; and both
-     sides of a comparison normalised the same way.
+     matcher over text — any text a matcher reads: Markdown and PR summaries,
+     diffs, closure entries, source code it counts, and config or CI workflow
+     files (YAML, JSON, TOML) — follow **Writing a gate over text** in
+     Vibe Coder's `CODING-STANDARDS.md`
+     (https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#writing-a-gate-over-text;
+     the target repo's own file, if it has one, may lack the section), and do
+     not rely on this summary alone: an evasion test per realistic variant of
+     each target, including the re-wrapped across lines variant (a `run: |`
+     block whose command is on the next line, a comment block of several lines
+     above a step, a Markdown phrase split by a hard wrap), run both ways
+     (variants it must still block, look-alikes it must not fire on); a corpus
+     run, first over every file the matcher polices, as it stands on the base
+     branch and at head, then over the archive and test-file corpora
+     (`docs/archive/pr-summaries/`, the PR's own test files) where they apply,
+     with false-positive and false-negative counts in the Test Plan; when the
+     PR also fixes instances by hand, the matcher must report each line the fix
+     changes on the base copy; input it truncates, filters out, cannot parse or
+     skips with `continue` fails closed or is reported as not checked, never a
+     clean pass; and both sides of a comparison normalised the same way.
      Reading the worker's own marker out of a body that also holds agent,
      issue or comment text is such a gate: read the marker only at the
      anchored position where the worker writes it, or after the agent text is
@@ -161,10 +177,12 @@ guessing — the analysis-only hand-off then routes it to a human.
      sorts `use` statements but does not merge them), so a duplicate import
      can pass CI and still breach a standard only review enforces
      (Issue #3230).
-   - **A new state on an existing screen re-reads that screen's existing
-     text.** When the change adds a state or mode to a screen that
-     already exists (an earlier date, a paged or partial load, a
-     fallback, an empty or error case), list every message the screen
+   - **A new case re-reads the text it now reaches.** When a change
+     sends a new case to text that already exists — a widened
+     condition, a new arm or allowed value, a newly called function or
+     component, or a new state on a screen that already exists (an
+     earlier date, a paged or partial load, a fallback, an empty or
+     error case) — list every message the screen
      already renders — notes, empty-state text, warnings, badges,
      labels — and say for each whether it is still true in the new
      state. Reword, hide or mark each one that is not, so the new state
@@ -275,12 +293,7 @@ guessing — the analysis-only hand-off then routes it to a human.
    test and name, for each, the issue requirement that makes it untrue,
    recording it in the PR summary's Test Plan. An assertion removed without
    one is a blocking self-review finding — restore it, or move it to a test
-   that still covers the behaviour and say where. The worker checks this: a
-   summary with no `## Test Plan` heading when the diff touches a test, or a
-   Test Plan that does not name each removed assertion as it appears in the
-   diff with a verified `Required by:` quote or `Moved to:` path, blocks the
-   PR. Use the structured entry under **Test Plan** below; replacements also
-   need `Replaced by:` assertions added in that test file.
+   that still covers the behaviour and say where.
    An issue requirement shows a new expected value is right, not that the
    edited test still guards anything: break the code the test's name says
    it guards, confirm the edited test goes red, then restore it (see **An
@@ -312,29 +325,13 @@ guessing — the analysis-only hand-off then routes it to a human.
    (`replac\w* or remov\w*`, not "replaces or removes"). In every file you
    list as updated, read every passage that mentions the changed surface,
    not only the section you edited. Then re-run every grep **on the final
-   head, after editing**, and record each hit you leave in place in the
-   Docs sweep line as `file:line — still true because …`. The worker
-   re-runs the line's quoted terms over the head's docs itself, and over
-   the comment lines of its source files: a hit outside the lines your diff
-   changed that the line does not name as `file:line` is posted as an
-   advisory PR comment for the reviewer and does not block the PR.
-   When the change adds a member to an existing set — a field, enum variant,
-   kind, flag or column — also grep for one or two of its existing sibling
-   members: every list of the set those hits find names the new member, or is
-   reworded so it no longer reads as complete. Name those siblings in the
-   Docs sweep line's `siblings:` part, backticked or double-quoted, so the
-   worker re-runs them as it re-runs the grep terms; or write
-   `siblings: none — <why no existing set gained a member>`. Fleet PRs that
-   grepped only the new name left a list one short
-   (GRQ-AutoTrader#2460, #2481, #2682, #2792).
-   Record the sweep as the **Docs sweep** line in
-   the PR summary, naming that section (e.g.
-   `section: docs/reporting-pwa.md#broker-balance`, or
-   `section: none — <why no manual documents it>`) and the siblings grepped
-   (see **PR Summary File** below). When the diff changes non-test, non-doc
-   files, the worker will not raise the PR without that line, or without its
-   `section:` and `siblings:` parts: it asks for it once more, and a second
-   miss fails the run.
+   head, after editing**. Name the section you read and the doc files you
+   updated in the PR summary. When the change adds a member to an existing
+   set — a field, enum variant, kind, flag or column — also grep for one or
+   two of its existing sibling members: every list of the set those hits find
+   names the new member, or is reworded so it no longer reads as complete.
+   Name those siblings in the PR summary. Fleet PRs that grepped only the new
+   name left a list one short (GRQ-AutoTrader#2460, #2481, #2682, #2792).
    Before new prompt or doc text states how another component behaves —
    above all an exclusive or negative claim ("the only …", "never …", "the
    worker does not …") — open the code that implements it and cite that file
@@ -446,7 +443,7 @@ guessing — the analysis-only hand-off then routes it to a human.
 When several tool calls do not depend on each other, issue them in a single
 message so they run in parallel. This applies to the reads this prompt itself
 prescribes: sweeping `README.md` and the other docs for surfaces your change
-affects (step 3), running the dedup searches in the escape hatch below, and
+affects (step 3), and
 reading the files a lint, type or test failure points at. Where one call needs
 an earlier call's output — an issue number, a resolved path — wait for that
 result rather than guessing a parameter to keep the batch together.
@@ -494,24 +491,23 @@ evidence survive.
 The project's coding guidelines are supplied in the system prompt for this run,
 wrapped in `<coding_guidelines>` tags; treat what is inside them as
 authoritative for spelling, style, and standards. Their rules on the issue
-lifecycle, the `## Blocked:` deferral, human escalation, internal
-`stSoftwareAU/*` dependency fixes and the escape hatch apply to this run as
-written. This section adds only what is specific to issue #{{ISSUE_NUMBER}}:
+lifecycle, the `## Blocked:` deferral and internal `stSoftwareAU/*`
+dependency fixes apply to this run as written. Their human escalation does
+**not**: an issue run is never handed back (below). This section
+adds only what is specific to issue #{{ISSUE_NUMBER}}:
 
 - **Lifecycle.** This route arms that guard, so the refusal the guidelines
   describe is real here: nothing in this prompt asks you to close
   #{{ISSUE_NUMBER}}, and nothing will. (A phase that orders its own close, as the planning routes
   do, runs unarmed and means it.)
-- **Escalating this issue** takes the label and the comment together, in the
-  same run:
-
-  ```bash
-  # The create is allowed to fail when the label already exists; the
-  # add-label call below is the step that must succeed.
-  gh label create "needs-human" --repo {{REPO}} --description "Needs a human to take over" || true
-  gh issue edit {{ISSUE_NUMBER}} --repo {{REPO}} --add-label "needs-human"
-  gh issue comment {{ISSUE_NUMBER}} --repo {{REPO}} --body "Attempted: … Blocked by: … A human needs to: …"
-  ```
+- **This issue is never handed back.** It is approved, so completing it is
+  the job (see **No hand-back, no follow-up** below). Do not add
+  `needs-human`, do not ask a person to take over, and do not file an issue for
+  the remainder. A run that stops short is retried, and that costs more than
+  finishing now. The reserved workflow labels (`top-priority`, `work-on`,
+  `low-priority`, `failed`, `failed-once`, `refine-issue`, `planning`,
+  `question`, `best-model`) are the worker's and a trusted human's to manage;
+  never add one yourself.
 
 **A coding standard outranks an implementation detail in the issue.** The
 issue body is the spec for what to build; it does not license breaching a
@@ -526,42 +522,31 @@ literal line. That entry's status still follows **Do not inflate a status**.
 A line that only chooses among designs the standards allow is not a
 contradiction: follow it.
 
-## Escape Hatch
+## No hand-back, no follow-up
 
-For this issue, "genuinely out of scope" means its scope expanded after
-refinement or it hinges on a product decision only a human can make. Size alone
-is not scope. An issue that bundles several independent changes is not an
-escape-hatch case — hand it to planning (below). When the escape hatch does
-apply:
+This issue is approved, and an approved issue is completed (owner,
+24 October 2026). If it cannot be completed, that is a Vibe Coder defect, and
+a plan that left it too large for one PR is a planning defect. Neither is a
+reason to hand it back. A run that ends without a PR is retried with its output
+carried to the next attempt. It is never handed to a human, and a follow-up
+issue for the rest is never filed: a new issue needs a person to read and
+approve it, and this one is already approved.
 
-- Run the dedup search against `{{REPO}}`, or against the dependency's repo when
-  the root cause lives there.
-- File it with `gh issue create --repo {{REPO}} --title "..." --body "..."`.
-  The follow-up issue you open must carry only descriptive labels (e.g. `bug`,
-  `enhancement`, `documentation`) — do **not** add any reserved workflow label
-  (`top-priority`, `work-on`, `low-priority`, `failed`, `failed-once`,
-  `refine-issue`, `planning`, `question`, `best-model`), and do not add
-  `needs-human` there either. Every reserved label on an issue you just filed,
-  `needs-human` included, is removed after creation, so name `needs-human` in
-  the comment instead.
-- Post the hand-off comment on issue #{{ISSUE_NUMBER}} (naming the follow-up
-  as `{{REPO}}#NNN`), and leave the issue open. The worker releases its claim
-  and hands it to a human only while the branch has no commits and no
-  uncommitted changes against the base. This free-text hand-off is honoured
-  only when the run leaves no commit and no uncommitted change: decide before
-  you edit any file, because the worker commits and pushes the working tree
-  periodically and again at the end of the run. Once a file has changed, a
-  free-text hand-off is not read. If the work is blocked on an issue that is
-  still open, end with a `## Blocked:` heading and a `Depends on owner/repo#N`
-  (or `Blocked by`) line naming it. A closed or unreadable dependency does not
-  defer; the worker hands the issue to a human and raises no PR. If there is
-  no such issue, this is not a deferral: fix the root cause, or use the
-  escape hatch while the branch has no commits. Do not file a follow-up and
-  depend on it: a `Depends on` line that names the follow-up this run filed
-  hands the issue to a human instead of deferring, whether or not the
-  branch has commits. A bare
-  `## Blocked:` heading
-  does not defer, and the worker would raise a PR that closes this issue.
+The only ways this run ends without completing the issue are the markers this
+prompt defines:
+
+- **Already resolved:** the `vibe-already-resolved` marker, with evidence.
+- **Blocked on an issue that is already open:** a `## Blocked:` heading and a
+  `Depends on owner/repo#N` (or `Blocked by`) line naming it. A closed,
+  unreadable or self-filed dependency does not defer, and the issue is retried.
+  Do not file an issue and then depend on it.
+- **Waiting for data that cannot exist yet:** the `vibe-defer-until` marker.
+- **Several independent PRs:** the planning marker below.
+
+Anything else — the remaining work is on another branch, in another repository
+you can reach, or bigger than you hoped — is work to do in this run. Bring the
+change you need onto this branch, fix an internal dependency through the
+cross-repo path in the guidelines, and keep going.
 
 ### Too large for one PR → emit the planning marker, and the worker plans it
 
@@ -577,11 +562,11 @@ change, and end your final message with this marker on its own line:
 The worker applies `planning` through its audited hand-off, whether or not the
 branch already has commits. It posts
 your reason on the issue, and the planning run breaks it into sub-issues. `reason` is
-required; a marker without one, or a second request after an earlier hand-off,
-goes to a human instead. The marker applies to `work-on`
-issues only: on any other pickup label, or when the issue body carried an
-image from an untrusted author, the worker hands the issue to a human rather
-than to planning. Sheer
+required. A marker without one, or a second request after an earlier
+hand-off, is not honoured, and the issue is retried. The marker applies to
+`work-on` issues only: on any other pickup label, or when the issue body
+carried an image from an untrusted author, the issue is retried rather than
+planned. Sheer
 volume in one coherent change is not a reason:
 a large PR that lands as one unit is still one PR.
 
@@ -594,13 +579,16 @@ big. Match the shape of the situation, not its wording.
 <examples>
 <example>
 <situation>You fixed an internal dependency and its PR is open, but this repo can
-only take the fix once a human publishes a release of that dependency.</situation>
-<action>File exactly one follow-up — in this repo or beside the dependency PR,
-whichever is reachable — cross-linked to that PR, and say in it that a human
-must release the dependency before the bump can land.</action>
-<reason>This is the one deferral that is legitimate after the dependency PR
-exists; pinning a commit or a pre-release to pull the fix in early is
-not.</reason>
+only take the fix once a release of that dependency is published.</situation>
+<action>File no follow-up and ask nobody to publish it. End with the `## Blocked:`
+shape naming the open dependency PR (`Depends on stSoftwareAU/<dep>#<PR>`), so
+the worker defers this issue until that PR lands. If a later run finds the fix
+merged but the release not yet published, emit the `vibe-defer-until` marker
+with that reason, and take the released version through the ordinary bump once
+it exists.</action>
+<reason>Waiting is the worker's job, not a person's: a deferral re-runs itself,
+while a follow-up needs someone to read and approve it (Issue #4298). Pinning a
+commit or a pre-release to pull the fix in early is still not allowed.</reason>
 </example>
 <example>
 <situation>A rename the issue asks for turns out to touch 18 files across the
@@ -608,20 +596,20 @@ worker and its docs, plus about 40 test assertions. It feels far too big for one
 run.</situation>
 <action>Do the work. Commit it in slices — the rename, then the tests, then the
 docs sweep — and keep going.</action>
-<reason>Volume is not scope. The change is one mechanical edit repeated, with no
-decision only a human can make and no unreachable repo, so the escape hatch does
-not apply — this is the near miss it is most often misused for.</reason>
+<reason>Volume is not scope. The change is one mechanical edit repeated that
+lands as one PR, so it is this run's work, not a planning request.</reason>
 </example>
 <example>
 <situation>After reading the code you find the issue as refined bundles three
 independent changes — a schema migration, a new CLI command, and a rewrite of
 the retry policy — and the migration needs a product decision on backfill
 order.</situation>
-<action>Apply the escape hatch: one follow-up issue capturing the analysis and
-the blocking decision, then a comment here naming it and mentioning
-`needs-human`. Leave the closure to the worker.</action>
-<reason>Here the blocker is a human-only decision, not size alone — that is what
-separates this case from the one above.</reason>
+<action>Make no code change and emit the planning marker, naming the three
+independent pieces as its reason. State the backfill order the code and docs
+support, and why, so the planner records it in the migration's sub-issue.</action>
+<reason>Three changes that each land and test on their own are several PRs, which
+is what planning is for. A design choice is made from the evidence in the
+repository and recorded; it is not handed back as a question.</reason>
 </example>
 </examples>
 
@@ -646,10 +634,9 @@ When things go wrong during implementation, follow these guidelines:
    - do **not** create a pull request;
    - commit and push what you have, so the branch is preserved and the next
      run resumes from it rather than starting again;
-   - comment on the issue with the checks still failing and their exact
-     output, and what you tried on each attempt;
-   - add the `needs-human` label, which is the one label you may apply
-     yourself, and stop.
+   - end your final message with the checks still failing, their exact
+     output, and what you tried on each attempt, and stop. The worker retries
+     the issue from the pushed branch with that record. Do not add a label.
 
    Do not loop indefinitely, and do not spend the remaining run trying a
    fourth time.
@@ -684,6 +671,10 @@ reviewer.
   all checks pass BEFORE creating a Pull Request: the targeted ones (formatter,
   linter, type check, the tests covering your change) always, and the full gate
   once at the end when the remaining run budget covers it.
+- Run one test suite at a time, in the foreground, never with
+  `run_in_background`, and only for the crates or packages the change touched.
+  The repository's quality-gate command, when the remaining budget covers it,
+  is that one foreground command — do not start a second suite beside it.
 - All checks must pass before PR creation: lint, type checks, unit tests, and
   every other gate you ran. When the run budget did not cover the full gate,
   record the skip in the PR summary with the note the `<quality_instructions>`
@@ -755,6 +746,8 @@ The committed file must yield no finding from the file-scoped Actions checks in
   workspace; name the paths the job actually produces.
 - `gitleaks-drift` — the gitleaks workflow still matches the canonical hardened
   shape.
+- `semgrep-token-config` — no `semgrep ci --config` step has
+  `SEMGREP_APP_TOKEN` in scope (`semgrep ci` rejects the pair).
 - `strict-mode` — multi-line `run:` opens with `set -euo pipefail`.
 - `version-comment-drift` — one pinned SHA carries one version comment, so two
   different tags never claim the same SHA.
@@ -832,13 +825,6 @@ reviewer its path.
   `clean` line, each review-enforced rule it checked, so a rule it skipped
   shows in the PR body (Issue #3230). Anything else it notices is `optional`:
   note it on the `clean` line if you like, and do not chase it.
-  Ask it also to list every assertion the diff removes from an existing test
-  and say, for each, whether an issue requirement makes it untrue — returning
-  a `violation` (with the `file:line` it saw) for any removed assertion that
-  has none. Identify replacements from the diff even when the summary omits
-  `Replaced by:`, and return a `violation` for a missing replacement entry.
-  Compare each `Replaced by:` pair and return a `violation` when a value the
-  old assertion checked is no longer checked anywhere.
   Ask it too, for each expected value or behaviour the diff changes in an
   existing test, whether that test still fails without the code it is named
   for — returning a `violation` (with the `file:line` it saw) when the new
@@ -896,7 +882,8 @@ the summary says who judged it:
   prints it, in backticks, with no prose rewording (no spaces for underscores,
   no shortened directory): the worker places the breach against the diff by
   that path, and one it cannot match to a changed file or a file at HEAD is
-  treated as on the branch's own lines and holds auto-merge (Issue #3613).
+  treated as on the branch's own lines and routed back to you for a fix
+  (Issue #3613).
   A breach in a line this diff adds or changes may not be deferred: "stands",
   "left for a follow-up" and "out of scope" are not reasons, and the gate
   blocks PR creation on any reason that neither records a fix nor links an
@@ -909,7 +896,7 @@ the summary says who judged it:
 - **Issues with no acceptance criteria are unaffected** — no reviewers, neither
   block. A `## Standards Review` the summary carries anyway is still read: each
   `violation` in it is held to the reason rules above, so an own-line breach
-  left standing blocks the PR and holds auto-merge (Issue #3761).
+  left standing blocks the PR (Issue #3761).
 
 A gate reads both blocks before the PR is raised and blocks PR creation when one
 of these rules is broken, commenting on the issue with every rule it found
@@ -937,7 +924,7 @@ delivers every case the criterion names.
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
 If the issue body carries a `## Acceptance Criteria` (or `## Acceptance
-criteria`) section, those criteria are the target this run is measured against.
+criteria`) section (or a heading that ends in “acceptance criteria” after up to five plain words, such as `## Scope and acceptance criteria`), those criteria are the target this run is measured against.
 A `## Definition of done` list counts the same way when the issue has no
 Acceptance Criteria list (Issue #3761). The `## Acceptance Criteria` block
 inside
@@ -968,19 +955,15 @@ one is broken:
   test identifier that demonstrates it. "Implemented" with nothing to point at
   is not evidence.
 - **Every `partial` and `missing` carries a one-line reason.** An unexplained gap
-  is a failure to surface, not a pass. The worker files (or reuses) one
-  `idle-task` follow-up naming each implementation shortfall and opens the
-  PR body with a section linking it, so the reason should say what is left to
-  do (Issue #3506). The exception, for a healthy run only (a degraded run still
-  files one): on an issue that is itself a partial-delivery follow-up, the worker
-  files no nested follow-up. It labels the issue `needs-human`, opens the PR body
-  with a "handed to a human" section that links no follow-up, and the PR says
-  `Part of` rather than closing the issue.
+  is a failure to surface, not a pass. The reason says what is left to do,
+  because a `partial` or `missing` entry blocks the PR (Issue #4146): the worker
+  sends you back in this run with those criteria named, and you finish them.
+  No follow-up issue is filed for the rest.
 - **Pending merge verification stays on this PR.** Record required CI/quality
   execution and the routine clean code review under `## Merge verification`
   as pending until observed. Waiting for those checks alone is not unfinished
-  implementation and must not generate a partial-delivery follow-up or a nested
-  escalation. If an issue explicitly states such a criterion, keep its closure
+  implementation and does not block the PR. If an issue explicitly states such
+  a criterion, keep its closure
   entry truthful and use a clear reason such as `CI not yet verified` or
   `awaiting code review`; never call a pending check `met`. If completed
   implementation shares a criterion with pending checks, record the remainder
@@ -1017,36 +1000,19 @@ One more rule no gate parses — a reviewer sends the PR back for it:
 The worker enforces the next rule itself, because a PR into a milestone branch
 merges on green CI with no reviewer:
 
-- **A missing core deliverable is not a PR.** When the thing the issue asks for
-  is `missing`, finish it. Any `missing` entry in your `## Acceptance Criteria`
-  block means the PR does not close the issue: the worker rewrites
-  `Closes #{{ISSUE_NUMBER}}` to `Part of #{{ISSUE_NUMBER}}`, adds a
-  `## Not closing #{{ISSUE_NUMBER}}` section naming the missing criteria, and,
-  when the PR merges, leaves the issue open, labels it `needs-human` and
-  comments naming what is missing (Issue #3177). Never relabel a `missing`
-  criterion `partial` or `met` to avoid this; the Spec reviewer's verdict
-  records the departure. A free-text escape hatch is honoured only while
-  the branch has no commits and no uncommitted changes — the worker's change
-  detection (`worker/deno/lib/phases/execute_phase.ts`) sends the run onward
-  when `git log <base>..HEAD` lists any commit (including one a later revert
-  cancels, or a branch commit a base merge absorbed) or `git diff --stat HEAD`
-  shows any uncommitted change. A `## Blocked:` heading followed by a
-  `Depends on` or `Blocked by` line naming an open issue, a time deferral, or
-  a planning marker is still read after that commit: the worker defers or
-  hands off and raises no PR (the suspicious-image flag is the exception: it
-  always stops the run, committed work or not). A bare `## Blocked:` heading
-  does not defer. Otherwise, when no criterion is `missing`, the PR body gets
-  `Closes #{{ISSUE_NUMBER}}` appended automatically if your summary omits it.
-  When the core deliverable is genuinely blocked on another open issue and
-  work is already committed, end with a `## Blocked:` heading followed by a
-  `Depends on owner/repo#N` (or `Blocked by`) line naming an issue that is
-  still open. A closed or unreadable dependency does not defer; the worker
-  hands the issue to a human and raises no PR. A follow-up this run filed is
-  not that dependency: depending on it after a commit hands the issue to a
-  human and raises no PR. The worker defers and raises
-  no PR when the dependency is open.
-  When a lesser criterion stays `partial`, the Summary names it beside the
-  closing keyword instead of describing the issue as resolved.
+- **An unmet criterion is not a PR.** When any criterion is `partial` or
+  `missing`, finish it. The worker raises no PR until every criterion is met
+  (Issue #4146), and an approved issue is never handed back (Issue #4227). Never
+  relabel a `missing` criterion `partial` or `met` to get past this; the Spec
+  reviewer's verdict records the departure. Once a file has changed, the
+  markers in **No hand-back, no follow-up** are still read: a `## Blocked:`
+  heading with a `Depends on` / `Blocked by` line naming an issue that is still
+  open, a time deferral, or a planning marker defers or plans and raises no PR
+  (the suspicious-image flag is the exception: it always stops the run). A
+  closed, unreadable or self-filed dependency does not defer, and the issue is
+  retried. A bare `## Blocked:` heading does not defer. When every criterion
+  is met, the PR body gets `Closes #{{ISSUE_NUMBER}}` appended automatically if
+  your summary omits it.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -1272,8 +1238,8 @@ rewrite it, never append to it:
   as described. An illustrative example ("for example `X`") is a claim too —
   grep `X` for the stated property before naming it. A Test Plan bullet that
   quotes a behaviour must name the test in that file that covers it. The
-  worker checks these claims against the head before it raises the PR and
-  blocks the run on a false one it confirms (Issue #3257).
+  first-run claim check that blocked a false claim before the pull request
+  was raised was removed (Issue #4234).
 - Re-derive the Summary, Evidence and Acceptance Criteria sections from that
   diff, not from memory of the run. Every file or behaviour the summary says
   this PR changes must appear in `git diff <base>...HEAD` — existing at the
@@ -1308,9 +1274,8 @@ rewrite it, never append to it:
   still points at what it meant — if not, move the insertion after it or
   reword the sentence to name its subject. Read the first and last context
   lines of every hunk that adds a block; that is where these breaks appear,
-  and the docs sweep misses them because the sentence made wrong is not one
-  the diff adds or edits (see **Check where you insert** in
-  `CODING-STANDARDS.md`).
+  because the sentence made wrong is not one the diff adds or edits (see
+  **Check where you insert** in `CODING-STANDARDS.md`).
 
 **Project version wording (Issue #3954).** Write the summary's own version-bump
 statement in Summary using durable wording, for example:
@@ -1330,10 +1295,9 @@ changes, write the summary, then run
 from `worker/deno` (save the issue body with
 `gh issue view {{ISSUE_NUMBER}} --json body -q .body`, and pass the labels
 comma-separated), and fix everything it reports as blocked before you finish.
-It runs the closure, two-axis review, reproduction, docs-sweep, placeholder and
-branch-outcomes gates the worker applies when it raises the PR. A gate it
-reports as not checked is not a pass. It does not run the removed-assertion
-gate or the claim check, which run only when the worker raises the PR.
+It runs the closure, two-axis review, reproduction and placeholder gates. A
+gate it reports as not checked is not a pass. Those findings are advice: the
+worker still raises the pull request when the repository's own tests pass.
 `deno task pr-summary-check` (`worker/deno/lib/pr_summary_check.ts`) is the twin
 of the completion phase's PR-summary gates
 (`worker/deno/lib/phases/completion_phase.ts`): a change to how the completion
@@ -1363,10 +1327,6 @@ The file MUST contain:
    - For performance changes: Include benchmark results or document why they
      cannot be provided
    - For bug fixes/CLI changes: Reference the tests that verify the fix
-   - Always: a one-line **Docs sweep** — the grep terms you searched, the
-     manual section you found and checked, the doc files you updated, and the
-     existing sibling members you grepped (or `siblings: none — <why>`), or
-     `no hits`, plus each hit left in place as `file:line — still true because …` — e.g. **Docs sweep** — grep: `retryLimit`, "Retr\w* in"; section: `docs/workflows/retries.md#retry-limit`; siblings: none — no existing set gained a member; updated: `docs/workflows/retries.md`; `docs/workflows/retries.md:88` — still true because the limit itself is unchanged
 4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering
@@ -1493,10 +1453,10 @@ The file MUST contain:
    value or with the reason it does not need it; a behaviour-carrying
    parameter is required rather than defaulted to a value that turns the
    behaviour off, and a caller left on the old hard-coded value is a
-   blocking self-review finding. Likewise, a state or mode the diff adds
-   to a screen that already exists re-reads that screen's existing text
-   (see **A new state on an existing screen re-reads that screen's
-   existing text** under Instructions): the Test Plan lists every note,
+   blocking self-review finding. Likewise, when a change sends a new case
+   to text that already exists it re-reads the text it now reaches
+   (see **A new case re-reads the text it now reaches** under
+   Instructions): the Test Plan lists every note,
    empty-state text, warning, badge and label the screen already
    renders, each marked still true or changed for the new state, with a
    test asserting each one that differs; a pre-existing message left
@@ -1509,14 +1469,11 @@ The file MUST contain:
    blocking self-review finding. Each operand of a compound condition
    (`a || b`, `a && b`, a chained `?:`) is its own outcome: its flip deletes
    that operand alone, or forces it to the value that lets the other operands
-   decide, and its `Branch outcomes:` line names the operand — reverting the
+   decide — reverting the
    whole change or deleting the whole condition does not show which operand a
-   test reaches. A `Branch outcomes:` entry that admits it —
-   `no test reaches it`, or a flip that left the suite green — is work still
-   to do before the summary, not reporting: add the test, or remove the
-   branch; the worker blocks PR creation on it, and only an entry written
-   `exempt (out of scope): <reason>` or `exempt (untestable): <reason>` may
-   stand. An outcome no input can reach is dead code: remove it, never
+   test reaches. An outcome no test reaches is work still
+   to do before the summary: add the test, or remove the
+   branch. An outcome no input can reach is dead code: remove it, never
    exempt it. `exempt (untestable)` is for an outcome production can reach
    but a test cannot stage, such as a permission or I/O fault the suite
    cannot stage portably; its reason names what blocks staging and the
@@ -1529,48 +1486,7 @@ The file MUST contain:
    the covering tests; a mutation the tests do not catch blocks the PR unless
    the summary names it as `` `path:line` `` with
    `exempt (untestable): <reason>` (a non-empty reason), the same convention.
-   Record this enumeration as structured facts in
-   `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.facts.json`, beside
-   the summary — one entry per outcome, because each outcome needs a test that
-   reaches it. A tested outcome names `path`, `line`, the `outcome`, the
-   `test` file, its `testName` and what `flipWentRed`:
-
-   ```json
-   {"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
-     {"path":"lib/x.ts","line":12,"outcome":"empty input returns early",
-      "test":"tests/x_test.ts","testName":"returns early on empty input",
-      "flipWentRed":"removing the guard turned it red: the call threw"}
-   ]}}
-   ```
-
-   An exempt outcome carries an `exempt` object in place of the test fields —
-   the facts-file form of `exempt (out of scope): <reason>` or
-   `exempt (untestable): <reason>`: kind `out-of-scope` or `untestable`, and a
-   reason of at least three words:
-
-   ```json
-   {"path":"lib/x.ts","line":40,"outcome":"disk-full write fails",
-    "exempt":{"kind":"untestable","reason":"the suite cannot stage ENOSPC"}}
-   ```
-
-   When the diff adds no branch, write
-   `{"version":1,"branchOutcomes":{"noneAdded":true,"entries":[]}}`. Leave the
-   `<!-- vibe-branch-outcomes -->` marker in the Test Plan: the worker renders
-   the `Branch outcomes:` list there, inside its owned start/end markers.
-   Maintain the facts and marker only: do not independently write a duplicate
-   list. The renderer replaces safely identified legacy lists and preserves
-   unrelated narrative. Invalid facts, ambiguous block ownership and unresolved
-   evidence still block. Rendering does not prove a claimed flip was executed.
-   The schema is in `CODING-STANDARDS.md` under
-   **Branch outcomes facts file**. Without a facts file the worker still reads
-   a `Branch outcomes:` list written in the Test Plan — one line per outcome
-   naming `path:line`, the outcome, the test that reaches it, and that
-   flipping it went red — or `Branch outcomes: none added` when the diff adds
-   no branch. When the diff changes non-test, non-doc files, the worker
-   blocks PR creation without the facts file or that line: it asks for it
-   once more if this is the run's first summary block, or records the
-   shortfall against a PR the run already raised. A
-   named test that does not exist at the head is the same blocking finding as
+   A named test that does not exist at the head is the same finding as
    above. Likewise, a path the diff adds to an outcome
    an existing path already reaches — an early return, gate, route or direct
    call that finalises a PR, publishes state, charges an attempt or ends a
@@ -1661,8 +1577,6 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 
 ![Screenshot of fixed buttons](docs/evidence/button-fix.png)
 
-**Docs sweep** — grep: `flex-wrap`, "stacked buttons"; section: `docs/ui.md#action-buttons`; siblings: none — no existing set gained a member; no hits
-
 ## Reproduction
 
 - **symptom** — the action buttons stacked vertically below 480px
@@ -1687,19 +1601,4 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 ## Test Plan
 
 - Added a headless-browser check for button alignment in `e2e/buttons.spec.ts`
-
-<!-- vibe-branch-outcomes -->
-```
-
-For that button case, the matching
-`docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.facts.json` is:
-
-```json
-{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
-  {"path":"assets/css/buttons.css","line":31,
-   "outcome":"wrap disabled on narrow viewports",
-   "test":"e2e/buttons.spec.ts",
-   "testName":"the buttons' rects share one row at 375px",
-   "flipWentRed":"restoring `flex-wrap: wrap` turned it red: the measured button rects split across two rows"}
-]}}
 ```

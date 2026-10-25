@@ -279,6 +279,79 @@ Deno.test("verifyResolvedTree - a Cargo tree runs cargo test --workspace as its 
   }
 });
 
+Deno.test("verifyResolvedTree - a mixed tree does not start cargo when the disk budget skips it (Issue #4326)", async () => {
+  // A Deno manifest makes the type check pass, so the resolution gate used to
+  // plan `cargo test` for the Cargo.toml beside it and fill the ephemeral
+  // target. The budget is re-read here; the type-check detail is not parsed.
+  const dir = await Deno.makeTempDir({ prefix: "issue-4326-gate-" });
+  try {
+    await Deno.writeTextFile(
+      `${dir}/deno.json`,
+      JSON.stringify({
+        tasks: {
+          "check:manifests": "deno run check_manifests.ts",
+          "test:unit": "deno test",
+        },
+      }),
+    );
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const seen: ResolutionTask[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task);
+        return Promise.resolve({ code: 0, output: "" });
+      },
+      passingTypeCheck,
+      () => 0,
+      () => Promise.resolve(true),
+    );
+    assertEquals(outcome.status, "passed", outcome.detail);
+    assertEquals(
+      seen.map((task) => task.kind),
+      ["deno", "deno"],
+      "Deno tasks still run",
+    );
+    assertEquals(
+      seen.some((task) => task.kind === "cargo"),
+      false,
+      "a cargo task must not start",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - cargo as the only suite does not fall through to quality.sh when the budget skips cargo (Issue #4326)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4326-gate-" });
+  try {
+    await Deno.writeTextFile(
+      `${dir}/deno.json`,
+      JSON.stringify({ tasks: { check: "deno check" } }),
+    );
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    await Deno.writeTextFile(
+      `${dir}/quality.sh`,
+      "#!/bin/bash\ncargo test --workspace\n",
+    );
+    const seen: ResolutionTask[] = [];
+    const outcome = await verifyResolvedTree(
+      dir,
+      (task) => {
+        seen.push(task);
+        return Promise.resolve({ code: 0, output: "" });
+      },
+      passingTypeCheck,
+      () => 0,
+      () => Promise.resolve(true),
+    );
+    assertEquals(seen, [], "neither cargo nor quality.sh may start");
+    assertEquals(outcome.status, "passed", outcome.detail);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("verifyResolvedTree - a Cargo tree whose tests fail is refused with the output (Issue #2138)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "issue-2138-gate-" });
   try {

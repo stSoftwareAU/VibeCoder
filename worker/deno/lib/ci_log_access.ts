@@ -5,8 +5,10 @@
  * path is not the same as a CI log that says nothing useful. The first is
  * an operator problem the worker can name; the second is a diagnosis
  * problem. Issue #3583 made the worker escalate the first to a human
- * rather than attempt a fix on no evidence, and that property is worth
- * keeping.
+ * rather than attempt a fix on no evidence. Issue #4304 removed that
+ * hand-back: the diagnosis is logged with its remediation and the fix
+ * proceeds on the built-in Actions log and the check's annotations, which
+ * are evidence too.
  *
  * What is *not* worth keeping is where it lived: the classification was
  * keyed on one particular provider id and carried that vendor's own
@@ -22,7 +24,7 @@
  * Uses Australian English throughout (behaviour, organisation, colour).
  */
 
-/** An access failure worth escalating rather than diagnosing around. */
+/** An access failure worth naming in the log (Issue #4304). */
 export interface CiLogAccessDiagnosis {
   /** Access failure class. */
   status: "unauthorised" | "forbidden" | "not-found";
@@ -30,7 +32,7 @@ export interface CiLogAccessDiagnosis {
   httpStatus: number;
   /** One line naming what failed. */
   summary: string;
-  /** One line naming what a human should do about it. */
+  /** One line naming what an operator can do about it. */
   remediation: string;
 }
 
@@ -38,7 +40,7 @@ export interface CiLogAccessDiagnosis {
  * Recover a diagnosis from a provider's failure string.
  *
  * The `CiLogProvider` interface carries failures as plain strings, so the
- * dispatcher classifies them back into the classes that warrant escalation.
+ * dispatcher classifies them back into the classes worth naming.
  * Returns `undefined` for anything that is not an access problem — a
  * malformed response, a 5xx, an unmatched check — so those keep the
  * tolerant "continue without an excerpt" behaviour they have always had.
@@ -83,17 +85,4 @@ export function classifyCiLogAccessError(
     default:
       return undefined;
   }
-}
-
-/** Render a diagnosis as a Markdown block for an issue or PR comment. */
-export function formatCiLogAccessDiagnosis(
-  diagnosis: CiLogAccessDiagnosis,
-): string {
-  return [
-    `**CI log access:** ${diagnosis.status} (HTTP ${diagnosis.httpStatus})`,
-    "",
-    diagnosis.summary,
-    "",
-    `**What to do:** ${diagnosis.remediation}`,
-  ].join("\n");
 }

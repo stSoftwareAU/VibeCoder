@@ -10,10 +10,42 @@ import {
   isClosingFence,
   maskMarkdownCode,
   parseFenceLine,
+  type ScanMeter,
   splitMarkdownCode,
   stripMarkdownCode,
 } from "../lib/markdown_code_spans.ts";
-import { assertLinearGrowth } from "./support/growth.ts";
+import { measureGrowth } from "./support/growth.ts";
+
+/**
+ * Linear growth from steps the scan records, not from a wall-clock ratio.
+ * A busy host stretches elapsed time and does not add steps (Issue #4312).
+ */
+function assertCountedGrowth<T>(
+  label: string,
+  build: (chars: number) => string,
+  run: (input: string, meter: ScanMeter) => T,
+  options: { baseChars: number; sizeFactor?: number },
+): T {
+  const meter: ScanMeter = { steps: 0 };
+  const measured = measureGrowth(
+    build,
+    (input) => run(input, meter),
+    { ...options, graceMs: 0, repeats: 1, now: () => meter.steps },
+  );
+  assert(
+    measured.baseMs > 0 && measured.scaledMs > 0,
+    `${label}: counted ${measured.baseMs} steps at ${measured.baseChars} chars — the scan recorded no work`,
+  );
+  assert(
+    !measured.superLinear,
+    `${label}: ${measured.baseChars} chars took ${measured.baseMs} steps but ` +
+      `${measured.scaledChars} chars (${
+        measured.sizeFactor.toFixed(1)
+      }x) took ` +
+      `${measured.scaledMs} steps, over the ${measured.allowedMs} steps a linear rule allows`,
+  );
+  return measured.output;
+}
 
 // ---------------------------------------------------------------------------
 // splitMarkdownCode — round-trips
@@ -292,10 +324,10 @@ Deno.test("parseFenceLine scales linearly on a long run followed by a character 
   // strip it from the edge and hide the defect — so a trailing "x" keeps it
   // in the middle.
   const build = (chars: number): string => "`".repeat(chars - 2) + "\rx";
-  assertLinearGrowth(
+  assertCountedGrowth(
     "parseFenceLine on a long run followed by a lone CR",
     build,
-    (input) => parseFenceLine(input) !== null,
+    (input, meter) => parseFenceLine(input, meter) !== null,
     { baseChars: 4_000, sizeFactor: 4 },
   );
 });
@@ -434,10 +466,10 @@ Deno.test("splitMarkdownCode scales linearly on many distinct-length unmatched r
     return parts.join(" ");
   };
 
-  assertLinearGrowth(
+  assertCountedGrowth(
     "splitMarkdownCode on many distinct-length unmatched runs",
     build,
-    (input) => splitMarkdownCode(input).length,
+    (input, meter) => splitMarkdownCode(input, meter).length,
     { baseChars: 150_000, sizeFactor: 16 },
   );
 });
@@ -464,10 +496,10 @@ Deno.test("splitMarkdownCode scales linearly on a long non-matching indent befor
   // LIST_ITEM_RE or TABLE_ROW_RE accept: each pattern's widened `[ \t]*`
   // prefix must fully unwind without ever finding a match, on every line.
   const build = (chars: number): string => `${" ".repeat(chars - 1)}x`;
-  assertLinearGrowth(
+  assertCountedGrowth(
     "splitMarkdownCode on a long non-matching leading-whitespace run",
     build,
-    (input) => splitMarkdownCode(input).length,
+    (input, meter) => splitMarkdownCode(input, meter).length,
     { baseChars: 150_000, sizeFactor: 8 },
   );
 });
@@ -476,10 +508,10 @@ Deno.test("splitMarkdownCode scales linearly on a long block-quote-marker run", 
   // Many leading spaces before `>`: BLOCK_QUOTE_RE's widened `[ \t]*` prefix
   // must match without backtracking on every line.
   const build = (chars: number): string => `${" ".repeat(chars - 1)}>`;
-  assertLinearGrowth(
+  assertCountedGrowth(
     "splitMarkdownCode on a long leading-whitespace run before a block quote marker",
     build,
-    (input) => splitMarkdownCode(input).length,
+    (input, meter) => splitMarkdownCode(input, meter).length,
     { baseChars: 150_000, sizeFactor: 8 },
   );
 });
@@ -490,10 +522,10 @@ Deno.test("splitMarkdownCode scales linearly on a long dash run rejected by a tr
   // characters as `\1*` — so a long run of `-` followed by a rejecting
   // character stays linear rather than quadratic.
   const build = (chars: number): string => `${"-".repeat(chars - 1)}x`;
-  assertLinearGrowth(
+  assertCountedGrowth(
     "splitMarkdownCode on a long dash run rejected by a trailing non-dash character",
     build,
-    (input) => splitMarkdownCode(input).length,
+    (input, meter) => splitMarkdownCode(input, meter).length,
     { baseChars: 150_000, sizeFactor: 8 },
   );
 });
@@ -503,10 +535,10 @@ Deno.test("splitMarkdownCode scales linearly on a long dash run rejected by a tr
 // no separating spaces must still unwind in one linear pass per line.
 Deno.test("splitMarkdownCode scales linearly on a long block-quote-prefix run", () => {
   const build = (chars: number): string => `${">".repeat(chars - 1)}x`;
-  assertLinearGrowth(
+  assertCountedGrowth(
     "splitMarkdownCode on a long repeated block-quote-marker prefix",
     build,
-    (input) => splitMarkdownCode(input).length,
+    (input, meter) => splitMarkdownCode(input, meter).length,
     { baseChars: 150_000, sizeFactor: 8 },
   );
 });

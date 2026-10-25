@@ -1,0 +1,12 @@
+{
+  "issue": 4132,
+  "chunk": "top-up-4132",
+  "title": "top-up: worker-gate failure-label cleanup command",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4132",
+  "definition": "One-off label cleanup: GitHub reads and writes use runGhCommand with argv arrays; failure comments are parsed as data, the latest record must be fleet-authored, categories come from WORKER_GATE_MARKERS, and dry-run is the default. No shell interpolation or direct filesystem writes.",
+  "status": "claimed",
+  "sweptAt": "a08c560fa0905a8d61bad1dba69b0d9018ece441",
+  "paths": [
+    "worker/deno/commands/clear_worker_gate_labels.ts"
+  ]
+}

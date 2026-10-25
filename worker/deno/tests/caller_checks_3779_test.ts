@@ -20,8 +20,14 @@ import {
   parseDiffChangedLines,
   renderCallerCheckSection,
 } from "../lib/caller_checks.ts";
+import {
+  createPromptDelimiters,
+  scrubUntrustedText,
+} from "../lib/prompt_delimiter.ts";
+import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 import { git, gitOk, setupGitRepoFixture } from "./support/git_repo_fixture.ts";
+import { syntheticGithubToken } from "./support/scrub_trigger_corpus.ts";
 
 // ---- definitionName ---------------------------------------------------------
 
@@ -605,4 +611,141 @@ Deno.test("callerGapFindings: unchanged and changed-and-tested verdicts are neve
     }]),
     [],
   );
+});
+
+Deno.test("callerGapFindings: a copy of the once-scrubbed symbol matches its entry, and so does the raw copy", () => {
+  const state: CallerCheckState = {
+    expected: [{
+      symbol: "{{X}}",
+      definedAt: "lib/helper.ts:1",
+      caller: "lib/caller.ts:2",
+    }],
+    notes: [],
+  };
+  const fenced = scrubUntrustedText("{{X}}");
+  assertEquals(fenced, "｛｛X｝｝");
+  assertEquals(
+    callerGapFindings(state, [{
+      ...VERDICT,
+      symbol: fenced,
+      caller: "lib/caller.ts:2",
+    }]),
+    [],
+  );
+  assertEquals(
+    callerGapFindings(state, [{
+      ...VERDICT,
+      symbol: "{{X}}",
+      caller: "lib/caller.ts:2",
+    }]),
+    [],
+  );
+});
+
+Deno.test("callerGapFindings: two callers whose symbols scrub to the same placeholder do not match each other's copy", () => {
+  const left = syntheticGithubToken("A");
+  const right = syntheticGithubToken("B");
+  const state: CallerCheckState = {
+    expected: [
+      { symbol: left, definedAt: "lib/helper.ts:1", caller: "lib/caller.ts:2" },
+      {
+        symbol: right,
+        definedAt: "lib/helper.ts:1",
+        caller: "lib/caller.ts:2",
+      },
+    ],
+    notes: [],
+  };
+  const placeholder = scrubUntrustedText(left);
+  assertEquals(placeholder, REDACTION_PLACEHOLDER);
+  assertEquals(scrubUntrustedText(right), placeholder);
+
+  const echoed = callerGapFindings(state, [{
+    ...VERDICT,
+    symbol: placeholder,
+    caller: "lib/caller.ts:2",
+  }]);
+  assertEquals(echoed.length, 1);
+  assertStringIncludes(
+    echoed[0]!.problem,
+    "no verdict was reported for 2 of 2",
+  );
+
+  assertEquals(
+    callerGapFindings(state, [
+      { ...VERDICT, symbol: left, caller: "lib/caller.ts:2" },
+      { ...VERDICT, symbol: right, caller: "lib/caller.ts:2" },
+    ]),
+    [],
+  );
+});
+
+const CALLER_LINE = /^- `([^`]*)` \(defined at `[^`]*`\): caller `([^`]*)`$/;
+const FENCE_BOUNDARY = "0123456789ab";
+
+/** The `[symbol, caller]` copies a model reads out of the rendered caller fence. */
+function fencedCopies(
+  state: CallerCheckState,
+): Array<{ symbol: string; caller: string }> {
+  const rendered = renderCallerCheckSection(state, FENCE_BOUNDARY);
+  const delimiters = createPromptDelimiters(FENCE_BOUNDARY);
+  const start = rendered.indexOf(delimiters.untrustedStart);
+  const end = rendered.indexOf(delimiters.untrustedEnd);
+  assert(start >= 0 && end > start, "the caller fence is rendered");
+  const copies: Array<{ symbol: string; caller: string }> = [];
+  for (
+    const line of rendered.slice(start + 1, end).join("\n").split("\n")
+  ) {
+    const match = CALLER_LINE.exec(line);
+    if (match) copies.push({ symbol: match[1]!, caller: match[2]! });
+  }
+  return copies;
+}
+
+Deno.test("callerGapFindings: a copy of a caller whose scrub depends on the rest of the fenced list matches", () => {
+  const cases: CallerCheckState[] = [
+    // A `<<` in the definition's path and a `>>` in the caller's path share one
+    // line, so the fence scrubs the caller differently from the caller alone.
+    {
+      expected: [{
+        symbol: "sharedHelper",
+        definedAt: "lib/<<h.ts:1",
+        caller: "lib/x>>.ts:2",
+      }],
+      notes: [],
+    },
+    // A `<<` ends one entry's caller and a `>>` ends the next entry's caller,
+    // so the newline-spanning pass pairs them across the two lines.
+    {
+      expected: [
+        {
+          symbol: "sharedHelper",
+          definedAt: "lib/helper.ts:1",
+          caller: "lib/a<<.ts:2",
+        },
+        {
+          symbol: "sharedHelper",
+          definedAt: "lib/helper.ts:1",
+          caller: "lib/b>>.ts:3",
+        },
+      ],
+      notes: [],
+    },
+  ];
+  for (const state of cases) {
+    const copies = fencedCopies(state);
+    assertEquals(copies.length, state.expected.length);
+    assert(
+      copies.some((c, i) => c.caller !== state.expected[i]!.caller),
+      "the fence must scrub a caller for this case to mean anything",
+    );
+    const fenced = copies.map((c) => ({ ...VERDICT, ...c }));
+    assertEquals(callerGapFindings(state, fenced), []);
+    const raw = state.expected.map((e) => ({
+      ...VERDICT,
+      symbol: e.symbol,
+      caller: e.caller,
+    }));
+    assertEquals(callerGapFindings(state, raw), []);
+  }
 });

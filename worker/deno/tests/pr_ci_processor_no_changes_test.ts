@@ -4,7 +4,8 @@
  * When Claude reviews a CI failure but pushes nothing, the worker must:
  *   - run classifyCiFailure() on the failing check;
  *   - post a category-specific PR comment;
- *   - add the `needs-human` label only for the `code-fix-required` category;
+ *   - re-run the failing check itself and never add `needs-human`, except
+ *     for a secret already in the base branch's history (Issue #4304);
  *   - never assert "transient or infrastructure".
  *
  * Includes a regression test for the PR #1678 semgrep ReDoS case.
@@ -30,6 +31,7 @@ import type {
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
+import { HISTORY_REWRITE_ESCALATION_MARKER_PREFIX } from "../lib/blocking_pr_stall_detector.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -58,12 +60,25 @@ function makeSilentLogger(): Logger {
 interface CapturedGh {
   comments: string[];
   labelsAdded: string[];
+  /** Every `gh run rerun` argv (Issue #4304). */
+  reruns: string[][];
 }
+
+/** The Actions run the mocked check-run id `111` belongs to. */
+const RUN_ID = 5550;
 
 function makeMockGithub(captured: CapturedGh): Partial<GitHubDeps> {
   return {
     runGhCommand: (args: string[]) => {
       if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+      // Issue #4304: the job → run lookup and the re-run itself.
+      if (args[0] === "api" && args[1] === "repos/org/repo/actions/jobs/111") {
+        return Promise.resolve(JSON.stringify({ run_id: RUN_ID, steps: [] }));
+      }
+      if (args[0] === "run" && args[1] === "rerun") {
+        captured.reruns.push(args);
+        return Promise.resolve("");
+      }
       // Capture PR comment bodies posted via `gh pr comment`
       if (args[0] === "pr" && args[1] === "comment") {
         const idx = args.indexOf("--body");
@@ -151,7 +166,7 @@ async function runNoChangesScenario(
         responseMessage,
       );
     }
-    const captured: CapturedGh = { comments: [], labelsAdded: [] };
+    const captured: CapturedGh = { comments: [], labelsAdded: [], reruns: [] };
 
     const mockClaude: Partial<ClaudeDeps> = {
       runClaudeWithRetry: (() =>
@@ -213,7 +228,19 @@ const REMOTE_CONFIRMS_PUSH = () =>
     reason: "verified in test",
   });
 
-Deno.test("processCiFailure no-changes - code-fix-required adds needs-human and quotes signals", async () => {
+/** The failed jobs of the check's own run were re-run (Issue #4304). */
+function assertReranFailedJobs(captured: CapturedGh): void {
+  assertEquals(captured.reruns, [[
+    "run",
+    "rerun",
+    String(RUN_ID),
+    "--failed",
+    "--repo",
+    "org/repo",
+  ]]);
+}
+
+Deno.test("processCiFailure no-changes - code-fix-required re-runs the check, never needs-human (Issue #4304)", async () => {
   const annotations: CheckAnnotation[] = [
     {
       path: "src/regex.ts",
@@ -233,25 +260,16 @@ Deno.test("processCiFailure no-changes - code-fix-required adds needs-human and 
   assertEquals(captured.comments.length >= 1, true);
   const body = captured.comments.at(-1) ?? "";
   assertStringIncludes(body, "**semgrep**");
-  assertStringIncludes(body, "needs-human");
   assertStringIncludes(body, "Classifier reason");
   // Quote some signal — at minimum the check name should be present.
   assertStringIncludes(body, "check:semgrep");
   assertEquals(body.toLowerCase().includes("transient"), false);
-  // Issue #2211: comment is now posted through escalateToHuman, so the
-  // body MUST carry the helper's `**Why:**` and `**Next step:**` markers.
-  assertStringIncludes(body, "**Why:**");
-  assertStringIncludes(body, "**Next step:**");
-
-  // Label: must include needs-human.
-  assertEquals(
-    captured.labelsAdded.includes("needs-human"),
-    true,
-    `expected needs-human in labels; got: ${captured.labelsAdded.join(",")}`,
-  );
+  assertEquals(body.includes("needs-human"), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertReranFailedJobs(captured);
 });
 
-Deno.test("processCiFailure no-changes - timing category suggests re-run, no needs-human", async () => {
+Deno.test("processCiFailure no-changes - timing category re-runs the check itself, no needs-human (Issue #4304)", async () => {
   const annotations: CheckAnnotation[] = [
     {
       path: "tests/slow.ts",
@@ -268,12 +286,13 @@ Deno.test("processCiFailure no-changes - timing category suggests re-run, no nee
   const body = captured.comments.at(-1) ?? "";
   assertStringIncludes(body, "**tests**");
   assertStringIncludes(body, "timing");
-  assertStringIncludes(body, "re-run");
+  assertStringIncludes(body, "re-runs the failing check");
   assertEquals(body.toLowerCase().includes("transient"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertReranFailedJobs(captured);
 });
 
-Deno.test("processCiFailure no-changes - infrastructure category suggests re-run, no needs-human", async () => {
+Deno.test("processCiFailure no-changes - infrastructure category re-runs the check itself, no needs-human (Issue #4304)", async () => {
   const annotations: CheckAnnotation[] = [
     {
       path: "deploy.log",
@@ -290,9 +309,10 @@ Deno.test("processCiFailure no-changes - infrastructure category suggests re-run
   const body = captured.comments.at(-1) ?? "";
   assertStringIncludes(body, "**deploy**");
   assertStringIncludes(body, "infrastructure");
-  assertStringIncludes(body, "re-run");
+  assertStringIncludes(body, "re-runs the failing check");
   assertEquals(body.toLowerCase().includes("transient"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertReranFailedJobs(captured);
 });
 
 Deno.test("processCiFailure no-changes - unknown category does not assert transience", async () => {
@@ -314,7 +334,9 @@ Deno.test("processCiFailure no-changes - unknown category does not assert transi
   assertStringIncludes(body, "**custom-check**");
   assertStringIncludes(body, "could not determine");
   assertEquals(body.toLowerCase().includes("transient"), false);
+  assertEquals(body.toLowerCase().includes("please review"), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertReranFailedJobs(captured);
 });
 
 // ---------------------------------------------------------------------------
@@ -364,10 +386,10 @@ Deno.test("processCiFailure no-changes - posts the agent's message verbatim with
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
 });
 
-Deno.test("processCiFailure no-changes - code-fix-required escalates with the agent's message as the reason (Issue #1876)", async () => {
+Deno.test("processCiFailure no-changes - code-fix-required posts the agent's message and retries (Issues #1876, #4304)", async () => {
   const agentMessage =
     "The semgrep finding is a genuine ReDoS in `some_regex.ts`; the rewrite " +
-    "needs a reviewer's call on the accepted pattern.";
+    "I tried still matched the rule.";
   const annotations: CheckAnnotation[] = [
     {
       path: "worker/deno/lib/some_regex.ts",
@@ -385,11 +407,10 @@ Deno.test("processCiFailure no-changes - code-fix-required escalates with the ag
   const body = captured.comments.at(-1) ?? "";
   assertStringIncludes(body, agentMessage);
   assertStringIncludes(body, "**Classifier reason:**");
-  // The escalation shape is unchanged — the message only replaces the reason.
-  assertStringIncludes(body, "**Why:**");
-  assertStringIncludes(body, "**Next step:**");
-  assertStringIncludes(body, "remove the `needs-human` label");
-  assertEquals(captured.labelsAdded.includes("needs-human"), true);
+  // Issue #4304: a plain reply, not an escalation.
+  assertEquals(body.includes("**Next step:**"), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertReranFailedJobs(captured);
 });
 
 Deno.test("processCiFailure no-changes - a history-rewrite escalation keeps the rotate-the-credential next step (Issue #1876)", async () => {
@@ -415,6 +436,10 @@ Deno.test("processCiFailure no-changes - a history-rewrite escalation keeps the 
   assertStringIncludes(body, agentMessage);
   assertStringIncludes(body, "Rotate the exposed credential");
   assertEquals(captured.labelsAdded.includes("needs-human"), true);
+  // A re-run cannot clear a finding in the base branch's history.
+  assertEquals(captured.reruns, []);
+  // Issue #4304: the marker stall repair reads to leave this one PR alone.
+  assertStringIncludes(body, HISTORY_REWRITE_ESCALATION_MARKER_PREFIX);
 });
 
 // ---------------------------------------------------------------------------
@@ -428,7 +453,7 @@ Deno.test("processCiFailure no-changes - a history-rewrite escalation keeps the 
 Deno.test("processCiFailure - Claude self-pushed: HEAD moved triggers success reply (Issue #1863)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const captured: CapturedGh = { comments: [], labelsAdded: [] };
+    const captured: CapturedGh = { comments: [], labelsAdded: [], reruns: [] };
 
     // Claude commits-and-pushes during its own run, so the final-mile
     // commitAndPushPending finds nothing to do.
@@ -511,7 +536,7 @@ Deno.test("processCiFailure - Claude self-pushed: HEAD moved triggers success re
 Deno.test("processCiFailure - genuine no-changes when HEAD unchanged still posts no-changes reply (Issue #1863)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const captured: CapturedGh = { comments: [], labelsAdded: [] };
+    const captured: CapturedGh = { comments: [], labelsAdded: [], reruns: [] };
 
     const mockClaude: Partial<ClaudeDeps> = {
       runClaudeWithRetry: (() =>
@@ -582,18 +607,15 @@ Deno.test("processCiFailure no-changes - regression for PR #1678 semgrep ReDoS",
   const captured = await runNoChangesScenario(input, "");
 
   const body = captured.comments.at(-1) ?? "";
-  // Acceptance criterion: needs-human added, no "transient" wording.
-  assertEquals(
-    captured.labelsAdded.includes("needs-human"),
-    true,
-    "needs-human label must be added for the semgrep ReDoS regression case",
-  );
+  // Acceptance criterion: no "transient" wording. Issue #4304: and no
+  // needs-human — the check is re-run and the fix retried instead.
   assertEquals(
     body.toLowerCase().includes("transient"),
     false,
     "must not assert transience for a real semgrep finding",
   );
-  assertStringIncludes(body, "needs-human");
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertReranFailedJobs(captured);
 });
 
 // ---------------------------------------------------------------------------
@@ -603,7 +625,7 @@ Deno.test("processCiFailure no-changes - regression for PR #1678 semgrep ReDoS",
 Deno.test("processCiFailure - HEAD moved but the remote disagrees: no success claim (Issue #579)", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const captured: CapturedGh = { comments: [], labelsAdded: [] };
+    const captured: CapturedGh = { comments: [], labelsAdded: [], reruns: [] };
     const mockClaude: Partial<ClaudeDeps> = {
       runClaudeWithRetry: (() =>
         Promise.resolve({

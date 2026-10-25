@@ -161,6 +161,12 @@ const SCAN_CATEGORY_LABELS: readonly LabelDefinition[] = [
     category: "content",
   },
   {
+    name: "ponytail-debt",
+    colour: "0e8a16",
+    description: "Ledger of SIMPLE-ON-PURPOSE markers",
+    category: "content",
+  },
+  {
     name: "bash-syntax-audit",
     colour: "b60205",
     description: "Bash syntax audit finding",

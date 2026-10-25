@@ -31,6 +31,7 @@ import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import type { GhCommandFn } from "./milestone_branch_sync.ts";
 import { parsePrListRows } from "./milestone_sync_landing.ts";
+import { logAt } from "./log_sink.ts";
 
 /** The open PR carrying a milestone branch's head, with its attempt history. */
 export interface MilestoneHeadPr {
@@ -75,8 +76,10 @@ export async function readMilestoneHeadPr(
     ]);
     rows = parsePrListRows(raw);
   } catch (err) {
-    log(
-      `WARNING: Could not list the open PR for milestone branch ` +
+    logAt(
+      log,
+      "warn",
+      `Could not list the open PR for milestone branch ` +
         `'${milestoneBranch}' in ${repo}: ${
           err instanceof Error ? err.message : String(err)
         } — the sync falls back to the local ledger (Issue #2998)`,
@@ -91,8 +94,10 @@ export async function readMilestoneHeadPr(
     ? row.headRefOid.trim().toLowerCase()
     : undefined;
   if (number === undefined || !headSha || !isConflictHeadSha(headSha)) {
-    log(
-      `WARNING: Open PR for milestone branch '${milestoneBranch}' in ${repo} ` +
+    logAt(
+      log,
+      "warn",
+      `Open PR for milestone branch '${milestoneBranch}' in ${repo} ` +
         `carried no readable head sha — the sync falls back to the local ` +
         `ledger (Issue #2998)`,
     );
@@ -108,8 +113,10 @@ export async function readMilestoneHeadPr(
     );
     return { number, headSha, attempts };
   } catch (err) {
-    log(
-      `WARNING: Could not read the conflict-resolution attempt history on ` +
+    logAt(
+      log,
+      "warn",
+      `Could not read the conflict-resolution attempt history on ` +
         `PR #${number} in ${repo} — the sync falls back to the local ledger ` +
         `(Issue #2998): ${err instanceof Error ? err.message : String(err)}`,
     );
@@ -185,8 +192,10 @@ export async function recordSyncAttemptOnPr(
     ]);
     return true;
   } catch (err) {
-    log(
-      `WARNING: Could not post the milestone sync conflict-attempt marker ` +
+    logAt(
+      log,
+      "warn",
+      `Could not post the milestone sync conflict-attempt marker ` +
         `on PR #${pr.number} in ${repo}: ${
           err instanceof Error ? err.message : String(err)
         } (Issue #2998)`,

@@ -319,24 +319,47 @@ Deno.test("parseChecklistVerdicts accepts valid entries and defaults", () => {
   );
 });
 
-Deno.test("parseChecklistVerdicts rejects each bad shape naming the problem", () => {
+Deno.test("parseChecklistVerdicts drops each bad shape and keeps valid neighbours", () => {
   const ok = { checklist: "M", item: "i", verdict: "met", note: "n" };
-  const bad: Array<[unknown, string]> = [
-    ["nope", "not an array"],
-    [{}, "not an array"],
-    [["x"], "not an object"],
-    [[null], "not an object"],
-    [[{ ...ok, checklist: "" }], '"checklist"'],
-    [[{ ...ok, item: 3 }], '"item"'],
-    [[{ ...ok, verdict: "maybe" }], "verdict"],
-    [[{ ...ok, verdict: undefined }], "verdict"],
-    [[{ ...ok, verdict: "MET" }], "verdict"],
-    [[ok, { ...ok, note: 5 }], "note"],
+  const kept = { checklist: "M", item: "i", verdict: "met", note: "n" };
+  const bad: unknown[] = [
+    "x",
+    null,
+    {},
+    { ...ok, checklist: "" },
+    { ...ok, item: 3 },
+    { ...ok, item: "" },
+    { ...ok, item: "   " },
+    { ...ok, verdict: "maybe" },
+    { ...ok, verdict: "partial" },
+    { ...ok, verdict: "n/a" },
+    { ...ok, verdict: undefined },
+    { ...ok, note: 5 },
   ];
-  for (const [value, message] of bad) {
-    const err = assertThrows(() => parseChecklistVerdicts(value), Error);
-    assertStringIncludes(err.message, message);
+  for (const entry of bad) {
+    const label = JSON.stringify(entry);
+    assertEquals(parseChecklistVerdicts([ok, entry]), [kept], label);
+    assertEquals(parseChecklistVerdicts([entry, ok]), [kept], label);
   }
+  for (const value of ["nope", {}, 5, undefined, null]) {
+    assertEquals(parseChecklistVerdicts(value), []);
+  }
+  assertEquals(
+    parseChecklistVerdicts([
+      { ...ok, verdict: "MET" },
+      { ...ok, verdict: " Met " },
+      { ...ok, item: "j", verdict: "Not Applicable" },
+    ]),
+    [
+      { checklist: "M", item: "i", verdict: "met", note: "n" },
+      { checklist: "M", item: "i", verdict: "met", note: "n" },
+      { checklist: "M", item: "j", verdict: "not applicable", note: "n" },
+    ],
+  );
+  assertEquals(
+    parseChecklistVerdicts([{ checklist: "M", item: "i", verdict: "met" }]),
+    [{ checklist: "M", item: "i", verdict: "met", note: "" }],
+  );
 });
 
 // ---- added after the pre-PR verifier review of #3594 -------------------------

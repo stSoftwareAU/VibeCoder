@@ -255,7 +255,7 @@ Deno.test("completion - screenshot gate: configured timeout is honoured (Issue #
   assertEquals(h.agentCalls[0]!.timeoutSeconds, 120);
 });
 
-Deno.test("completion - screenshot gate: extra turn does nothing, run fails as before (Issue #2960)", async () => {
+Deno.test("completion - screenshot gate: extra turn does nothing, the PR is still raised (Issue #4234)", async () => {
   const issueNumber = 2962;
   const repoPath = await makeRepo(issueNumber);
   const changedFiles = ["web/index.html"];
@@ -275,20 +275,16 @@ Deno.test("completion - screenshot gate: extra turn does nothing, run fails as b
   await cleanup(h);
 
   assertEquals(h.agentCalls.length, 1);
-  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 1);
+  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 0);
+  assertEquals(result.status, "continue");
+  assertEquals(h.capturedPrCreates.length, 1);
   assertEquals(
-    h.posted.filter((p) => p.includes("Screenshot Evidence Required")).length,
-    1,
+    h.posted.some((p) => p.includes("Notes for the reviewer")),
+    true,
   );
-  assertEquals(result.status, "failure");
-  assertEquals(
-    (result as { reason: string }).reason,
-    "Screenshot evidence missing for UI-related change",
-  );
-  assertEquals(h.capturedPrCreates.length, 0);
 });
 
-Deno.test("completion - screenshot gate: extra turn throws, run fails as before (Issue #2960)", async () => {
+Deno.test("completion - screenshot gate: extra turn throws, the PR is still raised (Issue #4234)", async () => {
   const issueNumber = 2963;
   const repoPath = await makeRepo(issueNumber);
   const changedFiles = ["web/index.html"];
@@ -313,17 +309,14 @@ Deno.test("completion - screenshot gate: extra turn throws, run fails as before 
   await cleanup(h);
 
   assertEquals(h.agentCalls.length, 1);
-  assertEquals(result.status, "failure");
-  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 1);
-  assertEquals(
-    h.posted.filter((p) => p.includes("Screenshot Evidence Required")).length,
-    1,
-  );
-  // One diff call for the original attempt only — no re-run of completion.
-  assertEquals(diffCalls, 1);
+  assertEquals(result.status, "continue");
+  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 0);
+  assertEquals(h.capturedPrCreates.length, 1);
+  // The failed turn re-runs completion, which reads the diff again.
+  assertEquals(diffCalls > 1, true);
 });
 
-Deno.test("completion - screenshot gate: extra turn errors (ok:false), run fails as before (Issue #2960)", async () => {
+Deno.test("completion - screenshot gate: extra turn errors (ok:false), the PR is still raised (Issue #4234)", async () => {
   const issueNumber = 2964;
   const repoPath = await makeRepo(issueNumber);
   const changedFiles = ["web/index.html"];
@@ -340,11 +333,12 @@ Deno.test("completion - screenshot gate: extra turn errors (ok:false), run fails
   await cleanup(h);
 
   assertEquals(h.agentCalls.length, 1);
-  assertEquals(result.status, "failure");
-  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 1);
+  assertEquals(result.status, "continue");
+  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 0);
+  assertEquals(h.capturedPrCreates.length, 1);
 });
 
-Deno.test("completion - screenshot gate: extra turn times out, run fails as before and no re-run (Issue #2960)", async () => {
+Deno.test("completion - screenshot gate: extra turn times out, the PR is still raised (Issue #4234)", async () => {
   const issueNumber = 2965;
   const repoPath = await makeRepo(issueNumber);
   const changedFiles = ["web/index.html"];
@@ -364,9 +358,9 @@ Deno.test("completion - screenshot gate: extra turn times out, run fails as befo
   await cleanup(h);
 
   assertEquals(h.agentCalls.length, 1);
-  assertEquals(result.status, "failure");
-  assertEquals(h.capturedPrCreates.length, 0);
-  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 1);
+  assertEquals(result.status, "continue");
+  assertEquals(h.capturedPrCreates.length, 1);
+  assertEquals(h.labelsAdded.filter((l) => l === "needs-screenshot").length, 0);
 });
 
 Deno.test("completion - screenshot gate: not needed for a non-UI change (Issue #2960)", async () => {

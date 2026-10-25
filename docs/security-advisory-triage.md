@@ -180,9 +180,11 @@ deferred on a `Depends on` line
 ([Dependency audit failures](../prompts/ci_fix/prompt.md#dependency-audit-failures)).
 Removing or replacing the dependency edge that pulls the vulnerable package
 in also counts as a fix; an `--ignore` or allow-list entry, or an edit to the
-audit workflow or audit command, never does. The agent adds `needs-human` to
-the pull request, with a comment naming the advisory ID, only when no edge
-can be upgraded, removed or replaced.
+audit workflow or audit command, never does. The agent removes the
+dependency itself — replacing it with a maintained alternative, or vendoring
+the part the code uses with the fix applied — only when no edge can be
+upgraded, removed or replaced, and it never adds `needs-human`
+(stSoftwareAU/VibeCoder#4304).
 
 That is the prompt's instruction, not a worker guarantee. Until
 stSoftwareAU/VibeCoder#3141 lands, the worker does not enforce this exception:

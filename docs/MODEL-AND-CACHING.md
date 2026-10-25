@@ -106,10 +106,10 @@ a section without a marker, fails `deno test`.
 | [Design note — effort-first vs tier-first](#design-note--effort-first-vs-tier-first) | ✅ | ⚠️ | ❌ | ❌ | Codex has four effort levels (no `xhigh`/`max`); neither the Gemini CLI nor DeepSeek's endpoint has an effort control, so both vary tier alone |
 | [Per-phase decision log](#per-phase-decision-log) | ✅ | ❌ | ❌ | ❌ | The decisions are Claude tier/price ones; the other tables copy the shape (top/base/cheap), not the rows — DeepSeek copies it without a cheap rung |
 | [Model/effort precedence chain](#%EF%B8%8F-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
-| [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`. |
-| [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`. The spawn caps are Claude Code environment variables |
+| [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns. A native `issue` run carrying these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or has them stripped with a warning before spawn otherwise (Issue #4109). When the provider is a repository pin, the run is stripped and kept (Issue #4346). The runner's refusal (Issue #4010) is only a backstop. |
+| [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or has them stripped with a warning before spawn otherwise (Issue #4109). When the provider is a repository pin, the run is stripped and kept (Issue #4346). The runner's refusal (Issue #4010) is only a backstop. The spawn caps are Claude Code environment variables |
 | [Pre-PR verifier (issue phase)](#pre-pr-verifier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The verifier is one extra pass through the Claude runner with the `issue` phase's model; it is not a `--agents` definition, and the `claude` provider is the one that runs it |
-| [Haiku sub-agent tier (issue phase)](#haiku-sub-agent-tier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The tier picks the model of Claude CLI `--agents` definitions (executor, Standards reviewer, explorer): `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`. |
+| [Haiku sub-agent tier (issue phase)](#haiku-sub-agent-tier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The tier picks the model of Claude CLI `--agents` definitions (executor, Standards reviewer, explorer): `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or has them stripped with a warning before spawn otherwise (Issue #4109). When the provider is a repository pin, the run is stripped and kept (Issue #4346). The runner's refusal (Issue #4010) is only a backstop. |
 | [Codex per-phase routing](#-codex-per-phase-routing) | ❌ | ✅ | ❌ | ❌ | Claude uses the precedence chain; Gemini and DeepSeek use their own sections |
 | [Gemini per-phase routing](#-gemini-per-phase-routing) | ❌ | ❌ | ✅ | ❌ | Claude uses the precedence chain; Codex and DeepSeek use their own sections |
 | [DeepSeek per-phase routing](#-deepseek-per-phase-routing) | ❌ | ❌ | ❌ | ✅ | Claude uses the precedence chain; Codex and Gemini use their own sections |
@@ -245,9 +245,11 @@ availability.
 | ci_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | pr_feedback | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | quality_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
+| merge_conflict | Sonnet | high | unchanged — the engineer resolving the merge, same tier as the reactive code phases (Issue #4174) |
 | spelling_fix | Haiku | low | unchanged |
 | summarise | Haiku | low | unchanged (large-input escalation still applies if pinned to a Haiku 4.x id) |
 | health | Haiku | low | unchanged — runs the Fable probe only while a phase routes to Fable |
+| compaction | Haiku | low | unchanged — a summarising turn, same tier as summarise (Issue #4174) |
 
 These defaults are defined in `PHASE_MODEL_DEFAULTS` and `PHASE_EFFORT_DEFAULTS`
 in [`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts);
@@ -529,7 +531,7 @@ override is visible in the cost logs. The resolution logic lives in
 
 ### Advisor and executor split (issue phase)
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the split is built from the Claude CLI's `--agents` definitions, so only the `claude` provider ever assembles them; `codex` and `gemini` never build the arguments, and `deepseek` (the same binary against another endpoint) strips them and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the split is built from the Claude CLI's `--agents` definitions, so only the `claude` provider ever assembles them; `codex` and `gemini` never build the arguments, and `deepseek` (the same binary against another endpoint) strips them and warns. A native `issue` run carrying these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or has them stripped with a warning before spawn otherwise (Issue #4109). When the provider is a repository pin, the run is stripped and kept (Issue #4346). The runner's refusal (Issue #4010) is only a backstop.
 
 The `issue_executor_split` configuration key
 ([CONFIGURATION.md](CONFIGURATION.md)) changes **who** does the work on an
@@ -626,9 +628,11 @@ and reports five numbers.
 - **Control** — every non-pilot host's `issue`-phase runs on Claude in the same
   window. Since Issue #2812 the key is on by default, so a control host must
   set `issue_executor_split: false` explicitly.
-- **Excluded from both sides** — runs on any other provider. The key does
-  nothing under `codex` or `gemini` and is stripped under `deepseek`, so those
-  runs would dilute both arms without testing anything.
+- **Not split by provider** — the pilot counters do not filter by provider.
+  A run is counted only when run stats exist and its stats comment was not
+  already posted. A run on `codex`, `gemini` or `deepseek` has its split state
+  settled by the planner before spawn (Issue #4109): rerouted to Claude, or
+  stripped of sub-agents.
 
 **Window** — 30 implementation runs on the pilot hosts, or 4 weeks, whichever
 comes first.
@@ -725,7 +729,7 @@ flowchart TD
 
 ### Reviewer sub-agents (issue phase)
 
-> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the reviewers are Claude CLI `--agents` definitions, built the same way as the split's executors; `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions is refused before spawn under `codex`, `gemini` and `deepseek` (Issue #4010); roll back with `issue_executor_split: false`, `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run the `issue` phase on `claude`.
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the reviewers are Claude CLI `--agents` definitions, built the same way as the split's executors; `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. A native `issue` run carrying these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude when `claude` is enabled and the health gate has not moved the run to a fallback provider, or has them stripped with a warning before spawn otherwise (Issue #4109). When the provider is a repository pin, the run is stripped and kept (Issue #4346). The runner's refusal (Issue #4010) is only a backstop.
 
 Every `issue` run whose body states acceptance criteria dispatches two
 independent reviewers before writing the PR summary (the *Independent Review
@@ -794,7 +798,7 @@ Every `claude` child, on every phase, runs with Claude Code's deterministic
 sub-agent caps set in its spawn environment by
 [`worker/deno/lib/claude_env.ts`](../worker/deno/lib/claude_env.ts)
 (`CLAUDE_SUBAGENT_CAP_ENV`). The caps are honoured from Claude Code 2.1.217;
-the image pins 2.1.306 in [`container/tools.json`](../container/tools.json).
+the image pins 2.1.310 in [`container/tools.json`](../container/tools.json).
 
 | Variable | Value | CLI default | Effect |
 | --- | --- | --- | --- |
@@ -829,12 +833,11 @@ summary marks `met` (Issue #3766); see
   file loaded and a resolvable comparable base ref (a missing summary skips it;
   an unresolvable base logs it as not checked), whether or not the issue carries
   acceptance criteria. That is normally one per run; each re-run of completion
-  (the in-run recoveries — summary-rule, security-fix, screenshot and the
-  summary-only claim correction turn — and the infrastructure retry) runs it
-  again. It runs even when an earlier summary gate blocks, because its verdict
-  is folded into that block.
-- **Cost.** Its tokens are recorded in the run's stats, like the summary claim
-  check's.
+  (the in-run recoveries — summary-rule, security-fix and screenshot — and
+  the infrastructure retry) runs it again. It runs even when an earlier
+  summary gate reports a finding, because its verdict is folded into that
+  note.
+- **Cost.** Its tokens are recorded in the run's stats.
 - **Tamper check.** A change the issue checkout's `git status` (untracked files
   included, ignored files not) or HEAD shows after the pass becomes a blocking
   finding. The summary is written into the disposable clone only at a path
@@ -852,10 +855,12 @@ The repository-owned checklists it also applies are in
 > tier only changes `--agents` definitions, built the same way as the split's
 > executors and the reviewers above; `codex` and `gemini` never build the
 > argument, and `deepseek` strips it and warns. A native `issue` run carrying
-> these definitions is refused before spawn under `codex`, `gemini` and
-> `deepseek` (Issue #4010); roll back with `issue_executor_split: false`,
-> `issue_reviewer_agents: false` and `issue_sub_agent_tier: "sonnet"`, or run
-> the `issue` phase on `claude`.
+> these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude
+> when `claude` is enabled and the health gate has not moved the run to a
+> fallback provider, or has them stripped with a warning before spawn
+> otherwise (Issue #4109). When the provider is a repository pin, the run is
+> stripped and kept (Issue #4346). The runner's refusal (Issue #4010) is only
+> a backstop.
 
 The `issue_sub_agent_tier` configuration key
 ([CONFIGURATION.md](CONFIGURATION.md), Issue #3402; the host-wide key with a
@@ -1072,8 +1077,8 @@ phases top out at `high`):
 |-------|-------------|--------------|
 | `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gpt-6-astra` (top tier) | `high` |
 | `issue` (implementation) | `gpt-6.1-sol` (base tier) | `high` |
-| `ci_fix`, `pr_feedback`, `quality_fix` | `gpt-6.1-sol` (base tier) | `medium` |
-| `spelling_fix`, `summarise`, `health` | `gpt-6-luna` (cheap tier) | `low` |
+| `ci_fix`, `pr_feedback`, `quality_fix`, `merge_conflict` | `gpt-6.1-sol` (base tier) | `medium` |
+| `spelling_fix`, `summarise`, `health`, `compaction` | `gpt-6-luna` (cheap tier) | `low` |
 
 The three tiers are the Codex counterparts of Claude's (owner decision
 2026-10-22): `gpt-6-astra` ("frontier intelligence for the most demanding
@@ -1098,7 +1103,7 @@ both providers supply their own names, tables and override state to it:
    (model only; effort has no per-repo base, exactly as Claude's has none)
 4. **Global config phase overrides** — `codex_phase_model_overrides` /
    `codex_phase_effort_overrides` in `.config.json`
-5. **Phase-specific hardcoded defaults** — the tables above
+5. **Phase-specific hardcoded defaults** — the tables above; on a ChatGPT login a built-in default the login refuses is skipped for the rest of the run (see **ChatGPT login** below)
 6. **Global environment variable** — `CODEX_MODEL` / `CODEX_EFFORT`
 
 An explicit `model`/`effort` on the invocation request still beats all six, and
@@ -1113,6 +1118,41 @@ is missing an entry, exactly as `buildClaudeModelArgs` does — a typo or a new
 phase whose author forgot a default is caught rather than shipping silently. A
 phase-less invocation is deliberate and stays quiet.
 
+**ChatGPT login.** On a ChatGPT login — an explicit
+`CODEX_HOME` whose `auth.json` is a ChatGPT login — a model taken from the
+built-in step-5 defaults may be one the login refuses. Today that is
+`gpt-6-luna`, the cheap tier: Codex returns HTTP 400 "The '<model>' model is not
+supported when using Codex with a ChatGPT account". The worker then marks that id
+refused for the rest of the run and omits `--model`, so the Codex CLI picks its
+own model. It warns **once** per refused id per run, naming the id, the phase
+and the re-pin knobs (`codex_phase_model_overrides` or
+`provider_model_tiers.codex`).
+
+A ChatGPT login is detected only from an explicit `CODEX_HOME`: a login in the
+CLI's default `$HOME/.codex` is not detected, as for the billing probe. The
+in-run retry applies only when the model came from phase routing; an explicit
+request `model` is never dropped.
+
+Two triggers reach this path:
+
+- **The health gate.** `tryModelAdaptation` re-probes Codex with no `--model`
+  before credential rotation or the provider fallback. If the re-probe is
+  healthy, no provider switch happens.
+- **An in-run `model-unavailable` refusal.** The invocation retries once on Codex
+  with no `--model` before the `agent_provider_fallback` switch (Issue #4034). A
+  second refusal falls through to that switch.
+
+Explicit pins are never dropped. Which ids a given login accepts is not yet
+verified live (Issue #4166). Pin ids the account accepts through the precedence
+list above, or through the
+[`provider_model_tiers.codex` example](#model-selection): `CODEX_MODEL_<PHASE>`,
+`codex_phase_model_overrides`, repo `codex_model` and `CODEX_MODEL` are steps
+of that list, and `provider_model_tiers.codex` is merged into the global
+`codex_phase_model_overrides` (step 4), so it is a pin rather than a built-in
+default. API-key mode is unchanged, because the refused set is never
+consulted. This mirrors DeepSeek's tier adaptation (Issue #2059); see
+[DeepSeek per-phase routing](#-deepseek-per-phase-routing).
+
 ```mermaid
 flowchart LR
     R["buildInvocation({ phase })"] --> S["resolveInvocationRouting()"]
@@ -1120,6 +1160,7 @@ flowchart LR
     S -->|otherwise| C["resolveCodexModel / resolveCodexEffort"]
     C --> P["phase_routing.ts<br/>six-step chain"]
     P -->|resolved| A["--model / -c model_reasoning_effort"]
+    P -->|built-in default refused by ChatGPT login| O["omit --model, warn once per id"]
     P -->|nothing, phase set| W["⚠️ warn once, CLI default stands"]
 ```
 
@@ -1142,8 +1183,8 @@ It covers the same phase keys as the Claude table, with Gemini model ids:
 |-------|--------------|
 | `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `gemini-2.5-pro` (top tier) |
 | `issue` (implementation) | `gemini-2.5-flash` (base tier) |
-| `ci_fix`, `pr_feedback`, `quality_fix` | `gemini-2.5-flash` (base tier) |
-| `spelling_fix`, `summarise`, `health` | `gemini-2.5-flash-lite` (cheap tier) |
+| `ci_fix`, `pr_feedback`, `quality_fix`, `merge_conflict` | `gemini-2.5-flash` (base tier) |
+| `spelling_fix`, `summarise`, `health`, `compaction` | `gemini-2.5-flash-lite` (cheap tier) |
 
 The model ids are an implementation choice over the current Gemini line-up, not
 a fixed contract: a deployment on a different line-up re-pins a tier through
@@ -1221,8 +1262,8 @@ model ids:
 |-------|----------------|
 | `planning`, `grill_me`, `quorum`, `quorum_judge`, `refinement`, `revision`, `question`, `clarification` | `deepseek-v4-pro` (top tier) |
 | `issue` (implementation) | `deepseek-flash` (base tier) |
-| `ci_fix`, `pr_feedback`, `quality_fix` | `deepseek-flash` (base tier) |
-| `spelling_fix`, `summarise`, `health` | `deepseek-flash` (base tier) |
+| `ci_fix`, `pr_feedback`, `quality_fix`, `merge_conflict` | `deepseek-flash` (base tier) |
+| `spelling_fix`, `summarise`, `health`, `compaction` | `deepseek-flash` (base tier) |
 
 **There is no cheap rung, and that is deliberate.** Claude, Codex and Gemini
 each drop the trivial trio (`spelling_fix`, `summarise`, `health`) onto a third,
@@ -1333,8 +1374,13 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
   cheapest rung, the same invocation is retried on the next provider in
   `agent_provider_fallback`. A ChatGPT login that does not offer a model is
   the usual case: Codex returns HTTP 400 "not supported when using Codex with
-  a ChatGPT account" (Issue #4019). The fallback resolves its own model for
-  the phase and starts a fresh session. It is capped at one switch per
+  a ChatGPT account" (Issue #4019). Where the refused model is a built-in
+  default on a Codex ChatGPT login, the invocation is first retried once on
+  Codex with no `--model` (Issue #4221, see the
+  [Codex per-phase routing](#-codex-per-phase-routing) section's "ChatGPT
+  login"); the provider switch applies only if that retry is refused
+  too. The fallback resolves its own model for the phase and starts a fresh
+  session. It is capped at one switch per
   invocation and logged as `[provider-fallback] <from> refused model … retrying
   on <to>`. With the list empty (pinned, the default) the run still gives up
   with `no cheaper fallback available`, as before.
@@ -1688,9 +1734,7 @@ the phase.
   (`reportPhaseDegradation`, `buildPhaseInvocations`), wired into
   [`refinement_processor.ts`](../worker/deno/lib/refinement_processor.ts),
   [`revision_processor.ts`](../worker/deno/lib/revision_processor.ts),
-  [`question_processor.ts`](../worker/deno/lib/question_processor.ts), and the
-  clarification dispatch in
-  [`clarity_phase.ts`](../worker/deno/lib/clarity_phase.ts) /
+  [`question_processor.ts`](../worker/deno/lib/question_processor.ts), and
   [`clarity_assessment.ts`](../worker/deno/lib/clarity_assessment.ts). The
   explicit pre-flight signal originates in
   [`fable_routing.ts`](../worker/deno/lib/fable_routing.ts) and is carried
@@ -2395,8 +2439,8 @@ costs depends on the provider:
 
 | Provider | Behaviour | Logged as |
 |----------|-----------|-----------|
-| `claude`, `deepseek` | One CLI, so one pair of levers: `/compact` is sent as the prompt of a `--resume` print run, and the session transcript under `CLAUDE_CONFIG_DIR` is then **measured**. Smaller means it worked. | `compaction: /compact` |
-| `claude`, `deepseek` (unproven) | Anything short of that proof — an unchanged or larger transcript, a non-zero `/compact` run, a transcript that cannot be measured, a spawn that failed — is treated as uncompacted, and every agent run of the issue instead carries `--autocompact 100000`, the smallest window the CLI accepts, so its own compaction happens earliest. | `compaction: autocompact 100000` |
+| `claude`, `deepseek` | One CLI, so one lever: `/compact` is sent as the prompt of a `--resume` print run, and the session transcript under `CLAUDE_CONFIG_DIR` is then **checked** for a new `compact_boundary` record. The transcript is append-only, so the file grows when it works (Issue #4116). | `compaction: /compact` |
+| `claude`, `deepseek` (unproven) | Anything short of that proof — no new boundary, a non-zero `/compact` run, a transcript that cannot be read, a spawn that failed — starts the issue on a new session instead of resuming the uncompacted one. No `--autocompact` window is ever passed: `100000` put the trigger below the issue prompt's own size and the CLI aborted with "Autocompact is thrashing". | `compaction: fresh session` |
 | `codex`, `gemini` | No compaction control is exposed, so the full transcript is carried. | `compaction unavailable` (naming the provider) |
 
 A `new` or `reset` stream session has no conversation to compact and logs

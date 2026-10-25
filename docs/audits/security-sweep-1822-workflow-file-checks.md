@@ -17,10 +17,11 @@ cheapest way to make `diffCoverage` green and a false record — the failure
 
 ## `worker/deno/lib/workflow_file_checks.ts`
 
-The module is a data table: eleven `{ id, label, run }` entries, each a thin
+The module is a data table: twelve `{ id, label, run }` entries, each a thin
 adapter over a pure scanner that already lives in `worker/deno/lib/` and is
-already swept — the nine native pre-filers and `workflow_hygiene_check.ts`
-all sit in slice 12e. It adds two private normalising
+already swept — nine of the ten native pre-filers and
+`workflow_hygiene_check.ts` sit in slice 12e; the tenth,
+`semgrep_token_drift_scanner.ts`, is claimed by a lib-sweep top-up slice. It adds two private normalising
 functions — `fromScanner` and `fromHygiene` — that copy four fields off a
 finding and return a new object. No scanner logic is reimplemented here.
 
@@ -40,4 +41,4 @@ touches the filesystem):
 No findings. The accepted residual: the table is a list, so a check omitted
 from it is a check the conformance test stops running. That is why
 `worker/deno/tests/workflow_template_audit_conformance_test.ts` asserts the
-exact eleven ids — a dropped check fails the gate rather than passing quietly.
+exact twelve ids — a dropped check fails the gate rather than passing quietly.

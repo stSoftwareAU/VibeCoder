@@ -334,7 +334,7 @@ export interface SweepRunResult {
  * (Issue #4403). Keep the two in step.
  */
 export const SEMGREP_IMAGE =
-  "semgrep/semgrep:1.173.0@sha256:67319956da3dcb58baf5b322899c15458e3963e7018a86aeeb5cd224e69cb77a";
+  "semgrep/semgrep:1.182.1@sha256:451b3d875c00dac7ed5db5293e584a07de11449a409c10b3c2d2652f429630b6";
 
 /** The ruleset `semgrep.yml` uses. */
 export const DEFAULT_SEMGREP_CONFIG = "p/default";

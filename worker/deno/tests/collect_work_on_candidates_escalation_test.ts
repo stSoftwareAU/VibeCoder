@@ -2,15 +2,15 @@
  * Integration tests for unworkable-work-on escalation in
  * `collectWorkOnCandidates` (Issue #2752).
  *
- * Verifies that:
- *   - a dependency cycle (A→B→A) escalates every issue on the cycle
- *     (needs-human + one comment naming the loop), drops them from
- *     candidates, and still selects a separate eligible work-on issue in the
- *     same pass (continue past the cycle, do not stall);
- *   - a milestone-tracking issue carrying `work-on` is escalated as a
- *     self-suppressing dead label and dropped;
- *   - re-scanning an already-escalated issue (carrying `needs-human`) posts
- *     no duplicate comment and does not re-apply the label;
+ * Verifies that (Issue #4298 — nothing here hands an issue to a human):
+ *   - a dependency cycle (A→B→A) is broken in issue-number order: the
+ *     lowest-numbered member is worked, the rest wait on it as an ordinary
+ *     dependency, and a separate eligible issue is still selected;
+ *   - a cycle member that also waits on an open issue outside the cycle is
+ *     not released;
+ *   - a milestone-tracking issue carrying `work-on` has the dead label
+ *     stripped;
+ *   - a tracker carrying another blocking label is left alone;
  *   - an ordinary (claimable) dependency block records the blockers the stall
  *     check read on the blocked entry (Issue #2494).
  *
@@ -20,7 +20,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { collectWorkOnCandidates } from "../lib/collect_work_on_candidates.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -30,39 +30,41 @@ import {
 } from "../lib/issue_finder_common.ts";
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
-import type { GitHubClient, GitHubComment, WorkerConfig } from "../types.ts";
-import type { EscalateUnworkableDeps } from "../lib/escalate_unworkable_work_on.ts";
+import type { WorkerConfig } from "../types.ts";
 
+/** Every write the collector sent: label adds, removals and comments. */
 interface Recorder {
   labels: Array<{ issue: number; label: string }>;
+  removed: Array<{ issue: number; label: string }>;
   comments: Array<{ issue: number; body: string }>;
 }
 
-function recordingClient(recorder: Recorder): GitHubClient {
-  const notImpl = (m: string) => () => Promise.reject(new Error(`${m} unused`));
-  return {
-    getIssue: notImpl("getIssue"),
-    getIssueComments: (): Promise<GitHubComment[]> => Promise.resolve([]),
-    addLabel: (_repo: string, issue: number, label: string) => {
-      recorder.labels.push({ issue, label });
-      return Promise.resolve();
-    },
-    removeLabel: notImpl("removeLabel"),
-    postComment: (_repo: string, issue: number, body: string) => {
-      recorder.comments.push({ issue, body });
-      return Promise.resolve(undefined);
-    },
-    editIssue: notImpl("editIssue"),
-    assignIssue: notImpl("assignIssue"),
-    unassignIssue: notImpl("unassignIssue"),
-    closeIssue: notImpl("closeIssue"),
-  };
+function newRecorder(): Recorder {
+  return { labels: [], removed: [], comments: [] };
 }
 
-function escalateDeps(recorder: Recorder): EscalateUnworkableDeps {
-  return {
-    ghClient: recordingClient(recorder),
-    ensureLabelExists: () => Promise.resolve({ ok: true, value: undefined }),
+/** Wrap a mock `gh` so the writes it receives land on `recorder`. */
+function recordingGh(
+  gh: (args: string[]) => Promise<string>,
+  recorder: Recorder,
+): (args: string[]) => Promise<string> {
+  return (args: string[]) => {
+    const issue = parseInt(args[2] ?? "", 10);
+    const value = (flag: string) => args[args.indexOf(flag) + 1] ?? "";
+    if (args[0] === "issue" && args[1] === "edit") {
+      if (args.includes("--add-label")) {
+        recorder.labels.push({ issue, label: value("--add-label") });
+      }
+      if (args.includes("--remove-label")) {
+        recorder.removed.push({ issue, label: value("--remove-label") });
+      }
+      return Promise.resolve("");
+    }
+    if (args[0] === "issue" && args[1] === "comment") {
+      recorder.comments.push({ issue, body: value("--body") });
+      return Promise.resolve("");
+    }
+    return gh(args);
   };
 }
 
@@ -199,13 +201,13 @@ async function collect(
     Deno.makeTempDirSync({ prefix: "work-on-escalation-cache-" }),
     600,
   );
+  const gh = recordingGh(mockGh, recorder);
   const options: FindIssuesOptions = {
     githubUser: "bot",
-    ghCommandFn: mockGh,
+    ghCommandFn: gh,
     cache,
-    escalateDeps: escalateDeps(recorder),
   };
-  const fetcher = createIssueFetcher(mockGh);
+  const fetcher = createIssueFetcher(gh);
   const issues = repoAllIssues ?? [];
   return await collectWorkOnCandidates(
     "owner/repo",
@@ -223,10 +225,10 @@ async function collect(
 // ---------------------------------------------------------------------------
 
 Deno.test(
-  "collectWorkOnCandidates - escalates a dependency cycle and still selects the eligible issue",
+  "collectWorkOnCandidates - breaks a dependency cycle in issue-number order and still selects the eligible issue (Issue #4298)",
   async () => {
     const config = makeConfig();
-    const recorder: Recorder = { labels: [], comments: [] };
+    const recorder = newRecorder();
     const mockGh = createMockGh({
       specs: [
         {
@@ -252,32 +254,25 @@ Deno.test(
 
     const result = await collect(mockGh, config, recorder);
 
-    // The eligible issue is selected in the same pass.
-    assertEquals(result.candidates.length, 1);
-    assertEquals(result.candidates[0]!.number, 10);
-
-    // Both cyclic issues escalated exactly once with needs-human.
-    const escalatedIssues = recorder.labels.map((l) => l.issue).sort();
-    assertEquals(escalatedIssues, [340, 341]);
-    assertEquals(recorder.labels.every((l) => l.label === "needs-human"), true);
-
-    // Exactly one comment per cyclic issue, naming the loop.
-    assertEquals(recorder.comments.length, 2);
-    const byIssue = new Map(recorder.comments.map((c) => [c.issue, c.body]));
-    assertStringIncludes(byIssue.get(340)!, "#340 → #341 → #340");
-    assertStringIncludes(byIssue.get(341)!, "#341 → #340 → #341");
-
-    // The cyclic issues are escalated, not suppressing — but the genuine
-    // eligible candidate keeps the suppression signal true.
+    // The eligible issue and the lowest-numbered cycle member are worked; the
+    // other member waits on it as an ordinary dependency.
+    assertEquals(result.candidates.map((c) => c.number).sort(), [10, 340]);
+    assertEquals(
+      result.blockedDetails.map((b) => [b.issueNumber, b.reason]),
+      [[341, "dependency-blocked"]],
+    );
+    // Nothing is handed to a human.
+    assertEquals(recorder.labels, []);
+    assertEquals(recorder.comments, []);
     assertEquals(result.hasSuppressingWorkOn, true);
   },
 );
 
 Deno.test(
-  "collectWorkOnCandidates - a repo whose only work-on issues form a cycle does not suppress",
+  "collectWorkOnCandidates - a repo whose only work-on issues form a cycle works the lowest-numbered one (Issue #4298)",
   async () => {
     const config = makeConfig();
-    const recorder: Recorder = { labels: [], comments: [] };
+    const recorder = newRecorder();
     const mockGh = createMockGh({
       specs: [
         {
@@ -297,23 +292,57 @@ Deno.test(
 
     const result = await collect(mockGh, config, recorder);
 
+    assertEquals(result.candidates.map((c) => c.number), [340]);
+    assertEquals(recorder.labels, []);
+    // A cycle member is now real work, so the repo's lower tiers wait for it.
+    assertEquals(result.hasSuppressingWorkOn, true);
+  },
+);
+
+Deno.test(
+  "collectWorkOnCandidates - a cycle member that also waits on an open issue outside the cycle stays blocked (Issue #4298)",
+  async () => {
+    const config = makeConfig();
+    const recorder = newRecorder();
+    const specs: IssueSpec[] = [
+      {
+        number: 340,
+        title: "Half of a loop",
+        labels: ["work-on"],
+        body: "Depends on #341\nDepends on #500",
+      },
+      {
+        number: 341,
+        title: "Other half",
+        labels: ["work-on"],
+        body: "Depends on #340",
+      },
+      { number: 500, title: "Unrelated open prerequisite", labels: [] },
+    ];
+
+    const result = await collect(
+      createMockGh({ specs }),
+      config,
+      recorder,
+      specs.map(buildFilterableIssue),
+    );
+
+    // #340 is the lowest on the cycle, but it also waits on #500, which is a
+    // real wait; releasing it would skip that dependency.
     assertEquals(result.candidates, []);
-    assertEquals(recorder.labels.map((l) => l.issue).sort(), [340, 341]);
-    // Both surviving work-on issues were escalated and dropped, so the repo
-    // must not keep its backlog suppressed.
-    assertEquals(result.hasSuppressingWorkOn, false);
+    assertEquals(recorder.labels, []);
   },
 );
 
 // ---------------------------------------------------------------------------
-// Dead-label tracker escalation
+// Dead-label tracker: the label is stripped (Issue #4298)
 // ---------------------------------------------------------------------------
 
 Deno.test(
-  "collectWorkOnCandidates - escalates a milestone-tracking work-on issue (dead label)",
+  "collectWorkOnCandidates - strips the dead work-on label from a milestone-tracking issue (Issue #4298)",
   async () => {
     const config = makeConfig();
-    const recorder: Recorder = { labels: [], comments: [] };
+    const recorder = newRecorder();
     const mockGh = createMockGh({
       specs: [
         {
@@ -327,22 +356,22 @@ Deno.test(
     const result = await collect(mockGh, config, recorder);
 
     assertEquals(result.candidates, []);
-    assertEquals(recorder.labels, [{ issue: 20, label: "needs-human" }]);
-    assertEquals(recorder.comments.length, 1);
-    assertStringIncludes(recorder.comments[0]!.body, "Relabel or close");
+    assertEquals(recorder.removed, [{ issue: 20, label: "work-on" }]);
+    assertEquals(recorder.labels, [], "never handed to a human");
+    assertEquals(recorder.comments, []);
     assertEquals(result.hasSuppressingWorkOn, false);
   },
 );
 
 // ---------------------------------------------------------------------------
-// Idempotence
+// A tracker with another blocking label is left to that label
 // ---------------------------------------------------------------------------
 
 Deno.test(
-  "collectWorkOnCandidates - an already-escalated tracker is not re-escalated",
+  "collectWorkOnCandidates - a tracker carrying another blocking label is left alone",
   async () => {
     const config = makeConfig();
-    const recorder: Recorder = { labels: [], comments: [] };
+    const recorder = newRecorder();
     const mockGh = createMockGh({
       specs: [
         {
@@ -359,8 +388,9 @@ Deno.test(
     const result = await collect(mockGh, config, recorder);
 
     assertEquals(result.candidates, []);
-    // No duplicate comment, no label re-apply.
+    // Nothing written: the blocking label already keeps it out of the pool.
     assertEquals(recorder.labels, []);
+    assertEquals(recorder.removed, []);
     assertEquals(recorder.comments, []);
     assertEquals(result.hasSuppressingWorkOn, false);
   },
@@ -387,7 +417,7 @@ async function stalledBlockerCase(
   result: Awaited<ReturnType<typeof collect>>;
 }> {
   const config = makeConfig();
-  const recorder: Recorder = { labels: [], comments: [] };
+  const recorder = newRecorder();
   const specs: IssueSpec[] = [
     {
       number: 100,
@@ -459,7 +489,7 @@ Deno.test(
   "collectWorkOnCandidates - does not escalate when blocking dependency is claimable",
   async () => {
     const config = makeConfig();
-    const recorder: Recorder = { labels: [], comments: [] };
+    const recorder = newRecorder();
     const mockGh = createMockGh({
       specs: [
         {
@@ -511,7 +541,7 @@ Deno.test(
   "collectWorkOnCandidates - a dependency-blocked candidate records the blockers the stall check used",
   async () => {
     const config = makeConfig();
-    const recorder: Recorder = { labels: [], comments: [] };
+    const recorder = newRecorder();
     const body = "Depends on #200\nDepends on other/repo#9";
     const mockGh = createMockGh({
       specs: [
@@ -568,7 +598,7 @@ Deno.test(
   "collectWorkOnCandidates - a pr-blocked candidate records the blocking PR number",
   async () => {
     const config = makeConfig();
-    const recorder: Recorder = { labels: [], comments: [] };
+    const recorder = newRecorder();
     const mockGh = createMockGh({
       specs: [
         {
@@ -613,7 +643,7 @@ Deno.test(
   "collectWorkOnCandidates - a pr-blocked candidate records the blocking PR number",
   async () => {
     const config = makeConfig();
-    const recorder: Recorder = { labels: [], comments: [] };
+    const recorder = newRecorder();
     const mockGh = createMockGh({
       specs: [
         {

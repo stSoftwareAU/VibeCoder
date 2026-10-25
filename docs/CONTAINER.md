@@ -86,23 +86,23 @@ calls it. Its row says so, and it is deliberately absent from
 
 | Toolchain                                          | Commands (or modules)                     | Exists for                                                                                    |
 | -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `rust` 1.99.0 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests |
+| `rust` 1.99.1 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests |
 | `cargo-deny`                                        | `cargo-deny`                              | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it |
 | `cargo-mutants` 27.1.0 (arm64 built from source)    | `cargo-mutants`                           | The Rust crates' diff-scoped mutation check (`cargo mutants --in-diff`, Issue #3393)              |
 | `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
 | `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
 | `gitleaks` 8.30.1                                   | `gitleaks`                                | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR                  |
-| `pwsh` 7.6.5 (PowerShell 7, tarball in `/opt/microsoft/powershell/7`) | `pwsh`                  | This repo's `.ps1` launcher suites — the gate runs the `run.ps1` ones and fails loud without it  |
+| `pwsh` 7.6.8 (PowerShell 7, tarball in `/opt/microsoft/powershell/7`) | `pwsh`                  | This repo's `.ps1` launcher suites — the gate runs the `run.ps1` ones and fails loud without it  |
 | `bats-core` 1.14.0                                  | `bats`                                    | NEAT-AI-core and NEAT-AI-scorer, whose gates run `bats tests/scripts` — skipped without it       |
 | `codespell` 2.4.3 (wheel in a `/opt/codespell` venv) | `codespell`                              | NEAT-AI-core's spelling check, and NEAT-AI-scorer's `scripts/spell-check.sh`, which exits 1 without it |
 | `pyyaml` 6.0.3 (wheel in the system interpreter's `purelib`) | *module* `yaml` — no command | NEAT-AI-core's workflow-assertion BATS suites, which parse workflow YAML with `python3 -c "import yaml"` |
-| `codegraph` 1.6.0 (bundle in `/opt/codegraph`, symlinked onto the PATH) | `codegraph` | The CodeGraph repo-context trial (Issue #2145) — the worker's own runs, not a monitored repository's gate |
-| `rtk` 0.49.0 (bare binary in `/usr/local/bin`)      | `rtk`                                     | The RTK trial (Issue #2328) — the worker's own runs, not a monitored repository's gate           |
-| `floci` 2.2.0 (native binary from the digest-pinned `floci/floci` image) | `floci`                | This repo's worker **runtime** and the pre-push gate's Floci CloudFormation check (Issue #3727): the LocalStack drop-in on port 4566 for the worker's own runs (Issue #3367) — not started by the entrypoint; that check runs `infra/cloudformation/test-floci.sh`, which starts it on demand. The same tag and digest also run as the service of the `.github/workflows/floci.yml` CI job (Issue #3369), which deploys `infra/cloudformation/` through `infra/cloudformation/test-floci.sh`; `worker/deno/tests/issue_3369_floci_workflow_test.ts` keeps the two tags and digests in agreement |
+| `codegraph` 1.6.2 (bundle in `/opt/codegraph`, symlinked onto the PATH) | `codegraph` | The CodeGraph repo-context trial (Issue #2145) — the worker's own runs, not a monitored repository's gate |
+| `rtk` 1.0.1 (bare binary  in `/usr/local/bin`)      | `rtk`                                     | The RTK trial (Issue #2328) — the worker's own runs, not a monitored repository's gate           |
+| `floci` 2.3.0 (native binary from the digest-pinned `floci/floci` image) | `floci`                | This repo's worker **runtime** and the pre-push gate's Floci CloudFormation check (Issue #3727): the LocalStack drop-in on port 4566 for the worker's own runs (Issue #3367) — not started by the entrypoint; that check runs `infra/cloudformation/test-floci.sh`, which starts it on demand. The same tag and digest also run as the service of the `.github/workflows/floci.yml` CI job (Issue #3369), which deploys `infra/cloudformation/` through `infra/cloudformation/test-floci.sh`; `worker/deno/tests/issue_3369_floci_workflow_test.ts` keeps the two tags and digests in agreement |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
-| `cspell` 10.3.6 (npm tarball, checksum-verified)    | `cspell`                                  | The pre-push gate's spelling stage for a repository that tracks a cspell config and whose CI runs cspell, e.g. GRQ's `docs/cspell.json` (Issue #3689) |
-| `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
-| `graft` 0.18.0 (npm tarball, then seven native modules compiled in the image) | `graft`                 | This repo's worker **runtime**, not a gate: Graft builds the tree-sitter code graph the repo-context injection reads |
+| `cspell` 10.4.0 (npm tarball, checksum-verified)    | `cspell`                                  | The pre-push gate's spelling stage for a repository that tracks a cspell config and whose CI runs cspell, e.g. GRQ's `docs/cspell.json` (Issue #3689) |
+| `semgrep` 1.182.1 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
+| `graft` 0.25.0 (npm tarball, then seven native modules compiled in the image) | `graft`                 | This repo's worker **runtime**, not a gate: Graft builds the tree-sitter code graph the repo-context injection reads |
 
 `rust`, `cargo-deny`, `cargo-mutants`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
 `bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk`, `floci` and `brief` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
@@ -117,7 +117,7 @@ added to one of the Containerfile's `install-toolchains.sh` runs.
 
 Nine consequences worth knowing:
 
-- **Rust is pinned to 1.99.0, not `stable`.** That is the channel
+- **Rust is pinned to 1.99.1, not `stable`.** That is the 1.99 channel
   NEAT-AI-scorer, NEAT-AI-Discovery, NEAT-AI-Lamarck and NEAT-AI-Backpropagation
   pin in their `rust-toolchain.toml`; they also declare `rust-version = "1.99"`,
   so on the 1.98.0 image every `cargo check` on them failed with exit 101
@@ -126,7 +126,7 @@ Nine consequences worth knowing:
   GRQ-AutoTrader, GRQ-AutoTraderBackTesting and template-rust still pin
   1.98.0 (Issue #309 enumerated `rust-toolchain.toml` across the fleet).
   There is no `rustup` in the image, so that file is not consulted here and
-  every crate builds with the baked 1.99.0. Bump those repos and this pin
+  every crate builds with the baked 1.99.1. Bump those repos and this pin
   together — a new stable's clippy lints break their `-D warnings` gates with
   no code change.
 - **There is no `rustup`.** The toolchain is installed into `/usr/local`, so
@@ -220,7 +220,7 @@ Nine consequences worth knowing:
   against a fetched tarball. It installs to `/usr/local/lib/floci/application`
   and writes a `/usr/local/bin/floci` wrapper: the native binary has no
   `--version` flag (passing one starts the server), so the wrapper answers
-  `--version` with `floci 2.2.0` itself and otherwise execs straight through.
+  `--version` with `floci 2.3.0` itself and otherwise execs straight through.
   The build then smoke-checks it — starts floci in the background bound to
   `127.0.0.1`, runs a bounded `curl --retry … --retry-connrefused` against
   `http://127.0.0.1:4566/`, logs the HTTP status, fails the build on no
@@ -1952,11 +1952,16 @@ invocation may **name** its provider:
 
 - `runClaudeWithTimeout` / `runClaudeWithRetry` take `agentProvider` (a
   registered id or a descriptor) on `RunClaudeOptions`;
-- `runExecuteClaudePhase` takes the same `agentProvider` option and forwards
-  it;
-- `selectAgentProvider(selector?)` in `agent_provider.ts` is the one resolution
-  point: with no argument it is `activeAgentProvider()`, so **omitting it
-  reproduces today's behaviour exactly**.
+- `runExecuteClaudePhase` takes the same `agentProvider` option. It forwards
+  the named provider to the runner, except that an issue run the pre-spawn
+  planner (`planIssueRunProvider`) reroutes to Claude (outcome
+  `rerouted-to-claude`, Issue #4109) is forwarded as `claude` instead;
+- `selectAgentProvider(selector?)` in `agent_provider.ts` is the resolution
+  point for a call: with no argument it is `activeAgentProvider()`, so
+  **omitting it reproduces today's behaviour exactly**. The issue-run phases
+  also read the active provider through `plannedActiveAgentProvider()`, which
+  skips the installed-set check, to plan before spawn; the runner's install
+  assert still refuses an uninstalled provider.
 
 Naming a provider changes nothing process-wide — not `agent_provider`, not
 `VIBE_AGENT_PROVIDER`. The descriptor is resolved **once per call** and held as
@@ -2040,6 +2045,11 @@ the registry:
   child (or the OpenAI key the Claude child) even if a future allowlist edit
   would otherwise let it through. `worker/deno/lib/agent_env.ts` holds the
   shared filter; each provider module holds only its three lists.
+
+Since 0.163.0 the `codex` CLI also spawns `/usr/local/bin/codex-code-mode-host`,
+a separate release asset that `container/providers/codex.sh` verifies against
+`codeModeHost.sha256` in `container/tools.json` and installs beside the CLI;
+without it every session runs with no tools (Issue #4323).
 
 Gemini is the third, and in Quorum mode it is the **judge**
 rather than a planner: it reads the two planners' candidate plans and picks a

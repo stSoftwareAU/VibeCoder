@@ -165,7 +165,7 @@ export const IN_GATE_SCRIPT_SUITES: ReadonlyMap<string, string> = new Map([
   [
     "tests/run_ps1_launcher_test.ts",
     "drives run.ps1, the Windows containment boundary, against a stub " +
-    "PATH; the image ships pwsh 7.6.5 (Issue #1596) so the gate can run " +
+    "PATH; the image ships pwsh 7.6.8 (Issue #1596) so the gate can run " +
     "it — 76s, plus about 11s for Issue #4119's three release-notice " +
     "cases, in the serial pass because it times a launcher watchdog",
   ],

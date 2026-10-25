@@ -74,6 +74,16 @@ Deno.test("buildUntrustedCommandEnv - keeps what a build genuinely needs", () =>
   assertEquals(env.CI, "true");
 });
 
+Deno.test("buildUntrustedCommandEnv - forwards the guest cargo job cap and does not invent one (Issue #4225)", () => {
+  const capped = buildUntrustedCommandEnv({
+    source: { ...WORKER_ENV, CARGO_BUILD_JOBS: "2" },
+  });
+  assertEquals(capped.CARGO_BUILD_JOBS, "2");
+
+  const host = buildUntrustedCommandEnv({ source: WORKER_ENV });
+  assertEquals(host.CARGO_BUILD_JOBS, undefined);
+});
+
 Deno.test("buildUntrustedCommandEnv - a repository may name extra variables", () => {
   // The seam per-repo credential scoping will use (Issue #573): a repository
   // whose checks genuinely need something names it, rather than every

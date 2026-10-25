@@ -161,7 +161,10 @@ Deno.test("disk_space - DEFAULT_DISK_CLEANUP_THRESHOLD is 90", () => {
 Deno.test("disk_space - checkAndCleanupDiskSpace returns error for empty workDir", async () => {
   const result = await checkAndCleanupDiskSpace({ workDir: "" });
   assertEquals(result.cleanedUp, false);
-  assertStringIncludes(result.message, "ERROR");
+  assertStringIncludes(
+    result.message,
+    "No directory specified for disk space check",
+  );
 });
 
 Deno.test("disk_space - checkAndCleanupDiskSpace ensures directory exists below threshold", async () => {
@@ -200,7 +203,7 @@ Deno.test("disk_space - checkAndCleanupDiskSpace cleans up at threshold", async 
       skipDenoCache: true,
     });
     assertEquals(result.cleanedUp, true);
-    assertStringIncludes(result.message, "WARNING");
+    assertStringIncludes(result.message, "Deleted and recreated");
 
     // Directory should exist but file should be gone
     const stat = await Deno.stat(workDir);

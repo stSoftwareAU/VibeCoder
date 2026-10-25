@@ -12,6 +12,8 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { CLAUDE_OUTPUT_ADAPTER } from "../lib/claude_output_adapter.ts";
+import { buildRunStats } from "../lib/run_stats.ts";
 import {
   attemptPrSelfHealing,
   buildDiagnosticContext,
@@ -26,6 +28,11 @@ import {
 } from "../lib/execute_claude_phase.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
+import {
+  setConfiguredAgentProviderId,
+  setConfiguredEnabledAgentProviderIds,
+} from "../lib/agent_provider.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 // =============================================================================
 // Screenshot requirement detection
@@ -548,19 +555,76 @@ Deno.test("runExecuteClaudePhase - failure when prompt building fails", async ()
 // Context budget hard ceiling (Issue #3713)
 // -----------------------------------------------------------------------
 
-Deno.test("runExecuteClaudePhase - context budget ceiling blocks the phase and escalates (Issue #3713)", async () => {
-  const escalations: Array<{ issueNumber: number; reason: string }> = [];
+/** A cached-prompt builder oversized only while the CI log is in it. */
+function ciLogHeavyBuilder(seen: Array<string | undefined>) {
+  return async (opts: { ciFailureContext?: string }) => {
+    seen.push(opts.ciFailureContext);
+    return {
+      ok: true as const,
+      value: {
+        systemPrompt: "Mock system",
+        prompt: opts.ciFailureContext ? "L".repeat(400_000) : "Mock prompt",
+        promptSha: "a".repeat(64),
+        cacheHit: false,
+      },
+    };
+  };
+}
+
+const CI_FAILURE_REPO_CONFIG = {
+  "owner/repo": { ciFailureLabels: ["ci-failure"] },
+} as unknown as Record<string, import("../types.ts").RepoConfig>;
+
+Deno.test("runExecuteClaudePhase - an oversized CI log is trimmed and the run proceeds (Issue #4298)", async () => {
+  const seen: Array<string | undefined> = [];
+  const handoffs: number[] = [];
+  let claudeCalls = 0;
+
+  const result = await runExecuteClaudePhase(
+    createTestOptions({
+      contextBudgetBlockPercent: 5,
+      issueLabels: "work-on,ci-failure",
+      repoConfigs: CI_FAILURE_REPO_CONFIG,
+      includeRecentActivity: false,
+    }),
+    createMockDeps({
+      buildCiFailureContext: async () => "a very long build log",
+      buildCachedIssuePrompt: ciLogHeavyBuilder(seen) as never,
+      handOffContextBudget: async (opts) => {
+        handoffs.push(opts.issueNumber);
+        return true;
+      },
+      runClaudeWithRetry: async () => {
+        claudeCalls++;
+        return {
+          ok: true,
+          value: { exitCode: 0, output: "", timedOut: false },
+        };
+      },
+    }),
+  );
+
+  assertEquals(result.action, "success");
+  assertEquals(seen, ["a very long build log", undefined]);
+  assertEquals(claudeCalls, 1, "the trimmed prompt is sent");
+  assertEquals(handoffs, [], "nothing is handed off");
+});
+
+Deno.test("runExecuteClaudePhase - a prompt still over the ceiling goes to planning, never to a human (Issue #4298)", async () => {
+  const handoffs: Array<{ issueNumber: number; labels: readonly string[] }> =
+    [];
   let claudeCalls = 0;
 
   const result = await runExecuteClaudePhase(
     // A 0.001% ceiling on a 1M window blocks any realistic prompt.
     createTestOptions({ contextBudgetBlockPercent: 0.001 }),
     createMockDeps({
-      escalateContextBudget: async (opts) => {
-        escalations.push({
+      handOffContextBudget: async (opts) => {
+        handoffs.push({
           issueNumber: opts.issueNumber,
-          reason: opts.reason,
+          labels: opts.issueLabels,
         });
+        return true;
       },
       runClaudeWithRetry: async () => {
         claudeCalls++;
@@ -575,25 +639,29 @@ Deno.test("runExecuteClaudePhase - context budget ceiling blocks the phase and e
   assertEquals(result.action, "failure");
   assertEquals(result.failureType, "context_budget");
   assertStringIncludes(result.failureMessage!, "hard ceiling");
+  assertStringIncludes(result.failureMessage!, "planning");
   assertEquals(claudeCalls, 0, "no billed invocation past the ceiling");
-  assertEquals(escalations.length, 1, "issue handed to a human");
-  assertEquals(escalations[0]!.issueNumber, 42);
+  assertEquals(handoffs, [{
+    issueNumber: 42,
+    labels: ["enhancement", "work-on"],
+  }]);
 });
 
 Deno.test("runExecuteClaudePhase - a zero ceiling keeps the budget check observational (Issue #3713)", async () => {
-  const escalations: string[] = [];
+  const handoffs: number[] = [];
 
   const result = await runExecuteClaudePhase(
     createTestOptions({ contextBudgetBlockPercent: 0 }),
     createMockDeps({
-      escalateContextBudget: async (opts) => {
-        escalations.push(opts.reason);
+      handOffContextBudget: async (opts) => {
+        handoffs.push(opts.issueNumber);
+        return true;
       },
     }),
   );
 
   assertEquals(result.action, "success");
-  assertEquals(escalations.length, 0);
+  assertEquals(handoffs.length, 0);
 });
 
 Deno.test("runExecuteClaudePhase - timeout failure with no self-healing", async () => {
@@ -797,6 +865,35 @@ Deno.test("runExecuteClaudePhase - dash-leading branch is refused before git fet
   }
 });
 
+Deno.test("createDefaultDeps log writes warn and error at those levels (Issue #4176)", () => {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (message?: unknown) => {
+    lines.push(String(message));
+  };
+  try {
+    const { log } = createDefaultDeps();
+    log("the budget is high", "warn");
+    log("the budget is blocked", "error");
+    log("the phase started");
+  } finally {
+    console.error = original;
+  }
+  const warn = lines.find((line) => line.includes("the budget is high"));
+  const error = lines.find((line) => line.includes("the budget is blocked"));
+  const info = lines.find((line) => line.includes("the phase started"));
+  assert(warn, `warn did not reach the log: ${JSON.stringify(lines)}`);
+  assert(error, `error did not reach the log: ${JSON.stringify(lines)}`);
+  assert(info, `info did not reach the log: ${JSON.stringify(lines)}`);
+  assert(warn.includes(" WARNING: "), warn);
+  assert(error.includes(" ERROR: "), error);
+  assert(info.includes(" INFO: "), info);
+  assert(warn.includes("[execute-claude-phase] the budget is high"), warn);
+  assert(error.includes("[execute-claude-phase] the budget is blocked"), error);
+  assertEquals(warn.includes("WARNING: the budget"), false);
+  assertEquals(error.includes("ERROR: the budget"), false);
+});
+
 Deno.test("createDefaultDeps - git runner reports checked-runner failures (Issue #268)", async () => {
   const deps = createDefaultDeps();
   const result = await deps.runGitCommand([
@@ -877,6 +974,47 @@ Deno.test("runExecuteClaudePhase - a clean exit with no changes is still no_chan
   );
   assertEquals(result.action, "no_changes");
 });
+
+for (
+  const [output, expected] of [
+    [
+      '{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":1}',
+      "failure",
+    ],
+    ['{"type":"result","is_error":false,"num_turns":0}', "failure"],
+    [
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Starting work"}]}}',
+      "failure",
+    ],
+    [
+      '{"type":"result","is_error":false,"num_turns":1,"result":"Already correct"}',
+      "no_changes",
+    ],
+  ] as const
+) {
+  Deno.test(`runExecuteClaudePhase - structured empty run ${output} returns ${expected} (Issue #4147)`, async () => {
+    const result = await runExecuteClaudePhase(
+      createTestOptions(),
+      createMockDeps({
+        runClaudeWithRetry: async () => ({
+          ok: true,
+          value: {
+            exitCode: 0,
+            output,
+            timedOut: false,
+            agentOutput: CLAUDE_OUTPUT_ADAPTER.decode(output),
+            runStats: buildRunStats(output, {
+              requestedModel: "test",
+              wallClockMs: 0,
+            }),
+          },
+        }),
+        runGitCommand: async () => ({ ok: true, value: "" }),
+      }),
+    );
+    assertEquals(result.action, expected);
+  });
+}
 
 Deno.test("runExecuteClaudePhase - screenshot label triggers screenshot instructions", async () => {
   let promptOptions: Record<string, unknown> | undefined;
@@ -1145,6 +1283,46 @@ Deno.test("runExecuteClaudePhase - a repo provider pin reaches the runner when n
     }),
   );
   assertEquals(capturedProvider, "deepseek");
+});
+
+Deno.test("runExecuteClaudePhase - a pin with sub-agents on is kept and stripped, not rerouted (Issue #4346)", async () => {
+  setConfiguredAgentProviderId("claude");
+  setConfiguredEnabledAgentProviderIds(["claude", "deepseek"]);
+  try {
+    let capturedProvider: string | undefined = "sentinel";
+    let capturedAgents: unknown = "sentinel";
+    let capturedSplit: unknown = "sentinel";
+    await runExecuteClaudePhase(
+      createTestOptions({
+        issueExecutorSplit: true,
+        issueReviewerAgents: true,
+        issueSubAgentTier: "haiku",
+        repoConfigs: {
+          "owner/repo": { agentProvider: "deepseek" },
+        },
+      }),
+      createMockDeps({
+        env: envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: "claude,deepseek" }),
+        runClaudeWithRetry: async (options) => {
+          capturedProvider = typeof options.agentProvider === "string"
+            ? options.agentProvider
+            : undefined;
+          capturedAgents = options.agents;
+          capturedSplit = options.issueExecutorSplit;
+          return {
+            ok: true,
+            value: { exitCode: 0, output: "Done.", timedOut: false },
+          };
+        },
+      }),
+    );
+    assertEquals(capturedProvider, "deepseek");
+    assertEquals(capturedAgents, undefined);
+    assertEquals(capturedSplit, undefined);
+  } finally {
+    setConfiguredAgentProviderId(undefined);
+    setConfiguredEnabledAgentProviderIds(undefined);
+  }
 });
 
 Deno.test("runExecuteClaudePhase - an explicit provider stays absolute over the repo pin", async () => {
