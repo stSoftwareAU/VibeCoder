@@ -7,7 +7,7 @@ asks.
 
 **This run's scope** is what the issue asks, as **Change Scope** below defines
 it.
-
+{{CAPABILITY_SECURITY_GUIDANCE}}
 ## Autonomous Execution
 
 You are running autonomously without a human operator. **Do NOT use plan mode**

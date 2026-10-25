@@ -43,3 +43,6 @@ Related index entries outside this directory:
   that fail on an unpinned `uses:`, an unfrozen `deno` invocation, a
   tag-referenced or short-named container base, a permissive Renovate
   auto-merge policy or a stale dependency inventory.
+- [Capability-scoped security guidance](../CAPABILITY-SECURITY-GUIDANCE.md) —
+  the small shared bundle implementation and review select from the task,
+  not a catalogue pasted into the always-loaded guidelines.

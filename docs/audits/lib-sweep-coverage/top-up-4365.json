@@ -1,0 +1,16 @@
+{
+  "issue": 4365,
+  "chunk": "top-up-4365",
+  "title": "top-up: capability security guidance and evaluation",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4365",
+  "definition": "Reviewed capability guidance, coverage scanning and local evaluation: bundles are read from the trusted worker/base copy and parsed before use; selection records signal identifiers rather than issue text. The bounded checkout scan skips symlinks and returns unknown for incomplete reads. Fixture authorisation checks tenant and writable fields at the update entry point. Evaluation uses fixed fixture arms and argument-vector subprocess calls with a 60-second bound, copies acceptance tests to temporary directories and checks their hashes, and writes only the caller-selected output artefact. The CLI performs no model or GitHub writes.",
+  "status": "claimed",
+  "sweptAt": "0d78f124911d7dab1b197b712a5eb31c2fdc3d8b",
+  "paths": [
+    "worker/deno/lib/capability_coverage_scan.ts",
+    "worker/deno/lib/capability_security_eval.ts",
+    "worker/deno/lib/capability_security_eval_cli.ts",
+    "worker/deno/lib/capability_security_fixtures/resource_update.ts",
+    "worker/deno/lib/capability_security_guidance.ts"
+  ]
+}

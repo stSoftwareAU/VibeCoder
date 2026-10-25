@@ -72,6 +72,16 @@ import {
   renderChecklistSection,
   REVIEW_CHECKLISTS_FILE,
 } from "../../../../worker/deno/lib/review_checklists.ts";
+import {
+  CAPABILITY_BUNDLE_PATH,
+  capabilityContextFromChange,
+  type CapabilityLoad,
+  effectiveCapabilityLoad,
+  loadCapabilityBundleFromText,
+  loadTrustedCapabilityBundle,
+  mergeCapabilityReview,
+  renderCapabilityReview,
+} from "../../../../worker/deno/lib/capability_security_guidance.ts";
 import { isDependencyAuditCheck } from "../../../../worker/deno/lib/dependency_audit_check.ts";
 import {
   metClosureItems,
@@ -811,9 +821,13 @@ export async function pass(
     gh?: (args: string[]) => Promise<string>;
     dir?: string;
     limit?: number;
+    /** Trusted capability bundle. Defaults to the copy shipped with the worker. */
+    loadCapabilityBundle?: () => Promise<CapabilityLoad>;
   } = {},
 ) {
   const callGh = deps.gh ?? gh;
+  const loadCapabilityBundle = deps.loadCapabilityBundle ??
+    loadTrustedCapabilityBundle;
   const dir = deps.dir ?? stateDir();
   const limit = deps.limit ?? DEFAULT_LIMIT;
   const owners = [...new Set([...repos].map((r) => r.split("/")[0]!))];
@@ -1002,6 +1016,71 @@ export async function pass(
       console.error(line);
       continue;
     }
+    const bundleTouched = changed === null ||
+      changed.includes(CAPABILITY_BUNDLE_PATH);
+    let capabilityBase: CapabilityLoad = { kind: "absent" };
+    let capabilityHead: CapabilityLoad | null = null;
+    if (bundleTouched && changed !== null) {
+      capabilityBase = await loadCapabilityBundleAtRef(
+        callGh,
+        repo,
+        pr.baseRefName,
+      );
+      capabilityHead = await loadCapabilityBundleAtRef(
+        callGh,
+        repo,
+        pr.headRefOid,
+      );
+    }
+    if (
+      capabilityBase.kind === "fetch_failed" ||
+      capabilityHead?.kind === "fetch_failed"
+    ) {
+      skipped["capability-unreadable"] =
+        (skipped["capability-unreadable"] ?? 0) + 1;
+      const reason = capabilityBase.kind === "fetch_failed"
+        ? capabilityBase.reason
+        : capabilityHead?.kind === "fetch_failed"
+        ? capabilityHead.reason
+        : "fetch failed";
+      const line =
+        `${key} capability guidance fetch failed, retried next pass: ${reason}`;
+      upkeep.push(line);
+      console.error(line);
+      continue;
+    }
+    const trustedBundle = await loadCapabilityBundle();
+    const capabilityLoad = effectiveCapabilityLoad(
+      capabilityBase,
+      capabilityHead,
+      trustedBundle,
+    );
+    const capabilityReview = renderCapabilityReview(
+      capabilityLoad,
+      capabilityContextFromChange({
+        title: pr.title,
+        body: pr.body ?? "",
+        paths: changed ?? [],
+      }),
+    );
+    if (capabilityReview.retry) {
+      skipped["capability-unreadable"] =
+        (skipped["capability-unreadable"] ?? 0) + 1;
+      const line =
+        `${key} capability guidance not checked, retried next pass: ${
+          capabilityReview.retryReason ?? "unavailable"
+        }`;
+      upkeep.push(line);
+      console.error(line);
+      continue;
+    }
+    const repoChecklistMarkdown = renderChecklistSection(checklists, changed);
+    const repoChecklistState = checklistState(checklists, changed);
+    const mergedChecks = mergeCapabilityReview(
+      repoChecklistMarkdown,
+      repoChecklistState,
+      capabilityReview,
+    );
     ready.push({
       repo,
       number: pr.number,
@@ -1014,11 +1093,11 @@ export async function pass(
       testChanges: existingTestChanges(files),
       noTestAdded: noTestAdded(files, kind),
       previousFindings: previousFindings(log, repo, pr.number),
-      reviewChecklists: renderChecklistSection(checklists, changed),
+      reviewChecklists: mergedChecks.markdown,
       closureEntries: renderClosureEntriesSection(
         metClosureItems(pr.body ?? ""),
       ),
-      checklistState: checklistState(checklists, changed),
+      checklistState: mergedChecks.state,
     });
   }
   // A single --repo run sees only part of the fleet, so it leaves the
@@ -1068,6 +1147,50 @@ export async function loadChecklistsAtRef(
     return loadChecklistsFromText(text);
   } catch (e) {
     return loadChecklistsFromText(
+      null,
+      `could not decode the gh api response: ${
+        firstLine((e as Error).message ?? String(e))
+      }`,
+    );
+  }
+}
+
+/** Read the capability bundle at a ref. Not found is absent; other gh failures retry. */
+export async function loadCapabilityBundleAtRef(
+  gh: (args: string[]) => Promise<string>,
+  repo: string,
+  gitRef: string,
+): Promise<CapabilityLoad> {
+  const ref = encodeURIComponent(gitRef).replaceAll("%2F", "/");
+  let raw: string;
+  try {
+    raw = await gh([
+      "api",
+      `repos/${repo}/contents/${CAPABILITY_BUNDLE_PATH}?ref=${ref}`,
+    ]);
+  } catch (e) {
+    const message = (e as Error).message ?? String(e);
+    if (/HTTP 404|Not Found/i.test(message)) {
+      return loadCapabilityBundleFromText(null);
+    }
+    const cause = message.split("\n").map((l) => l.trim()).find((l) => l) ??
+      "gh failed";
+    return { kind: "fetch_failed", reason: `gh api failed: ${cause}` };
+  }
+  try {
+    const body = JSON.parse(raw);
+    if (
+      typeof body?.content !== "string" || body.content === "" ||
+      (body.encoding !== undefined && body.encoding !== "base64")
+    ) {
+      throw new Error("no base64 content in the response");
+    }
+    const bin = atob(body.content.replace(/\s/g, ""));
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return loadCapabilityBundleFromText(text);
+  } catch (e) {
+    return loadCapabilityBundleFromText(
       null,
       `could not decode the gh api response: ${
         firstLine((e as Error).message ?? String(e))

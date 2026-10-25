@@ -174,3 +174,17 @@ deno test --allow-all worker/deno/tests/*checklists_3594_test.ts \
 To try a checklist by hand, put a `review-checklists.json` on a repository's
 default branch, open a PR touching a matching path, and confirm the section
 appears; then open one touching no listed path and confirm it does not.
+
+## Capability security checks
+
+The same brief also carries the capability checks from
+[`prompts/coding_guidelines/capability-security.json`](../prompts/coding_guidelines/capability-security.json)
+when the change's task, entry points, imports, callers or sinks match one.
+They are rendered into `{{REVIEW_CHECKLISTS}}` and use the same `checklist`
+verdict contract. The fleet reviewer and the pre-PR verifier render the same
+items. The trusted base copy governs, so a pull request cannot weaken the
+checks used to review it. A bundle that cannot be read is retried
+(`capability-unreadable` on the gate, not-checked on the verifier), not a
+clean review and not a finding charged to an unrelated change. A change that
+breaks the bundle is a blocking finding on that file. See
+[Capability-scoped security guidance](CAPABILITY-SECURITY-GUIDANCE.md).
