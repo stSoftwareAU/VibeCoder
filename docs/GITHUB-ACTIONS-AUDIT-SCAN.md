@@ -248,7 +248,7 @@ sequenceDiagram
 
     Main->>Filer: idle pass — nothing claimable
     Filer->>Filer: per-repo wrapper census<br/>(which repos already hold one?)
-    Filer->>Filer: 1/19 RNG picks github-actions-audit<br/>(uniform over the registered templates)
+    Filer->>Filer: 1/20 RNG picks github-actions-audit<br/>(uniform over the registered templates)
     Filer->>Template: buildIssueBody(repo)
     Template->>Template: load prompts/github_actions_audit/<br/>(substitute placeholders + catalogue tables)
     Template->>GH: gh issue create — title `Run a GitHub Actions audit`,<br/>label `idle-task`, no milestone
@@ -286,7 +286,7 @@ flowchart TD
     classDef output fill:#dcfce7,stroke:#15803d,color:#1f2937;
 
     Idle[Idle trigger<br/>run_core: nothing claimable]
-    Idle --> Pick{1/19 RNG over the<br/>registered idle-task templates}
+    Idle --> Pick{1/20 RNG over the<br/>registered idle-task templates}
     Pick -- github-actions-audit --> FileWrapper[File wrapper issue<br/>title: 'Run a GitHub Actions audit'<br/>label: idle-task<br/>no milestone — skipMilestone: true]:::output
     FileWrapper --> Claim[Next iteration<br/>claims the idle-task issue]
     Claim --> Ensure[Ensure `github-actions-audit` label exists]:::phase
@@ -1127,8 +1127,13 @@ other `BP-REPO-*` finding, the fix text omits the scanner's full admin-action
 sentence (`REPO_ADMIN_ACTION`) and
 `isAdminOnlyRepoSettingsIssue` (`admin_only_finding.ts`) lets this id
 through its `WORKER_FIXABLE_REPO_FINDINGS` allowlist, so the worker raises a
-normal pull request adding the file instead of handing the issue to a human;
-a body that did carry that full sentence would be admin-only again. Setup
+normal pull request adding the file instead of applying a setting; a body
+that did carry that full sentence would be admin-only again. Every other
+`BP-REPO-*` finding that reaches the issue lane is applied by the worker
+itself through `repo_settings_harden.ts` — that finding's step only — and
+closed; a token that cannot apply it records the failure on the normal
+`failed-once` ladder and retries, never handing the issue to a human
+(Issue #4298). Setup
 has no harden step and no write path for `SECURITY.md`, and the audit closer
 has no mapping for this id: the pull request that adds the file resolves the
 finding.

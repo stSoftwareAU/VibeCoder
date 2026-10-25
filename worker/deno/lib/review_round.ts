@@ -260,6 +260,8 @@ export function renderStreamLine(line: string): string | null {
 /** How much of the CLI's output is kept for the usage-limit check. */
 const OUTPUT_TAIL_BYTES = 64 * 1024;
 
+export const CLAUDE_REVIEW_TIMEOUT_MS = 60 * 60 * 1000;
+
 /**
  * Run `claude`, passing its output straight through to this process's own
  * stdout and stderr (the runner logs the container's output) while keeping
@@ -268,12 +270,22 @@ const OUTPUT_TAIL_BYTES = 64 * 1024;
  * With `streamFile`, stdout is the CLI's stream-json: it is written there in
  * full, and only its readable lines ({@link renderStreamLine}) are passed
  * through and kept for the usage-limit check.
+ *
+ * A non-positive `timeoutMs` is a timed-out attempt and does not spawn.
  */
 export async function runClaudeCli(
   args: string[],
   env: Record<string, string>,
   streamFile?: string,
+  timeoutMs: number = CLAUDE_REVIEW_TIMEOUT_MS,
 ): Promise<ReviewRoundAttempt> {
+  if (!(timeoutMs > 0)) {
+    const message = `claude timed out after ${timeoutMs}ms\n`;
+    await Deno.stderr.write(new TextEncoder().encode(message));
+    return { code: 124, output: message };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let child: Deno.ChildProcess;
   try {
     child = new Deno.Command("claude", {
@@ -282,12 +294,14 @@ export async function runClaudeCli(
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
+      signal: controller.signal,
     }).spawn();
   } catch (error) {
     const message = `cannot run claude: ${
       error instanceof Error ? error.message : String(error)
     }\n`;
     await Deno.stderr.write(new TextEncoder().encode(message));
+    clearTimeout(timer);
     return { code: 127, output: message };
   }
   let tail = "";
@@ -328,14 +342,24 @@ export async function runClaudeCli(
         .slice(-OUTPUT_TAIL_BYTES);
     }
   };
-  const [status] = await Promise.all([
-    child.status,
-    file === undefined
-      ? pump(child.stdout, Deno.stdout)
-      : pumpStream(child.stdout),
-    pump(child.stderr, Deno.stderr),
-  ]);
-  return { code: status.code, output: tail };
+  try {
+    const [status] = await Promise.all([
+      child.status,
+      file === undefined
+        ? pump(child.stdout, Deno.stdout)
+        : pumpStream(child.stdout),
+      pump(child.stderr, Deno.stderr),
+    ]);
+    if (controller.signal.aborted) {
+      return {
+        code: 124,
+        output: `claude timed out after ${timeoutMs}ms\n${tail}`,
+      };
+    }
+    return { code: status.code, output: tail };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

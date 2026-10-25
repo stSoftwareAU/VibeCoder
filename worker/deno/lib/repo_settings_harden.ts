@@ -1772,6 +1772,12 @@ export interface HardenRepoOptions {
   setupLogin?: string;
   /** The host's `copilot_code_review` (Issue #2701); absent is `leave`. */
   copilotCodeReview?: CopilotCodeReviewMode;
+  /**
+   * Run only these steps (Issue #4298): the issue lane fixes one
+   * repository-admin finding without rewriting any other setting. Absent runs
+   * the whole plan, as `setup` does.
+   */
+  onlyKinds?: readonly HardenStep["kind"][];
 }
 
 /** What {@link hardenRepo} found and did. */
@@ -2022,17 +2028,19 @@ async function hardenRepoInto(
       ? { copilotCodeReview: options.copilotCodeReview }
       : {}),
   });
+  const wanted = (kind: HardenStep["kind"]): boolean =>
+    options.onlyKinds === undefined || options.onlyKinds.includes(kind);
   const allowListStep = plan.find((s) => s.kind === "actions-allow-list");
-  const runnable = allowListFault
-    ? plan.filter((s) => s.kind !== "actions-allow-list")
-    : plan;
+  const runnable = plan.filter((s) =>
+    wanted(s.kind) && !(allowListFault && s.kind === "actions-allow-list")
+  );
   results.push(
     ...await applyRepoSettingsPlan(repo, runnable, {
       apply: options.apply,
       ghCommandFn: gh,
     }),
   );
-  if (allowListFault) {
+  if (allowListFault && wanted("actions-allow-list")) {
     results.push({
       step: allowListStep ?? {
         kind: "actions-allow-list",

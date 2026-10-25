@@ -20,11 +20,16 @@ import {
   LIB_SWEEP_LEDGER_PATH,
   LIB_SWEEP_TOP_UP_DIR,
   parseCoverageLedger,
+  patchLedgerSlice,
   readCoverageLedger,
   type SweepGitRunner,
   SweepLedgerError,
+  type SweepSlice,
+  sweepSliceFile,
   verifySweptAtsOnDefaultBranch,
 } from "./lib_sweep_coverage.ts";
+import { atomicWrite } from "./file_utils.ts";
+import { confinePath } from "./mutation_runner.ts";
 
 /** Runs `git <args>` in `cwd` (structurally the pre-push gate's git seam). */
 type Git = (
@@ -54,9 +59,139 @@ export type SweepCheckResult =
   | { ok: true; value: void }
   | { ok: false; error: string; infrastructure?: true };
 
+const COMMIT_SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * Rewrite any checked `sweptAt` that is not on `origin/main` to
+ * `git merge-base origin/main HEAD`, then commit that fix-up.
+ * A failed merge-base is returned as an error and the branch commit is left
+ * in place; the ancestry check still runs only after a successful repoint
+ * (Issue #4235). The ancestry check itself is unchanged.
+ */
+async function repointOffMainSweptAts(opts: {
+  cwd: string;
+  slices: readonly SweepSlice[];
+  git: Git;
+}): Promise<
+  | { ok: true; slices: SweepSlice[] }
+  | { ok: false; error: string }
+> {
+  const off: SweepSlice[] = [];
+  for (const slice of opts.slices) {
+    const ancestry = await opts.git(
+      ["merge-base", "--is-ancestor", slice.sweptAt, "origin/main"],
+      opts.cwd,
+    );
+    if (ancestry.code === 0) continue;
+    if (ancestry.code !== 1 && ancestry.code !== 128) {
+      return {
+        ok: false,
+        error:
+          `could not check whether sweptAt ${slice.sweptAt} is on origin/main: ${
+            ancestry.stderr.trim() ||
+            `git merge-base --is-ancestor exit ${ancestry.code}`
+          }`,
+      };
+    }
+    off.push(slice);
+  }
+  if (off.length === 0) return { ok: true, slices: [...opts.slices] };
+
+  const base = await opts.git(
+    ["merge-base", "origin/main", "HEAD"],
+    opts.cwd,
+  );
+  const mergeBase = base.stdout.trim();
+  if (base.code !== 0 || !COMMIT_SHA.test(mergeBase)) {
+    return {
+      ok: false,
+      error: `git merge-base origin/main HEAD failed: ${
+        base.stderr.trim() || mergeBase || `exit ${base.code}`
+      }`,
+    };
+  }
+
+  const byFile = new Map<string, SweepSlice[]>();
+  for (const slice of off) {
+    const relative = await sweepSliceFile(opts.cwd, slice.chunk);
+    const group = byFile.get(relative) ?? [];
+    group.push(slice);
+    byFile.set(relative, group);
+  }
+  for (const [relative, group] of byFile) {
+    const target = await confinePath(opts.cwd, relative, {
+      realPath: Deno.realPath,
+    });
+    if (target === null) {
+      return {
+        ok: false,
+        error: `sweep ledger path escapes the repository: ${relative}`,
+      };
+    }
+    let text = await Deno.readTextFile(target);
+    for (const slice of group) {
+      text = patchLedgerSlice(text, slice.chunk, { sweptAt: mergeBase });
+    }
+    const written = await atomicWrite({ targetFile: target, content: text });
+    if (!written.ok) {
+      return { ok: false, error: written.error.message };
+    }
+  }
+  const paths = [...byFile.keys()];
+  const added = await opts.git(["add", "--", ...paths], opts.cwd);
+  if (added.code !== 0) {
+    return {
+      ok: false,
+      error: `could not stage the repointed sweep ledger: ${
+        added.stderr.trim() || `git add exit ${added.code}`
+      }`,
+    };
+  }
+  const committed = await opts.git(
+    [
+      "-c",
+      "user.email=vibe-coder@localhost",
+      "-c",
+      "user.name=Vibe Coder",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "-m",
+      "Repoint sweep ledger sweptAt to the origin/main merge-base\n\n" +
+      `The recorded commit was not on origin/main. sweptAt is now ${mergeBase}.`,
+      "--",
+      ...paths,
+    ],
+    opts.cwd,
+  );
+  if (committed.code !== 0) {
+    return {
+      ok: false,
+      error: `could not commit the repointed sweep ledger: ${
+        committed.stderr.trim() || committed.stdout.trim() ||
+        `git commit exit ${committed.code}`
+      }`,
+    };
+  }
+  console.log(
+    `repointed sweep ledger sweptAt for ${
+      off.map((slice) => slice.chunk).join(", ")
+    } to ${mergeBase}`,
+  );
+  const replaced = new Map(off.map((slice) => [slice.chunk, mergeBase]));
+  return {
+    ok: true,
+    slices: opts.slices.map((slice) => {
+      const sweptAt = replaced.get(slice.chunk);
+      return sweptAt === undefined ? slice : { ...slice, sweptAt };
+    }),
+  };
+}
+
 /**
  * Verify the `sweptAt` of the slices contributed by the changed ledger files.
- * Makes no git call at all when no ledger file changed.
+ * Makes no git call at all when no ledger file changed. Off-main values are
+ * repointed to the origin/main merge-base before the ancestry check.
  */
 export async function checkSweptAtAncestry(opts: {
   cwd: string;
@@ -171,8 +306,12 @@ export async function checkSweptAtAncestry(opts: {
     }
   }
 
+  const repaired = await repointOffMainSweptAts({ cwd, slices, git });
+  if (!repaired.ok) return repaired;
+  const checked = { ...filtered, slices: repaired.slices };
+
   try {
-    await verifySweptAtsOnDefaultBranch(filtered, defaultRef, runGit);
+    await verifySweptAtsOnDefaultBranch(checked, defaultRef, runGit);
   } catch (error) {
     return {
       ok: false,

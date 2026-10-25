@@ -63,7 +63,7 @@ Deno.test("Issue #3140 - ci_fix Dependency audit failures section covers the tra
       "`Fixes #N`",
       "the same-repo form",
       "the fixing commit message",
-      "docs/archive/pr-summaries/pr-summary-*.md",
+      "docs/archive/pr-summaries/pr-summary-<issue>.md",
       "A PR comment does not close the issue",
       "The worker's merged-PR sweep reads the pull request body only",
       "only a same-repo `#N`",

@@ -26,6 +26,98 @@ import {
 import type { Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
+
+/**
+ * Options for a push or a push-recovery merge (Issue #4165).
+ *
+ * `expectedAncestor` is the head the pass started from. When it is set, a
+ * checkout that does not extend it is not this pass's work and must not be
+ * pushed or merged onto.
+ */
+export interface PushLineageOptions extends GitCommandOptions {
+  expectedAncestor?: string;
+}
+
+/** Whether HEAD still extends the commit a pass started from. */
+export type HeadExtension =
+  | { status: "extends" }
+  | { status: "unrelated"; message: string }
+  | { status: "unknown"; message: string };
+
+function nothingPushed(beforeSha: string, head: string): string {
+  return `the checkout moved off the PR head during the run; nothing pushed (started at ${beforeSha}, HEAD is ${head})`;
+}
+
+/**
+ * Decide whether `beforeSha` is an ancestor of HEAD (Issue #4165).
+ *
+ * Exit 1 from `git merge-base --is-ancestor` is a definite unrelated history.
+ * Any other failure is unknown: the push path refuses it, and the
+ * "HEAD moved" log keeps its previous reading, because a missing repository
+ * is not proof the branch was reset.
+ */
+export async function classifyHeadExtension(
+  beforeSha: string,
+  options: GitCommandOptions = {},
+): Promise<HeadExtension> {
+  try {
+    assertSafeGitRef(beforeSha, "starting head");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return { status: "unknown", message: nothingPushed(beforeSha, detail) };
+  }
+
+  const head = await runGitCommand(
+    ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"],
+    options,
+  );
+  const headSha = head.ok && head.value.code === 0
+    ? head.value.stdout.trim()
+    : "";
+  if (!headSha) {
+    const detail = head.ok
+      ? head.value.stderr.trim() || `git exited ${head.value.code}`
+      : head.error.message;
+    return {
+      status: "unknown",
+      message: nothingPushed(beforeSha, `unreadable (${detail})`),
+    };
+  }
+
+  const ancestor = await runGitCommand(
+    ["merge-base", "--is-ancestor", "--end-of-options", beforeSha, "HEAD"],
+    options,
+  );
+  if (ancestor.ok && ancestor.value.code === 0) {
+    return { status: "extends" };
+  }
+  if (ancestor.ok && ancestor.value.code === 1) {
+    return { status: "unrelated", message: nothingPushed(beforeSha, headSha) };
+  }
+  const detail = ancestor.ok
+    ? ancestor.value.stderr.trim() || `git exited ${ancestor.value.code}`
+    : ancestor.error.message;
+  return {
+    status: "unknown",
+    message: nothingPushed(
+      beforeSha,
+      `${headSha} (check failed: ${detail})`,
+    ),
+  };
+}
+
+/** Ok when no ancestor was required or HEAD extends it; otherwise a loud refusal. */
+export async function refuseUnlessHeadExtends(
+  options: PushLineageOptions,
+): Promise<Result<void>> {
+  if (!options.expectedAncestor) return { ok: true, value: undefined };
+  const lineage = await classifyHeadExtension(
+    options.expectedAncestor,
+    options,
+  );
+  if (lineage.status === "extends") return { ok: true, value: undefined };
+  return { ok: false, error: new Error(lineage.message) };
+}
 import { redactedLineTail } from "./redacted_text.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
@@ -90,8 +182,13 @@ async function unmergedPaths(options: GitCommandOptions): Promise<string[]> {
  */
 async function mergeRemoteBranch(
   branchName: string,
-  options: GitCommandOptions,
+  options: PushLineageOptions,
 ): Promise<Result<void>> {
+  // Issue #4165: never merge a rejected push of unrelated history into the
+  // remote head. A merge would publish the other branch as this PR's work.
+  const lineage = await refuseUnlessHeadExtends(options);
+  if (!lineage.ok) return lineage;
+
   const trackingRef = `refs/remotes/origin/${branchName}`;
   const mergeResult = await runGitCommand(
     ["merge", "--no-edit", "--end-of-options", trackingRef],
@@ -150,7 +247,7 @@ async function mergeRemoteBranch(
  */
 export async function recoverFromPushRejection(
   branchName: string,
-  options: GitCommandOptions = {},
+  options: PushLineageOptions = {},
   pushFailureDetail?: string,
   beforePush?: () => Promise<Result<void>>,
 ): Promise<Result<string>> {
@@ -175,6 +272,12 @@ export async function recoverFromPushRejection(
       error: err instanceof Error ? err : new Error(String(err)),
     };
   }
+
+  // Issue #4165: refuse before fetching or merging when this checkout is not
+  // the pass's own history. Merging origin into an unrelated HEAD is what
+  // published another branch onto the PR.
+  const lineage = await refuseUnlessHeadExtends(options);
+  if (!lineage.ok) return lineage;
 
   // An explicit refspec creates the tracking ref even in a single-branch clone.
   const fetchResult = await runGitCommand(fetchArgs, options);

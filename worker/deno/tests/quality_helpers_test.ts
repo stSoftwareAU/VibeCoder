@@ -294,7 +294,6 @@ Deno.test(
     const child = new Deno.Command(Deno.execPath(), {
       args: [
         "eval",
-        "--allow-all",
         `const { detectTool } = await import(${JSON.stringify(moduleUrl)});\n` +
         `const r = await detectTool("deno", "/nonexistent-home-xyzzy");\n` +
         `console.log(JSON.stringify(r));`,
@@ -554,4 +553,12 @@ Deno.test("formatBaselineCarryoverNote - plural grammar for count > 1", () => {
   const note = formatBaselineCarryoverNote(3);
   assertStringIncludes(note, "3 pre-existing");
   assertStringIncludes(note, "findings were");
+});
+
+Deno.test("detectTool - a which timeout is a failure, not a found tool (Issue #4249)", async () => {
+  const result = await detectTool("zz-not-deno", undefined, 0);
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "timed out");
+  }
 });

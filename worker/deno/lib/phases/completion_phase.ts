@@ -14,6 +14,13 @@ import { assertNever } from "../assert_never.ts";
  */
 
 import { summaryScrubProblem } from "../summary_scrub_gate.ts";
+import { recordPreprReviewChangesRequested } from "../fleet_telemetry.ts";
+import {
+  collectPreprReviewFindings,
+  type PreprReviewFinding,
+  renderPreprReviewHeadNote,
+  renderPreprReviewRequest,
+} from "../prepr_review_record.ts";
 
 import {
   CRITERIA_UNMET_GATE_MARKER,
@@ -40,7 +47,6 @@ import {
   prSummaryDigest,
 } from "../pr_body_sync.ts";
 import { adoptAgentRaisedPrBody } from "../agent_pr_adoption.ts";
-import { disarmAutoMerge } from "../auto_merge_disarm.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
@@ -49,6 +55,16 @@ import {
   prSummaryDigestInput,
   resolveBranchOutcomesFacts,
 } from "../pr_summary_facts.ts";
+import { renderBranchOutcomes, type SummaryFacts } from "../summary_facts.ts";
+import {
+  type FactsFlipVerdict,
+  fillMissingFlipVerdicts,
+  FLIP_VERIFIER_NO_VERDICT_REASON,
+  FLIP_VERIFIER_UNWIRED_REASON,
+  flipRefusalMessages,
+  flipVerifierFailedReason,
+} from "../facts_flip_verifier.ts";
+import { defaultMutationRunnerSeams } from "../mutation_runner.ts";
 import {
   buildSummaryClaimGateComment,
   runSummaryClaimCheck,
@@ -244,7 +260,6 @@ import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
   findOwnLineStandingViolations,
   PRE_PR_VERIFIER_HOLD_MARKER,
-  STANDING_VIOLATION_LABEL,
   type StandingViolation,
 } from "../standing_violation_routing.ts";
 import {
@@ -406,6 +421,60 @@ async function runSecurityDiscrimination(input: {
 }
 
 /**
+ * Run the facts flip verifier beside the branch-outcomes gate (Issue #4188).
+ *
+ * An unwired or thrown runner is a loud `not_checked` for every tested
+ * entry, never a silent pass. The caller blocks on `refused` messages.
+ */
+async function assessFactsFlips(input: {
+  facts: SummaryFacts;
+  repoPath: string;
+  budgetRaw: string;
+  verify: WorkerDeps["quality"]["verifyFactsFlips"];
+  logger: WorkerDeps["logger"];
+}): Promise<FactsFlipVerdict[]> {
+  const { facts, repoPath, budgetRaw, verify, logger } = input;
+  if (!verify) {
+    logger.warn("Facts flip verifier is not wired", { repoPath });
+    return fillMissingFlipVerdicts(facts, [], FLIP_VERIFIER_UNWIRED_REASON);
+  }
+  try {
+    const verdicts = fillMissingFlipVerdicts(
+      facts,
+      await verify(facts, {
+        ...defaultMutationRunnerSeams(),
+        repoPath,
+        budgetRaw,
+        warn: (message, context) => logger.warn(message, context),
+      }),
+      FLIP_VERIFIER_NO_VERDICT_REASON,
+    );
+    for (const verdict of verdicts) {
+      if (verdict.verdict.kind === "not_checked") {
+        logger.warn("Facts flip verifier did not check an entry", {
+          index: verdict.index,
+          reason: verdict.verdict.reason,
+        });
+      } else if (verdict.verdict.kind === "refused") {
+        logger.warn("Facts flip verifier refused an entry", {
+          index: verdict.index,
+          message: verdict.verdict.message,
+        });
+      } else {
+        logger.info("Facts flip verifier verified an entry", {
+          index: verdict.index,
+        });
+      }
+    }
+    return verdicts;
+  } catch (error) {
+    const reason = flipVerifierFailedReason(error);
+    logger.error("Facts flip verifier failed", { reason });
+    return fillMissingFlipVerdicts(facts, [], reason);
+  }
+}
+
+/**
  * Run a git command and return its stdout, throwing on any failure.
  *
  * `deps.git.runGitCommand` reports a non-zero exit as `ok: true` with the exit
@@ -499,6 +568,9 @@ async function armAutoMergeAtCreation(
     repo,
     prNumber,
     skipAutoMerge,
+    // Issue #1082: the fleet logins let the gated direct merge tell a
+    // genuine review from a sibling account's approval.
+    fleetAuthors: fleetAuthorsFor(ctx),
     commentFn,
     // Route the milestone gates' warnings into the worker log rather than
     // `console.warn`, which no operator reads.
@@ -634,12 +706,12 @@ interface SummaryRuleBlock {
    * The Standards `violation`s standing on lines this branch adds or changes
    * (Issue #3382). Recorded on the verdict so the recovery turn gets a CODE
    * FIX item for each, and — when one survives to the existing-PR finalise —
-   * the PR is labelled and auto-merge withheld.
+   * it is posted on the PR in the findings comment (Issue #4291).
    */
   standingViolations: readonly StandingViolation[];
   /** Surviving verifier findings; empty when the verifier did not block. */
   verifierHoldComment: string;
-  /** Confirmed manual/prompt claims that must not ship armed. */
+  /** Confirmed manual/prompt claims, posted in the findings comment. */
   docHoldComment: string;
   /**
    * True when a blocked gate in `sections` is fixed by changing tests (the
@@ -689,10 +761,10 @@ interface SummaryRuleBlock {
  * - **a second (or later) block in the same run, with a PR** — the in-run
  *   recovery already had its turn and failed to clear the gate, so this is
  *   where the existing-PR path finalises the PR the way the recovery path
- *   finalises it (body, labels, link, auto-merge — except that auto-merge is withheld
- *   and the PR labelled `standing-violation` when a Standards violation on
- *   the branch's own lines survived the recovery turn, Issue #3382), and the
- *   run reports
+ *   finalises it (body, labels, link, auto-merge; a Standards violation on
+ *   the branch's own lines that survived the recovery turn, Issue #3382, is
+ *   posted on the PR as a findings comment and the PR is still armed, Issue
+ *   #4291), and the run reports
  *   `summary_incomplete`: the work is done, the summary is short, and the
  *   issue stays attached to its PR instead of going back in the queue. An
  *   existing PR whose URL cannot be numbered fails the run instead — before
@@ -729,6 +801,58 @@ interface SummaryRuleBlock {
  *   carrying the `summary_incomplete` outcome on a later block that reached
  *   and finalised an existing PR.
  */
+/**
+ * Remember review findings that survived the in-run recovery (Issue #4236).
+ *
+ * Only when a summary-rule block is already recorded (the recovery turn has
+ * been spent) and this branch has no open pull request. An existing pull
+ * request takes the findings-comment path. Returns true when the caller
+ * should raise the pull request instead of failing the run.
+ */
+async function rememberReviewRecord(
+  repo: string,
+  state: PhaseState,
+  deps: WorkerDeps,
+  findings: readonly PreprReviewFinding[],
+): Promise<boolean> {
+  if (findings.length === 0) return false;
+  if ((state.summaryRuleBlocks?.length ?? 0) < 1) return false;
+  const existing = await deps.pr.findExistingPrForBranch(
+    repo,
+    state.branchName,
+  );
+  if (existing.ok) return false;
+  state.preprReviewFindings = [
+    ...(state.preprReviewFindings ?? []),
+    ...findings,
+  ];
+  return true;
+}
+
+/**
+ * Post the change-request record and count it. The record routes the next
+ * PR-feedback pass to answer the findings; the caller still arms auto-merge
+ * (Issue #4291).
+ */
+async function postPreprReviewRecord(
+  repo: string,
+  prNumber: number,
+  findings: readonly PreprReviewFinding[],
+  deps: WorkerDeps,
+): Promise<void> {
+  const logger = deps.logger;
+  logger.info(
+    "Pre-PR review requested changes — posting the record (Issue #4236)",
+    { repo, prNumber, findings: findings.length },
+  );
+  await deps.github.createClient(logger).postComment(
+    repo,
+    prNumber,
+    renderPreprReviewRequest(findings),
+  );
+  recordPreprReviewChangesRequested(findings.length);
+}
+
 async function reportSummaryRuleBlock(
   block: SummaryRuleBlock,
   ctx: IssueContext,
@@ -936,10 +1060,11 @@ async function reportSummaryRuleBlock(
     deps,
     {
       docsSweepHitsComment,
-      holdAutoMerge: block.standingViolations.length > 0 ||
-        block.verifierHoldComment.length > 0 || block.docHoldComment.length > 0,
-      verifierHoldComment: [block.verifierHoldComment, block.docHoldComment]
-        .filter(Boolean).join("\n\n"),
+      findingsComment: [
+        renderStandingViolations(block.standingViolations),
+        block.verifierHoldComment,
+        block.docHoldComment,
+      ].filter(Boolean).join("\n\n"),
     },
   );
   if (recovered.status !== "continue") return recovered;
@@ -1020,6 +1145,55 @@ async function postDocsSweepHitsComment(
 }
 
 /**
+ * The surviving own-line Standards violations as one findings section
+ * (Issues #3382, #4291). Empty when there are none.
+ */
+function renderStandingViolations(
+  violations: readonly StandingViolation[],
+): string {
+  if (violations.length === 0) return "";
+  return [
+    "Standards violations still standing on this branch's own lines:",
+    "",
+    ...violations.map((violation) => `- ${violation.text}`),
+  ].join("\n");
+}
+
+/**
+ * Post the findings that survived the recovery turn under the verifier-hold
+ * marker, which routes the next run to fix them (Issues #3796, #4291). A
+ * failed post is an error and never stops the PR being armed.
+ */
+async function postFindingsComment(
+  repo: string,
+  prNumber: number,
+  findings: string,
+  deps: WorkerDeps,
+): Promise<void> {
+  const logger = deps.logger;
+  logger.warn("Blocking findings survived the recovery turn — posting them", {
+    repo,
+    prNumber,
+  });
+  try {
+    await deps.github.createClient(logger).postComment(
+      repo,
+      prNumber,
+      `${PRE_PR_VERIFIER_HOLD_MARKER}\n\n` +
+        "Blocking pre-PR findings survived the recovery turn. Fix or " +
+        "dispute each finding with evidence.\n\n" +
+        findings,
+    );
+  } catch (error) {
+    logger.error("Could not post the pre-PR verifier findings comment", {
+      repo,
+      prNumber,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
  * Recover an existing PR by updating its body and labels, then finalise (Issue #1189).
  *
  * Issue #1559: When the recovered PR is already merged, skip the redundant
@@ -1029,14 +1203,12 @@ async function postDocsSweepHitsComment(
  * Issue #3237: `finalise.docsSweepHitsComment`, when non-empty, is posted to
  * the recovered PR once — advisory, best-effort, never affects the result.
  *
- * Issue #3382: `finalise.holdAutoMerge` is set when a Standards violation is
- * still standing on the branch's own lines, or a pre-PR verifier block survives
- * the recovery turn. Auto-merge
- * is then NOT armed and the PR is labelled `standing-violation` for the next
- * run to fix. Issue #4075: auto-merge is also disarmed (`gh pr merge
- * --disable-auto`) when an earlier pass had already armed it, because the
- * label alone leaves it live until the next sweep. The flag has no default:
- * every caller states it.
+ * Issue #3382: `finalise.findingsComment` is set when a Standards violation
+ * is still standing on the branch's own lines, or a pre-PR verifier block
+ * survives the recovery turn. It is posted on the PR under the verifier-hold
+ * marker, which routes the next run to fix it. Issue #4291: the PR is armed
+ * either way — PRs do not merge until they have a review approval and CI is
+ * green, and GitHub enforces both.
  *
  * Exported for unit testing — the primary entry point remains
  * `workOnIssueCompletion`.
@@ -1049,11 +1221,10 @@ export async function recoverAndFinaliseExistingPr(
   deps: WorkerDeps,
   finalise: {
     docsSweepHitsComment: string;
-    holdAutoMerge: boolean;
-    verifierHoldComment?: string;
+    findingsComment?: string;
   },
 ): Promise<PhaseResult> {
-  const { docsSweepHitsComment, holdAutoMerge } = finalise;
+  const { docsSweepHitsComment, findingsComment } = finalise;
   const { repo, issueNumber, githubUser, milestoneTitle, issueLabels } = ctx;
   const logger = deps.logger;
   const prNumber = prNumberFromUrl(prUrl);
@@ -1108,69 +1279,12 @@ export async function recoverAndFinaliseExistingPr(
 
     // Issue #1136: arm auto-merge here, on the recovery path too — see the
     // note on the creation path below.
-    if (prNumber > 0 && holdAutoMerge) {
-      // Issues #3382, #3796: a standing violation or verifier block — hold
-      // the merge and make the hold visible on the PR. The label is also what
-      // the Priority 1.65 sweep reads to keep it held (Issue #3517).
-      logger.warn(
-        "Auto-merge NOT armed: unresolved blocking findings — PR labelled " +
-          "standing-violation for the next run to fix",
-        {
-          repo,
-          prNumber,
-          reason: finalise.verifierHoldComment
-            ? "pre-PR verifier block (and any standing Standards violations)"
-            : "standing Standards violation",
-        },
-      );
-      const ensured = await deps.github.ensureLabelExists(
-        repo,
-        STANDING_VIOLATION_LABEL,
-      );
-      if (!ensured.ok) {
-        logger.warn("Could not ensure the standing-violation label exists", {
-          error: ensured.error.message,
-        });
-      }
-      const held = await deps.pr.updatePrLabels(repo, prNumber, [
-        STANDING_VIOLATION_LABEL,
-      ]);
-      if (!held.ok) {
-        logger.error(
-          "Could not label the PR standing-violation — the auto-merge hold " +
-            "is not visible on the PR (Issue #3382)",
-          { repo, prNumber, error: held.error.message },
-        );
-      }
-      // Issue #4075: an earlier pass may have armed auto-merge already; the
-      // label alone leaves it live until the next sweep. Disarm now, as
-      // holdUnverifiedReview does. Never throws; logs a warning on failure.
-      await disarmAutoMerge(
-        repo,
-        prNumber,
-        deps.github.runGhCommand,
-        (m) => logger.warn(m),
-      );
-      if (finalise.verifierHoldComment) {
-        try {
-          await deps.github.createClient(logger).postComment(
-            repo,
-            prNumber,
-            `${PRE_PR_VERIFIER_HOLD_MARKER}\n\n` +
-              "Auto-merge withheld: blocking pre-PR findings " +
-              "survived the recovery turn. Fix or dispute each finding with " +
-              "evidence before the hold is released.\n\n" +
-              finalise.verifierHoldComment,
-          );
-        } catch (error) {
-          logger.error("Could not post the pre-PR verifier hold comment", {
-            repo,
-            prNumber,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-    } else if (prNumber > 0) {
+    if (prNumber > 0 && findingsComment) {
+      // Issues #3382, #3796: surviving findings are posted on the PR for the
+      // next run to fix. Issue #4291: the PR is still armed below.
+      await postFindingsComment(repo, prNumber, findingsComment, deps);
+    }
+    if (prNumber > 0) {
       // Issue #4146: a timed-out run's draft continuation, now that every
       // criterion is met (the unmet-criteria gate never lets a partial run
       // reach here). Its body already says `Closes #N`; mark it ready so it
@@ -1192,7 +1306,13 @@ export async function recoverAndFinaliseExistingPr(
           ciStarted,
         });
       }
-      if (ciStarted) await armAutoMergeAtCreation(ctx, state, prNumber, deps);
+      const reviewRecord = state.preprReviewFindings ?? [];
+      if (reviewRecord.length > 0) {
+        await postPreprReviewRecord(repo, prNumber, reviewRecord, deps);
+      }
+      if (ciStarted) {
+        await armAutoMergeAtCreation(ctx, state, prNumber, deps);
+      }
     }
 
     // Issue #3237: advisory docs-sweep stale-hits comment, posted once.
@@ -1778,6 +1898,11 @@ async function completionBody(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
+  // Issue #4236: a later round in the same run (the unmet-criteria loop,
+  // or the one infrastructure retry) must record only the findings that
+  // survive this attempt. Findings remembered and then not raised would
+  // otherwise be posted again, or posted after the verifier had cleared them.
+  state.preprReviewFindings = undefined;
   const alreadyLanded = await alreadyLandedPhaseResult(
     ctx,
     state,
@@ -2085,8 +2210,10 @@ async function completionBody(
   const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
     // The repo's own formatters first (part of #2932): a formatting-only miss
     // is fixed and committed here rather than failing the gate, or shipping
-    // to review and CI. Same files as the gate, never Markdown; a formatter
-    // that fails or throws is logged and the gate below still reports it.
+    // to review and CI. Same files as the gate. Agent-authored Markdown stays
+    // unformatted; the worker's archive notes are formatted afterwards. A
+    // formatter that fails or throws is logged and the gate below still
+    // reports it.
     await formatBeforeGate(
       deps,
       state.repoPath,
@@ -3106,7 +3233,7 @@ async function completionBody(
     branchOutcomesNamedTests,
     (args) => deps.git.runGitCommand(args, { cwd: state.repoPath }),
   );
-  const branchOutcomes = validateBranchOutcomes({
+  let branchOutcomes = validateBranchOutcomes({
     changedFiles: changedFilesKnown ? changedFiles : null,
     prSummaryContent: prBody,
     testsAtHead,
@@ -3116,8 +3243,48 @@ async function completionBody(
     branchOutcomesFactsProblem = branchOutcomesFacts.reason;
   }
 
+  // Issue #4188: a refused flip blocks through this same gate. not_checked
+  // is rendered beside flipWentRed and does not block. The verifier runs
+  // only once the facts file has validated, next to validateBranchOutcomes.
+  let flipRefusals: string[] = [];
+  if (branchOutcomesFacts.kind === "valid") {
+    const flipVerdicts = await assessFactsFlips({
+      facts: branchOutcomesFacts.facts,
+      repoPath: state.repoPath,
+      budgetRaw: getRepoConfig(
+        config.repoConfig,
+        repo,
+        "mutationCheckBudgetSeconds",
+      ),
+      verify: deps.quality.verifyFactsFlips,
+      logger,
+    });
+    flipRefusals = flipRefusalMessages(flipVerdicts);
+    const rendered = renderBranchOutcomes(
+      branchOutcomesFacts.facts,
+      flipVerdicts,
+    );
+    const appliedBody = applyBranchOutcomesFacts(prBody, rendered);
+    if (appliedBody.ok) prBody = appliedBody.value;
+    else {
+      logger.error(
+        "Facts flip verdict could not be rendered into the PR body",
+        { reason: appliedBody.error.message },
+      );
+    }
+    const appliedSummary = applyBranchOutcomesFacts(summaryContent, rendered);
+    if (appliedSummary.ok) summaryContent = appliedSummary.value;
+    if (flipRefusals.length > 0) {
+      branchOutcomes = {
+        ...branchOutcomes,
+        problems: [...flipRefusals, ...branchOutcomes.problems],
+      };
+    }
+  }
+
   const branchOutcomesBlocked = branchOutcomesFactsProblem !== null ||
-    (branchOutcomes.applicable && !branchOutcomes.valid);
+    (branchOutcomes.applicable && !branchOutcomes.valid) ||
+    flipRefusals.length > 0;
   const branchOutcomesReason =
     `Branch outcomes not recorded in the PR summary: ${
       branchOutcomesFactsProblem ??
@@ -4044,24 +4211,38 @@ async function completionBody(
         reason: claimCheckVerdict.reason,
       };
     }
-    return await reportSummaryRuleBlock(
-      foldInLateSummaryVerdicts(
-        claimCheckVerdict.reason,
-        claimCheckVerdict.comment(),
-        [
-          docsSweepVerdict,
-          removedAssertionsVerdict,
-          placeholderVerdict,
-          branchOutcomesVerdict,
-          claimCheckVerdict,
-        ],
-      ),
-      ctx,
-      state,
-      prBody,
-      deps,
-      docsSweepHitsComment,
-    );
+    const claimFindings = collectPreprReviewFindings({
+      claimFindings: claimCheck.findings,
+      docFindings: claimCheck.docFindings,
+      testPlanProblems: claimCheck.testPlanProblems,
+    });
+    if (
+      await rememberReviewRecord(repo, state, deps, claimFindings)
+    ) {
+      logger.info(
+        "Summary claim check is the only remaining block — the PR will be raised with a change-request record (Issue #4236)",
+        { repo, issueNumber, findings: claimFindings.length },
+      );
+    } else {
+      return await reportSummaryRuleBlock(
+        foldInLateSummaryVerdicts(
+          claimCheckVerdict.reason,
+          claimCheckVerdict.comment(),
+          [
+            docsSweepVerdict,
+            removedAssertionsVerdict,
+            placeholderVerdict,
+            branchOutcomesVerdict,
+            claimCheckVerdict,
+          ],
+        ),
+        ctx,
+        state,
+        prBody,
+        deps,
+        docsSweepHitsComment,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -4081,23 +4262,33 @@ async function completionBody(
       findings: prePrVerifier.review.findings.length,
     });
     const comment = prePrVerifierVerdict.comment();
-    return await reportSummaryRuleBlock(
-      {
-        categories: prePrVerifierVerdict.categories ?? ["quality_check"],
-        reason: prePrVerifierVerdict.reason,
-        comment,
-        sections: [comment],
-        standingViolations,
-        verifierHoldComment: comment,
-        docHoldComment: "",
-        ...(unmetCriteria.length > 0 ? { unmetCriteria } : {}),
-      },
-      ctx,
-      state,
-      prBody,
-      deps,
-      docsSweepHitsComment,
-    );
+    const verifierFindings = collectPreprReviewFindings({
+      verifierFindings: prePrVerifier.review.findings,
+    });
+    if (await rememberReviewRecord(repo, state, deps, verifierFindings)) {
+      logger.info(
+        "Pre-PR verifier is the only remaining block — the PR will be raised with a change-request record (Issue #4236)",
+        { repo, issueNumber, findings: verifierFindings.length },
+      );
+    } else {
+      return await reportSummaryRuleBlock(
+        {
+          categories: prePrVerifierVerdict.categories ?? ["quality_check"],
+          reason: prePrVerifierVerdict.reason,
+          comment,
+          sections: [comment],
+          standingViolations,
+          verifierHoldComment: comment,
+          docHoldComment: "",
+          ...(unmetCriteria.length > 0 ? { unmetCriteria } : {}),
+        },
+        ctx,
+        state,
+        prBody,
+        deps,
+        docsSweepHitsComment,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -4139,6 +4330,11 @@ async function completionBody(
   // closed the issue against #173 and released three unpublished commits.
   // A merged or closed PR is never the PR for commits this run just pushed,
   // so the branch is consulted first and the decision is made explicitly.
+  const reviewRecord = state.preprReviewFindings ?? [];
+  if (reviewRecord.length > 0) {
+    prBody = `${renderPreprReviewHeadNote(reviewRecord.length)}\n\n${prBody}`;
+  }
+
   const openPrForBranch = await deps.pr.findExistingPrForBranch(
     repo,
     state.branchName,
@@ -4195,7 +4391,7 @@ async function completionBody(
       state,
       prBody,
       deps,
-      { docsSweepHitsComment, holdAutoMerge: false },
+      { docsSweepHitsComment },
     );
   }
 
@@ -4330,7 +4526,7 @@ async function completionBody(
           state,
           prBody,
           deps,
-          { docsSweepHitsComment, holdAutoMerge: false },
+          { docsSweepHitsComment },
         );
       } else if (isSecondaryRateLimitMessage(errorMsg)) {
         // The latch's own cool-down names both limits (Issue #1456), so it
@@ -4419,6 +4615,12 @@ async function completionBody(
     // raises and `decideSummaryPrMerge` re-gates on open children at merge
     // time (Issue #3909). The sweep already merged these children, so the
     // skip only ever delayed them.
+    // Issue #4291: a pre-PR review record is posted, and the PR is armed
+    // all the same.
+    const reviewRecord = state.preprReviewFindings ?? [];
+    if (prNumber > 0 && reviewRecord.length > 0) {
+      await postPreprReviewRecord(repo, prNumber, reviewRecord, deps);
+    }
     if (prNumber > 0) {
       await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }

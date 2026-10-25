@@ -45,13 +45,8 @@ import {
 } from "./run_outcome.ts";
 import { isGraftContextEnabled } from "./graft_context_config.ts";
 import { deleteResumeState } from "./resume_state_store.ts";
-import {
-  handOffAnalysisOnly,
-  hasAnalysisOnlyMarker,
-} from "./analysis_only_handoff.ts";
 import { isAdminOnlyRepoSettingsIssue } from "./admin_only_finding.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
-import { escalateReapprovalSuperseded } from "./reapproval_superseded_handoff.ts";
+import { closeReapprovalSuperseded } from "./reapproval_superseded_close.ts";
 import {
   detectSuspiciousImageFlag,
   handOffSuspiciousImage,
@@ -239,21 +234,19 @@ async function workOnIssueRecorded(
     // Issue #1862: the one point that sees both halves of the loop — a
     // post-merge re-approval the pre-check honoured, and a run that then
     // ended superseded because the merged PR already satisfies the original
-    // description. Hand it to a human with one deduped comment instead of
+    // description. Close it as completed by that PR (Issue #4298) instead of
     // letting the next cycle claim it again. Runs before the outcome is
     // derived so the note lands on the claim-release comment.
-    const handoffNote = await escalateReapprovalSuperseded({
+    const closeNote = await closeReapprovalSuperseded({
       repo: ctx.repo,
       issueNumber: ctx.issueNumber,
-      needsHumanLabel: ctx.config.needsHumanLabel,
       reapproval: state.postMergeReapproval,
       outcome: result.outcome,
-      githubUser: ctx.githubUser,
       ghFn: deps.github.runGhCommand,
       logger: deps.logger,
     });
-    if (handoffNote) {
-      state.releaseNotes = [...(state.releaseNotes ?? []), handoffNote];
+    if (closeNote) {
+      state.releaseNotes = [...(state.releaseNotes ?? []), closeNote];
     }
     // The run outcome travels to the claim-release comment (Issue #4325):
     // the PR the completion phase raised or recovered, or the diagnosed
@@ -514,90 +507,73 @@ async function workOnIssueCore(
         : { ...terminalResult, success: true };
     }
 
-    // Issue #2849 — up-front analysis-only / no-PR hand-off.
-    // When the issue body declares itself analysis-only via the
-    // `<!-- analysis-only -->` marker, `work-on` has no PR to raise as
-    // its completion signal, so it would re-pick-up and re-run the issue
-    // indefinitely (the #2834 loop). Hand off to `needs-human` before
-    // cloning the repo or running Claude. This is the up-front detection
-    // signal; the post-run signal (no code changes) is handled in the
-    // handle-no-changes phase. A clean hand-off is NOT a failure.
-    if (hasAnalysisOnlyMarker(ctx.issueBody)) {
-      logger.info(
-        "Analysis-only marker present — handing off to needs-human before running Claude",
-        { repo: ctx.repo, issueNumber: ctx.issueNumber },
-      );
-      await runPhase("analysis_only_handoff", async () => {
-        const ghClient = deps.github.createClient(logger);
-        await handOffAnalysisOnly({
-          ghClient,
-          repo: ctx.repo,
-          issueNumber: ctx.issueNumber,
-          needsHumanLabel: ctx.config.needsHumanLabel,
-          githubUser: ctx.githubUser,
-          trigger: "marker",
-          logger,
-          deps: { ensureLabelExists: deps.github.ensureLabelExists },
-        });
-        return {
-          category: "unknown",
-          status: "early_exit",
-          reason: "analysis_only_marker",
-        };
-      });
-      return {
-        success: true,
-        phase: "analysis_only_handoff",
-        reason: "analysis_only_marker",
-        timings,
-      };
-    }
-
-    // Issue #53 — up-front hand-off for a repository-admin finding.
-    // `repo_settings_scanner.ts` files `BP-REPO-*` findings whose fix is a
-    // settings change only an admin can make. If a human bulk-triaged one to
-    // `work-on`, running the agent changes nothing and completion fails "no
-    // commits ahead", releasing the claim so the still-`work-on` issue loops
-    // back into the pool forever. Recognise it from its body and hand it to a
-    // human before cloning the repo or running Claude. A clean hand-off is not
-    // a failure.
+    // Issue #53 — a repository-admin finding is a settings change, not code.
+    // `repo_settings_scanner.ts` files `BP-REPO-*` findings; running the agent
+    // on one changes nothing and completion fails "no commits ahead". So the
+    // worker applies the setting itself through `repo_settings_harden.ts`
+    // before cloning the repo or running Claude, and closes the finding
+    // (Issue #4298). A token that cannot apply it is recorded as a failure on
+    // the normal `failed-once` ladder and retried — never handed to a human.
     if (isAdminOnlyRepoSettingsIssue(ctx.issueBody)) {
       logger.info(
-        "Repository-admin finding — handing off to needs-human before running Claude (Issue #53)",
+        "Repository-admin finding — applying the setting before running Claude (Issue #4298)",
         { repo: ctx.repo, issueNumber: ctx.issueNumber },
       );
-      await runPhase("admin_only_handoff", async () => {
-        await escalateToHuman({
-          ghClient: deps.github.createClient(logger),
-          repo: ctx.repo,
-          target: { kind: "issue", number: ctx.issueNumber },
-          needsHumanLabel: ctx.config.needsHumanLabel,
-          heading: "Repository-admin action required",
-          reason:
-            "This finding's fix is a repository settings change that only a " +
-            "repository admin can make — the worker cannot change repository " +
-            "settings, so an agent run would change nothing and fail at " +
-            "completion. Handing off rather than looping on it.",
-          nextStep:
-            "A repository admin should apply the change described in the " +
-            "issue's Suggested fix, then close the issue.",
-          dedupKey: `admin-only-${ctx.issueNumber}`,
-          githubUser: ctx.githubUser,
-          deps: {
-            github: { ensureLabelExists: deps.github.ensureLabelExists },
-          },
-          logger,
-        });
+      const repair = await runPhase(
+        "admin_only_repair",
+        async () => {
+          const applied = await deps.github.repairRepoSettingsFinding(
+            ctx.repo,
+            ctx.issueBody,
+          );
+          if (!applied.ok) {
+            return {
+              category: "internal_error",
+              status: "failure",
+              reason:
+                `Repository-admin finding not applied: ${applied.error.message}`,
+            };
+          }
+          const ghClient = deps.github.createClient(logger);
+          try {
+            await ghClient.closeIssue(
+              ctx.repo,
+              ctx.issueNumber,
+              `## Setting applied\n\nThe worker applied this finding's repository setting itself, so the finding is closed (Issue #4298).\n\n${applied.value}`,
+            );
+            await ghClient.unassignIssue(ctx.repo, ctx.issueNumber, [
+              ctx.githubUser,
+            ]);
+          } catch (err) {
+            logger.warn(
+              "Failed to close the applied repository-admin finding",
+              {
+                repo: ctx.repo,
+                issueNumber: ctx.issueNumber,
+                error: err instanceof Error ? err.message : String(err),
+              },
+            );
+          }
+          return {
+            category: "unknown",
+            status: "early_exit",
+            reason: "admin_only_finding_applied",
+          };
+        },
+      );
+      if (repair.status === "failure") {
         return {
-          category: "unknown",
-          status: "early_exit",
-          reason: "admin_only_finding",
+          category: repair.category,
+          success: false,
+          phase: "admin_only_repair",
+          reason: repair.reason,
+          timings,
         };
-      });
+      }
       return {
         success: true,
-        phase: "admin_only_handoff",
-        reason: "admin_only_finding",
+        phase: "admin_only_repair",
+        reason: "admin_only_finding_applied",
         timings,
       };
     }

@@ -72,8 +72,11 @@ import {
   type SessionResumeState,
 } from "./session_resume.ts";
 import {
+  adaptCodexAfterModelRefusal,
+  applyCodexModelAdaptation,
   buildCodexArgs,
   buildCodexMcpConfigArgs,
+  codexAlternativeModels,
   composeCodexPrompt,
   resolveCodexEffort,
   resolveCodexModel,
@@ -497,17 +500,33 @@ export interface AgentProviderDescriptor {
   servedModelSatisfies?(served: string, expected: string): boolean;
   /**
    * Same-provider tiers to try when `model` probes unavailable (Issue #2059).
-   * Absent → no tier adaptation for this provider; the health gate's
-   * provider-level verdicts (fallback, skip) own the response.
+   * `phase` and `env` let a provider answer for one phase's built-in default
+   * (Issue #4221). Absent → no tier adaptation for this provider; the health
+   * gate's provider-level verdicts (fallback, skip) own the response.
    */
-  alternativeModels?(model: string): string[];
+  alternativeModels?(model: string, phase?: string, env?: EnvLookup): string[];
   /**
    * Apply a tier adaptation for this run (Issue #2059): routes phases whose
    * designed default is `unavailable` onto `alternative` — never overriding
-   * an explicit operator/repo/env pin. Absent → no adaptation for this
-   * provider.
+   * an explicit operator/repo/env pin. `phase` names the phase the probe ran
+   * for (Issue #4221). Absent → no adaptation for this provider.
    */
-  applyModelAdaptation?(unavailable: string, alternative: string): void;
+  applyModelAdaptation?(
+    unavailable: string,
+    alternative: string,
+    phase?: string,
+  ): void;
+  /**
+   * In-run counterpart of alternativeModels (Issue #4221): called when an
+   * invocation was refused `model`; returns true when the provider adapted its
+   * routing so one retry on the same provider will omit/replace the refused id.
+   * Absent → no in-run adaptation.
+   */
+  adaptAfterModelRefusal?(
+    model: string,
+    phase: string | undefined,
+    env?: EnvLookup,
+  ): boolean;
   /** Build the CLI argument list for one invocation. */
   buildInvocation(request: AgentInvocationRequest): string[];
   /**
@@ -622,8 +641,10 @@ function buildClaudeCliArgs(
   if (request.agents) {
     args.push("--agents", JSON.stringify(request.agents));
   }
-  // The split run's advisor edit guard (Issue #2344), beside the sub-agent
-  // definitions it enforces. Absent pushes nothing.
+  // One --settings for this spawn (Issues #2344, #2383, #4139). The caller
+  // has already merged the edit guard and the hooks into settingsJson, and
+  // the CLI keeps a single settings payload, so the flag is emitted once.
+  // Absent pushes nothing.
   if (request.settingsJson) {
     args.push("--settings", request.settingsJson);
   }
@@ -635,13 +656,6 @@ function buildClaudeCliArgs(
   // directory the agent never runs from.
   if (request.mcpConfigPath) {
     args.push("--mcp-config", request.mcpConfigPath);
-  }
-
-  // This spawn's hooks, carried on the command line (Issue #2383) rather than
-  // written to `~/.claude/settings.json`: a run that installs none emits no
-  // flag and spawns the argv it always did.
-  if (request.settingsJson) {
-    args.push("--settings", request.settingsJson);
   }
 
   // Static content passed separately so the CLI caches it (Issue #1262).
@@ -850,6 +864,28 @@ const CODEX_PROVIDER: AgentProviderDescriptor = {
   // does: the chain lives in `codex_executor.ts` and is never restated here.
   resolveModel(phase?: string, env?: EnvLookup): string | undefined {
     return resolveCodexModel(phase, env);
+  },
+
+  // A ChatGPT login may refuse a built-in default (Issue #4221): the alternative
+  // is the CLI's own default, i.e. no --model.
+  alternativeModels(model: string, phase?: string, env?: EnvLookup): string[] {
+    return codexAlternativeModels(model, phase, env);
+  },
+
+  applyModelAdaptation(
+    unavailable: string,
+    alternative: string,
+    phase?: string,
+  ): void {
+    applyCodexModelAdaptation(unavailable, alternative, phase);
+  },
+
+  adaptAfterModelRefusal(
+    model: string,
+    phase: string | undefined,
+    env?: EnvLookup,
+  ): boolean {
+    return adaptCodexAfterModelRefusal(model, phase, env);
   },
 
   resolveEffort(phase?: string, env?: EnvLookup): string | undefined {

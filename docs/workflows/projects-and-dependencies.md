@@ -84,14 +84,11 @@ So milestone issues always branch off the milestone branch when present, keeping
 
 **Workflow behaviour:**
 
-1. **Detect** — The worker (or supporting logic) builds a dependency graph and detects cycles (e.g. via topological sort / DFS — Depth-First Search). Issues that participate in a cycle are classified as **circular**.
-2. **Never select** — Circular issues are **never** considered "ready" and must not be picked for implementation. Selecting one would not resolve the cycle and would block others.
-3. **User must break the cycle** — Until a user edits the issues to remove or change a "Depends on" / "Blocked by" so that the cycle is broken, none of the issues in the cycle will be worked on. The worker does not arbitrarily "ignore" one dependency to break the cycle.
-4. **Must report** — The worker **must** report circular dependencies on GitHub so users can see and fix them. Machines are unattended; logging alone is not sufficient. For each issue in a detected cycle:
-   - **Comment** on the issue explaining that it is part of a circular dependency (list the cycle, e.g. "This issue is in a dependency cycle: #A → #B → #C → #A. Please remove or change a 'Depends on' / 'Blocked by' to break the cycle.").
-   - **Apply a dedicated label** (e.g. `circular-dependency` or as configured) so the issue is visible in issue lists and filters. The label must be auto-created with a consistent colour and description (see [Workflow labels](#%EF%B8%8F-workflow-labels)).
+1. **Detect** — The worker builds a dependency graph over the dependency-blocked `work-on` issues and detects cycles (DFS — Depth-First Search). Issues that participate in a cycle are classified as **circular**.
+2. **Break the cycle in issue-number order** — The lowest-numbered member of each cycle becomes a candidate and is worked; the other members wait on it as ordinary dependencies and are unblocked as it closes (Issue #4298). A member that also waits on an open issue *outside* its cycle is a real wait and stays blocked.
+3. **Never hand back** — No label or comment asks a human to fix the graph: an issue the worker cannot order itself is a Vibe Coder bug, not a human task.
 
-**Summary:** Detect circular dependencies; never pick circular issues; **always** comment and label so users are informed; require human intervention to fix the dependency graph.
+**Summary:** Detect circular dependencies; work the lowest-numbered member first; let the rest follow as ordinary dependencies.
 
 ### 🏷️ Workflow labels
 

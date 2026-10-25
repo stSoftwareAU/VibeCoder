@@ -176,14 +176,12 @@ export async function workOnIssueClarityPhase(
     return { status: "continue" };
   }
 
-  // Complexity pre-check (Issue #557). Previously this just returned
-  // Complexity pre-check removed — checkboxes and numbered lists indicate
-  // a well-defined issue, not a complex one. Let Claude assess complexity
-  // during implementation and handle it via the clarification phase.
-
-  // Clarity assessment
+  // Scope alone does not identify missing information (Issue #4147). The
+  // heuristic also counts clear numbered requirements as "too_complex";
+  // leave decomposition to implementation instead of asking a human whether
+  // to split an already-approved assignment. Genuine clarity questions remain.
   const clarity = analyseIssueClarity(issueTitle, issueBody, issueLabels);
-  if (clarity.isClear) {
+  if (clarity.isClear || clarity.reason === "too_complex") {
     state.clarityStatus = "assessed_clear";
     logger.info("Issue is clear, proceeding with implementation");
     return { status: "continue" };

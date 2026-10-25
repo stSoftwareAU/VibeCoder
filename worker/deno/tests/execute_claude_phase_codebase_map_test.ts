@@ -62,7 +62,8 @@ function createMockDeps(
     recordHeartbeat: () => Promise.resolve({ ok: true, value: undefined }),
     clearHeartbeat: () => Promise.resolve({ ok: true, value: undefined }),
     getPromptsCommit: () => Promise.resolve({ ok: true, value: "abc1234" }),
-    log: (message: string) => logs.push(message),
+    log: (message: string, level?: string) =>
+      logs.push(`${level ?? "INFO"}: ${message}`),
   };
 }
 
@@ -198,7 +199,7 @@ Deno.test("runExecuteClaudePhase - a map failure warns loudly and does not stop 
 
     assertEquals(captured.options?.codebaseMap, undefined);
     assert(
-      logs.some((l) => l.startsWith("WARN: codebase map unavailable")),
+      logs.some((l) => l.startsWith("warn: codebase map unavailable")),
       `expected a loud warning, got: ${logs.join(" | ")}`,
     );
     assert(

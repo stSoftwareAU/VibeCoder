@@ -9,6 +9,32 @@
  * Migrated from worker/shared/pid_guard.sh (Issue #903).
  */
 
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** `ps`, `pgrep` and `kill` probes. Seconds. A timeout is not "not running". */
+const PID_PROBE_TIMEOUT_MS = 10_000;
+
+function rethrowPidTimeout(err: unknown): void {
+  if (isCommandTimeoutError(err)) throw err;
+}
+
+async function runPidProbe(
+  executable: string,
+  args: string[],
+  stdout: "piped" | "null",
+  timeoutMs: number,
+): Promise<Deno.CommandOutput> {
+  return await commandOutputWithTimeout(executable, {
+    args,
+    stdout,
+    stderr: "null",
+    timeoutMs,
+  });
+}
+
 /** Result of a PID guard operation (e.g., checking an existing PID file). */
 export interface PidGuardResult {
   /** Whether the guard check passed (i.e., safe to proceed). */
@@ -62,16 +88,20 @@ export function trim(s: string): string {
  * @param pid - The process ID to check
  * @returns Whether the process is running
  */
-export async function isRunning(pid: number): Promise<boolean> {
+export async function isRunning(
+  pid: number,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
+): Promise<boolean> {
   try {
-    const cmd = new Deno.Command("ps", {
-      args: ["-p", String(pid)],
-      stdout: "null",
-      stderr: "null",
-    });
-    const output = await cmd.output();
+    const output = await runPidProbe(
+      "ps",
+      ["-p", String(pid)],
+      "null",
+      timeoutMs,
+    );
     return output.success;
   } catch (err) {
+    rethrowPidTimeout(err);
     console.debug(
       `[pid-guard] Failed to check if PID ${pid} is running: ${
         err instanceof Error ? err.message : String(err)
@@ -87,17 +117,21 @@ export async function isRunning(pid: number): Promise<boolean> {
  * @param pid - The process ID to query
  * @returns The command string, or empty string if unavailable
  */
-export async function getCommand(pid: number): Promise<string> {
+export async function getCommand(
+  pid: number,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
+): Promise<string> {
   try {
-    const cmd = new Deno.Command("ps", {
-      args: ["-p", String(pid), "-o", "command="],
-      stdout: "piped",
-      stderr: "null",
-    });
-    const output = await cmd.output();
+    const output = await runPidProbe(
+      "ps",
+      ["-p", String(pid), "-o", "command="],
+      "piped",
+      timeoutMs,
+    );
     if (!output.success) return "";
     return trim(new TextDecoder().decode(output.stdout));
   } catch (err) {
+    rethrowPidTimeout(err);
     console.debug(
       `[pid-guard] Failed to get command for PID ${pid}: ${
         err instanceof Error ? err.message : String(err)
@@ -186,21 +220,25 @@ export function parseEtimeToSeconds(etimeRaw: string): number | null {
  * @param pid - The process ID to query
  * @returns Elapsed seconds, or null if unavailable
  */
-export async function getElapsedSeconds(pid: number): Promise<number | null> {
+export async function getElapsedSeconds(
+  pid: number,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
+): Promise<number | null> {
   // Try etimes first (direct seconds format, available on Linux)
   try {
-    const cmd = new Deno.Command("ps", {
-      args: ["-p", String(pid), "-o", "etimes="],
-      stdout: "piped",
-      stderr: "null",
-    });
-    const output = await cmd.output();
+    const output = await runPidProbe(
+      "ps",
+      ["-p", String(pid), "-o", "etimes="],
+      "piped",
+      timeoutMs,
+    );
     if (output.success) {
       const etimes = trim(new TextDecoder().decode(output.stdout));
       const seconds = parseInt(etimes, 10);
       if (!isNaN(seconds)) return seconds;
     }
   } catch (err) {
+    rethrowPidTimeout(err);
     console.debug(
       `[pid-guard] etimes lookup failed for PID ${pid}, falling back to etime: ${
         err instanceof Error ? err.message : String(err)
@@ -208,19 +246,27 @@ export async function getElapsedSeconds(pid: number): Promise<number | null> {
     );
   }
 
-  // Fall back to etime format
+  return await readElapsedClock(pid, timeoutMs);
+}
+
+/** `ps -o etime=` fallback. A timeout is not "age unknown". */
+export async function readElapsedClock(
+  pid: number,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
+): Promise<number | null> {
   try {
-    const cmd = new Deno.Command("ps", {
-      args: ["-p", String(pid), "-o", "etime="],
-      stdout: "piped",
-      stderr: "null",
-    });
-    const output = await cmd.output();
+    const output = await runPidProbe(
+      "ps",
+      ["-p", String(pid), "-o", "etime="],
+      "piped",
+      timeoutMs,
+    );
     if (output.success) {
       const etime = trim(new TextDecoder().decode(output.stdout));
       return parseEtimeToSeconds(etime);
     }
   } catch (err) {
+    rethrowPidTimeout(err);
     console.debug(
       `[pid-guard] etime lookup failed for PID ${pid}: ${
         err instanceof Error ? err.message : String(err)
@@ -238,17 +284,21 @@ export async function getElapsedSeconds(pid: number): Promise<number | null> {
  * @returns The start time, or an empty string when the pid holds no process
  *   (or `ps` cannot report it)
  */
-export async function getStartTime(pid: number): Promise<string> {
+export async function getStartTime(
+  pid: number,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
+): Promise<string> {
   try {
-    const cmd = new Deno.Command("ps", {
-      args: ["-p", String(pid), "-o", "lstart="],
-      stdout: "piped",
-      stderr: "null",
-    });
-    const output = await cmd.output();
+    const output = await runPidProbe(
+      "ps",
+      ["-p", String(pid), "-o", "lstart="],
+      "piped",
+      timeoutMs,
+    );
     if (!output.success) return "";
     return trim(new TextDecoder().decode(output.stdout));
   } catch (err) {
+    rethrowPidTimeout(err);
     console.debug(
       `[pid-guard] Failed to read start time for PID ${pid}: ${
         err instanceof Error ? err.message : String(err)
@@ -326,29 +376,19 @@ async function resolveIdentity(
 export async function getDescendants(
   parentPid: number,
   depth = 0,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
 ): Promise<number[]> {
   const maxDepth = 20;
 
   if (depth >= maxDepth) return [];
-  if (!(await isRunning(parentPid))) return [];
+  if (!(await isRunning(parentPid, timeoutMs))) return [];
 
   // Get direct children
   let children: number[] = [];
   try {
-    const cmd = new Deno.Command("pgrep", {
-      args: ["-P", String(parentPid)],
-      stdout: "piped",
-      stderr: "null",
-    });
-    const output = await cmd.output();
-    if (output.success) {
-      const text = trim(new TextDecoder().decode(output.stdout));
-      children = text
-        .split("\n")
-        .map((s) => parseInt(trim(s), 10))
-        .filter((n) => !isNaN(n) && n > 0);
-    }
+    children = await listChildPids(parentPid, timeoutMs);
   } catch (err) {
+    rethrowPidTimeout(err);
     console.debug(
       `[pid-guard] pgrep failed for parent PID ${parentPid}, falling back to ps: ${
         err instanceof Error ? err.message : String(err)
@@ -356,28 +396,9 @@ export async function getDescendants(
     );
     // Fallback: use ps to find processes with this PPID
     try {
-      const cmd = new Deno.Command("ps", {
-        args: ["-o", "pid=", "-o", "ppid="],
-        stdout: "piped",
-        stderr: "null",
-      });
-      const output = await cmd.output();
-      if (output.success) {
-        const text = new TextDecoder().decode(output.stdout);
-        children = text
-          .trim()
-          .split("\n")
-          .map((line) => {
-            const parts = line.trim().split(/\s+/);
-            return {
-              pid: parseInt(parts[0] ?? "", 10),
-              ppid: parseInt(parts[1] ?? "", 10),
-            };
-          })
-          .filter((entry) => entry.ppid === parentPid && !isNaN(entry.pid))
-          .map((entry) => entry.pid);
-      }
+      children = await listChildPidsFromPs(parentPid, timeoutMs);
     } catch (err) {
+      rethrowPidTimeout(err);
       console.debug(
         `[pid-guard] ps fallback failed for parent PID ${parentPid}: ${
           err instanceof Error ? err.message : String(err)
@@ -389,7 +410,7 @@ export async function getDescendants(
   // Recursively get descendants (bottom-up order)
   const descendants: number[] = [];
   for (const child of children) {
-    const grandchildren = await getDescendants(child, depth + 1);
+    const grandchildren = await getDescendants(child, depth + 1, timeoutMs);
     descendants.push(...grandchildren);
     descendants.push(child);
   }
@@ -397,18 +418,69 @@ export async function getDescendants(
   return descendants;
 }
 
+/** `pgrep -P`. A timeout is not "this process has no children". */
+export async function listChildPids(
+  parentPid: number,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
+): Promise<number[]> {
+  const output = await runPidProbe(
+    "pgrep",
+    ["-P", String(parentPid)],
+    "piped",
+    timeoutMs,
+  );
+  if (!output.success) return [];
+  const text = trim(new TextDecoder().decode(output.stdout));
+  return text
+    .split("\n")
+    .map((s) => parseInt(trim(s), 10))
+    .filter((n) => !isNaN(n) && n > 0);
+}
+
+/** `ps` parent-pid fallback used when `pgrep` is absent. */
+export async function listChildPidsFromPs(
+  parentPid: number,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
+): Promise<number[]> {
+  const output = await runPidProbe(
+    "ps",
+    ["-o", "pid=", "-o", "ppid="],
+    "piped",
+    timeoutMs,
+  );
+  if (!output.success) return [];
+  const text = new TextDecoder().decode(output.stdout);
+  return text
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const parts = line.trim().split(/\s+/);
+      return {
+        pid: parseInt(parts[0] ?? "", 10),
+        ppid: parseInt(parts[1] ?? "", 10),
+      };
+    })
+    .filter((entry) => entry.ppid === parentPid && !isNaN(entry.pid))
+    .map((entry) => entry.pid);
+}
+
 /**
  * Send a signal to a process (best-effort, ignores errors).
  */
-async function sendSignal(pid: number, signal: string): Promise<void> {
+export async function sendSignal(
+  pid: number,
+  signal: string,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
+): Promise<void> {
   try {
-    const cmd = new Deno.Command("kill", {
-      args: [`-${signal}`, String(pid)],
-      stdout: "null",
-      stderr: "null",
-    });
-    await cmd.output();
+    await runPidProbe(
+      "kill",
+      [`-${signal}`, String(pid)],
+      "null",
+      timeoutMs,
+    );
   } catch (err) {
+    rethrowPidTimeout(err);
     console.debug(
       `[pid-guard] Failed to send signal ${signal} to PID ${pid}: ${
         err instanceof Error ? err.message : String(err)
@@ -614,19 +686,23 @@ export interface TerminateProcessTreeDeps {
 }
 
 /** Default `ps -o pgid=` runner backed by the real `ps` command. */
-async function defaultRunPgidCommand(pid: number): Promise<PgidCommandResult> {
+export async function defaultRunPgidCommand(
+  pid: number,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
+): Promise<PgidCommandResult> {
   try {
-    const cmd = new Deno.Command("ps", {
-      args: ["-p", String(pid), "-o", "pgid="],
-      stdout: "piped",
-      stderr: "null",
-    });
-    const output = await cmd.output();
+    const output = await runPidProbe(
+      "ps",
+      ["-p", String(pid), "-o", "pgid="],
+      "piped",
+      timeoutMs,
+    );
     return {
       success: output.success,
       stdout: new TextDecoder().decode(output.stdout),
     };
   } catch (err) {
+    rethrowPidTimeout(err);
     console.debug(
       `[pid-guard] Failed to get process group for PID ${pid}: ${
         err instanceof Error ? err.message : String(err)
@@ -763,17 +839,32 @@ export async function terminateProcessTree(
     );
     return;
   }
+  // A signal that fails (its `kill` timed out) is reported once the tree has
+  // had every other signal: one hung `kill` must not skip the pid's own TERM
+  // or the SIGKILL escalation and leave the tree running.
+  let signalError: unknown = undefined;
+  const signal = async (signalPid: number, name: string) => {
+    try {
+      await deps.sendSignal(signalPid, name);
+    } catch (err) {
+      signalError ??= err;
+    }
+  };
+  const finish = () => {
+    if (signalError !== undefined) throw signalError;
+  };
+
   if (pgid !== null) {
-    await deps.sendSignal(-pgid, "TERM");
+    await signal(-pgid, "TERM");
   }
-  await deps.sendSignal(pid, "TERM");
+  await signal(pid, "TERM");
 
   // Wait for termination
   for (let i = 0; i < maxWaitSeconds; i++) {
-    if (!(await deps.isRunning(pid))) return;
+    if (!(await deps.isRunning(pid))) return finish();
     // A live pid that is no longer ours means the target exited and the
     // kernel re-issued its pid: our work here is done.
-    if (!(await isSameProcess(target, deps.getStartTime))) return;
+    if (!(await isSameProcess(target, deps.getStartTime))) return finish();
     await deps.sleep(1000);
   }
 
@@ -784,13 +875,14 @@ export async function terminateProcessTree(
         `[pid-guard] PID ${pid} was reused before the SIGKILL escalation — ` +
           `nothing signalled (Issue #501)`,
       );
-      return;
+      return finish();
     }
     if (pgid !== null) {
-      await deps.sendSignal(-pgid, "KILL");
+      await signal(-pgid, "KILL");
     }
-    await deps.sendSignal(pid, "KILL");
+    await signal(pid, "KILL");
   }
+  finish();
 }
 
 /**
@@ -804,6 +896,7 @@ export async function terminateProcessTree(
  */
 export async function checkPidFile(
   pidFilePath: string,
+  timeoutMs: number = PID_PROBE_TIMEOUT_MS,
 ): Promise<PidGuardResult> {
   try {
     const content = await Deno.readTextFile(pidFilePath);
@@ -818,7 +911,22 @@ export async function checkPidFile(
       };
     }
 
-    if (await isRunning(existingPid)) {
+    let running: boolean;
+    try {
+      running = await isRunning(existingPid, timeoutMs);
+    } catch (err) {
+      // A probe that timed out has not shown the holder gone. Proceeding on
+      // it is how a second instance would start beside the first.
+      return {
+        canProceed: false,
+        message: `Could not tell whether PID ${existingPid} is running: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        existingPid,
+      };
+    }
+
+    if (running) {
       return {
         canProceed: false,
         message: `Another instance is running (PID ${existingPid})`,

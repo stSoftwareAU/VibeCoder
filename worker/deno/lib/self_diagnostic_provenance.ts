@@ -59,8 +59,6 @@ import {
   RUN_FAILURE_FAMILY_ID,
   RUN_FAILURE_MARKER_PREFIX,
 } from "./run_failure_issue.ts";
-import type { UnworkableEscalation } from "./escalate_unworkable_work_on.ts";
-
 /**
  * Where auto-filed worker diagnostics land, and the only repo whose issues
  * may be self-scheduled. Derived from the filer's own constant so the two
@@ -198,31 +196,3 @@ export function buildSelfScheduleAnnouncement(opts: {
     "before.",
   ].join("\n");
 }
-
-/**
- * Escalation for a recognised diagnostic the worker cannot self-schedule
- * and never will: the fault is real, the fix is blocked for good, and
- * leaving it open with no label is the "alarm nobody is obliged to read"
- * failure this issue exists to end.
- */
-export function buildUnschedulableDiagnosticEscalation(opts: {
-  issueNumber: number;
-  family: SelfDiagnosticFamily;
-  /** Why the block is permanent, in one clause. */
-  reason: string;
-}): UnworkableEscalation {
-  return {
-    reason: `this auto-filed worker diagnostic (family ` +
-      `\`${opts.family.id}\`) cannot be self-scheduled: ${opts.reason}. ` +
-      `The block does not clear on its own, so without a human the ` +
-      `diagnostic would stay open and unworked indefinitely.`,
-    nextStep: "Re-schedule it by hand — apply `work-on` (a trusted re-label " +
-      "dated after the merge also lifts the merged-PR block) or close the " +
-      "diagnostic if it is stale — then remove `needs-human`.",
-    dedupKey: `self-diagnostic-unschedulable-${opts.issueNumber}`,
-  };
-}
-
-/** Heading used on the escalation comment for an unschedulable diagnostic. */
-export const UNSCHEDULABLE_DIAGNOSTIC_HEADING =
-  "Auto-filed worker diagnostic cannot be scheduled — needs human attention";

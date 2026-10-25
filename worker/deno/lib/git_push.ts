@@ -12,7 +12,11 @@
 import type { Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
-import { recoverFromPushRejection } from "./git_push_recovery.ts";
+import {
+  recoverFromPushRejection,
+  refuseUnlessHeadExtends,
+} from "./git_push_recovery.ts";
+import type { PushLineageOptions } from "./git_push_recovery.ts";
 import { describeUnpushedCommits } from "./git_remote_head.ts";
 import {
   assertSafeGitRef,
@@ -200,7 +204,7 @@ export async function recoverExistingPr(
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      messages.push("WARNING: Failed to update PR body (non-fatal)");
+      messages.push("Failed to update PR body (non-fatal)");
     }
   }
 
@@ -313,7 +317,7 @@ export async function assertPushTargetAllowed(
  */
 export async function pushUnpushedCommits(
   branchName: string,
-  options: GitCommandOptions = {},
+  options: PushLineageOptions = {},
   allowDefaultBranch = false,
   beforePush?: () => Promise<Result<void>>,
 ): Promise<Result<number>> {
@@ -338,6 +342,12 @@ export async function pushUnpushedCommits(
       error: err instanceof Error ? err : new Error(String(err)),
     };
   }
+
+  // Issue #4165: do not push a checkout that does not extend the head this
+  // pass started from. An in-sync short-circuit below would otherwise report
+  // success for history that is not this pass's work.
+  const lineage = await refuseUnlessHeadExtends(options);
+  if (!lineage.ok) return lineage;
 
   // Count what the branch's *own* remote head is missing (Issue #211). The
   // old probe pair — `origin/<branch>..HEAD`, falling back to
@@ -772,7 +782,7 @@ export async function gateUnpushedCommits(
 export async function commitAndPushPending(
   branchName: string,
   commitMessage: string,
-  options: GitCommandOptions = {},
+  options: PushLineageOptions = {},
   allowDefaultBranch = false,
   preFlight?: PreFlightGateSpec,
   runId?: string,
@@ -789,6 +799,12 @@ export async function commitAndPushPending(
   if (!guard.ok) {
     return { ok: false, error: guard.error };
   }
+
+  // Issue #4165: refuse before staging or committing when the checkout is
+  // not the pass's own history. Committing onto it would only add to the
+  // history the push below is about to refuse.
+  const lineage = await refuseUnlessHeadExtends(options);
+  if (!lineage.ok) return lineage;
 
   // Step 1 — detect uncommitted changes.
   const statusResult = await runGitCommand(["status", "--porcelain"], options);

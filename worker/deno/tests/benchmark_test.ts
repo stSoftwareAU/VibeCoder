@@ -4,7 +4,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   formatBenchmarkTable,
   runBenchmark,
@@ -163,4 +168,10 @@ Deno.test("perf workload runner - a non-git binary still spawns directly (Issue 
   // A spawn that cannot start is reported, never swallowed as success.
   const missing = await runBenchmarkCommand("nonexistent_bench_bin_1396", []);
   assertEquals(missing.code, -1);
+});
+
+Deno.test("runBenchmarkCommand - a timeout is not a successful measurement (Issue #4249)", async () => {
+  const result = await runBenchmarkCommand("sleep", ["30"], undefined, 0);
+  assertNotEquals(result.code, 0);
+  assertStringIncludes(result.stderr, "timed out");
 });

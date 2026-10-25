@@ -12,15 +12,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   claimObjectStoreRepair,
   resetObjectStoreRepairsForTest,
 } from "../lib/object_store_repair.ts";
-import {
-  BROKEN_REFS_NEXT_STEP,
-  workOnIssueSetupBranch,
-} from "../lib/phases/setup_branch_phase.ts";
+import { workOnIssueSetupBranch } from "../lib/phases/setup_branch_phase.ts";
 import {
   createMockDeps,
   mockGitHubClient,
@@ -202,7 +199,7 @@ Deno.test(
 );
 
 Deno.test(
-  "#2884 - broken refs that survive sweep AND re-clone escalate with the repository named, marked clone_corrupt",
+  "#4298 - broken refs that survive sweep AND re-clone fail clone_corrupt for the retry and never hand off",
   async () => {
     resetObjectStoreRepairsForTest();
     const workDir = await Deno.makeTempDir({ prefix: "issue2884-escalate-" });
@@ -259,13 +256,10 @@ Deno.test(
           detectFailureCategory(result.reason) === "clone_corrupt",
         JSON.stringify(result),
       );
-      assertEquals(comments.length, 1, JSON.stringify(comments));
-      const comment = comments[0]!;
-      assertStringIncludes(comment, "Broken refs in shared clone");
-      assertStringIncludes(comment, "stSoftwareAU/VibeCoder");
-      assertStringIncludes(comment, BROKEN_REFS_NEXT_STEP);
-      assertStringIncludes(comment, "broken-refs-stSoftwareAU/VibeCoder");
-      assertEquals(labels, [ctx.config.needsHumanLabel]);
+      // Issue #4298: nothing is handed to a human. The next run claims the
+      // repair again and re-clones; no comment and no `needs-human`.
+      assertEquals(comments, []);
+      assertEquals(labels, []);
 
       if (state.heartbeatHandle) stopHeartbeat(state.heartbeatHandle);
     } finally {

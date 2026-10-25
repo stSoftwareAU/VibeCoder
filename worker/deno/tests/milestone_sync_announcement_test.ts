@@ -79,20 +79,22 @@ Deno.test("announceAgentAttempt - a milestone with nowhere to post is recorded, 
 });
 
 Deno.test("announceAgentAttempt - a post that failed is said out loud and not recorded", async () => {
-  const logs: string[] = [];
+  const logs: Array<{ message: string; level: string }> = [];
   const posted = await announceAgentAttempt(
     ANNOUNCEMENT,
     (args) => {
       if (args[1] === "comment") return Promise.reject(new Error("gh is down"));
       return Promise.resolve("");
     },
-    (message) => logs.push(message),
+    (message, level = "info") => logs.push({ message, level }),
   );
 
   assertEquals(posted, false);
   assert(
     logs.some((line) =>
-      line.includes("WARNING") && line.includes("gh is down")
+      line.level === "warn" &&
+      line.message.includes("Could not announce") &&
+      line.message.includes("gh is down")
     ),
     `the reason must reach the log, got ${JSON.stringify(logs)}`,
   );

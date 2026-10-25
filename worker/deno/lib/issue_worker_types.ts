@@ -28,6 +28,7 @@ import type { RtkOutputResult } from "./rtk_output.ts";
 import type { AgentRefusalOutcome } from "./haiku_refusal_retry.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
+import type { PreprReviewFinding } from "./prepr_review_record.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
 // Lost in the 1f2c10e merge into this milestone branch, leaving `deno check`
 // red on a type this file still uses (added by Issue #806).
@@ -40,7 +41,7 @@ import type { SecurityGateRunVerdict } from "./security_fix_gate_retry.ts";
 import type { SummaryRuleRunVerdict } from "./summary_rule_gate_retry.ts";
 import type { SummaryClaimCorrection } from "./summary_claim_correction.ts";
 import type { ScreenshotGateBlock } from "./screenshot_gate_retry.ts";
-import type { PostMergeReapproval } from "./reapproval_superseded_handoff.ts";
+import type { PostMergeReapproval } from "./reapproval_superseded_close.ts";
 
 /** Data shared across phases within a single workOnIssue invocation. */
 export interface IssueContext {
@@ -390,6 +391,13 @@ export interface PhaseState {
    * confirmed wrong.
    */
   summaryClaimCorrection?: SummaryClaimCorrection;
+  /**
+   * Review-style findings (pre-PR verifier or summary claim check) that
+   * survived the in-run recovery (Issue #4236). The completion phase raises
+   * the pull request and posts these as a change-request record instead of
+   * failing the run. Absent when this run is not on that path.
+   */
+  preprReviewFindings?: PreprReviewFinding[];
   /**
    * The screenshot gate's verdict for THIS run (Issue #2960), when it has
    * blocked. Set by the completion phase on the first block; the in-run

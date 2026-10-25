@@ -193,7 +193,9 @@ provider: it drops the backlog tiers only. A `model-unavailable` refusal is
 also handled inside the run: when the provider has no cheaper model, the
 invocation that was refused is retried on the next alternative, so a phase whose
 model the provider will not serve does not give up while the health gate
-passes on a different model (Issue #4034). It is
+passes on a different model (Issue #4034). A Codex ChatGPT-login refusal of a
+built-in default model is first retried once on Codex with no `--model`
+(Issue #4221) before that switch. It is
 not restricted to fixed-price subscriptions — see [Subscription-only billing
 policy](#subscription-only-billing-policy) for what it logs when the
 alternative is metered. Neither automatic mechanism is turned on for the

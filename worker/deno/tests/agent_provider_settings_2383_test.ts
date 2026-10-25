@@ -57,6 +57,22 @@ Deno.test("claude invocation - carries --settings with the payload when one is s
   assert(i < args.indexOf("-p"), "expected --settings before the prompt");
 });
 
+Deno.test("claude invocation - --settings appears once, carrying the merged payload (Issue #4139)", () => {
+  // The edit guard and the hooks already share one settingsJson. A second
+  // --settings for that same string is the same payload twice, and the CLI
+  // keeps only the last flag.
+  const args = claude.buildInvocation({
+    prompt: "P",
+    model: "m",
+    settingsJson: SETTINGS,
+  });
+  const flags = args.filter((arg) => arg === "--settings");
+  assertEquals(flags.length, 1);
+  assertEquals(args[args.indexOf("--settings") + 1], SETTINGS);
+  // Feasibility still sees the hook: one flag is enough for includes().
+  assertEquals(args.includes("--settings"), true);
+});
+
 Deno.test("claude invocation - omits --settings entirely when no payload is set (Issue #2383)", () => {
   const args = claude.buildInvocation({ prompt: "P", model: "m" });
   assertEquals(args.includes("--settings"), false);

@@ -48,7 +48,7 @@ Deno.test("time budget - a slow stub test is reported with its name and time", (
   ], NO_EXEMPTIONS);
 
   assertEquals(report.warnings, [
-    "WARNING: slow unit test (1.23s > 1.00s): tests/slow_test.ts — " +
+    "slow unit test (1.23s > 1.00s): tests/slow_test.ts — " +
     "a stub that sleeps",
   ]);
   // One slow case in a fast file is a warning, never a failure.

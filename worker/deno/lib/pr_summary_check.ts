@@ -18,6 +18,13 @@ import { validateIndependentReview } from "./independent_review_gate.ts";
 import { validateReproductionStatus } from "./reproduction_status_gate.ts";
 import { validateDocsSweep } from "./docs_sweep_gate.ts";
 import { validateResultPlaceholders } from "./result_placeholder_gate.ts";
+import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
+import { closingKeywordLine, ensurePrReferencesIssue } from "./pr_body.ts";
+import {
+  markdownLogicalUnits,
+  maskMarkdownCode,
+  splitMarkdownLines,
+} from "./markdown_code_spans.ts";
 import {
   lookupTestsAtHead,
   namedTestPaths,
@@ -26,8 +33,16 @@ import {
 } from "./branch_outcomes_gate.ts";
 import {
   applyBranchOutcomesFacts,
+  type BranchOutcomesFactsOutcome,
   resolveBranchOutcomesFacts,
 } from "./pr_summary_facts.ts";
+import {
+  type FactsFlipVerdict,
+  fillMissingFlipVerdicts,
+  flipVerifierFailedReason,
+  verifyFactsFlips,
+} from "./facts_flip_verifier.ts";
+import { defaultMutationRunnerSeams } from "./mutation_runner.ts";
 
 /** Outcome of one gate. A `not_checked` gate is not a pass. */
 export type GateStatus =
@@ -81,6 +96,73 @@ function fromVerdict(
 /** A gate that could not run for want of an input. */
 function notChecked(gate: string, issueRef: string, note: string): GateReport {
   return { gate, issueRef, status: "not_checked", problems: [], note };
+}
+
+/**
+ * `Part of #N` or `Refs #N` for the run's own issue. Whitespace inside the
+ * phrase is bounded so a padded body cannot backtrack. The issue number is
+ * compared after the match, never interpolated into the pattern.
+ */
+const PART_OR_REFS_RE = /\b(?:part\s{1,8}of|refs)\s{0,8}#(\d+)\b/gi;
+
+/** How the summary says it leaves the run's issue open, in reading order. */
+function keptOpenPhrases(summary: string, issueNumber: number): string[] {
+  const lines = splitMarkdownLines(maskMarkdownCode(summary));
+  const phrases: string[] = [];
+  for (const unit of markdownLogicalUnits(lines)) {
+    if (unit.kind === "code") continue;
+    PART_OR_REFS_RE.lastIndex = 0;
+    for (const match of unit.text.matchAll(PART_OR_REFS_RE)) {
+      if (Number(match[1]) === issueNumber) phrases.push(match[0]);
+    }
+  }
+  return phrases;
+}
+
+const WAYS_OUT =
+  "Mark the unmet criterion missing (`- **missing** — … — reason: …`) so the close is withheld, or drop the Part of / Refs line if this pull request does close the issue.";
+
+/**
+ * When a summary says it is only part of the run's issue, but the assembled
+ * body would still close that issue (Issue #4126).
+ *
+ * Route 1: no closing keyword, so `ensurePrReferencesIssue` appends
+ * `Closes #N`. Route 2: the summary itself contains a closing keyword,
+ * including a negated one such as "does not close #N", which GitHub still
+ * honours. A parsed `missing` criterion is the #3177 hold, so it passes.
+ *
+ * @returns The block message, or undefined when the gate passes.
+ */
+function partOfStillClosesProblem(
+  summary: string,
+  issueNumber: number,
+): string | undefined {
+  const phrases = keptOpenPhrases(summary, issueNumber);
+  if (phrases.length === 0) return undefined;
+  if (findMissingCriteria(summary).length > 0) return undefined;
+  const keptOpen = phrases[0]!;
+  const closing = closingKeywordLine(maskMarkdownCode(summary), issueNumber);
+  if (closing !== null) {
+    return `${keptOpen} says the issue stays open, but the summary still contains the closing phrase "${closing}". ${WAYS_OUT}`;
+  }
+  if (ensurePrReferencesIssue(summary, issueNumber) !== summary) {
+    return `${keptOpen} says the issue stays open, but the summary has no parsed missing criterion, so the worker appends Closes #${issueNumber}. ${WAYS_OUT}`;
+  }
+  return undefined;
+}
+
+/** The Part-of gate report for one summary. */
+function partOfStillClosesReport(
+  summary: string,
+  issueNumber: number,
+): GateReport {
+  const problem = partOfStillClosesProblem(summary, issueNumber);
+  return {
+    gate: "Part of still closes",
+    issueRef: "#4126",
+    status: problem === undefined ? "passed" : "blocked",
+    problems: problem === undefined ? [] : [problem],
+  };
 }
 
 /** Run every local PR-summary gate. Fails loud when git cannot be read. */
@@ -224,6 +306,18 @@ export async function runPrSummaryCheck(
   }
   reports.push(branchOutcomes);
 
+  reports.push(await factsFlipStage(facts, repoRoot));
+
+  reports.push(
+    input.issueNumber === null
+      ? notChecked(
+        "Part of still closes",
+        "#4126",
+        "no issue number in the summary file name",
+      )
+      : partOfStillClosesReport(summaryContent, input.issueNumber),
+  );
+
   reports.push(notChecked(
     "Summary claim check",
     "#3257",
@@ -231,6 +325,82 @@ export async function runPrSummaryCheck(
   ));
 
   return { ok: true, value: reports };
+}
+
+/** Map flip verdicts onto the report. A refusal blocks; not_checked does not. */
+function factsFlipReport(verdicts: readonly FactsFlipVerdict[]): GateReport {
+  const refusals: string[] = [];
+  const unchecked: string[] = [];
+  for (const verdict of verdicts) {
+    if (verdict.verdict.kind === "refused") {
+      refusals.push(verdict.verdict.message);
+    } else if (verdict.verdict.kind === "not_checked") {
+      unchecked.push(verdict.verdict.reason);
+    }
+  }
+  if (refusals.length > 0) {
+    return {
+      gate: "Facts flip verifier",
+      issueRef: "#4190",
+      status: "blocked",
+      problems: refusals,
+      ...(unchecked.length > 0 ? { note: unchecked.join("; ") } : {}),
+    };
+  }
+  if (unchecked.length > 0) {
+    return notChecked(
+      "Facts flip verifier",
+      "#4190",
+      unchecked.join("; "),
+    );
+  }
+  return {
+    gate: "Facts flip verifier",
+    issueRef: "#4190",
+    status: "passed",
+    problems: [],
+  };
+}
+
+/**
+ * The facts flip stage (Issue #4190). Calls the shared verifier. A missing
+ * facts file does not apply; a facts file that cannot be read is not checked.
+ */
+async function factsFlipStage(
+  facts: BranchOutcomesFactsOutcome,
+  repoRoot: string,
+): Promise<GateReport> {
+  if (facts.kind === "absent") {
+    return {
+      gate: "Facts flip verifier",
+      issueRef: "#4190",
+      status: "not_applicable",
+      problems: [],
+      note: "no facts file",
+    };
+  }
+  if (facts.kind === "error") {
+    return notChecked("Facts flip verifier", "#4190", facts.reason);
+  }
+  try {
+    const verdicts = fillMissingFlipVerdicts(
+      facts.facts,
+      await verifyFactsFlips(facts.facts, {
+        ...defaultMutationRunnerSeams(),
+        repoPath: repoRoot,
+        budgetRaw: "",
+        warn: () => {},
+      }),
+      "the flip verifier returned no verdict for this entry",
+    );
+    return factsFlipReport(verdicts);
+  } catch (error) {
+    return factsFlipReport(fillMissingFlipVerdicts(
+      facts.facts,
+      [],
+      flipVerifierFailedReason(error),
+    ));
+  }
 }
 
 /** Whether any gate blocked. */

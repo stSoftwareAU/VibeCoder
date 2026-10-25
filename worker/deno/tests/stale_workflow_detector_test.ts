@@ -89,14 +89,16 @@ function defaultConfig(
 /** Fixed "now" at 2026-02-01T00:00:00Z. */
 const FIXED_NOW_MS = new Date("2026-02-01T00:00:00Z").getTime();
 
+type LoggedLine = { message: string; level: string };
+
 function createTestDeps(
   overrides: Partial<StaleWorkflowDeps> = {},
 ): StaleWorkflowDeps & {
-  logs: string[];
+  logs: LoggedLine[];
   postedComments: Array<{ repo: string; issueNumber: number; body: string }>;
   closedIssues: Array<{ repo: string; issueNumber: number }>;
 } {
-  const logs: string[] = [];
+  const logs: LoggedLine[] = [];
   const postedComments: Array<
     { repo: string; issueNumber: number; body: string }
   > = [];
@@ -116,7 +118,7 @@ function createTestDeps(
       closedIssues.push({ repo, issueNumber });
       return Promise.resolve();
     },
-    log: (msg) => logs.push(msg),
+    log: (msg, level = "info") => logs.push({ message: msg, level }),
     now: () => FIXED_NOW_MS,
     nowSeconds: () => Math.floor(FIXED_NOW_MS / 1000),
     shouldShutdown: () => false,
@@ -400,7 +402,13 @@ Deno.test("stale workflow - processStalePlanning logs warning for stale planning
 
   assertEquals(results.length, 1);
   assertEquals(results[0]!.action, "warning");
-  assertEquals(deps.logs.some((l) => l.includes("WARNING")), true);
+  assertEquals(
+    deps.logs.some((l) =>
+      l.level === "warn" && l.message.includes("[stale-workflow]") &&
+      l.message.includes("#60")
+    ),
+    true,
+  );
   // No comments posted — warning only
   assertEquals(deps.postedComments.length, 0);
 });
