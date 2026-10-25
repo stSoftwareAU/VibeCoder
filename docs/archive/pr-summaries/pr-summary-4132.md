@@ -37,6 +37,12 @@ Issue numbers this diff cites as the reason the change exists:
 
 ## Test Plan
 
+- CI repair: the command is registered in the built-in command inventory and
+  security-sweep coverage ledger. The inherited pre-push retry builder now
+  participates in the prompt-fence canary matrix. The 82 targeted tests pass.
+- The inherited sweep findings are addressed without changing behaviour:
+  remove an unused prompt-result assignment and a redundant timeout condition,
+  and retain the URL-absence assertion without a URL-validation regex.
 - `worker/deno/tests/clear_worker_gate_labels_test.ts` drives `clearWorkerGateLabels` with an injected `gh` seam.
 - Reused `parseCategoryFromComment` (`worker/deno/commands/analyse_failed_once.ts`) for the `**Category:**` line.
 - Reused `isFleetAuthor` (`worker/deno/lib/fleet_authors.ts`), with the fleet set from `resolveAlertDedupAuthors` and `resolveFleetMaintenanceAuthorSet`.

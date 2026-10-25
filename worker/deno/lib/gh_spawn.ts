@@ -427,7 +427,7 @@ const productionRunner: GhSpawnRunner = async (args, options) => {
       return ghTimedOut(commandLabel, options.timeoutMs ?? 0);
     }
     if (controller.signal.aborted) {
-      if (callerAborted && !timedOut) {
+      if (callerAborted) {
         throw new DOMException("The operation was aborted", "AbortError");
       }
       return ghTimedOut(commandLabel, options.timeoutMs ?? 0);
