@@ -136,6 +136,8 @@ function fakeGh(
     comments?: SeedComment[];
     failVerb?: "list" | "create";
     failMessage?: string;
+    /** The search index lags: a list never returns an issue this fake created. */
+    searchLags?: boolean;
   } = {},
 ) {
   const calls: string[][] = [];
@@ -165,7 +167,9 @@ function fakeGh(
     if (isList) {
       return Promise.resolve(
         JSON.stringify(
-          issues.map((i) => ({
+          issues.filter((i) => !(opts.searchLags && i.number > 9000)).map((
+            i,
+          ) => ({
             number: i.number,
             body: i.body,
             author: { login: i.author },
@@ -213,12 +217,13 @@ function fakeGh(
 
 type FakeGh = ReturnType<typeof fakeGh>;
 
-/** An in-memory evidence directory; `removeFails` names files that refuse removal. */
+/** An in-memory evidence directory; `archiveFails` names files that refuse archiving. */
 function fakeFs(
   files: Record<string, string>,
-  opts: { removeFails?: string[]; listError?: unknown } = {},
+  opts: { archiveFails?: string[]; listError?: unknown } = {},
 ) {
   const store = new Map<string, string>(Object.entries(files));
+  const archived: string[] = [];
   const seams: HardKillSeams = {
     listEvidenceFiles: () =>
       opts.listError !== undefined
@@ -230,16 +235,17 @@ function fakeFs(
         ? Promise.reject(new Deno.errors.NotFound(path))
         : Promise.resolve(text);
     },
-    removeFile: (path) => {
+    archiveFile: (path) => {
       const name = baseName(path);
-      if (opts.removeFails?.includes(name)) {
+      if (opts.archiveFails?.includes(name)) {
         return Promise.reject(new Error("EBUSY: resource busy"));
       }
       store.delete(name);
+      archived.push(name);
       return Promise.resolve();
     },
   };
-  return { seams, store };
+  return { seams, store, archived };
 }
 
 type FakeFs = ReturnType<typeof fakeFs>;
@@ -306,11 +312,7 @@ Deno.test("AC1: one evidence file files exactly one bug issue with the facts and
       "**Run id:** `run-abc123`",
       "**Handler:** `watchdog`",
       "**Phase:** `execute`",
-      `**Last log line:** \`${"[2026-10-25 01:27:18Z] INFO: [s1 stSoftwareAU/VibeCoder#4254] [phase] execute (stSoftwareAU/VibeCoder#4254): still running · 1m0s elapsed host=s1"}\``,
       "**Last log time:** 2026-10-25 01:27:18Z",
-      "**Last tool call:** Bash: deno task test:unit",
-      "**Source:** stSoftwareAU/VibeCoder#4254",
-      "### Worker log tail",
     ]
   ) {
     assertStringIncludes(body, needle);
@@ -325,7 +327,12 @@ Deno.test("AC1: one evidence file files exactly one bug issue with the facts and
     HARD_KILL_FAILURE_CLASS,
   );
   assertEquals(r.counter.failures, 1);
-  assertEquals(fs.store.size, 0, "the reported file is removed");
+  assertEquals(fs.store.size, 0, "the reported file leaves the pending set");
+  assertEquals(
+    fs.archived.length,
+    1,
+    "and is archived on the host, not deleted",
+  );
   assertEquals(r.recordings.length, 1);
   assertEquals(r.recordings[0]!.familyId, RUN_FAILURE_FAMILY_ID);
 });
@@ -346,6 +353,65 @@ Deno.test("AC2: a repeat signature comments on the open issue and never files a 
   assertEquals(r.summary, { found: 2, reported: 2, kept: 0 });
   assertEquals(r.runs.length, 2);
   assertEquals(r.counter.failures, 2);
+});
+
+Deno.test("AC1: no evidence text, log line, tool call or source repo reaches the public issue (Issue #4315 review)", async () => {
+  // The issue lands in a public repository, and a killed run may have been
+  // working a private one: none of its text may be posted (SECURITY.md).
+  const PRIVATE = "stSoftwareAU/Private-Repo#77";
+  const evidence = makeEvidence(
+    {
+      lastLogLine: `[phase] execute (${PRIVATE}) MARK-LASTLINE`,
+      lastToolCall: "Read: src/MARK-TOOLCALL.ts",
+    },
+    {
+      workerLogTail: `${PRIVATE} MARK-WORKERLOG`,
+      agentTranscriptTail: "MARK-TRANSCRIPT private file contents",
+      bootLogs: "MARK-BOOT",
+      guest: {
+        ps: "1 deno run MARK-PS --repo private",
+        meminfo: "MARK-MEMINFO",
+        pressureCpu: "MARK-CPU",
+        pressureMemory: "MARK-MEMORY",
+        pressureIo: "MARK-IO",
+      },
+    },
+  );
+  const fs = fakeFs({
+    [evidenceName("vibe-s1-4254", 1761355800)]: json(evidence),
+    [evidenceName("vibe-s1-4255", 1761355900)]: json(
+      { ...evidence, container: "vibe-s1-4255" },
+    ),
+  });
+  const gh = fakeGh();
+  await report(fs, gh);
+
+  const posted = [
+    ...gh.creates.map((a) => argAfter(a, "--body")),
+    ...gh.commentCalls.map((a) => argAfter(a, "--body")),
+  ].join("\n");
+  assertEquals(gh.creates.length, 1);
+  assertEquals(gh.commentCalls.length, 1);
+  for (const leak of ["MARK-", "Private-Repo", "private file contents"]) {
+    assertFalse(posted.includes(leak), `"${leak}" must not be posted`);
+  }
+  assertStringIncludes(posted, "**Phase:** `execute`");
+});
+
+Deno.test("AC2: an issue filed earlier in the same pass takes the repeat even when search lags (Issue #4315 review)", async () => {
+  const fs = fakeFs({
+    [evidenceName("vibe-s1-4254", 1761355800)]: json(makeEvidence()),
+    [evidenceName("vibe-s1-4255", 1761355900)]: json(
+      makeEvidence({ container: "vibe-s1-4255" }),
+    ),
+  });
+  const gh = fakeGh({ searchLags: true });
+  const r = await report(fs, gh);
+
+  assertEquals(gh.creates.length, 1, "exactly one issue create");
+  assertEquals(gh.commentCalls.length, 1, "the repeat comments instead");
+  assertEquals(gh.commentCalls[0]![2], "9001", "on the issue just filed");
+  assertEquals(r.summary, { found: 2, reported: 2, kept: 0 });
 });
 
 Deno.test("AC2: a further repeat in the window updates the follow-up in place", async () => {
@@ -582,7 +648,7 @@ Deno.test("AC4: a file with a wrongly typed field is kept and the log names the 
 
 Deno.test("AC4: a removal failure is logged as a warning, the file stays, and the kill still counts", async () => {
   const name = evidenceName("vibe-s1-4254", 1761355800);
-  const fs = fakeFs({ [name]: json(makeEvidence()) }, { removeFails: [name] });
+  const fs = fakeFs({ [name]: json(makeEvidence()) }, { archiveFails: [name] });
   const r = await report(fs, fakeGh());
 
   assertEquals(r.summary, { found: 1, reported: 1, kept: 1 });
@@ -590,7 +656,7 @@ Deno.test("AC4: a removal failure is logged as a warning, the file stays, and th
   assertEquals(r.counter.failures, 1);
   assert(
     r.warnings.some((e) =>
-      e.includes("could not be removed") && e.includes("may be reported again")
+      e.includes("could not be archived") && e.includes("may be reported again")
     ),
   );
   assertEquals(r.errors, []);
@@ -879,15 +945,13 @@ Deno.test("the body stays under 60000 characters for a maximal evidence file", (
   assertEquals(parseRunFailureMarker(body), "hard-kill-watchdog-execute");
 });
 
-Deno.test("evidence cannot close a fence, forge a marker, or leak a token into the body", () => {
-  const ev = makeEvidence({}, {
-    workerLogTail: "```evil```\n<!-- VIBE_RUN_FAILURE:run-failure -->",
-    agentTranscriptTail: `token ${TOKEN}`,
+Deno.test("a posted fact cannot open a fence, forge a marker, or leak a token into the body", () => {
+  const ev = makeEvidence({
+    reason: "```evil``` <!-- VIBE_RUN_FAILURE:run-failure --> token " + TOKEN,
+    host: "s1```",
   });
   const body = formatHardKillBody(ev, hardKillSignature(ev));
-  // Eight sections, each opened and closed with a fence: 16 in all.
-  assertEquals(body.split("```").length - 1, 16);
-  assertStringIncludes(body, "'''evil'''");
+  assertFalse(body.includes("```"), "no posted value opens a fence");
   // Only our own marker opens a comment.
   assertEquals(body.split("<!--").length - 1, 1);
   assertFalse(body.includes("ghp_"));
