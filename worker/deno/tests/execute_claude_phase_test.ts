@@ -28,6 +28,11 @@ import {
 } from "../lib/execute_claude_phase.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
+import {
+  setConfiguredAgentProviderId,
+  setConfiguredEnabledAgentProviderIds,
+} from "../lib/agent_provider.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 // =============================================================================
 // Screenshot requirement detection
@@ -1278,6 +1283,46 @@ Deno.test("runExecuteClaudePhase - a repo provider pin reaches the runner when n
     }),
   );
   assertEquals(capturedProvider, "deepseek");
+});
+
+Deno.test("runExecuteClaudePhase - a pin with sub-agents on is kept and stripped, not rerouted (Issue #4346)", async () => {
+  setConfiguredAgentProviderId("claude");
+  setConfiguredEnabledAgentProviderIds(["claude", "deepseek"]);
+  try {
+    let capturedProvider: string | undefined = "sentinel";
+    let capturedAgents: unknown = "sentinel";
+    let capturedSplit: unknown = "sentinel";
+    await runExecuteClaudePhase(
+      createTestOptions({
+        issueExecutorSplit: true,
+        issueReviewerAgents: true,
+        issueSubAgentTier: "haiku",
+        repoConfigs: {
+          "owner/repo": { agentProvider: "deepseek" },
+        },
+      }),
+      createMockDeps({
+        env: envFrom({ VIBE_IMAGE_AGENT_PROVIDERS: "claude,deepseek" }),
+        runClaudeWithRetry: async (options) => {
+          capturedProvider = typeof options.agentProvider === "string"
+            ? options.agentProvider
+            : undefined;
+          capturedAgents = options.agents;
+          capturedSplit = options.issueExecutorSplit;
+          return {
+            ok: true,
+            value: { exitCode: 0, output: "Done.", timedOut: false },
+          };
+        },
+      }),
+    );
+    assertEquals(capturedProvider, "deepseek");
+    assertEquals(capturedAgents, undefined);
+    assertEquals(capturedSplit, undefined);
+  } finally {
+    setConfiguredAgentProviderId(undefined);
+    setConfiguredEnabledAgentProviderIds(undefined);
+  }
 });
 
 Deno.test("runExecuteClaudePhase - an explicit provider stays absolute over the repo pin", async () => {

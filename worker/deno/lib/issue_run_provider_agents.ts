@@ -3,7 +3,9 @@
  *
  * Only the Claude CLI accepts `--agents`; the Issue #4010 guard stays as a backstop.
  * A run the health gate moved onto a fallback provider is stripped, not rerouted
- * back to Claude, whose pool the gate found exhausted.
+ * back to Claude, whose pool the gate found exhausted. A repository pin (Issue
+ * #4346) is the invocation's provider, so it is stripped the same way even when
+ * Claude is usable: the pin is not replaced by a later reroute.
  */
 
 import {
@@ -41,6 +43,15 @@ export interface IssueRunProviderPlanInput {
   subAgentTier: IssueSubAgentTier;
   /** Enabled-set and install inputs; omit for the process environment. */
   selection?: EnabledAgentProviderSelection;
+  /**
+   * The provider is a repository pin (Issue #4346).
+   *
+   * A pin is the invocation's own provider. When it cannot carry `--agents`,
+   * the run keeps the pin and takes the agents-stripped shape even if Claude
+   * is installed and enabled. An unpinned provider is still rerouted to Claude
+   * when Claude is usable.
+   */
+  pinned?: boolean;
   /** Where the reroute or strip warning goes; omit for the default logger. */
   logger?: Logger;
 }
@@ -101,6 +112,23 @@ export function planIssueRunProvider(
 
   const selection = input.selection ?? {};
   const logger = input.logger ?? createLogger();
+  const stripped: IssueRunProviderPlan = {
+    provider,
+    executorSplit: false,
+    reviewerAgents: false,
+    subAgentTier: STRIPPED_SUB_AGENT_TIER,
+    outcome: "agents-stripped",
+  };
+  // A repository pin is not a host default the planner may swap (Issue #4346).
+  // Stripping is the same shape used when Claude cannot take the run, so the
+  // spawn carries no `--agents` and the #4010 guard does not refuse it.
+  if (input.pinned === true) {
+    logger.warn(
+      `Issue run is pinned to the ${provider.id} provider, which cannot ` +
+        `carry sub-agents; starting the run without sub-agents (Issue #4346)`,
+    );
+    return stripped;
+  }
   // A health-gate fallback means the Claude pool is exhausted (Issue #2062);
   // rerouting back to it would spawn on the pool the gate just left.
   const fallbackOverride = runProviderOverrideId();
@@ -126,11 +154,5 @@ export function planIssueRunProvider(
         : `is not enabled`) +
       `; starting the run without sub-agents (Issue #4109)`,
   );
-  return {
-    provider,
-    executorSplit: false,
-    reviewerAgents: false,
-    subAgentTier: STRIPPED_SUB_AGENT_TIER,
-    outcome: "agents-stripped",
-  };
+  return stripped;
 }

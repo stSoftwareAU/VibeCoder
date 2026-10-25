@@ -78,9 +78,12 @@ flowchart LR
 ```
 
 External dispatch is sequential. `max_concurrency` above one is refused. Claude
-roles use CLI tool denials; Codex roles use `read-only` or `workspace-write`
-sandboxes with approval prompts disabled, network access disabled for workspace
-writes, and multi-agent delegation disabled. Gemini cannot enforce the required
+roles use CLI tool denials. Codex roles run with the container as their
+sandbox, approval prompts disabled and multi-agent delegation disabled; the
+worker holds a Codex manager or reviewer to read-only by recording the checkout
+before the call and putting back anything the call changed (Issue #4356).
+Codex's own `--sandbox` is not used: it needs bubblewrap and a fresh procfs
+mount, which the agent container cannot provide. Gemini cannot enforce the required
 tool restrictions; DeepSeek has no proved fixed-price subscription. Those
 combinations fail closed. A host without the requested CLI or subscription
 fails before paid work. Observed exhausted or unavailable quota also refuses;
@@ -107,4 +110,4 @@ selection. This configuration does not select or rebalance experiment cohorts.
 Behavioural tests cover configuration layering, malformed overrides, adapter
 validation, same-provider and cross-provider handoffs, independent review,
 context separation, checkpoint recovery and native rollback. Live subscription
-entitlements and sandbox support must be verified on each participating host.
+entitlements must be verified on each participating host.

@@ -371,7 +371,11 @@ import {
 let lastGraphqlQuotaReading: GraphqlQuotaReading | null = null;
 
 // Liveness guard (Issue #2479)
-import { checkLivenessWindow } from "./liveness_guard.ts";
+import {
+  checkLivenessWindow,
+  formatLivenessPressureFields,
+  readLivenessTickPressure,
+} from "./liveness_guard.ts";
 
 // Crash handling
 import { cleanupInProgressIssue as crashCleanupFn } from "./crash_cleanup.ts";
@@ -6569,12 +6573,20 @@ export async function createProductionRunCoreDeps(
           );
           // Per-tick decision line so operators can confirm from the log
           // alone that the guard ran this cadence tick and what it saw.
+          // Issue #4225: the same line, and only when the guard returned
+          // ok (this branch), also carries MemAvailable and the two PSI
+          // files. A file that cannot be read is `unavailable` on that
+          // field. The read does not throw, so a missing file does not
+          // drop the tick line.
+          const pressureFields = formatLivenessPressureFields(
+            await readLivenessTickPressure(),
+          );
           logger.info(
             `[liveness] tick=${tick} alerted=${v.alerted} ` +
               `live_epoch=${v.liveEpoch ?? "none"} ` +
               `last_idle_claimed=${v.lastIdleClaimedEpoch ?? "none"} ` +
               `last_productive=${v.lastProductiveEpoch ?? "none"} ` +
-              hookFields,
+              `${hookFields} ${pressureFields}`,
           );
         } else {
           logger.warn("Liveness guard write failed (continuing)", {

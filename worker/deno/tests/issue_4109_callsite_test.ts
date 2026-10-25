@@ -1,6 +1,8 @@
 /**
  * Call-site tests for Issue #4109: a non-Claude provider that cannot carry
- * `--agents` is rerouted to Claude when Claude is enabled.
+ * `--agents` is rerouted to Claude when Claude is enabled. A repository pin
+ * is stripped and kept (Issue #4346); these tests cover an unpinned host
+ * provider.
  *
  * Each changed call site has a test that goes red when that site reverts to
  * the invocation provider:
