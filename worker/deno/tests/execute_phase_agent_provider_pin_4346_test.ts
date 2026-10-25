@@ -78,6 +78,8 @@ interface ObservedRun {
   agentProvider: unknown;
   rtkSelector: unknown;
   assignmentProvider: string | undefined;
+  agents: unknown;
+  issueExecutorSplit: unknown;
 }
 
 /** Run one issue and capture the provider the runner, RTK and assignment saw. */
@@ -136,6 +138,8 @@ async function observe(
     agentProvider: runOptions[0]?.agentProvider,
     rtkSelector: rtkSelectors[0],
     assignmentProvider: assignmentProviders[0],
+    agents: runOptions[0]?.agents,
+    issueExecutorSplit: runOptions[0]?.issueExecutorSplit,
   };
 }
 
@@ -178,20 +182,19 @@ Deno.test("execute_phase - a non-external allocation still forces claude over th
   }
 });
 
-Deno.test("execute_phase - a sub-agent reroute still names claude over the repo pin (Issue #4346)", async () => {
+Deno.test("execute_phase - a default host pinned to deepseek keeps the pin and strips sub-agents (Issue #4346)", async () => {
   configureClaudeHost();
   try {
     const config = buildDefaultWorkerConfig();
-    config.issueExecutorSplit = true;
-    config.issueReviewerAgents = true;
-    config.issueSubAgentTier = "sonnet";
     config.repoConfig = { "org/repo": { agentProvider: "deepseek" } };
 
     const observed = await observe(config);
 
-    assertEquals(observed.agentProvider, "claude");
-    assertEquals(observed.rtkSelector, "claude");
-    assertEquals(observed.assignmentProvider, "claude");
+    assertEquals(observed.agentProvider, "deepseek");
+    assertEquals(observed.rtkSelector, "deepseek");
+    assertEquals(observed.assignmentProvider, "deepseek");
+    assertEquals(observed.agents, undefined);
+    assertEquals(observed.issueExecutorSplit, undefined);
   } finally {
     resetProviderConfig();
   }
