@@ -139,6 +139,20 @@ matching bucket guide under
   [`### Cross-bucket: verbose gate output`](#cross-bucket-verbose-gate-output-check)
   below for the fixed id, the flag table, and the filing rule.
 
+### Behavioural security-test coverage
+
+A narrow static check, using the capability guidance, looks at three
+contracts only: resource or tenant authorisation, a sensitive-field
+update, and redaction at a log or outbound sink. A gap is a
+best-practices finding. It cites the production path, the tests
+inspected, and the uncovered contract. It is not proof of an exploit;
+the security scan keeps those. A missing file named security is not
+missing coverage. A test that was not executed is not a pass. A read
+failure is unknown, never a clean scan. An open security-scan issue
+for the same path is not filed again. The finding id is `BP-` plus a
+stable hash, the severity is low, and the usual cap and
+`best-practice-ignore:` marker apply.
+
 ### Rust bug-class checks
 
 [`buckets/rust.md`](../prompts/best_practices/buckets/rust.md) carries

@@ -1,0 +1,9 @@
+[package]
+name = "capsec_fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[test]]
+name = "accept"
+path = "tests/accept.rs"

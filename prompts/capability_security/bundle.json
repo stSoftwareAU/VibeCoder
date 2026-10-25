@@ -1,0 +1,111 @@
+{
+  "revision": "2026-10-26.1",
+  "attribution": "Adapted from CoSAI / OASIS Project CodeGuard v1.5.0, reviewed 26 October 2026 at commit 41160d54980bab0618165485ade3cfd2ade93288. Upstream licence: CC-BY-4.0. VibeCoder rewrote the selected ideas in its own words and limited them to five capabilities. This file is not an upstream plugin, it is not downloaded at run time, and a later upstream revision is not adopted automatically.",
+  "entries": [
+    {
+      "id": "capsec-resource-auth",
+      "title": "Resource and tenant authorisation",
+      "advice": "Authorise the caller against the resource's tenant or owner inside the operation's real entry point, using the platform's existing authentication and authorisation controls. Allow a write only through an explicit field allowlist and ignore every other field. A legitimate authorised update must still succeed.",
+      "validation": "An authorised request succeeds, and an unauthorised or cross-resource request fails at that control, with the feature called through its real entry point.",
+      "reviewCheck": "An authorised caller completes the operation, and an unauthorised or cross-tenant caller fails at the authorisation control. Writable fields come from an allowlist. A stub, an unused validator, unconditional rejection, a check only in a UI, or mocked-out authorisation does not pass.",
+      "signals": {
+        "task": [
+          "authoris",
+          "authoriz",
+          "tenant",
+          "mass assignment",
+          "mass-assignment",
+          "writable field",
+          "cross-resource",
+          "authenticated resource"
+        ],
+        "imports": [],
+        "entryPoints": [
+          "http",
+          "https",
+          "route",
+          "routes",
+          "handler",
+          "handlers",
+          "controller",
+          "controllers"
+        ],
+        "callers": [],
+        "sinks": []
+      }
+    },
+    {
+      "id": "capsec-safe-execution",
+      "title": "Safe process and query execution",
+      "advice": "Pass arguments as a list to the platform process API, and pass query parameters through the platform's parameter binding. Do not build a shell command or a query by concatenating untrusted text.",
+      "validation": "A legitimate command or query still runs, and untrusted text is not interpreted as syntax.",
+      "reviewCheck": "Untrusted text reaches a process or query only as data, through the platform's argument list or parameter binding. A wrapper that is never called, or a check that rejects every call, does not pass.",
+      "signals": {
+        "task": [
+          "shell command",
+          "subprocess",
+          "child process",
+          "raw query",
+          "command execution"
+        ],
+        "imports": ["child_process", "std::process", "tokio::process", "sqlx"],
+        "entryPoints": [],
+        "callers": [],
+        "sinks": [["Command::new"], ["child_process"], ["std::process"]]
+      }
+    },
+    {
+      "id": "capsec-outbound-url",
+      "title": "Outbound URL and TLS",
+      "advice": "Allow outbound destinations from an explicit host allowlist and verify the platform TLS certificate. Do not send the request to a host, scheme or address taken from untrusted input, and do not disable certificate checks.",
+      "validation": "A request to an allowed host still succeeds, and a request to any other host fails before it is sent.",
+      "reviewCheck": "Outbound requests go only to an allowlisted host over verified platform TLS. A deliberate negative-test certificate, a missing enterprise proxy, or an unused URL helper does not by itself fail this check.",
+      "signals": {
+        "task": ["outbound", "ssrf", "webhook", "tls certificate"],
+        "imports": ["reqwest", "undici", "axios", "node:https", "node:http"],
+        "entryPoints": [],
+        "callers": [],
+        "sinks": [["fetch("]]
+      }
+    },
+    {
+      "id": "capsec-file-bounds",
+      "title": "File boundaries and resource limits",
+      "advice": "Confine file access to a configured root and refuse a path that escapes it. Enforce a size limit before reading or writing. Use the platform's path and file APIs rather than a new confinement service.",
+      "validation": "A path inside the root and under the limit succeeds, and a path outside the root or over the limit fails.",
+      "reviewCheck": "File access stays inside a configured root and under a size limit. A missing file named security is not a failure of this check.",
+      "signals": {
+        "task": [
+          "path traversal",
+          "file boundary",
+          "resource limit",
+          "confinement"
+        ],
+        "imports": ["node:fs", "std::fs", "tokio::fs", "deno/fs"],
+        "entryPoints": [],
+        "callers": [],
+        "sinks": [["readFile"], ["writeFile"], ["File::open"]]
+      }
+    },
+    {
+      "id": "capsec-secret-logging",
+      "title": "Secret-safe logging",
+      "advice": "Redact secrets before they reach a log or an outbound body. Log the operation's identifier, not the credential, token or password.",
+      "validation": "The log or outbound body for a legitimate call contains the identifier and does not contain the secret.",
+      "reviewCheck": "A secret, token or password is redacted before it reaches a log or an outbound body. Absence of a file named security is not missing redaction.",
+      "signals": {
+        "task": ["redact", "secret-safe", "log secret", "credential in"],
+        "imports": [],
+        "entryPoints": [],
+        "callers": [],
+        "sinks": [
+          ["log", "secret"],
+          ["log", "token"],
+          ["log", "password"],
+          ["tracing", "secret"],
+          ["logger", "secret"]
+        ]
+      }
+    }
+  ]
+}

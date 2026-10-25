@@ -56,6 +56,7 @@ pointing at deleted files is worse than none.
 | [visa/visa-vulnerability-agentic-harness](https://github.com/visa/visa-vulnerability-agentic-harness) | The second opinion in the same gap analysis: verification lenses and business-context threat modelling | `docs/security/idle-task-scans-vs-anthropic-visa-harnesses-gap-analysis.md` |
 | [nealbridges/VulnHunter](https://github.com/nealbridges/VulnHunter) | Falsification and independent-verification discipline for security findings — a separate read-only pass that tries to disprove a fix, false-positive eliminations that must cite the defending `file:line`, and red→green discrimination evidence for security tests | `docs/security/vulnhunter-methodology-evaluation.md` |
 | [SLSA](https://slsa.dev/) | Provenance and build-integrity levels as the yardstick for supply-chain readiness | `prompts/best_practices/buckets/general.md` |
+| [CoSAI / OASIS Project CodeGuard v1.5.0](https://github.com/cosai-oasis/project-codeguard/blob/41160d54980bab0618165485ade3cfd2ade93288/skills/codeguard/SKILL.md) | Capability-scoped secure-implementation guidance, reviewed 26 October 2026 at commit `41160d54980bab0618165485ade3cfd2ade93288` and rewritten in our words under CC-BY-4.0. Five capabilities only. Not an upstream plugin, and not updated from the network | `prompts/capability_security/bundle.json`, `docs/CAPABILITY-SECURITY-GUIDANCE.md`, `worker/deno/lib/capability_security_guidance.ts` |
 
 ## Agents, prompting and accountability
 
