@@ -380,3 +380,113 @@ export async function checkLivenessWindow(
     },
   };
 }
+
+/** `/proc/meminfo`, read for `MemAvailable` on the liveness tick (Issue #4225). */
+const LIVENESS_MEMINFO_PATH = "/proc/meminfo";
+
+/** Kernel PSI files read on the liveness tick (Issue #4225). */
+const LIVENESS_PRESSURE_MEMORY_PATH = "/proc/pressure/memory";
+const LIVENESS_PRESSURE_CPU_PATH = "/proc/pressure/cpu";
+
+const MEM_AVAILABLE_KB_RE = /^MemAvailable:\s+(\d+)\s+kB/m;
+
+/**
+ * Pressure fields appended to the `[liveness] tick=` line (Issue #4225).
+ *
+ * `memAvailableMib` is an integer. `"unavailable"` means `/proc/meminfo`
+ * could not be read or contained no `MemAvailable:` line — not a reading
+ * of zero. `pressureMemory` and `pressureCpu` are the pressure files with
+ * whitespace collapsed to commas, the token `empty` when the file was
+ * readable but blank, or `unavailable` when the file could not be read.
+ */
+export interface LivenessTickPressure {
+  memAvailableMib: number | "unavailable";
+  pressureMemory: string;
+  pressureCpu: string;
+}
+
+/**
+ * Collapse a pressure file onto one log token.
+ *
+ * A readable blank file is `empty`. It is not `unavailable` (that token is
+ * only for a file that could not be read) and not a zero-stall line.
+ */
+export function collapseProcPressureText(text: string): string {
+  const collapsed = text.trim().replace(/\s+/g, ",");
+  return collapsed === "" ? "empty" : collapsed;
+}
+
+/**
+ * `MemAvailable` from `/proc/meminfo` text, in MiB.
+ *
+ * The kernel reports kibibytes. This divides by 1024 and rounds to an
+ * integer. `0` is a real reading. A missing `MemAvailable:` line is
+ * `"unavailable"`, including when `MemTotal:` is present on its own.
+ */
+export function memAvailableMibFromProcMeminfo(
+  text: string,
+): number | "unavailable" {
+  const match = MEM_AVAILABLE_KB_RE.exec(text);
+  if (!match) return "unavailable";
+  const kib = Number(match[1]);
+  if (!Number.isFinite(kib)) return "unavailable";
+  return Math.round(kib / 1024);
+}
+
+/**
+ * The three fields, in this order, each always present:
+ * `mem_available_mib=<n|unavailable> pressure_memory=<text> pressure_cpu=<text>`.
+ */
+export function formatLivenessPressureFields(
+  reading: LivenessTickPressure,
+): string {
+  const mem = reading.memAvailableMib === "unavailable"
+    ? "mem_available_mib=unavailable"
+    : `mem_available_mib=${reading.memAvailableMib}`;
+  return `${mem} pressure_memory=${reading.pressureMemory} ` +
+    `pressure_cpu=${reading.pressureCpu}`;
+}
+
+async function readPressureToken(
+  path: string,
+  readFile: (path: string) => Promise<string>,
+): Promise<string> {
+  try {
+    return collapseProcPressureText(await readFile(path));
+  } catch {
+    return "unavailable";
+  }
+}
+
+/**
+ * Read MemAvailable and the two PSI files for one liveness tick.
+ *
+ * Each file is read on its own. A missing or unreadable file becomes
+ * `unavailable` for that field and does not skip the others, and it is
+ * not reported as zero pressure. The function does not throw.
+ *
+ * @param readFile - Injectable reader. Production reads the path with
+ *   `Deno.readTextFile`, the same way other `/proc` probes in this repo do.
+ */
+export async function readLivenessTickPressure(
+  readFile: (path: string) => Promise<string> = (path) =>
+    Deno.readTextFile(path),
+): Promise<LivenessTickPressure> {
+  let memAvailableMib: number | "unavailable" = "unavailable";
+  try {
+    memAvailableMib = memAvailableMibFromProcMeminfo(
+      await readFile(LIVENESS_MEMINFO_PATH),
+    );
+  } catch {
+    memAvailableMib = "unavailable";
+  }
+  const pressureMemory = await readPressureToken(
+    LIVENESS_PRESSURE_MEMORY_PATH,
+    readFile,
+  );
+  const pressureCpu = await readPressureToken(
+    LIVENESS_PRESSURE_CPU_PATH,
+    readFile,
+  );
+  return { memAvailableMib, pressureMemory, pressureCpu };
+}

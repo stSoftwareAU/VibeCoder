@@ -703,6 +703,10 @@ targeted runs and timeouts.
 
 ### Targeted Test Execution
 
+Run one test suite at a time, in the foreground, never with
+`run_in_background`, and only for the crates or packages the change touched.
+Do not start a second suite beside the one you are waiting on.
+
 Run only the test files relevant to your changes:
 
 - **Cypress** — use `--spec`:

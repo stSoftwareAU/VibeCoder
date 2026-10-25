@@ -114,21 +114,15 @@ Deno.test("role configuration refuses malformed repository overrides and disable
   }
 });
 
-Deno.test("orchestrated Codex roles use enforced sandboxes and disable further delegation", () => {
+Deno.test("orchestrated Codex roles disable further delegation and approval prompts", () => {
   const provider = agentProviderById("codex")!;
   for (const role of ["manager", "executor", "reviewer"] as const) {
     const argv = provider.buildInvocation({
       prompt: "brief",
       orchestrationRole: role,
     });
-    assertEquals(
-      argv.includes("--dangerously-bypass-approvals-and-sandbox"),
-      false,
-    );
-    assertEquals(
-      argv[argv.indexOf("--sandbox") + 1],
-      role === "executor" ? "workspace-write" : "read-only",
-    );
+    // The container is the sandbox; read-only is held by the worker
+    // (Issue #4356, `orchestration/read_only_guard.ts`).
     assertEquals(argv.includes("features.multi_agent=false"), true);
     assertEquals(argv.includes('approval_policy="never"'), true);
   }
@@ -143,6 +137,19 @@ Deno.test("orchestrated Codex roles use enforced sandboxes and disable further d
 Deno.test("role dispatch supports same-provider and mixed-provider pairings with independent review", async () => {
   const dir = await Deno.makeTempDir();
   try {
+    // A read-only Codex role needs a git checkout to be held read-only
+    // (Issue #4356); CI has no global identity, so set one here.
+    for (
+      const args of [
+        ["init", "-q"],
+        ["config", "user.name", "Test"],
+        ["config", "user.email", "test@example.com"],
+        ["commit", "-q", "--allow-empty", "-m", "base"],
+      ]
+    ) {
+      const out = await new Deno.Command("git", { args, cwd: dir }).output();
+      assertEquals(out.success, true, `git ${args.join(" ")}`);
+    }
     await Deno.writeTextFile(
       `${dir}/auth.json`,
       JSON.stringify({ auth_mode: "chatgpt" }),

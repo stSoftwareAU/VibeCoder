@@ -1326,6 +1326,11 @@ async function executeClaudePhaseBody(
       provider: typeof invocationAgentProvider === "string"
         ? resolveAgentProvider(invocationAgentProvider)
         : invocationAgentProvider ?? plannedActiveAgentProvider(),
+      // A repo pin, and not an explicit per-invocation provider, is kept and
+      // stripped when it cannot carry `--agents` (Issue #4346). An explicit
+      // `options.agentProvider` is still rerouted when Claude can take it.
+      pinned: options.agentProvider === undefined &&
+        invocationAgentProvider !== undefined,
       selection: { env: deps.env },
       executorSplit: requestedExecutorSplit,
       reviewerAgents: options.issueReviewerAgents === true,
@@ -1342,6 +1347,8 @@ async function executeClaudePhaseBody(
       subAgentTier: issueRunPlan.subAgentTier,
     })
     : undefined;
+  // A reroute replaces an unpinned provider. A repo pin is stripped instead,
+  // so this stays the pin (Issue #4346).
   const effectiveAgentProvider = issueRunPlan?.outcome === "rerouted-to-claude"
     ? issueRunPlan.provider.id
     : invocationAgentProvider;

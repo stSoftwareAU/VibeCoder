@@ -421,8 +421,10 @@ that cannot carry a role before any paid work: `assertRoleSupported`
 provider, capability or tool-denial gap, and the subscription/CLI preflight
 (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI,
 unproved entitlement or exhausted quota. On that path nothing is dropped
-silently: Claude roles use CLI tool denials, Codex roles use read-only or
-workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
+silently: Claude roles use CLI tool denials, a read-only Codex role has every
+change it makes to the checkout put back by the worker
+(`worker/deno/lib/orchestration/read_only_guard.ts`, Issue #4356), and Gemini
+and DeepSeek fail closed. See
 [Role configuration](ROLE-CONFIGURATION.md).
 
 ## 8. Rollout and safeguards

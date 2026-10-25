@@ -547,31 +547,19 @@ export function buildCodexArgs(invocation: CodexInvocation): string[] {
     args.push(RESUME_SUBCOMMAND, invocation.resumeSessionId);
   }
 
+  // The container is the sandbox for orchestrated roles too (Issue #4356):
+  // the CLI's own sandbox needs bubblewrap and a fresh procfs mount, which
+  // the agent container cannot give it, so a sandboxed role could run no
+  // command at all. The worker keeps the manager and reviewer read-only
+  // instead (`orchestration/read_only_guard.ts`).
+  args.push(...STANDARD_FLAGS);
   if (invocation.orchestrationRole) {
-    const sandboxMode = invocation.orchestrationRole === "executor"
-      ? "workspace-write"
-      : "read-only";
-    args.push(
-      ...STANDARD_FLAGS.filter((flag) =>
-        flag !== "--dangerously-bypass-approvals-and-sandbox"
-      ),
-    );
-    // Resume rejects `--sandbox`; the config key is the mode that flag sets.
-    if (invocation.resumeSessionId) {
-      args.push("-c", `sandbox_mode="${sandboxMode}"`);
-    } else {
-      args.push("--sandbox", sandboxMode);
-    }
     args.push(
       "-c",
       'approval_policy="never"',
       "-c",
       "features.multi_agent=false",
-      "-c",
-      "sandbox_workspace_write.network_access=false",
     );
-  } else {
-    args.push(...STANDARD_FLAGS);
   }
 
   if (invocation.model && invocation.model !== CODEX_CLI_DEFAULT_MODEL) {
