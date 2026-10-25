@@ -31,6 +31,10 @@
 import { runWithTimeout } from "./subprocess_timeout.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import { stripJsonc } from "./jsonc.ts";
+import {
+  CARGO_BUILD_SKIPPED_FOR_MERGE,
+  shouldSkipEphemeralCargoBuild,
+} from "./heavy_build_gate.ts";
 
 /** How long the merged-tree type check may run before it is killed. */
 export const MERGE_GATE_TIMEOUT_MS = 300_000;
@@ -477,6 +481,12 @@ const spawnTypeCheck: TypeCheckRunner = async (project) => {
 export async function checkMergedTree(
   repoDir: string,
   runner: TypeCheckRunner = spawnTypeCheck,
+  /**
+   * Whether the ephemeral cargo build must not run (Issue #4326).
+   * Defaults to the host-disk budget. A merge still lands; CI builds it.
+   */
+  skipCargoBuild: () => Promise<boolean> = () =>
+    shouldSkipEphemeralCargoBuild(repoDir),
 ): Promise<MergeGateOutcome> {
   // A tree that cannot be read is a check that could not be run, not a
   // repository without one — refuse rather than wave it through as "skipped".
@@ -508,7 +518,16 @@ export async function checkMergedTree(
   }
 
   const checked: string[] = [];
+  const skipCargo = await skipCargoBuild();
+  let skippedCargo = false;
   for (const project of projects) {
+    if (project.kind === "cargo" && skipCargo) {
+      // The host is above its floor and short of cargo headroom, and
+      // pruning freed nothing. Running cargo here is what would take free
+      // space through the floor, so the merge lands and CI builds it.
+      skippedCargo = true;
+      continue;
+    }
     const where = `${describeProject(project)} in ${project.dir}`;
     let result: { code: number; output: string };
     try {
@@ -544,9 +563,20 @@ export async function checkMergedTree(
     checked.push(where);
   }
 
+  if (checked.length === 0 && skippedCargo) {
+    return {
+      status: "skipped",
+      detail: `${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`,
+      output: "",
+    };
+  }
+
+  const cargoNote = skippedCargo
+    ? `; ${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`
+    : "";
   return {
     status: "passed",
-    detail: `${checked.join("; ")} passed`,
+    detail: `${checked.join("; ")} passed${cargoNote}`,
     output: "",
   };
 }
