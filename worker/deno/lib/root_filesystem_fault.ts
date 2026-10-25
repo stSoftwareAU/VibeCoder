@@ -149,6 +149,12 @@ export async function detectRootFilesystemFault(
 
 /** The one ERROR line a faulted run logs before it ends. */
 export function formatRootFilesystemFault(fault: RootFilesystemFault): string {
+  // A host below its floor whose volume trim was refused (Issue #4360) ends
+  // on the same status — a fresh container is what returns the space — but
+  // the root is not emergency_ro unless the probe above actually found that.
+  if (fault.path === "host disk") {
+    return `[HOST_DISK_LOW] ${fault.detail}`;
+  }
   return `[${ROOT_FS_FAULT_CODE}] ${fault.path} is not writable: ` +
     `${fault.detail} — nothing inside this container can repair it, so ` +
     `ending this run with status ${ROOT_FS_FAULT_EXIT_STATUS} for the ` +

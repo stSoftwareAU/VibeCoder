@@ -37,6 +37,15 @@ import {
   parseAddedLines,
 } from "./mutation_gate.ts";
 import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
+import {
+  buildCacheEnvForCheckout,
+  ephemeralBuildCacheEnv,
+  workVolumeTrimRefusedForLaunch,
+} from "./ephemeral_build_cache.ts";
+import {
+  inFlightHostDiskGateEnabled,
+  parkInFlightBuild,
+} from "./heavy_build_gate.ts";
 
 export interface ProcessResult {
   code: number;
@@ -806,6 +815,41 @@ async function walkTests(
 }
 
 /**
+ * Child environment for one mutation or discrimination command.
+ *
+ * `cargo` and `deno` take the ephemeral target directory when the launch
+ * refuses the volume trim (Issue #4360), the same placement the agent and the
+ * quality gate already use. `git` does not: it writes no build output.
+ * An explicit `CARGO_TARGET_DIR` on `source` is left alone.
+ */
+export function mutationChildEnv(
+  cmd: string,
+  cwd: string,
+  options: {
+    source?: Record<string, string>;
+    overrides?: Record<string, string>;
+    trimRefused?: boolean;
+    root?: string;
+  } = {},
+): Record<string, string> {
+  const cache = cmd === "cargo" || cmd === "deno"
+    ? ephemeralBuildCacheEnv({
+      checkoutPath: cwd,
+      trimRefused: options.trimRefused === true,
+      ...(options.root === undefined ? {} : { root: options.root }),
+      ...(options.source === undefined ? {} : { source: options.source }),
+    })
+    : {};
+  return buildUntrustedCommandEnv({
+    ...(options.source === undefined ? {} : { source: options.source }),
+    overrides: { ...(options.overrides ?? {}), ...cache },
+  });
+}
+
+/** How often a running cargo or deno is asked whether the host is still above the floor. */
+const HOST_DISK_POLL_MS = 30_000;
+
+/**
  * Real seams: `Deno.Command` with kill-on-timeout, real clock and filesystem.
  *
  * The mutation gate runs repository code (`deno test -A`, `cargo mutants`'s
@@ -821,18 +865,51 @@ export function defaultMutationRunnerSeams(
   envSource?: Record<string, string>,
   /** Milliseconds between SIGTERM at the budget and SIGKILL; tests only. */
   killGraceMs: number = DEFAULT_KILL_GRACE_MS,
+  /**
+   * In-flight disk watch. Production leaves this unset and uses the armed
+   * gate; tests pass a park function and a short poll.
+   */
+  options?: {
+    diskPollMs?: number;
+    park?: (cwd: string) => Promise<string | null>;
+    trimRefused?: boolean;
+    cargoRoot?: string;
+  },
 ): MutationRunnerSeams {
   return {
     async runProcess(cmd, args, opts) {
+      const trimRefused = options?.trimRefused !== undefined
+        ? options.trimRefused
+        : (cmd === "cargo" || cmd === "deno") &&
+          workVolumeTrimRefusedForLaunch();
+      const childEnv = mutationChildEnv(cmd, opts.cwd, {
+        ...(envSource === undefined ? {} : { source: envSource }),
+        ...(opts.env === undefined ? {} : { overrides: opts.env }),
+        trimRefused,
+        ...(options?.cargoRoot === undefined
+          ? {}
+          : { root: options.cargoRoot }),
+      });
+      // The pure env names the directory; this makes it usable by both
+      // accounts, and drops the relocation if the root cannot be created.
+      if (childEnv["CARGO_TARGET_DIR"] !== undefined) {
+        const provisioned = buildCacheEnvForCheckout(opts.cwd, {
+          trimRefused: true,
+          ...(envSource === undefined ? {} : { source: envSource }),
+          ...(options?.cargoRoot === undefined
+            ? {}
+            : { root: options.cargoRoot }),
+        });
+        if (provisioned["CARGO_TARGET_DIR"] === undefined) {
+          delete childEnv["CARGO_TARGET_DIR"];
+        }
+      }
       let child: Deno.ChildProcess;
       try {
         child = new Deno.Command(cmd, {
           args,
           cwd: opts.cwd,
-          env: buildUntrustedCommandEnv({
-            ...(envSource === undefined ? {} : { source: envSource }),
-            ...(opts.env === undefined ? {} : { overrides: opts.env }),
-          }),
+          env: childEnv,
           clearEnv: true,
           stdin: "null",
           stdout: "piped",
@@ -865,8 +942,38 @@ export function defaultMutationRunnerSeams(
           } catch { /* already exited */ }
         }, killGraceMs);
       }, Math.max(1, opts.timeoutMs));
+      // A cargo that started above the floor can still fill the host
+      // (Issue #4360). Ask again while it runs, and stop it as a host fault
+      // rather than letting it write until the filesystem goes read-only.
+      // Absent unless production armed the gate or a test injected a park,
+      // so a short test command does not grow a timer.
+      let diskPark: string | undefined;
+      let diskSettled = false;
+      let diskKillTimer: ReturnType<typeof setTimeout> | undefined;
+      const watchDisk = options?.park !== undefined ||
+        inFlightHostDiskGateEnabled();
+      const diskTimer = watchDisk
+        ? setInterval(() => {
+          if (diskSettled || diskPark) return;
+          const ask = options?.park ?? parkInFlightBuild;
+          void ask(opts.cwd).then((reason) => {
+            if (diskSettled || !reason || diskPark) return;
+            diskPark = reason;
+            try {
+              child.kill("SIGTERM");
+            } catch { /* already exited */ }
+            diskKillTimer = setTimeout(() => {
+              try {
+                child.kill("SIGKILL");
+              } catch { /* already exited */ }
+            }, killGraceMs);
+          });
+        }, options?.diskPollMs ?? HOST_DISK_POLL_MS)
+        : undefined;
       try {
         const out = await child.output();
+        diskSettled = true;
+        if (diskPark) throw new Error(diskPark);
         const dec = new TextDecoder();
         return {
           code: out.code,
@@ -875,6 +982,9 @@ export function defaultMutationRunnerSeams(
           timedOut,
         };
       } finally {
+        diskSettled = true;
+        if (diskTimer !== undefined) clearInterval(diskTimer);
+        if (diskKillTimer !== undefined) clearTimeout(diskKillTimer);
         clearTimeout(timer);
         if (killTimer !== undefined) clearTimeout(killTimer);
       }

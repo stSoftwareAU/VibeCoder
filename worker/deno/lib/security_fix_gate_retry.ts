@@ -23,6 +23,7 @@
  */
 
 import { SECURITY_FIX_GATE_MARKER } from "./failure_diagnosis.ts";
+import { isHostDiskFaultText } from "./host_fault.ts";
 import type { SecurityFixDiscrimination } from "./security_fix_discrimination.ts";
 import {
   buildSecurityFixGateMessage,
@@ -201,10 +202,17 @@ async function persistVerdict(
     });
     return block;
   } catch (err) {
+    const message = (err as Error).message ?? String(err);
+    // A read-only or full disk cannot record a verdict. Falling back to an
+    // in-memory block would still charge the issue a blocked run (Issue #4360).
+    if (isHostDiskFaultText(message)) {
+      deps.logger.error(
+        `Could not persist the security-fix gate verdict: ${message}`,
+      );
+      throw err;
+    }
     deps.logger.warn(
-      `Could not persist the security-fix gate verdict — the next attempt will start blind and the consecutive-blocked-run count is NOT updated, so the ${MAX_CONSECUTIVE_BLOCKED_RUNS}-run gate-bug filing may be delayed: ${
-        (err as Error).message
-      }`,
+      `Could not persist the security-fix gate verdict — the next attempt will start blind and the consecutive-blocked-run count is NOT updated, so the ${MAX_CONSECUTIVE_BLOCKED_RUNS}-run gate-bug filing may be delayed: ${message}`,
     );
     // The retry still needs the verdict, so fall back to the in-memory one.
     return {
@@ -299,7 +307,18 @@ async function reportBlock(
   const logger = deps.logger;
   const { repo, issueNumber } = ctx;
   const verdicts = state.securityGateBlocks ?? [];
-  const block = await persistVerdict(ctx, state, deps, countsAsBlockedRun);
+  let block: SecurityFixGateBlock | undefined;
+  try {
+    block = await persistVerdict(ctx, state, deps, countsAsBlockedRun);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isHostDiskFaultText(message)) throw err;
+    return {
+      category: "internal_error",
+      status: "failure",
+      reason: message,
+    };
+  }
   const comment = buildSecurityFixGateBlockComment(verdicts);
 
   const client = deps.github.createClient(logger);
@@ -350,7 +369,18 @@ export async function recoverFromSecurityGateBlock(
   // Persisted before the retry so a run that dies mid-recovery still leaves the
   // verdict for the next attempt — charging no blocked run, because this block
   // has not ended one.
-  const block = await persistVerdict(ctx, state, deps, false);
+  let block: SecurityFixGateBlock | undefined;
+  try {
+    block = await persistVerdict(ctx, state, deps, false);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isHostDiskFaultText(message)) throw err;
+    return {
+      category: "internal_error",
+      status: "failure",
+      reason: message,
+    };
+  }
   if (!block) {
     return {
       category: "unknown",

@@ -122,7 +122,7 @@ const HIGH_PRESSURE_AT_KILL_RE = /memory pressure at kill: high/i;
  */
 const ENOSPC_RE = /(?<![\w/-])ENOSPC(?![\w/-])/;
 const DISK_FULL_PHRASE_RE =
-  /\bno space left on device\b|\bdisk full\b|\bdisk is full\b/i;
+  /\bno space left on device\b|\bdisk full\b|\bdisk is full\b|Read-only file system|\bos error 30\b|Parked as infrastructure \(Issue #4360\)/i;
 
 /** Whether `message` reports disk exhaustion in error-shaped text. */
 function isDiskFull(message: string): boolean {
@@ -494,7 +494,7 @@ export function classifyRunFailure(
       fixability: "code_fixable",
       failureClass: "disk-full",
       rationale:
-        "The message reports disk exhaustion (ENOSPC / no space left on device).",
+        "The message reports disk exhaustion (ENOSPC, no space left on device, or a read-only filesystem after the disk filled).",
     };
   }
 

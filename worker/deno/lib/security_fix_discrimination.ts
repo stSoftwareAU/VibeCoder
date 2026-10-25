@@ -42,6 +42,8 @@
  */
 
 import { isDenoTestFile } from "./mutation_gate.ts";
+import { isHostDiskFaultText } from "./host_fault.ts";
+import { parkInFlightBuild } from "./heavy_build_gate.ts";
 import {
   findCargoPackageDir,
   findDenoConfigDir,
@@ -233,6 +235,12 @@ interface Clock {
 export async function runSecurityFixDiscrimination(
   input: DiscriminationRunInput,
   seams: MutationRunnerSeams,
+  /**
+   * Host-disk park consulted before each cited test is built (Issue #4360).
+   * Production passes none and gets {@link parkInFlightBuild}, which is a
+   * no-op until the worker arms it. Tests pass their own.
+   */
+  park: (cwd: string) => Promise<string | null> = parkInFlightBuild,
 ): Promise<SecurityFixDiscrimination> {
   if (input.tests.length === 0) {
     return notChecked(
@@ -242,6 +250,13 @@ export async function runSecurityFixDiscrimination(
   }
   if (input.baseRef === "" || input.baseRef.startsWith("-")) {
     return notChecked(`unusable base ref "${input.baseRef}"`);
+  }
+
+  // Before the clock, the clone and the build. One host-disk park covers
+  // every cited test: a later combine must not hide the reason (Issue #4360).
+  if (input.tests.some(isRunnable)) {
+    const parked = await park(input.repoPath);
+    if (parked) return notChecked(parked);
   }
 
   const start = seams.now();
@@ -263,10 +278,15 @@ export async function runSecurityFixDiscrimination(
       });
       continue;
     }
+    // Before the clone and the cargo/deno. A host below its floor must not
+    // start the build, and the reason is returned whole so a later combine
+    // cannot replace it with "could not be run" (Issue #4360).
+    const parked = await park(input.repoPath);
+    if (parked) return notChecked(parked);
     try {
       runs.push({
         test,
-        result: await discriminate(input, test, seams, clock),
+        result: await discriminate(input, test, seams, clock, park),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -286,6 +306,14 @@ export async function runSecurityFixDiscrimination(
 function combineRuns(
   runs: Array<{ test: CitedSecurityTest; result: SecurityFixDiscrimination }>,
 ): SecurityFixDiscrimination {
+  // A host-disk fault outranks a partial discrimination. The combined
+  // "could not be run" sentence would hide the read-only text and the gate
+  // would charge the issue (Issue #4360).
+  for (const { result } of runs) {
+    if (result.kind === "not_checked" && isHostDiskFaultText(result.reason)) {
+      return result;
+    }
+  }
   const only = runs[0];
   if (runs.length === 1 && only !== undefined) return only.result;
   const checked: DiscriminationRun[] = [];
@@ -341,6 +369,7 @@ async function discriminate(
   test: CitedSecurityTest,
   seams: MutationRunnerSeams,
   clock: Clock,
+  park: (cwd: string) => Promise<string | null>,
 ): Promise<SecurityFixDiscrimination> {
   const rust = isRustFile(test.file);
   if (rust && !RUST_TEST_NAME.test(test.name)) {
@@ -443,6 +472,8 @@ async function discriminate(
       { outcome: DiscriminationRunOutcome } | { reason: string }
     > => {
       guard(`the ${where} run`);
+      const parked = await park(cwd);
+      if (parked) return { reason: parked };
       const res: ProcessResult = await seams.runProcess(
         cmd,
         [...args],

@@ -35,6 +35,7 @@ import {
   isInfrastructureFailure,
 } from "../failure_diagnosis.ts";
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
+import { parkInFlightBuild } from "../heavy_build_gate.ts";
 import { isBaselineAwareQualityGateEnabled } from "../baseline_aware_gate.ts";
 import {
   decideGateBypass,
@@ -466,6 +467,21 @@ async function runQualityGateBody(
   const { repo, config } = ctx;
   const logger = deps.logger;
   const maxAttempts = 2; // Initial check + 1 fix attempt
+
+  // The gate runs the repository's own cargo or deno. Below the floor that
+  // build is the host's fault, and it is not recorded as a failed gate
+  // (Issue #4360).
+  const park = await parkInFlightBuild(state.repoPath);
+  if (park) {
+    logger.warn(park, { repo });
+    return {
+      phaseResult: {
+        category: "internal_error",
+        status: "failure",
+        reason: park,
+      },
+    };
+  }
 
   // Holds a focused Claude retry prompt when the post-Claude run only
   // introduced specific new diffable findings versus the baseline
