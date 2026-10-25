@@ -454,5 +454,8 @@ Deno.test("human gate - a non-gate failure on the same PR still takes the cap-an
     state,
     makeInput("gitleaks", "gitleaks: aws-access-key detected", "555"),
   );
-  assert(state.labelCalls.length > 0, "expected the history-rewrite escalation");
+  assert(
+    state.labelCalls.length > 0,
+    "expected the history-rewrite escalation",
+  );
 });
