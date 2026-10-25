@@ -996,12 +996,12 @@ late: the deploy/publish workflows have already fired. Enforcement is
 - **No post-merge re-run of required checks** on the default branch.
 - **Hands-off landing, loud when blocked.** Merge-path precedence is
   fixed — native auto-merge first, direct merge only when native auto-merge is
-  refused on an unprotected branch — so the worker never races a repo's own
-  `auto-merge.yml`. `handleMergeAttempt()` in
+  refused on an unprotected branch or switched off on the repository — so the
+  worker never races a repo's own `auto-merge.yml`. `handleMergeAttempt()` in
   `worker/deno/lib/merge_block_escalation.ts` then acts on the outcome: a
   behind branch is updated so its checks re-run, and a PR that cannot be landed
-  gets an explanatory comment plus `needs-human`. A merge failure is never
-  swallowed. Review requests stay informational; only branch protection can
+  is logged and retried next cycle — never handed to a human with a comment or
+  `needs-human` (Issue #4304). A merge failure is never swallowed. Review requests stay informational; only branch protection can
   require an approval.
 - **One approval before the default branch.** Setup's `repo-settings-harden`
   makes every monitored repository's default branch require one approving

@@ -39,7 +39,7 @@ flowchart TD
     B -- "No (fall back)" --> E[directMergePr — backstop gate]
     E --> F{CI status?}
     F -- pending/failed --> G[Blocked: leave PR open]
-    F -- "no checks at all" --> N[Blocked: unverified —<br/>escalate to a human]
+    F -- "no checks at all" --> N[Blocked: unverified —<br/>branch update, retry next cycle]
     F -- passed --> H{behindBy > 0?}
     H -- yes --> I[Defer: branch-update maintenance<br/>merges target in, plain push →<br/>CI re-runs → retry next cycle]
     H -- no --> J["gh pr merge --squash<br/>(--merge for a milestone sync, or a milestone-fix PR<br/>whose head merges the default branch)<br/>--match-head-commit &lt;checked SHA&gt;"]
@@ -380,9 +380,10 @@ nothing. `checkCiStatus()` reports it as `no_checks` — a status distinct from
 direct-merge path is the one that bypasses branch protection, so it must fail
 closed here exactly as its neighbouring guards do.
 
-Waiting will not help (no check is coming), so the automated path escalates:
-`classifyMergeAttempt({ kind: "no_checks" })` returns `escalate`, which posts
-the explanatory PR comment and applies `needs-human`.
+The automated path never merges such a PR and never hands it to a human
+(Issue #4304): `classifyMergeAttempt({ kind: "no_checks" })` returns `retry`,
+which requests a branch update — a fresh head the repository's checks can run
+on — logs a warning, and tries again next cycle.
 
 The only way to land such a PR through the worker is the **explicit operator
 override** on the CLI:
@@ -636,22 +637,22 @@ omission rather than one defect (Issues #470, #1136).
 **A blocked merge is never silent.** Every outcome runs through
 `handleMergeAttempt()` in
 [`worker/deno/lib/merge_block_escalation.ts`](../worker/deno/lib/merge_block_escalation.ts),
-which maps it to exactly one of four dispositions:
+which maps it to exactly one of four dispositions. None of them hands the PR to
+a human (Issue #4304): every PR merges once it is approved and green, and the
+worker keeps working it until it does.
 
 | Outcome                                                | Disposition     | Worker behaviour                                                                                 |
 | ------------------------------------------------------ | --------------- | ------------------------------------------------------------------------------------------------ |
 | Merged, or native auto-merge armed                     | `landed`        | Nothing — the PR will land unattended                                                            |
 | Checks pending or failed                               | `await_checks`  | Log and wait; the CI-fix loop owns a red check and escalates on its own 3-attempt cap            |
 | Branch behind its base                                 | `update_branch` | `PUT .../update-branch` so the checks re-run against the merged state                            |
-| No checks at all on the head commit                    | `escalate`      | Explanatory PR comment **and** `needs-human` — nothing verified the head, and no check is coming |
+| No checks at all on the head commit                    | `retry`         | Branch update requested so checks run on a fresh head; logged as a warning, retried next cycle   |
 | Head moved after its checks were read                  | `await_checks`  | Log and wait; the new head's checks are on their way and the next cycle re-evaluates             |
-| Merge refused (protection rule, conflict, unmergeable) | `escalate`      | Explanatory PR comment **and** the `needs-human` label                                           |
+| Merge refused (protection rule, conflict, unmergeable) | `retry`         | Branch update requested; logged as a warning, retried next cycle                                 |
 
-Escalation routes through the shared `escalateToHuman()` chokepoint, so the
-label can never be applied without an accompanying explanation, and it is
-deduplicated per PR so a repeating scan does not spam the thread. A failed
-branch update escalates too — a PR that cannot be brought up to date is exactly
-the stall this is meant to eliminate.
+A failed branch update is retried the same way. A PR that conflicts with its
+base is the merge-conflict ladder's, which finds it by its mergeable state; no
+comment and no `needs-human` label is ever posted by this path.
 
 Review requests are **informational**: a requested reviewer never blocks a fix
 PR. Only branch protection can require an approval, and that is a per-repo
@@ -676,19 +677,24 @@ first line is `<!-- vibe-pre-pr-verifier-hold -->` and whose author is a fleet
 login is actionable feedback, including when this host wrote it; a fleet
 eyes reaction prevents repeat processing (Issue #3798).
 
+A repository with auto-merge switched off is no exception (Issue #4304):
+`enableAutoMerge()` falls back to the same gated, SHA-pinned direct merge an
+unprotected base takes, so the PR lands once it is approved and green instead
+of carrying a "merge it manually" note.
+
 The scan lists PRs authored by the worker only, so **human-authored PRs are
-never commented on or escalated** by this path.
+never commented on or merged** by this path.
 
 ```mermaid
 flowchart TD
     A[Auto-merge scan<br/>worker-authored PR] --> B[gh pr merge --auto]
     B -- enabled --> L[landed]
-    B -- "not allowed<br/>(branch unprotected)" --> C[directMergePr — backstop gate]
+    B -- "not allowed (branch unprotected)<br/>or auto-merge off on the repo" --> C[directMergePr — backstop gate]
     B -- other failure --> E
     C -- merged --> L
     C -- "pending / failed" --> W[await_checks<br/>log and wait]
     C -- behind target --> U[update-branch<br/>checks re-run]
-    C -- refused --> E[escalate:<br/>PR comment + needs-human]
+    C -- refused --> E[retry:<br/>update-branch, warn,<br/>try again next cycle]
     U -- update fails --> E
 ```
 
@@ -1104,8 +1110,8 @@ default tip never refills the attempt count.
 | Required CI check **failed**                        | Backstop returns blocked; PR left open                     | Fix lands on the feature branch; CI re-runs; re-evaluated next cycle           |
 | Feature branch **behind target**                    | Backstop defers; PR left open                              | Branch-update maintenance merges the target in → CI re-runs → merge-if-green   |
 | Head **moves** between the check read and the merge | SHA-pinned merge refused by GitHub; deferred, PR left open | The new head's checks run; next cycle re-evaluates the gate                    |
-| Green PR **refused by the merge**                   | Explanatory PR comment + `needs-human`                     | Human unblocks the merge; the worker does not retry while the label is applied |
-| **Branch update fails** on a behind PR              | Escalated the same way — never left silently open          | Human resolves the conflict on the feature branch                              |
+| Green PR **refused by the merge**                   | Branch update requested; warning logged                    | Retried every cycle (Issue #4304) — never handed to a human                    |
+| **Branch update fails** on a behind PR              | Warning logged — never left silently open                  | Retried next cycle; a conflict is resolved by the merge-conflict ladder        |
 | Push **targets default branch**                     | Push rejected with explicit error                          | Change is redirected through a feature-branch PR                               |
 | Default branch **cannot be resolved**               | Push allowed (fail-open)                                   | Feature-branch pushes are never blocked by a transient lookup failure          |
 | Ruleset write **fails for one repo**                | Logged as a non-fatal warning                              | Setup continues; the next setup run retries idempotently                       |

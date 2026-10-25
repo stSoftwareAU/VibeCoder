@@ -1655,8 +1655,9 @@ function singleOpenPrGh(
   };
 }
 
-Deno.test("ensureAutoMergeOnOpenPrs - a merge that cannot be arranged escalates, never silence", async () => {
+Deno.test("ensureAutoMergeOnOpenPrs - a repo with auto-merge switched off falls back to the gated direct merge (Issue #4304)", async () => {
   const handled: MergeAttemptOutcome[] = [];
+  const direct: number[] = [];
   const options: AutoMergeOptions = {
     ...makeBaseScanOptions({ ghCommandFn: singleOpenPrGh() }),
     getRepoConfig: () => "",
@@ -1665,23 +1666,28 @@ Deno.test("ensureAutoMergeOnOpenPrs - a merge that cannot be arranged escalates,
         result: "not_enabled_on_repo",
         message: "Auto-merge is not enabled on this repository",
       }),
+    // The gated direct merge (approval + green CI) is what lands it — never
+    // a note asking someone to merge it by hand.
+    directMergeFn: (_repo, prNumber) => {
+      direct.push(prNumber);
+      return Promise.resolve({ kind: "landed" } as MergeAttemptOutcome);
+    },
     handleMergeAttemptFn: (opts) => {
       handled.push(opts.outcome);
       return Promise.resolve({
-        disposition: "escalate",
+        disposition: "landed",
         branchUpdateRequested: false,
-        escalated: true,
       });
     },
   };
 
   const result = await ensureAutoMergeOnOpenPrs(options);
   assertEquals(result.ok, true);
-  assertEquals(handled.length, 1);
-  assertEquals(handled[0]!.kind, "merge_error");
+  assertEquals(direct, [10]);
+  assertEquals(handled, [{ kind: "landed", merged: true }]);
   if (result.ok) {
-    assertEquals(result.value.failedCount, 1);
-    assertEquals(result.value.enabledCount, 0);
+    assertEquals(result.value.failedCount, 0);
+    assertEquals(result.value.enabledCount, 1);
   }
 });
 
@@ -1696,9 +1702,8 @@ Deno.test("ensureAutoMergeOnOpenPrs - a thrown auto-merge error becomes a loud m
     handleMergeAttemptFn: (opts) => {
       handled.push(opts.outcome);
       return Promise.resolve({
-        disposition: "escalate",
+        disposition: "retry",
         branchUpdateRequested: false,
-        escalated: true,
       });
     },
   };
@@ -1726,7 +1731,6 @@ Deno.test("ensureAutoMergeOnOpenPrs - a stale-base direct merge is deferred, not
       return Promise.resolve({
         disposition: "update_branch",
         branchUpdateRequested: true,
-        escalated: false,
       });
     },
   };
@@ -2631,9 +2635,8 @@ Deno.test("ensureAutoMergeOnOpenPrs - a PR merged directly onto an unprotected m
     handleMergeAttemptFn: (opts) => {
       handled.push(opts.outcome);
       return Promise.resolve({
-        disposition: opts.outcome.kind === "landed" ? "landed" : "escalate",
+        disposition: opts.outcome.kind === "landed" ? "landed" : "retry",
         branchUpdateRequested: false,
-        escalated: opts.outcome.kind !== "landed",
       });
     },
   };
