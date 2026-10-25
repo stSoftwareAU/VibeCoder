@@ -2862,8 +2862,11 @@ PR comment processing uses a two-attempt system:
 
 1. **First failure** — adds a "confused" reaction; posts "will retry on next
    scan".
-2. **Second failure** — marks as processed (eyes reaction); posts "Permanently
-   Failed". No further retries.
+2. **Second failure** — closes the PR and re-queues its originating issue
+   through the stall ladder's rung (`abandonAndRestart`), then marks the
+   comment processed (eyes reaction). Nothing is left "permanently failed"
+   for a person (Issue #4304); a restart that is declined or fails leaves the
+   comment unmarked, so the next cycle retries it.
 
 Both reactions are **read back by reactor, never by count** (Issue #1249). Any
 account can react on any comment with no repository permission, so a count
@@ -2881,9 +2884,9 @@ the run retires the review (Issue #3383):
 1. **First failure** — posts a "First Attempt" reply carrying a hidden
    `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker; the review is left
    undismissed, so it is retried once its claim lease lapses.
-2. **Second failure** (the marker found, fleet-authored) — dismisses the
-   review (with a "Not addressed after two automated attempts" message, not
-   "addressed"); posts "Permanently Failed". No further retries.
+2. **Second failure** (the marker found, fleet-authored) — closes the PR and
+   re-queues its issue the same way, then dismisses the review (with a "Not
+   addressed after two automated attempts" message, not "addressed").
 
 No reaction is ever posted for a review — the old code reacted on
 `issues/comments/<reviewId>`, the wrong resource for a review id. Any other

@@ -2617,7 +2617,8 @@ async function completionBody(
   });
   // Issue #3177: `assemblePrBody` withholds the closing keyword when the
   // summary marks a criterion `missing`. Say so, since the PR then leaves
-  // the issue open and the merged-PR closers hand it to a human.
+  // the issue open, and the merged-PR closers leave it queued for a later
+  // run to finish (Issue #4304).
   const missingCriteria = findMissingCriteria(summaryContent);
   if (missingCriteria.length > 0) {
     logger.warn(

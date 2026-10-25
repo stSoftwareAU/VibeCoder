@@ -32,10 +32,16 @@ import {
 } from "./prepr_review_record.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
+  checkPrCommentHasFailedOnce,
   type CommentType,
   removeProcessedMark,
   type ReviewDismissalOutcome,
 } from "./pr_comments.ts";
+import {
+  abandonAndRestart,
+  type AbandonRestartOutcome,
+  type AbandonRestartRequest,
+} from "./conflict_abandon_restart.ts";
 import { getTokenEstimate } from "./claude_runner.ts";
 import { fetchIssueData } from "./issue_data.ts";
 import { fetchPrOwnerDirection } from "./owner_direction.ts";
@@ -64,7 +70,10 @@ import {
   PR_REVIEW_CLAIM_RENEW_MS,
 } from "./pr_review_claim_lease.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
-import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import {
+  type AlertDedupAuthorOptions,
+  resolveAlertDedupAuthors,
+} from "./alert_dedup_authors.ts";
 import {
   preparePrBranch,
   prResponseMessagePath,
@@ -118,7 +127,7 @@ import { describeUnpushedCommits } from "./git_remote_head.ts";
 import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
 import { getRunId } from "./run_id.ts";
 import {
-  buildReviewerNoChangeEscalation,
+  describeUnansweredReview,
   isReviewerChangeRequest,
   MAX_REVIEWER_NO_CHANGE_ATTEMPTS,
   probeAgentAnswer,
@@ -317,6 +326,14 @@ export interface PrFeedbackProcessorDeps {
    * exactly as it does today.
    */
   graftContextEnabled?: boolean;
+  /**
+   * Abandon-and-restart override (Issue #4304). Injected by tests;
+   * production leaves it undefined and gets {@link abandonAndRestart} over
+   * this run's `gh`, trusting the same fleet set the claim check uses.
+   */
+  abandonRestartFn?: (
+    request: AbandonRestartRequest,
+  ) => Promise<AbandonRestartOutcome>;
   /**
    * Collect the Graft repo-context bundle (Issue #2103). Optional —
    * {@link collectGraftContext} is used when omitted, and it spawns nothing
@@ -868,8 +885,8 @@ async function _processFeedbackWithHeartbeat(
    * PUT to the dismissals endpoint — which offers no un-dismissal, so a
    * failure here is fail-loud: the review stays outstanding and may be
    * processed again. `outcome` selects the dismissal message GitHub shows
-   * (Issue #3409): only `"addressed"` claims the change was made; a rebuttal,
-   * escalation, hand-off or pending fix PR each say what actually happened.
+   * (Issue #3409): only `"addressed"` claims the change was made; a rebuttal
+   * or a hand-off each say what actually happened.
    */
   const retireReview = async (
     outcome: ReviewDismissalOutcome,
@@ -1323,11 +1340,9 @@ async function _processFeedbackWithHeartbeat(
   }
 
   // In-run retry for an unanswered request-changes review (Issue #3246). A
-  // run that ends with no fix and no rebuttal escalates to `needs-human`
-  // rather than looping forever (Issue #3383: a `pr_review` claim no longer
-  // dismisses the review at claim time, but that escalation is still this
-  // run's one conclusion) — give the agent a second run inside this one
-  // first, before the worker posts the agent's rebuttal or escalates.
+  // run that ends with no fix and no rebuttal is charged for a later cycle,
+  // and then restarts the work (Issue #4304) — give the agent a second run
+  // inside this one first, before the worker posts its rebuttal or charges.
   let reviewerAttempts = 1;
   let lastAttempt = {
     exitCode: claudeResult.value.exitCode,
@@ -1898,7 +1913,7 @@ async function _processFeedbackWithHeartbeat(
   // follow-up issue and posts a hand-off message instead of looping on a
   // genuinely out-of-scope request, treat the run as a successful
   // resolution and post Claude's own message rather than the neutral
-  // "no changes" fallback. Surface needs-human in the run summary log.
+  // "no changes" fallback.
   //
   // Issue #3661 (SEC-6287d379587c): the prose markers alone are a claim, not
   // evidence. Confirm the follow-up issue the message names actually exists
@@ -1993,13 +2008,9 @@ async function _processFeedbackWithHeartbeat(
       value: {
         processed: true,
         changesPushed: false,
-        summary: escapeHatch.needsHuman
-          ? `PR #${prNumber} feedback handed off via escape hatch (${
-            escapeHatch.issueRef ?? "follow-up"
-          }) — needs-human requested`
-          : `PR #${prNumber} feedback handed off via escape hatch (${
-            escapeHatch.issueRef ?? "follow-up"
-          })`,
+        summary: `PR #${prNumber} feedback handed off via escape hatch (${
+          escapeHatch.issueRef ?? "follow-up"
+        })`,
       },
     };
   }
@@ -2034,9 +2045,10 @@ async function _processFeedbackWithHeartbeat(
     }
   }
 
-  // Issue #3246: set when this run escalates an unanswered request-changes
-  // review to `needs-human`, so the summary below can say so.
-  let reviewerEscalated = false;
+  // Issue #4304: set when an unanswered request-changes review that had
+  // already failed once closed this PR and re-queued its issue, so the
+  // summary below can say so.
+  let reviewerRestarted = false;
   // Issue #3408 review: set only once the rebuttal reply actually landed on
   // the PR, so the summary never claims "rebuttal posted" when the comment
   // post failed and the attempt was charged instead.
@@ -2044,28 +2056,23 @@ async function _processFeedbackWithHeartbeat(
 
   // Reply to comment — only claim "pushed" if push actually succeeded
   if (hasChanges && pushSucceeded && fixBranch && fixPrError) {
-    const posted = await replyFixPrRaiseFailed(
-      repo,
-      prNumber,
-      deps,
-      fixBranch,
-      input.branchName,
-      fixPrError,
-    );
-    // Issue #3383/#3408: a human is asked to land the fix, which answers
-    // the review — dismiss it rather than leaving it outstanding. But only
-    // once that hand-off is actually visible on the PR; a swallowed post
-    // failure must charge a failed attempt instead of silently retiring a
-    // review nothing was ever said about.
+    // Issue #4304: the fix is on origin but its PR into the gated head was
+    // not raised. Nobody is asked to open it by hand: the feedback stays
+    // outstanding, so the next cycle runs it again and raises the PR
+    // (`raiseMilestoneFixPr` reuses an open one, so a retry never
+    // duplicates it). A `pr_review` is charged and left undismissed; any
+    // other comment has its claim taken back so the next scan rediscovers it.
+    const detail =
+      `I pushed the fix to '${fixBranch}' on origin, but could not raise ` +
+      `the PR to land it into the gated head '${input.branchName}': ` +
+      `${fixPrError}. The worker retries this feedback on its next cycle.`;
     if (commentType === "pr_review") {
-      if (posted) {
-        await retireReview("fix_pr_pending");
-      } else {
-        await chargeReviewFailure(
-          "The fix was pushed, but the PR comment asking someone to open " +
-            "the fix PR could not be posted.",
-        );
-      }
+      await chargeReviewFailure(detail);
+    } else {
+      await releaseForRetry(repo, prNumber, commentType, commentId, deps, {
+        logger,
+        detail,
+      });
     }
   } else if (hasChanges && pushSucceeded) {
     const posted = await replyWithResult(
@@ -2125,61 +2132,50 @@ async function _processFeedbackWithHeartbeat(
       );
     }
   } else if (isReviewerChangeRequest(commentType)) {
-    // Issue #3246: no fix and no rebuttal after every in-run attempt —
-    // escalate now rather than post the neutral "could not identify a code
-    // change" reply (Issue #3383: the review is retired, not left
-    // outstanding, once the escalation below is attempted).
-    logger.warn(
-      "PR feedback: request-changes review left unanswered after every " +
-        "in-run attempt — escalating to needs-human (Issue #3246)",
-      {
-        repo,
-        prNumber,
-        reviewId: commentId,
-        attempts: reviewerAttempts,
-        lastExitCode: lastAttempt.exitCode,
-        lastDurationSeconds: lastAttempt.durationSeconds,
-      },
-    );
-    const escalation = buildReviewerNoChangeEscalation({
+    // Issue #3246: no fix and no rebuttal after every in-run attempt.
+    // Issue #4304: never handed to a human. The first such cycle charges a
+    // failed attempt, which records the failed-once marker and leaves the
+    // review outstanding for the next cycle to retry. A review that has
+    // already failed once is still unanswered after that retry, so the PR
+    // is closed and its issue redone through the stall ladder's own
+    // abandon-and-restart rung.
+    const record = describeUnansweredReview({
       reviewId: commentId,
       attempts: reviewerAttempts,
       lastExitCode: lastAttempt.exitCode,
       lastDurationSeconds: lastAttempt.durationSeconds,
     });
-    const escalated = await escalateToHuman({
-      ghClient: createGhEscalationClient(deps.github.runGhCommand),
+    const trustedAuthors = await resolveAlertDedupAuthors(
+      processorDeps.claimAuthorOptions ?? {},
+      (message) => logger.warn(message, { repo, prNumber }),
+    );
+    const failedOnce = await checkPrCommentHasFailedOnce(
       repo,
-      target: { kind: "pr", number: prNumber },
-      needsHumanLabel: "needs-human",
-      heading: escalation.heading,
-      reason: escalation.reason,
-      nextStep: escalation.nextStep,
-      ensureLabelColour: "d4c5f9",
-      ensureLabelDescription:
-        "Worker could not produce a fix; human review required",
-      dedupKey: `pr-review-unanswered:${repo}#${prNumber}:${commentId}`,
-      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
-      logger,
-    });
-    // Issue #3383/#3408: the escalation is this run's conclusion on the
-    // review, but only dismiss it once the label or the comment actually
-    // landed — `escalated.ok` is false only when both failed, in which
-    // case nothing exists on the PR (no fix, no rebuttal, no label, no
-    // comment) and the review must be charged, not silently retired.
-    reviewerEscalated = escalated.ok;
-    if (escalated.ok) {
-      await retireReview("escalated");
+      commentType,
+      commentId,
+      (args: string[]) => deps.github.runGhCommand(args),
+      trustedAuthors,
+      prNumber,
+    );
+    if (!failedOnce) {
+      logger.warn(
+        "PR feedback: request-changes review left unanswered after every " +
+          "in-run attempt — charged, so the next cycle retries it " +
+          "(Issue #4304)",
+        { repo, prNumber, reviewId: commentId, attempts: reviewerAttempts },
+      );
+      await chargeReviewFailure(`${record} The next cycle retries it.`);
     } else {
-      logger.error(
-        "PR feedback: escalating the unanswered request-changes review " +
-          "failed (Issue #3246)",
-        { repo, prNumber, reviewId: commentId, error: escalated.error.message },
-      );
-      await chargeReviewFailure(
-        "No fix or rebuttal was produced, and the needs-human escalation " +
-          `(label and comment) both failed: ${escalated.error.message}`,
-      );
+      reviewerRestarted = await restartUnansweredReview({
+        input,
+        record,
+        trustedAuthors,
+        processorDeps,
+      });
+      // The PR is closed, or the abandon was declined or failed and the
+      // review stays outstanding for the next cycle: either way nothing is
+      // charged — a second charge would retire it as permanently failed.
+      carrier.reviewSettlement = "released";
     }
   } else {
     await replyNoChanges(
@@ -2245,8 +2241,8 @@ async function _processFeedbackWithHeartbeat(
         ? fixPr
           ? `Pushed fixes for PR #${prNumber} feedback via fix PR #${fixPr.number}`
           : `Pushed fixes for PR #${prNumber} feedback`
-        : reviewerEscalated
-        ? `PR #${prNumber} review ${commentId}: no fix or rebuttal after ${reviewerAttempts} run(s) — escalated to needs-human`
+        : reviewerRestarted
+        ? `PR #${prNumber} review ${commentId}: still no fix or rebuttal after a retried cycle — PR abandoned and its issue re-queued`
         : hasChanges
         ? `Fixed PR #${prNumber} feedback locally but failed to push`
         : isReviewerChangeRequest(commentType) && customMessage !== undefined &&
@@ -2395,20 +2391,32 @@ async function replyBranchPrepareFailed(
 }
 
 /**
- * Issue #2907: the fix branch itself pushed successfully — it IS on origin —
- * but the PR that would land it into the gated head could not be raised.
- * `replyPushFailed`'s "the work is still on the worker's local branch"
- * would be false here; say the fix is on origin and needs a human to open
- * the PR.
+ * Take back a claimed comment's processed mark so the next scan rediscovers
+ * it and the feedback is retried (Issue #4304). A mark that cannot be taken
+ * back would leave the comment answered by nobody, so `detail` is posted as
+ * a direct reply instead — the same fallback the branch-prepare failure uses.
  */
-async function replyFixPrRaiseFailed(
+async function releaseForRetry(
   repo: string,
   prNumber: number,
+  commentType: CommentType,
+  commentId: string,
   deps: WorkerDeps,
-  fixBranch: string,
-  headBranch: string,
-  error: string,
-): Promise<boolean> {
+  opts: { logger: Logger; detail: string },
+): Promise<void> {
+  const markError = await removeProcessedMark(
+    repo,
+    commentType,
+    commentId,
+    (args: string[]) => deps.github.runGhCommand(args),
+    (message: string) => opts.logger.warn(message, { repo, prNumber }),
+  );
+  if (!markError) return;
+  opts.logger.warn(
+    "Could not release the comment's processed mark for a retry — " +
+      "replying directly since the comment will not be rediscovered",
+    { repo, prNumber, commentId, error: markError.message },
+  );
   try {
     await deps.github.runGhCommand([
       "pr",
@@ -2417,15 +2425,107 @@ async function replyFixPrRaiseFailed(
       "--repo",
       repo,
       "--body",
-      `I pushed the fix to '${fixBranch}' on origin, but could not raise ` +
-      `the PR to land it into the gated head '${headBranch}': ${error}` +
-      "\n\nCould someone open that PR manually?",
+      opts.detail,
     ]);
-    return true;
   } catch {
-    // Issue #3408 review: see replyWithResult — the caller must know
-    // whether this landed before it retires a claimed `pr_review` on it.
+    // Comment failure is non-critical
+  }
+}
+
+/**
+ * The PR's current base branch, for the abandon comments (Issue #4304).
+ * Throws when it cannot be read: the comments name it as fact.
+ */
+async function resolvePrBaseBranch(
+  input: PrFeedbackInput,
+  deps: WorkerDeps,
+): Promise<string> {
+  const base = (await deps.github.runGhCommand([
+    "pr",
+    "view",
+    String(input.prNumber),
+    "--repo",
+    input.repo,
+    "--json",
+    "baseRefName",
+    "--jq",
+    ".baseRefName",
+  ])).trim();
+  if (base.length === 0) {
+    throw new Error(`PR #${input.prNumber} reported no base branch`);
+  }
+  return base;
+}
+
+/**
+ * Close a PR whose request-changes review stayed unanswered across a retried
+ * cycle, and re-queue its originating issue (Issue #4304). Reuses the stall
+ * ladder's rung (`conflict_abandon_restart.ts`), which keeps the issue's own
+ * pickup label or applies `idle-task`, and never applies `needs-human`.
+ *
+ * @returns true when the PR was closed.
+ */
+async function restartUnansweredReview(args: {
+  input: PrFeedbackInput;
+  record: string;
+  trustedAuthors: readonly string[];
+  processorDeps: PrFeedbackProcessorDeps;
+}): Promise<boolean> {
+  const { input, record, trustedAuthors, processorDeps } = args;
+  const { logger, deps } = processorDeps;
+  const where = { repo: input.repo, prNumber: input.prNumber };
+  const rung = processorDeps.abandonRestartFn ??
+    ((request: AbandonRestartRequest) =>
+      abandonAndRestart(request, {
+        gh: (ghArgs: string[]) => deps.github.runGhCommand(ghArgs),
+        trustedAuthors,
+        logger,
+      }));
+  let outcome: AbandonRestartOutcome;
+  try {
+    outcome = await rung({
+      repo: input.repo,
+      prNumber: input.prNumber,
+      branchName: input.branchName,
+      baseBranch: await resolvePrBaseBranch(input, deps),
+      reason: {
+        kind: "stalled",
+        detail: `has a request-changes review no fix or rebuttal answered: ` +
+          record,
+        tried: "review-retry",
+      },
+    });
+  } catch (err) {
+    logger.error(
+      "PR feedback: abandoning the PR for an unanswered review threw — the " +
+        "review stays outstanding for the next cycle (Issue #4304)",
+      { ...where, error: err instanceof Error ? err.message : String(err) },
+    );
     return false;
+  }
+  switch (outcome.outcome) {
+    case "abandoned":
+    case "closed-without-issue":
+      logger.warn(
+        "PR feedback: unanswered review — PR abandoned and its work redone " +
+          "(Issue #4304)",
+        { ...where, outcome: outcome.outcome },
+      );
+      return true;
+    case "declined":
+      logger.warn(
+        "PR feedback: abandon declined for an unanswered review — the review " +
+          "stays outstanding for the next cycle (Issue #4304)",
+        { ...where, reason: outcome.reason.kind },
+      );
+      return false;
+    case "failed":
+      logger.error(
+        "PR feedback: abandon failed for an unanswered review — the review " +
+          "stays outstanding for the next cycle (Issue #4304)",
+        { ...where, step: outcome.step, error: outcome.message },
+      );
+      return false;
   }
 }
 
@@ -2451,7 +2551,8 @@ async function replyNoChanges(
   //
   // Issue #3246: a request-changes review (`commentType === "pr_review"`)
   // never reaches this function — its unanswered case is caught upstream
-  // and either posts the agent's rebuttal or escalates to `needs-human`.
+  // and either posts the agent's rebuttal or is retried, then restarted
+  // (Issue #4304).
   const classification = failingCheckName
     ? classifyCiFailure(failingCheckName, [], commentBody)
     : undefined;

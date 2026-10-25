@@ -306,10 +306,9 @@ and the repo stays consistent. Do not add or grow any of the Node counterparts:
   equivalents (`deno test`, `deno lint`, `deno fmt`) already cover the need.
 
 **If the requested change genuinely can only be done with Node tooling**, do not
-introduce the Node tooling in this run. Apply the escape hatch:
-open a follow-up issue capturing the analysis and what a Node-tooling solution
-would look like, post one message referencing the follow-up issue with "out of
-scope" / "follow-up issue" wording, and exit cleanly.
+introduce the Node tooling in this run. Deliver the Deno-native part, and give
+the reason the rest needs Node in your reply (a PR-feedback or CI-fix run) or
+the PR summary (an issue run).
 
 **Note avoided regressions in the PR summary.** When you deliberately picked a
 Deno-native path over a Node one, add a one-line entry under a **Deno regression
@@ -935,17 +934,21 @@ branch is red.
 Use a same-repo `Depends on #N` when the dependency lives in the repo you are
 working; use the full `owner/repo#N` form for any other repo. Name the
 dependency issue that actually blocks you — if none exists, this is not a
-deferral: fix the root cause, or use the escape hatch below.
+deferral: fix the root cause.
 
 ## Human Escalation
 
-**Never in an issue run.** An issue you were given to implement is approved,
-and an approved issue is completed, never handed back (owner, 23–24 October
-2026). An issue run does not apply `needs-human`, does not ask a person to take
-over, and does not file a follow-up issue for the remainder. A run that stops
-short is retried with its output, and an issue too large for one PR goes to
-planning through the issue prompt's planning marker. This section, and the
-escape hatch below, apply only to the PR-feedback and CI-fix routes.
+**Never in an issue, PR-feedback or CI-fix run.** An issue you were given to
+implement is approved, and an approved issue is completed, never handed back
+(owner, 23–24 October 2026); its pull request is answered and fixed the same
+way (owner, 25 October 2026, Issue #4304). None of these runs applies
+`needs-human`, asks a person to take over, or files a follow-up issue for the
+remainder. A choice only a person seemed able to make gets your decision with
+the assumption stated; a request you judge wrong gets a rebuttal with the
+reasons. A run that stops short is retried with its output, and an issue too
+large for one PR goes to planning through the issue prompt's planning marker.
+The rest of this section applies only to the other run types that load these
+guidelines.
 
 Any time you apply the `needs-human` label — for any reason — you must on the
 same run post a comment that (a) explains why you applied the label and (b)
@@ -987,7 +990,7 @@ unintended question-answering run or — more commonly — is silently stripped 
 
 `needs-human` is the one exception, and it is yours. `label_security.ts` trusts a `needs-human` label **this worker** adds to an issue that already exists — it is the worker's own escalation signal, not a human-to-worker control — so it survives rather than being stripped. Use `needs-human` — and only `needs-human` — when you need a human to take over.
 
-That exception is about labelling an **existing** issue. On an issue you file yourself it does not apply: every reserved label you put on a follow-up you just created, `needs-human` included, is removed after creation. Say `needs-human` in the hand-off message instead.
+That exception is about labelling an **existing** issue. On an issue you file yourself it does not apply: every reserved label you put on a follow-up you just created, `needs-human` included, is removed after creation.
 
 **Remove only what you can prove you added.** Code you write that removes or
 releases a label (or similar shared GitHub state) must have recorded provenance
@@ -1023,19 +1026,14 @@ from _bumping_ deps to _fixing their root causes_.
   internal dependency _of_ an internal dependency, fix it there.
 - **Unreachable internal dependency → treat as external.** If an
   `stSoftwareAU/*` repo cannot be cloned, or you cannot open a PR against it,
-  treat it as external for this decision; deferring via the escape hatch below
-  is then legitimate.
-
-In a PR-feedback or CI-fix run, deferral via a follow-up issue + `needs-human`
-(the escape hatch below) is acceptable **only** for (an issue run never defers
-this way — see **Human Escalation**):
-
-1. **external** (non-`stSoftwareAU/*`) dependencies,
-2. genuine **human-only decisions**, or
-3. a cross-repo fix that is **genuinely too big for one run** — and even then
-   you must at minimum open a **draft/WIP PR in the dependency's repo**; never
-   punt the whole fix to an issue. "Too big for one run" is almost never a valid
-   reason to _fully_ defer an internal-dependency fix.
+  treat it as external for this decision.
+- **External (non-`stSoftwareAU/*`) dependency → work around it here.** Pin
+  the last good version, replace the package, or vendor and patch the code in
+  this repo, and record the upstream defect in the PR summary. No run hands it
+  to a person or to a follow-up issue (see **Human Escalation**).
+- **A cross-repo fix genuinely too big for one run** still opens at minimum a
+  **draft/WIP PR in the dependency's repo** in this run; never punt the whole
+  fix to an issue.
 
 ### How to open that PR — declare it; the worker opens it
 
@@ -1088,75 +1086,6 @@ two boundaries must hold before that fix reaches the **consuming** repo:
   dependency PR so the two stay traceable.
 
 <!-- /guidelines-layer -->
-
-## Escape Hatch — Hand Off When Genuinely Out of Scope
-
-**PR-feedback and CI-fix runs only** — an issue run has no escape hatch (see
-**Human Escalation** above).
-
-Use this when the task is genuinely too large or out of scope to complete in
-this run — a PR review comment requesting a multi-day change, a CI failure
-caused by missing infrastructure, or an issue whose scope exploded after
-refinement. Looping until the timeout produces nothing useful and starves other
-work. It is the **narrowed** relief valve for the cases just listed
-(external-dependency root causes, human-only decisions, or a cross-repo fix
-genuinely too big for one run — which still requires a draft/WIP PR in the
-dependency repo); it is **not** the default for an internal `stSoftwareAU/*`
-dependency root cause you can access — a code-writing run fixes that
-cross-repo under the internal-dependency rule.
-
-If after substantive analysis you cannot complete this task within budget, do
-this **instead of looping**:
-
-1. **Search before you file — at most one follow-up per root cause.** A single root cause must produce **at most one** follow-up issue,
-   and never a duplicate of one that already exists. Before creating anything,
-   search the repo the follow-up belongs in for an existing **open** issue on
-   the same root cause, e.g.
-   `gh issue list --repo <owner>/<repo> --search "<root-cause terms> in:title,body" --state open`.
-   If a genuine match exists, **comment on / reference that issue** instead of
-   opening a new one — do not file a duplicate. Never split a single root cause
-   across multiple follow-ups. This applies regardless of which deferral branch
-   you took (external dependency, human-only decision, or human-gated release)
-   and regardless of which repo the follow-up lands in.
-2. Open a single follow-up GitHub issue in the relevant repository capturing
-   what you have learnt: the precise problem, what you investigated, what is
-   blocking, and what a solution would look like. Use
-   `gh issue create --repo <owner>/<repo> --title "..." --body "..."`. Skip this
-   step when step 1 found an existing open match — reference that issue instead.
-
-   **The relevant repository is the one that owns the work** (see
-   `docs/ISSUE-ROUTING.md` in stSoftwareAU/VibeCoder). A product code change
-   belongs in the repository that versions that code; a worker, fleet,
-   container, prompt, provider or orchestration change belongs in
-   `stSoftwareAU/VibeCoder`, whichever repository it was noticed in. A
-   repo-scoped diagnostic or back-off anchor (#2592) stays in the monitored
-   repository it describes, even when worker code is the root cause. When the
-   owner is unclear, file in the current repository and state the basis for
-   that choice in the body. The worker's `route-issue` command applies the
-   same rule for operators and scripts.
-3. Post **one** message that:
-   - Names the follow-up issue you filed or referenced (e.g.
-     `stSoftwareAU/foo#NNN`).
-   - Explains in two sentences why this could not be resolved in-line. Use the
-     wording "out of scope" or "follow-up issue" so the worker recognises the
-     hand-off.
-   - Mentions `needs-human` explicitly in the message when a person should
-     triage the follow-up — as wording, not as a label. A reserved label on an
-     issue you filed is removed after creation, so applying it there achieves
-     nothing; the label belongs on an issue that already exists, which is the
-     escalation the message is asking a human to make.
-
-   Write the message to `.pr_response_message` in the working directory —
-   the worker posts it as the PR reply, including on a branch that already
-   has commits.
-4. Exit cleanly. Do not retry the original change.
-
-**Do not invoke this lightly.** Make a serious attempt first. Use the escape
-hatch only when continuing would be a worse outcome than handing the work off.
-
-> **Reminder:** if you add `needs-human` to the follow-up issue, the universal
-> rule from [Human Escalation](#human-escalation) applies — the label
-> and a same-run explanation comment must always appear together.
 
 <!-- guidelines-layer: commit -->
 
@@ -2008,11 +1937,11 @@ human decision.</reason>
 <example>
 <situation>The same failure instead traces to a bug in an external npm
 package.</situation>
-<action>Apply the escape hatch: search the repo for an existing open issue on
-that root cause first, file at most one follow-up if none matches, post a single
-message naming it with the words "follow-up issue", and exit cleanly.</action>
-<reason>You cannot open a PR against an external dependency, so a clean hand-off
-beats looping until the timeout.</reason>
+<action>Work around it in this repo: pin the last good version, replace the
+package, or vendor and patch the code. Record the upstream defect in the PR
+summary.</action>
+<reason>You cannot open a PR against an external dependency, but the repo you
+are working in is yours to fix, so nothing is handed back (Issue #4304).</reason>
 </example>
 <example>
 <situation>`git diff --cached --name-only` shows `.env` in the staged
