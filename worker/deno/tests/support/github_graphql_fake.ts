@@ -50,11 +50,39 @@ export type FakeCheckContext =
   }
   | { kind: "statusContext"; context: string; state: string };
 
+/**
+ * One check suite on a pull request's head commit (Issue #4347). Enum values
+ * are uppercase as GitHub's GraphQL returns them, e.g. `COMPLETED`,
+ * `STARTUP_FAILURE`.
+ */
+export interface FakeCheckSuite {
+  /** The suite's database id; defaults to a stable value derived from its index. */
+  databaseId?: number;
+  /** The app's slug, e.g. "github-actions"; null for an unknown app. */
+  appSlug: string | null;
+  status: string;
+  /** Null while the suite has not finished. */
+  conclusion: string | null;
+  /**
+   * Check runs this suite created. Defaults to zero, the startup-failure
+   * shape (Issue #4347).
+   */
+  checkRunCount?: number;
+  /** Workflow display name, when the suite has a workflow run. */
+  workflowName?: string | null;
+  /** Workflow file path, for example `.github/workflows/actionlint.yml`. */
+  workflowPath?: string | null;
+  /** HTML URL of the workflow run. */
+  runUrl?: string | null;
+}
+
 /** Server-side state for one pull request. */
 export interface FakePullRequest {
   headOid: string;
   rollupState: string;
   contexts: FakeCheckContext[];
+  /** The head commit's check suites; defaults to none. */
+  checkSuites?: FakeCheckSuite[];
 }
 
 /** Everything the fake knows about one repository. */
@@ -71,6 +99,37 @@ export interface FakeGh {
   gh: (args: string[]) => Promise<string>;
   /** Every GraphQL query body the code under test sent, in order. */
   queries: string[];
+}
+
+/** Reject truncated selection sets rather than returning a plausible payload. */
+function validateSelectionSets(query: string): void {
+  let depth = 0;
+  let quoted = false;
+  let escaped = false;
+  let comment = false;
+  for (const char of query) {
+    if (comment) {
+      if (char === "\n") comment = false;
+      continue;
+    }
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+      continue;
+    }
+    if (char === "#") comment = true;
+    else if (char === '"') quoted = true;
+    else if (char === "{") depth++;
+    else if (char === "}" && --depth < 0) {
+      throw new Error("GraphQL syntax error: unexpected closing selection set");
+    }
+  }
+  if (quoted || depth !== 0) {
+    throw new Error(
+      "GraphQL syntax error: unterminated selection set or string",
+    );
+  }
 }
 
 /** Connection arguments as GitHub interprets them. */
@@ -133,7 +192,7 @@ function findFieldOpening(
   block: string,
   field: string,
 ): { 0: string; 1: string; index: number } | undefined {
-  const opening = /([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{/g;
+  const opening = /([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^)]*)\))?\s*\{/g;
   for (const match of block.matchAll(opening)) {
     if (match[1] !== field) continue;
     return { 0: match[0], 1: match[2] ?? "", index: match.index ?? 0 };
@@ -213,11 +272,41 @@ function pullRequestNode(
   const sliced = contexts
     ? applySlice(pr.contexts, parseSlice(contexts.args))
     : [];
+  // The suites are emitted only when the query selects them, as GitHub does.
+  const suites = selection(commits.body, "checkSuites");
+  const workflowRun = suites && selection(suites.body, "workflowRun");
+  const workflow = workflowRun && selection(workflowRun.body, "workflow");
+  if (workflow && /\bpath\b/.test(workflow.body)) {
+    throw new Error("Field 'path' doesn't exist on type 'Workflow'");
+  }
+  const checkSuites = suites
+    ? {
+      checkSuites: {
+        nodes: applySlice(pr.checkSuites ?? [], parseSlice(suites.args)).map(
+          (s, i) => ({
+            databaseId: s.databaseId ?? 9000 + i,
+            app: s.appSlug === null ? null : { slug: s.appSlug },
+            status: s.status,
+            conclusion: s.conclusion,
+            checkRuns: { totalCount: s.checkRunCount ?? 0 },
+            workflowRun: {
+              url: s.runUrl ?? null,
+              file: { path: s.workflowPath ?? null },
+              workflow: {
+                name: s.workflowName ?? null,
+              },
+            },
+          }),
+        ),
+      },
+    }
+    : {};
   return {
     commits: {
       nodes: [{
         commit: {
           oid: pr.headOid,
+          ...checkSuites,
           statusCheckRollup: {
             state: pr.rollupState,
             contexts: {
@@ -260,6 +349,7 @@ export function fakeGithubGraphQL(state: FakeRepoState): FakeGh {
     if (!field) throw new Error("fake gh received no query= field");
     const query = field.slice("query=".length);
     queries.push(query);
+    validateSelectionSets(query);
 
     const repo = /repository\(owner:\s*"([^"]*)",\s*name:\s*"([^"]*)"\)/.exec(
       query,
@@ -385,6 +475,7 @@ export function fakeGithubPrSearch(prs: readonly FakeSearchPr[]): FakeGh {
     if (!qArg) throw new Error("fake gh received no q= search variable");
     const query = queryArg.slice("query=".length);
     queries.push(query);
+    validateSelectionSets(query);
     if (!/\bsearch\s*\(/.test(query)) {
       throw new Error("fake gh received a non-search GraphQL query");
     }

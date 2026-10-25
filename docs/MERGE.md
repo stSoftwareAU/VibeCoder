@@ -311,17 +311,44 @@ that disagree on `total_count`, or a merged run count that does not equal
 the full set, so a failed or still-running check past the first page cannot
 read as `passed`.
 
-This matters because a workflow that failed to start (`startup_failure`) or a PR
-waiting on a manual approval (`action_required`) both report
-`status: "completed"`. Under the old denylist neither hit the failure branch nor
-the pending branch, so both fell through to `passed` and were direct-merged past
-branch protection.
+This matters because a PR waiting on a manual approval (`action_required`)
+reports a completed check run. Under the old denylist that conclusion hit
+neither the failure branch nor the pending branch, so it fell through to
+`passed` and was direct-merged past branch protection.
+
+A workflow that fails at startup is different. When the repository's Actions
+policy rejects a `uses:` action, GitHub records a check **suite** with conclusion
+`startup_failure` and creates **no check run** at all, so a check-run rollup
+never shows it (Issue #4347). `determineCiStatus()` therefore also reads the
+head commit's check suites: a completed suite from the `github-actions` app
+whose conclusion is not on the passing allowlist makes the verdict `failed`
+only when that suite created no check run of its own. A suite that has runs is
+already judged through the latest check run, so an earlier failed or cancelled
+run of the same workflow does not fail the commit again. The suites come from
+GraphQL `checkSuites` (including `checkRuns.totalCount`) on the batched read,
+and from `repos/{repo}/commits/{sha}/check-suites`
+(`latest_check_runs_count`) on the REST fallback. Suites from other apps, and
+suites that have not finished, change nothing. The CI-fix scan reads the same
+zero-run suites: a completed `github-actions` suite with conclusion
+`startup_failure` becomes a CI-fix candidate keyed by the suite id and named
+after the workflow and file path. The run URL is carried in its annotations,
+so the agent can locate the startup refusal while the check name and failure
+signature stay stable across pushes. Without workflow metadata the name is
+`GitHub Actions workflow startup failure`. GraphQL reads the path from
+`workflowRun.file.path`; the REST fallback reads the workflow run by suite id.
+The CI-fix handoff distinguishes suite ids from job ids. A no-change repair
+re-runs the entire workflow because a startup failure has no failed job to
+re-run. Startup suites stay eligible for repair even after the local job retry
+budget is spent; the fleet-wide attempt cap still bounds them and invokes the
+existing abandon-and-restart path, including when GitHub refuses a rerun.
+
 
 ```mermaid
 flowchart TD
     A[Check-run conclusion] --> B{On the passing allowlist?<br/>success / skipped / neutral}
     B -- yes --> C[passed]
     B -- no --> D[failed — including unknown<br/>and future conclusions]
+    S[Completed github-actions suite<br/>with no check run] -- conclusion not on allowlist --> D
     C --> E{Rollup state supplied?}
     E -- no --> F[Verdict stands]
     E -- yes --> G[Worse of the two verdicts wins]
@@ -385,7 +412,10 @@ flowchart TD
 
 A head commit with **no check runs and no commit statuses** has been verified by
 nothing. `checkCiStatus()` reports it as `no_checks` — a status distinct from
-`passed` — and the gate blocks the merge with the `no_checks` reason. The
+`passed` — and the gate blocks the merge with the `no_checks` reason. A failed
+`github-actions` check suite with no check run of its own on such a head makes
+it `failed` instead, because a suite can exist with no check run
+([the allowlist](#the-ci-verdict-is-an-allowlist)). The
 direct-merge path is the one that bypasses branch protection, so it must fail
 closed here exactly as its neighbouring guards do.
 

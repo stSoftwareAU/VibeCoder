@@ -33,7 +33,14 @@ const pr = (over: Partial<SearchPr> = {}): SearchPr => ({
     mergeCommitAllowed: true,
   },
   author: { login: "app/dependabot" },
-  commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] },
+  commits: {
+    nodes: [{
+      commit: {
+        statusCheckRollup: { state: "SUCCESS" },
+        checkSuites: { nodes: [] },
+      },
+    }],
+  },
   reviews: { nodes: [] },
   ...over,
 });

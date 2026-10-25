@@ -41,6 +41,7 @@ const rollup: PrRollup = {
     conclusion: "success",
   }],
   statusContexts: [],
+  checkSuites: [],
 };
 async function withLedger(body: (path: string, dir: string) => Promise<void>) {
   const dir = await Deno.makeTempDir();
@@ -131,6 +132,31 @@ Deno.test("PR observations record failed, pending, absent CI and unapproved revi
     });
   }
 });
+Deno.test("PR observations fail quality when a startup-failed check suite sits under a green rollup", async () => {
+  const startupFailure = {
+    id: 31,
+    appSlug: "github-actions",
+    status: "completed",
+    conclusion: "startup_failure",
+    checkRunCount: 0,
+  };
+  const cases: Array<[PrRollup["checkSuites"], string]> = [
+    [[startupFailure], "fail"],
+    [[], "pass"],
+  ];
+  for (const [checkSuites, expected] of cases) {
+    await withLedger(async (path) => {
+      await record(path, {}, undefined, { ...rollup, checkSuites });
+      const events = await readLifecycleLedger(path);
+      assertEquals(
+        events.filter((e) => e.kind === "gate").filter((e) =>
+          e.gate === "quality"
+        ).map((e) => e.result),
+        [expected],
+      );
+    });
+  }
+});
 Deno.test("PR observations skip markerless PRs and retain closed-unmerged outcomes", () =>
   withLedger(async (path) => {
     await record(path, { body: "Closes #1" });
@@ -193,6 +219,7 @@ Deno.test("maintenance check lookup exposes the same rollup it uses for CI decis
               nodes: [{
                 commit: {
                   oid: "abc123",
+                  checkSuites: { nodes: [] },
                   statusCheckRollup: {
                     state: "SUCCESS",
                     contexts: {
@@ -394,6 +421,7 @@ Deno.test("CI maintenance writes head-bound quality and review observations from
                   nodes: [{
                     commit: {
                       oid: "abc123",
+                      checkSuites: { nodes: [] },
                       statusCheckRollup: {
                         state: "SUCCESS",
                         contexts: {
@@ -579,6 +607,7 @@ Deno.test("CI maintenance skips markerless bots and refreshes missing review met
                       nodes: [{
                         commit: {
                           oid: "abc123",
+                          checkSuites: { nodes: [] },
                           statusCheckRollup: {
                             state: "SUCCESS",
                             contexts: { nodes: [] },
@@ -676,6 +705,7 @@ Deno.test("CI maintenance never revives a closed PR from a cached OPEN listing",
                     nodes: [{
                       commit: {
                         oid: "abc123",
+                        checkSuites: { nodes: [] },
                         statusCheckRollup: {
                           state: "SUCCESS",
                           contexts: {

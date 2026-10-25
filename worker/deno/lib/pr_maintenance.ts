@@ -18,6 +18,7 @@
  */
 
 import type { Logger, Result } from "../types.ts";
+import type { CheckAnnotation } from "./pr_spelling_processor.ts";
 import { recordLifecyclePrFromGithub } from "./lifecycle_pr_observation.ts";
 import type { PrRollup } from "./check_runs_batch.ts";
 import { recordPrRejection } from "./fleet_telemetry.ts";
@@ -50,7 +51,11 @@ import {
   getCiCheckRetryCount,
   resolveCheckFixRoute,
 } from "./pr_ci_checks.ts";
-import { fetchFailedCheckRunsBatch } from "./check_runs_batch.ts";
+import {
+  fetchFailedCheckRunsBatch,
+  STARTUP_FAILURE_CONCLUSION,
+  startupFailedSuiteEntry,
+} from "./check_runs_batch.ts";
 import {
   isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
@@ -179,9 +184,13 @@ export interface CommentEntry {
 /** Check run entry from the GitHub API. */
 export interface CheckRunEntry {
   id: number;
+  /** Synthetic startup entries carry their suite identity separately from jobs. */
+  checkSuiteId?: number;
   name: string;
   status: string;
   conclusion: string;
+  /** Startup failures have no check-run endpoint; carry their run details here. */
+  annotations?: CheckAnnotation[];
 }
 
 /** Options for PR scanning functions. */
@@ -810,6 +819,77 @@ export async function fetchFailedCheckRuns(
 }
 
 /**
+ * Fetch the startup-failed GitHub Actions suites on a branch's head commit
+ * (Issue #4347) — the REST twin of `rollupToStartupFailedSuites`. Such a suite
+ * carries no check run, so {@link fetchFailedCheckRuns} cannot see it; it is
+ * returned as a synthetic entry keyed by the suite id.
+ */
+/**
+ * The workflow run GitHub recorded for a check suite, via
+ * `actions/runs?check_suite_id=` (Issue #4347). A missing or unreadable run
+ * leaves the CI-fix candidate with a stable generic name.
+ */
+async function workflowRunForSuite(
+  repo: string,
+  suiteId: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<
+  { name: string | null; path: string | null; htmlUrl: string | null }
+> {
+  const empty = { name: null, path: null, htmlUrl: null };
+  try {
+    const output = await ghCommandFn([
+      "api",
+      `repos/${repo}/actions/runs?check_suite_id=${suiteId}`,
+      "--jq",
+      ".workflow_runs[0] // {} | {name, path, html_url}",
+    ]);
+    const parsed: unknown = JSON.parse(output);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return empty;
+    }
+    const run = parsed as {
+      name?: unknown;
+      path?: unknown;
+      html_url?: unknown;
+    };
+    return {
+      name: typeof run.name === "string" ? run.name : null,
+      path: typeof run.path === "string" ? run.path : null,
+      htmlUrl: typeof run.html_url === "string" ? run.html_url : null,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export async function fetchStartupFailedSuites(
+  repo: string,
+  branchName: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<CheckRunEntry[]> {
+  try {
+    const output = await ghCommandFn([
+      "api",
+      `repos/${repo}/commits/${branchName}/check-suites?per_page=100`,
+      "--jq",
+      `[.check_suites[] | select(.app.slug == "github-actions" and .status == "completed" and .conclusion == "${STARTUP_FAILURE_CONCLUSION}" and .latest_check_runs_count == 0) | .id]`,
+    ]);
+    const parsed: unknown = JSON.parse(output);
+    if (!Array.isArray(parsed)) return [];
+    const ids = parsed.filter((id): id is number => typeof id === "number");
+    const entries: CheckRunEntry[] = [];
+    for (const id of ids) {
+      const workflow = await workflowRunForSuite(repo, id, ghCommandFn);
+      entries.push(startupFailedSuiteEntry(id, workflow));
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Build a per-PR failed-check-runs lookup for a repo (Issue #1806).
  *
  * Tries one batched GraphQL `statusCheckRollup` call covering every PR
@@ -823,6 +903,9 @@ export async function fetchFailedCheckRuns(
  * @param conclusions - Conclusions to keep (default `["failure"]`; Issue
  *   #2914 passes `["failure", "cancelled"]` from the CI-fix scan), passed
  *   through to both the batched and the REST-fallback path.
+ * @param includeStartupFailedSuites - Also return the head commit's
+ *   startup-failed Actions suites, which carry no check run (Issue #4347);
+ *   only the CI-fix scan sets it.
  */
 export async function buildFailedCheckRunsLookup(
   repo: string,
@@ -830,6 +913,7 @@ export async function buildFailedCheckRunsLookup(
   ghCommandFn: (args: string[]) => Promise<string>,
   conclusions: readonly string[] = ["failure"],
   observe?: (prNumber: number, rollup: PrRollup) => Promise<void>,
+  includeStartupFailedSuites = false,
 ): Promise<(pr: PrEntry) => Promise<CheckRunEntry[]>> {
   const prNumbers = prs.map((p) => p.number);
   const batch = await fetchFailedCheckRunsBatch(
@@ -838,13 +922,23 @@ export async function buildFailedCheckRunsLookup(
     ghCommandFn,
     conclusions,
     observe,
+    includeStartupFailedSuites,
   );
   if (batch !== null) {
     return (pr) => Promise.resolve(batch.get(pr.number) ?? []);
   }
   // GraphQL failed — fall back to per-PR REST path
-  return (pr) =>
-    fetchFailedCheckRuns(repo, pr.headRefName, ghCommandFn, conclusions);
+  return async (pr) => [
+    ...await fetchFailedCheckRuns(
+      repo,
+      pr.headRefName,
+      ghCommandFn,
+      conclusions,
+    ),
+    ...(includeStartupFailedSuites
+      ? await fetchStartupFailedSuites(repo, pr.headRefName, ghCommandFn)
+      : []),
+  ];
 }
 
 /**
@@ -1409,6 +1503,7 @@ export async function findFailedPrChecks(
       const failedChecks = await getFailedChecks(pr);
 
       for (const check of failedChecks) {
+        if (check.checkSuiteId !== undefined) continue;
         // Route on the step that failed, not the job name (Issue #1579):
         // a `Scripts & spelling` job whose bats step failed is a CI-fix
         // job, and sending it here left the bats failure unfixed.
@@ -1627,6 +1722,7 @@ export async function findFailedCiChecks(
           );
         }
         : undefined,
+      true,
     );
 
     // Issue #1878: the `needs:` topology from the host's existing clone,
@@ -1764,12 +1860,17 @@ export async function findFailedCiChecks(
         if (deferredNames.has(check.name)) continue;
         if (gatedNames.has(check.name)) continue;
 
+        // A suite has no job id to replace on rerun. Preserve its identity all
+        // the way through the string-based worker handoff (Issue #4347).
+        const checkId = check.checkSuiteId === undefined
+          ? String(check.id)
+          : `suite-${check.checkSuiteId}`;
         // Skip genuine spelling failures — handled by findFailedPrChecks.
         // The decision reads the failed *step*, so a non-spelling step
         // inside a spelling-named job stays on this route (Issue #1579).
         const routing = await resolveCheckFixRoute({
           repo,
-          checkId: String(check.id),
+          checkId,
           checkName: check.name,
           ghCommandFn,
           logger,
@@ -1780,9 +1881,12 @@ export async function findFailedCiChecks(
         const retryCount = await getCiCheckRetryCount(
           stateDir,
           repo,
-          String(check.id),
+          checkId,
         );
-        if (retryCount >= maxRetries) {
+        // Startup suites retain their id across reruns, so a job-local cap
+        // would strand them. The processor's fleet-wide attempt cap still
+        // bounds repair and abandons/restarts the PR when it is spent.
+        if (retryCount >= maxRetries && check.checkSuiteId === undefined) {
           // Issue #4304: a spent check run is re-run rather than left red
           // for a person. The fresh run has a fresh retry budget and is
           // picked up next scan; the fleet-wide auto-fix cap bounds it.
@@ -1795,7 +1899,7 @@ export async function findFailedCiChecks(
           });
           await rerunFailedJobsOfCheck({
             repo,
-            checkId: String(check.id),
+            checkId,
             ghCommandFn,
             logger,
           });
@@ -1809,18 +1913,16 @@ export async function findFailedCiChecks(
           checkId: check.id,
         });
 
-        const annotationsJson = await fetchCheckAnnotations(
-          repo,
-          check.id,
-          ghCommandFn,
-        );
+        const annotationsJson = check.annotations
+          ? JSON.stringify(check.annotations)
+          : await fetchCheckAnnotations(repo, check.id, ghCommandFn);
         const encodedAnnotations = encodeBase64(annotationsJson);
 
         const failedCheck: FailedCiCheck = {
           repo,
           prNumber,
           branchName,
-          checkId: String(check.id),
+          checkId,
           checkName: check.name,
           encodedAnnotations,
           // Issue #1880: the base branch, so the processor can verify an
