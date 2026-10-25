@@ -827,3 +827,137 @@ Deno.test("rerunInfrastructureChecks - an unevaluable fleet bound stands the rer
     }`,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Startup-failed Actions suites (Issue #4347)
+// ---------------------------------------------------------------------------
+
+const SUITE_ID = 77;
+
+/** The `pr list` answer every scan below starts from. */
+const PR_LIST = JSON.stringify([{
+  number: PR_NUMBER,
+  headRefName: "issue-1-fix",
+  headRefOid: HEAD_SHA,
+  baseRefName: "main",
+}]);
+
+Deno.test("findFailedCiChecks - a green run plus a zero-run startup_failure suite is handed to CI-fix (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-suite-gql-" });
+  try {
+    const { gh: graphqlGh } = fakeGithubGraphQL({
+      owner: "org",
+      name: "repo",
+      pullRequests: {
+        [PR_NUMBER]: {
+          headOid: HEAD_SHA,
+          rollupState: "SUCCESS",
+          contexts: [{
+            kind: "checkRun",
+            databaseId: 1,
+            name: "build",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+          }],
+          checkSuites: [{
+            databaseId: SUITE_ID,
+            appSlug: "github-actions",
+            status: "COMPLETED",
+            conclusion: "STARTUP_FAILURE",
+          }],
+        },
+      },
+    });
+    const ghFn = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+      if (key.includes("api graphql")) return graphqlGh(args);
+      return Promise.resolve("[]");
+    };
+
+    const found = await scan(ghFn, makeRecordingLogger(), stateDir);
+    assert(found !== null);
+    assertEquals(found.checkId, String(SUITE_ID));
+    assertEquals(
+      found.checkName,
+      `GitHub Actions workflow (suite ${SUITE_ID})`,
+    );
+    assertEquals(found.prNumber, PR_NUMBER);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - the REST fallback also hands a zero-run startup_failure suite to CI-fix (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-suite-rest-" });
+  try {
+    const calls: string[] = [];
+    const ghFn = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      calls.push(key);
+      if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+      if (key.includes("api graphql")) {
+        return Promise.reject(new Error("GraphQL error"));
+      }
+      if (key.includes("/check-suites")) {
+        return Promise.resolve(`[${SUITE_ID}]`);
+      }
+      return Promise.resolve("[]");
+    };
+
+    const found = await scan(ghFn, makeRecordingLogger(), stateDir);
+    assert(found !== null);
+    assertEquals(found.checkId, String(SUITE_ID));
+    assertEquals(
+      found.checkName,
+      `GitHub Actions workflow (suite ${SUITE_ID})`,
+    );
+    const suiteCall = singleCall(calls, "/check-suites");
+    assertEquals(
+      suiteCall,
+      `api repos/${REPO}/commits/issue-1-fix/check-suites?per_page=100 --jq ` +
+        `[.check_suites[] | select(.app.slug == "github-actions" and ` +
+        `.status == "completed" and .conclusion == "startup_failure") | .id]`,
+    );
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+Deno.test("findFailedCiChecks - a green run and no startup-failed suite yields nothing (Issue #4347)", async () => {
+  const stateDir = await Deno.makeTempDir({ prefix: "ci-suite-none-" });
+  try {
+    const { gh: graphqlGh } = fakeGithubGraphQL({
+      owner: "org",
+      name: "repo",
+      pullRequests: {
+        [PR_NUMBER]: {
+          headOid: HEAD_SHA,
+          rollupState: "SUCCESS",
+          contexts: [],
+          checkSuites: [{
+            appSlug: "github-actions",
+            status: "COMPLETED",
+            conclusion: "SUCCESS",
+          }],
+        },
+      },
+    });
+    const ghFn = (args: string[]): Promise<string> => {
+      const key = args.join(" ");
+      if (key.includes("pr list")) return Promise.resolve(PR_LIST);
+      if (key.includes("api graphql")) return graphqlGh(args);
+      return Promise.resolve("[]");
+    };
+    assertEquals(await scan(ghFn, makeRecordingLogger(), stateDir), null);
+  } finally {
+    await Deno.remove(stateDir, { recursive: true });
+  }
+});
+
+/** The single recorded call containing `needle`. */
+function singleCall(calls: string[], needle: string): string {
+  const matches = calls.filter((c) => c.includes(needle));
+  assertEquals(matches.length, 1);
+  return matches[0] as string;
+}

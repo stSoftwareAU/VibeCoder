@@ -316,7 +316,10 @@ whose conclusion is not on the passing allowlist makes the verdict `failed`,
 even when the commit has no check runs and no commit statuses. The suites come
 from GraphQL `checkSuites` on the batched read, and from
 `repos/{repo}/commits/{sha}/check-suites` on the REST fallback. Suites from
-other apps, and suites that have not finished, change nothing.
+other apps, and suites that have not finished, change nothing. The CI-fix scan
+reads the same suites: a completed `github-actions` suite with conclusion
+`startup_failure` becomes a CI-fix candidate keyed by the suite id, so the fleet
+fixes it without a review round trip.
 
 ```mermaid
 flowchart TD

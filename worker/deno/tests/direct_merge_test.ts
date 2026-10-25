@@ -8,7 +8,7 @@
  * Issue #926
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   checkCiStatus,
   type CheckRunsResponse,
@@ -698,9 +698,45 @@ Deno.test("direct_merge - checkCiStatus REST fallback errors when the check-suit
   );
   assertEquals(result.ok, false);
   if (!result.ok) {
-    assertStringIncludes(result.error.message, "check suites");
-    assertStringIncludes(result.error.message, "#42");
+    assertEquals(
+      result.error.message,
+      "Failed to fetch check suites for PR #42: HTTP 500",
+    );
   }
+});
+
+Deno.test("direct_merge - checkCiStatus REST fallback reports a non-Error check-suites failure by its text (Issue #4347)", async () => {
+  const mock = restFallbackMock(new Error("unused"));
+  const result = await checkCiStatus(
+    "owner/repo",
+    42,
+    (args: string[]) =>
+      args.join(" ").includes("check-suites")
+        ? Promise.reject("rate limited")
+        : mock(args),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.error.message,
+      "Failed to fetch check suites for PR #42: rate limited",
+    );
+  }
+});
+
+Deno.test("direct_merge - checkCiStatus REST fallback asks gh for exactly the app slug, status and conclusion of each suite (Issue #4347)", async () => {
+  const suiteCalls: string[][] = [];
+  const mock = restFallbackMock(JSON.stringify({ check_suites: [] }));
+  await checkCiStatus("owner/repo", 42, (args: string[]) => {
+    if (args.join(" ").includes("check-suites")) suiteCalls.push(args);
+    return mock(args);
+  });
+  assertEquals(suiteCalls, [[
+    "api",
+    `repos/owner/repo/commits/${FAKE_SHA}/check-suites?per_page=100`,
+    "--jq",
+    "{check_suites: [.check_suites[] | {app_slug: .app.slug, status, conclusion}]}",
+  ]]);
 });
 
 Deno.test("direct_merge - checkCiStatus REST fallback errors on a check-suites reply with no array (Issue #4347)", async () => {

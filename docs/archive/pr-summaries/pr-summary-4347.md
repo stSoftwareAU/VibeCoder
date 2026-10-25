@@ -5,8 +5,8 @@ GitHub records such a workflow as a GitHub Actions **check suite** with
 conclusion `startup_failure` and zero check runs, which is not a
 `statusCheckRollup` context, so neither the worker nor the review gate saw it.
 Both now read the head commit's check suites and treat a completed
-`github-actions` suite with a non-allowlisted conclusion as failed. Closes
-#4347.
+`github-actions` suite with a non-allowlisted conclusion as failed, and the
+CI-fix scan now hands a `startup_failure` suite to the fleet. Closes #4347.
 
 Version bump: no `VERSION` change in this diff; the merged commit records the
 final version.
@@ -50,23 +50,32 @@ flowchart TD
 - The suite list is read with `first: 100` and not paginated; a commit with more
   than 100 suites could hide a failed one.
 
+- The CI-fix scan (`findFailedCiChecks`) sees the failure too. A suite with no
+  check run has no check-run id, so `rollupToStartupFailedSuites` (GraphQL) and
+  `fetchStartupFailedSuites` (REST fallback) return a synthetic `CheckRunEntry`
+  keyed by the **suite id**, named `GitHub Actions workflow (suite <id>)`, with
+  conclusion `startup_failure`. Only the CI-fix scan asks for it
+  (`includeStartupFailedSuites`); the spelling scan, `findFailedPrChecks`, does
+  not. Only `startup_failure` is surfaced: `action_required` needs a person to
+  approve the run, and `failure`/`cancelled` suites already carry check runs.
+
 ### Undiscoverable Facts
 
-- The issue's third step says the CI-fix scan then receives the failure. This
-  diff does not change the CI-fix scan: it reads check runs
-  (`rollupToFailedCheckRuns`), and a suite with no check run has no check-run id
-  for annotations or reruns. The gate now skips the PR as `ci-failed`, and
-  `determineCiStatus` blocks auto-merge. Surfacing the suite to the CI-fix agent
-  is not done here.
+- Downstream of the scan, the entry's id is used as a check-run id (job lookup,
+  annotations, the retry counter). For a suite id those lookups find nothing and
+  take their existing degraded paths ("could not resolve the Actions job —
+  routing to CI-fix as usual", empty annotations); the retry counter keys on the
+  suite id. I did not run the CI-fix processor against a live `startup_failure`
+  suite, so how the agent fares with no annotations is unobserved.
 
 ## Evidence
 
 Backend/CLI change; no UI files. Observed behaviour comes from the unit tests
-below, run on the final head: 302 passed, 0 failed across
+below, run on the final head: 549 passed, 0 failed across
 `lifecycle_pr_observation`, `merge_head_pin`, `milestone_merge_behaviour`,
-`milestone_route_restore`, `pr_maintenance`, `blocking_pr_stall_detector`,
-`milestone_ruleset_reported_checks`, `check_runs_batch`, `direct_merge` and the
-new gate test.
+`milestone_route_restore`, `pr_maintenance`, `ci_infrastructure_rerun_2914`,
+`blocking_pr_stall_detector`, `check_runs_batch`, `direct_merge`, the
+`review_fleet_prs_*` tests and the new gate test.
 
 The GraphQL fixtures come from
 `worker/deno/tests/support/github_graphql_fake.ts`, which now models
@@ -76,10 +85,10 @@ GitHub resolves it. The REST fallback stub returns what the `--jq` filter in
 `startup_failure` suite; the shape comes from the issue (completed /
 `startup_failure` / 0 runs) and GitHub's `checkSuites` GraphQL fields.
 
-`./quality.sh` on the final head: every static stage passed (lint, type check,
-fmt, markdownlint, semgrep, mermaid, spawn timeout, workflow hygiene and the
-rest). The `deno tests` stage failed with 15 failures, none in files this diff
-touches: 13 are "The running container image did not install the
+`./quality.sh` on the previous head: every static stage passed (lint, type
+check, fmt, markdownlint, semgrep, mermaid, spawn timeout, workflow hygiene and
+the rest). The `deno tests` stage failed with 15 failures, none in files this
+diff touches: 13 are "The running container image did not install the
 codex/gemini/deepseek coding-agent provider" (this container has only `claude`)
 and 2 are `completion_phase_repo_formatters_test.ts` ("formatter should commit
 the Rust fix"). I did not run those tests on the base branch to confirm they
@@ -105,7 +114,25 @@ fail there too.
 - `worker/deno/tests/check_runs_batch_test.ts` (passed): suites decoded
   lowercased; missing `checkSuites` and `checkSuites` without `nodes` give
   `ok:false`; empty `nodes` and no commit node are the documented empty states;
-  `rollupToCheckRunsResponse` carries `check_suites`.
+  `rollupToCheckRunsResponse` carries `check_suites` (with the suite id); the
+  malformed-response tests assert `ok === false` and the exact error message;
+  `rollupToStartupFailedSuites` makes an entry from a startup_failure suite and
+  ignores each of: no id, other app, unknown app, unfinished, null conclusion,
+  `success`, `failure`; `fetchFailedCheckRunsBatch` adds the suite entry only
+  with `includeStartupFailedSuites`.
+- `worker/deno/tests/ci_infrastructure_rerun_2914_test.ts` (passed): the CI-fix
+  scan `findFailedCiChecks`, given a green check run plus a zero-run
+  `startup_failure` suite, returns a CI-fix candidate keyed by the suite id on
+  the GraphQL path and on the REST fallback (exact `check-suites` `--jq` call
+  asserted); a green run with a passing suite yields none.
+- Mutation survivors from the completion check, now pinned: `direct_merge.ts`
+  check-suites call — a test asserts the exact `gh` argv (`"api"`, url,
+  `"--jq"`, filter), killing the deleted-element mutants — and the
+  `error instanceof Error` ternary — exact messages for an `Error` and a
+  non-`Error` rejection kill the negation. `check_runs_batch.ts`: the redundant
+  `checkSuites: []` default is gone (the literal now holds the decoded suites),
+  and the `ok: false` and error-ternary mutants are killed by `ok === false`
+  plus the exact message.
 - `worker/deno/tests/lifecycle_pr_observation_test.ts` (passed): a
   startup-failed suite under a green rollup records the `quality` gate as
   `fail`, with the no-suite control `pass`.
@@ -136,10 +163,12 @@ fail there too.
 - Shared-helper callers checked: `determineCiStatus` has three callers:
   `checkCiStatus` (both paths) and `lifecycle_pr_observation.ts` via
   `rollupToCheckRunsResponse`; each covered above. `PrRollup` literals exist
-  only in tests. `rollupToFailedCheckRuns`/the CI-fix scan are deliberately
-  unchanged (see Spec).
+  only in tests. `rollupToFailedCheckRuns` is unchanged; the CI-fix scan adds
+  the suite entries beside it (see Spec), and `buildFailedCheckRunsLookup`/
+  `fetchFailedCheckRunsBatch` gained a defaulted-off
+  `includeStartupFailedSuites` flag that only `findFailedCiChecks` passes.
 - Docs updated: `docs/MERGE.md` (allowlist section, mermaid, zero-checks
-  section), `DESIGN-PRINCIPLES.md` (CI verdict bullets),
+  section, CI-fix scan), `DESIGN-PRINCIPLES.md` (CI verdict bullets),
   `.claude/skills/review-fleet-prs/SKILL.md` (rule 2), doc comments in
   `check_runs_batch.ts`, `direct_merge.ts` and `gate.ts`. Not edited:
   `docs/workflows/ci-fix.md:194` still says the gate reports cancelled PRs as

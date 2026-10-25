@@ -10,6 +10,7 @@
 import type { Result } from "../types.ts";
 import { runGhCommand } from "./github.ts";
 import {
+  ACTIONS_APP_SLUG,
   fetchCheckRunsBatch,
   rollupToCheckRunsResponse,
   rollupToCombinedStatusResponse,
@@ -253,6 +254,8 @@ export interface CheckRun {
 
 /** GitHub check suite on a commit (REST `commits/{sha}/check-suites` shape). */
 export interface CheckSuite {
+  /** The suite's id; absent when the source did not carry one. */
+  id?: number;
   /** The app's slug, e.g. "github-actions"; null when the app is unknown. */
   app_slug: string | null;
   status: string;
@@ -271,12 +274,6 @@ export interface CheckRunsResponse {
    */
   check_suites?: CheckSuite[];
 }
-
-/**
- * The app slug of GitHub Actions. A workflow that fails at startup is recorded
- * as a completed suite from this app, which may carry no check run (Issue #4347).
- */
-export const ACTIONS_APP_SLUG = "github-actions";
 
 /** GitHub commit status entry. */
 export interface CommitStatus {

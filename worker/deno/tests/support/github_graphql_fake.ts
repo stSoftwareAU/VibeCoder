@@ -56,6 +56,8 @@ export type FakeCheckContext =
  * `STARTUP_FAILURE`.
  */
 export interface FakeCheckSuite {
+  /** The suite's database id; defaults to a stable value derived from its index. */
+  databaseId?: number;
   /** The app's slug, e.g. "github-actions"; null for an unknown app. */
   appSlug: string | null;
   status: string;
@@ -234,7 +236,8 @@ function pullRequestNode(
     ? {
       checkSuites: {
         nodes: applySlice(pr.checkSuites ?? [], parseSlice(suites.args)).map(
-          (s) => ({
+          (s, i) => ({
+            databaseId: s.databaseId ?? 9000 + i,
             app: s.appSlug === null ? null : { slug: s.appSlug },
             status: s.status,
             conclusion: s.conclusion,

@@ -50,7 +50,11 @@ import {
   getCiCheckRetryCount,
   resolveCheckFixRoute,
 } from "./pr_ci_checks.ts";
-import { fetchFailedCheckRunsBatch } from "./check_runs_batch.ts";
+import {
+  fetchFailedCheckRunsBatch,
+  STARTUP_FAILURE_CONCLUSION,
+  startupFailedSuiteEntry,
+} from "./check_runs_batch.ts";
 import {
   isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
@@ -810,6 +814,33 @@ export async function fetchFailedCheckRuns(
 }
 
 /**
+ * Fetch the startup-failed GitHub Actions suites on a branch's head commit
+ * (Issue #4347) — the REST twin of `rollupToStartupFailedSuites`. Such a suite
+ * carries no check run, so {@link fetchFailedCheckRuns} cannot see it; it is
+ * returned as a synthetic entry keyed by the suite id.
+ */
+export async function fetchStartupFailedSuites(
+  repo: string,
+  branchName: string,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<CheckRunEntry[]> {
+  try {
+    const output = await ghCommandFn([
+      "api",
+      `repos/${repo}/commits/${branchName}/check-suites?per_page=100`,
+      "--jq",
+      `[.check_suites[] | select(.app.slug == "github-actions" and .status == "completed" and .conclusion == "${STARTUP_FAILURE_CONCLUSION}") | .id]`,
+    ]);
+    const parsed: unknown = JSON.parse(output);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is number => typeof id === "number")
+      .map((id) => startupFailedSuiteEntry(id));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Build a per-PR failed-check-runs lookup for a repo (Issue #1806).
  *
  * Tries one batched GraphQL `statusCheckRollup` call covering every PR
@@ -823,6 +854,9 @@ export async function fetchFailedCheckRuns(
  * @param conclusions - Conclusions to keep (default `["failure"]`; Issue
  *   #2914 passes `["failure", "cancelled"]` from the CI-fix scan), passed
  *   through to both the batched and the REST-fallback path.
+ * @param includeStartupFailedSuites - Also return the head commit's
+ *   startup-failed Actions suites, which carry no check run (Issue #4347);
+ *   only the CI-fix scan sets it.
  */
 export async function buildFailedCheckRunsLookup(
   repo: string,
@@ -830,6 +864,7 @@ export async function buildFailedCheckRunsLookup(
   ghCommandFn: (args: string[]) => Promise<string>,
   conclusions: readonly string[] = ["failure"],
   observe?: (prNumber: number, rollup: PrRollup) => Promise<void>,
+  includeStartupFailedSuites = false,
 ): Promise<(pr: PrEntry) => Promise<CheckRunEntry[]>> {
   const prNumbers = prs.map((p) => p.number);
   const batch = await fetchFailedCheckRunsBatch(
@@ -838,13 +873,23 @@ export async function buildFailedCheckRunsLookup(
     ghCommandFn,
     conclusions,
     observe,
+    includeStartupFailedSuites,
   );
   if (batch !== null) {
     return (pr) => Promise.resolve(batch.get(pr.number) ?? []);
   }
   // GraphQL failed — fall back to per-PR REST path
-  return (pr) =>
-    fetchFailedCheckRuns(repo, pr.headRefName, ghCommandFn, conclusions);
+  return async (pr) => [
+    ...await fetchFailedCheckRuns(
+      repo,
+      pr.headRefName,
+      ghCommandFn,
+      conclusions,
+    ),
+    ...(includeStartupFailedSuites
+      ? await fetchStartupFailedSuites(repo, pr.headRefName, ghCommandFn)
+      : []),
+  ];
 }
 
 /**
@@ -1627,6 +1672,7 @@ export async function findFailedCiChecks(
           );
         }
         : undefined,
+      true,
     );
 
     // Issue #1878: the `needs:` topology from the host's existing clone,

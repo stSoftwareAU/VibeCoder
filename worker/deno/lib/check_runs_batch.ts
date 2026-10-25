@@ -62,6 +62,8 @@ export interface RollupStatusContext {
  * and zero check runs, so the check-run rollup alone cannot see it.
  */
 export interface RollupCheckSuite {
+  /** The suite's database id; null when the response did not carry one. */
+  id: number | null;
   /** The app's slug (e.g. "github-actions"); null when the app is unknown. */
   appSlug: string | null;
   /** Lowercased to match REST conventions (e.g. "completed", "queued"). */
@@ -134,7 +136,7 @@ export function buildCheckRunsBatchQuery(
         `n${i}: pullRequest(number: ${num}) {
           commits(last: 1) { nodes { commit {
             oid
-            checkSuites(first: 100) { nodes { app { slug } status conclusion } }
+            checkSuites(first: 100) { nodes { databaseId app { slug } status conclusion } }
             statusCheckRollup {
               state
               contexts(first: 100) { nodes {
@@ -194,6 +196,7 @@ interface BatchContextNode {
 }
 
 interface BatchCheckSuiteNode {
+  databaseId?: number | null;
   app?: { slug?: string | null } | null;
   status?: string | null;
   conclusion?: string | null;
@@ -227,6 +230,7 @@ function decodeCheckSuites(
     }
     const slug = node.app?.slug;
     return {
+      id: typeof node.databaseId === "number" ? node.databaseId : null,
       appSlug: typeof slug === "string" ? slug : null,
       status: typeof node.status === "string" ? node.status.toLowerCase() : "",
       conclusion: typeof node.conclusion === "string"
@@ -256,19 +260,16 @@ function convertBatch(
     const num = prNumbers[i];
     if (num === undefined) continue;
     const prNode = repoNode[`n${i}`];
-    const rollup: PrRollup = {
-      rollupState: null,
-      headSha: null,
-      checkRuns: [],
-      statusContexts: [],
-      checkSuites: [],
-    };
-
     const commitNodes = prNode?.commits?.nodes ?? [];
     const wrapper = commitNodes[0] ?? null;
     const oid = wrapper?.commit?.oid;
-    rollup.headSha = typeof oid === "string" && oid !== "" ? oid : null;
-    rollup.checkSuites = decodeCheckSuites(wrapper?.commit ?? null, num);
+    const rollup: PrRollup = {
+      rollupState: null,
+      headSha: typeof oid === "string" && oid !== "" ? oid : null,
+      checkRuns: [],
+      statusContexts: [],
+      checkSuites: decodeCheckSuites(wrapper?.commit ?? null, num),
+    };
     const checkRollup = wrapper?.commit?.statusCheckRollup ?? null;
     if (checkRollup) {
       rollup.rollupState = checkRollup.state ?? null;
@@ -424,6 +425,7 @@ export function rollupToCheckRunsResponse(rollup: PrRollup): CheckRunsResponse {
     conclusion: cr.conclusion,
   }));
   const check_suites: CheckSuite[] = rollup.checkSuites.map((s) => ({
+    ...(s.id === null ? {} : { id: s.id }),
     app_slug: s.appSlug,
     status: s.status,
     conclusion: s.conclusion,
@@ -490,6 +492,45 @@ export function rollupToFailedCheckRuns(
     }));
 }
 
+/** The app slug of GitHub Actions (Issue #4347). */
+export const ACTIONS_APP_SLUG = "github-actions";
+
+/** Conclusion of an Actions suite whose workflow was rejected at startup. */
+export const STARTUP_FAILURE_CONCLUSION = "startup_failure";
+
+/**
+ * The CI-fix scan's view of the head commit's startup-failed Actions suites
+ * (Issue #4347). A workflow rejected at startup is a completed
+ * `github-actions` suite with conclusion `startup_failure` and no check run,
+ * so {@link rollupToFailedCheckRuns} never sees it. Each such suite becomes a
+ * synthetic entry keyed by the suite id — a suite has no check-run id — so the
+ * scan raises a CI-fix task for it instead of leaving it to a review round trip.
+ */
+export function startupFailedSuiteEntry(suiteId: number): CheckRunEntry {
+  return {
+    id: suiteId,
+    name: `GitHub Actions workflow (suite ${suiteId})`,
+    status: "completed",
+    conclusion: STARTUP_FAILURE_CONCLUSION,
+  };
+}
+
+/** See {@link startupFailedSuiteEntry}. */
+export function rollupToStartupFailedSuites(
+  rollup: PrRollup,
+): CheckRunEntry[] {
+  const entries: CheckRunEntry[] = [];
+  for (const suite of rollup.checkSuites) {
+    if (
+      suite.id === null || suite.appSlug !== ACTIONS_APP_SLUG ||
+      suite.status !== "completed" ||
+      suite.conclusion !== STARTUP_FAILURE_CONCLUSION
+    ) continue;
+    entries.push(startupFailedSuiteEntry(suite.id));
+  }
+  return entries;
+}
+
 // ---------------------------------------------------------------------------
 // fetchFailedCheckRunsBatch — convenience helper for pr_maintenance
 // ---------------------------------------------------------------------------
@@ -507,6 +548,10 @@ export function rollupToFailedCheckRuns(
  * @param prNumbers - List of PR numbers to query
  * @param ghCommandFn - Injectable gh runner (defaults to runGhCommand)
  * @param conclusions - Conclusions to keep (default `["failure"]`)
+ * @param observe - Called with each PR's rollup before it is reduced
+ * @param includeStartupFailedSuites - Also return the head commit's
+ *   startup-failed Actions suites, which carry no check run (Issue #4347);
+ *   only the CI-fix scan sets it
  * @returns Map of failed check runs per PR, or null on failure
  */
 export async function fetchFailedCheckRunsBatch(
@@ -515,6 +560,7 @@ export async function fetchFailedCheckRunsBatch(
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
   conclusions: readonly string[] = ["failure"],
   observe?: (prNumber: number, rollup: PrRollup) => Promise<void>,
+  includeStartupFailedSuites = false,
 ): Promise<Map<number, CheckRunEntry[]> | null> {
   if (prNumbers.length === 0) return new Map();
   const result = await fetchCheckRunsBatch(repo, prNumbers, ghCommandFn);
@@ -522,7 +568,12 @@ export async function fetchFailedCheckRunsBatch(
   const out = new Map<number, CheckRunEntry[]>();
   for (const [num, rollup] of result.rollups) {
     await observe?.(num, rollup);
-    out.set(num, rollupToFailedCheckRuns(rollup, conclusions));
+    out.set(num, [
+      ...rollupToFailedCheckRuns(rollup, conclusions),
+      ...(includeStartupFailedSuites
+        ? rollupToStartupFailedSuites(rollup)
+        : []),
+    ]);
   }
   return out;
 }

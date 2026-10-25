@@ -134,6 +134,7 @@ Deno.test("PR observations record failed, pending, absent CI and unapproved revi
 });
 Deno.test("PR observations fail quality when a startup-failed check suite sits under a green rollup", async () => {
   const startupFailure = {
+    id: 31,
     appSlug: "github-actions",
     status: "completed",
     conclusion: "startup_failure",
