@@ -2982,9 +2982,9 @@ milestone branch pushable on unattended hosts:
   still the necessary fallback. The whole ladder — sweep, then re-clone —
   shares the #1093 `claimObjectStoreRepair` claim and so runs **at most once
   per repository per run**, whichever rung is reached first. A failure that
-  survives both rungs escalates `needs-human` with heading "Broken refs in
-  shared clone", naming the repository (dedup key `broken-refs-<repo>`), and
-  is categorised `clone_corrupt` rather than counted against the issue — see
+  survives both rungs names the repository and is categorised `clone_corrupt`
+  rather than counted against the issue, and is never handed to a human: the
+  next run repairs again (Issue #4298) — see
   "`clone_corrupt` is its own failure category" below. This is still distinct
   from plain object-store corruption, which skips straight to the re-clone
   rung (Issue #1093).
@@ -5113,16 +5113,11 @@ reason `prompt_too_long` does: the setup phase already ran the sweep/re-clone
 ladder once before giving up, so a further in-process retry can only burn a
 claim on a fault no in-process attempt can clear. The run-outcome class is
 `clone-corrupt`. No `failed-once` or `failed` label is ever applied for it, so
-the fault never charges the issue's own retry budget. It is not left
-claimable, though: the setup-phase ladder's `needs-human` escalation (heading
-"Broken refs in shared clone" / "Corrupt git object store", dedup keys
-`broken-refs-<repo>` / `object-store-corrupt-<repo>`) puts `needs-human` on
-this specific issue whenever the repair — the sweep/prune-fetch retry or the
-re-clone fallback from #1093 — did not clear the fault, including when this
-run's one repair attempt was already spent by an earlier issue and this issue
-therefore attempted no repair at all. `findIssuesByLabel` excludes any issue
-carrying `needsHumanLabel`, so an operator must remove that label after
-repairing the host's clone for the issue to become claimable again. See
+the fault never charges the issue's own retry budget. Nor is it handed to a
+human (Issue #4298): the setup phase no longer applies `needs-human` when the
+repair — the sweep/prune-fetch retry or the re-clone fallback from #1093 — did
+not clear the fault. The issue stays claimable, and the next run takes the
+once-per-run repair claim afresh and runs the ladder again. See
 "`create_feature_branch_from_base()`" above and
 [docs/workflows/README.md](workflows/README.md#per-lane-worktrees-issue-394)
 for the sweep-then-re-clone repair ladder that produces this category.
