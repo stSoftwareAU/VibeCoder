@@ -997,7 +997,6 @@ Two differences to plan for:
 
 | Concern                                   | Implementation                                 |
 | ----------------------------------------- | ---------------------------------------------- |
-| -----------------------------------       | ---------------------------------------------- |
 | `callbacks` block and validation          | `worker/deno/lib/run_callbacks_config.ts`      |
 | The runner, environment, capture          | `worker/deno/lib/run_callbacks.ts`             |
 | Host-failure payload and invoker          | `worker/deno/lib/host_failure_hook.ts`         |
