@@ -7447,10 +7447,18 @@ export async function runCoreLoop(
     // the scheduled-release classification, the claim release, the
     // failure and always callbacks. Wait for it, bounded, so the exit
     // cleanup's descendant sweep cannot kill the callbacks mid-flight.
-    await settleLiveSlotTails(
-      deps,
-      Math.max(0, deps.slotDrainGraceSeconds ?? 300) * 1000,
-    );
+    // Issue #4246: the drain has already waited until the finish plus
+    // the kill grace and the WIP reserve, and it has released any claim
+    // still held. Another slotDrainGraceSeconds here would hold
+    // "Run duration complete" past that bound. Once the finish grace
+    // has elapsed the tail wait is zero; a shutdown earlier in the
+    // cycle still gets the full slot grace.
+    const finishBound = finishDrainBound(config.claudeKillAfterSeconds);
+    const tailGraceMs = finishBound !== undefined &&
+        deps.now() >= finishBound.drainAtMs
+      ? 0
+      : Math.max(0, deps.slotDrainGraceSeconds ?? 300) * 1000;
+    await settleLiveSlotTails(deps, tailGraceMs);
 
     // --- Planned shutdown ---
     if (!exitedOnFailures) {

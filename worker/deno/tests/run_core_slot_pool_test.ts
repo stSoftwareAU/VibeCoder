@@ -2379,6 +2379,7 @@ Deno.test("slot pool - a slot that never settles does not hold the drain past th
   const released: string[] = [];
   const callbacks: string[] = [];
   const cycles: string[] = [];
+  const sleeps: number[] = [];
   let terminatedAt = 0;
   let clock: ReturnType<typeof setInterval> | undefined;
   let releaseHang: (() => void) | undefined;
@@ -2389,7 +2390,13 @@ Deno.test("slot pool - a slot that never settles does not hold the drain past th
     now: () => now,
     log: (message: string) => logs.push(message),
     logError: (message: string) => logs.push(message),
-    sleep: () => Promise.resolve(),
+    // Record every wait. The finish grace is the drain's bound; the
+    // end-of-run tail must not add the default 300 s slot grace on top
+    // (Issue #4246). A no-op sleep would hide that second wait.
+    sleep: (ms?: number) => {
+      sleeps.push(ms ?? 0);
+      return Promise.resolve();
+    },
     runCycleCallback: () => {
       cycles.push("heartbeat");
       return Promise.resolve();
@@ -2443,6 +2450,17 @@ Deno.test("slot pool - a slot that never settles does not hold the drain past th
     assert(cycles.includes("heartbeat"));
     assert(callbacks.includes("success"));
     assertEquals(result.exitReason, "Run duration expired");
+    // The default tail grace is 300 s. Once the finish grace has elapsed
+    // that wait must be zero, so the exit is not one slot grace later.
+    assert(
+      logs.some((line) => line.includes("still finishing — waiting up to 0s")),
+      logs.join("\n"),
+    );
+    assertEquals(
+      sleeps.filter((ms) => ms >= 300_000),
+      [],
+      `tail wait held the exit past the finish grace: ${sleeps.join(",")}`,
+    );
   } finally {
     if (clock !== undefined) clearInterval(clock);
     releaseHang?.();

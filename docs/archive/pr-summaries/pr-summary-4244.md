@@ -31,6 +31,9 @@ Version bump: not applicable — no `deno.json` version change.
 - **regression test** — `worker/deno/tests/claude_runner_finish_deadline_4244_test.ts::runClaudeWithTimeout - a session at 1h 50m is clamped to the finish deadline and the user prompt states it (Issue #4244)`
 
 ## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
 - **met** — A session started at 1 h 50 m gets a timeout ≤ 600 s − kill grace − reserve, and the prompt ends with the finish deadline and the seconds remaining. — evidence: `worker/deno/tests/claude_runner_finish_deadline_4244_test.ts::runClaudeWithTimeout - a session at 1h 50m is clamped to the finish deadline and the user prompt states it (Issue #4244)` — reviewer: met
 - **met** — A session with less than `MIN_AGENT_SESSION_SECONDS` left is not spawned, and the result carries `finishDeadline: true`. — evidence: `worker/deno/tests/claude_runner_finish_deadline_4244_test.ts::runClaudeWithTimeout - less than the minimum session is not spawned and carries finishDeadline (Issue #4244)` — reviewer: met
 - **met** — A session ended by the clamp carries `finishDeadline: true`. — evidence: `worker/deno/tests/claude_runner_finish_deadline_4244_test.ts::runClaudeWithTimeout - a session ended by the finish clamp carries finishDeadline (Issue #4244)` — reviewer: met
@@ -39,7 +42,10 @@ Version bump: not applicable — no `deno.json` version change.
 - **partial** — Tests and `./quality.sh` pass. — evidence: `deno test --allow-all tests/claude_runner_finish_deadline_4244_test.ts` (5 passed, 0 failed); `deno fmt` and `deno lint` on the touched files passed — reason: `./quality.sh` was not run in this session — reviewer: partial
 
 ## Standards Review
-- **clean** — Australian English in the new comments, the clock seam already used by the runner, no `deno.json` version bump, and the system prompt left untouched. `deno fmt` and `deno lint` on the touched files passed.
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — Australian English in the new comments, the existing clock seam, no `deno.json` version bump, and the system prompt left byte-identical. `deno fmt` and `deno lint` were clean on the runner files, and the five session tests passed. — evidence: `worker/deno/lib/claude_runner.ts`, `worker/deno/lib/run_timeline.ts`, `worker/deno/tests/claude_runner_finish_deadline_4244_test.ts`
 
 ## Test Plan
 - `worker/deno/tests/claude_runner_finish_deadline_4244_test.ts` — 5 passed, 0 failed, including the five acceptance cases above.

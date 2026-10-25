@@ -34,6 +34,9 @@ Version bump: not applicable — no `deno.json` version change.
 - **regression test** — `worker/deno/tests/progress_extension_hard_cap_421_test.ts::progress extension #4245 - a grant that would pass the finish is clamped, and the line says so`
 
 ## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
 - **met** — An extension grant never moves the deadline past finish − reserve. A grant that would is clamped, and the `[progress-extension]` line says so. — evidence: `worker/deno/tests/progress_extension_hard_cap_421_test.ts::progress extension #4245 - a grant that would pass the finish is clamped, and the line says so` — reviewer: met
 - **met** — The claim floor refuses a claim whose runway to the finish deadline is shorter than the floor. — evidence: `worker/deno/tests/claim_runway_test.ts::claim runway #4245 - the floor measures runway to the finish deadline, not the extension ceiling` — reviewer: met
 - **met** — An execute run whose agent result carries `finishDeadline: true` is classified `scheduled_release`, keeps its `wip:` commit, and adds no `failed-once`. — evidence: `worker/deno/tests/execute_phase_handover_test.ts::execute_phase #4245 - a finish deadline keeps the wip commit and is a scheduled release`; `worker/deno/tests/execute_phase_scheduled_release_424_test.ts::execute_phase #4245 - a finish deadline is a scheduled release and adds no failed-once` — reviewer: met
@@ -42,7 +45,10 @@ Version bump: not applicable — no `deno.json` version change.
 - **partial** — Tests and `./quality.sh` pass. — evidence: the focused Deno tests named in the Test Plan passed; `deno fmt` and `deno lint` on the touched files passed — reason: `./quality.sh` was not run in this session — reviewer: partial
 
 ## Standards Review
-- **clean** — one claim-floor function (`anchorClaimCapToFinish`) serves the serial scan, the slot pool and the production-deps snapshot; the extension label is passed only when it is the finish, so the hard-cap sentences stay. Australian English. No `deno.json` version bump. `deno fmt` and `deno lint` on the touched files passed.
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — one claim-floor function (`anchorClaimCapToFinish`) serves the serial scan, the slot pool and the production-deps snapshot; the extension label is passed only when it is the finish, so the hard-cap sentences stay. Australian English. No `deno.json` version bump. The cited #4245 tests passed. — evidence: `worker/deno/lib/claim_runway.ts`, `worker/deno/lib/progress_extension.ts`, `worker/deno/lib/phases/execute_phase.ts`
 
 ## Test Plan
 - `worker/deno/tests/progress_extension_hard_cap_421_test.ts`, `worker/deno/tests/claim_runway_test.ts` (8 passed, 0 failed), `worker/deno/tests/execute_phase_full_budget_420_test.ts`, `worker/deno/tests/execute_phase_scheduled_release_424_test.ts`, `worker/deno/tests/execute_phase_handover_test.ts`, `worker/deno/tests/merge_conflict_agent_test.ts`, `worker/deno/tests/milestone_conflict_ladder_test.ts`, `worker/deno/tests/pr_merge_conflict_processor_test.ts`, `worker/deno/tests/pr_feedback_processor_no_changes_test.ts`, `worker/deno/tests/pr_ci_processor_no_changes_test.ts`, `worker/deno/tests/deadline_model_docs_check_test.ts` (26 passed, 0 failed).
