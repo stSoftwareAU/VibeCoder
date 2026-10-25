@@ -58,3 +58,16 @@ Version bump: not applicable — no `deno.json` version change.
 - `worker/deno/tests/claude_runner_finish_deadline_4244_test.ts` — 5 passed, 0 failed, including the five acceptance cases above.
 - Twins of the prompt rule: the user-prompt append in `runClaudeWithTimeoutBody` and the system-prompt argument, which the byte-identical test reads back from the stub. `runClaudeWithRetry` copies `finishDeadline` so the execute phase sees the same flag the body sets.
 - `worker/deno/lib/vibe_env_registry.ts` keeps a single `VIBE_HARD_KILL_AT_EPOCH` entry, the Issue #4247 note. The second entry from the milestone merge is removed. It does not change the session clamp.
+
+## Security sweep follow-up
+
+Removed an unused prompt-result reassignment and a redundant timeout predicate
+inherited from the milestone. The gate-retry test now checks for a leaked PR
+URL with literal replacement instead of an unsafe regular expression; its
+absence assertion is preserved.
+
+### Test Plan for this push
+
+All 127 related execution, GitHub-spawn and gate-retry tests passed. Formatting
+and lint passed for the three affected TypeScript files. This push refreshes
+the archived summary required by the PR summary freshness gate.
