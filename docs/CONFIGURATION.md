@@ -1856,7 +1856,7 @@ unless explicitly overridden.
 | Question kill-after            | `question_kill_after`            | `10`       | Grace period after question timeout                                                                                                                                                                  |
 | Clarification timeout          | `clarification_timeout`          | `120`      | Timeout for clarification requests (2 minutes)                                                                                                                                                       |
 | Clarification kill-after       | `clarification_kill_after`       | `10`       | Grace period after clarification timeout                                                                                                                                                             |
-| Max clarification rounds       | `max_clarification_rounds`       | `3`        | Maximum clarification rounds before auto-proceeding                                                                                                                                                  |
+| Max clarification rounds       | `max_clarification_rounds`       | `3`        | Retired (Issue #4298): the worker no longer asks clarifying questions on an approved issue, so the value is accepted and ignored                                                                       |
 | Grill-me timeout | `grill_me_timeout` | `3600` | Timeout for a single grill-me round (1 hour). Raised from 10 minutes by — grill-me reasons at top-tier model and effort. See [Grill Me](workflows/grill-me.md). |
 | Grill-me kill-after            | `grill_me_kill_after`            | `10`       | Grace period after `grill_me_timeout` before force-kill                                                                                                                                              |
 | Max grill-me rounds | `max_grill_me_rounds` | `20` | Runaway ceiling on grill-me rounds since the latest Ready comment ([Issue #1933](https://github.com/stSoftwareAU/VibeCoder/issues/1933)). The stall guard normally stops grilling first; the ceiling-th round is itself the forced final round |
@@ -1910,7 +1910,7 @@ unless explicitly overridden.
 | Max session age (days)         | `max_session_age_days`           | `7`        | Maximum age for session files before cleanup. See [Session Compaction](#-session-compaction).                                                                                             |
 | Context budget warning %       | `context_budget_warning_percent` | `50`       | Usage percentage that triggers a budget warning. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                            |
 | Context budget error %         | `context_budget_error_percent`   | `80`       | Usage percentage that triggers a budget error. See [Context Budget Monitoring](#-context-budget-monitoring).                                                                              |
-| Context budget block %         | `context_budget_block_percent`   | `95`       | Hard ceiling — the execution phase stops and escalates at or above this usage (`0` disables). See [Context Budget Monitoring](#-context-budget-monitoring).                               |
+| Context budget block %         | `context_budget_block_percent`   | `95`       | Hard ceiling — at or above this usage the execution phase trims the comment and CI-log history and retries, then hands the issue to planning (`0` disables). See [Context Budget Monitoring](#-context-budget-monitoring). |
 | Max total comment chars | `max_total_comment_chars` | `20000` | Maximum total characters across all comments included in the prompt |
 | Max untrusted comment chars | `max_untrusted_comment_chars` | `2000` | Maximum characters per untrusted comment before truncation |
 | Max untrusted comment count | `max_untrusted_comment_count` | `5` | Maximum number of untrusted comments to include in the prompt |
@@ -1920,7 +1920,7 @@ unless explicitly overridden.
 | Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. See [Graft repo-context injection](#-graft-repo-context-injection). |
 | CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback, CI-fix, grill-me, clarity-assessment, refinement, revision and quorum** paths (Issues #2159, #2160, #2561, #2569) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | RTK output | `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash commands through RTK, the output filter trialled by Issue #2328. On by default since Issue #2432 — the owner's decision once it was seen to function in a live run, not a verdict on the trial's token bar: an unset or empty block filters, and a host that wants the raw output back sets `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum** (Issue #2380 added the key, Issue #2382 the module `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both implementation phases, Issue #2384 the wiring into the planning, question, PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue #2569 the wiring into the clarification-family phases through `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered alike. A path that spawns the agent more than once in a run — planning's draft, publish, retry and self-repair turns, a quorum plan-off's two drafts and judge, and the CI fix's post-quality retry — prepares RTK once and hands every spawn the same hook and prompt line, so the saved-token figure covers the whole run from one baseline. An **issue** run's run-stats comment reports it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare `ok` when the saved-token figure could not be read), `- **RTK:** failed`, `- **RTK:** off` on a host that opted out, or `- **RTK:** unsupported (gemini)` naming the provider. It is a status line, never a cost line, so it never moves the published issue total. A **question** round's run-stats comment, a **planning** round's published stats — on its failure path too — and a **grill-me** round's stats comment carry the same line, and since Issue #2561 the planning and grill-me comments carry the `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment, refinement, revision and quorum stats comments carry all three lines too (Issue #2569) — though clarity assessment and quorum post theirs only on a degraded run. A **PR-feedback** or **CI-fix** round's run-stats comment, posted on the PR it worked on, carries the `Graft:`, `CodeGraph:` and `RTK:` lines too, above the cumulative PR total ([One cost/model stats comment per run](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)). Every issue run also publishes it to the post-run callbacks as the additive `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite hook to the `--settings` payload of every Claude spawn on the ten wired paths (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum), so `git status` runs as `rtk git status`, and one line in the prompt telling the agent its Bash output is filtered and that `rtk recall` shows a failed command's full output. Codex receives the same worker-authored hook through per-spawn `-c hooks.PreToolUse` configuration with `features.hooks=true` and `--dangerously-bypass-hook-trust`, without writing the operator's `~/.codex`. Codex normalises shell input to `Bash` with a string `command`, so RTK needs no shim. Support is declared by the provider seam's `supportsPreToolUseHooks` capability: Claude and Codex can report `ok` and a saved-token delta; **Gemini and DeepSeek** record `unsupported` and proceed without it. When the switch is off, Codex receives no RTK hook configuration or hook-trust flag. RTK never fails a run: a missing `rtk` binary, a preflight that times out or exits non-zero, or a gain read that returns no usable figure, is logged as `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on unfiltered — the fault is surfaced, never swallowed as a clean pass. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `rtk_output.enabled` rather than reading as the default. It is independent of the repo-context switches `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any combination on, and none reads another. The trial protocol it is judged by — the bar, the window, the comparison rule and the verdict template — is [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
-| Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker stops and escalates with `needs-human`. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                            |
+| Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker closes the PR and redoes its issue (Issue #4304). See [Auto-fix attempt cap](#-auto-fix-attempt-cap). |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red or carry an unanswered authorised comment before the watchdog repairs it (sync and rerun once, then abandon and redo), or sit green and unmerged before the watchdog tries to merge it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 | Fleet PR slots                 | `fleet_pr_slots`                 | `8`        | How many fleet PRs may be open at once on a repository's **default branch** before a non-milestone issue is held — the owner's rule is one fleet PR per slot (Issue #2663). Set it to the fleet's total slot count: the sum of every host's `max_concurrent_issues`. No host's config carries the fleet's size, so the default cannot be derived; `8` is the ceiling of `max_concurrent_issues`, so one host at its maximum never holds itself and four hosts at the default two slots fill it exactly. Only fleet PRs count — `github_user` plus `fleet_pr_authors` ∪ `service_accounts` — never a human's. Milestone issues are unaffected: each `milestone/*` branch still holds one PR, so several milestones run several PRs at once. A non-positive or non-integer value falls back to `8`. Per repository via `repo_config.<repo>.fleet_pr_slots`. See [Open PR blocking](workflows/issue-processing.md). |
 
@@ -4030,7 +4030,7 @@ performance, or failures.
 | ------------------ | -------------------------------- | ------- | ------------------------------------------------------------------------------------------ |
 | Warning threshold  | `context_budget_warning_percent` | `50`    | Usage percentage that triggers a warning in the budget log                                 |
 | Error threshold    | `context_budget_error_percent`   | `80`    | Usage percentage that triggers an error in the budget log                                  |
-| Blocking threshold | `context_budget_block_percent` | `95` | Hard ceiling — the execution phase stops and escalates at or above this usage |
+| Blocking threshold | `context_budget_block_percent` | `95` | Hard ceiling — the execution phase trims history, retries, then hands the issue to planning |
 
 ```json
 {
@@ -4050,11 +4050,15 @@ performance, or failures.
    id such as `claude-haiku-4-5`).
 3. If usage exceeds the warning threshold, a warning is logged. If it exceeds
    the error threshold, an error is logged.
-4. If usage reaches `context_budget_block_percent`, the check fails closed
-  : the execution phase stops **before** the billed Claude
-   invocation, applies `needs-human`, and posts an explanation comment. Warning
-   and error thresholds remain observational — only the blocking threshold
-   stops work.
+4. If usage reaches `context_budget_block_percent`, the check fails closed:
+   the execution phase stops **before** the billed Claude invocation. It never
+   hands the issue to a human (Issue #4298). It rebuilds the prompt with the
+   comment history (and, on the CLI path, the CI log and recent activity)
+   trimmed and checks again. A prompt that still does not fit goes to planning
+   through the `vibe-needs-planning` hand-off, which splits the issue into
+   sub-issues; when planning cannot take it, the run fails and the issue is
+   retried on the normal `failed-once` ladder. Warning and error thresholds
+   remain observational — only the blocking threshold stops work.
 5. Budget entries are written to a daily JSON log file for operational
    visibility.
 
@@ -4075,9 +4079,9 @@ The budget log records each invocation's token breakdown, enabling operators to:
 - **Raise `context_budget_error_percent`** (e.g., to `90`) if you are
   comfortable operating closer to the context limit.
 - **Set `context_budget_block_percent` to `0`** to disable the hard ceiling and
-  restore warn-only behaviour. Raising it instead of splitting the issue only
-  defers the truncation — an issue that reaches 95% of the window will not
-  converge by retrying.
+  restore warn-only behaviour. Raising it only defers the truncation — an
+  issue that reaches 95% of the window will not converge by retrying, which
+  is why the worker sends it to planning.
 - The monitoring is lightweight (< 10 ms overhead). The warning and error
   thresholds are observational; the blocking threshold is the only one that
   stops a phase.
@@ -4819,8 +4823,8 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell, sweep ledger `sweptAt` ancestry and
-the Floci CloudFormation deploy test) still run and can fail the run. Unlike Step 1b, the completion gate
+fmt/lint, cargo fmt, markdownlint, cspell and the Floci CloudFormation deploy
+test) still run and can fail the run. Unlike Step 1b, the completion gate
 checks every non-merge commit the branch has ahead of the PR base
 (`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
 ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
@@ -4911,15 +4915,6 @@ The hook runs two stages:
      --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
-   - **sweep ledger `sweptAt` ancestry**, only when the push changes
-     `docs/audits/lib-sweep-coverage.json` or a
-     `docs/audits/lib-sweep-coverage/top-up-*.json`: it checks that the
-     `sweptAt` of just the slices those files contribute is an ancestor of the
-     default branch (`origin/HEAD`, resolved with
-     `git symbolic-ref --short refs/remotes/origin/HEAD`), the same check CI's
-     "Sweep ledger sweptAt ancestry" step makes, so a branch commit recorded as
-     `sweptAt` is caught before the push. A shallow clone is deepened first.
-     When no ledger file changed, this check makes no git calls;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push
      adds or modifies a file whose path starts with `infra/cloudformation/` and
      the repo tracks `infra/cloudformation/test-floci.sh`: it runs
@@ -4944,9 +4939,7 @@ It fails closed, by the same rules as pre-flight: a check that fails, cannot
 start, or times out refuses the push; markdownlint configured but
 `markdownlint-cli2` not found refuses the push; cspell configured and run by
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
-does not); a changed sweep ledger file whose default branch
-cannot be resolved, whose history cannot be deepened, or whose slice `sweptAt`
-is not on the default branch refuses the push; a Floci deploy test that exits
+does not); a Floci deploy test that exits
 non-zero, including when Floci cannot be started or the `aws` CLI is missing for
 a deployable template, refuses the push; a missing hook module, spec or `deno`
 binary refuses the push. Refusals print lines starting
@@ -4980,9 +4973,13 @@ git commands.
 A hands-off fetch → diagnose → fix → merge loop on an **unfixable** failure
 would otherwise burn model spend indefinitely and flood the PR with
 near-identical "attempted fix" comments. After `max_auto_fix_attempts`
-(default `3`) attempts at the *same* failure, the worker stops, applies
-`needs-human`, and posts **one** consolidated summary of every attempt —
-never a fourth "I tried again" note.
+(default `3`) attempts at the *same* failure, the worker stops, closes the
+PR and re-queues its originating issue through the stall-repair rung
+(`abandonAndRestart`) — never a fourth "I tried again" note, and never
+`needs-human` (Issue #4304). Every attempt's diagnosis stays on the closed
+PR's thread. Between attempts, a run that pushes nothing re-runs the failed
+jobs itself (`gh run rerun <run-id> --failed`) rather than asking a reviewer
+to, and a repeat failure on the same head is retried from that diagnosis.
 
 **The budget is the fleet's, not the host's.** The tally lives on the pull
 request itself, as a fleet-authored marker inside each comment the lane posts
@@ -5248,18 +5245,21 @@ the next cycle — and climbs a two-trip ladder:
   red CI, it counts for three thresholds (6 hours by default), which covers the
   CI rerun the first trip's sync starts; a red-CI marker days old belongs to an
   earlier stall.
-- **Auto-fix cap** — a PR carrying the
+- **Auto-fix cap** — a PR carrying the legacy
   [auto-fix attempt cap](#-auto-fix-attempt-cap) marker skips the rerun (its
-  lane has already given up) and goes straight to the second trip.
+  lane has already given up) and goes straight to the second trip. Since
+  Issue #4304 the CI-fix lane abandons a capped PR itself, so no new marker
+  is written.
 - **Human-authored PRs** — only a PR a push-capable fleet login authored is
   repaired or abandoned. Anyone else's stalled PR is logged and left alone.
-- **A `needs-human` PR is left alone.** Before the lease is even taken, a
-  fleet PR carrying `needs_human_label` — hand-applied by a reviewer, or
-  applied by a lane's own escalation (e.g. the CI-fix lane's "log fetch
-  blocked by credentials" hand-off, which leaves the PR red but posts no
-  auto-fix-cap marker) — is skipped with no comment, no sync and no lane
-  rerun. A human already owns the PR; the same veto the merge-conflict
-  watchdog applies (`docs/workflows/merge-conflicts.md`).
+- **A `needs-human` PR is repaired, not parked (Issue #4304).** A fleet PR
+  carrying `needs_human_label` — a legacy escalation, or one hand-applied —
+  has the label removed under the lease and then takes the same two-trip
+  repair as any other stalled PR. The one exception is a PR held for a
+  credential rotation: when its thread carries the fleet's
+  `history-rewrite:` escalation marker (a secret already in the base
+  branch's history), it is skipped with no comment, no sync and no lane
+  rerun, because no repair can clear it.
 
 Only fleet-authored marker comments count, so an outsider cannot trip the
 ladder by pasting a marker.

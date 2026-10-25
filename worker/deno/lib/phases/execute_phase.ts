@@ -143,9 +143,8 @@ import {
 import {
   buildContextBudgetEscalationReason,
   buildContextComponents,
-  CONTEXT_BUDGET_NEXT_STEP,
+  handOffOversizedIssueToPlanning,
 } from "../context_budget_guard.ts";
-import { escalateToHuman } from "../needs_human_escalation.ts";
 import { joinRedacted, redactedTail } from "../redacted_text.ts";
 import { reportRunDeadline } from "../slot_context.ts";
 import { prepareCodegraphRun } from "../codegraph_run.ts";
@@ -868,47 +867,54 @@ async function executeClaudeBody(
     );
   }
 
-  const promptResult = await deps.infrastructure.buildPrompt({
-    repo,
-    issueNumber: String(issueNumber),
-    issueTitle,
-    issueBody,
-    issueLabels: ctx.issueLabels.join(","),
-    // Present only on an `ok` collection (Issue #2102).
-    graftContextBundle: graftContext.bundle,
-    codebaseMap,
-    // The issue's comments (Issue #1910). Selected and trust-annotated where
-    // the context was built, fenced by the builder: a maintainer who narrows
-    // scope in a reply is now visible to the agent without the description
-    // being edited.
-    ...(ctx.issueComments ? { issueComments: ctx.issueComments } : {}),
-    ...(ctx.commentBoundaryId
-      ? { commentBoundaryId: ctx.commentBoundaryId }
-      : {}),
-    // Owner direction on the milestone parent (Issue #3205): a design the
-    // owner replaced on the parent after this sub-issue was written.
-    ...(ctx.parentOwnerDirection
-      ? { parentOwnerDirection: ctx.parentOwnerDirection }
-      : {}),
-    qualityInstructions,
-    customInstructions,
-    milestoneBranch: state.milestoneBranch,
-    // An operator's custom prompt replaces the built-in issue template for
-    // this run (Issue #848). Passed through rather than resolved here, so the
-    // dispatch handler stays the single place that decides a run is custom.
-    customPromptPath: ctx.customPromptPath,
-    customPromptLabel: ctx.customPromptLabel,
-    // An operator's `work-on` mapping overrides the built-in issue template
-    // for every implementation run (Issue #849); the per-run custom prompt
-    // above still wins when this run was dispatched by a custom label.
-    promptOverrides: promptOverrideMappings(config),
-    // Issue #2343: a split run's prompt carries the advisor/executor block.
-    issueExecutorSplit,
-    // Issue #2930: name this host's configured fleet run archive, when any.
-    ...(config.fleetRunArchive
-      ? { fleetRunArchive: config.fleetRunArchive }
-      : {}),
-  });
+  // Issue #4298: built by a closure so the context-budget ceiling below can
+  // rebuild the prompt with the comment history trimmed and try again,
+  // rather than asking a human to trim it.
+  const buildRunPrompt = (withComments: boolean) =>
+    deps.infrastructure.buildPrompt({
+      repo,
+      issueNumber: String(issueNumber),
+      issueTitle,
+      issueBody,
+      issueLabels: ctx.issueLabels.join(","),
+      // Present only on an `ok` collection (Issue #2102).
+      graftContextBundle: graftContext.bundle,
+      codebaseMap,
+      // The issue's comments (Issue #1910). Selected and trust-annotated where
+      // the context was built, fenced by the builder: a maintainer who narrows
+      // scope in a reply is now visible to the agent without the description
+      // being edited.
+      ...(withComments && ctx.issueComments
+        ? { issueComments: ctx.issueComments }
+        : {}),
+      ...(withComments && ctx.commentBoundaryId
+        ? { commentBoundaryId: ctx.commentBoundaryId }
+        : {}),
+      // Owner direction on the milestone parent (Issue #3205): a design the
+      // owner replaced on the parent after this sub-issue was written.
+      ...(ctx.parentOwnerDirection
+        ? { parentOwnerDirection: ctx.parentOwnerDirection }
+        : {}),
+      qualityInstructions,
+      customInstructions,
+      milestoneBranch: state.milestoneBranch,
+      // An operator's custom prompt replaces the built-in issue template for
+      // this run (Issue #848). Passed through rather than resolved here, so the
+      // dispatch handler stays the single place that decides a run is custom.
+      customPromptPath: ctx.customPromptPath,
+      customPromptLabel: ctx.customPromptLabel,
+      // An operator's `work-on` mapping overrides the built-in issue template
+      // for every implementation run (Issue #849); the per-run custom prompt
+      // above still wins when this run was dispatched by a custom label.
+      promptOverrides: promptOverrideMappings(config),
+      // Issue #2343: a split run's prompt carries the advisor/executor block.
+      issueExecutorSplit,
+      // Issue #2930: name this host's configured fleet run archive, when any.
+      ...(config.fleetRunArchive
+        ? { fleetRunArchive: config.fleetRunArchive }
+        : {}),
+    });
+  const promptResult = await buildRunPrompt(true);
   if (!promptResult.ok) {
     return {
       category: "internal_error",
@@ -918,7 +924,7 @@ async function executeClaudeBody(
   }
 
   // Destructure PromptParts for prompt caching (Issue #1262)
-  const { systemPrompt, prompt: basePrompt } = promptResult.value;
+  let { systemPrompt, prompt: basePrompt } = promptResult.value;
 
   // Prior progress exists (Issue #4170): setup resumed a checkpointed
   // branch, so tell the agent to review and continue instead of starting
@@ -930,9 +936,10 @@ async function executeClaudeBody(
   // user prompt, so the budget check below measures it like any other prompt
   // input. Independent of `enable_session_resume` and of the provider: the
   // committed file is the contract, a `--resume` transcript is the bonus.
-  const resumedPrompt = state.resumedFromCheckpoint
-    ? basePrompt + buildPriorProgressNote(issueNumber, state.handoverNote)
-    : basePrompt;
+  const withPriorProgress = (prompt: string): string =>
+    state.resumedFromCheckpoint
+      ? prompt + buildPriorProgressNote(issueNumber, state.handoverNote)
+      : prompt;
 
   // --- CodeGraph repo-context index (Issue #2159, part of #2145) ---
   // Prepared against the checkout the agent will work in — the same path it
@@ -988,30 +995,52 @@ async function executeClaudeBody(
   // Appended to the built prompt rather than written into the template, for
   // the same reason as the prior-progress note above: it is run-conditional,
   // and appending leaves the cached prefix untouched.
-  const userPrompt = rtk.applyPrompt(
-    graft.applyPrompt(codegraph.applyPrompt(resumedPrompt)),
-  );
+  const applyRunLines = (prompt: string): string =>
+    rtk.applyPrompt(
+      graft.applyPrompt(codegraph.applyPrompt(withPriorProgress(prompt))),
+    );
+  let userPrompt = applyRunLines(basePrompt);
 
   // --- Context budget hard ceiling (Issue #3713) ---
   // The budget check used to be observational only, so an issue whose prompt
   // kept growing was bounded by wall-clock alone. Stop here — before any
-  // billed invocation — and hand the issue to a human when the assembled
-  // prompt reaches the ceiling.
-  const budgetResult = checkContextBudget(
-    buildContextComponents({
-      systemPrompt,
-      userPrompt,
-      issueBody,
-      customInstructions,
-    }),
-    config.claudeModel || "opus",
-    {
-      warningThresholdPercent: config.contextBudgetWarningPercent,
-      errorThresholdPercent: config.contextBudgetErrorPercent,
-      blockThresholdPercent: config.contextBudgetBlockPercent,
-    },
-  );
+  // billed invocation — when the assembled prompt reaches the ceiling.
+  //
+  // Issue #4298: never by handing the issue to a human. The comment history
+  // is what grows without bound, so the prompt is rebuilt without it and
+  // checked again; one that still does not fit goes to planning to be split.
+  const measureBudget = () =>
+    checkContextBudget(
+      buildContextComponents({
+        systemPrompt,
+        userPrompt,
+        issueBody,
+        customInstructions,
+      }),
+      config.claudeModel || "opus",
+      {
+        warningThresholdPercent: config.contextBudgetWarningPercent,
+        errorThresholdPercent: config.contextBudgetErrorPercent,
+        blockThresholdPercent: config.contextBudgetBlockPercent,
+      },
+    );
+  let budgetResult = measureBudget();
   logger.info(formatBudgetBreakdown(budgetResult));
+  if (!budgetResult.ok && ctx.issueComments) {
+    logger.warn(
+      "Context budget ceiling reached — retrying with the comment history " +
+        "trimmed (Issue #4298)",
+      { repo, issueNumber, usagePercent: budgetResult.usagePercent },
+    );
+    const trimmed = await buildRunPrompt(false);
+    if (trimmed.ok) {
+      systemPrompt = trimmed.value.systemPrompt;
+      basePrompt = trimmed.value.prompt;
+      userPrompt = applyRunLines(basePrompt);
+      budgetResult = measureBudget();
+      logger.info(formatBudgetBreakdown(budgetResult));
+    }
+  }
   if (!budgetResult.ok) {
     const reason = buildContextBudgetEscalationReason(budgetResult);
     logger.error("Context budget ceiling reached — stopping the phase", {
@@ -1021,23 +1050,30 @@ async function executeClaudeBody(
       contextWindowSize: budgetResult.contextWindowSize,
       usagePercent: budgetResult.usagePercent,
     });
-    await escalateToHuman({
+    const handoff = await handOffOversizedIssueToPlanning({
       ghClient: deps.github.createClient(logger),
       repo,
-      target: { kind: "issue", number: issueNumber },
-      needsHumanLabel: config.needsHumanLabel,
-      heading: "Context budget ceiling reached",
-      reason,
-      nextStep: CONTEXT_BUDGET_NEXT_STEP,
-      dedupKey: `context-budget-${issueNumber}`,
+      issueNumber,
       githubUser: ctx.githubUser,
-      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
+      issueLabels: ctx.issueLabels,
+      reason,
       logger,
+      ensureLabelExists: deps.github.ensureLabelExists,
     });
+    if (handoff.applied) {
+      return {
+        category: "unknown",
+        status: "early_exit",
+        reason: "context_budget_exceeded",
+        ...(handoff.outcome ? { outcome: handoff.outcome } : {}),
+      };
+    }
+    // Planning could not take it: a failure on the normal `failed-once`
+    // ladder, retried like any other run that could not finish.
     return {
-      category: "unknown",
-      status: "early_exit",
-      reason: "context_budget_exceeded",
+      category: "prompt_too_long",
+      status: "failure",
+      reason: `Context budget ceiling reached: ${reason}`,
     };
   }
 

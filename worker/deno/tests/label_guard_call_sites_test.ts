@@ -3,20 +3,20 @@
  * sites that previously bypassed it (Issue #13).
  *
  * `assertWorkerCanApplyLabel` used to be reachable only via
- * `addLabelToIssue`. Two other paths reached the labels API directly:
- *   - `escalateToHuman` (`needs_human_escalation.ts`) — `ghClient.addLabel`
- *   - `ghClientFromCommandFn` (`label_clarification.ts`) — `runGhCommand`
+ * `addLabelToIssue`. `escalateToHuman` (`needs_human_escalation.ts`) reached
+ * the labels API directly through `ghClient.addLabel`. (The second path,
+ * `ghClientFromCommandFn` in `label_clarification.ts`, went with the
+ * clarification hand-off in Issue #4298.)
  *
- * These tests drive both call sites with a forbidden label and assert the
+ * These tests drive the call site with a forbidden label and assert the
  * mutation never reaches GitHub, plus happy-path tests proving the
  * allowlisted `needs-human` label still applies.
  *
  * Australian English used throughout (behaviour, colour, organisation).
  */
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { escalateToHuman } from "../lib/needs_human_escalation.ts";
-import { ghClientFromCommandFn } from "../lib/label_clarification.ts";
 import type { GitHubClient, Logger } from "../types.ts";
 
 // ---------------------------------------------------------------------------
@@ -133,39 +133,4 @@ Deno.test("escalateToHuman - still applies the allowlisted needs-human label", a
   assertEquals(postedBodies.length, 1);
   assertEquals(result.ok, true);
   if (result.ok) assertEquals(result.value.labelAdded, true);
-});
-
-// ---------------------------------------------------------------------------
-// ghClientFromCommandFn — label_clarification.ts
-// ---------------------------------------------------------------------------
-
-Deno.test("ghClientFromCommandFn - addLabel refuses a label outside the worker allowlist", async () => {
-  const calls: string[][] = [];
-  const client = ghClientFromCommandFn((args: string[]) => {
-    calls.push(args);
-    return Promise.resolve("");
-  });
-
-  await assertRejects(
-    () => client.addLabel("org/repo", 7, "work-on"),
-    Error,
-    "not authorised",
-  );
-  // No REST POST, no CLI fallback — nothing reached GitHub.
-  assertEquals(calls, []);
-});
-
-Deno.test("ghClientFromCommandFn - addLabel still applies the allowlisted needs-human label", async () => {
-  const calls: string[][] = [];
-  const client = ghClientFromCommandFn((args: string[]) => {
-    calls.push(args);
-    return Promise.resolve("");
-  });
-
-  await client.addLabel("org/repo", 7, "needs-human");
-  assertEquals(calls.length, 1);
-  assertEquals(
-    calls[0]!.join(" "),
-    "api -X POST repos/org/repo/issues/7/labels -f labels[]=needs-human",
-  );
 });

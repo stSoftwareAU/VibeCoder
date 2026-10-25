@@ -13,7 +13,9 @@
  * it: the first block inside a run is recoverable — the worker replays the
  * verdict into a fresh agent invocation and re-runs the gates — and only a
  * second block in the same run ends the run. Two consecutive *blocked runs*
- * then hand the issue to a human rather than burning a third.
+ * then file (or dedupe onto) a Vibe Coder gate-bug issue carrying the
+ * evidence (Issue #4298) — the issue itself is never handed to a human; it
+ * stays on the `failed-once` ladder and is retried.
  *
  * The completion phase calls {@link recoverFromSecurityGateBlock} and supplies
  * the completion attempt to re-run; everything else here is pure text.
@@ -41,7 +43,8 @@ import {
 } from "./issue_worker_types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { workOnIssueQualityGate } from "./phases/quality_gate_remediation_phase.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
+import { fileRunFailureIssue } from "./run_failure_issue.ts";
+import { getMachineId } from "./machine_id.ts";
 import { TOOL_OUTPUT_IS_DATA_RULE } from "./prompt_delimiter.ts";
 
 /** One gate verdict observed during a single run. */
@@ -58,16 +61,19 @@ export interface SecurityGateRunVerdict {
 }
 
 /**
- * Consecutive blocked runs tolerated on one issue before the worker stops
- * re-attempting and hands it to a human (Issue #1575).
+ * Consecutive blocked runs on one issue before the worker files a Vibe Coder
+ * gate-bug issue (Issues #1575, #4298).
  *
  * A *blocked run* is a run that ended in `failure` from the gate. The first
  * block inside a run is recovered by the in-run retry and never counts.
  */
 export const MAX_CONSECUTIVE_BLOCKED_RUNS = 2;
 
-/** Whether the recorded blocked-run count has reached the escalation point. */
-export function shouldEscalateBlockedRuns(blockCount: number): boolean {
+/** The run-failure class the gate-bug issue is filed and deduped under. */
+export const SECURITY_FIX_GATE_FAILURE_CLASS = "security-fix-gate-blocked";
+
+/** Whether the recorded blocked-run count has reached the gate-bug filing. */
+export function shouldFileGateBug(blockCount: number): boolean {
   return blockCount >= MAX_CONSECUTIVE_BLOCKED_RUNS;
 }
 
@@ -146,22 +152,18 @@ ${TOOL_OUTPUT_IS_DATA_RULE}`;
 }
 
 /**
- * Escalation text for an issue that has now cost {@link
- * MAX_CONSECUTIVE_BLOCKED_RUNS} consecutive blocked runs.
+ * The evidence filed on the Vibe Coder gate-bug issue once an issue has cost
+ * {@link MAX_CONSECUTIVE_BLOCKED_RUNS} consecutive blocked runs (Issue
+ * #4298). Repeated blocks on an approved issue are a Vibe Coder defect to
+ * fix — in the gate, or in what it asks the agent for — never a hand-off.
  */
-export function buildBlockedRunsEscalation(
-  block: SecurityFixGateBlock,
-): { reason: string; nextStep: string } {
-  const nextStep = blocksOnDiscrimination(block.missing)
-    ? "Read the gate comment above: its 'Recorded discrimination runs' section gives the worker's executed result. Make the cited test fail against the base versions of the changed non-test files and pass at the head, or fix the cause it records when the worker could not run the test (a build error, a language other than Deno or Rust, a timeout), then remove `needs-human` to release the issue."
-    : "Read the gate comment above: it lists the test declarations the gate matched in the branch diff. If the summary already cites one of them, the gate itself is at fault — fix `worker/deno/lib/security_fix_gate.ts`. Otherwise supply the missing evidence in the PR summary and remove `needs-human` to release the issue.";
-  return {
-    reason:
-      `${block.blockCount} consecutive runs on this issue ended blocked by the security-fix gate (Issue #1575), each after an in-run retry. The last verdict reported these evidence items missing: ${
-        block.missing.join(", ")
-      }.`,
-    nextStep,
-  };
+export function buildBlockedRunsGateBug(block: SecurityFixGateBlock): string {
+  const where = blocksOnDiscrimination(block.missing)
+    ? "The block rests on the worker's executed discrimination check (see 'Recorded discrimination runs' in the gate comment on the source issue). Either the agent cannot make the cited test discriminate, or the runner (`worker/deno/lib/security_fix_discrimination.ts`) cannot run it — a build error, a language other than Deno or Rust, a timeout."
+    : "If the PR summary already cites a test the diff declares, the gate itself is at fault — fix `worker/deno/lib/security_fix_gate.ts`. Otherwise the retry prompt is not getting the agent to supply the missing evidence.";
+  return `${block.blockCount} consecutive runs on ${block.repo}#${block.issueNumber} ended blocked by the security-fix gate (Issues #1575, #4298), each after an in-run retry. The last verdict reported these evidence items missing: ${
+    block.missing.join(", ")
+  }.\n\n${where}`;
 }
 
 /**
@@ -200,7 +202,7 @@ async function persistVerdict(
     return block;
   } catch (err) {
     deps.logger.warn(
-      `Could not persist the security-fix gate verdict — the next attempt will start blind and the consecutive-blocked-run count is NOT updated, so the ${MAX_CONSECUTIVE_BLOCKED_RUNS}-run hand-off may be delayed: ${
+      `Could not persist the security-fix gate verdict — the next attempt will start blind and the consecutive-blocked-run count is NOT updated, so the ${MAX_CONSECUTIVE_BLOCKED_RUNS}-run gate-bug filing may be delayed: ${
         (err as Error).message
       }`,
     );
@@ -220,12 +222,65 @@ async function persistVerdict(
 }
 
 /**
+ * File (or dedupe onto) the Vibe Coder gate-bug issue for an issue the gate
+ * has now blocked {@link MAX_CONSECUTIVE_BLOCKED_RUNS} runs running (Issue
+ * #4298). Routed through the run-failure filer, so it is deduped per class on
+ * a fleet-authored body marker, rate-limited per host and attested — one
+ * open issue however many issues hit it. Best-effort: a filing fault is
+ * logged and the run's own failure stands.
+ */
+async function fileGateBug(
+  ctx: IssueContext,
+  deps: WorkerDeps,
+  block: SecurityFixGateBlock,
+  comment: string,
+): Promise<void> {
+  const logger = deps.logger;
+  try {
+    const workDir = ctx.config.workDir;
+    const decision = await fileRunFailureIssue({
+      report: {
+        sourceRepo: ctx.repo,
+        sourceIssueNumber: ctx.issueNumber,
+        outcome: {
+          kind: "no_pr",
+          category: "security_fix_gate",
+          classification: {
+            fixability: "code_fixable",
+            failureClass: SECURITY_FIX_GATE_FAILURE_CLASS,
+            rationale: buildBlockedRunsGateBug(block),
+          },
+          phase: "completion",
+          elapsedSeconds: 0,
+          message: `${SECURITY_FIX_GATE_MARKER}: ${comment}`,
+        },
+        machineId: await getMachineId(workDir),
+      },
+      ghFn: deps.github.runGhCommand,
+      workDir,
+      log: (message) => logger.info(message),
+    });
+    logger.info("Security-fix gate bug filing", {
+      action: decision.action,
+      blockedRuns: block.blockCount,
+    });
+  } catch (err) {
+    logger.warn(
+      `Could not file the security-fix gate bug (non-fatal): ${
+        (err as Error).message
+      }`,
+    );
+  }
+}
+
+/**
  * Report a gate block that this run could not recover from.
  *
  * Posts the single operator-facing comment carrying every verdict the run
  * collected, and — only when the block genuinely ended the run in `failure`
- * from the gate — counts the blocked run and hands the issue to a human once
- * {@link MAX_CONSECUTIVE_BLOCKED_RUNS} consecutive runs have ended that way. An
+ * from the gate — counts the blocked run and files a Vibe Coder gate-bug issue
+ * once {@link MAX_CONSECUTIVE_BLOCKED_RUNS} consecutive runs have ended that
+ * way (Issue #4298). The issue itself stays on the `failed-once` ladder. An
  * agent invocation that could not be launched is not a gate verdict, so it is
  * reported without charging the issue a blocked run.
  *
@@ -258,23 +313,8 @@ async function reportBlock(
     );
   }
 
-  if (
-    countsAsBlockedRun && block && shouldEscalateBlockedRuns(block.blockCount)
-  ) {
-    const escalation = buildBlockedRunsEscalation(block);
-    await escalateToHuman({
-      ghClient: client,
-      repo,
-      target: { kind: "issue", number: issueNumber },
-      needsHumanLabel: ctx.config.needsHumanLabel,
-      reason: escalation.reason,
-      nextStep: escalation.nextStep,
-      heading: "Security-fix gate blocked this issue twice",
-      dedupKey: `security-fix-gate-${issueNumber}`,
-      githubUser: ctx.githubUser,
-      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
-      logger,
-    });
+  if (countsAsBlockedRun && block && shouldFileGateBug(block.blockCount)) {
+    await fileGateBug(ctx, deps, block, comment);
   }
 
   return {

@@ -9,15 +9,13 @@
  * on observable outcomes (whether `gh pr create` ran, whether the in-run
  * recovery fired, what the recovery prompt and posted comment say).
  *
- * Mirrors `completion_phase_summary_claim_check_test.ts`'s harness.
+ * Drives the live completion phase.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { callbackOutcomeFromRun } from "../lib/run_callback_context.ts";
 import type { RunOutcome } from "../lib/run_outcome.ts";
-import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
 import type { FailureCategory } from "../lib/failure_diagnosis.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
@@ -420,13 +418,13 @@ for (const summary of [SUMMARY_CLEAN, SUMMARY_PLACEHOLDER]) {
     assertEquals(outcome.labels.includes("standing-violation"), false);
     const holds = outcome.posted.filter((c) => c.number === 4412);
     assertEquals(holds.length, 1);
-    assertStringIncludes(holds[0]!.body, "<!-- vibe-pre-pr-verifier-hold -->");
+    assertStringIncludes(holds[0]!.body, "## Notes for the reviewer");
+    assertStringIncludes(holds[0]!.body, "auto-merge stays armed");
     assertStringIncludes(holds[0]!.body, FINDING.problem);
     assertEquals(holds[0]!.body.includes("Auto-merge withheld"), false);
-    assert(
-      outcome.posted.some((c) =>
-        c.number === ISSUE && c.body.includes(FINDING.problem)
-      ),
+    assertEquals(
+      holds[0]!.body.includes("<!-- vibe-pre-pr-verifier-hold -->"),
+      false,
     );
   });
 }
@@ -449,7 +447,9 @@ Deno.test("completion - a failed verifier findings comment is an error and the P
   });
   assertEquals(outcome.armed, 1);
   assert(
-    outcome.errors.some((message) => message.includes("verifier findings")),
+    outcome.errors.some((message) =>
+      message.includes("completion findings comment")
+    ),
   );
 });
 
@@ -478,7 +478,7 @@ Deno.test(
 
 // (b)
 Deno.test(
-  "completion - findings that persist with no PR raise it armed and post a change-request record (Issues #4236, #4291)",
+  "completion - findings that persist with no PR raise it armed and post one reviewer comment (Issues #4234, #4291)",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_CLEAN,
@@ -500,20 +500,18 @@ Deno.test(
     assertEquals(outcome.claudePrompts.length, 1);
     const record = outcome.posted.filter((c) => c.number === 4412);
     assertEquals(record.length, 1);
-    assertStringIncludes(
-      record[0]!.body,
-      preprReviewMarker("changes_requested"),
-    );
+    assertStringIncludes(record[0]!.body, "## Notes for the reviewer");
+    assertStringIncludes(record[0]!.body, "auto-merge stays armed");
     assertStringIncludes(record[0]!.body, "src/balance.ts:42");
     assertStringIncludes(record[0]!.body, FINDING.problem);
-    assertStringIncludes(
-      record[0]!.body,
-      "pre-PR review requested changes: 1 findings",
+    assertEquals(
+      record[0]!.body.includes(preprReviewMarker("changes_requested")),
+      false,
     );
     assertEquals(outcome.prBodies.length, 1);
-    assertStringIncludes(
-      outcome.prBodies[0]!,
-      "pre-PR review requested changes: 1 findings",
+    assertEquals(
+      outcome.prBodies[0]!.includes("pre-PR review requested changes"),
+      false,
     );
   },
 );
@@ -542,7 +540,7 @@ Deno.test(
 
 // (c)
 Deno.test(
-  "completion - findings that persist over an existing PR end as summary_incomplete",
+  "completion - findings that persist over an existing PR still finalise it armed",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_CLEAN,
@@ -550,8 +548,9 @@ Deno.test(
       existingPr: true,
     });
 
-    assertEquals(outcome.status, "early_exit");
-    assertEquals(outcome.outcomeKind, "summary_incomplete");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.armed, 1);
+    assertEquals(outcome.outcomeKind, undefined);
   },
 );
 
@@ -669,31 +668,18 @@ Deno.test(
 
 // (h)
 Deno.test(
-  "completion - verifier findings fold into the summary claim check's block",
+  "completion - a wrong claim in the summary does not stop the verifier's advice turn",
   async () => {
-    const claimReply = `${DRIFT_VERDICT_OPEN}\n${
-      JSON.stringify({
-        findings: [{
-          file: SUMMARY_REL,
-          sentence: CLAIM_SENTENCE,
-          reason: "the head's phraseAnywhere builds no regex",
-        }],
-      })
-    }\n${DRIFT_VERDICT_CLOSE}`;
     const outcome = await runCompletion({
       summary: SUMMARY_WRONG_CLAIM,
       retryWrites: SUMMARY_FIXED,
       verifier: [checked([FINDING]), checked([])],
-      claimReply,
     });
 
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.claudePrompts.length, 1, "one recovery turn");
-    const prompt = outcome.claudePrompts[0]!;
-    assertStringIncludes(prompt, "REQUIRED ITEM 1 of 2");
-    assertStringIncludes(prompt, "REQUIRED ITEM 2 of 2");
-    assertStringIncludes(prompt, "describes named code wrongly");
-    assertStringIncludes(prompt, FINDING.problem);
+    assertStringIncludes(outcome.claudePrompts[0]!, FINDING.problem);
+    assertEquals(outcome.prCreateCalls, 1);
   },
 );
 
@@ -742,32 +728,25 @@ Deno.test("completion retains evidence, substantive and mixed verifier causes wi
     assertEquals(o.armed, 1);
     assertEquals(o.causes[0], causes);
     const record = o.posted.find((c) => c.number === 4412);
-    assert(record, "the change-request record was posted");
+    assert(record, "the reviewer note was posted");
     for (const finding of findings) {
       assertStringIncludes(record.body, `${finding.file}:${finding.line}`);
     }
   }
 
-  // A mechanical summary gate still fails the run. Its category stays a
-  // ladder failure, not a crash read off the gate's quoted text.
+  // A placeholder and a verifier finding are advice. The pull request is
+  // raised, and the first block still records both categories.
   const blocked = await runCompletion({
     summary: SUMMARY_PLACEHOLDER,
     verifier: [checked([FINDING])],
   });
-  assertEquals(blocked.status, "failure");
-  assertEquals(blocked.category, "quality_check");
-  assertEquals(blocked.causes.at(-1), [
+  assertEquals(blocked.status, "continue");
+  assertEquals(blocked.prCreateCalls, 1);
+  assertEquals(blocked.armed, 1);
+  assertEquals(blocked.causes[0], [
     "summary_incomplete",
     "quality_check",
   ]);
-  assertEquals(blocked.prCreateCalls, 0);
-  assertEquals(
-    classifyCodingFailure(
-      "wrapper quotes rate limit ENOSPC timeout",
-      blocked.category,
-    ).disposition,
-    "ladder",
-  );
 });
 
 Deno.test("existing PR outcomes retain evidence and substantive verifier causes through callbacks (Issue #3738)", async () => {
@@ -778,7 +757,7 @@ Deno.test("existing PR outcomes retain evidence and substantive verifier causes 
     category: "summary_incomplete",
   };
   for (
-    const [findings, category, categories] of [
+    const [findings, _category, categories] of [
       [[evidence], "summary_incomplete", ["summary_incomplete"]],
       [[FINDING], "quality_check", ["quality_check"]],
       [[evidence, FINDING], "quality_check", [
@@ -792,18 +771,8 @@ Deno.test("existing PR outcomes retain evidence and substantive verifier causes 
       verifier: [checked([...findings])],
       existingPr: true,
     });
-    assertEquals(o.outcome?.kind, "summary_incomplete");
-    const emitted = callbackOutcomeFromRun({
-      repo: REPO,
-      issueNumber: ISSUE,
-      result: "success",
-      startedAtEpochMs: 0,
-      finishedAtEpochMs: 1,
-      outcome: o.outcome,
-    });
-    assertEquals(emitted?.category, category);
-    assertEquals(emitted?.categories, categories);
-    assertEquals(emitted?.failureClass, "agent-outcome");
+    assertEquals(o.status, "continue");
+    assertEquals(o.causes[0], categories);
     // Issue #4291: the findings are posted and the PR is still armed.
     assertEquals(o.armed, 1);
     assertEquals(o.labels.includes("standing-violation"), false);
@@ -863,10 +832,10 @@ Deno.test("completion - findings remembered on one attempt are not posted after 
     },
     {
       status: "continue",
-      verifiers: 3,
+      verifiers: 2,
       prs: 1,
       armed: 1,
-      prompts: 2,
+      prompts: 1,
       reason: undefined,
     },
   );

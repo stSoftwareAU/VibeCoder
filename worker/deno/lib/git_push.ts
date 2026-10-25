@@ -43,7 +43,7 @@ import { runGhOrThrow } from "./gh_spawn.ts";
  * (Issue #3577). Omit the spec to disable the gate — the repo then commits and
  * pushes with zero added latency. Passing a spec turns on Step 1b's
  * changed-file checks (Issue #3689: deno/cargo fmt, markdownlint, cspell and
- * `sweptAt` ancestry) even when `commands` is empty; an empty list only means
+ * the Floci deploy test) even when `commands` is empty; an empty list only means
  * no repo pre-flight commands run.
  */
 export interface PreFlightGateSpec {
@@ -553,8 +553,8 @@ function capGateText(text: string): string {
 
 /**
  * The pre-push gate gave a verdict on the branch's content (PR #3716 review):
- * a changed-file or pre-flight command failed, a plan could not be built, or a
- * `sweptAt` is not on the default branch. {@link gateUnpushedCommits} returns
+ * a changed-file or pre-flight command failed, or a plan could not be built.
+ * {@link gateUnpushedCommits} returns
  * any other error (a git or remote lookup that failed or timed out) as an
  * infrastructure error,
  * so a caller that blames the branch for a failed gate can tell the two apart.

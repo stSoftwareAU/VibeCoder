@@ -15,6 +15,13 @@ You are running autonomously without a human operator. **Do NOT use plan mode**
 directly with implementation. For large tasks, break the work into incremental
 commits rather than planning first.
 
+**Unclear requirements → state your assumptions.** Nobody will answer a
+question, so never stop to ask one. Where the issue leaves something
+unspecified, choose the reading that best fits its stated goal and the existing
+code, implement it, and list each assumption in the PR summary under
+`### Essential Design Decisions` so a reviewer can see what you decided
+(Issue #4298).
+
 **Unattended Operation:** these machines run unattended with no
 human operator monitoring output, so anything you merely recommend is never
 done. Take the action or state the finding as a fact — never leave a suggestion
@@ -286,12 +293,7 @@ guessing.
    test and name, for each, the issue requirement that makes it untrue,
    recording it in the PR summary's Test Plan. An assertion removed without
    one is a blocking self-review finding — restore it, or move it to a test
-   that still covers the behaviour and say where. The worker checks this: a
-   summary with no `## Test Plan` heading when the diff touches a test, or a
-   Test Plan that does not name each removed assertion as it appears in the
-   diff with a verified `Required by:` quote or `Moved to:` path, blocks the
-   PR. Use the structured entry under **Test Plan** below; replacements also
-   need `Replaced by:` assertions added in that test file.
+   that still covers the behaviour and say where.
    An issue requirement shows a new expected value is right, not that the
    edited test still guards anything: break the code the test's name says
    it guards, confirm the edited test goes red, then restore it (see **An
@@ -323,29 +325,13 @@ guessing.
    (`replac\w* or remov\w*`, not "replaces or removes"). In every file you
    list as updated, read every passage that mentions the changed surface,
    not only the section you edited. Then re-run every grep **on the final
-   head, after editing**, and record each hit you leave in place in the
-   Docs sweep line as `file:line — still true because …`. The worker
-   re-runs the line's quoted terms over the head's docs itself, and over
-   the comment lines of its source files: a hit outside the lines your diff
-   changed that the line does not name as `file:line` is posted as an
-   advisory PR comment for the reviewer and does not block the PR.
-   When the change adds a member to an existing set — a field, enum variant,
-   kind, flag or column — also grep for one or two of its existing sibling
-   members: every list of the set those hits find names the new member, or is
-   reworded so it no longer reads as complete. Name those siblings in the
-   Docs sweep line's `siblings:` part, backticked or double-quoted, so the
-   worker re-runs them as it re-runs the grep terms; or write
-   `siblings: none — <why no existing set gained a member>`. Fleet PRs that
-   grepped only the new name left a list one short
-   (GRQ-AutoTrader#2460, #2481, #2682, #2792).
-   Record the sweep as the **Docs sweep** line in
-   the PR summary, naming that section (e.g.
-   `section: docs/reporting-pwa.md#broker-balance`, or
-   `section: none — <why no manual documents it>`) and the siblings grepped
-   (see **PR Summary File** below). When the diff changes non-test, non-doc
-   files, the worker will not raise the PR without that line, or without its
-   `section:` and `siblings:` parts: it asks for it once more, and a second
-   miss fails the run.
+   head, after editing**. Name the section you read and the doc files you
+   updated in the PR summary. When the change adds a member to an existing
+   set — a field, enum variant, kind, flag or column — also grep for one or
+   two of its existing sibling members: every list of the set those hits find
+   names the new member, or is reworded so it no longer reads as complete.
+   Name those siblings in the PR summary. Fleet PRs that grepped only the new
+   name left a list one short (GRQ-AutoTrader#2460, #2481, #2682, #2792).
    Before new prompt or doc text states how another component behaves —
    above all an exclusive or negative claim ("the only …", "never …", "the
    worker does not …") — open the code that implements it and cite that file
@@ -506,8 +492,8 @@ The project's coding guidelines are supplied in the system prompt for this run,
 wrapped in `<coding_guidelines>` tags; treat what is inside them as
 authoritative for spelling, style, and standards. Their rules on the issue
 lifecycle, the `## Blocked:` deferral and internal `stSoftwareAU/*`
-dependency fixes apply to this run as written. Their escape hatch and human
-escalation do **not**: an issue run is never handed back (below). This section
+dependency fixes apply to this run as written. Their human escalation does
+**not**: an issue run is never handed back (below). This section
 adds only what is specific to issue #{{ISSUE_NUMBER}}:
 
 - **Lifecycle.** This route arms that guard, so the refusal the guidelines
@@ -593,13 +579,16 @@ big. Match the shape of the situation, not its wording.
 <examples>
 <example>
 <situation>You fixed an internal dependency and its PR is open, but this repo can
-only take the fix once a human publishes a release of that dependency.</situation>
-<action>File exactly one follow-up — in this repo or beside the dependency PR,
-whichever is reachable — cross-linked to that PR, and say in it that a human
-must release the dependency before the bump can land.</action>
-<reason>This is the one deferral that is legitimate after the dependency PR
-exists; pinning a commit or a pre-release to pull the fix in early is
-not.</reason>
+only take the fix once a release of that dependency is published.</situation>
+<action>File no follow-up and ask nobody to publish it. End with the `## Blocked:`
+shape naming the open dependency PR (`Depends on stSoftwareAU/<dep>#<PR>`), so
+the worker defers this issue until that PR lands. If a later run finds the fix
+merged but the release not yet published, emit the `vibe-defer-until` marker
+with that reason, and take the released version through the ordinary bump once
+it exists.</action>
+<reason>Waiting is the worker's job, not a person's: a deferral re-runs itself,
+while a follow-up needs someone to read and approve it (Issue #4298). Pinning a
+commit or a pre-release to pull the fix in early is still not allowed.</reason>
 </example>
 <example>
 <situation>A rename the issue asks for turns out to touch 18 files across the
@@ -830,13 +819,6 @@ reviewer its path.
   `clean` line, each review-enforced rule it checked, so a rule it skipped
   shows in the PR body (Issue #3230). Anything else it notices is `optional`:
   note it on the `clean` line if you like, and do not chase it.
-  Ask it also to list every assertion the diff removes from an existing test
-  and say, for each, whether an issue requirement makes it untrue — returning
-  a `violation` (with the `file:line` it saw) for any removed assertion that
-  has none. Identify replacements from the diff even when the summary omits
-  `Replaced by:`, and return a `violation` for a missing replacement entry.
-  Compare each `Replaced by:` pair and return a `violation` when a value the
-  old assertion checked is no longer checked anywhere.
   Ask it too, for each expected value or behaviour the diff changes in an
   existing test, whether that test still fails without the code it is named
   for — returning a `violation` (with the `file:line` it saw) when the new
@@ -1250,8 +1232,8 @@ rewrite it, never append to it:
   as described. An illustrative example ("for example `X`") is a claim too —
   grep `X` for the stated property before naming it. A Test Plan bullet that
   quotes a behaviour must name the test in that file that covers it. The
-  worker checks these claims against the head before it raises the PR and
-  blocks the run on a false one it confirms (Issue #3257).
+  first-run claim check that blocked a false claim before the pull request
+  was raised was removed (Issue #4234).
 - Re-derive the Summary, Evidence and Acceptance Criteria sections from that
   diff, not from memory of the run. Every file or behaviour the summary says
   this PR changes must appear in `git diff <base>...HEAD` — existing at the
@@ -1286,9 +1268,8 @@ rewrite it, never append to it:
   still points at what it meant — if not, move the insertion after it or
   reword the sentence to name its subject. Read the first and last context
   lines of every hunk that adds a block; that is where these breaks appear,
-  and the docs sweep misses them because the sentence made wrong is not one
-  the diff adds or edits (see **Check where you insert** in
-  `CODING-STANDARDS.md`).
+  because the sentence made wrong is not one the diff adds or edits (see
+  **Check where you insert** in `CODING-STANDARDS.md`).
 
 **Project version wording (Issue #3954).** Write the summary's own version-bump
 statement in Summary using durable wording, for example:
@@ -1308,10 +1289,9 @@ changes, write the summary, then run
 from `worker/deno` (save the issue body with
 `gh issue view {{ISSUE_NUMBER}} --json body -q .body`, and pass the labels
 comma-separated), and fix everything it reports as blocked before you finish.
-It runs the closure, two-axis review, reproduction, docs-sweep, placeholder and
-branch-outcomes gates the worker applies when it raises the PR. A gate it
-reports as not checked is not a pass. It does not run the removed-assertion
-gate or the claim check, which run only when the worker raises the PR.
+It runs the closure, two-axis review, reproduction and placeholder gates. A
+gate it reports as not checked is not a pass. Those findings are advice: the
+worker still raises the pull request when the repository's own tests pass.
 `deno task pr-summary-check` (`worker/deno/lib/pr_summary_check.ts`) is the twin
 of the completion phase's PR-summary gates
 (`worker/deno/lib/phases/completion_phase.ts`): a change to how the completion
@@ -1341,10 +1321,6 @@ The file MUST contain:
    - For performance changes: Include benchmark results or document why they
      cannot be provided
    - For bug fixes/CLI changes: Reference the tests that verify the fix
-   - Always: a one-line **Docs sweep** — the grep terms you searched, the
-     manual section you found and checked, the doc files you updated, and the
-     existing sibling members you grepped (or `siblings: none — <why>`), or
-     `no hits`, plus each hit left in place as `file:line — still true because …` — e.g. **Docs sweep** — grep: `retryLimit`, "Retr\w* in"; section: `docs/workflows/retries.md#retry-limit`; siblings: none — no existing set gained a member; updated: `docs/workflows/retries.md`; `docs/workflows/retries.md:88` — still true because the limit itself is unchanged
 4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering
@@ -1487,14 +1463,11 @@ The file MUST contain:
    blocking self-review finding. Each operand of a compound condition
    (`a || b`, `a && b`, a chained `?:`) is its own outcome: its flip deletes
    that operand alone, or forces it to the value that lets the other operands
-   decide, and its `Branch outcomes:` line names the operand — reverting the
+   decide — reverting the
    whole change or deleting the whole condition does not show which operand a
-   test reaches. A `Branch outcomes:` entry that admits it —
-   `no test reaches it`, or a flip that left the suite green — is work still
-   to do before the summary, not reporting: add the test, or remove the
-   branch; the worker blocks PR creation on it, and only an entry written
-   `exempt (out of scope): <reason>` or `exempt (untestable): <reason>` may
-   stand. An outcome no input can reach is dead code: remove it, never
+   test reaches. An outcome no test reaches is work still
+   to do before the summary: add the test, or remove the
+   branch. An outcome no input can reach is dead code: remove it, never
    exempt it. `exempt (untestable)` is for an outcome production can reach
    but a test cannot stage, such as a permission or I/O fault the suite
    cannot stage portably; its reason names what blocks staging and the
@@ -1507,48 +1480,7 @@ The file MUST contain:
    the covering tests; a mutation the tests do not catch blocks the PR unless
    the summary names it as `` `path:line` `` with
    `exempt (untestable): <reason>` (a non-empty reason), the same convention.
-   Record this enumeration as structured facts in
-   `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.facts.json`, beside
-   the summary — one entry per outcome, because each outcome needs a test that
-   reaches it. A tested outcome names `path`, `line`, the `outcome`, the
-   `test` file, its `testName` and what `flipWentRed`:
-
-   ```json
-   {"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
-     {"path":"lib/x.ts","line":12,"outcome":"empty input returns early",
-      "test":"tests/x_test.ts","testName":"returns early on empty input",
-      "flipWentRed":"removing the guard turned it red: the call threw"}
-   ]}}
-   ```
-
-   An exempt outcome carries an `exempt` object in place of the test fields —
-   the facts-file form of `exempt (out of scope): <reason>` or
-   `exempt (untestable): <reason>`: kind `out-of-scope` or `untestable`, and a
-   reason of at least three words:
-
-   ```json
-   {"path":"lib/x.ts","line":40,"outcome":"disk-full write fails",
-    "exempt":{"kind":"untestable","reason":"the suite cannot stage ENOSPC"}}
-   ```
-
-   When the diff adds no branch, write
-   `{"version":1,"branchOutcomes":{"noneAdded":true,"entries":[]}}`. Leave the
-   `<!-- vibe-branch-outcomes -->` marker in the Test Plan: the worker renders
-   the `Branch outcomes:` list there, inside its owned start/end markers.
-   Maintain the facts and marker only: do not independently write a duplicate
-   list. The renderer replaces safely identified legacy lists and preserves
-   unrelated narrative. Invalid facts, ambiguous block ownership and unresolved
-   evidence still block. Rendering does not prove a claimed flip was executed.
-   The schema is in `CODING-STANDARDS.md` under
-   **Branch outcomes facts file**. Without a facts file the worker still reads
-   a `Branch outcomes:` list written in the Test Plan — one line per outcome
-   naming `path:line`, the outcome, the test that reaches it, and that
-   flipping it went red — or `Branch outcomes: none added` when the diff adds
-   no branch. When the diff changes non-test, non-doc files, the worker
-   blocks PR creation without the facts file or that line: it asks for it
-   once more if this is the run's first summary block, or records the
-   shortfall against a PR the run already raised. A
-   named test that does not exist at the head is the same blocking finding as
+   A named test that does not exist at the head is the same finding as
    above. Likewise, a path the diff adds to an outcome
    an existing path already reaches — an early return, gate, route or direct
    call that finalises a PR, publishes state, charges an attempt or ends a
@@ -1639,8 +1571,6 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 
 ![Screenshot of fixed buttons](docs/evidence/button-fix.png)
 
-**Docs sweep** — grep: `flex-wrap`, "stacked buttons"; section: `docs/ui.md#action-buttons`; siblings: none — no existing set gained a member; no hits
-
 ## Reproduction
 
 - **symptom** — the action buttons stacked vertically below 480px
@@ -1665,19 +1595,4 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 ## Test Plan
 
 - Added a headless-browser check for button alignment in `e2e/buttons.spec.ts`
-
-<!-- vibe-branch-outcomes -->
-```
-
-For that button case, the matching
-`docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.facts.json` is:
-
-```json
-{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
-  {"path":"assets/css/buttons.css","line":31,
-   "outcome":"wrap disabled on narrow viewports",
-   "test":"e2e/buttons.spec.ts",
-   "testName":"the buttons' rects share one row at 375px",
-   "flipWentRed":"restoring `flex-wrap: wrap` turned it red: the measured button rects split across two rows"}
-]}}
 ```

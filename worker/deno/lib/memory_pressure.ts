@@ -18,6 +18,14 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** Darwin `sysctl` probe. Seconds. A timeout is not "pressure unknown". */
+const MEMORY_PROBE_TIMEOUT_MS = 10_000;
+
 /** Below this share of total memory available, pressure is "high". */
 export const DEFAULT_PRESSURE_THRESHOLD = 0.10;
 
@@ -88,7 +96,7 @@ export async function probeMemoryPressure(options: {
  * on Linux; `sysctl kern.memorystatus_vm_pressure_level` on macOS (1 =
  * normal, 2 = warn, 4 = critical — the same signal the kernel's own
  * memorystatus jetsam acts on); "unknown" anywhere else or when the signal
- * cannot be read. Never throws.
+ * cannot be read. A timeout throws; any other unreadable signal is "unknown".
  */
 export async function probeHostMemoryPressure(options: {
   os?: string;
@@ -105,19 +113,23 @@ export async function probeHostMemoryPressure(options: {
       const level = Number(raw);
       if (!Number.isFinite(level) || level <= 0) return { level: "unknown" };
       return { level: level >= 2 ? "high" : "ok" };
-    } catch {
+    } catch (error) {
+      if (isCommandTimeoutError(error)) throw error;
       return { level: "unknown" };
     }
   }
   return { level: "unknown" };
 }
 
-async function readDarwinPressureLevel(): Promise<string> {
-  const out = await new Deno.Command("sysctl", {
+export async function readDarwinPressureLevel(
+  timeoutMs: number = MEMORY_PROBE_TIMEOUT_MS,
+): Promise<string> {
+  const out = await commandOutputWithTimeout("sysctl", {
     args: ["-n", "kern.memorystatus_vm_pressure_level"],
     stdout: "piped",
     stderr: "null",
-  }).output();
+    timeoutMs,
+  });
   if (!out.success) throw new Error("sysctl failed");
   return new TextDecoder().decode(out.stdout);
 }

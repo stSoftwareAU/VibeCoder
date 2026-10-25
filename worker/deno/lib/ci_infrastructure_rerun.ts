@@ -11,11 +11,11 @@
  *
  * This module classifies each red check as infrastructure (cancelled, or
  * a failure that never started) or code (a genuine failure), and re-runs
- * the infrastructure ones' workflow runs directly — at most once per PR
- * head commit, so a rerun that keeps coming back cancelled escalates to a
- * human instead of looping forever.
+ * the infrastructure ones' workflow runs directly. A head that keeps coming
+ * back cancelled is re-run again on every scan rather than left for a person
+ * (Issue #4304); the marker below keeps it to one comment per head.
  *
- * The once-per-head bound is recorded fleet-wide, not per host (Issue
+ * The once-per-head record is kept fleet-wide, not per host (Issue
  * #2919): it used to live in a marker file in each host's own state
  * volume, invisible to any other host, so two accounts each re-ran the
  * same cancelled run once — the bound Issue #2914 added held only
@@ -239,11 +239,11 @@ const FORTY_HEX = /^[0-9a-f]{40}$/i;
  *
  * A run that also carries a real code failure (its id is in
  * `codeRunIds`) is left alone — the CI-fix agent's fix-push re-triggers
- * it, and re-running it here would race that push. Bounded fleet-wide by a
+ * it, and re-running it here would race that push. Each head gets one
  * `vibe-ci-infra-rerun` marker comment on the pull request itself (Issue
- * #2919), posted only after at least one rerun succeeds, so a rerun GitHub
- * itself refused is retried on the next scan rather than silently given up
- * on.
+ * #2919), posted only after at least one rerun succeeds; a head that is
+ * still red is re-run again on later scans without a second comment
+ * (Issue #4304).
  *
  * @returns The workflow run ids that were re-run.
  */
@@ -302,14 +302,18 @@ export async function rerunInfrastructureChecks(opts: {
     return [];
   }
 
-  if (isInfraRerunRecordedAt(fleetMarkers, headSha)) {
-    logger.warn(
-      `${repo}#${prNumber} head ${headSha} was already re-run once for ` +
-        `cancelled/never-started checks and is still red — a human needs ` +
-        `to look (Issue #2914, Issue #2919)`,
+  // Issue #4304: a head already re-run and still cancelled or never
+  // started is re-run again rather than left for a person — a rerun costs
+  // no agent time, and the run clears once the runner or Actions budget is
+  // back. The marker only dedups the comment: one per head.
+  const alreadyRecorded = isInfraRerunRecordedAt(fleetMarkers, headSha);
+  if (alreadyRecorded) {
+    logger.info(
+      `${repo}#${prNumber} head ${headSha} was already re-run for ` +
+        `cancelled/never-started checks and is still red — re-running it ` +
+        `again (Issue #4304)`,
       { repo, prNumber, headSha },
     );
-    return [];
   }
 
   const seen = new Set<number>();
@@ -358,7 +362,7 @@ export async function rerunInfrastructureChecks(opts: {
     }
   }
 
-  if (rerun.length > 0) {
+  if (rerun.length > 0 && !alreadyRecorded) {
     // Issue #2919: the record lives on the pull request, not in this
     // host's state volume, so every fleet host reads the same bound.
     const marker = buildCiInfraRerunMarker({ head: headSha.toLowerCase() });
@@ -379,4 +383,64 @@ export async function rerunInfrastructureChecks(opts: {
   }
 
   return rerun;
+}
+
+/**
+ * Re-run the failed jobs of the Actions run behind one check (Issue #4304).
+ *
+ * The CI-fix lane used to end a run that changed nothing by asking someone
+ * to "please re-run the failing check". The worker does that itself: the
+ * check id is the Actions job id, the job names its run, and
+ * `gh run rerun <run> --failed` re-runs exactly the jobs that failed. A
+ * repeat failure arrives as a fresh check run, so the CI-fix scan picks it
+ * up again and the fleet-wide attempt cap — not a person — bounds the loop.
+ *
+ * Never throws. A check whose run cannot be resolved (not GitHub Actions,
+ * or the lookup failed) or a re-run `gh` refuses is logged and reported as
+ * `null`; the next scan retries.
+ *
+ * @returns The run id that was re-run, or `null` when nothing was re-run.
+ */
+export async function rerunFailedJobsOfCheck(opts: {
+  repo: string;
+  checkId: string;
+  ghCommandFn: (args: string[]) => Promise<string>;
+  logger: Logger;
+}): Promise<number | null> {
+  const { repo, checkId, ghCommandFn, logger } = opts;
+  const job = await lookupActionsJob(repo, Number(checkId), ghCommandFn);
+  if (job?.runId == null) {
+    logger.warn(
+      `Could not resolve the Actions run behind check ${checkId} on ${repo} ` +
+        `— the failing check was not re-run; the next scan retries ` +
+        `(Issue #4304)`,
+      { repo, checkId },
+    );
+    return null;
+  }
+  try {
+    await ghCommandFn([
+      "run",
+      "rerun",
+      String(job.runId),
+      "--failed",
+      "--repo",
+      repo,
+    ]);
+  } catch (error) {
+    logger.warn(
+      `Could not re-run the failed jobs of run ${job.runId} on ${repo}: ` +
+        `${
+          error instanceof Error ? error.message : String(error)
+        } — the next scan retries (Issue #4304)`,
+      { repo, checkId, runId: job.runId },
+    );
+    return null;
+  }
+  logger.info(
+    `Re-ran the failed jobs of run ${job.runId} on ${repo} after a CI-fix ` +
+      `run that changed nothing (Issue #4304)`,
+    { repo, checkId, runId: job.runId },
+  );
+  return job.runId;
 }

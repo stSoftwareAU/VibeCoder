@@ -37,11 +37,7 @@ import {
   withGraftContext,
 } from "./graft_context.ts";
 import { prTitleForGraftQuery } from "./pr_title_read.ts";
-import {
-  getCiCheckRetryCount,
-  postCiFixMaxRetriesComment,
-  recordCiCheckRetry,
-} from "./pr_ci_checks.ts";
+import { getCiCheckRetryCount, recordCiCheckRetry } from "./pr_ci_checks.ts";
 import {
   type CheckAnnotation,
   decodeAnnotations,
@@ -101,7 +97,6 @@ import { assertSafeGitRef } from "./git_ref_args.ts";
 import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
 import { getRunId } from "./run_id.ts";
 import {
-  buildAutoFixCapSummary,
   computeFailureSignature,
   consumesAutoFixAttempt,
   DEFAULT_MAX_AUTO_FIX_ATTEMPTS,
@@ -134,7 +129,6 @@ import {
 } from "./blocked_outcome.ts";
 import {
   appendAttemptToComment,
-  buildCapAttemptRows,
   isBlockerOpen,
   parseBlockerRef,
   type PrCiFixMarkerState,
@@ -146,6 +140,13 @@ import {
   PR_ESCALATION_NEXT_STEP,
 } from "./pr_no_changes_response.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
+import { rerunFailedJobsOfCheck } from "./ci_infrastructure_rerun.ts";
+import {
+  abandonAndRestart,
+  type AbandonRestartDeps,
+  type AbandonRestartOutcome,
+  type AbandonRestartRequest,
+} from "./conflict_abandon_restart.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
@@ -175,7 +176,6 @@ import {
 import {
   type CiLogAccessDiagnosis,
   classifyCiLogAccessError,
-  formatCiLogAccessDiagnosis,
 } from "./ci_log_access.ts";
 
 // Re-export shared annotation types for convenience
@@ -245,8 +245,8 @@ export interface CiFixResult {
    * #2060) — `off` on a host that has not opted in.
    *
    * Present only on a run that reached the collection: a lost PR lock, an
-   * exhausted retry budget, a credentials escalation or an already-diagnosed
-   * head all return before a prompt is built. Never carries the bundle itself.
+   * exhausted retry budget or a spent auto-fix cap all return before a
+   * prompt is built. Never carries the bundle itself.
    */
   graftContext?: GraftContextResult;
   /**
@@ -325,11 +325,20 @@ export interface CiProcessorDeps {
   maxCiRetries?: number;
   /**
    * Maximum auto-fix attempts per stable failure signature before the
-   * worker stops and escalates with `needs-human` (Issue #3582, default: 3).
+   * worker abandons the PR and redoes its issue (Issues #3582, #4304,
+   * default: 3).
    * Distinct from `maxCiRetries`, which keys on the check-run id and so
    * resets on every push.
    */
   maxAutoFixAttempts?: number;
+  /**
+   * Abandon-and-restart override (tests); defaults to
+   * {@link abandonAndRestart}. Run when the auto-fix cap binds (Issue #4304).
+   */
+  abandonPr?: (
+    request: AbandonRestartRequest,
+    deps: AbandonRestartDeps,
+  ) => Promise<AbandonRestartOutcome>;
   /**
    * State directory for CI retry tracking. Defaults to
    * {@link resolveCiCheckStateDir} — an absolute path inside the work
@@ -845,17 +854,16 @@ async function _processCiFailureLocked(
       maxRetries: maxCiRetries,
     });
 
-    // Post max-retries comment. The name is defused before it reaches that
-    // fleet-authored body, and the defusal is logged here rather than
-    // swallowed inside the pure builder (Issue #2260).
-    await postCiFixMaxRetriesComment(
+    // Issue #4304: no "manual intervention is required" comment. The failed
+    // jobs are re-run, so a fresh check run with a fresh retry budget comes
+    // back to the lane; the fleet-wide auto-fix cap, which abandons the PR
+    // and redoes its issue, bounds the whole loop.
+    await rerunFailedJobsOfCheck({
       repo,
-      prNumber,
-      inertCheckName(checkName, logger),
-      checkRunId,
-      maxCiRetries,
-      ghFn,
-    );
+      checkId: checkRunId,
+      ghCommandFn: ghFn,
+      logger,
+    });
 
     return {
       ok: true,
@@ -1499,59 +1507,12 @@ async function _processCiWithHeartbeat(
   // Resolve a CI log excerpt: configured per-repo actions first
   // (Issue #1893), falling back to the built-in GitHub Actions provider
   // (Issue #3580). All failures are tolerated — a CI log outage must not
-  // stall the fix flow.
+  // stall the fix flow. Issue #4304: that includes a provider refusing the
+  // worker's credentials (401/403/404), which used to stop the run with
+  // `needs-human`; it is logged and the fix proceeds on the Actions log and
+  // the check's annotations.
   const ciLogOutcome = await _resolveCiLogExcerpt(input, processorDeps);
   const prFailureActionsExcerpt = ciLogOutcome.excerpt;
-
-  // Credentials preflight (Issue #3583). A 401/403/404 from the CI log
-  // provider means the worker has no evidence at all, so it escalates
-  // with the actionable diagnosis instead of guessing at a fix.
-  if (ciLogOutcome.accessDiagnosis) {
-    const diagnosis = ciLogOutcome.accessDiagnosis;
-    logger.warn("CI log fetch failed authentication — escalating", {
-      repo,
-      prNumber,
-      checkName,
-      accessStatus: diagnosis.status,
-      ...(diagnosis.httpStatus !== undefined
-        ? { httpStatus: diagnosis.httpStatus }
-        : {}),
-    });
-
-    await escalateToHuman({
-      ghClient: createGhEscalationClient(
-        processorDeps.ghCommandFn ?? deps.github.runGhCommand,
-      ),
-      repo,
-      target: { kind: "pr", number: prNumber },
-      needsHumanLabel: "needs-human",
-      heading: "CI log fetch blocked by credentials",
-      reason:
-        `The CI log for **${safeCheckName}** could not be fetched, so there is no build output to diagnose.\n\n${
-          formatCiLogAccessDiagnosis(diagnosis)
-        }`,
-      nextStep: diagnosis.remediation,
-      // One comment per access failure class — not one per push.
-      dedupKey: `ci-log-access:${diagnosis.status}`,
-      ensureLabelColour: "d4c5f9",
-      ensureLabelDescription:
-        "Worker could not produce a fix; human review required",
-      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
-      logger,
-    });
-
-    return {
-      ok: true,
-      value: {
-        processed: false,
-        changesPushed: false,
-        annotationCount: annotations.length,
-        retryCount: newRetryCount,
-        summary:
-          `CI log fetch failed (${diagnosis.status}) for PR #${prNumber} (${checkName}) — escalated with needs-human instead of guessing at a fix`,
-      },
-    };
-  }
 
   // Auto-fix attempt cap (Issue #3582). The signature is composed of
   // durable parts only, so three attempted fixes on one underlying failure
@@ -1660,49 +1621,60 @@ async function _processCiWithHeartbeat(
   });
 
   if (hasReachedAutoFixCap(attemptCount, maxAutoFixAttempts)) {
-    logger.warn("Auto-fix attempt cap reached — escalating to a human", {
-      repo,
-      prNumber,
-      checkName,
-      signature,
-      attempts: attemptCount,
-      maxAutoFixAttempts,
-    });
-
-    const escalationGhFn = processorDeps.ghCommandFn ??
-      deps.github.runGhCommand;
-    await escalateToHuman({
-      ghClient: createGhEscalationClient(escalationGhFn),
-      repo,
-      target: { kind: "pr", number: prNumber },
-      needsHumanLabel: "needs-human",
-      heading: "Automatic fix attempts exhausted",
-      reason: buildAutoFixCapSummary({
-        // Inert already, and inert again inside the builder: the defusal is
-        // reported once, here, rather than swallowed in a pure helper
-        // (Issue #2260).
-        checkName: safeCheckName,
+    // Issue #4304: the budget is spent on one failure, so the PR is closed
+    // and its issue redone from the base branch through the stall-repair
+    // rung — never handed to a human. Every attempt's diagnosis stays on
+    // this PR's thread, which the abandon comment links.
+    logger.warn(
+      "Auto-fix attempt cap reached — abandoning the PR and redoing its " +
+        "issue (Issue #4304)",
+      {
+        repo,
+        prNumber,
+        checkName,
         signature,
-        maxAttempts: maxAutoFixAttempts,
-        attempts: buildCapAttemptRows(priorAttempts),
-      }),
-      nextStep: PR_ESCALATION_NEXT_STEP,
-      // One consolidated comment per signature — never a fourth
-      // "I tried again" note. The comments are already in hand, so the
-      // dedup scan costs no second read.
-      dedupKey: `auto-fix-cap:${signature}`,
-      // Only a read that actually happened: an empty list handed over as
-      // "the comments" would tell the dedup scan there is no prior
-      // escalation when in truth nothing was read.
-      ...(markerState.readFailed
-        ? {}
-        : { prefetchedComments: markerState.comments }),
-      ensureLabelColour: "d4c5f9",
-      ensureLabelDescription:
-        "Worker could not produce a fix; human review required",
-      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
-      logger,
-    });
+        attempts: attemptCount,
+        maxAutoFixAttempts,
+      },
+    );
+    const abandon = processorDeps.abandonPr ?? abandonAndRestart;
+    const outcome = await abandon(
+      {
+        repo,
+        prNumber,
+        branchName: input.branchName,
+        baseBranch: input.baseRef ?? "the base branch",
+        reason: {
+          kind: "stalled",
+          detail: `has a failing \`${safeCheckName}\` check that ` +
+            `${maxAutoFixAttempts} automatic fix attempts did not clear ` +
+            `(failure signature \`${signature}\`)`,
+          tried: "ci-fix-cap",
+        },
+      },
+      {
+        gh: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+        trustedAuthors: processorDeps.fleetLogins ?? [],
+        logger,
+      },
+    );
+    if (outcome.outcome !== "abandoned") {
+      // Left open; the next scan reaches the cap again and retries.
+      logger.warn(
+        "Auto-fix cap: the abandon did not complete — the next scan " +
+          "retries it (Issue #4304)",
+        {
+          repo,
+          prNumber,
+          outcome: outcome.outcome,
+          ...(outcome.outcome === "declined"
+            ? { reason: outcome.reason.kind }
+            : outcome.outcome === "failed"
+            ? { step: outcome.step, error: outcome.message }
+            : {}),
+        },
+      );
+    }
 
     return {
       ok: true,
@@ -1712,44 +1684,20 @@ async function _processCiWithHeartbeat(
         annotationCount: annotations.length,
         retryCount: newRetryCount,
         summary:
-          `Auto-fix cap reached for PR #${prNumber} (${checkName}, signature ${signature}) — escalated with needs-human`,
+          `Auto-fix cap reached for PR #${prNumber} (${checkName}, signature ${signature}) — ${
+            outcome.outcome === "abandoned"
+              ? `abandoned and issue #${outcome.issueNumber} re-queued`
+              : `abandon ${outcome.outcome}; retried next scan`
+          }`,
       },
     };
   }
 
-  // Issue #1879: the fleet already diagnosed this exact failure on this
-  // exact head and reported that nothing needed changing. Nothing has moved
-  // since, so a second run — on this host or any other — would reach the
-  // same conclusion and post a second copy of it. Run no agent and post
-  // nothing; a new head re-opens the question below.
-  // The *earliest* no-change comment is the one carrying the diagnosis, so
-  // that is what a repeat is appended to — but the short-circuit asks a
-  // different question, "has any run already answered for **this** head?",
-  // which a later attempt recorded in that same comment can satisfy.
+  // Issue #4304: there is no "already answered on this head" short-circuit.
+  // A no-change run re-runs the failing check, so the same failure on the
+  // same head is a re-run that failed again — retried below, and bounded by
+  // the cap above rather than left red for a reviewer.
   const priorNoChange = findNoChangeComment(markerState.markers, signature);
-  const answeredThisHead = beforeSha !== undefined &&
-    priorAttempts.some((record) =>
-      record.outcome === "no-change" && record.head === beforeSha
-    );
-  if (priorNoChange !== undefined && answeredThisHead) {
-    logger.info(
-      "CI fix skipped: the fleet has already reported no change required " +
-        "for this failure on this head (Issue #1879)",
-      { repo, prNumber, checkName, signature, head: beforeSha },
-    );
-    return {
-      ok: true,
-      value: {
-        processed: false,
-        changesPushed: false,
-        annotationCount: annotations.length,
-        retryCount: newRetryCount,
-        summary:
-          `PR #${prNumber} (${checkName}) — already diagnosed as "no change ` +
-          `required" on this head (signature ${signature}); posted nothing`,
-      },
-    };
-  }
 
   await recordCiMilestone(
     processorDeps,
@@ -1763,8 +1711,8 @@ async function _processCiWithHeartbeat(
   // `failed` collection is reported and the fix proceeds unbundled.
   //
   // Collected here rather than beside `loadRepoContextContent` above: every
-  // stand-down between the two — the auto-fix cap, the credentials
-  // escalation, an already-diagnosed head — returns without building a
+  // stand-down between the two — the auto-fix cap, an unreadable marker
+  // tally, a parked human gate — returns without building a
   // prompt, and a 300-second graph build spent on a run that never prompts is
   // pure waste. The graph is built over the checkout itself (Issue #1673),
   // which is the PR head branch, hence the untrusted fence around the bundle.
@@ -2466,8 +2414,8 @@ async function _processCiWithHeartbeat(
     );
   } else {
     // Issue #1691: replace dismissive "transient or infrastructure" fallback
-    // with a classifier-aware response. For code-fix-required failures, add
-    // the `needs-human` label so a reviewer takes over.
+    // with a classifier-aware response. Issue #4304: no category but a secret
+    // already in the base branch's history hands the PR to a reviewer.
     const classification = classifyCiFailure(
       checkName,
       annotations.map((a) => ({
@@ -2610,8 +2558,8 @@ async function _processCiWithHeartbeat(
       // The explanation is the comment just edited, so nothing is posted.
       // No label is applied here either: `needs-human` belongs to the
       // `escalateToHuman` chokepoint (Issue #2202), which the run that first
-      // posted this diagnosis already went through for the same signature —
-      // and which the cap escalation goes through again at attempt 3.
+      // posted this diagnosis already went through when it escalated at all
+      // — only a secret in the base branch's history does (Issue #4304).
       logger.info(
         "CI-fix reply appended to the existing comment — no second copy, " +
           "no second escalation (Issue #1879)",
@@ -2620,9 +2568,9 @@ async function _processCiWithHeartbeat(
     } else if (response.addNeedsHuman) {
       // Issue #2211: route via the shared escalateToHuman helper so the
       // `needs-human` label and the explanation comment are applied
-      // atomically through a single chokepoint. The classifier-derived
-      // explanation becomes the `reason`; the reviewer instructions
-      // become the `nextStep`.
+      // atomically through a single chokepoint. Since Issue #4304 only the
+      // history-rewrite arm reaches here: a secret already in the base
+      // branch's history needs a credential rotation, a kept hard stop.
       const escalationGhFn = processorDeps.ghCommandFn ??
         deps.github.runGhCommand;
       await escalateToHuman({
@@ -2638,6 +2586,9 @@ async function _processCiWithHeartbeat(
         // credential" guidance must survive an agent message replacing the
         // reason.
         nextStep: response.nextStep ?? PR_ESCALATION_NEXT_STEP,
+        // Issue #4304: stall repair lifts every other `needs-human`; this
+        // marker is how it recognises the credential rotation it must not.
+        dedupKey: `history-rewrite:${signature}`,
         ensureLabelColour: "d4c5f9",
         ensureLabelDescription:
           "Worker could not produce a fix; human review required",
@@ -2651,6 +2602,21 @@ async function _processCiWithHeartbeat(
         (verbatimBody ?? response.body) + markerSuffix,
         deps,
       );
+    }
+
+    // Issue #4304: the worker re-runs the failing check itself rather than
+    // asking a reviewer to. A repeat failure comes back as a fresh check run,
+    // so the next scan retries from this diagnosis, and the fleet-wide
+    // attempt cap above — which abandons and redoes the issue — bounds it.
+    // The one escalation left (a secret already in the base branch's
+    // history) is not something a re-run can clear.
+    if (!response.addNeedsHuman) {
+      await rerunFailedJobsOfCheck({
+        repo,
+        checkId: checkRunId,
+        ghCommandFn: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+        logger,
+      });
     }
   }
 
@@ -3037,15 +3003,10 @@ async function _runPostClaudeQualityCheck(
 // PR failure action integration (Issue #1893)
 // ---------------------------------------------------------------------------
 
-/** A resolved CI log excerpt, or the access failure that prevented one. */
+/** A resolved CI log excerpt. */
 interface CiLogExcerptOutcome {
   /** Rendered Markdown excerpt, or `""` when none could be fetched. */
   excerpt: string;
-  /**
-   * Set when the fetch failed on credentials or job path (Issue #3583).
-   * The caller escalates rather than attempting a fix on no evidence.
-   */
-  accessDiagnosis?: CiLogAccessDiagnosis;
 }
 
 /**
@@ -3058,9 +3019,10 @@ interface CiLogExcerptOutcome {
  * configuration. The chosen provider id is always logged, making a silent
  * fall-through to annotation-only diagnosis visible in the worker log.
  *
- * A credentials or target failure (401/403/404) comes back as an
- * `accessDiagnosis` so the caller can post it instead of proceeding
- * without evidence (Issue #3583).
+ * A configured provider's credentials or target failure (401/403/404) is
+ * logged with its remediation and falls through to the built-in provider
+ * like any other failure (Issue #4304) — the fix proceeds on whatever
+ * evidence remains, never parked for a human to fix the credentials.
  */
 async function _resolveCiLogExcerpt(
   input: CiFixInput,
@@ -3080,7 +3042,6 @@ async function _resolveCiLogExcerpt(
     });
     return configured;
   }
-  if (configured.accessDiagnosis) return configured;
 
   const ctx: CiFailureContext = {
     repo: input.repo,
@@ -3221,9 +3182,10 @@ async function _runConfiguredPrFailureActions(
 
   const successes = results.filter((r) => r.ok);
   if (successes.length === 0) {
-    // A credentials or job-path failure is not "just another outage":
-    // without a log there is no evidence to fix from, so it is reported
-    // back for escalation rather than silently dropped (Issue #3583).
+    // A credentials or job-path failure is named in the log with its
+    // remediation so the operator can act on it (Issue #3583), but the fix
+    // is not stopped for it: the built-in Actions provider and the check's
+    // annotations are still evidence to fix from (Issue #4304).
     const accessDiagnosis = _classifyAccessFailures(results, providers);
     logger.warn(
       "All configured PR failure actions errored — proceeding with unchanged CI fix prompt",
@@ -3231,10 +3193,16 @@ async function _runConfiguredPrFailureActions(
         repo: input.repo,
         prNumber: input.prNumber,
         attempted: results.length,
-        ...(accessDiagnosis ? { accessStatus: accessDiagnosis.status } : {}),
+        ...(accessDiagnosis
+          ? {
+            accessStatus: accessDiagnosis.status,
+            accessSummary: accessDiagnosis.summary,
+            remediation: accessDiagnosis.remediation,
+          }
+          : {}),
       },
     );
-    return { excerpt: "", ...(accessDiagnosis ? { accessDiagnosis } : {}) };
+    return { excerpt: "" };
   }
 
   return { excerpt: formatPrFailureActionsExcerpt(results) };

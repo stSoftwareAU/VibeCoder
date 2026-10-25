@@ -26,8 +26,6 @@ import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import type { GitHubClient, WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import { CLARIFICATION_NEXT_STEP } from "../lib/phases/clarity_assessment_phase.ts";
-import { MILESTONE_BRANCH_NEXT_STEP } from "../lib/phases/setup_branch_phase.ts";
 import { UNFINISHED_RETRY_HEADING } from "../lib/unfinished_issue_retry.ts";
 
 /**
@@ -528,18 +526,14 @@ Deno.test("setupBranch - fails the run when milestone branch cannot be ensured",
   // The base branch is never swapped to the default branch.
   assertEquals(state.baseBranch, "milestone/fitness-performance");
   assertEquals(state.milestoneBranch, "milestone/fitness-performance");
-  // The failure is handed off on the issue with the git error text.
-  assertEquals(calls.postComment.length, 1);
-  assertStringIncludes(
-    calls.postComment[0]?.body ?? "",
-    "protected branch hook declined",
+  // Issue #4298: the failure is never handed to a human. The run fails on
+  // the normal retry ladder, which repeats the create-from-default and the
+  // ruleset repair next run — no `needs-human`, no hand-off comment.
+  assertEquals(calls.postComment.length, 0);
+  assertEquals(
+    calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+    false,
   );
-  assertStringIncludes(
-    calls.postComment[0]?.body ?? "",
-    MILESTONE_BRANCH_NEXT_STEP,
-  );
-  assertEquals(calls.addLabel.length, 1);
-  assertEquals(calls.addLabel[0]?.label, ctx.config.needsHumanLabel);
 
   // Cleanup heartbeat
   if (state.heartbeatHandle) {
@@ -802,50 +796,6 @@ Deno.test("clarityPhase - early exits for question label and releases claim", as
   assertEquals(calls.unassignIssue.length, 1);
 });
 
-Deno.test("clarityPhase - skips when max clarification rounds reached", async () => {
-  const config = makeConfig({ maxClarificationRounds: 2 });
-  const ctx = makeContext({
-    // Issue #1263: the rounds are counted off the authored comment rows —
-    // `testbot` is this context's own `githubUser`.
-    issueCommentRows: [
-      { author: "testbot", body: "## Clarification Needed\nQ1" },
-      { author: "testbot", body: "## Clarification Needed\nQ2" },
-    ],
-    config,
-  });
-  const state = makeState();
-  const deps = createMockDeps();
-
-  const result = await workOnIssueClarityPhase(ctx, state, deps);
-
-  assertEquals(result.status, "continue");
-  assertEquals(state.clarityStatus, "skipped");
-});
-
-Deno.test("clarityPhase - an outsider's clarification headings do not retire the gate (Issue #1263)", async () => {
-  const config = makeConfig({ maxClarificationRounds: 2 });
-  const ctx = makeContext({
-    // Everything an outsider controls: the prompt blob, and comments of
-    // their own repeating the heading a whole limit's worth of times.
-    issueComments: "## Clarification Needed\nQ1\n## Clarification Needed\nQ2",
-    issueCommentRows: [
-      {
-        author: "outsider",
-        body: "## Clarification Needed\nQ1\n## Clarification Needed\nQ2",
-      },
-    ],
-    config,
-  });
-  const state = makeState();
-  const deps = createMockDeps();
-
-  const result = await workOnIssueClarityPhase(ctx, state, deps);
-
-  assertEquals(result.status, "continue");
-  // Assessed rather than waved through: the gate is still on.
-  assertEquals(state.clarityStatus, "assessed_clear");
-});
-
 Deno.test("clarityPhase - detailed issue bodies proceed normally", async () => {
   // Detailed issues with numbered steps and checkboxes are well-defined,
   // not complex. The clarity phase should not reject them.
@@ -884,7 +834,6 @@ Deno.test("clarityPhase - six clear requirements without code paths keep their l
     issueTitle: "Account reports start at the account reporting date",
     issueBody: REPORT_REQUIREMENTS,
     issueLabels: ["enhancement", "work-on", "top-priority"],
-    issueCommentRows: [],
   });
   assertEquals(
     analyseIssueClarity(ctx.issueTitle, ctx.issueBody, ctx.issueLabels).reason,
@@ -903,12 +852,11 @@ Deno.test("clarityPhase - six clear requirements without code paths keep their l
   assertEquals(calls, makeStubGhCalls());
 });
 
-Deno.test("clarityPhase - vague instructions still require clarification with six requirements (Issue #4147)", async () => {
+Deno.test("clarityPhase - a vague approved issue proceeds with stated assumptions, never asking a human (Issue #4298)", async () => {
   const ctx = makeContext({
     issueTitle: "Improve things",
     issueBody: `Make it better.\n\n${REPORT_REQUIREMENTS}`,
     issueLabels: ["work-on", "top-priority"],
-    issueCommentRows: [],
   });
   assertEquals(
     analyseIssueClarity(ctx.issueTitle, ctx.issueBody, ctx.issueLabels).reason,
@@ -922,10 +870,11 @@ Deno.test("clarityPhase - vague instructions still require clarification with si
 
   const result = await workOnIssueClarityPhase(ctx, state, deps);
 
-  assertEquals(result.status, "early_exit");
-  assertEquals(calls.postComment.length, 1);
-  assertEquals(calls.addLabel.map((call) => call.label), ["needs-human"]);
-  assertEquals(calls.unassignIssue.length, 1);
+  // The first round proceeds, exactly as the round cap used to after three:
+  // no question comment, no `needs-human`, and the claim is kept.
+  assertEquals(result.status, "continue");
+  assertEquals(state.clarityStatus, "skipped");
+  assertEquals(calls, makeStubGhCalls());
 });
 
 Deno.test("clarityPhase - removes stale planning label from issue (Issue #1215)", async () => {
@@ -953,77 +902,6 @@ Deno.test("clarityPhase - removes stale planning label from issue (Issue #1215)"
   assertEquals(calls.removeLabel.length, 1);
   assertEquals(calls.removeLabel[0]?.label, config.planningLabel);
   assertEquals(calls.removeLabel[0]?.repo, "org/repo");
-});
-
-Deno.test("clarityPhase - unassigns worker even when addLabel fails during clarification (Issue #1215)", async () => {
-  // When addLabel fails during the clarification workflow, the worker must
-  // still unassign itself to release the claim.
-  const ctx = makeContext({
-    issueBody: "Do something",
-    issueTitle: "Unclear issue",
-  });
-  const state = makeState();
-  const calls = makeStubGhCalls();
-  const deps = createMockDeps({
-    github: {
-      createClient: () =>
-        ({
-          ...makeStubGhClient(calls),
-          addLabel: () => Promise.reject(new Error("addLabel failed")),
-        }) as GitHubClient,
-    },
-  });
-
-  const result = await workOnIssueClarityPhase(ctx, state, deps);
-
-  // If clarification questions were generated and comment was posted,
-  // the worker should still try to unassign even if addLabel fails.
-  // If no clarification questions generated, it proceeds with implementation.
-  if (
-    result.status === "early_exit" &&
-    (result as { reason: string }).reason === "waiting_for_clarification"
-  ) {
-    assertEquals(calls.unassignIssue.length, 1);
-  }
-  // Either way the function must not throw
-});
-
-Deno.test("clarityPhase - clarification comment states the next step and routes label via escalateToHuman (Issue #2210)", async () => {
-  const ctx = makeContext({
-    issueTitle: "Tidy things",
-    issueBody: "clean up the helper code",
-    issueLabels: [],
-  });
-  const state = makeState();
-  const calls = makeStubGhCalls();
-  const deps = createMockDeps({
-    github: {
-      createClient: () => makeStubGhClient(calls),
-    },
-  });
-
-  const result = await workOnIssueClarityPhase(ctx, state, deps);
-
-  assertEquals(result.status, "early_exit");
-  assertEquals(
-    (result as { reason: string }).reason,
-    "waiting_for_clarification",
-  );
-  // Label routed through escalateToHuman.
-  assertEquals(
-    calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
-    true,
-  );
-  // Exactly one comment — the helper deduped against the marker rather than
-  // posting a second escalation comment.
-  assertEquals(
-    calls.postComment.length,
-    1,
-    "dedup must suppress the helper's duplicate comment",
-  );
-  const body = calls.postComment[0]!.body;
-  assertEquals(body.includes("## Clarification Needed"), true);
-  assertEquals(body.includes(CLARIFICATION_NEXT_STEP), true);
 });
 
 // ============================================================================
@@ -3406,15 +3284,24 @@ Deno.test(
   },
 );
 
-Deno.test("workOnIssue #53 - a repository-admin finding hands off to needs-human before setup/execute", async () => {
-  const ctx = makeContext({
-    issueBody:
-      "<!-- finding-id: BP-REPO-RULESET-NO-REVIEW -->\n\n## Suggested fix\n\n" +
-      "Repository admin action — the worker cannot change repository settings. " +
-      "Settings → Rules → require a review.",
-  });
+const ADMIN_FINDING_BODY =
+  "<!-- finding-id: BP-REPO-RULESET-NO-REVIEW -->\n\n## Suggested fix\n\n" +
+  "Repository admin action — the worker cannot change repository settings. " +
+  "Settings → Rules → require a review.";
+
+Deno.test("workOnIssue #4298 - a repository-admin finding is applied by the worker and the issue closed", async () => {
+  const ctx = makeContext({ issueBody: ADMIN_FINDING_BODY });
+  const calls = makeStubGhCalls();
   let claudeRan = false;
+  const repaired: string[] = [];
   const deps = createMockDeps({
+    github: {
+      createClient: () => makeStubGhClient(calls),
+      repairRepoSettingsFinding: (repo, body) => {
+        repaired.push(`${repo}:${body.length}`);
+        return Promise.resolve({ ok: true, value: "- [applied] approval" });
+      },
+    },
     claude: {
       runClaudeWithRetry: () => {
         claudeRan = true;
@@ -3428,10 +3315,43 @@ Deno.test("workOnIssue #53 - a repository-admin finding hands off to needs-human
 
   const result = await workOnIssue(ctx, deps);
 
-  assertEquals(result.success, true, "a clean hand-off is not a failure");
-  assertEquals(result.phase, "admin_only_handoff");
-  assertEquals(result.reason, "admin_only_finding");
-  assertEquals(claudeRan, false, "the agent must not run for an admin finding");
+  assertEquals(result.success, true);
+  assertEquals(result.phase, "admin_only_repair");
+  assertEquals(repaired.length, 1, "the worker applies the setting itself");
+  assertEquals(claudeRan, false, "the agent cannot change settings either");
+  assertEquals(calls.closeIssue.length, 1, "the fixed finding is closed");
+  assertEquals(
+    calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+    false,
+    "never handed to a human (Issue #4298)",
+  );
+});
+
+Deno.test("workOnIssue #4298 - a refused repository-admin fix is a failure to retry, not a hand-off", async () => {
+  const ctx = makeContext({ issueBody: ADMIN_FINDING_BODY });
+  const calls = makeStubGhCalls();
+  const deps = createMockDeps({
+    github: {
+      createClient: () => makeStubGhClient(calls),
+      repairRepoSettingsFinding: () =>
+        Promise.resolve({
+          ok: false,
+          error: new Error("HTTP 403: Must have admin rights"),
+        }),
+    },
+  });
+
+  const result = await workOnIssue(ctx, deps);
+
+  assertEquals(result.success, false);
+  assertEquals(result.phase, "admin_only_repair");
+  assertEquals(result.category, "internal_error");
+  assertStringIncludes(result.reason, "Must have admin rights");
+  assertEquals(calls.closeIssue.length, 0);
+  assertEquals(
+    calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
+    false,
+  );
 });
 
 Deno.test("workOnIssue - stops at setup failure", async () => {
@@ -3681,7 +3601,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "workOnIssue - up-front analysis-only marker hands off to needs-human before running Claude (Issue #2849)",
+    "workOnIssue - an analysis-only marker runs the analysis instead of handing off before Claude (Issues #2849, #4298)",
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -3712,21 +3632,14 @@ Deno.test({
 
     const result = await workOnIssue(ctx, deps);
 
-    // Clean hand-off — success, dedicated phase, not a failure.
-    assertEquals(result.success, true);
-    assertEquals(result.phase, "analysis_only_handoff");
-    assertEquals(result.reason, "analysis_only_marker");
-    // Claude was never run, and no setup/execute phase ran.
-    assertEquals(claudeRan, false);
-    assertEquals(result.timings["execute"], undefined);
-    assertEquals(result.timings["setup"], undefined);
-    // needs-human applied, explanation comment posted, claim released.
+    // The analysis is the deliverable, so the agent must run to produce it
+    // (Issue #4298) — the up-front hand-off to a human is gone.
+    assertEquals(claudeRan, true);
+    assert(result.phase !== "analysis_only_handoff");
     assertEquals(
       calls.addLabel.some((c) => c.label === ctx.config.needsHumanLabel),
-      true,
+      false,
     );
-    assertEquals(calls.postComment.length, 1);
-    assertEquals(calls.unassignIssue.length, 1);
   },
 });
 

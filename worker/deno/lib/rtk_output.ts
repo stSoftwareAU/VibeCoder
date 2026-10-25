@@ -134,7 +134,7 @@ export const RTK_OFF: Readonly<RtkOutputResult> = Object.freeze({
 /** Options this module passes to the subprocess seam. */
 export interface RtkRunOptions {
   cwd?: string;
-  timeoutMs?: number;
+  timeoutMs: number;
   env?: Record<string, string>;
 }
 
@@ -142,7 +142,7 @@ export interface RtkRunOptions {
 export type RtkRunner = (
   executable: string,
   args: string[],
-  options?: RtkRunOptions,
+  options: RtkRunOptions,
 ) => Promise<Result<SubprocessResult>>;
 
 /**

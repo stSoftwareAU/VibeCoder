@@ -93,11 +93,12 @@ export function commentCarriesOpenPreprReview(body: string): boolean {
 }
 
 /**
- * Findings the claim check and the verifier contribute to one record.
+ * Findings a caller passes in. The summary claim check that used to supply
+ * `claimFindings` was removed (Issue #4234).
  *
- * Claim findings have no line number of their own; they are cited at line 1
- * of the file the check named. Test-plan problems are cited on the test
- * file the check resolved.
+ * A claim-shaped finding has no line number of its own; it is cited at line 1
+ * of the file the caller named. Test-plan problems are cited on the test
+ * file the caller resolved.
  */
 export function collectPreprReviewFindings(input: {
   claimFindings?: readonly { file: string; reason: string }[];

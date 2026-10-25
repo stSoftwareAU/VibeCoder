@@ -633,7 +633,7 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
           // The pre-merge backstop gate inside directMergePr re-checks CI
           // status and branch freshness (Issue #2582), so the redundant
           // pre-check here is removed. The outcome is returned so the scan
-          // can update a stale branch or escalate a blocked merge rather
+          // can update a stale branch or retry a blocked merge rather
           // than swallowing the failure (Issue #3584).
           const merge = await directMergePr(repo, prNumber, runGhCommand);
           if (!merge.ok) {
@@ -650,7 +650,6 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
           return { kind: merge.value.blocked ?? "checks_pending" };
         },
         needsScreenshotLabel,
-        needsHumanLabel: config.needsHumanLabel || "needs-human",
       });
 
       if (!result.ok) {

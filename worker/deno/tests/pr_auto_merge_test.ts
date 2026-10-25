@@ -115,20 +115,48 @@ Deno.test("pr_auto_merge - enableAutoMerge returns Enabled on success", async ()
   assertEquals(result.result, AutoMergeResult.Enabled);
 });
 
-Deno.test("pr_auto_merge - enableAutoMerge returns NotEnabledOnRepo when not enabled", async () => {
-  let commentPosted = false;
+Deno.test("pr_auto_merge - auto-merge switched off on the repo takes the gated direct merge, and asks nobody to merge by hand (Issue #4304)", async () => {
+  const comments: string[] = [];
+  let directCalls = 0;
   const result = await enableAutoMerge({
     repo: "owner/repo",
     prNumber: 1,
     ghCommandFn: async () => {
       throw new Error("auto-merge is not enabled on this repository");
     },
-    commentFn: async () => {
-      commentPosted = true;
+    commentFn: async (_repo, _pr, body) => {
+      comments.push(body);
+    },
+    directMergeFn: async () => {
+      directCalls++;
+      return { ok: true, value: { merged: true } };
     },
   });
+  assertEquals(result.result, AutoMergeResult.MergedDirectly);
+  assertEquals(directCalls, 1);
+  assertEquals(comments, []);
+});
+
+Deno.test("pr_auto_merge - auto-merge switched off and the gate defers: retried next scan, no manual-merge note (Issue #4304)", async () => {
+  const comments: string[] = [];
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 1,
+    ghCommandFn: async () => {
+      throw new Error("auto-merge is not enabled on this repository");
+    },
+    commentFn: async (_repo, _pr, body) => {
+      comments.push(body);
+    },
+    directMergeFn: async () => ({
+      ok: true,
+      value: { merged: false, blocked: "checks_pending" },
+    }),
+  });
   assertEquals(result.result, AutoMergeResult.NotEnabledOnRepo);
-  assertEquals(commentPosted, true);
+  assertEquals(comments, []);
+  assert(!/manual/i.test(result.message), result.message);
+  assertStringIncludes(result.message, "checks_pending");
 });
 
 Deno.test("pr_auto_merge - enableAutoMerge returns NotAllowed for unprotected branch", async () => {
@@ -955,15 +983,18 @@ Deno.test("pr_auto_merge - isBaseProtected reads the effective branch rules: req
 });
 
 // ---------------------------------------------------------------------------
-// Issue #4396 / #3433: a PR bound for a rolled-up milestone branch is held
-// where it is (auto-merge disarmed), never merged or moved to the default branch
+// Issue #4396 / #3433 / #4304: a PR bound for a rolled-up milestone branch is
+// never merged there or moved to the default branch — it is closed and its
+// issue redone, never left on hold for a human
 // ---------------------------------------------------------------------------
 
-Deno.test("pr_auto_merge - a base whose rollup already merged: comment once, disarm, no retarget, no merge (Issue #3433)", async () => {
+Deno.test("pr_auto_merge - a base whose rollup already merged: disarm, no retarget, no merge, closed and redone (Issue #4304)", async () => {
   const calls: string[][] = [];
+  const abandoned: Array<{ prNumber: number; branchName: string }> = [];
   const result = await enableAutoMerge({
     repo: "owner/repo",
     prNumber: 3371,
+    headRefName: "issue-3300-tidy",
     baseRefName: "milestone/clean-up",
     isBaseProtectedFn: async () => false,
     directMergeFn: async () => {
@@ -980,16 +1011,24 @@ Deno.test("pr_auto_merge - a base whose rollup already merged: comment once, dis
     }),
     ghCommandFn: async (args) => {
       calls.push(args);
-      if (args[0] === "api" && args.join(" ").includes("/comments")) return "";
       return "";
     },
     authorOptions: { fleetAuthors: ["vibe-bot"] },
+    abandonFn: async (request) => {
+      abandoned.push({
+        prNumber: request.prNumber,
+        branchName: request.branchName,
+      });
+      return {
+        outcome: "abandoned",
+        issueNumber: 3300,
+        label: { kept: "work-on" },
+      };
+    },
   });
   assertEquals(result.result, AutoMergeResult.HeldRouteClosed);
   assert(result.message.includes("#3125"), result.message);
-  const comment = calls.find((c) => c[0] === "pr" && c[1] === "comment");
-  assert(comment, "an explanatory comment is posted");
-  assert(comment.join(" ").includes("rollup PR #3125"));
+  assertEquals(abandoned, [{ prNumber: 3371, branchName: "issue-3300-tidy" }]);
   assert(
     !calls.some((c) => c[0] === "pr" && c[1] === "edit"),
     "the PR is never retargeted",
@@ -1006,50 +1045,12 @@ Deno.test("pr_auto_merge - a base whose rollup already merged: comment once, dis
     ),
     "no --auto merge issued",
   );
-});
-
-Deno.test("pr_auto_merge - the hold comment is posted once (marker de-dup) (Issue #3433)", async () => {
-  const calls: string[][] = [];
-  const result = await enableAutoMerge({
-    repo: "owner/repo",
-    prNumber: 3371,
-    baseRefName: "milestone/clean-up",
-    getDefaultBranchFn: async () => ({ ok: true, value: "Develop" }),
-    decideMilestoneBaseFn: async () => ({
-      decision: "block",
-      reason: "milestone-closed",
-      milestoneBranch: "milestone/clean-up",
-      milestoneNumber: 7,
-      detail: 'milestone #7 "Clean up" is closed',
-    }),
-    ghCommandFn: async (args) => {
-      calls.push(args);
-      if (args[0] === "api" && args.join(" ").includes("/comments")) {
-        // Issue #1249: fleet-authored, so the marker genuinely de-duplicates.
-        return JSON.stringify([
-          { author: "vibe-bot", body: "earlier" },
-          {
-            author: "vibe-bot",
-            body: "<!-- milestone-route-closed-hold -->\nalready said",
-          },
-        ]);
-      }
-      return "";
-    },
-    authorOptions: { fleetAuthors: ["vibe-bot"] },
-  });
-  assertEquals(result.result, AutoMergeResult.HeldRouteClosed);
   assert(
-    !calls.some((c) => c[0] === "pr" && c[1] === "comment"),
-    "no second comment",
-  );
-  assert(
-    !calls.some((c) => c[0] === "pr" && c[1] === "edit"),
-    "never retargeted",
-  );
-  assert(
-    calls.some((c) => c.includes("--disable-auto")),
-    "still disarmed",
+    !calls.some((c) =>
+      c[0] === "pr" && c[1] === "comment" &&
+      /a human|by hand|manually/i.test(c.join(" "))
+    ),
+    "nobody is asked to act",
   );
 });
 

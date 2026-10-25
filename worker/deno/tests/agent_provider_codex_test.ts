@@ -409,6 +409,31 @@ Deno.test("codex provider - the fragment is pinned in container/tools.json", asy
   }
 });
 
+Deno.test("codex provider - the code-mode host is pinned per CLI architecture and installed (Issue #4323)", async () => {
+  // Since CLI 0.163.0 every Codex session needs
+  // /usr/local/bin/codex-code-mode-host; without it the agent runs with no
+  // tools at all. The host ships as its own release asset, so it needs its
+  // own checksum for every architecture the CLI is pinned for.
+  const manifest = parseContainerManifest(
+    await Deno.readTextFile(`${repoRoot}container/tools.json`),
+  );
+  const pin = manifest.providers.find((p) => p.id === CODEX_PROVIDER_ID);
+  assert(pin, "container/tools.json pins the codex provider");
+  const hostSha = pin.codeModeHost?.sha256 ?? {};
+  for (const arch of Object.keys(pin.sha256)) {
+    assert(
+      /^[0-9a-f]{64}$/.test(hostSha[arch] ?? ""),
+      `the code-mode host carries a ${arch} SHA-256, as the CLI does`,
+    );
+  }
+
+  const fragment = await Deno.readTextFile(
+    `${repoRoot}container/${codex.install.fragment}`,
+  );
+  assertStringIncludes(fragment, "/usr/local/bin/codex-code-mode-host");
+  assertStringIncludes(fragment, ".codeModeHost.sha256[$arch]");
+});
+
 Deno.test("codex provider - the fragment verifies its download and reads its pins from the manifest", async () => {
   const fragment = await Deno.readTextFile(
     `${repoRoot}container/${codex.install.fragment}`,

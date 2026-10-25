@@ -22,10 +22,7 @@ import {
   _setGhSpawnRunner,
   spawnGh,
 } from "../lib/gh_spawn.ts";
-import {
-  markPrCommentAsFailed,
-  markPrCommentAsFailedOnce,
-} from "../lib/pr_comments.ts";
+import { markPrCommentAsFailedOnce } from "../lib/pr_comments.ts";
 import { buildQuestionFailureComment } from "../lib/label_question_failure.ts";
 import {
   buildCrashMessage,
@@ -144,21 +141,6 @@ function bodyOf(calls: string[][]): string {
 Deno.test("SEC-c250e91f7ab8 - first-attempt PR failure reply redacts secrets", async () => {
   const calls: string[][] = [];
   await markPrCommentAsFailedOnce(
-    "org/repo",
-    7,
-    "issue",
-    "12345",
-    `clone failed: GH_TOKEN=${GH_TOKEN_SAMPLE}`,
-    capturingGh(calls),
-  );
-  const body = bodyOf(calls);
-  assertEquals(body.includes(GH_TOKEN_SAMPLE), false);
-  assertStringIncludes(body, REDACTION_PLACEHOLDER);
-});
-
-Deno.test("SEC-c250e91f7ab8 - permanent PR failure reply redacts secrets", async () => {
-  const calls: string[][] = [];
-  await markPrCommentAsFailed(
     "org/repo",
     7,
     "issue",

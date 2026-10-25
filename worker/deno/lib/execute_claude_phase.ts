@@ -144,10 +144,9 @@ import {
 import {
   buildContextBudgetEscalationReason,
   buildContextComponents,
-  CONTEXT_BUDGET_NEXT_STEP,
+  handOffOversizedIssueToPlanning,
 } from "./context_budget_guard.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
-import { createGhEscalationClient } from "./gh_escalation_client.ts";
+import { createGitHubClient } from "./github.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import {
   readSecurityFixGateBlock,
@@ -408,11 +407,11 @@ export interface ExecuteClaudePhaseOptions {
   contextBudgetErrorPercent?: number;
   /**
    * Hard context-budget ceiling as a percentage (Issue #3713, default: 95).
-   * At or above it the phase stops and escalates; `0` disables the ceiling.
+   * At or above it the phase retries with the CI log and recent activity
+   * trimmed, then hands the issue to planning (Issue #4298); `0` disables
+   * the ceiling.
    */
   contextBudgetBlockPercent?: number;
-  /** Needs-human label name (Issue #3713, default: "needs-human"). */
-  needsHumanLabel?: string;
   /**
    * Coding-agent provider for this phase's invocation only (Issue #4109).
    *
@@ -553,12 +552,12 @@ export interface ExecuteClaudePhaseDeps {
    */
   getPromptsCommit: () => Promise<Result<string>>;
   /**
-   * Hand the issue to a human when the context-budget ceiling blocks the
-   * phase (Issue #3713). Optional so existing test doubles need no change —
-   * {@link defaultEscalateContextBudget} (the shared `escalateToHuman`
-   * chokepoint) is used when omitted.
+   * Send the issue to planning when its prompt still does not fit after the
+   * trim (Issue #4298). Resolves `true` when the hand-off applied. Optional
+   * so existing test doubles need no change —
+   * {@link defaultHandOffContextBudget} is used when omitted.
    */
-  escalateContextBudget?: (options: ContextBudgetEscalation) => Promise<void>;
+  handOffContextBudget?: (options: ContextBudgetHandoff) => Promise<boolean>;
   /**
    * Collect the Graft repo-context bundle (Issue #2102). Optional so existing
    * test doubles need no change — {@link collectGraftContext} is used when
@@ -572,13 +571,13 @@ export interface ExecuteClaudePhaseDeps {
   log: (message: string, level?: LogLevelName) => void;
 }
 
-/** Arguments for the context-budget hand-off (Issue #3713). */
-export interface ContextBudgetEscalation {
+/** Arguments for the context-budget planning hand-off (Issue #4298). */
+export interface ContextBudgetHandoff {
   repo: string;
   issueNumber: number;
   githubUser: string;
-  needsHumanLabel: string;
-  /** The `**Why:**` line — why the phase stopped. */
+  issueLabels: readonly string[];
+  /** Why the phase stopped. */
   reason: string;
 }
 
@@ -913,35 +912,25 @@ export async function attemptPrSelfHealing(
 // =============================================================================
 
 /**
- * Hand the issue to a human through the shared `escalateToHuman`
- * chokepoint when the context-budget ceiling blocks the phase (Issue #3713).
- *
- * Escalation failures are logged, never swallowed into a silent success —
- * the phase still fails loud with `failureType: "context_budget"`.
+ * Send an issue whose prompt cannot fit the window to planning (Issue
+ * #4298), through the same hand-off the `vibe-needs-planning` marker uses.
+ * Never hands it to a human: when planning cannot take it, the phase fails
+ * and the issue is retried.
  */
-export async function defaultEscalateContextBudget(
-  options: ContextBudgetEscalation,
-): Promise<void> {
+export async function defaultHandOffContextBudget(
+  options: ContextBudgetHandoff,
+): Promise<boolean> {
   const logger = createLogger();
-  const result = await escalateToHuman({
-    ghClient: createGhEscalationClient((args) => runGhOrThrow(args)),
+  const handoff = await handOffOversizedIssueToPlanning({
+    ghClient: createGitHubClient(logger),
     repo: options.repo,
-    target: { kind: "issue", number: options.issueNumber },
-    needsHumanLabel: options.needsHumanLabel,
-    heading: "Context budget ceiling reached",
-    reason: options.reason,
-    nextStep: CONTEXT_BUDGET_NEXT_STEP,
-    dedupKey: `context-budget-${options.issueNumber}`,
+    issueNumber: options.issueNumber,
     githubUser: options.githubUser,
+    issueLabels: options.issueLabels,
+    reason: options.reason,
     logger,
   });
-  if (!result.ok) {
-    logger.error("Context-budget escalation failed", {
-      repo: options.repo,
-      issueNumber: options.issueNumber,
-      error: result.error.message,
-    });
-  }
+  return handoff.applied;
 }
 
 /**
@@ -977,7 +966,7 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
   // (Issue #4176). The marker is the logger's own level word.
   const phaseLog = bindLogger(createLogger({ host: "" }));
   return {
-    escalateContextBudget: defaultEscalateContextBudget,
+    handOffContextBudget: defaultHandOffContextBudget,
     env: (name) => Deno.env.get(name),
     runClaudeWithRetry,
     runExternalOrchestratedIssueRun: (input) =>
@@ -1135,7 +1124,6 @@ async function executeClaudePhaseBody(
       OPERATIONAL_DEFAULTS.contextBudgetWarningPercent,
     contextBudgetErrorPercent = OPERATIONAL_DEFAULTS.contextBudgetErrorPercent,
     contextBudgetBlockPercent = OPERATIONAL_DEFAULTS.contextBudgetBlockPercent,
-    needsHumanLabel = "needs-human",
   } = options;
 
   const startTime = Date.now();
@@ -1447,39 +1435,43 @@ async function executeClaudePhaseBody(
     );
   }
 
-  const promptResult = await deps.buildCachedIssuePrompt({
-    repo,
-    issueNumber: String(issueNumber),
-    issueTitle,
-    issueBody,
-    issueLabels,
-    qualityInstructions,
-    customInstructions,
-    screenshotRequired,
-    skipScreenshotCheck,
-    milestoneBranch: milestoneBranch || undefined,
-    recentActivity,
-    codebaseMap,
-    // Present only on an `ok` collection (Issue #2102); the builder renders
-    // nothing when it is undefined.
-    graftContextBundle: graftContext.bundle,
-    ciFailureContext,
-    ciFailureBoundaryId,
-    securityGateBlock,
-    cache: promptCache,
-    logger,
-    verbosityLevel,
-    // Issue #849: an operator's `work-on` mapping replaces the built-in issue
-    // template here too — this phase is a second entry point into the same
-    // build, and skipping the overrides would silently run the built-in one.
-    ...(promptOverrides ? { promptOverrides } : {}),
-    // Issue #2343: a split run's prompt carries the advisor/executor block.
-    issueExecutorSplit,
-    // Issue #2930: name this host's configured fleet run archive, when any.
-    ...(options.fleetRunArchive
-      ? { fleetRunArchive: options.fleetRunArchive }
-      : {}),
-  });
+  // Issue #4298: built by a closure so the context-budget ceiling below can
+  // rebuild the prompt with the CI log and recent activity trimmed.
+  const buildRunPrompt = (withHistory: boolean) =>
+    deps.buildCachedIssuePrompt({
+      repo,
+      issueNumber: String(issueNumber),
+      issueTitle,
+      issueBody,
+      issueLabels,
+      qualityInstructions,
+      customInstructions,
+      screenshotRequired,
+      skipScreenshotCheck,
+      milestoneBranch: milestoneBranch || undefined,
+      recentActivity: withHistory ? recentActivity : undefined,
+      codebaseMap,
+      // Present only on an `ok` collection (Issue #2102); the builder renders
+      // nothing when it is undefined.
+      graftContextBundle: graftContext.bundle,
+      ciFailureContext: withHistory ? ciFailureContext : undefined,
+      ciFailureBoundaryId: withHistory ? ciFailureBoundaryId : undefined,
+      securityGateBlock,
+      cache: promptCache,
+      logger,
+      verbosityLevel,
+      // Issue #849: an operator's `work-on` mapping replaces the built-in issue
+      // template here too — this phase is a second entry point into the same
+      // build, and skipping the overrides would silently run the built-in one.
+      ...(promptOverrides ? { promptOverrides } : {}),
+      // Issue #2343: a split run's prompt carries the advisor/executor block.
+      issueExecutorSplit,
+      // Issue #2930: name this host's configured fleet run archive, when any.
+      ...(options.fleetRunArchive
+        ? { fleetRunArchive: options.fleetRunArchive }
+        : {}),
+    });
+  let promptResult = await buildRunPrompt(true);
 
   if (!promptResult.ok) {
     return {
@@ -1493,7 +1485,7 @@ async function executeClaudePhaseBody(
   // Extract structured prompt parts with cache metadata (Issue #1273).
   // Static content (coding guidelines) goes into the system prompt,
   // dynamic content (issue details) goes into the user prompt.
-  const {
+  let {
     systemPrompt,
     prompt: builtUserPrompt,
     promptSha,
@@ -1509,34 +1501,63 @@ async function executeClaudePhaseBody(
   // untrusted fence the builder wrote.
   // Issue #2383 appends its recall line the same way, and only on a run whose
   // hook is actually installed — the other half of the indivisible pair.
-  const userPrompt = rtk.applyPrompt(
-    graft.applyPrompt(codegraph.applyPrompt(builtUserPrompt)),
-  );
+  const applyRunLines = (prompt: string): string =>
+    rtk.applyPrompt(graft.applyPrompt(codegraph.applyPrompt(prompt)));
+  let userPrompt = applyRunLines(builtUserPrompt);
 
   // --- Context budget monitoring and hard ceiling (Issues #1327, #3713) ---
   // Estimate token counts for each major prompt component and log the budget
   // breakdown. Warnings and errors are observational; the ceiling is not —
-  // at or above it the phase stops before any billed invocation and the
-  // issue is handed to a human, so a non-converging issue is bounded by
-  // context rather than by wall-clock alone.
+  // at or above it the phase stops before any billed invocation, so a
+  // non-converging issue is bounded by context rather than by wall-clock.
+  //
+  // Issue #4298: the ceiling never hands the issue to a human. The CI log
+  // and the recent-activity summary are the history that grows, so the
+  // prompt is rebuilt without them and checked again; an issue that still
+  // does not fit goes to planning to be split.
   {
-    const components = buildContextComponents({
-      systemPrompt,
-      userPrompt,
-      issueBody,
-      customInstructions,
-      recentActivity,
-      ciFailureContext,
-    });
-
     const model = "opus"; // Phase model resolution happens downstream
-    const budgetResult = checkContextBudget(components, model, {
-      warningThresholdPercent: contextBudgetWarningPercent,
-      errorThresholdPercent: contextBudgetErrorPercent,
-      blockThresholdPercent: contextBudgetBlockPercent,
-    });
-
+    const measure = (withHistory: boolean) =>
+      checkContextBudget(
+        buildContextComponents({
+          systemPrompt,
+          userPrompt,
+          issueBody,
+          customInstructions,
+          ...(withHistory ? { recentActivity, ciFailureContext } : {}),
+        }),
+        model,
+        {
+          warningThresholdPercent: contextBudgetWarningPercent,
+          errorThresholdPercent: contextBudgetErrorPercent,
+          blockThresholdPercent: contextBudgetBlockPercent,
+        },
+      );
+    let budgetResult = measure(true);
     deps.log(formatBudgetBreakdown(budgetResult));
+
+    if (!budgetResult.ok && (ciFailureContext || recentActivity)) {
+      logAt(
+        deps.log,
+        "warn",
+        "Context budget ceiling reached — retrying with the CI log and " +
+          "recent activity trimmed (Issue #4298)",
+      );
+      const trimmed = await buildRunPrompt(false);
+      if (trimmed.ok) {
+        promptResult = trimmed;
+        ({
+          systemPrompt,
+          prompt: builtUserPrompt,
+          promptSha,
+          cacheHit: promptCacheHit,
+          templateSource: promptTemplate,
+        } = trimmed.value);
+        userPrompt = applyRunLines(builtUserPrompt);
+        budgetResult = measure(false);
+        deps.log(formatBudgetBreakdown(budgetResult));
+      }
+    }
 
     if (budgetResult.warning) {
       logAt(deps.log, "warn", `${budgetResult.warning}`);
@@ -1566,21 +1587,24 @@ async function executeClaudePhaseBody(
     }
 
     if (!budgetResult.ok) {
-      const failureMessage = buildContextBudgetEscalationReason(budgetResult);
-      deps.log(`BLOCKED: ${failureMessage}`);
-      const escalate = deps.escalateContextBudget ??
-        defaultEscalateContextBudget;
-      await escalate({
+      const reason = buildContextBudgetEscalationReason(budgetResult);
+      deps.log(`BLOCKED: ${reason}`);
+      const handOff = deps.handOffContextBudget ?? defaultHandOffContextBudget;
+      const planned = await handOff({
         repo,
         issueNumber,
         githubUser,
-        needsHumanLabel,
-        reason: failureMessage,
+        issueLabels: issueLabels.split(",").map((l) => l.trim()).filter((l) =>
+          l !== ""
+        ),
+        reason,
       });
       return {
         action: "failure",
         failureType: "context_budget",
-        failureMessage,
+        failureMessage: planned
+          ? `${reason} Handed to planning to split it (Issue #4298).`
+          : `${reason} Planning could not take it, so the issue is retried.`,
         elapsedSeconds: elapsedSince(startTime),
       };
     }

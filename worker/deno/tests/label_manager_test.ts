@@ -12,7 +12,6 @@ import {
   buildQuestionFailureComment,
   checkAndHealPlanningEscalation,
   checkIssueHasFailedOnce,
-  countClarificationRounds,
   DEFAULT_LABEL_CONFIG,
   detectPlanningEscalationInComments,
   ensureLabelExists,
@@ -25,13 +24,9 @@ import {
   labelCacheIsValid,
   markIssueAsFailedOnce,
   PLANNING_ESCALATION_HEADINGS,
-  postClarifyingQuestions,
   validateClarifyingQuestions,
 } from "../lib/label_manager.ts";
-import { ghClientFromCommandFn } from "../lib/label_clarification.ts";
-import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
-import type { GitHubClient } from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -561,43 +556,6 @@ Deno.test("label manager - handleQuestionFailure adds failed-once on first failu
 // Clarification
 // ---------------------------------------------------------------------------
 
-Deno.test("label manager - countClarificationRounds counts the fleet's own rounds", async () => {
-  // Issue #1263: a round is a fleet-authored comment. `worker` here is the
-  // counting host's own login, so no configured fleet set is needed.
-  const count = (comments: { author: string; body: string }[]) =>
-    countClarificationRounds(comments, {
-      issueNumber: 7,
-      githubUser: "worker",
-      log: () => {},
-    });
-
-  assertEquals(await count([]), 0);
-  assertEquals(
-    await count([
-      { author: "worker", body: "## Clarification Needed\nsome text" },
-    ]),
-    1,
-  );
-  assertEquals(
-    await count([
-      { author: "worker", body: "## Clarification Needed\nfirst" },
-      { author: "worker", body: "## Clarification Needed\nsecond" },
-    ]),
-    2,
-  );
-  assertEquals(
-    await count([{ author: "worker", body: "No clarification here" }]),
-    0,
-  );
-  // A heading anyone can write is not a round.
-  assertEquals(
-    await count([
-      { author: "outsider", body: "## Clarification Needed\nplanted" },
-    ]),
-    0,
-  );
-});
-
 Deno.test("label manager - validateClarifyingQuestions rejects empty input", () => {
   const result = validateClarifyingQuestions("");
   assertEquals(result.ok, false);
@@ -625,177 +583,6 @@ Deno.test("label manager - validateClarifyingQuestions accepts multiple question
     "1. What colour should the button be?\n2. Should it be centred?",
   );
   assertEquals(result.ok, true);
-});
-
-Deno.test("label manager - postClarifyingQuestions rejects invalid questions", async () => {
-  const { ghCommandFn } = createMockGh({});
-
-  const result = await postClarifyingQuestions({
-    repo: "org/repo",
-    issueNumber: 42,
-    githubUser: "worker-user",
-    clarifyingQuestions: "No questions here",
-  }, { ghCommandFn });
-
-  assertEquals(result.ok, false);
-});
-
-Deno.test("label manager - postClarifyingQuestions posts comment and adds label", async () => {
-  const dir = await makeTempDir();
-  try {
-    const calls: string[][] = [];
-    const mockGh = async (args: string[]): Promise<string> => {
-      calls.push(args);
-      if (args.join(" ").includes("label list")) return "needs-clarification\n";
-      return "";
-    };
-
-    const result = await postClarifyingQuestions({
-      repo: "org/repo",
-      issueNumber: 42,
-      githubUser: "worker-user",
-      clarifyingQuestions: "What colour should it be?",
-    }, { ghCommandFn: mockGh, cacheDir: dir });
-
-    assertEquals(result.ok, true);
-    assertEquals(wasCalledWith(calls, "issue comment"), true);
-    // Issue #976: label is now added via REST API
-    assertEquals(
-      wasCalledWith(calls, "api -X POST repos/org/repo/issues/42/labels"),
-      true,
-    );
-    assertEquals(wasCalledWith(calls, "--remove-assignee worker-user"), true);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("postClarifyingQuestions - masks secrets in the posted comment (Issue #3226)", async () => {
-  const dir = await makeTempDir();
-  try {
-    const calls: string[][] = [];
-    const mockGh = async (args: string[]): Promise<string> => {
-      calls.push(args);
-      return "";
-    };
-
-    const secret = "sk-ant-api03-" + "A".repeat(80);
-    const ghpToken = "ghp_" + "B".repeat(36);
-
-    const result = await postClarifyingQuestions({
-      repo: "org/repo",
-      issueNumber: 42,
-      githubUser: "worker-user",
-      clarifyingQuestions:
-        `Should the key be ${secret}? Or the token ${ghpToken}?`,
-    }, { ghCommandFn: mockGh, cacheDir: dir });
-
-    assertEquals(result.ok, true);
-
-    // Find the posted comment body (the `--body` argument of `issue comment`).
-    const commentCall = calls.find((call) =>
-      call.includes("comment") && call.includes("--body")
-    );
-    assertEquals(commentCall !== undefined, true);
-    const body = commentCall![commentCall!.indexOf("--body") + 1] ?? "";
-
-    // The raw secrets must not appear in the world-readable comment.
-    assertEquals(body.includes(secret), false);
-    assertEquals(body.includes(ghpToken), false);
-    // The surrounding question text is preserved.
-    assertEquals(body.includes("Should the key be"), true);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("ghClientFromCommandFn - addLabel uses REST POST (Issue #2210)", async () => {
-  const calls: string[][] = [];
-  const ghCommandFn = (args: string[]) => {
-    calls.push(args);
-    return Promise.resolve("");
-  };
-  const client = ghClientFromCommandFn(ghCommandFn);
-  await client.addLabel("org/repo", 7, "needs-human");
-  assertEquals(
-    wasCalledWith(calls, "api -X POST repos/org/repo/issues/7/labels"),
-    true,
-  );
-});
-
-Deno.test("postClarifyingQuestions - routes label via escalateToHuman and dedups (Issue #2210)", async () => {
-  const dir = await makeTempDir();
-  try {
-    const calls: string[][] = [];
-    const postedBodies: string[] = [];
-    const mockGh = async (args: string[]): Promise<string> => {
-      calls.push(args);
-      if (args.join(" ").includes("issue comment")) {
-        const idx = args.indexOf("--body");
-        if (idx >= 0) postedBodies.push(args[idx + 1] ?? "");
-      }
-      if (args.join(" ").includes("label list")) return "needs-clarification\n";
-      return "";
-    };
-
-    const addedLabels: string[] = [];
-    let helperPostCount = 0;
-    // Injected client: dedup lookup returns the just-posted comment (carrying
-    // the marker) so escalateToHuman recognises it and skips a duplicate.
-    const ghClient: GitHubClient = {
-      getIssue: () => Promise.reject(new Error("not used")),
-      getIssueComments: () =>
-        Promise.resolve([
-          {
-            id: 1,
-            body: `## Clarification Needed\n${
-              buildDedupMarker("clarification-42")
-            }`,
-            author: "worker-user",
-            createdAt: new Date().toISOString(),
-            reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
-          },
-        ]),
-      addLabel: (_r, _n, label) => {
-        addedLabels.push(label);
-        return Promise.resolve();
-      },
-      removeLabel: () => Promise.resolve(),
-      postComment: () => {
-        helperPostCount++;
-        return Promise.resolve(undefined);
-      },
-      editIssue: () => Promise.resolve(),
-      assignIssue: () => Promise.resolve(),
-      unassignIssue: () => Promise.resolve(),
-      closeIssue: () => Promise.resolve(),
-    };
-
-    const result = await postClarifyingQuestions({
-      repo: "org/repo",
-      issueNumber: 42,
-      githubUser: "worker-user",
-      clarifyingQuestions: "What colour should it be?",
-    }, { ghCommandFn: mockGh, cacheDir: dir, ghClient });
-
-    assertEquals(result.ok, true);
-    // Label applied via the injected client (escalateToHuman path).
-    assertEquals(addedLabels.includes("needs-human"), true);
-    // Dedup suppressed the helper's own comment.
-    assertEquals(
-      helperPostCount,
-      0,
-      "helper must not post a duplicate comment",
-    );
-    // The clarification comment carries the dedup marker.
-    assertEquals(postedBodies.length, 1);
-    assertEquals(
-      postedBodies[0]!.includes(buildDedupMarker("clarification-42")),
-      true,
-    );
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
 });
 
 // ---------------------------------------------------------------------------
@@ -974,6 +761,38 @@ Deno.test(
   },
 );
 
+Deno.test("label manager - ensureLabelExists tries REST API before CLI for creation", async () => {
+  const dir = await makeTempDir();
+  try {
+    const calls: string[][] = [];
+    const mockGh = async (args: string[]): Promise<string> => {
+      calls.push(args);
+      const joined = args.join(" ");
+      // Cache miss — return empty label list
+      if (joined.includes("label list")) return "bug\nfeature\n";
+      return "";
+    };
+
+    const result = await ensureLabelExists(
+      "org/repo",
+      "new-label",
+      "ff0000",
+      "A new label",
+      { ghCommandFn: mockGh, cacheDir: dir },
+    );
+
+    assertEquals(result.ok, true);
+    // Should have tried REST API for label creation
+    assertEquals(
+      wasCalledWith(calls, "api -X POST repos/org/repo/labels"),
+      true,
+    );
+    // Should NOT have needed CLI fallback since REST API succeeded
+    assertEquals(wasCalledWith(calls, "label create new-label"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
 Deno.test("label manager - ensureLabelExists tries REST API before CLI for creation", async () => {
   const dir = await makeTempDir();
   try {
@@ -1284,42 +1103,6 @@ Deno.test("label manager - escalateToPlanning succeeds even when label-add fails
       repo: "org/repo",
       issueNumber: 42,
       githubUser: "worker-user",
-    }, { ghCommandFn: mockGh, cacheDir: dir });
-
-    // Must still succeed — label failure is non-fatal
-    assertEquals(result.ok, true);
-    // Comment should still have been posted
-    assertEquals(wasCalledWith(calls, "issue comment"), true);
-    // Unassign should still have happened
-    assertEquals(wasCalledWith(calls, "--remove-assignee worker-user"), true);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});
-
-Deno.test("label manager - postClarifyingQuestions succeeds even when label-add fails", async () => {
-  const dir = await makeTempDir();
-  try {
-    const calls: string[][] = [];
-    const mockGh = async (args: string[]): Promise<string> => {
-      calls.push(args);
-      const joined = args.join(" ");
-      if (joined.includes("label list")) return "needs-clarification\n";
-      // Both REST API and CLI label-add fail
-      if (joined.includes("api -X POST") && joined.includes("labels")) {
-        throw new Error("REST API 403");
-      }
-      if (joined.includes("--add-label")) {
-        throw new Error("CLI permission denied");
-      }
-      return "";
-    };
-
-    const result = await postClarifyingQuestions({
-      repo: "org/repo",
-      issueNumber: 42,
-      githubUser: "worker-user",
-      clarifyingQuestions: "What colour should it be?",
     }, { ghCommandFn: mockGh, cacheDir: dir });
 
     // Must still succeed — label failure is non-fatal

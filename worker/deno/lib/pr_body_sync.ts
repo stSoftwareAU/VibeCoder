@@ -31,9 +31,8 @@
  * overwrites the body when the summary file was deleted — a missing file is
  * treated as "nothing to refresh", not as "blank the body".
  *
- * Issue #3535: the structured Branch outcomes facts file beside the summary is
- * rendered into the rebuilt body and its content is part of the digest input,
- * so a push changing only the facts still refreshes the body.
+ * The digest is of the summary alone (Issue #4234). A facts file beside the
+ * summary is not part of the digest and is not rendered into the body.
  *
  * Issue #3760: the digest-reconcile pass in `pr_body_reconcile.ts` is a further
  * caller, whoever pushed the PR head. It compares the digest the live body
@@ -69,12 +68,6 @@ import {
 import { buildWorkerFooter } from "./worker_identity.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { loadPrSummary } from "./pr_summary_loader.ts";
-import {
-  applyBranchOutcomesFacts,
-  prSummaryDigestInput,
-  prSummaryFactsPath,
-  resolveBranchOutcomesFacts,
-} from "./pr_summary_facts.ts";
 import {
   findBranchEvidenceImages,
   formatBranchEvidenceSection,
@@ -429,10 +422,7 @@ export async function buildSyncedPrBodyCandidate(
       };
     }
 
-    // Issue #3535: the facts file is a second pathspec so a facts-only change
-    // is not skipped.
     const summaryRelPath = prSummaryPath(issueNumber);
-    const factsRelPath = prSummaryFactsPath(issueNumber);
     const diffResult = await deps.runGitCommand(
       [
         "diff",
@@ -441,7 +431,6 @@ export async function buildSyncedPrBodyCandidate(
         "HEAD",
         "--",
         summaryRelPath,
-        factsRelPath,
       ],
       { cwd: input.repoPath },
     );
@@ -449,7 +438,7 @@ export async function buildSyncedPrBodyCandidate(
       return {
         ok: false,
         error: new Error(
-          `Failed to diff ${summaryRelPath} and ${factsRelPath}: ${diffResult.error.message}`,
+          `Failed to diff ${summaryRelPath}: ${diffResult.error.message}`,
         ),
       };
     }
@@ -473,31 +462,9 @@ export async function buildSyncedPrBodyCandidate(
   }
 
   const changedFiles = (view.files ?? []).map((f) => f.path);
-  const rawSummary = summaryResult.value.content;
-  // Issue #3535: fail loud on an invalid facts file; never rebuild without it.
-  const factsOutcome = await resolveBranchOutcomesFacts(
-    input.repoPath,
-    issueNumber,
-  );
-  if (factsOutcome.kind === "error") {
-    return { ok: false, error: new Error(factsOutcome.reason) };
-  }
+  const summaryContent = summaryResult.value.content;
   // Must equal the digest completion_phase records at PR creation.
-  const currentDigest = await prSummaryDigest(
-    prSummaryDigestInput(
-      rawSummary,
-      factsOutcome.kind === "valid" ? factsOutcome.content : null,
-    ),
-  );
-  let summaryContent = rawSummary;
-  if (factsOutcome.kind === "valid") {
-    const rendered = applyBranchOutcomesFacts(
-      rawSummary,
-      factsOutcome.rendered,
-    );
-    if (!rendered.ok) return rendered;
-    summaryContent = rendered.value;
-  }
+  const currentDigest = await prSummaryDigest(summaryContent);
 
   if (
     skipUnchanged && recordedDigest !== undefined &&
@@ -563,8 +530,8 @@ export async function buildSyncedPrBodyCandidate(
  *   refreshed;
  * - the summary file was not deleted (a deleted summary means "nothing to
  *   refresh", not "blank the body");
- * - the summary actually changed (Issue #3535: the facts file beside it counts
- *   as part of the summary, in both the digest and the legacy diff):
+ * - the summary actually changed (the digest is of the summary alone,
+ *   Issue #4234):
  *   - when the live body carries a summary-digest marker (Issue #3315), that
  *     recorded digest differs from the digest of the summary at HEAD; or
  *   - for a legacy body with no digest marker, a before-push SHA is

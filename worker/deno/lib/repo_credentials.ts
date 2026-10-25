@@ -37,6 +37,27 @@
  */
 
 import type { Result } from "../types.ts";
+import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
+
+/** An operator mint command. Minutes. A timeout throws; it is not exit 0. */
+const CREDENTIAL_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
+
+export async function runCredentialCommand(
+  command: string,
+  timeoutMs: number = CREDENTIAL_COMMAND_TIMEOUT_MS,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const result = await commandOutputWithTimeout("/bin/sh", {
+    args: ["-c", command],
+    stdout: "piped",
+    stderr: "piped",
+    timeoutMs,
+  });
+  return {
+    code: result.code,
+    stdout: new TextDecoder().decode(result.stdout),
+    stderr: new TextDecoder().decode(result.stderr),
+  };
+}
 
 /** What one repository's checks need. */
 export interface RepoCredentialSpec {
@@ -124,19 +145,7 @@ export function parseMintedCredentials(stdout: string): Record<string, string> {
  */
 export function createDefaultCredentialDeps(): RepoCredentialDeps {
   return {
-    run: async (command: string) => {
-      const proc = new Deno.Command("/bin/sh", {
-        args: ["-c", command],
-        stdout: "piped",
-        stderr: "piped",
-      });
-      const result = await proc.output();
-      return {
-        code: result.code,
-        stdout: new TextDecoder().decode(result.stdout),
-        stderr: new TextDecoder().decode(result.stderr),
-      };
-    },
+    run: (command: string) => runCredentialCommand(command),
     readEnv: (name: string) => Deno.env.get(name),
     warn: (message: string) => console.warn(message),
   };

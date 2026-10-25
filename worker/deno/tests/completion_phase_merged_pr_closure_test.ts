@@ -144,7 +144,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "" },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -215,7 +215,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "" },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -265,7 +265,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "" },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -307,7 +307,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
-      { docsSweepHitsComment: "" },
+      {},
     );
 
     assertEquals(result, { status: "continue" });
@@ -348,7 +348,7 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
-      { docsSweepHitsComment: "" },
+      {},
     );
 
     const closeCall = gh.calls.find(
@@ -411,7 +411,7 @@ Deno.test(
       makeState(),
       FINDINGS_PR_BODY,
       deps,
-      { docsSweepHitsComment: "", findingsComment: "- finding: unresolved" },
+      { findingsComment: "- finding: unresolved" },
     );
 
     assertEquals(result, { status: "continue" });
@@ -446,7 +446,7 @@ Deno.test(
       makeState(),
       FINDINGS_PR_BODY,
       deps,
-      { docsSweepHitsComment: "" },
+      {},
     );
 
     assertEquals(result, { status: "continue" });

@@ -187,7 +187,7 @@ export type CodegraphStatus = "ok" | "failed" | "off" | "unsupported";
 /** Subprocess options this module needs — the injectable half of the seam. */
 export interface CodegraphRunOptions {
   cwd?: string;
-  timeoutMs?: number;
+  timeoutMs: number;
   env?: Record<string, string>;
 }
 
@@ -195,7 +195,7 @@ export interface CodegraphRunOptions {
 export type CodegraphRunner = (
   executable: string,
   args: string[],
-  options?: CodegraphRunOptions,
+  options: CodegraphRunOptions,
 ) => Promise<Result<SubprocessResult>>;
 
 /** The git seam. Defaults to `runGitCommand`. */

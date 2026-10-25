@@ -534,6 +534,10 @@ function codexHookArgs(settingsJson: string): string[] {
  * not used: concurrent slots share a working directory and would resume
  * each other's sessions.
  *
+ * `codex exec resume` does not accept `--sandbox` (Issue #4333). A resumed
+ * orchestrated run sets the same mode through `sandbox_mode` (`-c`). A fresh
+ * `codex exec` still passes `--sandbox`.
+ *
  * @param invocation - Prompt, model/effort selection and resume state.
  * @returns The argument list, prompt last (or `-` when stdin carries it).
  */
@@ -544,14 +548,21 @@ export function buildCodexArgs(invocation: CodexInvocation): string[] {
   }
 
   if (invocation.orchestrationRole) {
+    const sandboxMode = invocation.orchestrationRole === "executor"
+      ? "workspace-write"
+      : "read-only";
     args.push(
       ...STANDARD_FLAGS.filter((flag) =>
         flag !== "--dangerously-bypass-approvals-and-sandbox"
       ),
-      "--sandbox",
-      invocation.orchestrationRole === "executor"
-        ? "workspace-write"
-        : "read-only",
+    );
+    // Resume rejects `--sandbox`; the config key is the mode that flag sets.
+    if (invocation.resumeSessionId) {
+      args.push("-c", `sandbox_mode="${sandboxMode}"`);
+    } else {
+      args.push("--sandbox", sandboxMode);
+    }
+    args.push(
       "-c",
       'approval_policy="never"',
       "-c",

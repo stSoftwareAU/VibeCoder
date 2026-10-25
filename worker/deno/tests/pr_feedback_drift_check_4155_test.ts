@@ -69,11 +69,17 @@ const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
   reason: "not under test",
 });
 
-function verdictEmpty(): string {
+function verdictOwn(): string {
   return [
     "<!-- vibe-drift-verdict -->",
     "```json",
-    JSON.stringify({ findings: [] }),
+    JSON.stringify({
+      findings: [{
+        file: OWN,
+        sentence: "The value is 1.",
+        reason: "src/app.ts now sets value to 2",
+      }],
+    }),
     "```",
     "<!-- /vibe-drift-verdict -->",
   ].join("\n");
@@ -81,10 +87,10 @@ function verdictEmpty(): string {
 
 const OWN = "docs/archive/pr-summaries/pr-summary-4155.md";
 const FOREIGN = "docs/archive/pr-summaries/pr-summary-3302.md";
-const OWN_SUMMARY = "## Summary\n\nCloses #4155.\n";
+const OWN_SUMMARY = "## Summary\n\nCloses #4155.\nThe value is 1.\n";
 const FOREIGN_SUMMARY = "## Summary\n\nCloses #3302.\n";
 
-Deno.test("runPrFeedbackDriftCheck scopes Docs sweep to the PR's own summary (Issue #4155)", async () => {
+Deno.test("runPrFeedbackDriftCheck scopes prose findings to the PR's own summary (Issue #4155)", async () => {
   const dir = await initRepo("wip/not-an-issue");
   try {
     await writeFile(dir, OWN, OWN_SUMMARY);
@@ -108,18 +114,16 @@ Deno.test("runPrFeedbackDriftCheck scopes Docs sweep to the PR's own summary (Is
         logger: { info: () => {}, warn: () => {}, error: () => {} },
         runAgent: async (req) => {
           calls.push(req);
-          return { ok: true, output: verdictEmpty() };
+          return { ok: true, output: verdictOwn() };
         },
       },
     );
     assertEquals(outcome.status, "reported");
     if (outcome.status !== "reported") return;
-    assert(
-      outcome.residual.docsSweepProblems.some((p) => p.includes(OWN)),
-    );
-    assert(
-      outcome.residual.docsSweepProblems.every((p) => !p.includes(FOREIGN)),
-    );
+    assertEquals(outcome.residual.findings.map((f) => f.file), [OWN]);
+    assertEquals(outcome.residual.docsSweepProblems, []);
+    assert(calls.length > 0);
+    assert(calls[0]!.prompt.includes(OWN));
     for (const call of calls) {
       assert(!call.prompt.includes(FOREIGN));
     }
@@ -157,17 +161,13 @@ Deno.test("a base merge does not make another issue's summary part of the drift 
         runGh: async () => "main\n",
         runMutationCheck: notMutationChecked,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
-        runAgent: async () => ({ ok: true, output: verdictEmpty() }),
+        runAgent: async () => ({ ok: true, output: verdictOwn() }),
       },
     );
     assertEquals(outcome.status, "reported");
     if (outcome.status !== "reported") return;
-    assert(
-      outcome.residual.docsSweepProblems.some((p) => p.includes(OWN)),
-    );
-    assert(
-      outcome.residual.docsSweepProblems.every((p) => !p.includes(FOREIGN)),
-    );
+    assertEquals(outcome.residual.findings.map((f) => f.file), [OWN]);
+    assertEquals(outcome.residual.docsSweepProblems, []);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -196,7 +196,7 @@ Deno.test("an edit to another issue's archived summary is restored (Issue #4155)
           error: () => {},
           warn: (message) => warnings.push(message),
         },
-        runAgent: async () => ({ ok: true, output: verdictEmpty() }),
+        runAgent: async () => ({ ok: true, output: verdictOwn() }),
       },
     );
     assertEquals(

@@ -22,9 +22,10 @@ quality checks) failures, keeps branches **up to date** with the base
 turned on only when the PR is actually mergeable, and every merge first passes a
 **pre-merge gate** that re-checks CI and branch freshness. User feedback
 (comments, "Request changes") is also handled: address it, push, mark processed.
-If a piece of feedback is genuinely **out of scope** for one run, the worker
-takes the **escape hatch** — it files a follow-up issue, replies once naming it,
-and exits cleanly rather than looping.
+Every comment ends with a pushed fix or a reasoned reply: feedback that turns
+on a product choice gets the agent's decision with the assumption stated, and
+feedback the agent judges wrong gets a rebuttal. The worker never hands a PR
+back to a person and files no follow-up issue for leftover work (Issue #4304).
 
 ```mermaid
 flowchart TD
@@ -205,21 +206,20 @@ The pr_feedback prompt closes every finding in a `CHANGES_REQUESTED` review one
 of two ways: **fixed** in a commit pushed to the PR branch, or **rebutted** as a
 false positive with the reason recorded in `.pr_response_message`. Recording a
 finding in the PR summary as a "known limitation", "follow-up" or "open
-violation" is not a resolution — the next review raises it again. The only
-other exit is the existing escape hatch above: a filed follow-up issue named in
-`.pr_response_message`. When a finding is fixed, the PR summary text that
+violation" is not a resolution — the next review raises it again. There is
+no other exit: no finding is handed to a person or to a follow-up issue
+(Issue #4304). When a finding is fixed, the PR summary text that
 recorded it as a limitation is deleted in the same push, so the summary stays
 true to the head (per the existing "keep the PR summary true to the head"
 rule). After a verified push to the PR's own head, the worker re-syncs the
 description from `pr-summary-<N>.md` when the summary at the head differs
-from the SHA-256 digest recorded in the body's hidden marker (the digest also
-covers the optional `pr-summary-<N>.facts.json` beside it, Issue #3535) — whichever push
+from the SHA-256 digest recorded in the body's hidden marker (the digest is
+of the summary alone, Issue #4234) — whichever push
 changed it, this run's or an earlier one. A pr_feedback run also re-syncs
 when it pushed nothing and has no commits left unpushed, so a run that
 answers a finding without a push still refreshes a stale body (Issue #3315).
 A body raised before the digest marker existed keeps the older rule:
-rebuilt only when this run's own push changed the summary file or its facts
-file. Fix branches
+rebuilt only when this run's own push changed the summary file. Fix branches
 for a gated milestone head are skipped, and only a worker-authored PR is
 edited. A failed sync is logged once at warning and does not fail the run
 (Issue #3089).
@@ -237,10 +237,11 @@ is first fetched with `gh pr view <n> --json body,headRefOid`; a failure there
 is logged at warning naming the cause, as for a contents read failure, and the
 body is left unchanged. For a PR whose body carries both the worker marker and
 the `vibe-pr-summary sha256` digest marker, it reads `pr-summary-<N>.md`
-(falling back to the legacy `docs/pr-summary-<N>.md`) and
-`pr-summary-<N>.facts.json` at the PR's head commit through the contents API
+(falling back to the legacy `docs/pr-summary-<N>.md`) at the PR's head
+commit through the contents API
 (`gh api repos/{repo}/contents/<path>?ref=<head>`), with no checkout, and
-computes the same digest the body records. When the digest matches, nothing is
+computes the same digest the body records. The digest is of the summary
+alone (Issue #4234). When the digest matches, nothing is
 edited and nothing is logged. The match is memoised per PR, keyed on the head
 SHA and the recorded digest, and reused only while both are unchanged, so later
 cycles make no contents calls for that PR; an entry is pruned once the PR is no
@@ -303,8 +304,9 @@ once the run retires it** below) — but a run that ends with nothing to show
 for it, and no rebuttal either, still has to end somewhere, or the review
 would be retried for ever with no record that anything was ever tried. The
 worker (`worker/deno/lib/pr_feedback_processor.ts`, with the decision
-helpers in `worker/deno/lib/pr_feedback_reviewer_no_change.ts`) guards
-against that case by escalating to a human rather than looping silently:
+helpers in `worker/deno/lib/pr_feedback_reviewer_no_change.ts`) retries it
+once more, then redoes the work — it never hands the PR to a human
+(Issue #4304):
 
 - If the run leaves no commit, no working-tree change and no
   `.pr_response_message`, the worker re-runs the agent once, in the same
@@ -315,16 +317,26 @@ against that case by escalating to a human rather than looping silently:
   `.pr_response_message`, that message is posted as the reply — the
   rebuttal — never the neutral "could not identify a code change" reply.
 - If no fix was pushed and there is no `.pr_response_message`, the worker
-  posts no neutral reply either: it labels the PR `needs-human` with a
-  comment naming the review id, the number of runs, the last run's exit
-  code and duration, and saying no fix or rebuttal was produced.
+  posts no neutral reply either. The first time, it charges a failed
+  attempt — the "First Attempt" reply below, naming the review id, the
+  number of runs and the last run's exit code and duration — and leaves the
+  review outstanding, so the next cycle retries it.
+- A review that already carries the fleet's failed-once marker and is still
+  unanswered closes the PR and re-queues its originating issue through
+  `abandonAndRestart` (`worker/deno/lib/conflict_abandon_restart.ts`), the
+  rung the stall-repair pass uses. The issue keeps its own pickup label or
+  gets `idle-task`. A declined or failed abandon leaves the review
+  outstanding for the next cycle; nothing is charged a second time.
 - At most `MAX_REVIEWER_NO_CHANGE_ATTEMPTS` (2) agent runs are made for a
   single claimed review.
 
 This only changes behaviour for a claimed request-changes review. A
-no-change run against an inline review comment or a top-level PR comment is
-unaffected: it still gets the neutral "could not identify a code change"
-reply.
+no-change run against an inline review comment or a top-level PR comment
+posts the agent's own `.pr_response_message` — its reasoned account of why
+the code is already correct — and only a run that wrote nothing gets the
+stock "could not identify a code change" reply. Neither ever asks the reviewer to clarify
+(Issue #4304; GRQ-AutoTrader#4261 was asked "Please clarify if a change is
+required.").
 
 ```mermaid
 flowchart TD
@@ -335,7 +347,9 @@ flowchart TD
     L -- yes --> F{"Pushed fix?"}
     F -- yes --> OK["Reply describes the fix"]
     F -- "no, has .pr_response_message" --> REB["Post it as the rebuttal"]
-    F -- "no, and no .pr_response_message" --> NH["Label needs-human;<br/>comment names review id,<br/>run count, exit code, duration"]
+    F -- "no, and no .pr_response_message" --> FO{"Already<br/>failed once?"}
+    FO -- no --> CH["Charge a failed attempt;<br/>next cycle retries"]
+    FO -- yes --> AR["Close the PR and<br/>re-queue its issue"]
     U --> F
     P["Inline comment or<br/>top-level PR comment,<br/>no change found"] --> NEU["Neutral 'could not identify<br/>a code change' reply"]
 ```
@@ -357,18 +371,17 @@ they still get the eyes reaction at claim time and keep the 60-second claim
 rule.
 
 The review is dismissed only when the run **retires** it: a fix verified on
-the remote, a fix pushed to a gated head's fix branch whose PR could not be
-raised (a human is asked), the agent's rebuttal posted, the escape-hatch
-hand-off, the no-fix-no-rebuttal `needs-human` escalation above, or the
-second failure below. Each of those first five outcomes also requires its
+the remote, the agent's rebuttal posted, the escape-hatch hand-off, or the
+second failure below. Each of those first three outcomes also requires its
 own announcement to have actually reached the PR — the push-success reply,
-the fix-PR-raise-failed hand-off, the rebuttal, the escape-hatch reply, or
-(for the escalation) the label add or the comment post. A `gh` call that
-fails to post that announcement charges a failed attempt instead of
-dismissing a review nothing was said about (Issue #3408 review). Any other
-outcome — an agent error, a timeout, a push that never lands on the remote,
+the rebuttal, or the escape-hatch reply. A `gh` call that fails to post that
+announcement charges a failed attempt instead of dismissing a review nothing
+was said about (Issue #3408 review). Any other outcome — an agent error, a
+timeout, a push that never lands on the remote, a fix pushed to a gated
+head's fix branch whose PR could not be raised (retried next cycle, since
+`raiseMilestoneFixPr` reuses an open fix PR), no fix and no rebuttal (above),
 or any outcome that settles nothing, such as a prompt-build failure — is
-charged as a failed attempt instead:
+charged as a failed attempt instead (Issue #4304):
 
 - The **first** failure posts a "First Attempt" reply carrying a hidden
   `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker and leaves the review
@@ -380,10 +393,9 @@ charged as a failed attempt instead:
 The dismissal message GitHub shows on the review states the outcome, so a
 dismissed review is never mislabelled as addressed (Issue #3409). Only a
 verified pushed fix says "Changes have been addressed by the automated
-worker."; a rebuttal says no code change was made, an escalation says it was
-escalated to `needs-human`, a hand-off says it was handed off to a follow-up
-issue, a pushed fix whose fix PR still needs opening says so, and the second
-failure says it was not addressed after two automated attempts.
+worker."; a rebuttal says no code change was made, a hand-off says it was
+handed off to a follow-up issue, and the second failure says it was not
+addressed after two automated attempts.
 
 No reaction is ever made for a review — a review has no reactions endpoint
 of its own; the old code reacted on `issues/comments/<reviewId>`, the wrong
@@ -398,7 +410,7 @@ stateDiagram-v2
     [*] --> Outstanding
     Outstanding --> Leased : Claim posts a<br/>lease line
     Leased --> Outstanding : Lease lapses<br/>(no renewal in 15 min)
-    Leased --> Retired : Run retires it<br/>(fix, rebuttal,<br/>escape hatch, needs-human)
+    Leased --> Retired : Run retires it<br/>(fix, rebuttal,<br/>hand-off)
     Leased --> FailedOnce : First failure<br/>(PR_REVIEW_FAILED_ONCE marker)
     FailedOnce --> Outstanding : Lease lapses
     FailedOnce --> Retired : Second failure<br/>(Permanently Failed)
@@ -516,9 +528,10 @@ Six checks run, each only when it applies:
    manual, prompt or source-comment file, it also asks the shared doc-prose
    question (Issues #3347, #3715, #3731), scoped to this push's change. The
    shared scope includes changed comments, unchanged attached declaration
-   comments and module headers, plus heading-bounded manual sections named by
-   the Docs sweep entry or mentioning a changed source path, basename or
-   exported declaration. The extra manual sections exclude `docs/archive/`.
+   comments and module headers, plus heading-bounded manual sections the
+   summary names or that mention a changed source path, basename or exported
+   declaration. The extra manual sections exclude `docs/archive/`. No Docs
+   sweep entry is required (Issue #4234).
    This prose scope has its own 20-file and 40-section caps before the overall
    40-file model-pass cap; overflow and unreadable input are logged as not
    checked, never passed. It reports contradictions about triggers, refusals,
@@ -579,11 +592,7 @@ Six checks run, each only when it applies:
    file, several counts that do not each follow the test file they count, or
    different counts for one test file. Each unchecked figure is drift, not a
    log line: it goes to the recovery turn below.
-3. **Docs sweep re-check** — when the push changes a code file and the PR's
-   own summary exists, the Issue #3073 docs-sweep gate is re-run against the
-   PR's changed files. Another issue's archived summary is not part of that
-   check (Issue #4155). That gate also requires the Docs sweep line's
-   `siblings:` part (Issue #3371), so a feedback push's summary needs it too.
+3. **Docs sweep re-check** — removed (Issue #4234). A feedback push still updates the manuals the change makes false. The worker does not re-check a Docs sweep line.
 4. **Deterministic quoted-sentence check (Issue #3244)** — on every
    non-skipped push, the change request this push answers is parsed for its
    findings in the review-fleet-prs shape (`**\`<file>[:<line>]\`**:
@@ -596,44 +605,7 @@ Six checks run, each only when it applies:
    hit. A named summary that cannot be read at the head is reported as not
    checked rather than given a recovery turn on its own — the same as a
    model pass that returns no verdict.
-5. **Deterministic line-citation check (Issue #3341)** — on every
-   non-skipped push, for the PR's own
-   `docs/archive/pr-summaries/pr-summary-<issue>.md` when it also existed
-   at the before-run head (Issue #4155), the
-   summary as it stood at the before-run head is read with `git show`, and
-   its `Branch outcomes:` list entries — plus the header's own inline body,
-   not a table under the header — are parsed for `path:N` / `path:N-M`
-   citations. Another issue's archived summary is left out. When the head
-   branch names no issue, a summary a base merge left identical to the base
-   is left out, and one this branch changed is still checked. Where the facts file
-   `docs/archive/pr-summaries/pr-summary-<N>.facts.json` exists at a ref
-   (the before-run head, read with `git ls-tree` / `git show`, or the head
-   working tree), its structured entries' `path`, `line` and `endLine` are
-   that ref's citations and the summary's prose `Branch outcomes:` list at
-   that ref is not read (Issue #3536); with no facts file at a ref, the
-   prose list is read as above, so a transition from one form to the other
-   compares citations from the two. A citation naming a file this push
-   changed (an exact path match, or a unique `/`-boundary suffix match
-   such as a bare basename) is
-   mapped through this push's diff of that file (`git diff -U0
-   <before-run head> -- <path>`, the working tree against the before-run
-   head). Two things count as a hit: the cited line(s) moved and the
-   `Branch outcomes:` entry still cites the old `path:N`/`N-M`, reported
-   naming the old and the new line numbers; or this push changed or removed
-   a cited line and the entry citing it is word-for-word unchanged from the
-   before-run head, reported as a flip result carried over. Rewriting the
-   entry — renumbered, with the flip re-run — clears it. A citation of a
-   file this push did not change is never a hit, and a citation this push
-   added (absent from the before-run summary) is not checked. The check
-   reports, as not-checked rather than a hit, a cited name matching more
-   than one changed file, a diff it cannot read as text (`git` failed, or a
-   binary file), a malformed citation (line `0`, a reversed range) of a
-   changed file, a before-run summary it could not read, a before-run
-   `Branch outcomes:` list longer than the parser reads, and a facts file
-   it cannot read or that fails to parse or validate at either ref (never
-   read as "no citations"). A hit whose head citations came from the facts
-   file names that facts file, not the `.md` summary, and asks for the
-   entry's `line`/`endLine` to be renumbered there.
+5. **Line-citation check** — removed with the branch-outcomes facts file (Issue #4234). A test the summary names must still exist at the head.
 6. **Diff-scoped mutation check (Issue #3750)** — in every review-fix run the
    mutation check runs over the lines this run itself added: the working tree,
    uncommitted edits and untracked files included, against the before-run head.
@@ -652,13 +624,9 @@ Six checks run, each only when it applies:
 Any hit gets **one** recovery turn — a Test Plan figure the recount could not
 check is a hit too (Issue #3740) — and the agent, with full tools, is asked
 to rewrite the listed sentences, recount the Test Plan, restate each unchecked
-figure as "`<file>` (N tests at head)" or remove it, fix the Docs sweep
-line, rewrite or remove each stale quoted sentence, and renumber each
-listed line citation to the head, in the file each hit names (a facts
-entry's `line`/`endLine`, or the `.md` summary's `Branch outcomes:` list) —
-re-running the flip for any entry whose
-cited code this push changed rather than carrying the old result over —
-without changing code, except that a mutation survivor (item 6) is answered
+figure as "`<file>` (N tests at head)" or remove it, and rewrite or remove
+each stale quoted sentence, without changing code, except that a mutation
+survivor (item 6) is answered
 with tests or docs, never production code. The checks are then re-run, and
 the mutation check runs once more when survivors were found and the turn ran;
 a prose finding counts
@@ -677,11 +645,9 @@ line-citation check reported. Whatever remains after the recovery turn —
 plus a model pass that returned no verdict and a summary that could not be
 checked — is appended to `.pr_response_message` under `### Drift check
 (Issue #3143)`, so it reaches the PR reply instead of being pushed silently.
-The residual lists the change-request quotes still present, the Branch-outcomes
-citations still at the previous head's numbers, the prose findings and Test
-Plan counts still standing, the Docs sweep problems, a model pass that returned
-no verdict, a named summary the quote check could not read, each citation case
-the line-citation check could not check, and — under the heading "Test Plan
+The residual lists the change-request quotes still present, the prose findings
+and Test Plan counts still standing, a model pass that returned
+no verdict, a named summary the quote check could not read, and — under the heading "Test Plan
 figures the drift check could not verify" (Issue #3740) — each Test Plan figure
 still unchecked after the recovery turn, with its reason. A push whose only
 drift is an unchecked figure is therefore not reported clean. Surviving mutants
@@ -692,7 +658,7 @@ by themselves.
 
 ```mermaid
 flowchart TD
-    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check,<br/>line-citation check,<br/>mutation check"]
+    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount,<br/>quoted-sentence check,<br/>mutation check"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
     H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]
@@ -752,20 +718,17 @@ sequenceDiagram
     O-->>W: accepted → no "check the branch" comment
 ```
 
-**Out-of-scope feedback → escape hatch.** Sometimes a review
-comment asks for something genuinely too large for one run — a multi-day
-refactor, a change that depends on a product decision only a human can make, or
-work that bundles several independent pieces. Rather than looping until the
-timeout, the worker takes the **escape hatch**: it opens a follow-up issue
-capturing the analysis (the problem, what was investigated, what is blocking,
-and what a solution would look like), posts **one** reply on the PR naming that
-follow-up issue (using the words "out of scope" / "follow-up issue") and
-mentioning `needs-human` if a person should triage, then exits cleanly without
-retrying the original change. The relief valve only fires after a serious
-attempt — it is not a shortcut to skip difficult work. The hand-off is only
-recorded as a resolution when the follow-up issue it names **exists and was
-filed by the worker, a fleet sibling, or an allowlisted author** — naming a
-pre-existing issue is not evidence of a hand-off (Issue #185). See
+**Out-of-scope feedback → decide or rebut, never hand back.** Sometimes a
+review comment asks for something that looks too large for one run, or turns
+on a product choice. The pr_feedback prompt's **Decide, Never Hand Back** rule
+has the agent decide such a choice itself, stating the assumption in
+`.pr_response_message` so the reviewer can overturn it with one more comment,
+and rebut a request it judges wrong for this PR with the reasons. It never
+asks for `needs-human`, never asks the reviewer to clarify, and never files a
+follow-up issue for leftover work (Issue #4304). The worker still recognises
+an old-style hand-off message naming a follow-up issue, as a defence: the
+follow-up must exist and be filed by the worker, a fleet sibling or an
+allowlisted author (Issue #185), and any reserved label on it is stripped. See
 [DESIGN-PRINCIPLES.md → Escape hatch for out-of-scope work](../../DESIGN-PRINCIPLES.md).
 
 ### 🟠 Priority 1.5 — Spelling and quality fixes (automatic)
@@ -1064,19 +1027,20 @@ flowchart TD
   re-runs, and the
   next cycle re-evaluates (see the dual-layer pre-merge gate above). The merge is
   never forced against a stale branch.
-- **Out-of-scope PR feedback:** The worker takes the **escape hatch** — files a
-  follow-up issue, replies once naming it (mentioning `needs-human` if a person
-  should triage), and exits cleanly rather than looping.
+- **Out-of-scope PR feedback:** The agent decides with the assumption stated,
+  or rebuts with reasons — never a hand-back or a follow-up issue
+  (Issue #4304).
 - **No fix and no rebuttal on a request-changes review:** A claimed
   `CHANGES_REQUESTED` review whose run leaves no commit, no working-tree
   change and no `.pr_response_message` is re-run once (in the same worker
   run, with a note appended) rather than answered with the neutral reply,
   because the review would otherwise sit retried for ever with no record
   that anything was tried; if the final run still has neither a pushed fix
-  nor a `.pr_response_message`, the worker labels the PR `needs-human`
-  instead of posting a reply — one of the outcomes that retires the review
-  (see **A request-changes review is never answered with "no change"** and
-  **A review is dismissed only once the run retires it** above).
+  nor a `.pr_response_message`, the worker charges a failed attempt so the
+  next cycle retries the review, and a review still unanswered after that
+  closes the PR and re-queues its issue (Issue #4304; see **A
+  request-changes review is never answered with "no change"** and **A review
+  is dismissed only once the run retires it** above).
 
 ## 📚 Further reading
 
@@ -1084,7 +1048,7 @@ flowchart TD
   the dual-layer pre-merge gate, visibility-aware required checks,
   defer-and-retry, read-only default branch, and workflow-trigger normalisation.
 - **Design overview:** [DESIGN-PRINCIPLES.md](../../DESIGN-PRINCIPLES.md) — dual-layer pre-merge
-  enforcement and the out-of-scope escape hatch.
+  enforcement and the escape-hatch hand-off defence.
 - **Internals:** [Worker Internals](../INTERNALS.md) — run loop, issue
   selection, PR monitoring, milestone/dependency handling.
 - **Implementation details:** [worker/deno/lib/run_core.ts](../../worker/deno/lib/run_core.ts),

@@ -9,7 +9,7 @@
  * Australian English spelling throughout (behaviour, defence, authorised).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   checkPidFile,
   getCommand,
@@ -305,6 +305,19 @@ Deno.test("pid_guard - checkPidFile detects stale PID file", async () => {
   }
 });
 
+Deno.test("pid_guard - a liveness probe that times out does not clear the PID lock (Issue #4251)", async () => {
+  const tmpFile = await Deno.makeTempFile();
+  try {
+    await Deno.writeTextFile(tmpFile, `${Deno.pid}\n`);
+    const result = await checkPidFile(tmpFile, 0);
+    assertEquals(result.canProceed, false);
+    assertEquals(result.existingPid, Deno.pid);
+    assertStringIncludes(result.message, "timed out");
+  } finally {
+    await Deno.remove(tmpFile);
+  }
+});
+
 Deno.test("pid_guard - checkPidFile handles invalid PID content", async () => {
   const tmpFile = await Deno.makeTempFile();
   try {
@@ -411,6 +424,31 @@ Deno.test("pid_guard - terminateProcessTree sends SIGTERM to group and process",
   assertEquals(sent, [
     { target: -1234, signal: "TERM" },
     { target: 1234, signal: "TERM" },
+  ]);
+});
+
+Deno.test("pid_guard - a group signal that times out still signals the pid and escalates (Issue #4251)", async () => {
+  const { deps, sent } = makeFakeDeps({
+    pgidOutput: "1234\n",
+    runningSequence: [true],
+  });
+  const record = deps.sendSignal;
+  deps.sendSignal = async (target: number, signal: string) => {
+    await record(target, signal);
+    if (target < 0) throw new Error("kill timed out after 10000ms");
+  };
+
+  await assertRejects(
+    () => terminateProcessTree(1234, 2, deps),
+    Error,
+    "kill timed out",
+  );
+
+  assertEquals(sent, [
+    { target: -1234, signal: "TERM" },
+    { target: 1234, signal: "TERM" },
+    { target: -1234, signal: "KILL" },
+    { target: 1234, signal: "KILL" },
   ]);
 });
 

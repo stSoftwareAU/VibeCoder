@@ -50,7 +50,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { parseRepoSettingsFindingId } from "../lib/admin_only_finding.ts";
+import {
+  FINDING_STEP_KIND,
+  parseRepoSettingsFindingId,
+} from "../lib/admin_only_finding.ts";
 import {
   buildAllowedActionPatterns,
   type HardenRepoOutcome,
@@ -86,21 +89,9 @@ export interface CloseFixedFindingsResult {
   warnings: string[];
 }
 
-/**
- * The hardening step kind that fixes each `BP-REPO-*` finding the scanner
- * files. A finding id absent from this map is never closed.
- */
-export const FINDING_STEP_KIND: Readonly<Record<string, HardenStep["kind"]>> = {
-  "BP-REPO-DEFAULT-TOKEN-WRITE": "workflow-token",
-  "BP-REPO-ACTIONS-MAY-APPROVE-PRS": "workflow-token",
-  "BP-REPO-ACTIONS-ALLOW-ALL": "actions-allow-list",
-  "BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE": "actions-allow-list",
-  "BP-REPO-SHA-PIN-NOT-ENFORCED": "sha-pinning-required",
-  "BP-REPO-RULESET-NO-REVIEW": "default-branch-approval",
-  "BP-REPO-SECRET-SCANNING-OFF": "secret-scanning",
-  "BP-REPO-PUSH-PROTECTION-OFF": "secret-scanning",
-  "BP-REPO-PVR-OFF": "private-vulnerability-reporting",
-};
+// The hardening step kind that fixes each `BP-REPO-*` finding. Defined once,
+// in lib, because the issue lane applies the same step (Issue #4298).
+export { FINDING_STEP_KIND };
 
 /** Open issues read per repo; more than this is warned about, not paged. */
 const OPEN_ISSUE_LIMIT = 200;

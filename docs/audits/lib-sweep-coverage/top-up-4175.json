@@ -1,0 +1,12 @@
+{
+  "issue": 4175,
+  "chunk": "top-up-4175",
+  "title": "top-up: restore a closed milestone route",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4175",
+  "definition": "modules added after 12a-12af recorded their coverage: worker/deno/lib/milestone_route_restore.ts (an open milestone whose rollup has merged gets a fresh rollup, and a sync PR is not opened into a route that stays closed) (#4175)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/milestone_route_restore.ts"
+  ],
+  "sweptAt": "bc0277cad86834f4fa9c43bc24b95f86b302bb4a"
+}

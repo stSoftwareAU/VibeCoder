@@ -41,6 +41,8 @@ import {
   repairMilestoneRulesetCreateBlock,
 } from "./milestone_ruleset_check.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
+import { repairAdminOnlyFinding } from "./admin_only_finding.ts";
+import { hardenRepo } from "./repo_settings_harden.ts";
 
 // Git operations
 import {
@@ -221,12 +223,6 @@ import {
   type SecurityFixDiscrimination,
 } from "./security_fix_discrimination.ts";
 import {
-  type FactsFlipSeams,
-  type FactsFlipVerdict,
-  verifyFactsFlips,
-} from "./facts_flip_verifier.ts";
-import type { SummaryFacts } from "./summary_facts.ts";
-import {
   fileBaselineCarryoverTracker,
   fileRedCheckTracker,
 } from "./baseline_carryover_tracker.ts";
@@ -256,6 +252,15 @@ export interface GitHubDeps {
    * spawn `gh` at github.com.
    */
   repairMilestoneCreateBlock: (repo: string) => Promise<RepairMilestoneResult>;
+  /**
+   * Apply the setting a repository-admin finding asks for (Issue #4298),
+   * returning the applied steps or the refusal. A seam for the same reason as
+   * the ruleset repair above: a test must not write settings on github.com.
+   */
+  repairRepoSettingsFinding: (
+    repo: string,
+    issueBody: string,
+  ) => Promise<Result<string>>;
 }
 
 /** Git operations — branching, push, conflict resolution, state recovery. */
@@ -369,10 +374,9 @@ export interface ClaudeDeps {
   runOrchestratedIssueRun: typeof runOrchestratedIssueRun;
   runClaudeWithRetry: typeof runClaudeWithRetry;
   /**
-   * The read-only question the completion phase asks about the PR summary's
-   * claims about named code (Issue #3257) — a seam separate from
-   * `runClaudeWithRetry` so a test can script the verdict without the
-   * question counting as an agent turn in tests that count recovery turns.
+   * Kept so a test can script a model reply without it counting as an agent
+   * turn. The completion phase does not ask this question: the summary claim
+   * check was removed (Issue #4234).
    */
   runSummaryClaimQuestion: typeof runClaudeWithRetry;
   /**
@@ -574,16 +578,6 @@ export interface QualityDeps {
   runSecurityFixDiscrimination?: (
     input: DiscriminationRunInput,
   ) => Promise<SecurityFixDiscrimination>;
-  /**
-   * Re-run each tested facts entry's named test under a mutant of the cited
-   * line (Issues #4186, #4188). Optional: when absent, or when it throws, the
-   * completion phase records a loud `not_checked` and never treats that as a
-   * pass. A `refused` verdict blocks the raise.
-   */
-  verifyFactsFlips?: (
-    facts: SummaryFacts,
-    seams: FactsFlipSeams,
-  ) => Promise<FactsFlipVerdict[]>;
 }
 
 // ---------------------------------------------------------------------------
@@ -714,6 +708,19 @@ export function createDefaultDeps(
           repo,
           (args, stdin) =>
             runGhOrThrow(args, stdin === undefined ? {} : { stdin }),
+        ),
+      // Issue #4298: the worker applies a repository-admin finding's setting
+      // with its own token, and only that finding's steps.
+      repairRepoSettingsFinding: (repo: string, issueBody: string) =>
+        repairAdminOnlyFinding(
+          repo,
+          issueBody,
+          (target, kinds) =>
+            hardenRepo(target, {
+              apply: true,
+              ghCommandFn: runGhCommand,
+              onlyKinds: kinds,
+            }),
         ),
     },
 
@@ -869,7 +876,6 @@ export function createDefaultDeps(
         runCoverageCarryOverCheck(input, defaultMutationRunnerSeams()),
       runSecurityFixDiscrimination: (input) =>
         runSecurityFixDiscrimination(input, defaultMutationRunnerSeams()),
-      verifyFactsFlips,
     },
   };
 }
@@ -1046,6 +1052,11 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
         reason: "mock: no ruleset read",
       })
     ),
+    // Issue #4298: a mocked repository's setting already holds. A test that
+    // wants a refusal overrides it.
+    repairRepoSettingsFinding: mockFn<
+      GitHubDeps["repairRepoSettingsFinding"]
+    >(() => Promise.resolve({ ok: true, value: "mock: already holds" })),
     ...overrides?.github,
   };
 
@@ -1292,11 +1303,9 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
         value: { exitCode: 0, output: "mock", timedOut: false },
       })
     ),
-    // Not scripted by default (Issue #3257): the model pass fails, so the
-    // claim check records it in `notChecked` and logs it at warn level
-    // (never blocking), and no run stats are recorded — a test that says
-    // nothing about the claim check is unaffected. A test that exercises
-    // the check scripts this seam.
+    // The summary claim check that called this seam was removed (Issue
+    // #4234). The mock stays so a test can still script the function;
+    // completion does not call it.
     runSummaryClaimQuestion: mockFn<ClaudeDeps["runSummaryClaimQuestion"]>(
       () =>
         Promise.resolve({

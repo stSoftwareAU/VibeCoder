@@ -32,28 +32,14 @@
  * present in that summary at the head — a hit gets the same one recovery
  * turn as the model pass's findings, then is reported.
  *
- * Issue #3341 found a third gap: a review-fix push can edit a file a
- * `Branch outcomes:` entry cites as `path:line` without renumbering the
- * list, leaving a citation pointing at the previous head's line numbers
- * (PR #3160, #3312 review evidence: a cited check had moved from line 398
- * to 434 and the entry still named 398). This is also deterministic and
- * no-model-needed (`branch_outcome_citations.ts`): for the PR's own summary
- * readable at both the previous head and now (Issue #4155), it maps that summary's
- * previous citations of a file this push changed through `git diff -U0
- * <beforeSha>`, and flags a citation still at the old line number for a
- * line that moved, or an entry left unchanged apart from whitespace
- * although its cited lines were changed or removed by this push — carrying
- * a stale verdict forward rather than re-reading the code at the head.
- * Issue #3536: a ref with a `pr-summary-<N>.facts.json` file contributes its
- * structured `path`/`line`/`endLine` entries instead of its prose list; a
- * malformed or unreadable facts file at either ref is reported as not
- * checked, never read as "no citations".
+ * The branch-outcomes citation check and the docs-sweep check were removed
+ * (Issue #4234). They no longer produce findings.
  *
  * Issue #3347 found that a fix push which only rewrites a manual or prompt
  * sentence was never questioned. The model pass now also runs when the push
  * edits manual or prompt Markdown (`isManualProsePath`), and the question
- * then asks the shared doc-prose question from `doc_prose_claims.ts` — the
- * same one the first-run claim check asks. Issues #3715 and #3731 add changed
+ * then asks the shared doc-prose question from `doc_prose_claims.ts`.
+ * Issues #3715 and #3731 add changed
  * source comments, attached headers and affected manual sections through the
  * shared scope builder. A push changing only the PR summary or non-source,
  * non-Markdown docs still gets no model pass.
@@ -81,7 +67,7 @@
  *     A["Agent's review-fix turn"] --> B{"beforeSha known<br/>and this push<br/>changed something?"}
  *     B -- no --> S["skipped"]
  *     B -- yes --> C["Collect this push's files,<br/>the PR's full file list,<br/>PR summaries, head test counts"]
- *     C --> D["Deterministic checks:<br/>Test Plan recount (mismatches<br/>and unchecked figures),<br/>Docs sweep gate,<br/>stale change-request quotes,<br/>line-citation check"]
+ *     C --> D["Deterministic checks:<br/>Test Plan recount (mismatches<br/>and unchecked figures),<br/>stale change-request quotes"]
  *     C --> MC["Mutation check over this run's own lines"]
  *     C --> E{"Code, test or manual/prompt<br/>Markdown changed?"}
  *     E -- yes --> F["One constrained,<br/>read-only model question:<br/>quote the drifted sentences"]
@@ -99,11 +85,10 @@
  * ```
  *
  * The verdict renderer ({@link renderDriftVerdictQuestion}), verdict parser
- * ({@link parseDriftVerdict}) and {@link DRIFT_CHECK_DISALLOWED_TOOLS} are
- * shared with `summary_claim_check.ts` (Issue #3257), the first-run
- * counterpart of this module's model question — run from the completion
- * phase, where a PR summary describes named code wrongly on the very first
- * run rather than drifting from it on a later review-fix push.
+ * ({@link parseDriftVerdict}) and {@link DRIFT_CHECK_DISALLOWED_TOOLS} were
+ * shared with the first-run claim check (Issue #3257). That check was
+ * removed (Issue #4234). This review-fix question is the pass that still
+ * uses them.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -115,15 +100,7 @@ import {
   renderProseRanges,
 } from "./doc_prose_scope.ts";
 
-import {
-  changedFilesCitedBy,
-  type DiffHunk,
-  findStaleCitations,
-  parseDiffHunks,
-} from "./branch_outcome_citations.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
-import { loadPrSummaryFacts, prSummaryFactsPath } from "./pr_summary_facts.ts";
-import { parseSummaryFacts, type SummaryFacts } from "./summary_facts.ts";
 import { CLOSURE_VERDICT_DISALLOWED_TOOLS } from "./closure_verdict_recovery.ts";
 import {
   type ChangeRequestFinding,
@@ -132,11 +109,6 @@ import {
   parseChangeRequestFindings,
   summaryFilesNamedBy,
 } from "./change_request_quotes.ts";
-import {
-  codeChangingFiles,
-  isDocsSweepExemptPath,
-  validateDocsSweep,
-} from "./docs_sweep_gate.ts";
 import {
   docProseClaimInstruction,
   isManualProsePath,
@@ -150,6 +122,29 @@ import {
   type MutationGateVerdict,
 } from "./mutation_gate.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
+
+const DOC_EXTENSION_RE = /\.(md|mdx|markdown|rst|adoc|txt)$/i;
+const DOCS_SEGMENT_RE = /(^|\/)docs\//i;
+
+/** A documentation path: a doc extension or any path under a docs directory. */
+function isDocumentationPath(path: string): boolean {
+  const trimmed = path.trim();
+  if (trimmed === "") return false;
+  if (isTestFilePath(trimmed)) return false;
+  if (DOC_EXTENSION_RE.test(trimmed)) return true;
+  if (DOCS_SEGMENT_RE.test(trimmed)) return true;
+  return false;
+}
+
+/** Changed paths that are neither tests nor documentation. */
+function codeChangingFiles(changedFiles: readonly string[]): string[] {
+  return changedFiles.filter((path) => {
+    const trimmed = path.trim();
+    if (trimmed === "") return false;
+    if (isTestFilePath(trimmed)) return false;
+    return !isDocumentationPath(trimmed);
+  });
+}
 import { prResponseMessagePath } from "./pr_branch_preparation.ts";
 import {
   buildBoundaryIntegrityInstruction,
@@ -308,8 +303,8 @@ const SHA_PATTERN = /^[0-9a-f]{7,64}$/i;
  * Render a constrained, read-only drift-verdict question (Issues #3143,
  * #3257).
  *
- * The shared shape behind {@link buildDriftQuestionPrompt} (review-fix
- * drift) and `summary_claim_check.ts`'s first-run question: no file edits
+ * Review-fix drift uses this shape (Issue #3143). The first-run claim
+ * question that used the same shape was removed (Issue #4234). No file edits
  * this turn, an intro naming what to read, the files to check inside a
  * CSPRNG-nonced untrusted fence, a narrowed instruction, and a single
  * `DRIFT_VERDICT_OPEN`/`DRIFT_VERDICT_CLOSE` JSON reply block.
@@ -1117,8 +1112,6 @@ async function computeHeadCounts(
 function collect(
   summaries: readonly LoadedSummary[],
   headCounts: ReadonlyMap<string, TestDeclarationCounts>,
-  prFiles: readonly string[],
-  changesBehaviour: boolean,
 ): {
   mismatches: string[];
   docsSweepProblems: string[];
@@ -1134,15 +1127,7 @@ function collect(
       (u) => `${s.path}: ${u.reason} — "${u.line}"`,
     )
   );
-  const docsSweepProblems = changesBehaviour
-    ? summaries.flatMap((s) =>
-      validateDocsSweep({
-        changedFiles: prFiles,
-        prSummaryContent: s.content,
-      }).problems.map((problem) => `${s.path}: ${problem}`)
-    )
-    : [];
-  return { mismatches, docsSweepProblems, testPlanUnchecked };
+  return { mismatches, docsSweepProblems: [], testPlanUnchecked };
 }
 
 /** Whitespace-normalised form used to compare a quoted sentence to file text. */
@@ -1152,7 +1137,7 @@ function normaliseWhitespace(text: string): string {
 
 /**
  * Whether `sentence` appears (whitespace-normalised) inside `content`.
- * Exported for reuse by `summary_claim_check.ts` (Issue #3257).
+ * Exported for reuse by a removed summary gate (Issue #3257).
  */
 export function sentenceFoundIn(sentence: string, content: string): boolean {
   return normaliseWhitespace(content).includes(normaliseWhitespace(sentence));
@@ -1183,158 +1168,6 @@ async function checkStaleQuotes(
     stale: stale.map((s) => `${s.file}: "${s.quote}"`),
     unchecked,
   };
-}
-
-/**
- * Check every loaded PR summary's Branch-outcomes line citations against
- * this push's diff (Issue #3341).
- *
- * For each summary, reads it at the before-run head with `git ls-tree` /
- * `git show` — a summary new in this push (empty `ls-tree` result) has
- * nothing to compare and is skipped; an unreadable before-run summary is
- * reported unchecked rather than silently passed. The paths handed to git
- * (`s.path`, and the cited paths resolved against `pushFiles`) come from
- * git's own `--name-only`/`ls-files` output or from the caller's own
- * summary list, never parsed out of the untrusted summary text itself, so a
- * `--` separator before each path is enough defence against an option-like
- * value.
- *
- * Issue #3536: each summary's facts file is read at the before-run head (via
- * git) and at the head (from disk). Facts present at a ref supply that ref's
- * citations; a facts file that cannot be read or parsed at either ref makes
- * the summary unchecked rather than reading as "no citations".
- */
-async function checkLineCitations(
-  repoPath: string,
-  deps: DriftCheckDeps,
-  beforeSha: string,
-  summaries: readonly LoadedSummary[],
-  pushFiles: readonly string[],
-): Promise<{ stale: string[]; unchecked: string[] }> {
-  const stale: string[] = [];
-  const unchecked: string[] = [];
-
-  for (const s of summaries) {
-    const lsTree = await deps.runGit([
-      "ls-tree",
-      "--name-only",
-      beforeSha,
-      "--",
-      s.path,
-    ]);
-    if (lsTree === null || lsTree.code !== 0) {
-      unchecked.push(
-        `${s.path}: could not read the summary at the before-run head, ` +
-          "so its Branch outcomes citations were not checked",
-      );
-      continue;
-    }
-    if (lsTree.stdout.trim() === "") {
-      // New in this push — nothing to compare against.
-      continue;
-    }
-
-    const show = await deps.runGit(["show", `${beforeSha}:${s.path}`]);
-    if (show === null || show.code !== 0) {
-      unchecked.push(
-        `${s.path}: could not read the summary at the before-run head, ` +
-          "so its Branch outcomes citations were not checked",
-      );
-      continue;
-    }
-    const previous = show.stdout;
-
-    // `loadSummaries` only yields `pr-summary-<N>.md` paths (`isPrSummaryPath`).
-    const issueNumber = Number(/pr-summary-(\d+)\.md$/.exec(s.path)![1]);
-    const factsPath = prSummaryFactsPath(issueNumber);
-    const notChecked = `${s.path}: Branch outcomes citations not checked: `;
-
-    let previousFacts: SummaryFacts | null = null;
-    const factsLsTree = await deps.runGit([
-      "ls-tree",
-      "--name-only",
-      beforeSha,
-      "--",
-      factsPath,
-    ]);
-    if (factsLsTree === null || factsLsTree.code !== 0) {
-      unchecked.push(
-        `${notChecked}could not read ${factsPath} at the before-run head`,
-      );
-      continue;
-    }
-    if (factsLsTree.stdout.trim() !== "") {
-      const factsShow = await deps.runGit([
-        "show",
-        `${beforeSha}:${factsPath}`,
-      ]);
-      if (factsShow === null || factsShow.code !== 0) {
-        unchecked.push(
-          `${notChecked}could not read ${factsPath} at the before-run head`,
-        );
-        continue;
-      }
-      const parsed = parseSummaryFacts(factsShow.stdout);
-      if (!parsed.ok) {
-        unchecked.push(
-          `${notChecked}${factsPath} at the before-run head does not parse — ${parsed.error.message}`,
-        );
-        continue;
-      }
-      previousFacts = parsed.value;
-    }
-
-    let currentFacts: SummaryFacts | null = null;
-    const loaded = await loadPrSummaryFacts(repoPath, issueNumber);
-    if (!loaded.ok) {
-      unchecked.push(`${notChecked}${loaded.error.message}`);
-      continue;
-    }
-    if (loaded.value !== null) {
-      const parsed = parseSummaryFacts(loaded.value.content);
-      if (!parsed.ok) {
-        unchecked.push(
-          `${notChecked}${factsPath} at the head does not parse — ${parsed.error.message}`,
-        );
-        continue;
-      }
-      currentFacts = parsed.value;
-    }
-
-    const cited = changedFilesCitedBy(previous, pushFiles, previousFacts);
-    const hunksByPath = new Map<string, readonly DiffHunk[]>();
-    for (const path of cited) {
-      const diff = await deps.runGit([
-        "diff",
-        "-U0",
-        "--no-color",
-        "--no-ext-diff",
-        "--no-textconv",
-        beforeSha,
-        "--",
-        path,
-      ]);
-      if (diff === null || diff.code !== 0) continue;
-      const hunks = parseDiffHunks(diff.stdout);
-      if (hunks === null) continue;
-      hunksByPath.set(path, hunks);
-    }
-
-    const found = findStaleCitations({
-      summaryPath: s.path,
-      previousSummary: previous,
-      currentSummary: s.content,
-      previousFacts,
-      currentFacts,
-      currentFactsPath: factsPath,
-      changedFiles: pushFiles,
-      hunksByPath,
-    });
-    stale.push(...found.stale);
-    unchecked.push(...found.unchecked);
-  }
-
-  return { stale: uniq(stale), unchecked: uniq(unchecked) };
 }
 
 /**
@@ -1564,12 +1397,7 @@ export async function runPrFeedbackDriftCheck(
   const codeFiles = codeChangingFiles(pushFiles);
   const changesBehaviour = codeFiles.length > 0;
   const headCounts = await computeHeadCounts(repoPath, prFiles);
-  const initialChecks = collect(
-    summaries,
-    headCounts,
-    prFiles,
-    changesBehaviour,
-  );
+  const initialChecks = collect(summaries, headCounts);
   // A figure the recount cannot check is reported, not passed silently
   // (Issue #3381), and is a drift hit that drives the recovery turn and the
   // residual (Issue #3740, `collect`). The warning is kept as it was.
@@ -1604,13 +1432,7 @@ export async function runPrFeedbackDriftCheck(
   // citations left at the previous head's line numbers (Issue #3341). Runs
   // on every non-skipped push, not gated on `changesBehaviour` or the model
   // pass — a citation can go stale on a docs-only push too.
-  const initialCitations = await checkLineCitations(
-    repoPath,
-    deps,
-    beforeSha,
-    summaries,
-    pushFiles,
-  );
+  const initialCitations = { stale: [] as string[], unchecked: [] as string[] };
 
   // Diff-scoped mutation check over this run's own lines, base merges
   // excluded (Issue #3750). Survivors not covered by a PR-summary exemption
@@ -1672,7 +1494,7 @@ export async function runPrFeedbackDriftCheck(
     }
     const docFiles: string[] = [];
     for (const path of prFiles) {
-      if (!isDocsSweepExemptPath(path) || isTestFilePath(path)) continue;
+      if (!isDocumentationPath(path)) continue;
       if (
         !await summaryInScope(repoPath, deps, path, issueNumber, baseRef)
       ) continue;
@@ -1871,23 +1693,12 @@ export async function runPrFeedbackDriftCheck(
     baseRef,
   );
   const freshHeadCounts = await computeHeadCounts(repoPath, prFiles);
-  const freshChecks = collect(
-    freshSummaries,
-    freshHeadCounts,
-    prFiles,
-    changesBehaviour,
-  );
+  const freshChecks = collect(freshSummaries, freshHeadCounts);
   const freshStaleQuotes = await checkStaleQuotes(
     repoPath,
     changeRequestFindings,
   );
-  const freshCitations = await checkLineCitations(
-    repoPath,
-    deps,
-    beforeSha,
-    freshSummaries,
-    pushFiles,
-  );
+  const freshCitations = { stale: [] as string[], unchecked: [] as string[] };
   // The mutation check runs again only when the recovery turn ran against
   // initial survivors (Issue #3750): the fresh summaries then supply any
   // exemption the turn added. Otherwise the initial verdict stands.

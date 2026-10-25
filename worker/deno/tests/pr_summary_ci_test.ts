@@ -36,7 +36,6 @@ import {
 } from "./support/git_repo_fixture.ts";
 
 const SUMMARY_PATH = "docs/archive/pr-summaries/pr-summary-42.md";
-const FACTS_PATH = "docs/archive/pr-summaries/pr-summary-42.facts.json";
 const CODE_FILE = "worker/deno/lib/foo.ts";
 const BRANCH = "issue-42-foo";
 
@@ -52,10 +51,6 @@ const GOOD_SUMMARY = [
   "",
 ].join("\n");
 
-const NO_DOCS_SWEEP = GOOD_SUMMARY.split("\n").filter((line) =>
-  !line.includes("Docs sweep")
-).join("\n");
-
 // --- Pure: classification ---------------------------------------------------
 
 Deno.test("isCodePath - worker, prompts and .claude paths are code; docs and look-alikes are not", () => {
@@ -67,9 +62,8 @@ Deno.test("isCodePath - worker, prompts and .claude paths are code; docs and loo
   assert(!isCodePath("docs/worker/x"));
 });
 
-Deno.test("summaryIssueOf - reads the issue from the summary and facts names only", () => {
+Deno.test("summaryIssueOf - reads the issue from the summary name only", () => {
   assertEquals(summaryIssueOf(SUMMARY_PATH), 42);
-  assertEquals(summaryIssueOf(FACTS_PATH), 42);
   assertEquals(summaryIssueOf(`${SUMMARY_PATH}.bak`), null);
   assertEquals(
     summaryIssueOf("docs/archive/pr-summaries/pr-summary-012.md"),
@@ -140,17 +134,6 @@ Deno.test("judgeFreshness - a commit touching both code and summary counts as fr
   assertEquals(judgeFreshness(commits, 42), {
     kind: "fresh",
     summaryCommit: "sc",
-  });
-});
-
-Deno.test("judgeFreshness - a facts-only commit counts as a summary commit", () => {
-  const commits: CommitChange[] = [
-    { sha: "f1", files: [FACTS_PATH] },
-    { sha: "c1", files: [CODE_FILE] },
-  ];
-  assertEquals(judgeFreshness(commits, 42), {
-    kind: "fresh",
-    summaryCommit: "f1",
   });
 });
 
@@ -412,19 +395,6 @@ Deno.test("pr-summary-ci - a branch with only code changes and no summary is no 
   });
 });
 
-Deno.test("pr-summary-ci - a blocked gate fails even when the summary is fresh", async () => {
-  await withRepo(async (clone) => {
-    await startBranch(clone, BRANCH);
-    await commitCode(clone, "export const a = 1;\n");
-    await commitSummary(clone, NO_DOCS_SWEEP);
-
-    const r = await runCi(clone, BRANCH);
-    assertEquals(r.code, 1);
-    assertStringIncludes(r.stdout, "[PASSED] Summary freshness");
-    assertStringIncludes(r.stdout, "[BLOCKED] Docs sweep");
-  });
-});
-
 Deno.test("pr-summary-ci - a non-issue head branch carrying a summary is not checked and exits 0", async () => {
   await withRepo(async (clone) => {
     await startBranch(clone, "milestone/foo");
@@ -516,24 +486,7 @@ Deno.test("pr-summary-ci - a code commit that is a child of the summary but date
   });
 });
 
-Deno.test("pr-summary-ci - a branch changing only the facts file, with no summary, is blocked", async () => {
-  await withRepo(async (clone) => {
-    await startBranch(clone, BRANCH);
-    await commitCode(clone, "export const a = 1;\n");
-    await Deno.mkdir(`${clone}/docs/archive/pr-summaries`, { recursive: true });
-    await commitFile(clone, FACTS_PATH, "{}\n", "facts only");
-
-    const r = await runCi(clone, BRANCH);
-    assertEquals(r.code, 1);
-    assertStringIncludes(r.stdout, "[BLOCKED] Summary freshness");
-    assertStringIncludes(
-      r.stdout,
-      `the facts file ${FACTS_PATH} is on the branch but the summary ${SUMMARY_PATH} is not`,
-    );
-  });
-});
-
-// --- Branch-outcome coverage: report escaping and counting -------------------
+// --- Report escaping and counting --------------------------------------------
 
 Deno.test("formatCiReport - a DEL character in a code path is escaped, not printed raw", () => {
   const text = formatCiReport({

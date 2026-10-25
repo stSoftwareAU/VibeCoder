@@ -161,6 +161,12 @@ Deno.test("detectMilestoneDeadlocks - a dependency with no milestone is not held
   assertEquals(detectMilestoneDeadlocks(graph), []);
 });
 
+Deno.test("detectMilestoneDeadlocks - a landed dependency is not held", () => {
+  const graph = autoTraderGraph();
+  graph.landedDependencies = [1456];
+  assertEquals(detectMilestoneDeadlocks(graph), []);
+});
+
 Deno.test("detectMilestoneDeadlocks - an empty graph reports nothing", () => {
   assertEquals(
     detectMilestoneDeadlocks({

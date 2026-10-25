@@ -170,7 +170,6 @@ import { milestoneBranchSyncCommand } from "./commands/milestone_branch_sync.ts"
 import { diagnoseCommand } from "./commands/diagnose.ts";
 import { diagnoseIssueCommand } from "./commands/diagnose_issue.ts";
 import { diagnoseRepoCommand } from "./commands/diagnose_repo.ts";
-import { clarityPhaseCommand } from "./commands/clarity_phase.ts";
 import { qualityGatePhaseCommand } from "./commands/quality_gate_phase.ts";
 import { executeClaudePhaseCommand } from "./commands/execute_claude_phase.ts";
 import { workOnIssueCommand } from "./commands/work_on_issue.ts";
@@ -375,7 +374,6 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(diagnoseCommand);
   registry.register(diagnoseIssueCommand);
   registry.register(diagnoseRepoCommand);
-  registry.register(clarityPhaseCommand);
   registry.register(qualityGatePhaseCommand);
   registry.register(executeClaudePhaseCommand);
   registry.register(workOnIssueCommand);

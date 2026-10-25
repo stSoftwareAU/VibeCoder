@@ -243,7 +243,7 @@ Deno.test("renovate custom managers capture every pinned CI install", async () =
   // Issue #1344 removed `pages.yml`, and `http-server`/`pa11y-ci` went with
   // it. Issue #1376 took the Ruby tree, so `bundler-audit` — and the
   // `rubygems` custom manager that pinned it — went too.
-  for (const expected of ["markdownlint-cli2@0.23.2"]) {
+  for (const expected of ["markdownlint-cli2@0.24.0"]) {
     assert(
       captured.has(expected),
       `no renovate customManager captures ${expected}; captured: ` +

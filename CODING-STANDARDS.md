@@ -277,16 +277,7 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    edited test files). Each one needs an issue requirement that makes it
    untrue, recorded in the PR summary. An assertion removed without one is a
    blocking self-review finding: restore it, or move it to a test that still
-   covers the behaviour and say where. The worker enforces this at PR
-   creation (`removed_assertion_gate.ts`, Issues #3131, #3739): each removed
-   assertion has its own Test Plan list entry, with `Required by: "<quote>"`
-   quoting at least 5 words verbatim from the linked issue's title or body
-   (not comments), or `Moved to: <path>` naming the file where the same
-   assertion is added with its guards and coverage preserved. A replacement
-   also carries `Replaced by:` naming the new assertions in inline code;
-   each must be added in the same test file. The Standards reviewer identifies replacements from the diff, rejects
-   omitted `Replaced by:` entries, compares each pair and rejects lost
-   checks that still hold. The requirement
+   covers the behaviour and say where. The Test Plan table that used to block the pull request for this was removed (Issue #4234). The requirement
    shows the new value is right, not that the edited test still checks
    anything: each edited
    expectation also owes the red-check in **An edited expectation must
@@ -786,13 +777,7 @@ is a new environment requirement, the Test Plan names the existing tests
 that needed fixture changes, or says that none did and how that was checked.
 stSoftwareAU/VibeCoder#3388 and #3522 each left an unedited negative test in
 a plain temporary directory that no longer reached the guard it pins
-(Issue #3530). The same holds for a change to an emitted or read form — a
-label, a key, a prefix or a format. Search the tests for the old form and
-for fragments of it. Confirm that every absence check, negative case and
-containment check that names it can still fail, and record the search in
-the Test Plan. An absence check, negative case or containment check that
-names the old form and can no longer fail is a blocking self-review
-finding (Issue #4163).
+(Issue #3530).
 
 **Every changed call site needs a test that goes red without it.** This
 covers every new or changed wiring between an entry point and the code it
@@ -890,25 +875,10 @@ it or forcing it to the value that lets the other operands decide, and name a
 test that goes red for each one. Reverting the whole change, or deleting the
 whole condition, does not show which operand a test reaches. An outcome with
 no test, or one whose flip leaves the suite green, is a blocking self-review
-finding: add a test for it. When the run writes or refreshes a PR summary,
-record the enumeration as structured facts in
-`docs/archive/pr-summaries/pr-summary-<N>.facts.json` beside it — one entry
-per outcome naming `path:line`, the outcome, the test that reaches it, and that
-flipping it went red, or `"noneAdded": true` when the diff adds no branch — and
-leave the `<!-- vibe-branch-outcomes -->` marker in its
-Test Plan, where the worker renders that record as the `Branch outcomes:` list
-(`CODING-STANDARDS.md` → **Branch outcomes facts file** gives the schema); every
-test it names must exist at the head (see **A named test must exist**). Without
-a facts file, the worker still reads a `Branch outcomes:` list written in the
-Test Plan, or `Branch outcomes: none added`. A `Branch outcomes:` line for a
-compound condition names the operand it covers, and its flip is that operand's
-flip (Issue #3376). An entry that admits no test reaches its outcome is work
-still to do, not a record: add the test that goes red, or remove the branch.
-Only an outcome the issue puts out of scope, or one production can reach but a
-test cannot stage, may stand, written `exempt (out of scope): <reason>` or
-`exempt (untestable): <reason>` (in the facts file, an `exempt` object of kind
-`out-of-scope` or `untestable` with that reason); an issue run's branch-outcomes
-gate blocks PR creation on any other admission (Issue #3288). An outcome no
+finding: add a test for it. Every test the summary names must exist at the
+head (see **A named test must exist**). The test plan names the operand it covers. A compound condition's flip is that
+operand's flip (Issue #3376). An outcome no test reaches is work still to do:
+add the test that goes red, or remove the branch. An outcome no
 input can reach is dead code: remove it, never exempt it. `exempt (untestable)`
 is for an outcome production can reach but a test cannot stage, such as a
 permission or I/O fault the suite cannot stage portably; its reason names what
@@ -916,69 +886,12 @@ blocks staging and the harness search — the test files that already call the
 enclosing function or script (a grep of the test tree for its name), each with
 why it cannot reach the outcome. "No existing harness" with no search named is
 not a reason. An outcome the linked issue asks a test for, in its acceptance
-criteria or Definition of done, cannot be `exempt (untestable)`. The gate checks
-only that an exemption gives a reason of three or more words, so the search must
-be named for a reviewer to check it (Issue #3428). The diff-scoped mutation
-check (Issue #3393, `docs/mutation-check.md`) blocks the PR on any added line
-whose mutation the tests do not catch, exempt only by the same
-`exempt (untestable): <reason>` record naming `path:line`. A fix to an existing
-PR re-enumerates every branch its own commits add, not only those a review
-finding named, and refreshes the facts file (or, without one, the list) to the
-head.
-
-**Branch outcomes facts file.** The facts file is JSON of this shape: top level
-`{"version": 1, "branchOutcomes": {"noneAdded": <boolean>, "entries": [...]}}`;
-unknown keys are rejected and only version 1 is accepted. `noneAdded: true`
-requires an empty `entries`; `false` requires at least one entry. Every entry
-has `path` (repo-relative, characters `[A-Za-z0-9_.-/]` only, no `..` or empty
-segment, at most 300 chars), `line` (a positive integer), an optional `endLine`
-(not less than `line`) and `outcome`. Each entry then gives either `test` (a
-test file path), `testName` and `flipWentRed`, or `exempt:
-{"kind": "out-of-scope" | "untestable", "reason": "..."}` — never both, never
-neither; the reason needs at least 3 words. Text fields are single-line,
-non-empty and at most 1,000 chars. Caps: the raw file at most 100,000 chars
-(checked before parsing), at most 100 entries, and each rendered entry at most
-4,000 chars. It fails closed: a facts file that cannot be read or fails any
-rule blocks PR creation with the field path and reason (for example
-`branchOutcomes.entries[0].exempt.reason: needs at least 3 words`); it is never
-treated as absent. The worker renders the list at the first
-`<!-- vibe-branch-outcomes -->` marker and owns the block through
-`<!-- /vibe-branch-outcomes -->`. Re-rendering replaces that block idempotently.
-Structured facts are authoritative: safely identified legacy lists are replaced,
-with unrelated narrative preserved. Ambiguous ownership and unreached-outcome
-admissions block rather than being discarded. Write the facts and marker, not a
-second independently maintained list. The rendered list is
-then checked like a prose one, including that each named test exists at the
-head. With no facts file, the `Branch outcomes:` list in the Test Plan is read
-as before.
-
-```json
-{
-  "version": 1,
-  "branchOutcomes": {
-    "noneAdded": false,
-    "entries": [
-      {
-        "path": "worker/deno/lib/example.ts",
-        "line": 42,
-        "outcome": "returns the fail-closed default when the file is absent",
-        "test": "worker/deno/tests/example_test.ts",
-        "testName": "example fails closed when the file is absent",
-        "flipWentRed": "returned the lenient value; the test went red"
-      },
-      {
-        "path": "worker/deno/lib/example.ts",
-        "line": 57,
-        "outcome": "retries after a disk fault",
-        "exempt": {
-          "kind": "untestable",
-          "reason": "the suite cannot stage a disk fault portably"
-        }
-      }
-    ]
-  }
-}
-```
+criteria or Definition of done, cannot be `exempt (untestable)`. Name the
+search so a reviewer can check it (Issue #3428). The diff-scoped mutation
+check (Issue #3393, `docs/mutation-check.md`) reports any added line whose
+mutation the tests do not catch; it does not stop the pull request. A fix to
+an existing PR re-checks every branch its own commits add, not only those a
+review finding named.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
@@ -1907,9 +1820,8 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   doc yet, so a grep for it comes back clean. Every doc comment, module doc,
   manual page or API description that lists the set names the new member in
   the same change, or is reworded so it no longer reads as complete. Name the
-  siblings you grepped in the Docs sweep line's `siblings:` part, backticked or
-  double-quoted, or write `siblings: none — <why no existing set gained a
-  member>`; fleet PRs that grepped only the new name left a list one short
+  siblings you grepped in the PR summary; fleet PRs that grepped only the new
+  name left a list one short
   (GRQ-AutoTrader#2460, #2481, #2682, #2792).
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
@@ -1920,9 +1832,8 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
 - Grep for the **stem** of a behavioural claim, not one inflection
   (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
   final head after editing. In a file you update, read every passage that
-  mentions the changed surface, not only the section you edited. Each
-  remaining hit goes in the Docs sweep line by `file:line` with the reason it
-  is still true.
+  mentions the changed surface, not only the section you edited. Name each
+  remaining hit in the PR summary by `file:line` with the reason it is still true.
 - **Check where you insert.** Before adding a new function, item, test or
   paragraph, read the lines directly above and below the insertion point. A
   doc comment, attribute or decorator directly above belongs to the item
@@ -1988,34 +1899,18 @@ for every PR summary — containing:
 3. **Evidence** — Screenshots (saved to `docs/evidence/`) for UI changes,
    before/after benchmark results for performance changes, or test references
    for bug fixes. If visual evidence cannot be provided, state why.
-   Always add a one-line **Docs sweep** — the grep terms searched, the doc
-   files updated, the manual `section:` read for the changed surface, and the
-   `siblings:` part (the existing sibling members grepped for each set the
-   change adds a member to, or `siblings: none — <why>`), or `no hits` (see
-   [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)). The
-   worker refuses to raise a PR whose diff changes code with no such line, or
-   whose line has no real `section:` or `siblings:` part, or whose grep field
-   has no quoted term and no explained `grep: none — <why>` negative. It re-runs the quoted
-   sibling terms as it re-runs the grep terms.
-   Re-run the grep on the final head and list each hit you leave in place as
-   `file:line — still true because …`, so the worker and the reviewer can
-   check it: the worker re-runs the line's quoted terms over the head's docs
-   and the comment lines of its source files, and posts a hit outside the
-   diff that the line does not name as an advisory PR comment for the
-   reviewer, rather than blocking the PR.
+   Name the manual section you read and the doc files you updated (see
+   [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)).
+   The docs-sweep line and the gate that refused a pull request for it were
+   removed (Issue #4234).
 4. **Test Plan** — Tests added or modified.
 
 In this repository, `deno task pr-summary-check --base <base-branch>
-<summary-file>` from `worker/deno` runs most of the PR-summary gates against a
-summary at either stage: a draft before the PR is raised, or the archived
-summary once it is open. A gate it reports as not checked is not a pass. For a
-summary named `pr-summary-<N>.md` it also reads
-`docs/archive/pr-summaries/pr-summary-<N>.facts.json` under the repository
-root, as the worker does (it takes only `<N>` from the summary's file name):
-the Branch outcomes gate sees the list rendered at the
-`<!-- vibe-branch-outcomes -->` marker. It blocks on invalid facts, ambiguous
-block ownership or unresolved evidence; a safely identified legacy duplicate is
-regenerated from the facts.
+<summary-file>` from `worker/deno` reports the summary gates that remain:
+closure, independent review, reproduction status and result placeholders.
+A finding there is advice for the reviewer (Issue #4234). The check does not
+read a facts file. A result reported as not checked is not a pass; name the
+check that could not run and its reason.
 
 `deno task pr-summary-check`
 (`worker/deno/lib/pr_summary_check.ts`) is the twin of the completion phase's
@@ -2043,9 +1938,9 @@ CI runs the same gates on every push to a pull request: the `PR summary
 freshness and gates` step in `.github/workflows/validate-scripts.yml` runs
 `deno task pr-summary-ci --base <base-branch> --head-branch <head-branch>`
 (Issue #3768). On an `issue-<N>-…` head branch whose diff carries
-`pr-summary-<N>.md` (or its facts file), it fails when the PR's newest non-merge
+`pr-summary-<N>.md`, it fails when the PR's newest non-merge
 commit changing `worker/`, `prompts/` or `.claude/` is newer than the newest
-commit changing that summary or its facts file. Rewrite the summary for the head
+commit changing that summary. The digest is of the summary alone. Rewrite the summary for the head
 in that push, whoever makes it. The step then runs the `pr-summary-check` gates
 and fails on a blocked one; gates needing the issue body or labels are reported
 as not checked. A PR carrying no summary passes with a log line. On a head
@@ -2057,9 +1952,8 @@ run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
 it names, and rewrite — never append to — the summary so every claim
 (reproduction status, test results, "known defect" notes, named functions and
 files) matches the head — an illustrative example ("for example `X`") is a
-claim too. The worker also checks this named-code rule on the first-run
-summary before the PR is raised, and blocks a false claim it confirms
-(Issue #3257).
+claim too. The first-run claim check that blocked a false claim before the
+pull request was raised was removed (Issue #4234).
 Every file or behaviour the summary says the PR changes
 must appear in `git diff <base>...HEAD`, not merely exist at the head — a merge
 from the base branch can supersede the change — and an abandoned iteration's
@@ -2081,7 +1975,8 @@ The worker enforces this itself, not only a reviewer, because a PR into a
 milestone branch merges unreviewed on green CI (Issue #3177): a summary
 whose `## Acceptance Criteria` block marks any criterion `missing` is raised
 as `Part of #<n>`, never `Closes #<n>`, and when it merges the worker leaves
-the issue open, labels it `needs-human` and names the missing criteria.
+the issue open and queued, with its existing labels, so a later run finishes
+the missing criteria (Issue #4304).
 In an issue run, a hand-off (the planning marker, a time deferral, or a
 `## Blocked:` dependency) is honoured after a commit as well as before one.
 A free-text escape hatch is honoured only while the branch has no commits
@@ -2092,10 +1987,9 @@ line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). That CI-fix
 deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
 or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
 (`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
-branch is red. The Escape Hatch
-in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
-honoured on a committed PR branch when `.pr_response_message` names a
-follow-up issue. Any later commit on the branch — a
+branch is red. A PR-feedback or CI-fix hand-off in `.pr_response_message`
+that names a follow-up issue is still recognised on a committed PR branch,
+although `prompts/pr_feedback/prompt.md` no longer offers one (Issue #4304). Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
 
@@ -2158,23 +2052,15 @@ not imply an automatic patch policy. Exact release/build evidence belongs in
 Evidence with its final commit or release provenance. Preserve dependency pins,
 historical reproduction versions, migration examples and changelog entries.
 
-The worker checks this mechanically too (Issues #3347, #3715, #3731).
-Whenever a PR summary was loaded, the first-run claim check asks a read-only
-model, before the PR is raised, about added or edited manual/prompt Markdown,
-changed source comments, and unchanged module headers or doc comments attached
-to changed declarations. It also checks heading-bounded manual sections named
-by the Docs sweep entry or mentioning a changed source path, basename or
-exported declaration; this extra manual scope excludes `docs/archive/`.
-The prose scope is capped at 20 files and 40 affected manual sections; anything
-past a cap is logged as not checked, never passed. For unchanged prose the
-question is whether this change makes it false, and sets without one code list
-require a grep of the whole head tree for other members. A confirmed
-contradiction is a summary-rule block: on the run's first summary-rule block
-the run gets one recovery turn to rewrite the sentence, and a block that
-survives it fails the run or, when a PR already exists, finalises it as
-`summary_incomplete`. On a review-fix push the drift check builds the same
-prose scope and gives one recovery turn before reporting what remains. This
-enforces the rule above; it does not replace it.
+The first-run claim check that used to ask this before the pull request was
+raised was removed (Issue #4234). A review-fix push still asks the shared
+doc-prose question through the drift check's model pass (Issues #3347, #3715,
+#3731), over changed comments, unchanged attached headers and heading-bounded
+manual sections the summary names or that mention a changed source path. That
+scope excludes `docs/archive/` and is capped at 20 files and 40 manual
+sections; anything past a cap is logged as not checked, never passed. A
+finding that remains is reported on the pull request. This does not replace
+the rule above.
 
 **Behaviour another issue delivers is not described as present.** A doc,
 prompt or code comment may name work that another issue owns — a sibling

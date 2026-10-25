@@ -1,4 +1,4 @@
-import { agentTranscriptDir } from "./agent_transcript.ts";
+import { agentTranscriptDir, agentTranscriptPath } from "./agent_transcript.ts";
 import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
 /**
  * Production dependency wiring for the run-core main event loop.
@@ -342,7 +342,11 @@ import {
 } from "./rate_limit_signal.ts";
 import { isHostRateLimitPauseActive } from "./provider_quota_scope.ts";
 import { fallbackPolicyFromWorkerConfig } from "./provider_fallback_policy.ts";
-import { deriveIdleReason, recordHookFailure } from "./fleet_telemetry.ts";
+import {
+  deriveIdleReason,
+  recordHookFailure,
+  recordOutcome,
+} from "./fleet_telemetry.ts";
 import { writeFleetTelemetryFile } from "./fleet_telemetry_sidecar.ts";
 import { preflightGitHubRateLimit } from "./github_rate_limit_preflight.ts";
 import { heldProviderCredentialLabel } from "./credential_preflight.ts";
@@ -413,6 +417,7 @@ import {
   buildIssueRunCallbackContext,
 } from "./run_callback_context.ts";
 import { getRunId } from "./run_id.ts";
+import { parseCodexTranscript } from "./run_outcome_classifier.ts";
 import {
   type FleetAuthorSetInput,
   isFleetAuthor,
@@ -493,6 +498,11 @@ import {
   terminateActiveAgentRuns,
 } from "./claude_runner.ts";
 import { fileRunFailureIssue } from "./run_failure_issue.ts";
+import {
+  HARD_KILL_FAILURE_CLASS,
+  reportPendingHardKills,
+} from "./hard_kill_report.ts";
+import type { SelfDiagnosticFiling } from "./self_diagnostic_attestation.ts";
 import { setMarkerReleaseHook } from "./claim_release.ts";
 import { readMarkerState } from "./heartbeat_storage.ts";
 import { probeHostMemoryPressure } from "./memory_pressure.ts";
@@ -576,6 +586,40 @@ function homeDirectory(env: EnvLookup): string | undefined {
   return env("HOME") ?? env("USERPROFILE");
 }
 
+/**
+ * Codex session items for this run, when the transcript tee wrote one
+ * (Issue #4324).
+ *
+ * A missing file is the tee being off, not a fault. Any other read failure
+ * is logged and treated as no transcript, so claim release still finishes.
+ */
+async function readCodexTranscriptItems(
+  issueNumber: number,
+  env: EnvLookup,
+  log: (message: string) => void,
+): Promise<readonly unknown[] | undefined> {
+  const home = homeDirectory(env);
+  if (!home) return undefined;
+  const path = agentTranscriptPath(
+    agentTranscriptDir(home),
+    getRunId(),
+    issueNumber,
+  );
+  try {
+    const text = await Deno.readTextFile(path);
+    const items = parseCodexTranscript(text);
+    return items.length > 0 ? items : undefined;
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return undefined;
+    log(
+      `Codex transcript for #${issueNumber} could not be read: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -638,6 +682,24 @@ export interface ProductionDepsOptions {
    * takes its default runner.
    */
   idleDetectGhCommandFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * `gh` runner the hard-kill reporter files through (Issue #4254).
+   *
+   * Production leaves this unset and gets {@link runGhCommandRaw}. Tests inject
+   * a stub so the wiring from `reportHardKills` to its failure hook and fleet
+   * count can be driven end to end without a real `gh` call.
+   */
+  hardKillGhFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * Attestation recorder the hard-kill reporter files through (Issue #4254).
+   *
+   * Production leaves this unset and gets the module's own default, the
+   * production recorder. Tests inject a fake so a filing never appends to the
+   * host's audit journal.
+   */
+  hardKillRecordFiling?: (filing: SelfDiagnosticFiling) => Promise<boolean>;
 
   /**
    * `gh` runner for the cross-repo open-PR prefetch (Issue #1486).
@@ -3730,7 +3792,9 @@ export async function createProductionRunCoreDeps(
             // reopened. Only the fleet's own roll-back marker suppresses the
             // close, so the maintenance author set is what is trusted here.
             fleetAuthors: maintenanceAuthors,
-            logFn: (message: string) => logger.info(message),
+            // Issue #4175: a level-aware sink, so a rollup that cannot be
+            // created reaches logger.warn.
+            logFn: bindLogger(logger),
             // Issue #2831: a failed fetch or state save is logged, not lost.
             logger,
           },
@@ -4805,11 +4869,6 @@ export async function createProductionRunCoreDeps(
         issueBody: issueData.body ?? "",
         issueLabels: issueData.labels ?? [],
         issueComments: commentContext.issueComments,
-        // Issue #4061: the same comments with their authors, for the clarity
-        // phase's round count (Issue #1263). Left out, every issue warned
-        // "No authored comment rows", counted zero rounds, and the
-        // `maxClarificationRounds` escape could never trigger.
-        issueCommentRows: issueData.comments ?? [],
         ...(commentContext.commentBoundaryId
           ? { commentBoundaryId: commentContext.commentBoundaryId }
           : {}),
@@ -4890,12 +4949,18 @@ export async function createProductionRunCoreDeps(
       // A setup fault (Issue #2954) is released unlabelled and consumes no
       // attempt — the fault is the host's or the repository's, not the
       // issue's.
+      const transcript = await readCodexTranscriptItems(
+        issue.issueNumber,
+        env,
+        (message) => logger.info(message),
+      );
       const plan = planCodingFailure({
         success: result.success,
         expectedSkip: isExpectedSkip,
         reason: result.reason,
         category: result.category,
         classification: result.classification,
+        ...(transcript ? { transcript } : {}),
         ...(result.ladderApplied ? { ladderApplied: true } : {}),
         ...(result.phase ? { phase: result.phase } : {}),
       });
@@ -4908,6 +4973,7 @@ export async function createProductionRunCoreDeps(
           failureReason: result.reason,
           category: result.category,
           classification: result.classification,
+          ...(transcript ? { transcript } : {}),
           ...(result.phase ? { failurePhase: result.phase } : {}),
           labels: {
             failedLabel: config.failedLabel,
@@ -5286,12 +5352,18 @@ export async function createProductionRunCoreDeps(
         // #4329), best-effort so this cannot stop claim release.
         try {
           const marker = await readMarkerState(workDir, repo, issueNumber);
+          const transcript = await readCodexTranscriptItems(
+            issueNumber,
+            env,
+            (message) => logger.info(message),
+          );
           const decision = await fileRunFailureIssue({
             report: {
               sourceRepo: repo,
               sourceIssueNumber: issueNumber,
               outcome,
               machineId,
+              ...(transcript ? { transcript } : {}),
               ...(marker?.commentId
                 ? {
                   releaseCommentUrl:
@@ -5436,7 +5508,9 @@ export async function createProductionRunCoreDeps(
           // `enabled: false`.
           rtk: run.rtk ?? rtkNotRun(config.rtkOutput.enabled),
         }, {
-          runId: getRunId(),
+          // Issue #4254: a hard-kill report names the killed run's id; every
+          // other caller reports the current run.
+          runId: run.runId ?? getRunId(),
           host: Deno.hostname(),
           ...(config.workerName ? { workerName: config.workerName } : {}),
           ...(config.agentProvider ? { provider: config.agentProvider } : {}),
@@ -5492,6 +5566,47 @@ export async function createProductionRunCoreDeps(
         log: bindLogger(logger),
         logError: (message) => logger.error(message),
       });
+    },
+    /**
+     * Report the hard-kill evidence files the launcher watchdog left in the
+     * host log directory (Issue #4254). Each signature is filed once, its
+     * failure callback runs through the same `runIssueCallbacks` path as any
+     * other run, and the kill is counted in the first scan cycle's fleet
+     * summary (the cycle that runs this report). Never throws.
+     */
+    async reportHardKills() {
+      const evidenceDir = hostLogDirectory(env);
+      if (evidenceDir === null) {
+        logger.info(
+          "Hard-kill reporting skipped: no HOME, so no host log directory (Issue #4254).",
+        );
+        return;
+      }
+      try {
+        const summary = await reportPendingHardKills({
+          evidenceDir,
+          ghFn: options.hardKillGhFn ?? runGhCommandRaw,
+          runFailureCallback: async (run) => {
+            await deps.runIssueCallbacks?.(run);
+          },
+          countFailure: () => recordOutcome("failure", HARD_KILL_FAILURE_CLASS),
+          recordFiling: options.hardKillRecordFiling,
+          log: (message) => logger.info(message),
+          logError: (message) => logger.error(message),
+          logWarn: (message) => logger.warn(message),
+        });
+        if (summary.found > 0) {
+          logger.info(
+            `Hard-kill reporting: found ${summary.found}, reported ${summary.reported}, kept ${summary.kept} for the next start (Issue #4254).`,
+          );
+        }
+      } catch (error) {
+        logger.warn(
+          `Hard-kill reporting faulted: ${
+            error instanceof Error ? error.message : String(error)
+          }. The scan cycle continues.`,
+        );
+      }
     },
     async cleanupInProgressIssue() {
       try {

@@ -31,6 +31,11 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
+import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
+
+/** A full-history gitleaks or trufflehog pass. Minutes, then it fails loud. */
+const HISTORY_SCAN_TIMEOUT_MS = 30 * 60 * 1000;
+
 /** A location-only finding — never carries the secret value itself. */
 export interface HistoryFinding {
   /** Scanner that reported it. */
@@ -675,19 +680,27 @@ function statusLabel(status: FindingStatus): string {
 }
 
 /** Default runner — spawns the scanner as a subprocess. */
-const defaultRunner: CommandRunner = async (cmd, cwd) => {
+export async function runHistoryScanner(
+  cmd: ScanCommand,
+  cwd: string,
+  timeoutMs: number = HISTORY_SCAN_TIMEOUT_MS,
+): Promise<CommandOutcome> {
   let output: Deno.CommandOutput;
   try {
-    output = await new Deno.Command(cmd.bin, {
+    output = await commandOutputWithTimeout(cmd.bin, {
       args: cmd.args,
       cwd,
       stdout: "piped",
       stderr: "piped",
-    }).output();
+      timeoutMs,
+    });
   } catch (error) {
-    // Fail loud: a missing scanner must never look like a clean sweep.
+    // Fail loud: a missing scanner, or one that timed out, must never look
+    // like a clean sweep.
     throw new Error(
-      `failed to run "${cmd.bin}": ${(error as Error).message}. ` +
+      `failed to run "${cmd.bin}": ${
+        error instanceof Error ? error.message : String(error)
+      }. ` +
         `Install ${cmd.bin} before running the full-history scan.`,
     );
   }
@@ -696,7 +709,9 @@ const defaultRunner: CommandRunner = async (cmd, cwd) => {
     stdout: new TextDecoder().decode(output.stdout),
     stderr: new TextDecoder().decode(output.stderr),
   };
-};
+}
+
+const defaultRunner: CommandRunner = (cmd, cwd) => runHistoryScanner(cmd, cwd);
 
 /** Enumerate every ref in the repository (branches, tags, remotes). */
 export async function listRefs(

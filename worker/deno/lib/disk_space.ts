@@ -341,7 +341,7 @@ export async function getDiskFreeBytes(path: string): Promise<number | null> {
 export type DfRunner = (
   executable: string,
   args: string[],
-  options?: { cwd?: string; timeoutMs?: number; quiet?: boolean },
+  options: { cwd?: string; timeoutMs: number; quiet?: boolean },
 ) => Promise<Result<SubprocessResult>>;
 
 /**

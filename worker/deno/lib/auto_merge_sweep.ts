@@ -22,8 +22,10 @@
  * 3. **Auto-merge follows the base** (Issue #3433) — every swept PR
  *    passes the base check before any arming or branch update (the GraphQL
  *    read is skipped only for an unarmed, non-fix PR on a milestone base); a
- *    milestone-fix PR off its milestone branch, or a PR moved onto the default branch, is disarmed and
- *    held, so a retarget cannot land a milestone's work unreviewed.
+ *    milestone-fix PR off its milestone branch, or a PR moved onto the default branch, is disarmed,
+ *    so a retarget cannot land a milestone's work unreviewed. It is moved back
+ *    onto the base it was opened against, or closed and its issue redone —
+ *    never held for a human (Issue #4304).
  * 4. **Every PR is armed for auto-merge** (Issue #4291) — PRs do not merge
  *    until they have a review approval and CI is green, and GitHub enforces
  *    both. The sweep never withholds arming, or disarms, for a review, a

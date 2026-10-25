@@ -1,5 +1,6 @@
-// Tests for the manual/prompt prose scope and question shared by the
-// first-run claim check and the review-fix drift check (Issue #3347).
+// Tests for the manual and prompt prose helpers the review-fix drift check
+// uses: path selection, the file cap, and the prose-against-code question
+// (Issue #3347). The first-run claim check was removed (Issue #4234).
 // Uses Australian English throughout.
 
 import {

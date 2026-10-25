@@ -89,11 +89,7 @@ committed to the repository as permanent documentation and contains:
 The worker reads this file and includes its contents in the PR body. If no PR
 summary file is created, a warning note is included in the PR body. PR
 creation records a SHA-256 digest of the summary's content in the PR body as
-a hidden marker (when the agent also wrote the optional
-`pr-summary-{issue_number}.facts.json` facts file beside the summary, the digest
-covers the facts content too, and its Branch outcomes list is rendered into the
-body's summary; with no facts file the digest is of the summary alone, so older
-digests stay valid, Issue #3535), and the sub-agent tier the issue run resolved as a second
+a hidden marker (the digest is of the summary alone, Issue #4234), and the sub-agent tier the issue run resolved as a second
 one, `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`), so a later PR
 outcome can be attributed to that tier (Issue #3403); the fleet summary's
 per-tier PR-outcome figures do this (Issue #3404). A re-sync carries the
@@ -106,7 +102,7 @@ re-syncs under the same condition, and also when it pushed nothing and has no
 commits left unpushed, so a feedback run that only answers a finding still
 refreshes a stale body. A body raised before this digest marker existed keeps
 the older rule: rebuilt only when this run's own push changed the summary
-file or its facts file. So the description never drifts from a summary rewritten
+file. So the description never drifts from a summary rewritten
 after creation, for as long as that run's conditions are met. Priority 1.64 also
 catches a push the worker did not make (Issue #3760), such as a review-fix
 commit pushed by hand: each cycle it re-syncs, in the repos due that cycle, an
@@ -120,7 +116,7 @@ completion phase adopts it at every exit, once the checkout's HEAD is the
 pushed head and the PR is open. A marker-less PR on any other branch is still left alone.
 A re-sync never files an issue: a criterion still `partial` or `missing`
 blocks the PR at completion instead (Issue #4146, see
-[issue-processing.md](workflows/issue-processing.md#-no-pr-until-every-acceptance-criterion-is-met)).
+[issue-processing.md](workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run)).
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale
@@ -215,43 +211,13 @@ label overrides this for specific issues.
 
 ## ❓ Clarification Phase (Handling Unclear or Complex Issues)
 
-The **clarification phase** runs before implementation and is important for
-getting good results. It does three things:
-
-1. **Is the issue clear?** If not, the worker posts questions on the issue and
-   adds the `needs-human` label (the standalone
-   `needs-clarification` label was retired in favour of the consolidated
-   worker-to-human handoff signal). You reply on the issue and remove the label;
-   the worker will re-assess on the next run.
-2. **Is it small enough for a single PR / one run?** If the issue is too large,
-   the worker posts an escalation comment asking a trusted human to add the
-   `planning` label so the issue can be broken into smaller sub-issues. The
-   worker does not add `planning` itself — see
-   [Worker Label Policy](../README.md#%EF%B8%8F-supported-labels).
-3. **Is it too large for a single PR?** If the issue is clear but too complex
-   for one implementation, the worker posts an escalation comment asking a
-   trusted human to add the `planning` label — once added, the planning workflow
-   breaks it into smaller sub-issues. No code is written until the issue is
-   appropriately scoped.
-
-To skip clarification, add the `documentation` label. The worker limits
-clarification to 3 rounds (configurable) before proceeding with reasonable
-assumptions.
-
-**A masked instruction is always asked about (Issue #2390).** The worker masks
-anything secret-shaped before it publishes text, and a mask can land on the one
-value an instruction needs — `Add persist-credentials: ***REDACTED***` tells
-nobody what to set. When an issue's instructions carry a mask placeholder as
-the value of a setting, the worker does not guess and does not invoke the
-agent: it posts a `## Clarification Needed` comment naming each line and waits.
-Edit the issue to restore the value (or reply, if you would rather not edit) —
-and if the value really is a secret, describe the change without it. The
-`documentation` label does not skip this check. A secret masked in a quoted
-log, an `## Evidence` section or running prose is left alone: that is the mask
-doing its job. When the worker itself files an issue whose instructions were
-masked, the issue carries a visible notice saying so and the log carries a
-`[MASKED_INSTRUCTION_FILED]` line, so a false positive in the filter gets
-fixed at its source.
+The **clarification phase** runs before implementation. It routes an issue
+whose labels name another handler (`refine-issue`, `question`) and then runs a
+quick clarity check. An approved issue is never handed back to a human
+(Issue #4298): when the check finds it vague, the run proceeds and the agent
+states the assumptions it made in the PR summary. An issue too large for one PR
+goes to planning through the agent's `vibe-needs-planning` marker. The
+`documentation` label skips the check.
 
 For the full clarification workflow, including decision diagrams and
 configuration, see
@@ -483,6 +449,14 @@ subsequent scan until a human removes the label.
   action) is required.
 - The issue raises a product or architectural question that only a human
   stakeholder can resolve.
+
+**What is never escalated (Issue #4298):** an approved issue the worker can
+resolve itself. An analysis-only issue is closed with its analysis; a
+repository-admin finding is applied with the worker's token (or retried on the
+`failed-once` ladder when the token cannot); a dependency cycle is worked in
+issue-number order; a dead `work-on` label on a milestone tracker is stripped;
+a re-approved issue a merged PR already satisfies, and a worker diagnostic a
+merged PR fixed, are closed as completed.
 
 **To resume work:**
 
@@ -752,8 +726,9 @@ For other reviewers:
 
 The worker will process the feedback, push fixes, and dismiss the review once
 it has settled it — not at the moment it claims the review. The dismissal
-message says how it was settled (addressed, rebutted, escalated, handed off or
-permanently failed), so only a fixed review reads as addressed. A run that dies
+message says how it was settled (addressed, rebutted, handed off, or not
+addressed after two attempts — when the PR is closed and its issue redone,
+Issue #4304), so only a fixed review reads as addressed. A run that dies
 mid-flight leaves the review undismissed rather than silently answered, so it
 is picked up again (by this host or another) once its claim lapses.
 

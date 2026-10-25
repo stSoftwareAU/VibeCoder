@@ -1,15 +1,19 @@
 /**
  * Tests for `lib/context_budget_guard.ts` — the shared prompt component
- * breakdown and escalation copy behind the hard context ceiling (Issue #3713).
+ * breakdown and the planning hand-off behind the hard context ceiling
+ * (Issues #3713, #4298).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildContextBudgetEscalationReason,
   buildContextComponents,
-  CONTEXT_BUDGET_NEXT_STEP,
+  handOffOversizedIssueToPlanning,
 } from "../lib/context_budget_guard.ts";
 import { checkContextBudget } from "../lib/context_budget.ts";
+import { buildPlanningHandoffMarker } from "../lib/planning_handoff.ts";
+import { createLogger } from "../lib/logger.ts";
+import type { GitHubClient } from "../types.ts";
 
 Deno.test("context_budget_guard - measures every supplied component", () => {
   const components = buildContextComponents({
@@ -76,7 +80,33 @@ Deno.test("context_budget_guard - escalation reason survives an empty breakdown"
   assert(!reason.includes("Largest component"));
 });
 
-Deno.test("context_budget_guard - next step tells the human what to do", () => {
-  assertStringIncludes(CONTEXT_BUDGET_NEXT_STEP, "needs-human");
-  assertStringIncludes(CONTEXT_BUDGET_NEXT_STEP, "work-on");
+Deno.test("context_budget_guard - an issue already planned once is retried, not handed to anyone (Issue #4298)", async () => {
+  const labels: string[] = [];
+  const comments: string[] = [];
+  const client = {
+    getIssueComments: () =>
+      Promise.resolve([{ body: `earlier\n${buildPlanningHandoffMarker()}` }]),
+    addLabel: (_r: string, _n: number, label: string) => {
+      labels.push(label);
+      return Promise.resolve();
+    },
+    postComment: (_r: string, _n: number, body: string) => {
+      comments.push(body);
+      return Promise.resolve(undefined);
+    },
+  } as unknown as GitHubClient;
+
+  const handoff = await handOffOversizedIssueToPlanning({
+    ghClient: client,
+    repo: "org/repo",
+    issueNumber: 7,
+    githubUser: "bot",
+    issueLabels: ["work-on"],
+    reason: "too big",
+    logger: createLogger({ host: "" }),
+  });
+
+  assertEquals(handoff.applied, false);
+  assertEquals(labels, []);
+  assertEquals(comments, []);
 });

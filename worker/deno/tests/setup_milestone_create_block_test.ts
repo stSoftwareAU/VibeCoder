@@ -12,7 +12,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type IssueContext,
   type PhaseState,
@@ -165,7 +165,7 @@ Deno.test("setupBranch - repairs the create-blocking ruleset and opens the miles
   await stopHeartbeatFor(state);
 });
 
-Deno.test("setupBranch - a refused repair still fails loud and names what the worker tried (Issue #2079)", async () => {
+Deno.test("setupBranch - a refused repair still fails loud and names what the worker tried, without a hand-off (Issues #2079, #4298)", async () => {
   resetMilestoneCreateBlockRepairsForTest();
   resetRepoLevelRejectionsForTest();
   const ctx = makeContext();
@@ -197,14 +197,12 @@ Deno.test("setupBranch - a refused repair still fails loud and names what the wo
 
   assertEquals(result.status, "failure");
   assertStringIncludes((result as { reason: string }).reason, BRANCH);
-  // The handoff says the worker tried and why it could not finish.
-  assertEquals(calls.comments.length, 1);
-  const comment = calls.comments[0] ?? "";
-  assertStringIncludes(comment, "needs ADMIN");
-  assert(
-    calls.labels.includes(ctx.config.needsHumanLabel),
-    "a refused repair must still escalate to a human",
-  );
+  // The failure says the worker tried and why it could not finish, and the
+  // issue is never handed to a human (Issue #4298) — the retry repeats the
+  // repair next run.
+  assertStringIncludes((result as { reason: string }).reason, "needs ADMIN");
+  assertEquals(calls.comments.length, 0);
+  assertEquals(calls.labels.includes(ctx.config.needsHumanLabel), false);
 
   await stopHeartbeatFor(state);
 });

@@ -321,11 +321,11 @@ Deno.test(
       prExistsForBranch: false,
     });
 
-    assertEquals(observed.status, "failure");
-    assertEquals(observed.prCreateCalls, 0, "gh pr create must not run");
-    assertStringIncludes(observed.reason ?? "", "Independent Spec/Standards");
+    assertEquals(observed.status, "continue");
+    assertEquals(observed.prCreateCalls, 1);
     assertEquals(observed.comments.length, 1);
     assertStringIncludes(observed.comments[0]!, "Independent review missing");
+    assertStringIncludes(observed.comments[0]!, "auto-merge stays armed");
   },
 );
 
@@ -339,22 +339,16 @@ Deno.test(
       prExistsForBranch: true,
     });
 
-    assertEquals(observed.status, "early_exit");
-    assertEquals(observed.outcomeKind, "summary_incomplete");
-    assertEquals(observed.outcomePrNumber, 1107);
-    assertStringIncludes(
-      observed.outcomeProblem ?? "",
-      "Independent Spec/Standards",
-    );
-    assertEquals(observed.outcomeLabel, "summary_incomplete:pr#1107");
+    assertEquals(observed.status, "continue");
+    assertEquals(observed.outcomeKind, undefined);
     // The work is on the PR the run already raised — never a second one.
     assertEquals(observed.prCreateCalls, 0, "gh pr create must not run");
     // The issue stays attached to that PR: body updated and auto-merge armed.
     assertEquals(observed.recoverCalls, 1);
     assertEquals(observed.finaliseCalls, 1);
-    // The shortfall still reaches the issue thread.
     assertEquals(observed.comments.length, 1);
     assertStringIncludes(observed.comments[0]!, "Independent review missing");
+    assertStringIncludes(observed.comments[0]!, "auto-merge stays armed");
   },
 );
 
@@ -368,10 +362,11 @@ Deno.test(
       prExistsForBranch: true,
     });
 
-    assertEquals(observed.status, "early_exit");
-    assertEquals(observed.outcomeKind, "summary_incomplete");
-    assertStringIncludes(observed.outcomeProblem ?? "", "Reproduction status");
+    assertEquals(observed.status, "continue");
+    assertEquals(observed.outcomeKind, undefined);
     assertEquals(observed.prCreateCalls, 0);
+    assertStringIncludes(observed.comments[0] ?? "", "Reproduction");
+    assertStringIncludes(observed.comments[0] ?? "", "auto-merge stays armed");
   },
 );
 
@@ -497,7 +492,7 @@ const DIFF_ADDS_LINES_10_TO_15 =
 
 /** True when a comment is the worker's findings comment naming the violation. */
 const isViolationFindingsComment = (c: string) =>
-  c.startsWith("<!-- vibe-pre-pr-verifier-hold -->") &&
+  c.includes("## Notes for the reviewer") &&
   c.includes("American spelling in the new code");
 
 for (
@@ -520,8 +515,8 @@ for (
         diffUnified0: DIFF_ADDS_LINES_10_TO_15,
       });
 
-      assertEquals(observed.status, "early_exit");
-      assertEquals(observed.outcomeKind, "summary_incomplete");
+      assertEquals(observed.status, "continue");
+      assertEquals(observed.outcomeKind, undefined);
       assertEquals(observed.recoverCalls, 1);
       assertEquals(
         observed.finaliseCalls,
@@ -558,10 +553,16 @@ Deno.test(
       diffUnified0: DIFF_ADDS_LINES_10_TO_15.replace("+10,6", "+40,6"),
     });
 
-    assertEquals(observed.status, "early_exit");
-    assertEquals(observed.outcomeKind, "summary_incomplete");
+    assertEquals(observed.status, "continue");
+    assertEquals(observed.outcomeKind, undefined);
     assertEquals(observed.recoverCalls, 1);
     assertEquals(observed.finaliseCalls, 1);
-    assertEquals(observed.comments.some(isViolationFindingsComment), false);
+    assertEquals(
+      observed.comments.some((c) =>
+        c.includes("<!-- vibe-pre-pr-verifier-hold -->")
+      ),
+      false,
+    );
+    assertStringIncludes(observed.comments[0] ?? "", "auto-merge stays armed");
   },
 );

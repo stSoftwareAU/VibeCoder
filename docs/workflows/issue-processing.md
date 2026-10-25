@@ -716,13 +716,13 @@ gitGraph
 - **No eligible issue:** Skip implementation this iteration; continue to sleep and next loop.
 - **Claim fails:** Log and skip; do not retry same issue this run (another worker may have won).
 - **Clarification requested:** Post questions, add `needs-human`, unassign; user removes label and responds; next run re-evaluates.
-- **Large scope alone:** The fleet does not apply `needs-human` or remove discovery labels because the clarity heuristic returned `too_complex`. Implementation proceeds; an actual decomposition decision uses the existing `vibe-needs-planning` path. Explicit vague or missing-information results still ask clarifying questions. See [Clarification](planning-and-questions.md#-clarification).
+- **Large scope alone:** The fleet does not apply `needs-human` or remove discovery labels because the clarity heuristic returned `too_complex`. Implementation proceeds; an actual decomposition decision uses the existing `vibe-needs-planning` path. Vague or missing-information results proceed too, with the agent stating its assumptions (Issue #4298). See [Clarification](planning-and-questions.md#-clarification).
 - **Implementation failure (first):** Comment, add `failed-once`, clean stale branch, unassign; next run may retry. **Second failure:** Replace with `failed`, skip thereafter until user removes label.
 - **Unrecoverable blocker (`needs-human` escalation):** If the worker determines the task cannot be completed autonomously — e.g. it needs credentials only a human can grant, or depends on a product decision — it adds the `needs-human` label, posts a comment explaining what a human must do next, and stops. The issue is **excluded from discovery** on every subsequent scan until a human removes the label. The worker never self-applies `top-priority` or any other reserved workflow label for this purpose. See [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human) below.
 - **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
 - **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
 - **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat returns a not-finished failure on the retry ladder rather than deferring again (Issue #4227). A dependency this fleet filed during the same run (fleet author, `createdAt` at or after the run start) is not deferred either; the run retries as not finished rather than waiting on a dependency the run itself just created — bypassing the usage-limit and interrupted-run retries, the described-code-change retry, and the short-output failure on the no-changes path, each of which would otherwise return a `failure` with no `needs-human` and leave the next run to defer onto a follow-up nothing picks up (Issue #3146). See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
-- **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now only an issue whose body declares itself analysis-only via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker is handed off: the worker posts the analysis once, applies `needs-human`, unassigns, and stops. **Any other approved issue is never handed back (Issue #4227):** a run that ends with no PR posts one `## Not finished — retrying` comment carrying its output and returns a `no_changes` failure, so the issue is retried on the `failed-once` ladder with its escalating cooldown, keeping `work-on` and `top-priority`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. An explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins over this retry. A `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run instead takes the not-finished retry above (Issues #3146, #4227). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
+- **Analysis-only / no-PR issues:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now an issue whose body declares itself analysis-only via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker is finished by its analysis: the worker posts it and closes the issue as completed (Issue #4298), never handing it to a human. **Any other approved issue is never handed back (Issue #4227):** a run that ends with no PR posts one `## Not finished — retrying` comment carrying its output and returns a `no_changes` failure, so the issue is retried on the `failed-once` ladder with its escalating cooldown, keeping `work-on` and `top-priority`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. An explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins over this retry. A `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run instead takes the not-finished retry above (Issues #3146, #4227). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
 - **A crashed run is never analysis-only (Issue #4147):** a run whose agent exited non-zero, reported a failed or unfinished structured result, or completed zero model turns is a run failure. With no recoverable local changes, commits or PR, both execution entry points reject it through the shared `emptyRunFailureReason` check: the standalone command reports `execution_error`; the fleet phase reports `interrupted` and takes its bounded infrastructure retry on a fresh session. A failed run hands no session on to its stream, including a structured failure reported with exit code zero. Providers without structured metadata retain their exit-code rule. On 2026-10-22 46 implementation issues were handed to a human as "analysis-only" by runs in which no model ran. The runner also retries an unusable resumed session once without `--resume` (the #204 path). See [`execute_claude_phase.ts`](../../worker/deno/lib/execute_claude_phase.ts), [`phases/execute_phase.ts`](../../worker/deno/lib/phases/execute_phase.ts) and `detectResumedSessionUnusable` in [`claude_executor.ts`](../../worker/deno/lib/claude_executor.ts).
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
@@ -794,7 +794,7 @@ flowchart TD
 
 For user-facing guidance, see [USAGE.md — Worker escalation via `needs-human`](../USAGE.md#-worker-escalation-via-needs-human). For the config key, see [CONFIGURATION.md — `needs_human_label`](../CONFIGURATION.md#-configuration-defaults).
 
-## 🧭 Analysis-only / no-PR hand-off
+## 🧭 Analysis-only / no-PR issues
 
 `work-on` treats a raised PR as its completion signal. An issue whose only
 deliverable is analysis — a gap analysis, coverage matrix, or
@@ -834,47 +834,37 @@ checkpoint already pushed. A failed push applies no hand-off and posts no
 comment naming the branch. The phase raises no PR. See
 [`lib/phases/declared_handoff.ts`](../../worker/deno/lib/phases/declared_handoff.ts).
 
-The worker now detects an analysis-only / no-PR issue from **two signals** and
-hands it off cleanly to `needs-human` (the only operational label the worker may
-apply, routed through the [escalation chokepoint](../../worker/deno/lib/needs_human_escalation.ts)):
+An author, grill-me, or planning declares an issue analysis-only by adding the
+HTML-comment marker `<!-- analysis-only -->` (or `<!-- no-pr -->`) to the issue
+body. The worker runs Claude on it like any other issue — the analysis is the
+deliverable, so it has to be produced. When the run finishes with **no code
+changes** but useful text, the worker posts the analysis and **closes the issue
+as completed** (Issue #4298). It is never handed to a human, and the closed
+issue cannot loop. A run that does commit code on a marked issue raises its PR
+as normal.
 
-- **(a) Up-front body marker.** An author, grill-me, or planning can declare an
-  issue analysis-only by adding the HTML-comment marker `<!-- analysis-only -->`
-  to the issue body. The worker hands off **before** cloning the repo or running
-  Claude — no wasted run.
-- **(b) Post-run signal, on a marked issue only.** Claude finishes with **no
-  code changes** but useful text on an issue that carries the marker. The
-  worker posts the partial answer (the analysis is the deliverable) and then
-  hands off. On an approved issue without the marker the same outcome is
-  **not finished** and is retried, never handed back (Issue #4227,
-  [`unfinished_issue_retry.ts`](../../worker/deno/lib/unfinished_issue_retry.ts)).
-  The same applies to every guard that used to fall through to a human: a
-  repeat deferral or planning request, a self-filed or closed dependency, an
-  exhausted time deferral, and an unhonoured declared hand-off on committed
-  work.
-
-Both marker paths apply `needs-human` plus a paired explanation comment,
-which drops the issue from discovery and triggers
-[`stripDiscoveryLabelsOnEscalation`](../../worker/deno/lib/escalation_cleanup.ts)
-to remove `work-on` server-side, so the issue never loops. A clean hand-off is
-**not** a `failed` outcome — the task did its job.
+On an approved issue without the marker the same outcome is **not finished**
+and is retried, never handed back (Issue #4227,
+[`unfinished_issue_retry.ts`](../../worker/deno/lib/unfinished_issue_retry.ts)).
+The same applies to every guard that used to fall through to a human: a repeat
+deferral or planning request, a self-filed or closed dependency, an exhausted
+time deferral, and an unhonoured declared hand-off on committed work. One case
+keeps even a marked issue open: when an untrusted author's image sat in front of
+an agent that then reported the issue already fixed, nothing the agent said may
+close it (Issue #1385), so the run is retried.
 
 ```mermaid
 flowchart TD
-  Pick["work-on issue picked up"] --> Marker{"Body has<br/><!-- analysis-only --> ?"}
-  Marker -->|Yes| HandOff["Hand off to needs-human<br/>(before running Claude)"]
-  Marker -->|No| Run["Run Claude"]
+  Pick["work-on issue picked up"] --> Run["Run Claude"]
   Run --> Changes{"Code changes<br/>produced?"}
   Changes -->|Yes| PR["Quality gate → PR"]
   Changes -->|"No, blocked on another issue"| Defer["Defer: record Depends on owner/repo#N,<br/>keep the discovery label, release the claim"]
   Changes -->|"No, verified already resolved<br/>(commit / PR cited)"| Close["Close with the evidence<br/>in the comment"]
-  Changes -->|"No, useful text, marked analysis-only"| Partial["Post partial answer"] --> HandOff
+  Changes -->|"No, useful text, marked analysis-only"| Done["Post the analysis,<br/>close as completed (#4298)"]
   Changes -->|"No, anything else"| Retry["Not finished: comment + no_changes failure,<br/>retried on the failed-once ladder (#4227)"]
   Changes -->|"No, no output"| Guard["Fallback loop guard:<br/>failed-once + escalating cooldown"]
-  HandOff --> Stop["Apply needs-human + comment,<br/>release claim, stop"]
   style Pick fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-  style HandOff fill:#e0a050,stroke:#8b4500,color:#1a1a1a
-  style Stop fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style Done fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Guard fill:#c45858,stroke:#6b2020,color:#fff
   style Defer fill:#5a86b0,stroke:#1d3a5a,color:#fff
@@ -889,11 +879,12 @@ The agent declares it with
 (`prompts/issue/prompt.md`); a broadened keyword list remains as a
 fallback for output that carries no marker. A claim with no commit or PR behind
 it is *not* enough to close a live issue — an unmarked approved issue is
-retried as not finished; a marked analysis-only issue keeps its hand-off. See
+retried as not finished; a marked analysis-only issue is closed with its
+analysis. See
 [already_resolved_outcome.ts](../../worker/deno/lib/already_resolved_outcome.ts).
 
 **A blocked run is checked first.** "Blocked on another issue" is a deferral, not
-an analysis-only hand-off — and it is decided before the already-complete check,
+an analysis-only answer — and it is decided before the already-complete check,
 because a blocked answer routinely contains phrases such as "no changes needed"
 and closing a live task is the one outcome the next scan cannot undo. The agent
 cannot make that call itself either: the `gh` guard refuses
@@ -971,17 +962,15 @@ flowchart TD
 **Implementation:** [`worker_record_block.ts`](../../worker/deno/lib/worker_record_block.ts)
 (shared grammar for the `Depends on` and `Deferred until` lines).
 
-**Fallback loop guard.** When neither clean signal fires — Claude produces no
-changes **and** no useful output — the run returns a failure and the existing
-`failed-once` → `failed` / `needs-human` ladder
-([label_failure.ts](../../worker/deno/lib/label_failure.ts)) ensures the issue is
-never re-run indefinitely.
+**Fallback loop guard.** When Claude produces no changes **and** no useful
+output, the run returns a failure and the `failed-once` record and its
+escalating cooldown ([label_failure.ts](../../worker/deno/lib/label_failure.ts))
+keep the issue from being re-run back to back.
 
-**Implementation:** [analysis_only_handoff.ts](../../worker/deno/lib/analysis_only_handoff.ts)
-(marker detection + hand-off), wired into
-[issue_worker.ts](../../worker/deno/lib/issue_worker.ts) (signal a) and
+**Implementation:** [analysis_only.ts](../../worker/deno/lib/analysis_only.ts)
+(marker detection) and
 [handle_no_changes_phase.ts](../../worker/deno/lib/phases/handle_no_changes_phase.ts)
-(signal b).
+(`finishOrRetry`: close with the analysis, or retry).
 
 ## ✅ Acceptance-criteria closure before the PR
 
@@ -1077,421 +1066,68 @@ reads that signal at both ends
   them, so the original issue can resume and raise its completion PR. The
   cached path reads the merged PR body live; no persisted cache shape changes.
 
-```mermaid
-flowchart TD
-    S["PR summary closure block"] --> M{"Any entry<br/>missing?"}
-    M -->|no| C["PR body: Closes #N"]
-    M -->|yes| P["PR body: Part of #N<br/>+ Not closing #N section"]
-    C --> X["Merged: issue closed"]
-    P --> H["Merged: issue left open,<br/>existing labels kept,<br/>missing criteria logged"]
-    style X fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style H fill:#e9c46a,stroke:#b08900,color:#000
-```
+- **What counts as unmet.** Every `partial` or `missing` closure entry, matched
+  to the issue's criteria by its words (Issue #3128). A scope item the closure
+  block says nothing about counts too when the block assesses fewer entries
+  than the issue states. A pending merge check is not unfinished work.
+- **One note, then the pull request.** The unmet criteria reach the in-session
+  note (`summary_rule_gate_retry.ts`). The re-run raises the pull request even
+  when a criterion is still unmet, and posts what remains for the reviewer.
+- **Degraded runs follow the same rule.** A fallback model changes nothing
+  here.
+- **Complete means ready.** Once every criterion is met, completion rewrites a
+  draft's body (`Closes #N`), runs `gh pr ready` and arms squash auto-merge.
 
-A `partial` entry is unaffected: the PR still closes the issue and the
-Summary names the gap beside the closing keyword.
+- **A timed-out run keeps a draft.** A run that times out (or is released on
+  schedule) with its work preserved on the branch opens a DRAFT PR saying
+  `Part of #N` — never a closing keyword, never auto-merge (the sweep skips
+  drafts, Issue #1800) — via
+  [`draft_continuation_pr.ts`](../../worker/deno/lib/draft_continuation_pr.ts).
+  The fleet's own draft never holds its issue (`getBlockingPRForIssue`), so the
+  next run re-claims it, resumes the branch and finishes.
+- **Complete means ready, and merging as soon as possible.** Once every
+  criterion is met, completion rewrites a draft's body (`Closes #N`), runs
+  `gh pr ready` and arms squash auto-merge in the same step, rather than
+  waiting for the sweep.
 
-## Durable project-version wording
+[`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) keeps
+only the pure scope assessment both this gate and `claim_freshness.ts` read.
 
-The issue and review-fix templates request durable project-version statements in
-the archived summary. The existing summary loader also narrowly normalises
-standalone `Version bump:` root-manifest version pairs in Summary/Test Plan (or
-an unheaded legacy summary). This runs before existing facts rendering and body
-reconciliation, without another model call or refusal gate. It states that the
-manifest is updated for the change and the merged commit records the final
-value, so it assumes neither automatic patch bumps nor any other bump policy.
-Body digests use that stable rendered content.
+## 🔒 Changed workflow files are checked before the PR
 
-The normaliser preserves dependencies, exact release evidence, fenced/inline
-examples, indented code, historical ancestors and release continuations. Nested
-manifest ownership is ambiguous, so those version pairs are preserved. It does
-not rewrite archived history on read; the generator writes durable wording to
-new archived summaries. Exact release numbers remain labelled with their final
-commit/release provenance.
+The changed-workflow gate remains blocking (Issue #4234). It checks the workflow
+files added or changed by the branch and rejects introduced findings or checker
+errors before creating the PR. Findings already present on the base belong to
+the workflow audit. See [Extending the worker](../EXTENDING.md).
+
+## Pre-PR verifier (Issue #3395)
+
+The pre-PR verifier checks implementation, closure claims and repository-owned
+review checklists. Its findings are advisory at completion (Issue #4234): the
+agent receives one in-session opportunity to address them, and any remaining
+findings are included in the PR's reviewer note. Repository quality checks,
+secret scanning, the security-fix gate and the changed-workflow gate remain
+blocking. See [review checklists](../review-checklists.md).
 
 ## 🔍 Independent review on two axes
 
-The closure block above says **which** criteria were met; Issue #663 added **who
-judged them**. Until then the verdict was self-assessed by the agent that wrote
-the code, in the same context that produced it — which is why the prompt had to
-counter-steer in wording ("do not inflate a status", "when in doubt use
-`partial`"). Adopted from `skills/engineering/code-review/SKILL.md` in
-[mattpocock/skills](https://github.com/mattpocock/skills), which solves the same
-problem structurally: review the diff on two axes, in independent sub-agent
-contexts so they cannot pollute each other, and report them under separate
-headings.
-
-**What the run must produce.** When the issue states criteria, `prompts/issue/`
-dispatches two reviewer sub-agents in parallel before the PR summary is written,
-each given the finished diff and nothing from the author's context:
-
-- **Spec reviewer** — inputs `git diff <base>...HEAD` and the issue body. Three
-  questions: which requirements are missing or partial, what behaviour is in the
-  diff that was not asked for, and which requirements look implemented but are
-  implemented wrongly. Its verdicts populate the `## Acceptance Criteria` block,
-  one `reviewer:` verdict per entry. A helper or component the issue says to
-  reuse counts as a stated requirement, so a diff that re-implements it by
-  hand is not `met` (Issue #3084).
-- **Standards reviewer** — inputs the same diff and `CODING-STANDARDS.md`. Its
-  findings go under a separate `## Standards Review` heading as `violation`
-  entries (with `file:line` and `reason: fixed in this diff`, or
-  `reason: pre-existing, filed #<n>`) and the `clean` areas it checked. Three departures are always a `violation` (Issues #3011,
-  #3021): a named-but-absent test — a comment, anchor or PR claim naming a
-  test file that is not in the repository — a test stub for another
-  repository's binary that is more permissive than the real callee, with no
-  named contract source, and a workflow invariant documented but not
-  validated — a `.github/workflows/*` behaviour change the README or a
-  comment calls load-bearing that the repository's workflow validator does
-  not assert. A rule the target repository's standards say is **enforced by
-  review** — no lint, formatter or CI check catches it, such as
-  GRQ-AutoTrader's one `use` statement per module per file — is a
-  `violation` whenever a line the diff adds or changes breaches it, whatever
-  its effect on correctness, and the `clean` line names each review-enforced
-  rule the reviewer checked (Issue #3230).
-
-**A violation the diff introduced blocks the PR.** A Standards finding in a
-line this PR wrote — a doc comment the change made wrong, a cited test that
-exists neither in the diff nor at the head — is fixed in the same diff before
-the PR is raised (Issue #3058). Only a departure that predates the diff may
-stand, and its `reason:` links the follow-up issue the run filed
-(`pre-existing, filed #<n>`); one the issue itself requires names that issue.
-The gate cannot see the diff, so it does not check which lines a finding sits
-on (the completion phase does read the diff, to route a standing violation on
-the branch's own lines to a code-capable recovery turn — Issue #3382, see
-[the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)), but it does refuse every other way out: a `violation` whose reason neither
-opens with `fixed` (or `corrected` / `resolved`) nor links an issue (`#123`,
-`owner/repo#123` or an issue URL) blocks PR creation. "Stands" and "left for a
-follow-up" used to pass, and fleet review then sent the PR back for the breach
-its own summary admitted (Issue #3196: VibeCoder#3065, GRQ-AutoTrader#2210
-and #2479).
-
-**The reviewer challenges; it does not silently win.** A reviewer that saw only
-the diff is sometimes wrong about a criterion satisfied by code it could not
-see, so the run may depart from its verdict — but only out loud, keeping the
-`reviewer:` field as written and adding a one-line `reason:`. An unrecorded
-departure is the self-assessment the axis exists to remove.
-
-**The gate.** [`independent_review_gate.ts`](../../worker/deno/lib/independent_review_gate.ts)
-runs beside the closure gate at the same PR-creation chokepoint and blocks when
-the criteria block carries no `vibe-spec-review` provenance marker, when an entry
-names no `reviewer:` verdict, when a departure from that verdict carries no
-reason, when the `## Standards Review` section is absent, unsourced or empty,
-when a `violation` names no evidence or a reason that is neither
-`fixed in this diff` nor a linked follow-up issue, or when either axis carries the
-other's findings — never merged, never reranked, because a change can pass one
-axis and fail the other and reporting them together lets one mask the other.
-Issues with **no** acceptance criteria get no reviewers and no Spec block, and
-the Spec-axis rules and the axis-separation rule do not apply. A `## Standards
-Review` the summary carries anyway is still read (Issue #3761): each `violation`
-in it is held to the reason rules above, a refused one blocks PR creation, and
-the completion phase's standing-violation routing (Issue #3382, below) applies
-to it. Without criteria the gate does not require the Standards section, its
-provenance marker or a finding, and a summary with no `## Standards Review` on
-such an issue is not checked at all.
-
-```mermaid
-flowchart TD
-    D["Diff: git diff base...HEAD"] --> SP["Spec reviewer sub-agent<br/>diff + issue body"]
-    D --> ST["Standards reviewer sub-agent<br/>diff + CODING-STANDARDS.md"]
-    SP --> AC["## Acceptance Criteria<br/>met / partial / missing + reviewer:"]
-    ST --> SR["## Standards Review<br/>violation / clean"]
-    AC --> G{"Independent-review gate<br/>provenance, verdicts,<br/>axes kept apart?"}
-    SR --> G
-    G -->|yes| PR["PR created"]
-    G -->|no| B["Blocked: comment names<br/>each rule broken; run fails"]
-    style SP fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-    style ST fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-    style G fill:#7aa8d4,stroke:#1d3f5a,color:#1a1a1a
-    style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style B fill:#c45858,stroke:#6b2020,color:#fff
-```
-
-### Pre-PR verifier (Issue #3395)
-
-The two reviewers above read a diff and judge it; neither runs anything, and
-neither sees the PR summary the gates read. Issue #3395 adds a third check the
-**worker** runs itself, the pre-PR verifier
-([`pre_pr_verifier.ts`](../../worker/deno/lib/pre_pr_verifier.ts), wired into the
-completion phase, [`completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)).
-On every completion attempt that has a PR summary file loaded and a resolvable
-comparable base ref, whether or not the issue carries acceptance criteria (a
-missing summary skips it; an unresolvable base logs it as not checked), the worker makes one extra
-model pass after the summary is written and committed and before the PR is
-raised. The agent dispatches nothing for it.
-
-- **Model and cap.** The `issue` phase's model, through the Claude runner,
-  capped at 1800 seconds or the run's `claude_timeout` if that is lower. No
-  browser (Playwright MCP) is given.
-- **Brief.** The fleet reviewer's own,
-  [`prompts/pr_review_brief/prompt.md`](../../prompts/pr_review_brief/prompt.md),
-  which `.claude/skills/review-fleet-prs/SKILL.md` also uses. It is one shared
-  template, and `pr_review_brief_shared_3395_test.ts` fails if the two diverge.
-  The reply has the fleet reviewer's JSON shape: `summary`, `findings`,
-  `testChanges`, `testChangeNotes` and `unrelatedIssues`, plus a `checklist`
-  array when the repository's
-  [review checklists](../review-checklists.md) apply to the changed files. The
-  reply also carries a `callers` array when the worker listed callers (see
-  **Existing callers of changed functions** below). A reply without the
-  checklist array is read as `[]`, but the worker owes a verdict for
-  every item the brief rendered: an item with none, a malformed or unreadable
-  checklist file (the base copy, unless the change edits the file and its own
-  copy is usable or removes it, in which case the change is judged on that
-  copy; or the change's own copy, when that is the broken one), or a
-  changed-file list that is unknown each add a blocking finding on
-  `review-checklists.json` themselves, whatever the model replied. A
-  `missing` verdict blocks the PR even with no matching finding. A failed read
-  of the base or head ref makes the verifier "not checked" rather than a
-  finding. It also asks for a `closure` array (Issue #3766): the worker parses
-  the summary's `## Acceptance Criteria` closure block and lists every entry
-  the agent marked `met` in the brief, and the reply carries one
-  `{criterion, verdict, note}` per listed entry, `verdict` being `met`,
-  `partial` or `missing`; `met` only when the change delivers every case, path
-  and test the criterion names
-  ([`closure_met_check.ts`](../../worker/deno/lib/closure_met_check.ts)). The
-  worker adds a blocking finding on the PR summary for each listed entry rated
-  `partial` or `missing`, and one for the entries left without a verdict (a
-  reply without the array counts as no verdicts, and a malformed array entry
-  is dropped rather than failing the reply, so it counts as no verdict while the
-  reply's other findings stay), whatever the model's own findings say. Matching
-  accepts either the raw criterion or its rendered form, which applies delimiter
-  scrubbing and secret redaction to each criterion separately inside the shared
-  fence. The verifier's copy is not scrubbed again: a second pass can change it.
-  No scrub runs across the joined entries, so one criterion cannot rewrite or
-  hide a later entry. Verdicts for both forms are considered together, with
-  `missing` or `partial` still blocking even when the other form is rated `met`.
-  Matching ignores all leading list numbers (`1.` or `1)`, followed by
-  whitespace), including a criterion's own numbering, before clipping, so
-  displayed numbering cannot turn a complete verdict into a missing one. The
-  listed criteria are agent-written text copied from the issue, so they are
-  rendered inside the prompt's untrusted fence and named in its
-  boundary-integrity instruction; only the worker's instruction sentence sits
-  outside it. The fleet review gate uses this same renderer for its
-  `closureEntries` field; the orchestrator copies that fenced section verbatim
-  into the shared brief rather than pasting raw PR-body criteria.
-  A summary that marks no entry `met`, or has no closure block,
-  lists none and owes no verdict. The fleet reviewer shares the brief and so
-  the instruction, but its `post.ts` does not check the array.
-- **Existing callers of changed functions (Issue #3779).** Before the
-  verifier runs, the worker lists each function or method whose body the diff
-  changes. It finds them with a language-agnostic definition-line heuristic
-  over the head file, then searches the head's tracked files for each name
-  with `git grep -w`, leaving out the lines the diff changes, test files,
-  docs, comment lines, import-list lines and the definition itself. The list
-  shows at most 10 callers per function, for at most 15 functions that have
-  callers, and searches at most 40 changed functions. Callers beyond 10 and
-  functions not searched are counted in a note to the verifier. A changed file
-  whose path git quotes is not scanned and is also noted. The list is appended
-  to the verifier's prompt as required items
-  ([`caller_checks.ts`](../../worker/deno/lib/caller_checks.ts)). The reply
-  then carries a `callers` array with one entry per listed caller,
-  `{symbol, caller: "file:line", verdict, note}`, where `verdict` is
-  `unchanged`, `changed and tested` or `regressed`. The code adds a blocking
-  finding for every listed caller with no verdict and for every `regressed`
-  verdict, whatever the model's own findings say. A verdict matches a listed
-  caller when it copies the symbol and caller either as the worker holds them
-  or as the fenced list shows them (the once-scrubbed text). A scrubbed form
-  shared by two different listed callers (for example two secrets both shown
-  as the redaction placeholder) matches neither, so each needs a verdict that
-  copies its raw symbol and caller. A git failure while listing callers, or a
-  malformed `callers` array, makes the pass "not checked". The fleet reviewer
-  does not get this list.
-- **Disposable checkout.** A `git clone --shared` of the issue checkout at the
-  head commit, with its `origin` remote removed, holding the exact PR summary
-  text the gates read. The verifier may run commands there: tests, flipping a
-  line and rerunning, timing a regex, building. `gh`, `git push`, `curl`,
-  `wget`, WebFetch, WebSearch and sub-agents are denied through the CLI's
-  `disallowedTools` denylist, and the checkout has no push destination. This is
-  not a network sandbox: another program the verifier runs through Bash could
-  still reach the network, and the agent-side `gh` guard is the backstop for
-  `gh`. The issue checkout's `git status` (untracked files included, ignored
-  files not) and HEAD are compared before and after, and a change either shows
-  becomes a blocking finding. The summary is written into the clone only at a
-  path confirmed, after resolving symlinks, to lie inside the clone; a path
-  that leaves it makes the pass not checked. The disposable directory is
-  deleted afterwards.
-
-| | Spec / Standards reviewers | Pre-PR verifier |
-| --- | --- | --- |
-| Runs when | Before the summary is written, dispatched by the agent, only when the issue states criteria | After the summary is committed, dispatched by the worker, on every completion attempt with a PR summary file and a resolvable base ref, criteria or not |
-| Sees | The diff plus the issue body or `CODING-STANDARDS.md` | A shared clone of the head commit, with the exact PR summary text |
-| Can execute | No (read-only tools) | Yes, in the disposable clone; `gh`, `git push`, `curl`, `wget`, WebFetch/WebSearch and sub-agents denied by a `disallowedTools` denylist (not a network sandbox) |
-| Reads the PR summary | No | Yes |
-
-**What blocks.** Any `findings` entry, including those the worker adds for the
-checklist and closure verdicts above, is a blocking finding, a late
-summary-rule verdict. It is folded into whichever earlier summary gate blocks
-first, or blocks on its own after the summary claim check. It reaches the run's
-single [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn
-as its own numbered REQUIRED ITEM. That turn may change code for a verifier item
-(the recovery prompt allows it for this item only), and the quality gate re-runs
-afterwards. Findings still present on the re-run are reported like other
-summary-gate blocks: a `failure` with no PR, or `summary_incomplete` over an
-existing PR, with the comment on the issue thread. In the existing-PR case,
-the surviving verifier findings are also posted on the PR (Issue #3796), and
-the PR is still armed for auto-merge (Issue #4291). A finding is
-settled by a fix or an evidence-backed dispute naming the finding in the
-final message; marking a criterion partial, listing a known gap or noting a
-test as not red-checked does not settle it (Issue #3797). `testChanges: meaningful`
-is not a finding and does not block.
-
-**When it cannot run.** A pass that cannot run (brief missing, git failure,
-a failed caller listing, launch error, timeout, unparseable reply, or a
-malformed `callers` array) is logged as a warning as "not checked",
-never read as clean, and does not block, as is a summary path that leaves the
-clone. A verifier after which the issue checkout's `git status` (untracked
-files included, ignored files not) or HEAD shows a change, or after which the
-checkout cannot be re-read, produces a blocking finding. `unrelatedIssues` are logged, not
-filed.
-
-**Cost.** One extra agent session per completion attempt: normally one per
-run, and each re-run of completion (the in-run recoveries and the
-infrastructure retry in `runCompletionAttempt`) runs it again. It runs even
-when an earlier summary gate blocks, because its verdict is folded into that
-block. Its tokens are recorded in the run's stats like the claim check's. See
-[MODEL-AND-CACHING.md](../MODEL-AND-CACHING.md#pre-pr-verifier-issue-phase).
-
-```mermaid
-flowchart TD
-    S["Summary written<br/>and committed"] --> V["Verifier in disposable clone<br/>fleet reviewer's brief"]
-    V --> F{"Any findings?"}
-    F -->|no| PR["PR raised"]
-    F -->|yes| R["Folded into recovery turn<br/>as a REQUIRED ITEM"]
-    R --> Q["Code and summary fixed,<br/>quality gate re-runs,<br/>completion re-runs"]
-    Q --> V2{"Findings still present?"}
-    V2 -->|no| PR
-    V2 -->|yes| B["Reported like other summary-gate blocks:<br/>failure, or summary_incomplete over a PR"]
-    style V fill:#7aa8d4,stroke:#1d3f5a,color:#1a1a1a
-    style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style B fill:#c45858,stroke:#6b2020,color:#fff
-```
+Independent reviewers still assess correctness and standards. Their completion
+findings are advisory: one in-session correction opportunity, then remaining
+findings appear in the PR's reviewer note (Issue #4234).
+Rules marked **enforced by review** still belong in the Standards review. A
+workflow rule that is documented but not validated needs a validator and a
+negative test; its documentation alone does not prove enforcement.
 
 ## 🐛 Reproduction status on a bug fix
 
-All three work-tier labels run the **same pipeline** and `bug` is a purely
-descriptive label, so until Issue #521 a PR summary that said "added a regression
-test" read identically whether the test had been watched to fail before the fix
-or merely written afterwards — precisely the over-claim the fail-loud standard
-exists to prevent. Adopted from GitHub spec-kit's `bug` extension, whose
-guardrail is worth taking whole: *a reproduction that was not actually performed
-is reported as `partial` or `not-run`, not `verified`* (see
-[SPEC-KIT-COMPARISON.md](../SPEC-KIT-COMPARISON.md)). The vocabulary is adopted,
-not the three-command structure: no new label, no new priority tier, no separate
-lane — just a conditional block in the existing PR-summary contract.
+Reproduce the reported fault before changing production behaviour. Reproduction
+status is advisory at completion (Issue #4234); the testing standards still
+apply to the implementation and to review.
 
-**What the run must produce.** When the issue carries the `bug` label,
-`prompts/issue/` requires a `## Reproduction` block in
-`docs/archive/pr-summaries/pr-summary-<issue>.md` recording three things — the
-symptom, the status, and the regression test that covers it:
-
-```markdown
-## Reproduction
-
-- **symptom** — `parseDate("2024-02-29")` threw `RangeError` on a leap day
-- **status** — `verified` — the regression test was observed failing against the unfixed code and passing after the fix
-- **regression test** — `worker/deno/tests/date_parser_test.ts::parses a leap day`
-```
-
-- **`verified`** — the regression test was actually observed failing against the
-  unfixed code and passing after the fix. Only then.
-- **`partial`** — the symptom was reproduced in part, with a one-line `reason:`
-  for what was not exercised.
-- **`not-run`** — the reproduction was not performed, with a one-line `reason:`.
-  This is a legitimate, reportable outcome, not a failure to hide.
-
-**How a run climbs to `verified`.** The three statuses defined what to report but
-not how to get there, so a hard bug degraded to `not-run` with no ladder to
-climb (Issue #661). The prompt now names the method, and it is the same loop the
-[CI-fix workflow](ci-fix.md#-the-reproduction-loop-before-the-fix) gained: build a
-**red-capable command** first — deterministic, seconds, unattended (`< /dev/null`),
-narrow — run it against the unfixed code and watch it go red; **minimise** the red
-scenario one element at a time until removing anything left turns it green, and
-that minimised scenario is the regression test; apply the fix and watch the same
-command go green. The attempt is bounded, and a loop that never went red is
-reported as `partial` or `not-run` naming what was tried — the ladder has an
-honest bottom rung, which is why it does not become a licence to over-claim.
-
-**What a red run proves (Issue #2924).** A fleet run once claimed a bug fix
-whose regression test only went red against the PR's own modified fake, and
-passed on unmodified base-branch production code — proving nothing about the
-defect — while another changed production behaviour on an unreproduced
-diagnosis. The prompt now ties red to the base branch: the test must fail
-against the unfixed **base-branch** production code with the **base branch's**
-own test doubles, not a double the PR has already changed, and a reviewer can
-check this by running the PR's new test against the base ref's production
-code. While the status is `partial` or `not-run`, the run must not change
-production behaviour or a durable format on an unverified diagnosis — it
-either confirms the premise against the base branch or pins current behaviour
-with a test. Where the issue cites a logged error line, the reproducing test
-starts from that exact input, and the PR summary quotes it.
-
-**A test must be able to fail on the wrong input (Issues #3060, #3851).** The
-base-branch red run covers bug fixes, but a new guard has no unfixed base to
-go red against. Fleet PRs were sent back for negative tests whose fixture
-never held the forbidden value — a "GH_TOKEN is unset" test whose mint step
-already returned an empty token, a "null rather than carried over" test whose
-only earlier line had no prices either — so each passed with or without its
-guard. The guidelines and the issue prompt's Test Plan step now require a
-fixture that contains the forbidden thing and a run with the guard broken on
-purpose that goes red; a negative test that stays green without its guard is a
-blocking self-review finding. Fleet PRs also added tests pinning which of two
-similar values the code reads — a percentage stated against one of two bases,
-a displayed and a derived figure meant to read the same record — on fixtures
-where the two candidates were equal, so each passed whichever value the code
-read; one stayed green while the code really read the wrong record
-(Issue #3851). The same rule now requires such a fixture to give the
-candidates different values, and the break is to point the code at the sibling
-value, recorded in the Test Plan as, for example,
-`reads base B instead of A → red`; a fixture where the candidates are equal is
-a blocking self-review finding.
-
-**A refusal test must be refused by the rule it names (Issue #3162).** A
-test that only checks *that* an input was refused passes on a refusal from
-any rule. Fleet PRs were sent back for exactly that: GRQ-AutoTrader#2386's
-schema/loader agreement test probed fields both sides refused for a
-missing companion field, so nothing was compared, and its review-fix push
-left an off-step probe refused by a cross-field rule, hiding a real
-`multipleOf` drift; GRQ-AutoTrader#2393 added a retired-field check that
-now refuses an untouched test's input at the write boundary before it
-reaches the `EquityRequired` rule the test is named for; and in
-VibeCoder#3079 a fake that threw led to the `false` the test expected. The
-guidelines, the issue prompt's Test Plan step and the pr_feedback prompt
-now require asserting the specific error variant or rule, an input that
-satisfies every other rule (the same input with only the probed value made
-legal is accepted, by both sides for a comparison test), and a re-run of
-the existing later-refusal tests whenever a change adds an earlier
-refusal.
-
-**A new precondition must not stop existing tests short (Issue #3530).**
-That later-refusal re-run covered only refusals. Fleet PRs added an
-earlier precondition that refused nothing, or that the author did not read
-as a refusal, and left unedited negative tests that no longer reached
-their guard: VibeCoder#3388 made suppression markers need a verified
-commit identity from `git blame`, so an expired-waiver test in a non-git
-temporary directory was rejected before `expires=` was read; and
-VibeCoder#3522 put the working-tree digest into the `deno check` cache
-key, which is null outside a git repository, so `runDenoCheck - a FAILED
-result is never cached` ran with caching off. `CODING-STANDARDS.md` and
-the guidelines now widen the re-run to any precondition a change adds
-before existing logic — a check, an early return, a null or disabled
-result, or an environment requirement such as a git repository or
-identity — and require the fixture to meet it, a positive control
-asserting it holds, and a Test Plan line naming the existing tests that
-needed fixture changes.
-
-**Every outcome of a branch needs a test (Issue #3069).** Fleet PRs were
-also sent back for a new branch with one outcome no test reached: a
-stale-remote guard whose stubs all returned `ls-remote` exit 0, so
-simplifying the condition to `code !== 0` (and so standing down on exit 2,
-the path every real gated CI fix takes) left the suite green; and a trait
-default promised to return an error whose every test used an implementation
-that overrode it. The guidelines and the issue prompt's Test Plan step now
-require each outcome of a branch the diff adds — condition, match arm, exit
-code, interface default — to have a named test that reaches it, checked by
-flipping the outcome on purpose and seeing the suite go red; a test double
-that overrides the default or always returns the same code does not count.
-The worker now checks this at completion time rather than trusting the
-prompt alone — see
-[A branch outcome with no recorded test blocks the summary](#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147).
+A test named for a later step in a pipeline must reach that step: break only
+its own step and leave the earlier ones in place, then confirm the test fails.
+Passing because an earlier step rejects the input does not prove the later
+step works (Issue #3666).
 
 **Each operand of a compound condition is its own outcome (Issue #3376).**
 Fleet PRs flipped a compound condition as one outcome — reverting the whole
@@ -1506,355 +1142,6 @@ operand, each flipped on its own — deleted, or forced to the value that lets
 the other operands decide — with a test that goes red for each, and a `Branch
 outcomes:` line that names its operand. The issue prompt's Test Plan step and
 the pr_feedback re-enumeration rule carry the same requirement.
-
-**A test named for one step must reach that step (Issue #3666).** Fleet PRs
-added the same handling at more than one step of a path, then a new test named
-for a later step whose fixture stopped at an earlier one, so the named step's
-handling could be deleted with every test green. NEAT-AI-Discovery#2400 named
-a test for its per-iteration deadline checks but passed an already elapsed
-deadline, which the up-front check caught; VibeCoder#3308's real-repo test of
-the ancestor walk ran in a repository with no origin, so `gitignoreReallowed`
-returned before the walk; and two private fleet PRs stopped a second-loop test
-in the first loop and a read time-limit test at the connect. Each author's red
-check reverted the whole change, which removed the earlier step too.
-`CODING-STANDARDS.md` and the guidelines now require the red check for such a
-test to break only its own step and leave the earlier ones in place, a
-positive control asserting that the run got past the earlier steps when the
-steps share one mechanism, and one Test Plan line per such test. The issue
-prompt's Test Plan step, the pr_feedback red-run rule and the shared review
-brief carry the same check.
-
-**Every changed call site needs a test that goes red without it (Issue #3067).**
-A test of a shared helper, or of some of its callers, does not cover the
-other callers' wiring. Fleet PRs threaded a new argument through several
-production callers and tested only one: VibeCoder#2918 passed
-`RED_CHECK_CONCLUSIONS` to `buildFailedCheckRunsLookup` from
-`findFailedCiChecks`, but the REST stub ignored `--jq`, so reverting that
-caller kept every test green; GRQ-AutoTrader#2220 left the
-`screen_candidates` caller of `commit_buy` untested for its new `is_held`
-argument. The guidelines and the issue prompt's Test Plan step now require
-reverting each changed call site on its own and seeing a test go red; a call
-site whose revert leaves the suite green is a blocking self-review finding.
-
-**A single entry point counts too (Issue #3222).** The rule above read as
-covering only a change threaded through more than one production caller, so
-fleet PRs that wired a behaviour into one CLI command or UI control tested the
-helper behind it and left the wiring unreached: VibeCoder#3203 switched
-`sweep_drift.ts` to `readCoverageLedger(repoRoot)` but its fixture wrote only
-the ledger file, so restoring the old read kept every test green;
-GRQ-AutoTrader#2560 tested `loadOlderDecisions` directly and no test pressed
-the Load older decisions or Retry button. The rule now covers every new or
-changed wiring between an entry point (a CLI command or task, an HTTP route or
-handler, a scheduled job, a UI control's event handler) and the code it
-drives, including a single caller; a new or changed UI control needs a test
-that invokes its handler and asserts what it sends or changes, and the PR
-summary lists each entry point checked.
-
-**Narrowing a shared helper changes every caller (Issue #3100).** A
-stricter validator added for one new call site also rejects values its
-existing callers legitimately pass. Fleet PRs narrowed a shared helper and
-broke callers they never checked: VibeCoder#2881 made `assertSafeGitRef`
-reject `feature/-wip`, a valid branch name an existing caller passes; and
-VibeCoder#3095 made `validateGhIssueJson` reject `MERGED`, a state `gh`
-really returns. The guidelines now require listing the helper's existing
-callers and the real values each can receive, checked against the tool's
-actual output; keeping the shared helper as it was and applying the stricter
-rule at the new call site when any caller can pass a rejected value;
-otherwise adding a test that an existing caller still accepts its real
-inputs; and listing the callers checked in the PR summary.
-
-**Changing a shared helper's result changes every caller (Issue #3779).** The
-rule from Issue #3100 read as covering only narrowing, and it accepted a
-callers list the agent wrote itself. VibeCoder#3353 gave
-`syncPrBodyFromSummary` a `headSha !== view.headRefOid` freshness check for
-the no-push feedback path. The CI-fix and merge-conflict callers sync right
-after their own push, while GitHub's `headRefOid` still lags, so they got
-"checkout is not the PR head" and left the description stale. A private fleet
-PR gave a shared record lookup a fallback for one caller. The other caller
-read "nothing" as "leave it alone" and went on to act on a closed record,
-though its PR summary named that caller and called it unchanged. The
-guidelines rule now covers any change to what a shared helper returns, refuses
-or finds, and requires a test through each existing caller whose behaviour the
-change touches. The pre-PR verifier now gets the caller list from the worker
-([pre-PR verifier](#pre-pr-verifier-issue-3395)).
-
-**A new argument or behaviour reaches every caller that needs it (Issue #3253).**
-The changed-call-site rule above covers callers the diff changes; a caller the
-diff should have changed but did not has nothing to revert, so that rule
-cannot find it. Fleet PRs wired a new value into some callers and missed one:
-VibeCoder#3251 gave `recoverAndFinaliseExistingPr` a `docsSweepHitsComment = ""`
-parameter that `reportSummaryRuleBlock` never passed; GRQ-AutoTrader#2282
-added `RunOrigin` but every production caller hard-coded
-`RunOrigin::Scheduled`; and VibeCoder#3095 fixed two of three declared
-hand-off outcomes and left `handOffToPlanning` unchanged. The guidelines and
-the issue prompt's Test Plan step now require listing every caller and
-sibling route first, passing the new value on each or stating why one does
-not need it, making a behaviour-carrying parameter required rather than
-defaulting it to a value that turns the behaviour off, and treating a caller
-left on the old hard-coded value as a blocking self-review finding.
-
-**A new case re-reads the text it now reaches (Issue #3259).** Fleet UI
-PRs added a state or mode to an existing screen
-and left the screen's existing messages describing the old state; tests
-rendered only the new rows, so the suite stayed green. GRQ-AutoTrader#2560
-added "Load older decisions" paging to Activity, and its empty state still
-read "Nothing happened in this period." above the load-older control.
-GRQ-AutoTrader#2615 added an earlier-date mode to Scores: every row still
-drew today's live `CurrentStars` badge beside that date's stars, and the
-unreadable-decisions note still said rows "may read as not evaluated"
-where every row read "Not considered". Unlike the caller-reach rule
-above, no caller is missed: the existing on-screen text is what goes
-unchecked. `CODING-STANDARDS.md` and the issue prompt now require listing
-every message the screen already renders, saying whether each is still
-true in the new state, rewording, hiding or marking each one that is
-not, a test asserting each message that differs, and the list of
-messages checked in the PR summary's Test Plan.
-
-**A new path to an existing outcome keeps that outcome's guards (Issue #3087).**
-Fleet PRs added a second route to an outcome the code already reached, and the
-new route skipped a guard the old one applied: VibeCoder#3085 ran
-`reportSummaryRuleBlock` before a guard in `completion_phase.ts` (since
-replaced by the unmet-criteria gate, Issue #4146); VibeCoder#2909 added an `if (!prepared.ok)` early return
-after `claimPrComment` that neither replied nor released the claim;
-VibeCoder#3065's milestone sync skipped `isConflictAttemptDue`; and
-GRQ-AutoTrader#2279's `publishBusy` skipped the freshness tracker's ticket
-check. The guidelines, the issue prompt's Test Plan step and the PR-feedback
-prompt now require listing every guard and side effect the existing path
-applies before the outcome, keeping each on the new path or stating why it
-does not apply, and proving each kept guard with a test that goes red when
-the new branch is moved ahead of it.
-
-**A new branch must be reachable by the input it exists for (Issue #3167).**
-The mirror of the #3087 rule: fleet PRs inserted a new branch below an
-existing early exit that a realistic input for the new case fires first,
-and tested it with a fixture that never tripped that exit. GRQ#5105 placed
-the run-start test-mode guard after the roster loop's `exit 0` paths, so a
-leaked test-mode flag on an opted-out team or empty roster exited 0 with no
-refusal; VibeCoder#3134 placed the unassigned-gap capture below
-`if (subjectWordSet.size === 0) continue;`, dropping a `partial` or
-`missing` entry with no subject words; and VibeCoder#3159's
-self-filed-dependency hand-off sat first below the described-code-change
-retry and short-output failure, then — after one review-fix round — still
-below `detectRunInterrupted`, a wording guess that matches ordinary blocked
-prose. The guidelines, the issue prompt's Test Plan step and the
-PR-feedback prompt now require listing each exit above the insertion point
-and what fires it, moving the new branch above any exit its realistic input
-can fire first (or stating why a real infrastructure signal must win), and
-a test whose realistic input trips each earlier exit and goes red when the
-branch is moved back below it.
-
-**Code that deletes or replaces state proves everything it destroys is
-safe to lose (Issue #3107).** Fleet PRs wrote clone swaps that checked
-only the state they were about. GRQ#5153's promisor path in
-`_grq_shallow_history_reclone_unfiltered` proved the current branch
-matched origin, then replaced the old `.git` and dropped every other
-local branch, the stash and the reflogs. GRQ#5152's feed-repo re-clone
-checked the current branch and a clean tree, then `rm -rf`'d a clone
-holding unpushed commits on another branch that `model_checkin` was due
-to push — although the sibling guard from GRQ#5153 was already on its
-branch. **Bound irreversible actions** covered only commands the agent
-runs, and the #3087 rule needs an existing sibling path. The guidelines
-(with a pointer from **Bound irreversible actions generally**) and the
-issue prompt's Test Plan step now require listing everything the old
-copy holds that the replacement will not — every local branch tip and
-its unpushed commits, the stash, reflogs, untracked and ignored files,
-local config — proving each item safe to lose or refusing the
-operation, calling an existing sibling guard rather than writing a new
-one, a refusal test whose fixture holds that state, and the inventory
-in the PR summary.
-
-**State recorded on a failure path is cleared on the path that recovers
-(Issue #3430).** Two private fleet PRs wrote a persistent record of a bad
-condition on the failure path and never cleared it on a later healthy run. A
-self-healing step recorded a degraded streak when its repair failed and
-cleared it only after a repair succeeded, so a run that measured the state
-healthy, below threshold or switched off left a stale `first_seen` that would
-trip an absolute "off for too long" limit on the next failure. A "this host
-cannot run this suite" outcome wrote an ineligible ledger entry that nothing
-cleared when a later run fitted, so the next report would claim the host had
-been ineligible since days earlier. Both PRs' tests stubbed the record helper.
-The guidelines and the issue prompt's Test Plan step now require listing every
-path on which a later run finds the condition gone, clearing the record on
-each (or saying why it should outlive a healthy run), following an existing
-set/clear pair, a lifecycle test through the real helper that goes red when
-the clear is deleted, and the set/clear pairs in the PR summary.
-
-**Nothing exists only for a test to read (Issue #3455).** Three private
-fleet PRs in one week added a production member that only tests used: an
-optional preset prop on a web UI component that no production caller
-passed, there only so tests could server-render the component; a field on a
-chart data record whose only production caller read just the label and
-value; and a public field on an API client's error class whose data the UI
-already showed through the error message. Each test checked the member
-instead of what a user or caller sees, so it could stay green while that
-output was wrong. `CODING-STANDARDS.md`, the guidelines and the issue
-prompt's Test Plan step now require one production reader or setter for each
-field, prop, parameter, type or export the diff adds to non-test code, found
-with `git grep -n -w <name>` outside test code; with none, the member is
-removed and the assertion moves onto the returned value, error message or
-rendered text. A member the issue asks for as public API is exempt, and the
-PR summary says so.
-
-**Changing the shape of persisted data bumps its key or reads the old shape
-(Issue #3328).** Fleet PRs changed the type of a value that outlives a
-deployment or relaunch and kept its versioned key, so the previous release's
-entries were read back as the new type: VibeCoder#3325 moved `getSubIssues`
-from `number[]` to `SubIssueRef[]` under the unchanged
-`issue_sub_issues_v1_` prefix of the file-backed `.gh-scan-cache`, and a
-`[7, 8]` entry made `checkParentBlocked` throw and skip the parent/child
-gate; GRQ-AutoTrader#2481 made `cashChange` read only `row.interest_charged`
-while the service worker's `grq-api-v1:` cache still held rows with the old
-`interest` key. Each PR's tests saw only new-shape data, so CI stayed green.
-`CODING-STANDARDS.md` and the guidelines now require bumping the key's
-version or reading and converting the old shape, a test that seeds an
-old-shape entry, updating every doc that names the key, and saying in the PR
-summary which of the two was chosen.
-
-**A cached API response is persisted data, and a standard outranks the spec line
-that breaches it (Issue #3564).** After #3328 landed, a planner-written
-sub-issue in a private fleet repository told the coder that a newly served
-response field's "missing or malformed value throws", and the sub-PR implemented
-and tested exactly that; every installed client's service-worker cache still
-held the previous release's body without the field, so the affected views stayed
-unavailable until a manual reload. `CODING-STANDARDS.md` and the guidelines now
-say a client that reads API responses through a cache that outlives a deployment
-holds persisted data, and that unless the cache key is bumped a newly served
-field's absence is read as unknown (null), never as an error. The planning
-prompt makes a sub-issue that adds, renames or removes a field a client parses
-say which half of the rule applies, and the issue prompt's Project Guidelines
-say a coding standard outranks an implementation detail in the issue: the run
-follows the standard and records the deviation in the PR summary.
-
-**A new test must go red without its change (Issue #3093).** Fleet PRs
-added the regression test a fix or a review asked for, and the test passed
-whether or not the change was there: VibeCoder#3091, #3085 and #3079, and
-GRQ-AutoTrader#2218. The guidelines now require a test added to guard a
-change to go red when only that change is removed; a test that stays green
-without its change is a blocking self-review finding. A test that only pins
-current behaviour — the fault was unreproduced or already fixed, and no
-production change was made — is expected green on base, and the Test Plan
-says so. The issue prompt's Test Plan step counts a new test only once it
-has been seen red with only its change removed, and names that exception.
-Documentation-drift tests gained a fourth condition: the pinned phrase
-occurs only in the rule being added. When a review asks for the red run,
-the pr_feedback rule requires the failing line to be quoted in
-`.pr_response_message`.
-
-**An edited expectation must still go red without its guard (Issue #3374).**
-Fleet PRs changed an expected value in an existing test because the issue
-required it, and the test then passed whether or not the code its name says it
-guards still worked: VibeCoder#3372 (a `branch_outcomes_gate_test.ts` test
-whose new expected list came back the same whether or not the test-path scan
-stopped at a later Branch outcomes header) and GRQ-AutoTrader#2408. The
-removed-assertion rule asks only for the issue requirement that justifies the
-new value, and the new-test rule covers only tests a PR adds. The guidelines
-and `CODING-STANDARDS.md` now require each edited expectation to go red with
-that code broken on purpose — otherwise the PR adds an assertion that does, or
-names the test the lost check moved to — and the issue prompt's Test Plan step
-asks for one red-check line per edited expectation. The issue prompt also asks
-the Standards reviewer whether each such test still fails without the code it
-is named for.
-
-**Re-scoping an existing drift test keeps every check's reach
-(Issue #3307).** Fleet PRs converting whole-file drift tests to `section()`
-kept every pinned string and still lost a check, and were sent back for it:
-a review round of VibeCoder#3240 had narrowed two absence checks to one
-section, and one of VibeCoder#3297 had moved a pin into a list where a
-longer pin already contained it. Condition 4's base check cannot see this,
-because a moved pin is meant to be on base. `CODING-STANDARDS.md` §
-Documentation-drift tests now asks for each moved pin to be scoped to the
-section holding its rule and red-checked there, for no pin to be a substring
-of another in the same list (`assertPins` throws on one), and for
-whole-file absence checks to stay on `flatWholeFile`. The issue and
-pr_feedback prompts and `CONTRIBUTING.md` point to it from their per-phrase
-check.
-
-**A drift pin for a code-held value is red-checked at its source
-(Issue #3655).** Fleet drift tests typed in a value the code already held, so
-the test, the doc and the literal agreed with each other and stayed green when
-the code moved on: VibeCoder#3478 typed in the Floci tag that
-`container/tools.json` holds, and VibeCoder#3654 typed in the clone flags that
-`buildShallowCloneArgs` returns. Condition 3 of `CODING-STANDARDS.md` §
-Documentation-drift tests already forbade this, but the guidelines asked only
-for the doc-removed red check, which a typed-in value passes. The guidelines'
-new-test rule now states condition 3 and adds the source-mutation red check:
-change each code-held value where it is produced, see the drift test fail,
-restore it, and record one Test Plan line per value. The issue prompt's Test
-Plan step, the pr_feedback rule and step 4 of the shared review brief
-(`prompts/pr_review_brief/prompt.md`) ask for the same.
-
-**Check where you insert (Issue #3194).** Fleet PRs added a new item or
-paragraph at a point that cut existing text off from what it describes.
-GRQ-AutoTrader#2218 and #2413 each put a new Rust function between another
-function's doc comment and that function, so rustdoc joined the two blocks
-and the new helper's doc opened with the other function's description.
-GRQ-AutoTrader#2478 put a new paragraph in front of a sentence reading
-"Both paragraphs above describe …", which then named the wrong paragraphs.
-The docs sweep did not catch either, because the sentence made wrong was not
-one the diff added or edited. `CODING-STANDARDS.md` and the guidelines
-(**A Code Change Owes a Docs Change**) now require reading the lines directly
-above and below every insertion point. A new item goes above an existing doc
-comment, attribute or decorator, never between it and its item. A following
-sentence that points back must still point at what it meant, or the insertion
-moves after it, or the sentence is reworded to name its subject. The first and
-last context lines of every hunk that adds a block are read in the diff. The
-issue prompt's PR-summary self-review list carries the same step.
-
-**Vet every regex on untrusted text, one hostile case per pattern
-(Issue #3164).** Fleet PRs added a parser for agent-written text with a hostile
-case for the one pattern the author had in mind, and shipped a sibling
-pattern in the same module with the same quadratic backtracking:
-VibeCoder#3085 capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE`,
-which cost a third review round, and VibeCoder#3160's
-`BRANCH_OUTCOMES_HEADING_RE` took about a minute per call on a heading
-padded with spaces. The guidelines now require every regex a change adds
-or edits that runs on untrusted or agent-written text to be read for two
-quantifiers that can match the same characters with only optional tokens
-between them, to have that overlap removed, and to get its own hostile
-case: a long run of the shared character followed by a character the
-pattern rejects. The pr_feedback prompt sends a backtracking finding to
-every other regex in the same module. The same change fixed the
-`\s*:?\s*` heading tail in the acceptance-criteria, failure-detection,
-independent-review and reproduction-status parsers, and the trailing
-`/\s+$/` strip in the failure-detection repair.
-
-**A `(.*)$` tail can fail on a lone carriage return (Issue #3186).** The
-same gates read labelled values (`reason:`, `evidence:`, `symptom:`,
-`status:`, `test:`) and list items with a greedy `(.*)$`. `.` does not cross
-a lone `\r`, so on a line holding one the tail could not reach `$`: an
-unanchored label search restarted at every later occurrence of the label and
-rescanned to the end each time, and an anchored one split a run of spaces
-between `\s*` and `(.*)` in every possible way. Both are quadratic; at the
-200 000-character scan cap a single PR summary cost seconds to tens of
-seconds per call, and the closure gate has no cap. Each value is now read
-with `([^\n]*)` and no `$`, a tail that cannot fail, so the first labelled
-occurrence wins and a value after a lone `\r` is read rather than dropped.
-The regex-vetting rule names the shape.
-
-**The same shapes outside the gates (Issue #3206).** Applying the rule found
-three more patterns on untrusted text. The commit-message issue reference in
-`issue_lifecycle.ts` and the sub-issue parent link in `planning_processor.ts`
-had `\s*:?\s*` separators (the parent link followed by a further `\s*`, so
-cubic). They now use `\s*(?::\s*)?`. The partial-rollup closing-keyword guard
-in `milestone_partial_rollup.ts` scans a body carrying branch names of any
-length, and its `[\w.-]*\/?[\w.-]*#` reference split a long name in every
-way; each side of `owner/repo#N` is now capped at 100 characters.
-
-**Observe the real tool before you rely on it (Issue #3082).** The
-stub-contract rule says a fake must match the real tool, but not how to
-learn what the real tool does, so fleet PRs guessed and built the fake from
-the same guess. PR #2939 assumed `git for-each-ref` fails on a malformed ref,
-when it exits 0 and prints `warning: ignoring broken ref` on stderr; PR #2949
-matched `gh` labels case-sensitively, though `Needs-Human` and
-`needs-human` are the same label; and PR #3079's fake `gh` returned only
-the merge commit for `compare/{X}...{head}`, when the real API also lists
-the base commits that merge brought in. The guidelines now require running
-the real tool on the case first (on the issue's own examples when it names
-any), building the fake's fixture from the observed output, and giving the
-command and the output relied on in the PR summary — or citing the tool's
-documentation or source when the case cannot be observed safely. The issue
-prompt's Bugs/Enhancements requirement makes a fake built from expected
-rather than observed behaviour a blocking self-review finding.
 
 **A fake mirrors the production implementation it stands in for (Issues #3224, #3900).**
 The stub-contract and observe-real-tool rules cover external callees —
@@ -1889,827 +1176,16 @@ exposed-headers list), and the PR summary names where that deployed setting
 is set. A change whose only proof is a fixture the producer never emits
 is a blocking self-review finding.
 
-**A test of a third-party tool's input uses that tool's semantics (Issue #3235).**
-The fake-mirrors rule covers the repository's own ports and server responses;
-fleet PRs instead tested config read by an external tool against an in-repo
-stand-in for that tool's engine. stSoftwareAU/TagsTS#93's hand-written glob
-matcher never matched `*` before `/`, so `milestone/foo` failed a `*/*` branch
-filter GitHub accepts; TagsTS#98 compiled a Renovate `matchStrings` look-ahead
-with JavaScript's `RegExp`, which accepts it, while Renovate's RE2 rejects the
-whole config. The guidelines now require running the tool's own validator or
-engine where CI can run it, and otherwise testing the stand-in against
-documented cases — the case the change relies on and one the tool rejects or
-does not match — naming that documentation in the PR summary. The
-workflow-validator rule links to it, so a validator that emulates GitHub's
-glob or expression semantics is held to the same bar.
-
-**The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
-parses the block and blocks PR creation in
-[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
-when a `bug`-labelled issue produces a summary with no `## Reproduction` block,
-no symptom, no recognised status, a `verified` claim that names no regression
-test or states no fail-before/pass-after observation, or a downgraded status with
-no reason. The gate comments on the issue naming every rule broken and the
-required shape. Issues **without** the `bug` label are unaffected.
-
-```mermaid
-flowchart TD
-    B["Issue labelled bug"] --> I["Implementation run<br/>prompts/issue/"]
-    I --> S["PR summary carries<br/>## Reproduction block"]
-    S --> G{"Reproduction gate<br/>symptom + status + test?<br/>verified only if observed?"}
-    G -->|yes| PR["PR created"]
-    G -->|"no"| X["Blocked: comment names<br/>each rule broken; run fails"]
-    N["Issue without the bug label"] --> PR
-    style B fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-    style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-    style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style X fill:#c45858,stroke:#6b2020,color:#fff
-```
-
-## 📚 Docs sweep on a code change
-
-The issue and pr_feedback prompts have required a grep for the changed term
-since Issue #2952, but a grep for a name that did not change finds nothing, so
-a PR could rewrite what a manual section described while the sweep truthfully
-reported "no hits" (GRQ-AutoTrader#2231, #2239, #2227 — the last raised a PR
-with no **Docs sweep** line at all, after a WIP checkpoint). The prompts now
-also require a grep for the changed surface's own name — a card or page title
-for a UI component, a route for an endpoint, a report or command name for a
-query or read path — even when no name changed, reading any section it finds
-through and fixing every sentence the change makes false; a hit is cleared
-only once the sentence it sits in has been read, never by the file's topic
-matching. The **Docs sweep** line now names the section read, e.g.
-`section: docs/reporting-pwa.md#broker-balance`, or `section: none — <why no
-manual documents it>`, and it names the sibling members grepped in its
-`siblings:` part (Issue #3371).
-
-**The gate.** [`docs_sweep_gate.ts`](../../worker/deno/lib/docs_sweep_gate.ts)
-(`validateDocsSweep`, `buildDocsSweepGateComment`) runs as a fourth
-summary-rule gate in
-[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
-whenever `git diff --name-only <base>...HEAD` carries any file that is
-neither a test (`isTestFilePath`, shared with the security-fix gate) nor
-documentation (`.md`, `.mdx`, `.markdown`, `.rst`, `.adoc`, `.txt`, or a
-`docs/` path segment) — and also when the diff cannot be read, fail closed.
-It blocks a summary with no **Docs sweep** line, a `section:` that is empty or
-a bare placeholder (`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`), or a
-`siblings:` part (Issue #3371) that is missing, a bare placeholder (`none`,
-`n/a`, `tbd`, …), or quotes no backticked or double-quoted term and is not the
-`siblings: none — <reason>` negative. `section: none — <reason>` and `no hits`
-are both accepted. The grep field must quote a usable term, or state
-`grep: none — <why no terms apply>`; missing, unquoted or bare-negative grep
-fields are refused too (Issue #3861). A bad `section:` and a bad `siblings:` are reported
-together. The entry is read as one logical unit from the shared
-`markdownLogicalUnits` splitter (Issue #3356), so a hard-wrapped entry is
-joined up to the next blank line, list item, heading, table row, fence or HTML
-comment, and a `Docs sweep` line inside a fenced example is not the entry. Its
-verdict is
-computed once, early, so it stands beside — not strictly after — the
-reproduction-status gate: when the closure, independent-review or
-reproduction-status gate blocks the summary first, the docs-sweep verdict is
-folded into that gate's own notice (Issue #3085 review), and only a summary
-that passes all three reaches the late summary gates' own block, which reports
-every one of docs sweep, the placeholder-token gate, the branch-outcomes gate,
-the summary claim check and the [pre-PR verifier](#pre-pr-verifier-issue-3395)
-that fails, at once (Issue #3147, #3257, #3395).
-
-It is a summary-rule gate like the other three, so the same
-[in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) gives the
-agent one more turn on the run's first block, whether or not the branch
-already carries a PR (Issue #3163); only a second block on an existing-PR
-branch finalises as `summary_incomplete`. That one turn is shared: a summary
-missing both an earlier gate's requirement and the Docs sweep line is asked
-for both at once, in the earlier gate's notice, rather than losing the sweep
-to a second, unrecovered block (Issue #3085 review).
-
-**The line's own terms are re-run at the head (Issue #3172).** A complete-looking
-line used to pass while hits of its own grep terms still stated the removed
-behaviour, often in a file it listed as updated — the agent fixed the section
-it named and stopped (GRQ-AutoTrader#2413), or grepped one inflection and
-missed another (#2405: "replaces or removes" against "replaced or removed").
-Once the line passes,
-[`docs_sweep_hits.ts`](../../worker/deno/lib/docs_sweep_hits.ts)
-(`checkDocsSweepTerms`) re-runs each term the line quotes after `grep:` and
-each sibling term in its `siblings:` part (backticked or double-quoted) with
-`git grep -i` at `HEAD` over `README.md`,
-every `*/README.md` and `docs/` (excluding `docs/archive/`). The removed-doc
-phrases (Issue #4105, below) are re-run over the same surfaces. Terms are
-literal, except that a `\w*` or `\w+` stem marker matches a run of word
-characters, so `replac\w*` finds both forms. A hit is cleared when it sits
-on a line the branch's `git diff --unified=0 <base>...HEAD` added or
-changed, or when the line names it as `file:line` or `file:start-end`. Any
-other hit is advisory (Issue #3237, because the re-run was failing fleet
-runs): it is posted once, as a PR comment for the reviewer, listing each
-`file:line` and its sentence (at most 20, then "and N more"), and logged at
-WARN. Quoted terms after colonless `grep` or `grep terms` are read too
-(Issue #3861). A semicolon or the next `section:`, `siblings:`, `updated:`,
-`files updated:` or `grep:` field label ends the current field outside
-quotes. A label inside a quoted term stays part of the term. An explained
-`grep: none — <why>` contributes no search terms, even when the explanation
-quotes a name. When GitHub's secondary rate limit defers the PR to the next cycle
-(Issue #1951), the comment is parked with the deferred PR record and the
-drain posts it on the PR it raises. It never blocks the summary and triggers
-no recovery turn — fix it, or
-name it as `file:line — still true because …`. A
-term with more than 10 such hits in doc files the diff did not touch is a
-locator word, not a removed claim: those hits are set aside and the term
-is logged as not checked line by line, while its hits in files the diff
-touched are still listed. A grep or diff that cannot run, or an
-unresolvable base ref, is logged at ERROR as not checked and does not block
-the PR.
-
-**The line names the sibling members it grepped (Issue #3371).** The #3137
-rule that adding a member owes a docs change was prose only, and a grep for
-the new member's name finds nothing, so four GRQ-AutoTrader PRs
-(#2460, #2481, #2682, #2792) left a doc or contract list one short: each sweep
-grepped only the new name. GRQ-AutoTrader#2792's sweep grepped only the new trim-tolerance
-names, never `OWNER_TUNED` or the buy ceiling. The `siblings:` part of the
-**Docs sweep** line now names the existing sibling members grepped for each set
-the change adds a member to, backticked or double-quoted, or
-`siblings: none — <why no existing set gained a member>`. The worker re-runs
-the quoted sibling terms exactly as it re-runs the `grep:` terms, with the same
-paths, clearing rule and advisory handling; a `none — …` negative re-runs no
-sibling terms, though removed-doc phrases still run (Issue #4105). The
-pr_feedback drift check runs the same gate, so a feedback push's
-summary needs `siblings:` too.
-
-**Doc comments in source files are swept too (Issue #3219).** Fleet PRs fixed
-the manuals and the comment directly above the code they edited, and left doc
-comments elsewhere describing the removed behaviour: on a shared constant, a
-reader, a helper the code calls, or a sibling module, in files the diff did
-not touch (stSoftwareAU/VibeCoder#3215, GRQ-AutoTrader#2460, #2393). The
-prompts now extend the grep to source files: for each name the change removes
-or whose behaviour it changes, and for the shared constants, types and helpers
-the changed code defines or calls, the agent reads every doc comment and
-module doc a hit lands in and fixes any sentence the change makes false.
-`checkDocsSweepTerms` re-runs the same grep and sibling terms over source
-files outside `docs/` (`SOURCE_COMMENT_PATHSPECS`: `*.ts`, `*.rs`, `*.py`,
-`*.go`, `*.sh` and the
-other common source extensions) and keeps only hits on a whole comment line
-(`isSourceCommentLine`: `//`, `/*`, a `*` continuation, or `#` and a space).
-A code line, or a comment trailing code, is not read. Those hits are cleared
-the same way — a line the diff changed, or `file:line` in the Docs sweep line
-— and are otherwise advisory too: posted once as a PR comment and logged at
-WARN, never blocking and never triggering a recovery turn. The broad-term
-limit of 10 is
-counted for source comments apart from docs, so a term common in comments
-never sets aside its doc hits.
-
-**Wording the diff removed is re-run too (Issue #4105).** The agent greps the
-terms for the new thing, not the old sentence it rewrote, so a PR could leave
-an old value in a defaults-table row or the README's copy of a rewritten rule
-(two fleet PRs did). `checkDocsSweepTerms` therefore takes a third term source
-from the branch diff: each line it removed from `README.md`, a `*/README.md` or
-`docs/` (not `docs/archive/`) contributes its backticked literals of at least
-2 characters and each run of at least 4 words between punctuation. A phrase
-still present in an added line of the same hunk is dropped, since the PR kept
-that wording. At most 20 phrases (`MAX_REMOVED_PHRASES`) are re-run per run, in
-diff order; any beyond the cap are logged at WARN, not silently dropped. Each
-phrase is a fixed-string, case-insensitive `git grep` at `HEAD` over the doc
-surfaces only, never source comments. Its hits are cleared exactly like term
-hits (a line the diff changed, or `file:line` in the Docs sweep line) and use
-the same per-surface broad-term cap of 10. They are advisory (Issue #3237):
-posted once in the same PR comment under the label "removed wording still
-present" and logged at WARN, never blocking. The re-run happens even when the
-Docs sweep line quotes no grep or sibling terms, so the diff is now always read
-(one extra `git diff`); a line with no terms and no removed doc wording is
-still skipped.
-
-## 🧪 Removed test assertions must be accounted for
-
-The issue prompt and `CODING-STANDARDS.md` have required (since Issue #3061)
-that a PR summary's Test Plan name every assertion the diff removes from an
-existing test, with the issue requirement that makes it untrue — but the
-rule was prose only, and nothing checked it. Sub-PR GRQ-AutoTrader#2370
-(Issue #2253) was raised with a summary that had no `## Test Plan` section
-at all, and its rewritten test dropped a still-true per-day check that a
-`BBB` row exists for every session; the change reached milestone PR
-GRQ-AutoTrader#2376.
-
-**The gate.**
-[`removed_assertion_gate.ts`](../../worker/deno/lib/removed_assertion_gate.ts)
-(`validateRemovedAssertions`, `findRemovedAssertions`,
-`buildRemovedAssertionGateComment`) runs as a summary-rule gate in
-[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
-whenever `git diff --name-only <base>...HEAD` lists a test file
-(`isTestFilePath`, shared with the security-fix and docs-sweep gates) — and
-also when that list cannot be read, fail closed. It then blocks a summary
-with no `## Test Plan` heading.
-
-It decides whether the gate applies from
-`git diff --name-status -z --find-renames <base>...HEAD` (NUL-separated, so
-a non-ASCII path is not quoted into a pathspec that matches nothing), not
-from the rename-collapsed `git diff --name-only` list. A rename or copy
-whose old or new path is a test file contributes both paths, so a test
-file renamed to `src/moved.rs` is still a test-file change. It then reads
-`git diff --unified=4000000 --find-renames --diff-filter=AMRD <base>...HEAD -- <those paths>`.
-Deleted test files are in that patch. A pathspec of only a rename's new
-name is not used: that would show the file as brand-new and hide the
-removed lines. The context is large enough that each test file's patch is
-one hunk holding the whole old file and the whole new file, so the gate
-sees every assertion in full and everything around it.
-
-On each side of each test file it lexes the source first, blanking
-comments and string contents (`//`, `/* */` and quotes for Rust and
-C-like files; `#` and triple quotes for Python; `#` for shell and bats), so
-an assertion inside a comment or a string is not an assertion. In C-like
-files (TypeScript, JavaScript and the like) a regex literal is blanked as
-well: a `/` where an expression can begin — at the start of the file, after
-`(` `,` `=` `:` `[` `!` `&` `|` `?` `{` `}` `;`, after any other operator
-(including the `>` of an arrow, so `` => /`/.test(c) `` is a regex), or
-after a keyword such as `return` or `typeof` — opens a one-line regex that
-ends at an unescaped `/` outside a `[…]` class. So a quote or backtick
-inside a regex (`` /[*_`>]/g ``) does not open a string that hides the lines
-below it. A `/` with no closing `/` on its line is division. A template
-literal's `${…}` substitutions are lexed as code, with a stack of brace
-depths that resumes the template at the matching `}`, so a nested template
-or quote inside a substitution (`` `'${v.replaceAll("'", `'\\''`)}'` ``)
-does not close the outer template early. It then
-collects every assertion statement — `assert…(`, `assert_eq!(`,
-`assert.x(`, `expect(` not preceded by `.`, and Python/bats
-`assert`/`assert_x` commands; `debug_assert!` and a declaration such as
-`function assertNoEscalation(…) {` are not assertions — extending each
-over the following lines until its brackets close (up to 200 lines).
-
-An assertion on the old side counts as kept or moved only when the new
-side of some test file in the diff holds a copy with the same text,
-ignoring whitespace, **and** the same context:
-
-- **The same guards and skips around it.** Its enclosing lines are found
-  by indentation and by open `{`, so both formatted and unformatted code
-  are covered. Every enclosing line that does not just name a test, a test
-  group, a test function (`#[test]`, `test_…`) or a type or module is part
-  of the context: an `if`/`else`/`match`, a loop, a `with` or `try`, a
-  callback such as `.forEach(`, a wrapper helper, or a helper function that
-  may never be called. A head wrapped over several lines is part of the
-  context whole, every line of its condition: `deno fmt`'s
-  `if (`…`) {`, black's `if (`…`):`, rustfmt's `if a` / `&& b` / `{`, an
-  Allman `{`, a Python `\` continuation, and a `for (` whose array of
-  cases spans lines. These are found as one logical line: lines inside an
-  open `(` or `[`, lines that lead with `&&`, `||`, `.` or `?`, and a bare
-  `{` all continue the line above. A head longer than 200 lines is
-  reported, since the gate cannot key it whole. When an enclosing line continues a chain — `else`,
-  `elif`, `} else if`, `except`, `catch`, `finally`, a `case`/`default:`
-  arm or a Rust match arm — the earlier heads of that chain back to its
-  opening `if`, `try`, `switch` or `match` are part of the context too. They
-  are found by brace (the `if (…) {` whose `{` a `} else {` closes) and by
-  indentation (same-indent heads above, skipping their bodies). So changing
-  the `if` condition above an `else` assertion is a removal. When no brace
-  links a branch to its head and the walk back passes 400 lines, the
-  assertion is reported, because the gate cannot see the head. So are skip
-  markers on the enclosing test:
-  `it.skip(`, `Deno.test.ignore(`, `xit(`, `ignore: true`, `#[ignore]`,
-  `#[should_panic]`, a non-test `#[cfg(…)]`, `@pytest.mark.skip`,
-  `@unittest.skip`, `pytestmark`.
-- **The same early exits before it** in its innermost function: `return`,
-  `continue`, `break`, `throw`, `raise`, `panic!`, `pytest.skip(`,
-  `t.Skip(` and the like, outside a closure opened on the same line. An
-  exit inside a function or closure body that closed before the assertion
-  is not counted: a `{` opened by `=> {`, `function (…) {`, `|x| {` or an
-  object method such as `async run(args) {`, or a nested Python `def`. A
-  `return` in a mock or callback cannot stop a later assertion from
-  running, so changing it does not mark that assertion removed. An exit in
-  a closed `if` or loop block still counts.
-
-Copies are counted, so deleting one of two identical assertions is a
-removal. Everything else is removed: an edit to any line of a multi-line
-assertion (a `.any(` predicate losing a condition, an expected value
-changing), an assertion commented out or deleted, and a copy re-added
-under a new condition, into a skipped test or after a new early exit. An
-unchanged assertion whose guard, skip or preceding exit changed is
-removed too, and so is one whose brackets never close within 200 lines
-when the file changes at or after it, because the gate cannot tell where
-it ends. A re-wrap, a re-indent, or a move to another test or another
-test file with nothing new around it still counts as moved. As a backstop
-for a lexer mistake, a removed line that opens an assertion but that the
-lexer entered already inside a carried-over string or block comment is
-always reported, even when the same text is re-added: the gate cannot read
-its context, so it fails closed. An assertion-shaped line in a multi-line
-template literal or block comment that the diff removes or moves must
-therefore be named in the Test Plan too. Valid source never ends inside a
-string, template, `${…}` substitution or block comment, so when either
-side's lexer reaches the end of a file still inside one, it has lost its
-place. If the file changes at or after the line where that literal opened,
-every assertion-shaped line of the old side from that line on is reported.
-A copy on such a new side from that line on cannot vouch for a move.
-
-Each remaining removed assertion must appear, ignoring whitespace, in its
-own Test Plan list entry. The entry carries exactly one structured reason:
-
-- `Required by: "<quote>"` quotes at least 5 words verbatim from the linked
-  issue's title or body (not comments), ignoring whitespace wrapping. The
-  quote must occur within one of those fields, not across their boundary.
-- `Moved to: <path>` names a file where the same canonical assertion occurs
-  on added lines, with its guards, skips and early exits preserved. The
-  existing scanner still exempts safe moves; any explicit move claim is
-  checked, and a surviving copy cannot account for multiple removals.
-
-A replacement also carries `Replaced by:` with each new assertion in inline
-code. Every named replacement must be added in the same test file as the
-removed assertion. Whether an added assertion replaces a removed one is
-reviewed semantically; an unrelated new test in that file does not establish
-a replacement. A missing or fabricated reason, a wrong destination, or a
-named replacement absent from the added lines blocks PR creation
-(Issue #3739). Reasons on another
-list entry cannot justify a removal. The Standards reviewer still judges
-whether a quoted requirement actually makes the old assertion untrue, and
-identifies replacements from the diff even when `Replaced by:` is omitted.
-A missing replacement entry is a `violation`; comparing each pair also
-returns a `violation` when a value the old assertion checked is no longer
-checked anywhere.
-
-When the test-file patch itself cannot be read, or it reaches the
-8,000,000-character read cap, only the heading rule applies and a warning
-is logged. The patch is not scanned after a silent cut.
-
-Like the docs-sweep and result-placeholder gates, its verdict is computed
-early and folded into an earlier summary gate's own notice (closure,
-independent review, reproduction status) when one of those blocks first, and
-it gets the same single
-[in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn — a
-second block fails the run, and a branch that already carries a PR instead
-finalises as `summary_incomplete`. Among the standalone gates it runs after
-the docs sweep and before the placeholder-token gate.
-
-```mermaid
-flowchart TD
-  A["Diff touches a test file?"] -->|No| Z["Continue"]
-  A -->|Yes / unreadable| B["Summary has ## Test Plan heading?"]
-  B -->|No| X["Block PR"]
-  B -->|Yes| C["Any assertion edited, deleted, or re-added under a new guard, skip or exit?"]
-  C -->|No| Z
-  C -->|Yes| D["Each named with a verified reason and replacement evidence?"]
-  D -->|Yes| Z
-  D -->|No| X
-  style Z fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-  style X fill:#c45858,stroke:#6b2020,color:#fff
-```
-
-## 🚫 A leftover placeholder token blocks the summary
-
-A fleet PR could leave a literal fill-in-later token — e.g.
-`QUALITY_RESULT_PLACEHOLDER` — where the quality-gate result belonged,
-because nothing checked the summary for a bare ALL-CAPS token the agent
-never resolved (Issue #3124).
-[`result_placeholder_gate.ts`](../../worker/deno/lib/result_placeholder_gate.ts)
-blocks PR creation when the PR summary contains a token matching
-`\b[A-Z][A-Z0-9_]*_(?:PLACEHOLDER|PENDING|TBD|TODO)\b` anywhere in prose, or
-when a line citing a gate command (`quality.sh`, a `deno`/`cargo`/`npm`/
-`pnpm`/`yarn`/`go`/`make` subcommand, `pytest`, `shellcheck` or `semgrep`)
-leaves the text after its last colon — or after an em dash, en dash,
-spaced hyphen, spaced double hyphen or `=` following the cited command —
-a bare ALL-CAPS identifier with at least one underscore — a structural
-backstop that catches an invented suffix without the gate having to
-enumerate it. GRQ#5164, raised after Issue #3124 landed, carried
-`- ./quality.sh < /dev/null on the head: GATE_OUTCOME_PENDING` in its
-summary and PR body; the original `_PLACEHOLDER`-only regex let it
-through, so Issue #3248 widened the gate to both rules above. VibeCoder
-PRs #3233 and #3283 then separated the command from a bare
-`QUALITY_RESULT` / `GATE_RESULT` with an em dash, which the colon-only
-backstop let through, so Issue #3287 counts those separators too — only
-after the cited command, so a list bullet's `- ` or an option's `=`
-before it is not read as one. A token inside a backtick code span or a
-fenced code block is ignored either way, so an identifier mentioned in
-code is never flagged. Like the docs-sweep gate it is folded into the
-earlier summary gates' own notice when one of those blocks first, and it
-gets the same single
-[in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
-turn — a second block fails the run.
-
-## 🌳 A branch outcome with no recorded test blocks the summary (Issue #3147)
-
-Fleet PRs kept shipping a new branch no test reached, and review-fix runs
-closed out an untested-branch finding by adding the test it named while
-their own rework opened new untested branches of its own (GRQ-AutoTrader#2368),
-or named a test that did not exist (VibeCoder#3132). The enumeration the
-guidelines already required — Issue #3069, above — stayed prose: nothing
-checked that the PR summary actually carried it, or that a named test was
-real.
-
-**The gate.**
-[`branch_outcomes_gate.ts`](../../worker/deno/lib/branch_outcomes_gate.ts)
-runs as a summary-rule gate in
-[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
-with the same applicability test as the docs-sweep gate: whenever
-`git diff --name-only <base>...HEAD` carries any file that is neither a test
-(`isTestFilePath`) nor documentation (`.md`, `.mdx`, `.markdown`, `.rst`,
-`.adoc`, `.txt`, or a `docs/` path segment) — and also when the diff cannot
-be read, fail closed. It blocks a summary with no `Branch outcomes:` list
-(a `Branch outcomes:` line, bold or plain, or a `Branch outcomes` heading,
-followed by one list item per outcome naming `path:line`, the outcome, the
-test that reaches it, and that flipping it went red), an empty one, a bare
-placeholder (`tbd`, `n/a`, …), or one that names a test-file path not
-tracked at HEAD — checked with `git ls-tree` on HEAD, run from the
-repository root, so a named path must itself be relative to the repository
-root (`worker/deno/tests/foo_test.ts`, not `tests/foo_test.ts`) even though
-the test command runs from `worker/deno` (Issue #3160); a failed lookup also
-blocks, fail closed. A test identifier with no test-file path (for example a
-Rust inline `mod::tests::name`) is not existence-checked. `Branch outcomes:
-none added` is accepted when the diff adds no branch.
-A line that opens with the phrase inside a code span — a hard-wrapped
-sentence quoting `` `Branch outcomes:` `` followed by more prose, say — is a
-quoted mention, not the header: it neither satisfies the gate nor ends a real
-list (Issue #3377). The exception is a code-span line with nothing after the
-separator except `none` or `none added`, such as a bare
-`` `Branch outcomes:` `` line above a list or
-`` `Branch outcomes: none added` ``, which still counts as the header.
-
-It also blocks an entry that admits its own outcome is unreached. A strong
-admission — "no test reaches", "covers" or "exercises" it, "not reached by
-any test", or a negation directly governing a go/turn verb ("never went
-red", "did not go red", "no test went red", "does not turn red") — blocks
-whatever the entry names. A weaker admission — "unreached", "untested",
-"unreachable", or a flip that "stayed green" or "left … the suite green" —
-blocks only when the entry names no test-file path and records no red
-flip. The admission must be in the entry's own prose, not inside
-backticks: a closed code span containing `::` is read only up to that
-`::`, any other code span containing whitespace (a quoted test name, a
-command such as `cargo test --workspace`) is not read at all, and a span
-with no whitespace (a path, `path:line`, an identifier) is read as is — so
-bold prose carries the admission, but backticks around it do not. Lines
-the list parser otherwise skips — table rows, prose after the list,
-entries past the 100-entry cap — are still checked for this admission. The
-one exception is an entry written `exempt (out of scope): <reason>` or
-`exempt (untestable): <reason>` with a reason of at least three words; an
-exemption with no reason blocks too (Issue #3288, after
-GRQ-AutoTrader#2682 and VibeCoder#3282 raised with admitted-untested
-entries).
-
-**The facts file (Issue #3535).** The agent may instead record the Branch
-outcomes list as structured JSON in
-`docs/archive/pr-summaries/pr-summary-<N>.facts.json`, validated by
-`parseSummaryFacts`. With no facts file the prose gate above is unchanged. An
-unreadable file (any read error other than not-found), malformed JSON or a
-schema-invalid file blocks PR creation with a reason naming the facts file,
-as a summary-rule block that shares the single in-run recovery.
-A valid file's list is rendered by `renderBranchOutcomes` into the summary,
-at the `<!-- vibe-branch-outcomes -->` marker, in place of a safely identified
-legacy list, or appended when neither is present, before the PR body is assembled. The block ends at
-`<!-- /vibe-branch-outcomes -->` and is replaced idempotently on refresh.
-Facts are authoritative: the shared renderer replaces safely identified legacy
-lists, preserving unrelated narrative. Duplicate/unmatched ownership markers,
-unowned legacy evidence and unresolved unreached-outcome admissions remain
-blocking; they are never discarded to make rendering succeed. Agents maintain
-facts plus the marker, rather than a second list. The gate then reads the assembled
-body as it reads a prose list: every test path the prose parser names there —
-each entry's declared test, a test-shaped entry `path`, and a test named in
-the text that follows the list's header — is existence-checked at HEAD with the same
-`git ls-tree` lookup, and an absent one blocks. A facts-file block's comment
-names the facts problem first. The PR-body resync applies the same
-rendering, digests the facts content with the summary (a PR with no facts file
-digests the summary alone, so older digests stay valid), counts a change to the
-facts file in the legacy no-digest diff rule, and fails with an error naming
-the file when it is unreadable or invalid.
-
-It is a summary-rule gate like docs sweep and the placeholder-token gate: its
-verdict is folded into an earlier summary gate's own notice when that one
-blocks first, it shares the single
-[in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn, and
-a second block fails the run — a branch that already carries a PR finalises
-as `summary_incomplete` through `reportSummaryRuleBlock`. The gate runs in
-the issue-run completion phase only; a pr_feedback run instead re-enumerates
-every branch its own fix commits add and refreshes the facts file's entries
-(`pr-summary-<N>.facts.json`) to the head when the PR has one, or the
-committed summary's `Branch outcomes:` list otherwise, rather than leaving the
-first round's entries standing (`prompts/pr_feedback/prompt.md`).
-
-## 🔎 A summary that describes named code wrongly blocks the PR (Issue #3257)
-
-A first-run PR summary has repeatedly described named code wrongly — quoting
-a function, file, test, regex or pattern and saying what it does, contains,
-matches or covers when the head says something else. VibeCoder#3252 cost
-three separate send-backs to three false claims in one summary; #3132 cited a
-Test Plan behaviour no test actually covered. The review-fix drift check
-(Issue #3143, `pr_feedback_drift_check.ts`) catches exactly this shape of
-problem, but only on a review-fix push — it never runs on the very first turn
-that writes the summary and raises the PR.
-
-**The gate.**
-[`summary_claim_check.ts`](../../worker/deno/lib/summary_claim_check.ts) runs
-from the issue-run completion phase (`completionBody` in
-[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts))
-whenever a PR summary file was loaded, before the PR is raised. It reuses the
-review-fix drift check's question renderer (`renderDriftVerdictQuestion`),
-verdict parser (`parseDriftVerdict`) and read-only tool deny list
-(`DRIFT_CHECK_DISALLOWED_TOOLS`) rather than inventing a second copy of that
-machinery.
-
-Two independent checks feed one result:
-
-1. **One constrained, read-only model question.** The model runs
-   `git diff <base>...HEAD`, reads the summary file (fenced under a nonce),
-   and quotes every sentence that names a function, file, test, regex or
-   pattern and says what it does, contains, matches or covers but is false at
-   the head — an illustrative "for example `X`" counts too. A finding blocks
-   only when it names the summary file and its sentence is found in the
-   summary's own text; otherwise it is logged as unconfirmed and never acted
-   on. A base ref that cannot be resolved, a question that cannot be
-   launched, and a reply with no readable verdict are each logged at warn
-   level — the same as the review-fix drift check's own model pass. All three
-   are recorded in `notChecked` and never block on their own — an unreachable
-   model or an unreadable file is never reported as a clean check, but it also
-   never blocks a PR by itself.
-2. **A deterministic Test Plan backstop**
-   (`findTestPlanClaimProblems`). In the `## Test Plan` section, a list item
-   that names a test file in backticks and quotes a behaviour ("…" or
-   “…”, at least two significant words) attaches to the nearest preceding
-   test-file reference, provided no other backtick span (a command, a path,
-   an error message) lies between them — otherwise to the nearest following
-   one under the same condition, and otherwise it is not a coverage claim at
-   all. An attached claim must point to a test in that file (split at test
-   declarations) whose name or body, or the file's own preamble — the text
-   before the first declaration, where a fixture shared by more than one
-   test tends to live — shares at least half of the quote's significant
-   words; a named test file not tracked at the head blocks too. A reference
-   to a directory (trailing `/`), a glob or a directory prefix of tracked
-   paths is not a file; it, an ambiguous basename, an unreadable or oversized
-   file, a file with no recognised test declaration, or a claim past the
-   50-claim cap is logged as not checked rather than blocking. A corpus run of this backstop over the 876
-   summaries archived in `docs/archive/pr-summaries/` when it was run flagged 2
-   (pr-summary-658 and pr-summary-663, both quoting test names no longer
-   present in the named files); the adjacency and preamble rules above
-   removed four would-be false positives — pr-summary-1549 and -3222
-   (shared fixture constants) and pr-summary-599 and -3178 (quoted error
-   messages sitting beside other backtick spans).
-
-Either kind of hit is a summary-rule block, folded into whichever summary
-gate blocks first — the claim check comes after docs sweep, removed
-assertions, the result placeholder and branch outcomes, and before the
-[pre-PR verifier](#pre-pr-verifier-issue-3395), the one verdict that can fold
-into its block — and goes
-through the existing [in-run
-recovery](#-the-in-run-recovery-from-a-summary-rule-block) path when it is
-not alone: the run's first block, or a later block folded with another gate,
-takes the one recovery turn, then a further block fails the run (or
-finalises an existing PR as `summary_incomplete`). The claim check runs again
-on the re-run after that turn either way.
-
-**Prose affected by the change (Issues #3347, #3715, #3731).** The one
-read-only model question also covers added or edited lines in manual/prompt
-Markdown outside `docs/archive/pr-summaries/`, excluding summaries and tests.
-For changed source files recognised by `isProseSourcePath`, the shared lexer
-selects comment text, excluding executable code and string literals: changed
-comments, module headers, and doc comments attached to changed declarations.
-The recognised extensions cover JavaScript/TypeScript, Rust, shell, Python,
-Ruby, C/C++, Java, Go, C# and SQL; other source formats are outside this scope.
-The question explicitly asks for a grep of the whole head tree when a claim
-names a set without one authoritative list, such as signal senders, result
-readers or files a command reads.
-
-The same scope builder, `doc_prose_scope.ts`, adds unchanged manual sections:
-the heading-bounded section named by the summary's Docs sweep `section:` field,
-and sections mentioning a changed source path, basename or exported
-declaration. These extra sections can be in untouched manuals, but never
-under `docs/archive/`. A named parent heading includes its subsections; a
-source-reference match ends at the next heading. The model asks whether
-**this change** makes the sentence false, not whether it was always right.
-Sentences the head still agrees with are not findings, except a parity
-sentence ("as before", "exactly as X", "the same as", "unchanged", "no
-behaviour change"), which is also checked against the base side or the other
-path it names.
-
-The combined prose scope is capped at 20 files and the extra manual scope at
-40 sections. The prompt lists selected paths and line ranges inside its
-untrusted-data boundary. Files/sections past a cap, unreadable tracked files,
-unavailable diffs and unterminated source literals/comments are recorded as
-not checked, never passed. Both checks log these at warning level. Both
-aggregate cap overflow into one warning per check (the count and the first
-few names), not one line per range; every other not-checked reason is logged
-as its own warning. A deleted file has no
-prose to check. If the changed-file list itself is unavailable, the summary is
-still questioned and its prose extension is recorded as not checked.
-
-`docProseClaimInstruction` retains the trigger classes: when behaviour
-happens, what it refuses, rejects, allows or skips, absolute words, counted
-or closed lists, and a parity sentence ("as before", "exactly as X did",
-"the same as", "unchanged", "no behaviour change"). A parity sentence is a
-claim about both sides: the model opens the base with `git show <base>:<path>`,
-or the other path at the head, and names both `file:line`s. A reported
-contradiction quotes the sentence verbatim and names the contradicting head
-`file:line`. Confirmed findings go through the
-existing summary-rule recovery path. First-run `docFindings` carry the
-manual/comment findings separately from summary findings. Markdown findings
-can use the sentence correction below; source comments stay on the ordinary
-recovery and hold path, without granting the narrow turn source-code writes.
-The review-fix check uses the same scope and does not send an unconfirmed
-source/prose finding to its recovery turn. Neither check becomes a general
-manual audit.
-
-**Issues #3324 and #3865.** A later block where the claim check is the only
-earlier summary gate still failing gets one narrow correction turn. This
-covers summary sentences and confirmed `docFindings` in selected manuals or
-prompts, including the affected unchanged sections. A block containing a source
-comment finding follows the ordinary recovery and hold path. File-writing
-tools and `Bash` are denied; `Read`/`Grep`/`Glob` remain available to inspect
-the head code.
-
-The model reads the original files by path; fenced findings are scrubbed
-evidence, never the editable source. When findings are summary-only, the model
-returns the corrected summary between `<!-- vibe-corrected-summary -->`
-markers. When manual or prompt findings are present, it returns an indexed
-replacement string for each
-flagged sentence, including any summary findings in that same block. The
-worker locates each flagged span with the claim check's whitespace-normalised
-matching rules and changes only that span in its own file. Missing or duplicate
-indices, ambiguous or overlapping spans, unsafe paths and symlink aliases are
-refused. Text outside those spans is preserved byte for byte. Both reply
-formats refuse newly introduced prompt-scrubbing artefacts (U+2024, fullwidth
-braces/angle brackets, `author＝` or a redaction placeholder) before writing.
-Completion and the local summary checker also reject scrubbed HTML-comment
-markers, including inside Mermaid or code spans (Issue #3710).
-
-The worker commits changed files, runs the quality gate, then re-runs
-completion once. Confirmed sentences still present are carried forward even
-if the next model check misses them; an unreadable manual does not clear its
-confirmed finding. A failed invocation, malformed reply or unchanged sentence
-therefore cannot silently clear the block. A later block folded with another
-gate does not get this extra turn. A surviving manual or source-comment finding
-on an existing PR, whether the block is claim-check-only or mixed, is posted
-with the existing worker repair marker so PR feedback can act on it, and the
-PR is still armed for auto-merge (Issue #4291). With no PR, the run fails.
-
-A pre-PR verifier block on that same attempt is checked again after the claim
-correction: the claim gate returns first and completion rechecks the gates.
-
-```mermaid
-flowchart TD
-    A["Completion phase, summary loaded,<br/>before raising the PR"] --> B["Test Plan backstop:<br/>quoted behaviour vs. named test file"]
-    A --> C{"Base ref known?"}
-    C -- no --> D["Not checked"]
-    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code,<br/>selected comments and manual prose"]
-    E --> F["Confirm each finding against<br/>the summary's or the doc's own text"]
-    B --> G{"Any confirmed finding<br/>or Test Plan problem?"}
-    F --> G
-    D --> G
-    G -- yes --> H{"First summary-rule<br/>block this run?"}
-    G -- no --> I["PR raised"]
-    H -- yes --> RT["One recovery turn<br/>(all folded gates, one per item)"]
-    RT --> A
-    H -- no --> J{"Claim check the only gate,<br/>summary/manual findings only,<br/>correction turn unused?"}
-    J -- no --> K["Fail / finalise<br/>summary_incomplete"]
-    J -- yes --> L["One narrow claim<br/>correction turn (#3324, #3865)"]
-    L --> M["Re-run: wrong sentences<br/>still present carried forward"]
-    M --> N{"Gate satisfied?"}
-    N -- yes --> I
-    N -- no --> K
-    style I fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style K fill:#c45858,stroke:#6b2020,color:#fff
-```
-
-## 🔧 Changed workflow files are checked before the PR
-
-Issue #1755 hardens the provisioning path **by construction**: the workflow
-templates, the pin resolution done at filing time, and the
-`prompts/issue/prompt.md` rule that tells a run how to write a workflow file.
-All three are instructions an LLM run follows; none of them is a gate. A run
-that embellishes what it was given — a bare-digest pin — or writes a workflow no
-template produces still ships a file the
-[`github-actions-audit`](../GITHUB-ACTIONS-AUDIT-SCAN.md) idle task files a
-finding against days later, in a repository the fleet does not own.
-
-**The gate.** [`changed_workflow_gate.ts`](../../worker/deno/lib/changed_workflow_gate.ts)
-runs every entry in
-[`WORKFLOW_FILE_CHECKS`](../../worker/deno/lib/workflow_file_checks.ts) over the
-`.github/workflows/` files the branch **added or changed**, at the same
-PR-creation chokepoint in
-[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
-Those checks are the audit's own file-scoped ones — the nine native pre-filers
-plus the two `quality.sh` hygiene rules — and every one of them decides from the
-file text alone: no network, no run history, no repository settings. On the
-branch diff they cost milliseconds. Any finding blocks the PR, and the failure
-names the check id, the file, the line and the detail, so the next attempt fixes
-the file rather than guessing. The gate honours no in-file
-`best-practice-ignore` marker — it reads the branch's files without blame, and
-no production path configures a verified commit identity, so every marker is
-rejected — and prose in the PR summary does not clear it either: a finding that
-genuinely does not apply needs a human to review it, or a fix to the scanner
-(Issue #3683).
-
-**Only what the run touched is in scope.** A repository whose *pre-existing*
-workflow files already carry findings is the idle-task audit's business, not this
-PR's: an untouched offender must never block an unrelated change. Deletions are
-out of scope too — the diff is collected with `--diff-filter=ACMR`, so a removed
-workflow has no text to check and its absence is never read as an unreadable
-file.
-
-**And only what the run *introduced*** (Issue #2043). Scoping to changed *files*
-was not enough: a file a run appended two steps to was still checked whole, so a
-`push:` trigger that had sat on the base commit for months blocked the PR that
-touched the file for an unrelated reason — a `severity:low` audit finding turned
-into a hard block on unrelated work, and each block recorded as a host failure.
-Every check therefore runs **twice**: once over the branch's text, once over
-`git show <base>:<path>`, and a finding is the run's only when it is absent at
-base. The comparison is per check, by `(finding id, file)`, and it counts — two
-findings sharing an id where base carried one report the extra one, so a second
-offender is never masked by the first. Line numbers are excluded from the key,
-because appending a step shifts every line below it without changing what is
-wrong. A path absent at base is one the branch **added**, so it is checked whole;
-a base version that cannot be **read** is a fault and blocks, while one that
-cannot be **parsed** is not — that is often the very state the run is fixing.
-
-**Not deciding is a failure, not a pass** (see
-[Never fail silently](../../CODING-STANDARDS.md)). A diff that cannot be
-collected, a changed file that cannot be read, and a file whose YAML does not
-parse are each reported as a fault and block the PR. "No findings" is only a
-pass when the checks actually ran over the text.
-
-Like the security-fix gate and unlike the nine summary gates above, a finding
-here is a defect in the **change**, not a shortfall in the summary, so it stops
-the run whether or not a PR already exists.
-
-```mermaid
-flowchart TD
-    A["Branch pushed"] --> D["git diff --name-only<br/>--diff-filter=ACMR base...HEAD"]
-    D -->|"diff failed"| X["Blocked: fail loud —<br/>an unknown diff is not a pass"]
-    D --> F{"Any changed<br/>.github/workflows/*.yml?"}
-    F -->|no| PR["PR creation continues"]
-    F -->|yes| R{"Read + parse each<br/>changed file, and its<br/>base version"}
-    R -->|"read or parse failed"| X
-    R --> C{"WORKFLOW_FILE_CHECKS<br/>over branch text and base text"}
-    C --> DF{"Finding also<br/>present at base?"}
-    DF -->|"yes — pre-existing"| PR
-    DF -->|"no — introduced here"| B["Blocked: comment names<br/>check id, file, line, detail"]
-    U["Untouched offending workflow"] -.->|"out of scope — audit files it"| PR
-    style F fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-    style R fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-    style C fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-    style DF fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-    style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style B fill:#c45858,stroke:#6b2020,color:#fff
-    style X fill:#c45858,stroke:#6b2020,color:#fff
-```
-
-## ⛔ No PR until every acceptance criterion is met
-
-The owner's ruling (Issue #4146): "If the criteria is not met then don't raise
-a PR, just complete the job." "Partially completed" is never a resolution.
-Until #4146 a run whose summary closed a criterion out `partial` or `missing`
-still raised a PR that closed the issue on merge, and filed a `Finish #N`
-follow-up for the rest (Issues #2562, #3506). That machinery is gone.
-
-[`unmet_criteria_gate.ts`](../../worker/deno/lib/unmet_criteria_gate.ts) is a
-completion gate, last in the chain of PR-summary gates:
-
-```mermaid
-flowchart TD
-    S["PR summary closure block"] --> U{"Any criterion partial,<br/>missing or unassessed?"}
-    U -- no --> P["PR raised; it closes the issue"]
-    U -- yes --> R["No PR. The agent is sent back in this run<br/>with each unmet criterion named"]
-    R --> G{"Fewer unmet than last round,<br/>and rounds left?"}
-    G -- yes --> S
-    G -- no --> F["Run failure: criteria_unmet.<br/>Branch kept; the next run resumes it.<br/>No PR, no follow-up, no needs-human"]
-```
-
-- **What counts as unmet.** Every `partial` or `missing` closure entry, matched
-  to the issue's criteria by its words (Issue #3128). A scope item the closure
-  block says nothing about counts too when the block assesses fewer entries
-  than the issue states: silence is not `met`. A pending merge check
-  (`CI not yet verified`, `awaiting code review`) is not unfinished work and
-  does not count.
-- **The run keeps working.** The block reaches the in-run recovery turn
-  (`summary_rule_gate_retry.ts`, Issue #2189) with each unmet criterion as an
-  UNMET CRITERION item the turn must finish in code and tests. Re-labelling a
-  criterion `met` without the work is the over-claim the Spec reviewer exists
-  to catch. Further rounds follow while each one meets more criteria than the
-  last, up to `MAX_UNMET_CRITERIA_ROUNDS`; a round that moves nothing ends the
-  run.
-- **A run that still cannot finish fails** as `criteria_unmet` on the ordinary
-  `failed-once` → `failed` ladder. No PR is raised, no follow-up is filed, and
-  nothing is labelled `needs-human`. The branch stays pushed, so the next run
-  resumes it (Issues #220, #585).
-- **An incomplete PR is a draft.** The owner: "make sure that incomplete PRs
-  are draft so the CI and code reviews aren't done." A PR the agent raised
-  itself from inside the execute phase is turned back into a draft the moment
-  a criterion is found unmet: `gh pr ready --undo`, auto-merge disarmed, and
-  the body rewritten to `Part of #N` with no closing keyword. It is never
-  closed; the draft never holds its issue, so the next run continues the
-  branch.
-- **Degraded runs follow the same rule.** Whether the run was served by a
-  fallback model changes nothing here: the run-stats `Degraded:` line is
-  telemetry, not a delivery decision.
-- **A timed-out run keeps a draft.** A run that times out (or is released on
-  schedule) with its work preserved on the branch opens a DRAFT PR saying
-  `Part of #N` — never a closing keyword, never auto-merge (the sweep skips
-  drafts, Issue #1800) — via
-  [`draft_continuation_pr.ts`](../../worker/deno/lib/draft_continuation_pr.ts).
-  The fleet's own draft never holds its issue (`getBlockingPRForIssue`), so the
-  next run re-claims it, resumes the branch and finishes.
-- **Complete means ready, and merging as soon as possible.** Once every
-  criterion is met, completion rewrites a draft's body (`Closes #N`), runs
-  `gh pr ready` and arms squash auto-merge in the same step, rather than
-  waiting for the sweep.
-
-[`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) keeps
-only the pure scope assessment both this gate and `claim_freshness.ts` read.
+When two inputs could supply the result, give the candidates different values
+and point the code at the sibling value to confirm the test fails (Issue #3851).
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
-The nine summary gates above — acceptance-criteria closure, independent review,
-reproduction status, docs sweep, removed test assertions, the
-placeholder-token gate, the branch-outcomes gate, the summary claim check and
-the pre-PR verifier — sit at the completion phase's PR-creation chokepoint, so blocking one
-normally costs the next
-attempt a rewrite and nothing else. The
+The summary gates that remain — acceptance-criteria closure, independent
+review, reproduction status, the placeholder-token gate and the pre-PR
+verifier — are advice (Issue #4234). The first report is one in-session note.
+Whatever remains is one pull-request comment. None of them fails the run or
+stops the pull request. The
 chokepoint is not always ahead of the PR: the agent raises its own PR from inside
 the execute phase often enough that the completion phase carries a self-healing
 recovery path for exactly that.
@@ -2728,7 +1204,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on summary or manual/prompt sentences, after the one claim correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and armed for auto-merge; surviving standing violations, verifier findings or manual findings are posted on the PR (Issue #4291); issue stays attached to the PR |
+| `summary_incomplete` | a PR exists and a summary rule is still unmet after the one in-session note (Issue #4234) | PR finalised and armed for auto-merge; the remaining findings are one comment on the PR; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -2737,13 +1213,9 @@ whether or not the run's branch already carries a PR (Issue #3163) — see
 [the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) below.
 An existing PR is not finalised, labelled or auto-merged across that turn;
 only a block that survives the recovery (the run's second such block) on an
-existing-PR branch finalises as `summary_incomplete` — except that when the
-claim check alone is still blocking on that second attempt, on summary or
-manual/prompt sentences, it first gets
-one claim correction turn (Issue #3324), and only a block that
-survives *that* turn finalises the PR. Either way the gate's
-remediation comment is posted, so the shortfall is on the issue thread rather
-than only in one host's log.
+existing-PR branch finalises as `summary_incomplete`. The remaining findings
+are one comment on the pull request (Issue #4234). The shortfall is on the
+pull request rather than only in one host's log.
 
 A degraded run, or a healthy run with its own `partial`/`missing` gaps
 (Issue #3506), on an existing-PR branch is the exception to
@@ -2823,23 +1295,14 @@ flowchart TD
     G -->|no| R{"First summary-rule block<br/>of this run?"}
     R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
     RT --> G
-    R -->|no| CC{"Claim check the only gate<br/>still blocking, correction<br/>turn unused this run?"}
-    CC -->|yes| CT["One claim correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
-    CT --> G
-    CC -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
-    Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
-    Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
+    R -->|no| N["Note what remains, then raise<br/>or finalise the PR and arm<br/>auto-merge (Issue #4234)"]
     style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style WF fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-    style Q fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style R fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style RT fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-    style CC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
-    style CT fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-    style S fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
-    style F fill:#c45858,stroke:#6b2020,color:#fff
+    style N fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style F2 fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
@@ -2884,16 +1347,9 @@ now recover the way the security-fix gate does
 A run that satisfies the gate on the re-run raises its PR, or, when the run's
 branch already carried a PR from the execute phase, updates and finalises that
 same PR — no second PR is opened. A **second** block in the same run is not
-recovered again, with one exception: when the claim check alone is still
-blocking on summary or manual/prompt sentences — every earlier summary gate having
-passed — the run instead gets
-one claim correction turn before it is treated as a second block
-(Issue #3324, [above](#-a-summary-that-describes-named-code-wrongly-blocks-the-pr-issue-3257)).
-Any other second block fails exactly as a block did before, with the
-comment already on the thread; on an existing-PR branch that PR is finalised
-as `summary_incomplete` (Issue #1140). The same verdict is never posted
-twice, so the thread records the shortfall rather than the number of attempts
-at it. A recovery invocation the worker could not launch at all — a rate
+recovered again. The pull request is still raised, or the existing one
+finalised, and auto-merge stays armed. Whatever remains is one comment on
+that pull request (Issue #4234). The same finding is not posted twice. A recovery invocation the worker could not launch at all — a rate
 limit, a failed spawn — changed nothing on the branch: with no PR the
 original block stands unaltered; with an existing PR, completion re-runs and
 that block finalises the PR as `summary_incomplete` rather than failing the
@@ -2908,10 +1364,8 @@ this way: the gate comment landed on the issue seconds after the agent's own
 PR, with no chance to fix the summary, and #3159 went out still describing
 the old no-changes deferral in this manual. The run's first block now always
 takes the one recovery turn, whichever kind of branch it is on; a block that
-survives that turn is handled as before — finalised as `summary_incomplete`
-when a PR exists, failed when none does — unless it is the claim check
-alone still blocking on summary or manual/prompt sentences, in which case it gets the
-one claim correction turn first (Issue #3324).
+survives that turn is noted on the pull request, which is raised or finalised
+and armed either way (Issue #4234).
 
 **Issue #3382.** The recovery turn used to be told the code had already
 passed the quality gate and must not change, while the Issue #3196 gate
@@ -2957,14 +1411,13 @@ The Issue #3196 reason rules still cannot see the diff. This routing runs
 whatever headings the linked issue uses, so an issue that states no criteria
 still has its summary's `## Standards Review` read (Issue #3761, NEAT-AI#4065).
 
-All nine summary gates route through it: closure (#518), independent review
-(#663), reproduction status (#521), docs sweep (#3073), removed test
-assertions (#3131), the placeholder-token gate (#3124), the
-branch-outcomes gate (#3147), the summary claim check (#3257) and the pre-PR
-verifier (#3395). The two
-exceptions above do not — the
-security-fix and changed-workflow gates report defects in the change, not
-documentation shortfalls, so they still stop the run.
+The summary gates that still run route through it: closure (#518),
+independent review (#663), reproduction status (#521), the placeholder-token
+gate (#3124), the mutation check (#3393), coverage carry-over (#3795), the
+pre-PR verifier (#3395) and unmet criteria (#4146). Each is advice: the first
+report is one in-session note, and whatever remains is one pull-request
+comment (Issue #4234). The security-fix and changed-workflow gates do not —
+they report defects in the change, so they still stop the run.
 
 **Implementation.**
 [`summary_rule_gate_retry.ts`](../../worker/deno/lib/summary_rule_gate_retry.ts)
@@ -3160,14 +1613,14 @@ an orphaned merge too:
   that PR already satisfied, the level branch released as superseded, a success
   with no output and the label untouched, so the next scan claimed it again —
   three Opus invocations in four hours. The pre-check now records the
-  re-approval on the phase state, and a run that **then** ends superseded is
-  handed to a human: one marker-deduped comment naming the PR that resolved the
-  issue and asking what the re-approval should change, `needs-human` applied
-  through the shared escalation chokepoint, and the discovery labels stripped by
-  `stripDiscoveryLabelsOnEscalation` — so the issue is not re-claimed until
-  someone answers. Both facts are required: a re-approved run that raised a PR
-  was worked normally, and a superseded release with no re-approval is the
-  ordinary #218 stop.
+  re-approval on the phase state, and a run that **then** ends superseded has
+  shown the merged PR already does what the issue asks, so the worker closes
+  the issue as completed by that PR, with a comment naming it (Issue #4298 — it
+  is never handed to a human). Anything the re-approval wanted beyond that PR
+  belongs in a new issue. Both facts are required: a re-approved run that
+  raised a PR was worked normally, and a superseded release with no
+  re-approval is the ordinary #218 stop. See
+  [`reapproval_superseded_close.ts`](../../worker/deno/lib/reapproval_superseded_close.ts).
 
 ```mermaid
 flowchart TD
@@ -3175,8 +1628,7 @@ flowchart TD
   Reapp -->|"Yes — re-approved"| Work["Continue the run:<br/>WARNING, no close"]
   Work --> Sup{"Run ended superseded?<br/>(nothing left to change)"}
   Sup -->|No| Pr["Ordinary outcome:<br/>the re-approved scope's PR"]
-  Sup -->|Yes| Hand["Hand off (Issue #1862):<br/>one deduped comment +<br/>needs-human, labels stripped"]
-  Hand --> Wait["Not re-claimed until<br/>a human answers"]
+  Sup -->|Yes| Hand["Close as completed by the merged PR<br/>(Issues #1862, #4298)"]
   Reapp -->|No| Landed{"Merge reachable from<br/>the default branch?"}
   Landed -->|Yes| Close["Close the issue<br/>(success)"]
   Landed -->|"No — orphaned"| Heal["Raise / confirm a rollup PR<br/>milestone branch → default"]
@@ -3189,15 +1641,14 @@ flowchart TD
   style Bounce fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
   style Work fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
   style Pr fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
-  style Hand fill:#e0a050,stroke:#8b4500,color:#1a1a1a
-  style Wait fill:#7a9cc4,stroke:#2c4a6b,color:#1a1a1a
+  style Hand fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
 ```
 
 **Implementation:** [orphaned_rollup.ts](../../worker/deno/lib/orphaned_rollup.ts)
 (the repair), [phases/merged_pr_precheck_phase.ts](../../worker/deno/lib/phases/merged_pr_precheck_phase.ts)
 (detect → self-heal → bounce, and the re-approval skip),
-[reapproval_superseded_handoff.ts](../../worker/deno/lib/reapproval_superseded_handoff.ts)
-(the re-approved-then-superseded hand-off), `isExpectedSkipResult` in
+[reapproval_superseded_close.ts](../../worker/deno/lib/reapproval_superseded_close.ts)
+(the re-approved-then-superseded close), `isExpectedSkipResult` in
 [issue_worker_types.ts](../../worker/deno/lib/issue_worker_types.ts) (the main
 loop's skip-versus-failure classification).
 

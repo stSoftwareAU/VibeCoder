@@ -48,7 +48,7 @@ sweep.
 ```mermaid
 flowchart LR
     W["worker-scan<br/>open `security` issues with a SEC- id<br/>(+ optional fresh Claude scan)"] --> N[Normalise]
-    S["semgrep scan --json<br/>local binary or the digest-pinned image<br/>semgrep/semgrep:1.173.0"] --> N
+    S["semgrep scan --json<br/>local binary or the digest-pinned image<br/>semgrep/semgrep:1.182.1"] --> N
     C["codeql<br/>gh api …/code-scanning/alerts (all severities)<br/>or a SARIF file"] --> N
     N --> D["Dedup by fingerprint<br/>rule family + path + 10-line window"]
     D --> B{In the baseline?}
@@ -305,7 +305,7 @@ workflow, the baseline or the sweep code:
    JavaScript/TypeScript with `upload: never`, so the SARIF stays on the
    runner and never collides with the repository's default-setup CodeQL;
    the sweep reads it with `--codeql-sarif`.
-2. **Semgrep** — the same digest-pinned `semgrep/semgrep:1.173.0@sha256:…`
+2. **Semgrep** — the same digest-pinned `semgrep/semgrep:1.182.1@sha256:…`
    image `semgrep.yml` uses, `semgrep scan --config p/default --json`, handed
    over with `--semgrep-json`. Running it as its own step separates "scanner
    failed" from "sweep failed".

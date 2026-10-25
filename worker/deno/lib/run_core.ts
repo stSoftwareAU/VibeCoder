@@ -1289,6 +1289,17 @@ export interface RunCoreDeps {
    */
   runCycleCallback?: (cycle: TerminalScanCycle) => Promise<void>;
 
+  /**
+   * Report the hard-kill evidence files the launcher watchdog left behind
+   * (Issue #4254). Runs once per process, inside the first scan cycle and
+   * after that cycle's fleet snapshot, so a kill it counts lands in that
+   * cycle's `fleetSummary.failures`. Must never throw; a throw is logged and
+   * the loop continues.
+   *
+   * Optional: absent is a no-op.
+   */
+  reportHardKills?: () => Promise<void>;
+
   // Status
   setStatusIdle: () => Promise<void>;
   setStatusWorking: (details: string) => Promise<void>;
@@ -5785,6 +5796,8 @@ export async function runCoreLoop(
   let fleetIdleReason: FleetIdleReason = "unknown";
   /** Set once the fleet summary has been emitted, so `finally` is a no-op. */
   let fleetSummaryEmitted = false;
+  /** Set once hard-kill evidence has been reported (Issue #4254). */
+  let hardKillsReported = false;
   /** Wall-clock the current scan cycle opened (Issue #1955). */
   let cycleStartedAtMs = startTime;
   let cycleFleetStart = getFleetTelemetry(startTime);
@@ -6173,6 +6186,26 @@ export async function runCoreLoop(
           tracker.resetScanProgress();
           cycleStartedAtMs = deps.now();
           cycleFleetStart = getFleetTelemetry(cycleStartedAtMs);
+
+          // --- Hard-kill evidence (Issue #4254) ---
+          // Once per process, after the cycle's fleet snapshot so a kill it
+          // counts is in this cycle's `fleetSummary.failures`. Placed above
+          // every early exit in the loop body (root filesystem, trust
+          // refresh, spend ceiling), so none of them can skip it.
+          if (!hardKillsReported && deps.reportHardKills) {
+            hardKillsReported = true;
+            try {
+              await deps.reportHardKills();
+            } catch (hardKillErr) {
+              warnOf(deps)(
+                `Hard-kill reporting faulted: ${
+                  hardKillErr instanceof Error
+                    ? hardKillErr.message
+                    : String(hardKillErr)
+                }. The scan cycle continues.`,
+              );
+            }
+          }
 
           // Touch PID file for proof of life
           await deps.touchPidFile();
