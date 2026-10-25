@@ -1,0 +1,12 @@
+{
+  "issue": 4341,
+  "chunk": "top-up-4341",
+  "title": "top-up: semgrep token drift pre-filer",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4341",
+  "definition": "worker/deno/lib/semgrep_token_drift_scanner.ts: reads already-parsed workflow files and reports a `semgrep ci --config` step with SEMGREP_APP_TOKEN in scope; pure, never throws, writes nothing (#4341)",
+  "status": "claimed",
+  "sweptAt": "e317b5f274ca1521a97cdc7c746fed3ad91e4bce",
+  "paths": [
+    "worker/deno/lib/semgrep_token_drift_scanner.ts"
+  ]
+}
