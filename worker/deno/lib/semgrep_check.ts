@@ -39,6 +39,13 @@
 
 import { SEMGREP_IMAGE, SEMGREP_IMAGE_TAG } from "./pinned_actions.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** A binary version probe. Seconds. A timeout is not "semgrep is absent". */
+const SEMGREP_PROBE_TIMEOUT_MS = 10_000;
 import { runningInContainerImage } from "./container_stamp.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
@@ -499,17 +506,19 @@ export async function spawnWithDeadline(
 export async function probe(
   binary: string,
   probeArgs: string[],
+  timeoutMs: number = SEMGREP_PROBE_TIMEOUT_MS,
 ): Promise<string | null> {
   try {
-    const command = new Deno.Command(binary, {
+    const result = await commandOutputWithTimeout(binary, {
       args: probeArgs,
       stdout: "piped",
       stderr: "null",
+      timeoutMs,
     });
-    const result = await command.output();
     if (!result.success) return null;
     return new TextDecoder().decode(result.stdout).trim();
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return null;
   }
 }

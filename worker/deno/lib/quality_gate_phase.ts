@@ -38,6 +38,34 @@ import {
 import { TOOL_OUTPUT_IS_DATA_RULE } from "./prompt_delimiter.ts";
 import { fenceQualityOutput } from "./untrusted_quality_output.ts";
 import { resolveRepoCredentials } from "./repo_credentials.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+} from "./subprocess_timeout.ts";
+
+/** A repository quality run or formatter. Minutes, so a hang fails closed. */
+const REPOSITORY_COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** `--kill-after=10` plus slack, past which the native backstop fires. */
+const NATIVE_TIMEOUT_WRAPPER_GRACE_SECONDS = 30;
+
+/** `id`, `which`, `lsof`, `pgrep` and `kill`. Seconds. */
+const PROBE_TIMEOUT_MS = 10_000;
+
+function probeCommand(
+  binary: string,
+  args: string[],
+  stdout: "piped" | "null",
+  timeoutMs: number,
+): Promise<Deno.CommandOutput> {
+  return commandOutputWithTimeout(binary, {
+    args,
+    stdout,
+    stderr: "null",
+    stdin: "null",
+    timeoutMs,
+  });
+}
 
 /**
  * Whether this container can drop to the untrusted account, resolved once.
@@ -242,7 +270,7 @@ export interface QualityGateDeps {
   /** Run a command and capture output. Returns [exitCode, output]. */
   runCommand: (
     cmd: string[],
-    options?: { stdin?: "null" | "inherit"; cwd?: string },
+    options?: { stdin?: "null" | "inherit"; cwd?: string; timeoutMs?: number },
   ) => Promise<{ exitCode: number; output: string }>;
   /** Format quality failure message. */
   formatFailureMsg: (
@@ -291,10 +319,15 @@ export interface QualityGateParams {
  */
 async function spawnRepositoryCommand(
   cmd: string[],
-  options: { stdin?: "null" | "inherit"; cwd?: string } | undefined,
+  options: {
+    stdin?: "null" | "inherit";
+    cwd?: string;
+    timeoutMs?: number;
+  } | undefined,
   repoCredentialEnv: Record<string, string>,
   dropToUntrusted: boolean,
 ): Promise<{ exitCode: number; output: string }> {
+  const timeoutMs = options?.timeoutMs ?? REPOSITORY_COMMAND_TIMEOUT_MS;
   try {
     const dropped = dropToUntrusted ? await untrustedSpawn(cmd) : [...cmd];
     const env = untrustedQualityCommandEnv({
@@ -312,7 +345,7 @@ async function spawnRepositoryCommand(
         ? {}
         : { CARGO_TARGET_DIR: target },
     );
-    const proc = new Deno.Command(spawnable[0]!, {
+    const result = await commandOutputWithTimeout(spawnable[0] ?? "", {
       args: spawnable.slice(1),
       // The declared credentials are placed AFTER the allowlist, so a
       // repository's own declaration is the only way a credential reaches
@@ -327,8 +360,8 @@ async function spawnRepositoryCommand(
       stderr: "piped",
       stdin: options?.stdin === "inherit" ? "inherit" : "null",
       cwd: options?.cwd,
+      timeoutMs,
     });
-    const result = await proc.output();
     const stdout = new TextDecoder().decode(result.stdout);
     const stderr = new TextDecoder().decode(result.stderr);
     return { exitCode: result.code, output: stdout + stderr };
@@ -346,7 +379,11 @@ async function spawnRepositoryCommand(
  */
 export function runCommandAsWorker(
   cmd: string[],
-  options?: { stdin?: "null" | "inherit"; cwd?: string },
+  options?: {
+    stdin?: "null" | "inherit";
+    cwd?: string;
+    timeoutMs?: number;
+  },
 ): Promise<{ exitCode: number; output: string }> {
   return spawnRepositoryCommand(cmd, options, {}, false);
 }
@@ -359,6 +396,7 @@ export function createDefaultDeps(
    * a credential is in scope for the repository that named it and no other.
    */
   repoCredentialEnv: Record<string, string> = {},
+  probeTimeoutMs: number = PROBE_TIMEOUT_MS,
 ): QualityGateDeps {
   return {
     getRepoConfig: (
@@ -396,24 +434,25 @@ export function createDefaultDeps(
           .split(/\s+/);
       for (const port of ports) {
         try {
-          const lsof = new Deno.Command("lsof", {
-            args: ["-ti:" + port],
-            stdout: "piped",
-            stderr: "null",
-          });
-          const result = await lsof.output();
+          const result = await probeCommand(
+            "lsof",
+            ["-ti:" + port],
+            "piped",
+            probeTimeoutMs,
+          );
           if (result.success) {
             const pids = new TextDecoder().decode(result.stdout).trim();
             if (pids) {
-              const kill = new Deno.Command("kill", {
-                args: ["-9", ...pids.split("\n")],
-                stdout: "null",
-                stderr: "null",
-              });
-              await kill.output();
+              await probeCommand(
+                "kill",
+                ["-9", ...pids.split("\n")],
+                "null",
+                probeTimeoutMs,
+              );
             }
           }
-        } catch {
+        } catch (error) {
+          if (isCommandTimeoutError(error)) throw error;
           // Port not in use or lsof not available
         }
       }
@@ -428,24 +467,25 @@ export function createDefaultDeps(
       ];
       for (const pattern of patterns) {
         try {
-          const pgrep = new Deno.Command("pgrep", {
-            args: ["-f", pattern],
-            stdout: "piped",
-            stderr: "null",
-          });
-          const result = await pgrep.output();
+          const result = await probeCommand(
+            "pgrep",
+            ["-f", pattern],
+            "piped",
+            probeTimeoutMs,
+          );
           if (result.success) {
             const pids = new TextDecoder().decode(result.stdout).trim();
             if (pids) {
-              const kill = new Deno.Command("kill", {
-                args: ["-9", ...pids.split("\n")],
-                stdout: "null",
-                stderr: "null",
-              });
-              await kill.output();
+              await probeCommand(
+                "kill",
+                ["-9", ...pids.split("\n")],
+                "null",
+                probeTimeoutMs,
+              );
             }
           }
-        } catch {
+        } catch (error) {
+          if (isCommandTimeoutError(error)) throw error;
           // pgrep not available or no matching processes
         }
       }
@@ -453,28 +493,30 @@ export function createDefaultDeps(
 
     getUserId: async (): Promise<string> => {
       try {
-        const cmd = new Deno.Command("id", {
-          args: ["-u"],
-          stdout: "piped",
-          stderr: "null",
-        });
-        const result = await cmd.output();
+        const result = await probeCommand(
+          "id",
+          ["-u"],
+          "piped",
+          probeTimeoutMs,
+        );
         return new TextDecoder().decode(result.stdout).trim();
-      } catch {
+      } catch (error) {
+        if (isCommandTimeoutError(error)) throw error;
         return "1000";
       }
     },
 
     getGroupId: async (): Promise<string> => {
       try {
-        const cmd = new Deno.Command("id", {
-          args: ["-g"],
-          stdout: "piped",
-          stderr: "null",
-        });
-        const result = await cmd.output();
+        const result = await probeCommand(
+          "id",
+          ["-g"],
+          "piped",
+          probeTimeoutMs,
+        );
         return new TextDecoder().decode(result.stdout).trim();
-      } catch {
+      } catch (error) {
+        if (isCommandTimeoutError(error)) throw error;
         return "1000";
       }
     },
@@ -486,14 +528,15 @@ export function createDefaultDeps(
       if (envCmd) return envCmd;
       for (const t of ["gtimeout", "timeout"]) {
         try {
-          const which = new Deno.Command("which", {
-            args: [t],
-            stdout: "null",
-            stderr: "null",
-          });
-          const result = await which.output();
+          const result = await probeCommand(
+            "which",
+            [t],
+            "null",
+            probeTimeoutMs,
+          );
           if (result.success) return t;
-        } catch {
+        } catch (error) {
+          if (isCommandTimeoutError(error)) throw error;
           // Not found
         }
       }
@@ -585,7 +628,13 @@ export async function runNativeQualityCheck(
     cmd = ["bash", "-c", qualityCommand];
   }
 
-  const result = await deps.runCommand(cmd, { stdin: "null" });
+  // The repository's configured timeout bounds the run, not the 30-minute
+  // default. With a `timeout` wrapper its TERM and --kill-after come first,
+  // so this backstop sits just past them.
+  const timeoutMs = timeoutCmd
+    ? (timeoutSeconds + NATIVE_TIMEOUT_WRAPPER_GRACE_SECONDS) * 1000
+    : timeoutSeconds * 1000;
+  const result = await deps.runCommand(cmd, { stdin: "null", timeoutMs });
 
   // Always clean up subprocesses after quality check
   await deps.cleanupSubprocesses();

@@ -27,6 +27,11 @@ import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
+import {
+  commandOutputWithTimeout,
+  isCommandTimeoutError,
+  spawnCommandWithTimeout,
+} from "./subprocess_timeout.ts";
 import { formatCoarseDuration } from "./rate_limit_wait.ts";
 import {
   describeMemoryPressure,
@@ -1408,16 +1413,6 @@ async function runClaudeWithTimeoutBody(
       ? ["-n", String(agentNice), agentBinary, ...args]
       : args;
 
-    const command = new Deno.Command(spawnBinary, {
-      args: spawnArgs,
-      cwd,
-      clearEnv: true,
-      env: prePushHook.env,
-      stdout: "piped",
-      stderr: "piped",
-      stdin: promptViaStdin ? "piped" : "null",
-    });
-
     logger?.info(
       // Name the provider that is about to run (Issue #4109) so a Quorum
       // run's interleaved log lines attribute to the agent that produced them.
@@ -1471,7 +1466,27 @@ async function runClaudeWithTimeoutBody(
       );
     }
     const startMs = clock.now();
-    const child = command.spawn();
+    const child = spawnCommandWithTimeout(spawnBinary, {
+      args: spawnArgs,
+      cwd,
+      clearEnv: true,
+      env: prePushHook.env,
+      stdout: "piped",
+      stderr: "piped",
+      stdin: promptViaStdin ? "piped" : "null",
+      // Backstop past the latest deadline the watchdog can reach. The
+      // watchdog still kills the tree at its deadline; this signal fires only
+      // if that child is still alive.
+      timeoutMs: agentSpawnBackstopMs(
+        timeoutSeconds,
+        killAfterSeconds,
+        options.progressExtension === undefined ? undefined : {
+          enabled: options.progressExtension.policy.enabled === true,
+          ceilingMs: options.progressExtension.ceilingMs,
+        },
+        clock.now(),
+      ),
+    });
     const childPid = child.pid;
     if (promptViaStdin && promptFilePath) {
       // Stream the file into stdin and close it at EOF (pipeTo closes the
@@ -2781,15 +2796,51 @@ export async function killClaudeProcessTree(
 /** Default gap between two memory-pressure evidence lines (Issue #4384). */
 export const DEFAULT_MEMORY_WATCH_MIN_INTERVAL_MS = 60_000;
 
+/** The longest delay `setTimeout` honours; a longer one fires at once. */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/**
+ * The agent spawn's backstop timeout, in milliseconds (Issue #4251).
+ *
+ * It must not fire before the watchdog's own deadline plus its grace. With
+ * the progress extension on (Issue #4296) that deadline moves: up to the
+ * supervisor's ceiling when there is one, and without limit when there is
+ * not, so the backstop is then the longest timer there is.
+ */
+export function agentSpawnBackstopMs(
+  timeoutSeconds: number,
+  killAfterSeconds: number,
+  extension: { enabled: boolean; ceilingMs?: number } | undefined,
+  nowMs: number,
+): number {
+  let budgetMs = timeoutSeconds * 1000;
+  if (extension?.enabled === true) {
+    if (extension.ceilingMs === undefined) return MAX_TIMER_DELAY_MS;
+    budgetMs = Math.max(budgetMs, extension.ceilingMs - nowMs);
+  }
+  return Math.min(budgetMs + killAfterSeconds * 1000, MAX_TIMER_DELAY_MS);
+}
+
+/** `ps` for the memory watch. Seconds. A timeout is not an empty table. */
+const AGENT_PS_TIMEOUT_MS = 10_000;
+
 /** `ps -eo pid,ppid,rss,etime,args` for the memory watch. */
-async function defaultRunPs(): Promise<string> {
-  const out = await new Deno.Command("ps", {
+export async function readAgentProcessTable(
+  timeoutMs: number = AGENT_PS_TIMEOUT_MS,
+): Promise<string> {
+  const out = await commandOutputWithTimeout("ps", {
     args: ["-eo", "pid,ppid,rss,etime,args"],
     stdout: "piped",
     stderr: "null",
-  }).output();
+    timeoutMs,
+  });
   if (!out.success) throw new Error("ps failed");
   return new TextDecoder().decode(out.stdout);
+}
+
+/** `ps -eo pid,ppid,rss,etime,args` for the memory watch. */
+async function defaultRunPs(): Promise<string> {
+  return await readAgentProcessTable();
 }
 
 /**
@@ -4312,6 +4363,9 @@ function requiredTools(agentBinaryPath?: string): string[] {
   ];
 }
 
+/** `which` probe. Seconds. A timeout is not "tool missing". */
+const WHICH_TIMEOUT_MS = 10_000;
+
 /**
  * Check whether a CLI tool is available.
  *
@@ -4319,7 +4373,10 @@ function requiredTools(agentBinaryPath?: string): string[] {
  *   the tool (Issue #959).
  * @returns true if the tool is found
  */
-async function isCommandAvailable(tool: string): Promise<boolean> {
+export async function isCommandAvailable(
+  tool: string,
+  timeoutMs: number = WHICH_TIMEOUT_MS,
+): Promise<boolean> {
   // An explicit path is checked where it is, not searched for (Issue #959):
   // `PATH` has nothing to say about a binary the caller already located, and
   // a `which` probe here is what forced a test holding a stub agent to
@@ -4333,14 +4390,15 @@ async function isCommandAvailable(tool: string): Promise<boolean> {
     }
   }
   try {
-    const command = new Deno.Command("which", {
+    const output = await commandOutputWithTimeout("which", {
       args: [tool],
       stdout: "piped",
       stderr: "piped",
+      timeoutMs,
     });
-    const output = await command.output();
     return output.success;
-  } catch {
+  } catch (error) {
+    if (isCommandTimeoutError(error)) throw error;
     return false;
   }
 }

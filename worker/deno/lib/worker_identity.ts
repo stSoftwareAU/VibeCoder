@@ -70,8 +70,11 @@ export function getWorkerUniqueId(workerName: string): string {
  * Tries in order (Issue #1058):
  *   1. Deno.hostname() — requires --allow-sys=hostname
  *   2. Environment variables: HOSTNAME (Linux), COMPUTERNAME (Windows), NAME
- *   3. Running `hostname` command — requires --allow-run
- *   4. Falls back to "unknown-host" only as a last resort
+ *   3. Falls back to "unknown-host" only as a last resort
+ *
+ * The `hostname` command is not spawned. A synchronous spawn cannot be
+ * interrupted, so a hung command would stall every caller of this function
+ * (Issue #4251). `Deno.hostname()` is the bounded check.
  *
  * Must work on both macOS and Ubuntu.
  */
@@ -92,21 +95,6 @@ export function getHostname(): string {
     }
   } catch {
     // Permission denied — try next fallback
-  }
-
-  // Strategy 3: Run hostname command (requires --allow-run)
-  try {
-    const cmd = new Deno.Command("hostname", {
-      stdout: "piped",
-      stderr: "null",
-    });
-    const output = cmd.outputSync();
-    if (output.success) {
-      const h = new TextDecoder().decode(output.stdout).trim();
-      if (h.length > 0) return h;
-    }
-  } catch {
-    // Command not found or permission denied
   }
 
   return "unknown-host";
