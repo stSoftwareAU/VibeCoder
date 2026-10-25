@@ -1969,14 +1969,19 @@ function milestoneRequest(
 function recordingLogger(): Logger & {
   warnings: Array<{ message: string; context?: LogContext }>;
   errors: Array<{ message: string; context?: LogContext }>;
+  infos: Array<{ message: string; context?: LogContext }>;
 } {
+  const infos: Array<{ message: string; context?: LogContext }> = [];
   const warnings: Array<{ message: string; context?: LogContext }> = [];
   const errors: Array<{ message: string; context?: LogContext }> = [];
   const noop = () => {};
   return {
     warnings,
     errors,
-    info: noop,
+    infos,
+    info: (message: string, context?: LogContext) => {
+      infos.push({ message, ...(context ? { context } : {}) });
+    },
     warn: (message: string, context?: LogContext) => {
       warnings.push({ message, ...(context ? { context } : {}) });
     },
@@ -2447,6 +2452,32 @@ Deno.test(
       0,
       "its issue was re-queued by the roll-back, not again here",
     );
+  },
+);
+
+Deno.test(
+  "abandonAndRebuildMilestone - logs the left-out sub-PRs only when some were left out (PR #4344 review)",
+  async () => {
+    for (const exclude of [[11], []]) {
+      const logger = recordingLogger();
+      const outcome = await abandonAndRebuildMilestone(milestoneRequest(), {
+        gh: makeMilestoneGh({
+          subPrListing: twoSubPrListing(),
+          issueStates: {},
+        }).gh,
+        git: makeMilestoneGit().git,
+        logger,
+        excludePrNumbers: exclude,
+      });
+      assert(outcome.outcome === "milestone-rebuilt");
+      const leftOut = logger.infos.filter((i) =>
+        i.message.includes("leaves out")
+      );
+      assertEquals(leftOut.length, exclude.length);
+      if (exclude.length > 0) {
+        assertStringIncludes(leftOut[0].message, "leaves out 1 sub-PR(s)");
+      }
+    }
   },
 );
 

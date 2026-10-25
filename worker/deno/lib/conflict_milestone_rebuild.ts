@@ -17,7 +17,9 @@
  * 1. The rebuild starts **detached at the base tip** — a fresh detached
  *    checkout of the base tip, not a reset of the milestone branch — so
  *    nothing of the old, conflicting history is carried forward by accident.
- * 2. Every sub-PR that merged into the milestone branch is replayed, **in
+ * 2. Every sub-PR that merged into the milestone branch, except those the
+ *    caller excludes (`excludePrNumbers`: the ones an earlier roll-back
+ *    reverted, whose issues are already re-queued), is replayed, **in
  *    merge order**, by cherry-picking its merge commit onto the rebuild. Merge
  *    order (not PR number, not issue number) is the order history actually
  *    happened in, and replaying any other order risks a cherry-pick that
@@ -405,7 +407,10 @@ function errorMessage(error: unknown): string {
 
 /**
  * Rebuild a conflicted `milestone/**` branch from its base tip, replaying
- * every sub-PR that merged into it, and deliver the result (Issue #3035).
+ * the sub-PRs that merged into it (less any in `excludePrNumbers`), and deliver
+ * the result (Issue #3035). When `gate` is wired and refuses the rebuilt tree,
+ * nothing is pushed or re-queued and the outcome is `failed` at step
+ * `milestone-gate`.
  *
  * Never throws: every failure is returned as `{ outcome: "failed", step }`.
  */

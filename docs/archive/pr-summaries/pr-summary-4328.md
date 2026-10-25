@@ -124,8 +124,9 @@ there unchanged.
 
 ## Test Plan
 
-- Added `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts` (35
-  tests at head): `judgeSyncFailure` refusal flags (set on the two, not set on
+- `worker/deno/tests/milestone_sync_refusal_ladder_4328_test.ts` (35 tests at
+  head, run on the head: 117 passed with `conflict_abandon_restart_test.ts`):
+  `judgeSyncFailure` refusal flags (set on the two, not set on
   disrupted, ruleset, non-conflict and merge-gate verdicts);
   `escalateRepeatedRefusal` below/at ceiling and non-refusals; the sweep
   acceptance tests (agent and gate) ; the presync twin; spent-elsewhere hand-off
@@ -236,6 +237,23 @@ there unchanged.
 - `./quality.sh < /dev/null` on the head: passed (with skipped checks: config
   integration, checkov); `deno tests` stage passed with
   `VIBE_IMAGE_AGENT_PROVIDERS=claude` set.
+- PR #4344 mutation survivors: `conflict_milestone_rebuild.ts:515` (negated
+  left-out log condition) is now killed by `abandonAndRebuildMilestone - logs
+  the left-out sub-PRs only when some were left out` in
+  `worker/deno/tests/conflict_abandon_restart_test.ts`; red-checked by negating
+  the condition → red.
+  - exempt (untestable): `worker/deno/lib/conflict_milestone_rebuild.ts:626` —
+    `output: ""` in the gate-threw verdict; an absent `output` is falsy and the
+    only reader (`verdict.output ? … : ""`) renders the same message, so the
+    mutant is behaviourally equivalent. Harness search:
+    `conflict_abandon_restart_test.ts` (gate-threw test) cannot tell them apart.
+  - exempt (untestable): `worker/deno/lib/run_core_production_deps.ts:6908` —
+    the `rebuildGateFn` arrow sits inline in the unexported
+    `syncMilestoneBranchesFn`, which calls the real `syncMilestoneBranches` with
+    the live `gh` and clone; the tests that touch the sweep deps
+    (`milestone_sync_refusal_ladder_4328_test.ts`,
+    `heavy_build_gate_3178_test.ts`) inject `rebuildGateFn`/`heavyBuildGateFn`
+    directly, so none reaches this wiring.
 
 ## Known gaps
 

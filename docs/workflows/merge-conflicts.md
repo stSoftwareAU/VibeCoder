@@ -970,7 +970,8 @@ removed the last `needs-human` from the milestone conflict path:
   record was not written.
 - Once a roll-back has been spent on a milestone branch, a spent budget is
   offered a **rebuild** before the next roll-back (Issue #4328): the branch is
-  rebuilt from its base tip with its merged sub-PRs replayed, delivered as a
+  rebuilt from its base tip with its merged sub-PRs replayed (less those the
+  roll-back reverted, below), delivered as a
   fast-forward (a plain push, or a sync PR when a ruleset refuses it), and never
   force-pushed. The sub-PRs that roll-back reverted (the ledger's
   `revertedPrs`) are left out of the replay, since their issues are re-queued
