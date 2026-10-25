@@ -56,7 +56,11 @@ import { logAt } from "./log_sink.ts";
 export enum AutoMergeResult {
   /** Auto-merge enabled successfully */
   Enabled = "enabled",
-  /** Auto-merge not enabled on the repository (not an error) */
+  /**
+   * Auto-merge not enabled on the repository (not an error). The gated direct
+   * merge takes over and this is what it returns while it defers
+   * (Issue #4304).
+   */
   NotEnabledOnRepo = "not_enabled_on_repo",
   /** Auto-merge not allowed for this PR (branch not protected) — needs fallback */
   NotAllowed = "not_allowed",
@@ -331,7 +335,8 @@ async function postBehindSyncReason(
  * `Deferred` that nothing else has already explained. Everything else is
  * either the worker doing what it set out to do (`Enabled`, `Skipped`,
  * `MergedDirectly`) or already explained on the PR by the path that produced
- * it — `Draft` (author's choice), `NotEnabledOnRepo` (its own note),
+ * it — `Draft` (author's choice), `NotEnabledOnRepo` (the gated direct
+ * merge retries it next scan, Issue #4304),
  * `BlockedOpenChildren` (#3909), `HeldRouteClosed` and `HeldBaseRetargeted`
  * (#3433, each posts its own hold comment), `BlockedPendingDependencies` (#3014), a
  * `milestone-behind` outcome (the #2005 `postBehindSyncReason` already
@@ -1520,19 +1525,35 @@ export async function enableAutoMerge(
       }
 
       if (classification === AutoMergeResult.NotEnabledOnRepo) {
-        try {
-          await commentFn(
-            repo,
-            prNumber,
-            "**Note:** Auto-merge is not enabled on this repository. This PR will need to be merged manually after review.",
-          );
-        } catch {
-          // Comment failure is not fatal
+        // Issue #4304: a repository with auto-merge switched off is merged by
+        // the worker itself, through the same gated, SHA-pinned direct merge
+        // an unprotected base takes — once the PR is approved and green. It
+        // is never handed to a human to "merge manually"; a gate that defers
+        // is retried on the next scan.
+        const merge = await (options.directMergeFn ?? directMergePr)(
+          repo,
+          prNumber,
+          ghCommandFn,
+          undefined,
+          options.fleetAuthors && options.fleetAuthors.length > 0
+            ? { approvedDefaultBranch: { fleetAuthors: options.fleetAuthors } }
+            : {},
+        );
+        if (merge.ok && merge.value.merged) {
+          return {
+            result: AutoMergeResult.MergedDirectly,
+            message:
+              `PR #${prNumber} merged directly: auto-merge is not enabled on ${repo}, so the gated direct merge landed it (Issue #4304)`,
+          };
         }
         return {
           result: AutoMergeResult.NotEnabledOnRepo,
           message:
-            `Auto-merge is not enabled on this repository — PR #${prNumber} needs manual merge`,
+            `Auto-merge is not enabled on ${repo} — PR #${prNumber} takes the gated direct merge, which did not merge it yet (${
+              merge.ok
+                ? merge.value.blocked ?? "gate deferred"
+                : merge.error.message
+            }); retried next scan (Issue #4304)`,
         };
       }
 

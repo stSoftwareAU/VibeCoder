@@ -36,21 +36,23 @@ Deno.test("Issue #3140 - ci_fix Dependency audit failures section covers what co
   }
 });
 
-Deno.test("Issue #3140 - ci_fix Dependency audit failures section covers the needs-human escalation", async () => {
+Deno.test("Issue #4304 - ci_fix Dependency audit failures section replaces or vendors, never needs-human", async () => {
   const doc = await readRepoDoc("prompts/ci_fix/prompt.md");
   const text = flat(section(doc, "Dependency audit failures"));
   for (
     const phrase of [
       "Only when no edge can be upgraded, removed or replaced",
-      // The label instruction and its pairing with the comment are the new
-      // rule; a bare `needs-human` already appears elsewhere in the prompt.
-      "add `needs-human` to the PR",
-      "The label and that comment always go together",
-      "names the advisory ID",
+      "replace it with a maintained alternative, or vendor the part of it the code uses",
+      "Never add `needs-human` for an audit",
+      "naming the advisory ID",
     ]
   ) {
     assertStringIncludes(text, phrase);
   }
+  assert(
+    !text.includes("add `needs-human` to the PR"),
+    "the audit section must not hand the PR to a human",
+  );
 });
 
 Deno.test("Issue #3140 - ci_fix Dependency audit failures section covers the tracking issue and several-PRs rule", async () => {
@@ -145,18 +147,18 @@ Deno.test("Issue #3140 - CODING-STANDARDS scopes the audit carve-out inside the 
 });
 
 /**
- * Wording the CI-fix manual and the prompt index share for the escalation.
- * A bare `needs-human` would not do: both sections already carried it before
- * the audit exception (CODING-STANDARDS.md, "Documentation-drift tests",
- * condition 4).
+ * Wording the CI-fix manual and the prompt index share for the last resort.
+ * Issue #4304 replaced the `needs-human` hand-off with replacing or vendoring
+ * the dependency, so the shared phrase names that instead.
  */
-const SHARED_ESCALATION = "`needs-human` with an advisory-naming comment";
+const SHARED_ESCALATION =
+  "the dependency replaced or vendored, never handed to a human";
 
 /**
  * The operator manual and the prompt index must name the same exception the
  * prompt does, and point at the section that states it. Scoped to the named
  * section for the same reason as `assertCiFixAuditScoping` above.
- * `escalation` is the document's own wording for the `needs-human` hand-off.
+ * `escalation` is the document's own wording for the last resort.
  */
 async function assertAuditExceptionLinked(
   relative: string,
@@ -197,6 +199,6 @@ Deno.test("Issue #3140 - advisory-triage manual states the audit exception and l
   await assertAuditExceptionLinked(
     "docs/security-advisory-triage.md",
     "Emergency dependency override",
-    "adds `needs-human` to the pull request, with a comment naming the advisory ID",
+    "it never adds `needs-human`",
   );
 });

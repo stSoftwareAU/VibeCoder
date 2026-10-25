@@ -325,8 +325,7 @@ export function redactGhBodyArgs(
  * ***REDACTED***`" and nobody was told. Refusing to file would lose the
  * finding, and unmasking is never on the table, so the issue is filed **with a
  * visible notice** naming the masked lines, and one `[MASKED_INSTRUCTION_FILED]`
- * line is logged so a false positive is fixed at its source. The pickup path
- * (`clarity_phase.ts`) then asks for the value rather than working the issue.
+ * line is logged so a false positive is fixed at its source.
  *
  * Runs after the loop, so it sees the body whichever spelling carried it —
  * every `--body-file` form has already been rewritten to `--body` by then.

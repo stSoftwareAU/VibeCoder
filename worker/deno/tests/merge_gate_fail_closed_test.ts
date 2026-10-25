@@ -212,8 +212,8 @@ Deno.test("direct_merge - directMergePr merges an unverified PR when allowNoChec
   assertEquals(merged, true);
 });
 
-Deno.test("merge gate - no_checks escalates to a human rather than waiting", () => {
-  assertEquals(classifyMergeAttempt({ kind: "no_checks" }), "escalate");
+Deno.test("merge gate - no_checks is retried, never handed to a human (Issue #4304)", () => {
+  assertEquals(classifyMergeAttempt({ kind: "no_checks" }), "retry");
 });
 
 Deno.test("blockedReason - maps no_checks to its stable string", () => {

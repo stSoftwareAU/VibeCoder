@@ -12,7 +12,6 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import type { Logger } from "../types.ts";
-import { defaultMutationRunnerSeams } from "../lib/mutation_runner.ts";
 import {
   type ClaudeDeps,
   type ConfigDeps,
@@ -537,27 +536,6 @@ Deno.test("createDefaultDeps - wires the coverage carry-over runner (Issue #3795
       kind: "not_applicable",
       reason: "the diff removes no lines from an existing Deno test file",
     });
-  } finally {
-    await Deno.remove(repoPath, { recursive: true });
-  }
-});
-
-Deno.test("createDefaultDeps - wires the facts flip verifier (Issue #4188)", async () => {
-  const deps = createDefaultDeps();
-  const verify = deps.quality.verifyFactsFlips;
-  assertEquals(typeof verify, "function");
-  const repoPath = await Deno.makeTempDir();
-  try {
-    const result = await verify!({
-      version: 1,
-      branchOutcomes: { noneAdded: true, entries: [] },
-    }, {
-      ...defaultMutationRunnerSeams(),
-      repoPath,
-      budgetRaw: "",
-      warn: () => {},
-    });
-    assertEquals(result, []);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }

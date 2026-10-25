@@ -80,6 +80,16 @@ export const AUTO_FIX_CAP_MARKER_PREFIX =
   "<!-- needs-human-escalation: auto-fix-cap:";
 
 /**
+ * Marker prefix of the one CI-fix escalation kept since Issue #4304: a
+ * secret already in the base branch's history, which needs a credential
+ * rotation no repair performs (`pr_ci_processor.ts` passes
+ * `dedupKey: history-rewrite:<signature>`). Stall repair leaves a PR carrying
+ * it alone; every other `needs-human` is lifted and the PR repaired.
+ */
+export const HISTORY_REWRITE_ESCALATION_MARKER_PREFIX =
+  "<!-- needs-human-escalation: history-rewrite:";
+
+/**
  * Prefix of the hidden trip marker the stall-repair pass posts on a PR
  * (Issue #2802). Defined here, not in `stall_repair.ts`, because the detector
  * must not read that marker as a fleet reply.

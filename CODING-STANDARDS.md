@@ -786,13 +786,7 @@ is a new environment requirement, the Test Plan names the existing tests
 that needed fixture changes, or says that none did and how that was checked.
 stSoftwareAU/VibeCoder#3388 and #3522 each left an unedited negative test in
 a plain temporary directory that no longer reached the guard it pins
-(Issue #3530). The same holds for a change to an emitted or read form — a
-label, a key, a prefix or a format. Search the tests for the old form and
-for fragments of it. Confirm that every absence check, negative case and
-containment check that names it can still fail, and record the search in
-the Test Plan. An absence check, negative case or containment check that
-names the old form and can no longer fail is a blocking self-review
-finding (Issue #4163).
+(Issue #3530).
 
 **Every changed call site needs a test that goes red without it.** This
 covers every new or changed wiring between an entry point and the code it

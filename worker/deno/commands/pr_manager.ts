@@ -24,7 +24,6 @@
  *   - check-pr-comment-failed-once: Check if comment has failed once
  *   - record-ci-check-retry: Record a CI check retry
  *   - get-ci-check-retry-count: Get retry count for a CI check
- *   - post-ci-fix-max-retries-comment: Post max-retries comment
  *   - link-pr-to-issue: Post linking comment on issue
  *   - post-issue-link-with-retry: Post linking comment with retry
  *   - verify-issue-link-comment: Check if linking comment exists
@@ -65,7 +64,6 @@ import { AutoMergeResult, enableAutoMerge } from "../lib/pr_auto_merge.ts";
 import { directMergePr } from "../lib/direct_merge.ts";
 import {
   getCiCheckRetryCount,
-  postCiFixMaxRetriesComment,
   recordCiCheckRetry,
 } from "../lib/pr_ci_checks.ts";
 import {
@@ -549,35 +547,6 @@ export const prManagerCommand: Command = {
         return { success: true, message: String(count) };
       }
 
-      case "post-ci-fix-max-retries-comment": {
-        const repo = String(args["repo"] ?? "");
-        const prNumber = Number(args["pr-number"] ?? 0);
-        const checkName = String(args["check-name"] ?? "");
-        const checkId = String(args["check-id"] ?? "");
-        const maxRetries = Number(args["max-retries"] ?? 3);
-        if (!repo || !prNumber || !checkName || !checkId) {
-          return {
-            success: false,
-            message:
-              "Missing required arguments: --repo, --pr-number, --check-name, --check-id",
-          };
-        }
-        const result = await postCiFixMaxRetriesComment(
-          repo,
-          prNumber,
-          checkName,
-          checkId,
-          maxRetries,
-          runGhCommand,
-        );
-        return {
-          success: result.ok,
-          message: result.ok
-            ? "Max-retries comment posted"
-            : result.error.message,
-        };
-      }
-
       // --- Issue linking operations ---
       case "link-pr-to-issue": {
         const repo = String(args["repo"] ?? "");
@@ -788,7 +757,7 @@ export const prManagerCommand: Command = {
         return {
           success: false,
           message:
-            `Unknown operation: ${operation}. Valid: ensure-pr-references-issue, build-milestone-section, build-idempotency-marker, extract-issue-number, validate-pr-evidence, process-screenshot-evidence, find-screenshot-references, enable-auto-merge, finalise-pr, claim-pr-comment, mark-comment-processed, reply-to-comment, handle-pr-comment-failure, check-pr-comment-failed-once, record-ci-check-retry, get-ci-check-retry-count, post-ci-fix-max-retries-comment, link-pr-to-issue, post-issue-link-with-retry, verify-issue-link-comment, find-existing-pr-for-branch, find-existing-pr-for-issue, close-duplicate-prs, close-issues-for-merged-prs, retarget-pr-to-milestone`,
+            `Unknown operation: ${operation}. Valid: ensure-pr-references-issue, build-milestone-section, build-idempotency-marker, extract-issue-number, validate-pr-evidence, process-screenshot-evidence, find-screenshot-references, enable-auto-merge, finalise-pr, claim-pr-comment, mark-comment-processed, reply-to-comment, handle-pr-comment-failure, check-pr-comment-failed-once, record-ci-check-retry, get-ci-check-retry-count, link-pr-to-issue, post-issue-link-with-retry, verify-issue-link-comment, find-existing-pr-for-branch, find-existing-pr-for-issue, close-duplicate-prs, close-issues-for-merged-prs, retarget-pr-to-milestone`,
         };
     }
   },

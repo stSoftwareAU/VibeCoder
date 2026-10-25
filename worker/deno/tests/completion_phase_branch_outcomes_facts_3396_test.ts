@@ -20,7 +20,6 @@ import {
   renderBranchOutcomes,
   type SummaryFacts,
 } from "../lib/summary_facts.ts";
-import { FLIP_VERIFIER_UNWIRED_REASON } from "../lib/facts_flip_verifier.ts";
 
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f901122334455";
 const REPO = "stSoftwareAU/VibeCoder";
@@ -54,24 +53,6 @@ ${block}
 
 - \`${EXISTING_TEST}\`
 `;
-}
-
-/** The render a raised PR shows when the flip verifier is not wired. */
-function renderedWithUnwiredFlip(facts: SummaryFacts): string {
-  return renderBranchOutcomes(
-    facts,
-    facts.branchOutcomes.entries.flatMap((entry, index) =>
-      "test" in entry
-        ? [{
-          index,
-          verdict: {
-            kind: "not_checked" as const,
-            reason: FLIP_VERIFIER_UNWIRED_REASON,
-          },
-        }]
-        : []
-    ),
-  );
 }
 
 function factsFor(test: string): SummaryFacts {
@@ -321,7 +302,7 @@ Deno.test(
 
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.prCreateCalls, 1);
-    assertStringIncludes(outcome.prBodies[0]!, renderedWithUnwiredFlip(facts));
+    assertStringIncludes(outcome.prBodies[0]!, renderBranchOutcomes(facts));
     assertEquals(outcome.prBodies[0]!.includes(BRANCH_OUTCOMES_MARKER), true);
     assert(
       outcome.logs.some((log) =>
@@ -353,7 +334,7 @@ Deno.test(
 
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.prCreateCalls, 1);
-    assertStringIncludes(outcome.prBodies[0]!, renderedWithUnwiredFlip(facts));
+    assertStringIncludes(outcome.prBodies[0]!, renderBranchOutcomes(facts));
   },
 );
 
@@ -451,7 +432,7 @@ Deno.test(
     assertEquals(outcome.prCreateCalls, 1);
     assertStringIncludes(
       outcome.prBodies[0]!,
-      renderedWithUnwiredFlip(factsFor(EXISTING_TEST)),
+      renderBranchOutcomes(factsFor(EXISTING_TEST)),
     );
     assertEquals(
       outcome.prBodies[0]!.match(/\*\*Branch outcomes:\*\*/g)?.length,

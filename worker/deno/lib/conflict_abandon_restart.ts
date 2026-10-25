@@ -795,12 +795,15 @@ export function exhaustedEscalationDedupKey(
  * (Issues #2802, #2803). The comments state it as fact, so each route names
  * its own: the blocking-PR route synced the branch and reran its owning lane;
  * the conflict-queue route only cleared the ladder's wait so it ran again;
- * the PR-feedback lane retried an unanswered request-changes review in a
- * later cycle (Issue #4304).
+ * the CI-fix lane spent its whole attempt budget on one failure (Issue #4304)
+ * and abandons here rather than handing the PR to a human; the PR-feedback
+ * lane retried an unanswered request-changes review in a later cycle
+ * (Issue #4304).
  */
 export type StallRepairTried =
   | "sync-and-lane-rerun"
   | "ladder-rerun"
+  | "ci-fix-cap"
   | "review-retry";
 
 /**
@@ -822,16 +825,20 @@ export type AbandonReason =
     tried: StallRepairTried;
   };
 
-/** The repair a first trip made, as a sentence opening with who made it. */
+/** What was tried before the abandon, as a sentence's subject and verb. */
 function describeStallRepair(tried: StallRepairTried, base: string): string {
   switch (tried) {
     case "ladder-rerun":
-      return "The stall-repair pass reran the merge-conflict ladder once";
+      return "The stall-repair pass already reran the merge-conflict ladder once";
     case "sync-and-lane-rerun":
-      return `The stall-repair pass synced it with \`${base}\` and reran ` +
-        "its owning lane once";
+      return `The stall-repair pass already synced it with \`${base}\` and ` +
+        "reran its owning lane once";
+    case "ci-fix-cap":
+      return "The CI-fix lane already spent every automatic fix attempt on " +
+        "this same failure";
     case "review-retry":
-      return "The PR-feedback lane retried the review in a later cycle";
+      return "The PR-feedback lane already retried the review in a later " +
+        "cycle";
   }
 }
 

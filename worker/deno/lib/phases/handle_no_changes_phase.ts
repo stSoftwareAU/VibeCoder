@@ -41,6 +41,7 @@ import {
   gatePlanningHandoff,
 } from "../image_conclusion_gate.ts";
 import { hasPlanningRequestMarker } from "../planning_handoff.ts";
+import { closeNegativeResultIssue } from "../negative_result_close.ts";
 import { redactSecrets } from "../secret_redaction.ts";
 import { redactedTail } from "../redacted_text.ts";
 import {
@@ -302,6 +303,27 @@ export async function workOnIssueHandleNoChanges(
   const declaredOutcome = await handOffDeclaredOutcome(ctx, state, deps);
   if (declaredOutcome.result) return declaredOutcome.result;
   const { blocked, selfFiledDependency } = declaredOutcome;
+
+  // Issue #4298: a benchmark run with no gain records the results and the
+  // `negative-result` label; the worker closes the issue on that record. The
+  // label is the agent's own word, so the image gate withholds this close as
+  // it does the already-resolved one (Issue #1385).
+  if (
+    !blocked && !gateAlreadyResolvedClose(ctx.untrustedImages).withheld &&
+    await closeNegativeResultIssue({
+      ghClient: deps.github.createClient(logger),
+      repo,
+      issueNumber,
+      githubUser,
+      logger,
+    })
+  ) {
+    return {
+      category: "unknown",
+      status: "early_exit",
+      reason: "negative_result_closed",
+    };
+  }
 
   // Check whether the run verified the issue was already resolved (Issue #519,
   // tightened by Issue #241). Detection is the explicit
