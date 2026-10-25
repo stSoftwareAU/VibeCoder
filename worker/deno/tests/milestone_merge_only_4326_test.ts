@@ -703,11 +703,15 @@ Deno.test("merge-only e2e - control: the same resolved conflict is refused by a 
 });
 
 Deno.test("mergeOnlyBindings - mixed trees keep Deno checks and suites while skipping cargo (PR #4343)", async () => {
-  for (const nested of [false, true]) {
+  for (const layout of ["shared", "siblings", "cargo-root", "deno-root"]) {
     for (const failure of ["none", "check", "unit"]) {
       await withTree({}, async (dir) => {
-        const denoDir = nested ? `${dir}/web` : dir;
-        const cargoDir = nested ? `${dir}/engine` : dir;
+        const denoDir = ["siblings", "cargo-root"].includes(layout)
+          ? `${dir}/web`
+          : dir;
+        const cargoDir = ["siblings", "deno-root"].includes(layout)
+          ? `${dir}/engine`
+          : dir;
         await Deno.mkdir(denoDir, { recursive: true });
         await Deno.mkdir(cargoDir, { recursive: true });
         await Deno.writeTextFile(`${cargoDir}/Cargo.toml`, CARGO_TOML);
@@ -786,6 +790,67 @@ Deno.test("merge-only e2e - a failing Deno check in a mixed tree refuses the pus
     assertEquals(result.ok, false);
     assertEquals(checked, ["deno"]);
     assertEquals(await remoteSha(f.remote, MILESTONE), before);
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("merge-only e2e - root Cargo cannot hide a failing nested Deno resolution suite (PR #4343)", async () => {
+  const f = await fixture({
+    milestone: ["shared.txt", "a\nB\nc\n"],
+    main: ["shared.txt", "a\nB\nB2\nc\n"],
+  });
+  try {
+    await Deno.mkdir(`${f.clone}/web`);
+    await Deno.writeTextFile(
+      `${f.clone}/web/deno.json`,
+      JSON.stringify({
+        tasks: { check: "deno check main.ts", "test:unit": "deno test" },
+      }),
+    );
+    await git(["add", "web/deno.json"], f.clone);
+    await git(["commit", "-m", "nested Deno project"], f.clone);
+    await git(["push", "origin", MILESTONE], f.clone);
+    const before = await remoteSha(f.remote, MILESTONE);
+    const checked: string[] = [];
+    const tested: string[] = [];
+    const bindings = bindingsFor(REASON, undefined, {
+      checkMergedTree: (dir, _runner, skip) =>
+        checkMergedTree(dir, (project) => {
+          checked.push(project.kind);
+          return Promise.resolve({ code: 0, output: "" });
+        }, skip),
+      verifyResolvedTree: (dir, _runner, typed, now, skip) =>
+        verifyResolvedTree(
+          dir,
+          (task) => {
+            tested.push(task.kind);
+            return Promise.resolve({
+              code: 1,
+              output: "nested Deno regression",
+            });
+          },
+          typed,
+          now,
+          skip,
+        ),
+    });
+    const result = await syncMilestoneBranchWithDefault(
+      MILESTONE,
+      "main",
+      { cwd: f.clone },
+      undefined,
+      bindings.mergeGate,
+      bindings.resolutionGate,
+      bindings.agentFn,
+    );
+    assertEquals(result.ok, false, "the resolved conflict must not be pushed");
+    assert(checked.length > 0, "the nested Deno check must run");
+    assert(checked.every((kind) => kind === "deno"), "cargo stays skipped");
+    assert(tested.length > 0, "the failing nested Deno suite must run");
+    assert(tested.every((kind) => kind === "deno"), "cargo stays skipped");
+    assertEquals(await remoteSha(f.remote, MILESTONE), before);
+    assertEquals(await mergeInProgress(f.clone), false);
   } finally {
     await Deno.remove(f.root, { recursive: true });
   }

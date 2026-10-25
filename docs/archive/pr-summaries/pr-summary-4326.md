@@ -22,7 +22,9 @@ Version bump: no `VERSION` change was made by hand in this change.
 
 Above-floor merge-only admission defers cargo builds to CI. Both gates delegate
 to the normal repository gates with cargo skipping forced on; Deno type checks
-and unit suites still run in mixed trees. Only cargo-only skipped resolutions
+and unit suites still run in mixed trees. Manifest discovery tracks each
+toolchain separately, so a root Cargo manifest cannot hide nested Deno
+projects, and vice versa. Only cargo-only skipped resolutions
 receive `landUnverified`. A failing Deno check refuses a push, and an unlistable
 resolution tree fails closed. Cargo trees retain the agent restriction because
 an agent can run cargo; Deno-only trees retain the real agent.
@@ -195,3 +197,16 @@ sweep follows `heavyBuildAdmission` (`merge-only` carries the reason as
 `mergeOnly`), while `main`'s gate-level cargo skip stays as a second guard in
 `milestone_merge_gate.ts` and `milestone_resolution_gate.ts`. The merge-only
 sweep log explicitly says cargo builds wait for CI and Deno checks remain.
+
+## Nested-project review fix
+
+The shared discovery gate now treats a manifest as covering only its own
+toolchain. Cargo workspace members remain covered by their parent while nested
+Deno projects are found. Tests cover both nesting directions, co-located and
+sibling layouts. A real-git regression proves a deterministically resolved merge
+cannot advance the remote milestone branch when the nested Deno suite fails.
+The new discovery and remote-branch regressions failed before the fix.
+
+Validation: 119 focused admission, merge, resolution, repair, sweep and pre-cut
+tests passed; `deno task check:manifests` passed (857 passed, 1 ignored); format
+and lint checks passed for the three changed TypeScript files.

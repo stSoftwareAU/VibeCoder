@@ -465,3 +465,29 @@ Deno.test("checkMergedTree - a mixed tree passes its Deno check and does not cla
     assertStringIncludes(outcome.detail, CARGO_BUILD_SKIPPED_FOR_MERGE);
   });
 });
+
+Deno.test("findTypeCheckProjects - toolchain coverage cannot hide a nested project of the other kind (PR #4343)", async () => {
+  for (const rootKind of ["cargo", "deno"]) {
+    await withTempDir(async (dir) => {
+      const cargoDir = rootKind === "cargo" ? dir : `${dir}/engine`;
+      const denoDir = rootKind === "deno" ? dir : `${dir}/web`;
+      await writeFile(
+        `${cargoDir}/Cargo.toml`,
+        '[workspace]\nmembers = ["member"]\n',
+      );
+      await writeFile(
+        `${cargoDir}/member/Cargo.toml`,
+        '[package]\nname = "member"\n',
+      );
+      await writeFile(`${denoDir}/deno.json`, "{}");
+      await writeFile(`${denoDir}/member/deno.json`, "{}");
+      const projects = await findTypeCheckProjects(dir);
+      assertEquals(
+        projects.map((p) => ({ kind: p.kind, dir: p.dir })),
+        rootKind === "cargo"
+          ? [{ kind: "cargo", dir }, { kind: "deno", dir: denoDir }]
+          : [{ kind: "deno", dir }, { kind: "cargo", dir: cargoDir }],
+      );
+    });
+  }
+});
