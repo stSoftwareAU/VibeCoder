@@ -549,7 +549,8 @@ export async function presyncMilestoneBranch(
       "warn",
       `Milestone branch '${milestoneBranch}' in ${repo}: conflict ` +
         `attempt ${attempts} of ${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed ` +
-        `at rung ${verdict.rung}` +
+        // A merge-gate refusal is charged with no rung (Issue #4304).
+        (verdict.rung ? `at rung ${verdict.rung}` : `(${verdict.reason})`) +
         (isConflictBudgetExhausted(entry)
           ? " — the budget is now spent and the branch belongs to the roll-back"
           : "") +
@@ -557,7 +558,8 @@ export async function presyncMilestoneBranch(
     );
     return deferral(
       `conflict attempt ${attempts} of ${MILESTONE_CONFLICT_ATTEMPT_BUDGET} ` +
-        `failed at rung ${verdict.rung}: ${verdict.reason}`,
+        `failed${verdict.rung ? ` at rung ${verdict.rung}` : ""}: ` +
+        verdict.reason,
       behindBy,
     );
   }

@@ -12,7 +12,6 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  buildMergeGateEscalationComment,
   checkMergedTree,
   collapseRepeatedLines,
   detectRustToolchainGap,
@@ -229,20 +228,6 @@ Deno.test("mergeGateFailureError - is typed so the sync can escalate on it (Issu
   assertStringIncludes(err.message, "milestone/x");
   assertStringIncludes(err.message, "main");
   assertStringIncludes(err.message, "onSlotIdle");
-});
-
-Deno.test("buildMergeGateEscalationComment - names the merge and the check output (Issue #974)", () => {
-  const body = buildMergeGateEscalationComment({
-    repo: "owner/repo",
-    milestoneBranch: "milestone/x",
-    defaultBranch: "main",
-    reason: "deno task check failed: TS2339 Property 'onSlotIdle'",
-  });
-  assertStringIncludes(body, "needs a human");
-  assertStringIncludes(body, "milestone/x");
-  assertStringIncludes(body, "main");
-  assertStringIncludes(body, "onSlotIdle");
-  assertStringIncludes(body, "not pushed");
 });
 
 Deno.test("checkMergedTree - a tree the gate cannot read fails, it is not assumed clean (Issue #974)", async () => {

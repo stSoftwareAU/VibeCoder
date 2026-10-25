@@ -642,7 +642,7 @@ work that raises PRs, so it can never see a PR its own cycle created; the
 post-scan pass does, and lists live rather than from the cache 1.65 filled.
 It is skipped, with a logged reason, on a cycle that did no work — see
 [Merge Enforcement — hands-off landing](MERGE.md#hands-off-landing--precedence-and-loud-failure)
-(Issue #1136). Every swept PR passes the base check before any arming or branch update (the GraphQL read is skipped only for an unarmed, non-fix PR on a milestone base), and a mistargeted or retargeted PR is disarmed and held ([Milestones](workflows/milestones.md), Issue #3433).
+(Issue #1136). Every swept PR passes the base check before any arming or branch update (the GraphQL read is skipped only for an unarmed, non-fix PR on a milestone base), and a mistargeted or retargeted PR is disarmed, then moved back onto the base it was opened against, or closed and its issue redone — never held for a human ([Milestones](workflows/milestones.md), Issues #3433, #4304).
 
 #### 🚦 Primary GraphQL quota exhaustion
 
@@ -4791,8 +4791,10 @@ consequences are worth naming:
   repairing count; when it repairs a ref, the fetch is run again before the
   branch is counted, and when it repairs nothing the fetch failure stands.
 - **Only a charged failure spends the budget.** A conflict every granted rung
-  left undecided is charged; a ruleset-refused push, a merge-gate refusal or
-  any other `not-charged` verdict is not — charging the branch for a fault that
+  left undecided is charged, and so is a merge-gate refusal of a clean merge
+  (Issue #4304: it is a conflict git could not see, answered by the same
+  roll-back and `merge-fallback` flag); a ruleset-refused push or any other
+  `not-charged` verdict is not — charging the branch for a fault that
   is not its own is what Issues #1772 and #1778 removed. Those deferrals are
   bounded by the per-issue expected-skip cooldown instead: one bounce per
   issue, then the issue is in cooldown.

@@ -1064,10 +1064,12 @@ Deno.test("syncMilestoneBranches - a closed parent planning issue is commented o
   try {
     const calls: string[][] = [];
     const streakPath = milestoneSyncStreakPath(dir);
-    for (let cycle = 0; cycle < 2; cycle++) {
+    // A plain failure's streak record is the one sync post left (Issue #4304:
+    // a gate refusal is the conflict ladder's now), so it drives this test.
+    for (let cycle = 0; cycle < 4; cycle++) {
       await syncMilestoneBranches(escalationDeps(calls, {
         milestoneTitle: "#1730 Resolve merge conflicts",
-        failure: "gate",
+        failure: "plain",
         parentClosed: true,
         streakPath,
       }));
@@ -1089,7 +1091,7 @@ Deno.test("syncMilestoneBranches - a closed parent planning issue is commented o
     const comments = calls.filter((c) =>
       c[0] === "issue" && c[1] === "comment"
     );
-    assertEquals(comments.length, 1, "a second cycle posts nothing");
+    assertEquals(comments.length, 1, "a later cycle posts nothing");
     assertEquals(comments[0]![2], "1730");
     assert(
       !comments[0]!.join(" ").includes("Reopened by the milestone"),
@@ -2325,8 +2327,8 @@ Deno.test("syncMilestoneBranches - the last concluded failure hands off to the r
   }
 });
 
-Deno.test("syncMilestoneBranches - a refused merge gate is not charged and keeps its escalation (Issue #1778)", async () => {
-  const dir = await Deno.makeTempDir({ prefix: "issue-1778-gate-" });
+Deno.test("syncMilestoneBranches - a refused merge gate is charged to the budget and asks no human (Issue #4304)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4304-gate-" });
   try {
     const streakPath = milestoneSyncStreakPath(dir);
     const calls: string[][] = [];
@@ -2341,13 +2343,12 @@ Deno.test("syncMilestoneBranches - a refused merge gate is not charged and keeps
     }));
 
     const entry = await readLedger(streakPath);
-    assertEquals(entry?.conflictAttempts, 0);
-    assertEquals(entry?.lastAttempt?.outcome, "not-charged");
-    assertEquals(entry?.gateEscalated, true);
-    // Today's escalation stands for a gate refusal — it is not a conflict.
-    assert(
-      calls.some((c) => c[0] === "issue" && c[1] === "comment"),
-      "the merge-gate escalation must still be posted",
+    assertEquals(entry?.conflictAttempts, 1);
+    assertEquals(entry?.lastAttempt?.outcome, "failed");
+    assertEquals(
+      humanFacingCalls(calls).length,
+      0,
+      `posted: ${JSON.stringify(humanFacingCalls(calls))}`,
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -2488,6 +2489,8 @@ Deno.test("judgeSyncFailure - only an unresolved conflict is charged (Issue #177
   );
   assertEquals(judgeSyncFailure(gated, true).outcome, "not-charged");
 
+  // Issue #4304: a merged tree the repo's own check refuses is charged, so
+  // the conflict ladder — not a human — answers it.
   assertEquals(
     judgeSyncFailure(
       mergeGateFailureError("milestone/x", "main", {
@@ -2497,7 +2500,7 @@ Deno.test("judgeSyncFailure - only an unresolved conflict is charged (Issue #177
       }) as Error,
       true,
     ).outcome,
-    "not-charged",
+    "failed",
   );
 
   const ruleset = judgeSyncFailure(

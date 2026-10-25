@@ -37,10 +37,7 @@ import {
 import type { RepoLease } from "./maintenance_lane.ts";
 import type { SyncClaim } from "./milestone_sync_claim.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
-import {
-  buildMergeGateEscalationComment,
-  isMergeGateFailure,
-} from "./milestone_merge_gate.ts";
+import { isMergeGateFailure } from "./milestone_merge_gate.ts";
 import {
   buildConflictEscalationComment,
   describeBranchTips,
@@ -804,8 +801,12 @@ export function judgeSyncFailure(
       };
   }
   if (isMergeGateFailure(error)) {
+    // Issue #4304: a clean merge whose tree the repository's own check
+    // refuses is a conflict git could not see. It is charged, so the budget,
+    // the roll-back and the `merge-fallback` flag answer it, exactly as they
+    // answer a textual conflict — it is never handed to a human.
     return {
-      outcome: "not-charged",
+      outcome: "failed",
       reason: "the merge gate refused the merged tree",
     };
   }
@@ -2442,8 +2443,12 @@ export async function syncMilestoneBranches(
                     "warn",
                     `Milestone branch '${milestone.milestoneBranch}' ` +
                       `in ${repo}: conflict attempt ${attempts} of ` +
-                      `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed at rung ` +
-                      `${verdict.rung} (Issue #1778)`,
+                      `${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed ` +
+                      // A merge-gate refusal has no rung (Issue #4304).
+                      (verdict.rung
+                        ? `at rung ${verdict.rung}`
+                        : `(${verdict.reason})`) +
+                      ` (Issue #1778)`,
                   );
                 }
               }
@@ -2492,26 +2497,10 @@ export async function syncMilestoneBranches(
               // spent, which is exactly the "needs-human while a rung remains"
               // this budget removes.
             } else if (isMergeGateFailure(syncResult.error)) {
-              // Issue #974: a merged tree the repo's own check rejects is not a
-              // transient condition a retry clears — it needs a human now, not
-              // after three more cycles of the same refusal. `gateEscalated` is
-              // tracked apart from the ordinary streak flag, so a branch that
-              // already escalated for a different reason still reports this.
-              // Without a streak file there is nowhere to record that the
-              // comment was posted, so escalating would repeat every cycle —
-              // the loud WARNING log above stands on its own there.
-              if (entry && !entry.gateEscalated) {
-                const escalated = await escalateMergeGateFailure(
-                  repo,
-                  milestone,
-                  syncResult.error.message,
-                  ghCommandFn,
-                  log,
-                );
-                if (escalated) {
-                  entry.gateEscalated = true;
-                }
-              }
+              // Issue #4304: a merged tree the repo's own check rejects is
+              // charged to the conflict budget above (`judgeSyncFailure`), so
+              // the roll-back and the `merge-fallback` flag answer it. Nothing
+              // is posted for a human; the loud WARNING log above stands.
             } else if (
               entry && !entry.escalated &&
               entry.count >= MILESTONE_SYNC_ESCALATION_THRESHOLD
@@ -2844,54 +2833,6 @@ async function clearEarlierSyncEscalation(
 }
 
 /**
- * Post one needs-human comment for a merge the gate refused (Issue #974).
- *
- * Best-effort, and returns true only when the comment was posted, so the
- * caller marks the streak escalated and does not repeat it every cycle. The
- * tracking issue is the number the milestone title leads with; without one
- * the refusal still stands — it is only the escalation that has nowhere to
- * go, and the log says so rather than passing over it.
- */
-async function escalateMergeGateFailure(
-  repo: string,
-  milestone: ActiveMilestone,
-  reason: string,
-  ghCommandFn: GhCommandFn,
-  log: (message: string) => void,
-): Promise<boolean> {
-  // Both sides' commits travel with every sync escalation (Issue #1558), so
-  // whoever picks it up can diff each side rather than reconstruct it.
-  const tips = await resolveBranchTips(
-    repo,
-    [
-      { branch: milestone.defaultBranch },
-      { branch: milestone.milestoneBranch },
-    ],
-    ghCommandFn,
-    log,
-  );
-
-  const gateBody = `${
-    buildMergeGateEscalationComment({
-      repo,
-      milestoneBranch: milestone.milestoneBranch,
-      defaultBranch: milestone.defaultBranch,
-      reason,
-    })
-  }\n\n${describeBranchTips(tips)}`;
-
-  return await escalateToExistingIssue(
-    repo,
-    milestone,
-    gateBody,
-    `a refused milestone sync merge for '${milestone.milestoneBranch}' ` +
-      `(Issue #974)`,
-    ghCommandFn,
-    log,
-  );
-}
-
-/**
  * Post one escalation comment where a human will see it (Issue #1769).
  *
  * The destination is an issue that already exists — the milestone's parent
@@ -3024,8 +2965,9 @@ async function postEscalationComment(
 }
 
 /**
- * Post one needs-human comment on a chronically-failing milestone branch's
- * tracking issue (Issue #4260, proposal 2). Best-effort: returns true only
+ * Post one record comment on a chronically-failing milestone branch's
+ * tracking issue (Issue #4260, proposal 2). It asks nobody to act
+ * (Issue #4304): the worker retries the sync every cycle. Best-effort: returns true only
  * when the comment was posted, so the caller marks the streak escalated and
  * does not repeat it every cycle. The tracking issue is the number the
  * milestone title leads with; without one there is nowhere to escalate.
@@ -3069,14 +3011,15 @@ async function escalateSyncFailure(
     log,
   );
 
-  const body = `## Milestone branch sync is stuck — needs a human\n\n` +
+  const body = `## Milestone branch sync keeps failing\n\n` +
     `\`${milestone.milestoneBranch}\` has failed to sync with ` +
     `\`${milestone.defaultBranch}\` for ${failureCount} consecutive cycles` +
     `${aheadBehind}.\n\n` +
     `Latest reason from git:\n\n> ${reason}\n\n` +
     `${describeBranchTips(tips)}\n\n` +
-    `The worker will keep retrying but cannot resolve this itself. Once the ` +
-    `branch syncs, this escalation clears automatically (Issue #4260).`;
+    `This is a record, not a request: the worker retries the sync every ` +
+    `cycle, and once the branch syncs this note clears automatically ` +
+    `(Issues #4260, #4304).`;
 
   const what =
     `stuck milestone sync for '${milestone.milestoneBranch}' after ` +
