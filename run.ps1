@@ -16,9 +16,13 @@
 #   2. Update the worker checkout to origin's default branch (Issue #512).
 #   3. Build the launch plan (runtime detection, image reference, mounts).
 #   4. Build the image when the content-derived reference is absent.
-#   5. Launch the container, stop it if this launcher is terminated, and exit
+#   5. When the plan enforces egress (Issue #4047), bring up the egress sidecar:
+#      an internal network and a proxy the worker must route through. A sidecar
+#      that does not come up is a refused launch, never a launch without it.
+#   6. Launch the container, stop it if this launcher is terminated, and exit
 #      with the container's exit status so Task Scheduler and loop.ps1 see
-#      real failures.
+#      real failures. Every exit path tears the egress sidecar down, keeping the
+#      proxy's own log first.
 #
 # Host paths are resolved from $env:USERPROFILE in Windows spelling; the
 # in-container paths are identical to the run.sh case, so the worker sees one
@@ -46,6 +50,13 @@
 #              read-only (Issue #509). A failed update is a warning, never a
 #              refused launch, and VIBE_SKIP_CHECKOUT_UPDATE turns it off for
 #              a development checkout or a CI tree.
+# Issue #4047: The egress sidecar. The plan names an internal network and a
+#              proxy on it; the worker runs with no route to the network except
+#              through that proxy. Brought up immediately before the worker
+#              starts, torn down by Exit-Launcher on every exit, and the proxy's
+#              own log is kept beside the run log. Its argv arrives in the plan,
+#              so this script never spells a runtime verb for it. The run.sh
+#              twin carries the same contract.
 ################################################################################
 
 $ErrorActionPreference = "Stop"
@@ -202,6 +213,88 @@ $HealLog = ""
 # recorder when the host is parked, removed by Exit-Launcher afterwards.
 $EgressLog = ""
 
+# Set once the egress sidecar's network exists (Issue #4047), so every exit from
+# here on tears the sidecar down. Cleared by Stop-EgressSidecar: teardown runs once.
+$EgressSidecarStarted = $false
+
+<#
+.SYNOPSIS
+    Print the first non-empty line of a runtime's output (Issue #4047).
+#>
+function Get-FirstLine {
+    param([string] $Text)
+
+    $line = ($Text -split "`n" | ForEach-Object { $_.Trim() } |
+        Where-Object { $_ } | Select-Object -First 1)
+    if ($line) { return $line }
+    return "no explanation given"
+}
+
+<#
+.SYNOPSIS
+    Remove one egress resource, warning rather than failing (Issue #4047).
+.DESCRIPTION
+    Teardown must not change the exit status and must not skip the removal
+    after it, so a failure is reported by name and the caller carries on.
+#>
+function Remove-EgressResource {
+    param(
+        [Parameter(Mandatory = $true)][string] $Label,
+        [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]] $Arguments
+    )
+
+    try {
+        $removed = Invoke-HostCommand -FilePath $Runtime -ArgumentList $Arguments -Capture
+        if ($removed.ExitCode -ne 0) {
+            [Console]::Error.WriteLine(
+                "[run.ps1] warning: could not remove the $Label ($($Arguments -join ' ')) - $(Get-FirstLine $removed.StdErr)")
+        }
+    } catch {
+        [Console]::Error.WriteLine(
+            "[run.ps1] warning: could not remove the $Label ($($Arguments -join ' ')) - $($_.Exception.Message)")
+    }
+}
+
+<#
+.SYNOPSIS
+    Tear the egress sidecar down: keep the proxy's log, then remove the proxy and
+    the network (Issue #4047).
+.DESCRIPTION
+    The proxy's own account is written first, because removing the container
+    removes it. Each step is best-effort and independent of the others, so one
+    failed removal never skips the next. A sidecar that never came up has
+    nothing to tear down, and the flag says so.
+#>
+function Stop-EgressSidecar {
+    if (-not $EgressSidecarStarted) { return }
+    # Once only: a second exit on the way out must not repeat the teardown.
+    $script:EgressSidecarStarted = $false
+
+    if (-not $LogDir_) {
+        [Console]::Error.WriteLine(
+            "[run.ps1] warning: no log directory - the egress proxy's log is not kept")
+    } else {
+        $proxyLogPath = Join-Path $LogDir_ "egress-proxy.log"
+        try {
+            $proxyLogs = Invoke-HostCommand -FilePath $Runtime -ArgumentList $ProxyLogsArgs -Capture
+            $proxyText = "$($proxyLogs.StdOut)$($proxyLogs.StdErr)".TrimEnd([char]13, [char]10)
+            New-Item -ItemType Directory -Force -Path $LogDir_ | Out-Null
+            $stamp = [DateTime]::UtcNow.ToString("yyyy-MM-dd\THH:mm:ss\Z")
+            Add-Content -LiteralPath $proxyLogPath `
+                -Value "$stamp egress proxy log (Issue #4047)" -ErrorAction Stop
+            if ($proxyText) {
+                Add-Content -LiteralPath $proxyLogPath -Value $proxyText -ErrorAction Stop
+            }
+        } catch {
+            [Console]::Error.WriteLine(
+                "[run.ps1] warning: cannot keep the egress proxy's log in $proxyLogPath - $($_.Exception.Message)")
+        }
+    }
+
+    Remove-EgressResource -Label "egress proxy" -Arguments $ProxyRemoveArgs
+    Remove-EgressResource -Label "egress network" -Arguments $NetworkRemoveArgs
+}
+
 <#
 .SYNOPSIS
     Record this launcher's outcome for the self-heal backoff (Issue #4072).
@@ -263,6 +356,9 @@ function Write-RestartOutcome {
 function Exit-Launcher {
     param([Parameter(Mandatory = $true)][int] $Code)
 
+    # Before the outcome is recorded: the sidecar's log is part of this run's
+    # evidence, and its containers must not outlive the launch (Issue #4047).
+    Stop-EgressSidecar
     Write-RestartOutcome -Status $Code
     # The comment-stripped Containerfile beside the plan file (Issue #4393)
     # must not outlive the launcher on any exit path.
@@ -606,6 +702,18 @@ $ExtensionBuildArgs = [System.Collections.Generic.List[string]]::new()
 $BuilderStopArgs = [System.Collections.Generic.List[string]]::new()
 $BuilderAbsentPatterns = [System.Collections.Generic.List[string]]::new()
 $RunArgs = [System.Collections.Generic.List[string]]::new()
+# The egress sidecar (Issue #4047). `egress` must be present and say `enforced`
+# or `none`: a plan that omits it is refused, never read as an open network.
+$EgressMode = ""
+$NetworkCreateArgs = [System.Collections.Generic.List[string]]::new()
+$NetworkRemoveArgs = [System.Collections.Generic.List[string]]::new()
+$ProxyRunArgs = [System.Collections.Generic.List[string]]::new()
+$ProxyConnectArgs = [System.Collections.Generic.List[string]]::new()
+$ProxyLogsArgs = [System.Collections.Generic.List[string]]::new()
+$ProxyRemoveArgs = [System.Collections.Generic.List[string]]::new()
+$ProxyReadyMarker = ""
+# Every sidecar key the plan carried, so `none` with a sidecar can be refused.
+$EgressSidecarKeys = [System.Collections.Generic.List[string]]::new()
 
 try {
     # The plan resolves and validates the container runtime, computes the
@@ -670,6 +778,14 @@ try {
             "builder-stop" { $BuilderStopArgs.Add($value) }
             "builder-absent" { $BuilderAbsentPatterns.Add($value) }
             "run" { $RunArgs.Add($value) }
+            "egress" { $EgressMode = $value }
+            "network-create" { $NetworkCreateArgs.Add($value); $EgressSidecarKeys.Add($key) }
+            "network-remove" { $NetworkRemoveArgs.Add($value); $EgressSidecarKeys.Add($key) }
+            "proxy-run" { $ProxyRunArgs.Add($value); $EgressSidecarKeys.Add($key) }
+            "proxy-connect" { $ProxyConnectArgs.Add($value); $EgressSidecarKeys.Add($key) }
+            "proxy-logs" { $ProxyLogsArgs.Add($value); $EgressSidecarKeys.Add($key) }
+            "proxy-remove" { $ProxyRemoveArgs.Add($value); $EgressSidecarKeys.Add($key) }
+            "proxy-ready" { $ProxyReadyMarker = $value; $EgressSidecarKeys.Add($key) }
             default {
                 [Console]::Error.WriteLine(
                     "Error: unrecognised launch-plan key: $key")
@@ -688,6 +804,36 @@ if (-not $Runtime -or -not $Image -or -not $KeepImages -or
     $VolumeRemoveArgs.Count -eq 0 -or $ImageRemoveArgs.Count -eq 0) {
     [Console]::Error.WriteLine(
         "Error: incomplete container launch plan - refusing to launch")
+    Exit-Launcher 1
+}
+
+# The egress contract (Issue #4047). A plan that does not say how egress is
+# handled is refused outright: an absent key must never read as an open network.
+# The comparisons are case-sensitive (-cne, -ceq): "Enforced" is not "enforced".
+if ($EgressMode -cne "enforced" -and $EgressMode -cne "none") {
+    [Console]::Error.WriteLine(
+        "Error: incomplete container launch plan - refusing to launch: egress key missing or not 'enforced' or 'none' (got `"$EgressMode`")")
+    Exit-Launcher 1
+}
+if ($EgressMode -ceq "enforced") {
+    $sidecarGaps = [System.Collections.Generic.List[string]]::new()
+    if ($NetworkCreateArgs.Count -eq 0) { $sidecarGaps.Add("network-create") }
+    if ($NetworkRemoveArgs.Count -eq 0) { $sidecarGaps.Add("network-remove") }
+    if ($ProxyRunArgs.Count -eq 0) { $sidecarGaps.Add("proxy-run") }
+    if ($ProxyConnectArgs.Count -eq 0) { $sidecarGaps.Add("proxy-connect") }
+    if ($ProxyLogsArgs.Count -eq 0) { $sidecarGaps.Add("proxy-logs") }
+    if ($ProxyRemoveArgs.Count -eq 0) { $sidecarGaps.Add("proxy-remove") }
+    if (-not $ProxyReadyMarker) { $sidecarGaps.Add("proxy-ready") }
+    if ($sidecarGaps.Count -gt 0) {
+        [Console]::Error.WriteLine(
+            "Error: incomplete container launch plan - refusing to launch: egress is enforced but the plan omits " +
+            ($sidecarGaps -join ", "))
+        Exit-Launcher 1
+    }
+} elseif ($EgressSidecarKeys.Count -gt 0) {
+    [Console]::Error.WriteLine(
+        "Error: incomplete container launch plan - refusing to launch: egress is none but the plan carries sidecar keys " +
+        ((@($EgressSidecarKeys) | Select-Object -Unique) -join ", "))
     Exit-Launcher 1
 }
 
@@ -1395,6 +1541,95 @@ try {
         "be reported without the runtime's own explanation (Issue #720)")
 }
 
+# The egress sidecar (Issue #4047), before the worker starts: an internal network,
+# and a proxy on it that the worker's own run argv routes through. Any step that
+# does not come up is a refused launch - there is never a fallback to an open
+# network, or to a launch without the proxy. Teardown is Stop-EgressSidecar,
+# called by Exit-Launcher on every exit once the network exists.
+if ($EgressMode -ceq "enforced") {
+    # How long the proxy is waited on to report ready (Issue #4047). Overridable
+    # for a slow host or a test; a value that is not a positive integer is a
+    # refused launch, not a silent default.
+    $ProxyReadyTries = 30
+    $ProxyReadyInterval = 1
+    $readyTriesOverride = [Environment]::GetEnvironmentVariable("VIBE_EGRESS_PROXY_READY_TRIES")
+    if ($readyTriesOverride) {
+        if ($readyTriesOverride -notmatch '^[1-9][0-9]{0,4}$') {
+            [Console]::Error.WriteLine(
+                "Error: VIBE_EGRESS_PROXY_READY_TRIES must be a positive integer (got `"$readyTriesOverride`") - refusing to launch")
+            Exit-Launcher 1
+        }
+        $ProxyReadyTries = [int]$readyTriesOverride
+    }
+    $readyIntervalOverride = [Environment]::GetEnvironmentVariable("VIBE_EGRESS_PROXY_READY_INTERVAL")
+    if ($readyIntervalOverride) {
+        if ($readyIntervalOverride -notmatch '^[1-9][0-9]{0,4}$') {
+            [Console]::Error.WriteLine(
+                "Error: VIBE_EGRESS_PROXY_READY_INTERVAL must be a positive integer (got `"$readyIntervalOverride`") - refusing to launch")
+            Exit-Launcher 1
+        }
+        $ProxyReadyInterval = [int]$readyIntervalOverride
+    }
+
+    # (a) A same-named leftover from a crashed launch would make the creates
+    # below fail on a name that is taken. Their status is ignored: when nothing
+    # was left behind, the removal has nothing to do.
+    Invoke-HostCommand -FilePath $Runtime -ArgumentList $ProxyRemoveArgs -Capture | Out-Null
+    Invoke-HostCommand -FilePath $Runtime -ArgumentList $NetworkRemoveArgs -Capture | Out-Null
+
+    # (b) The internal network: the worker's only route off the host is through
+    # the proxy on it.
+    $networkCreate = Invoke-HostCommand -FilePath $Runtime -ArgumentList $NetworkCreateArgs -Capture
+    if ($networkCreate.ExitCode -ne 0) {
+        [Console]::Error.WriteLine(
+            "Error: cannot create the egress network: $(Get-FirstLine $networkCreate.StdErr) - refusing to launch")
+        Exit-Launcher 1
+    }
+    # (c) From here on the network exists, so every exit tears it down.
+    $EgressSidecarStarted = $true
+
+    # (d) The proxy.
+    $proxyRun = Invoke-HostCommand -FilePath $Runtime -ArgumentList $ProxyRunArgs -Capture
+    if ($proxyRun.ExitCode -ne 0) {
+        [Console]::Error.WriteLine(
+            "Error: cannot start the egress proxy: $(Get-FirstLine $proxyRun.StdErr) - refusing to launch")
+        Exit-Launcher 1
+    }
+
+    # (e) The proxy joins the internal network.
+    $proxyConnect = Invoke-HostCommand -FilePath $Runtime -ArgumentList $ProxyConnectArgs -Capture
+    if ($proxyConnect.ExitCode -ne 0) {
+        [Console]::Error.WriteLine(
+            "Error: cannot connect the egress proxy to the egress network: $(Get-FirstLine $proxyConnect.StdErr) - refusing to launch")
+        Exit-Launcher 1
+    }
+
+    # (f) The proxy must say it is listening before the worker is started on it.
+    $proxyReady = $false
+    $proxyLogText = ""
+    for ($attempt = 1; $attempt -le $ProxyReadyTries; $attempt++) {
+        $proxyLogs = Invoke-HostCommand -FilePath $Runtime -ArgumentList $ProxyLogsArgs -Capture
+        $proxyLogText = "$($proxyLogs.StdOut)$($proxyLogs.StdErr)"
+        if ($proxyLogText.Contains($ProxyReadyMarker)) {
+            $proxyReady = $true
+            break
+        }
+        if ($attempt -lt $ProxyReadyTries) { Start-Sleep -Seconds $ProxyReadyInterval }
+    }
+    if (-not $proxyReady) {
+        [Console]::Error.WriteLine(
+            "Error: the egress proxy did not report ready ($ProxyReadyMarker) after $ProxyReadyTries tries - refusing to launch without egress; its last output follows")
+        # Capped: the proxy's last words name the fault, not every line it wrote.
+        $proxyTail = @($proxyLogText.TrimEnd([char]13, [char]10) -split "`n" |
+            Select-Object -Last 40)
+        if (-not $proxyLogText.Trim()) { $proxyTail = @("(no output)") }
+        foreach ($line in $proxyTail) {
+            [Console]::Error.WriteLine("  | $($line.TrimEnd([char]13))")
+        }
+        Exit-Launcher 1
+    }
+}
+
 # Start the container rather than waiting on it blindly, so this launcher
 # survives to report the container's exit status.
 #
@@ -1416,8 +1651,16 @@ $runInfo.RedirectStandardInput = $true
 # redirected, and it is copied straight back out (Issue #720).
 $runInfo.RedirectStandardError = $null -ne $RunCapture
 
-$container = [System.Diagnostics.Process]::Start($runInfo)
-$container.StandardInput.Close()
+try {
+    $container = [System.Diagnostics.Process]::Start($runInfo)
+    $container.StandardInput.Close()
+} catch {
+    # A start that throws must still tear the egress sidecar down (Issue #4047),
+    # which an unhandled exception here would skip.
+    [Console]::Error.WriteLine(
+        "Error: cannot start $Runtime to run $ContainerName - $($_.Exception.Message)")
+    Exit-Launcher 1
+}
 
 $wedged = $false
 try {

@@ -25,6 +25,24 @@
  * 4. Each table row comes back as one `id verdict detail` line and is asserted
  *    in its own test step, so a failure names exactly what became reachable.
  *
+ * ## The egress sidecar (Issue #4047)
+ *
+ * On Docker and Podman the worker does not sit on the default bridge. It joins
+ * a per-launch INTERNAL network, which has no route out, and the only route out
+ * is an egress-proxy sidecar that is also attached to the bridge. The suite
+ * starts that sidecar with the shared `startEgressSidecar` helper before the
+ * first container starts, and stops it in a `finally`, so a failed probe cannot
+ * leave it running. The sidecar runs the worker's own code from a read-only
+ * mount of the checkout, so the fixture carries a copy of `worker/deno` (its
+ * tests left out). The network and proxy names are per-run, so the suite never
+ * touches a production host's `vibe-coder-egress*` resources.
+ *
+ * Two further checks follow from that. The worker's attached networks are read
+ * from the runtime's own `inspect`, not inferred from the argv: they must be
+ * the internal network alone, never `bridge`. And a direct TCP connect from
+ * inside the worker to a public address must fail. Apple `container` has no
+ * sidecar, so both checks apply only where the plan carries one.
+ *
  * ## When it runs
  *
  * Real containers need a real runtime. The tests skip — loudly, naming the
@@ -62,6 +80,11 @@ import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
 import { GH_CREDENTIAL_SUBDIR } from "../lib/credential_preflight.ts";
 import { isAtOrAbove } from "../lib/host_path_style.ts";
+import {
+  type RuntimeRunner,
+  startEgressSidecar,
+  stopEgressSidecar,
+} from "../lib/container_egress.ts";
 
 const REPO_ROOT = new URL(import.meta.url).pathname.replace(
   /\/worker\/deno\/tests\/[^/]+$/,
@@ -78,6 +101,13 @@ const RUN_TIMEOUT_MS = 90_000;
 
 /** Longest a read-only runtime query may take. */
 const QUERY_TIMEOUT_MS = 30_000;
+
+/**
+ * The hosts the egress sidecar lets the worker reach. A small, realistic list:
+ * the probes check that the worker reaches nothing directly, so the list only
+ * has to be one the launcher would really pass (Issue #4047).
+ */
+const EGRESS_ALLOWLIST = ["github.com", "api.anthropic.com"];
 
 // ---------------------------------------------------------------------------
 // Runtime invocation
@@ -211,7 +241,14 @@ if (!RESOLUTION.ready && !containmentRequired()) {
 // ---------------------------------------------------------------------------
 
 /** What a single table row asks the container to check. */
-type ProbeKind = "absent" | "socket" | "rw" | "ro-file" | "ro-dir" | "canary";
+type ProbeKind =
+  | "absent"
+  | "socket"
+  | "rw"
+  | "ro-file"
+  | "ro-dir"
+  | "canary"
+  | "tcp";
 
 /** One row of the probe table. */
 interface Probe {
@@ -368,6 +405,22 @@ probe_canary() {
   fi
 }
 
+# A direct connect from the worker must fail. Its only route out is the egress
+# proxy, so an address outside the allowlist is unreachable from the network
+# itself. The connect is bounded, so a route that silently drops packets reads
+# as unreachable rather than hanging the probe.
+probe_tcp() {
+  id="$1"
+  endpoint="$2"
+  host="$(printf '%s' "$endpoint" | cut -d: -f1)"
+  port="$(printf '%s' "$endpoint" | cut -d: -f2)"
+  if timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$port" 2>/dev/null; then
+    report "$id" connected "$endpoint"
+  else
+    report "$id" unreachable "$endpoint"
+  fi
+}
+
 status=0
 while IFS=$'\\t' read -r kind id target; do
   case "$kind" in
@@ -378,6 +431,7 @@ while IFS=$'\\t' read -r kind id target; do
     ro-file) probe_ro_file "$id" "$target" ;;
     ro-dir) probe_ro_dir "$id" "$target" ;;
     canary) probe_canary "$id" "$target" ;;
+    tcp) probe_tcp "$id" "$target" ;;
     *)
       echo "unknown containment probe kind: $kind" >&2
       status=1
@@ -421,6 +475,36 @@ const CUSTOM_PROMPT_PROBE_FILE = "containment-probe-prompt.md";
 async function makeSharedDir(path: string, mode = 0o755): Promise<void> {
   await Deno.mkdir(path, { recursive: true });
   await Deno.chmod(path, mode);
+}
+
+/**
+ * Copy a directory tree, skipping the named entries of its top level only.
+ *
+ * Used for the worker's own source, which the egress sidecar runs from a mount
+ * of the checkout (Issue #4047). Symbolic links are refused rather than copied
+ * silently: a link could point outside the tree the sidecar is meant to see.
+ */
+async function copyTree(
+  from: string,
+  to: string,
+  skipTopLevel: readonly string[] = [],
+): Promise<void> {
+  await Deno.mkdir(to, { recursive: true });
+  for await (const entry of Deno.readDir(from)) {
+    if (skipTopLevel.includes(entry.name)) continue;
+    const source = `${from}/${entry.name}`;
+    const target = `${to}/${entry.name}`;
+    if (entry.isDirectory) {
+      await copyTree(source, target);
+    } else if (entry.isFile) {
+      await Deno.copyFile(source, target);
+    } else {
+      throw new Error(
+        `${source} is not a plain file or directory, so the worker source ` +
+          `copy for the egress sidecar cannot carry it.`,
+      );
+    }
+  }
 }
 
 /**
@@ -536,7 +620,23 @@ async function buildHostFixture(
     hostPaths,
     volumes,
     customPromptPaths: [customPromptFile],
+    egressAllowlist: EGRESS_ALLOWLIST,
+    // Per-run names, like the volumes above: the suite must never start,
+    // stop or remove a production host's `vibe-coder-egress*` resources.
+    egressNames: {
+      network: `vibe-test-egress-${token}`,
+      proxy: `vibe-test-egress-proxy-${token}`,
+    },
   });
+
+  // The egress sidecar runs the worker's own code from a read-only mount of
+  // the checkout (Issue #4046), so the fixture carries a copy of it. The tests
+  // are left out: the sidecar never reads them.
+  if (plan.egress) {
+    await copyTree(`${REPO_ROOT}/worker/deno`, `${checkout}/worker/deno`, [
+      "tests",
+    ]);
+  }
 
   // The volume lifecycle, exactly as run.sh performs it: create what is
   // absent, then the root ownership init. Without the init the work-directory
@@ -825,6 +925,25 @@ function readOnlyRootProbes(plan: ContainerLaunchPlan): Probe[] {
 }
 
 /**
+ * The worker's route out, probed from inside it (Issue #4047).
+ *
+ * Empty for a plan with no egress sidecar (Apple container), which has no
+ * internal network to confine the worker to, so there is nothing to assert.
+ */
+function egressProbes(plan: ContainerLaunchPlan): Probe[] {
+  if (!plan.egress) return [];
+  return [
+    {
+      kind: "tcp",
+      id: "direct-connect-public-address",
+      target: "1.1.1.1:443",
+      why: "the worker's only route out is the egress proxy, so a direct " +
+        "TCP connect to a public address must fail",
+    },
+  ];
+}
+
+/**
  * Render the probe table.
  *
  * @throws When an identifier or path carries a tab or newline, which the
@@ -936,6 +1055,84 @@ function findPublishedPorts(document: unknown): string[] {
   return findings;
 }
 
+/**
+ * The networks a container is attached to, as the runtime's inspect names them.
+ *
+ * @param document - The parsed output of `inspect`
+ * @returns The network names, sorted
+ * @throws When the document carries no network map: a document that says
+ *   nothing about networks must not read as "attached to none".
+ */
+function attachedNetworks(document: unknown): string[] {
+  const container = Array.isArray(document) ? document[0] : undefined;
+  const networks =
+    (container as { NetworkSettings?: { Networks?: unknown } } | undefined)
+      ?.NetworkSettings?.Networks;
+  if (networks === null || typeof networks !== "object") {
+    throw new Error(
+      "The runtime's inspect output names no NetworkSettings.Networks map.",
+    );
+  }
+  return Object.keys(networks).sort();
+}
+
+/**
+ * Start the worker detached, hand its inspect output to `check`, then remove it.
+ *
+ * The container is removed whether or not `check` passes, so a failed
+ * assertion leaves nothing running.
+ */
+async function withRunningWorker(
+  context: ContainmentContext,
+  plan: ContainerLaunchPlan,
+  name: string,
+  check: (inspected: string) => void,
+): Promise<void> {
+  const started = await runRuntime(
+    context.descriptor.executable,
+    runArgsWithProbe(plan, name, ["--detach"], ["-c", "sleep 45"]),
+  );
+  assertEquals(
+    started.code,
+    0,
+    `Could not start the container to inspect it:\n${started.stderr}`,
+  );
+
+  try {
+    const inspected = await runRuntime(
+      context.descriptor.executable,
+      ["inspect", name],
+      QUERY_TIMEOUT_MS,
+    );
+    assertEquals(
+      inspected.code,
+      0,
+      `\`${context.descriptor.executable} inspect ${name}\` failed:\n` +
+        inspected.stderr,
+    );
+    // Guard against a vacuous pass: an empty document would report no ports
+    // or networks for the trivial reason that it describes nothing.
+    assert(
+      inspected.stdout.includes(name),
+      `The runtime's inspect output does not describe ${name}:\n` +
+        inspected.stdout.slice(0, 500),
+    );
+    check(inspected.stdout);
+  } finally {
+    const removed = await runRuntime(
+      context.descriptor.executable,
+      ["rm", "--force", name],
+      QUERY_TIMEOUT_MS,
+    );
+    if (removed.code !== 0) {
+      console.warn(
+        `Could not remove the containment probe container ${name} ` +
+          `(exit ${removed.code}): ${removed.stderr.trim()}`,
+      );
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The tests
 // ---------------------------------------------------------------------------
@@ -957,13 +1154,26 @@ Deno.test({
     const context = RESOLUTION.context;
     const token = crypto.randomUUID().slice(0, 8);
     const fixture = await buildHostFixture(context, token);
+    const egress = fixture.plan.egress;
+    const runtime: RuntimeRunner = (args) =>
+      runRuntime(context.descriptor.executable, [...args]);
+    let sidecarUp = false;
 
     try {
+      // The sidecar comes up before the first worker container. A failed start
+      // has already torn itself down (startEgressSidecar), so only a sidecar
+      // that is up is stopped in the finally below.
+      if (egress) {
+        await startEgressSidecar(egress, runtime);
+        sidecarUp = true;
+      }
+
       const probes = [
         ...prohibitedProbes(fixture),
         ...socketProbes(),
         ...mountProbes(fixture),
         ...readOnlyRootProbes(fixture.plan),
+        ...egressProbes(fixture.plan),
       ];
       await Deno.writeTextFile(
         `${fixture.checkout}/containment-probes.tsv`,
@@ -1000,6 +1210,8 @@ Deno.test({
           ? `prohibited: ${probe.target}`
           : probe.kind === "canary"
           ? `host-home canary: ${probe.target}`
+          : probe.kind === "tcp"
+          ? `direct connect: ${probe.target}`
           : `mount: ${probe.target}`;
 
         await t.step(label, () => {
@@ -1048,6 +1260,14 @@ Deno.test({
                 "not-found",
                 `The host-home canary ${probe.target} was found inside the ` +
                   `container at ${result.detail} — the host home is exposed.`,
+              );
+              break;
+            case "tcp":
+              assertEquals(
+                result.verdict,
+                "unreachable",
+                `${probe.why}, but the container connected to ` +
+                  `${probe.target}: ${seen}`,
               );
               break;
           }
@@ -1148,78 +1368,67 @@ Deno.test({
 
       await t.step(
         "the running container publishes no inbound ports",
-        async () => {
-          const name = `${fixture.plan.containerName}-ports`;
-          const started = await runRuntime(
-            context.descriptor.executable,
-            runArgsWithProbe(fixture.plan, name, ["--detach"], [
-              "-c",
-              "sleep 45",
-            ]),
-          );
-          assertEquals(
-            started.code,
-            0,
-            `Could not start the container to inspect it:\n${started.stderr}`,
-          );
-
-          try {
-            const inspected = await runRuntime(
-              context.descriptor.executable,
-              ["inspect", name],
-              QUERY_TIMEOUT_MS,
-            );
-            assertEquals(
-              inspected.code,
-              0,
-              `\`${context.descriptor.executable} inspect ${name}\` failed:\n` +
-                inspected.stderr,
-            );
-            const document = JSON.parse(inspected.stdout);
-            // Guard against a vacuous pass: an empty document would report no
-            // ports for the trivial reason that it describes nothing.
-            assert(
-              inspected.stdout.includes(name),
-              `The runtime's inspect output does not describe ${name}:\n` +
-                inspected.stdout.slice(0, 500),
-            );
-            const published = findPublishedPorts(document);
-            assertEquals(
-              published,
-              [],
-              `The running container publishes inbound ports, as the ` +
-                `runtime reports them: ${published.join(", ")}`,
-            );
-          } finally {
-            const removed = await runRuntime(
-              context.descriptor.executable,
-              ["rm", "--force", name],
-              QUERY_TIMEOUT_MS,
-            );
-            if (removed.code !== 0) {
-              console.warn(
-                `Could not remove the containment probe container ${name} ` +
-                  `(exit ${removed.code}): ${removed.stderr.trim()}`,
+        () =>
+          withRunningWorker(
+            context,
+            fixture.plan,
+            `${fixture.plan.containerName}-ports`,
+            (inspected) => {
+              const published = findPublishedPorts(JSON.parse(inspected));
+              assertEquals(
+                published,
+                [],
+                `The running container publishes inbound ports, as the ` +
+                  `runtime reports them: ${published.join(", ")}`,
               );
-            }
-          }
-        },
+            },
+          ),
       );
-    } finally {
-      for (const name of fixture.volumeNames) {
-        const removed = await runRuntime(
-          context.descriptor.executable,
-          ["volume", "rm", name],
-          QUERY_TIMEOUT_MS,
+
+      if (egress) {
+        // Asked of the runtime, not inferred from the argv: the worker must be
+        // attached to the internal network alone, and never to the bridge.
+        await t.step(
+          `the running container joins only ${egress.internalNetwork}, not bridge`,
+          () =>
+            withRunningWorker(
+              context,
+              fixture.plan,
+              `${fixture.plan.containerName}-network`,
+              (inspected) => {
+                const networks = attachedNetworks(JSON.parse(inspected));
+                assertEquals(
+                  networks,
+                  [egress.internalNetwork],
+                  `The running container is attached to ${
+                    networks.join(", ")
+                  }, ` +
+                    `not only to the internal egress network.`,
+                );
+              },
+            ),
         );
-        if (removed.code !== 0) {
-          console.warn(
-            `Could not remove the throwaway volume ${name} ` +
-              `(exit ${removed.code}): ${removed.stderr.trim()}`,
-          );
-        }
       }
-      await Deno.remove(fixture.root, { recursive: true });
+    } finally {
+      try {
+        // The sidecar goes before the fixture it mounts is deleted below.
+        if (egress && sidecarUp) await stopEgressSidecar(egress, runtime);
+      } finally {
+        for (const name of fixture.volumeNames) {
+          const removed = await runRuntime(
+            context.descriptor.executable,
+            ["volume", "rm", name],
+            QUERY_TIMEOUT_MS,
+          );
+          if (removed.code !== 0) {
+            console.warn(
+              `Could not remove the throwaway volume ${name} ` +
+                `(exit ${removed.code}): ${removed.stderr.trim()}`,
+            );
+          }
+        }
+        await Deno.remove(fixture.root, { recursive: true });
+      }
     }
   },
 });
@@ -1254,6 +1463,7 @@ function samplePlan(): ContainerLaunchPlan {
       configStageDir: "/home/operator/.vibe-coder/run-config",
       credentialDir: "/home/operator/.vibe-coder/credentials",
     },
+    egressAllowlist: EGRESS_ALLOWLIST,
   });
 }
 
@@ -1505,6 +1715,55 @@ Deno.test("containment harness - the read-only root and its writable exceptions 
   assertEquals(readOnlyRootProbes(writableRoot), []);
 });
 
+Deno.test("containment harness - the direct public connect is probed only where the plan has an egress sidecar (Issue #4047)", () => {
+  // Runs without a container runtime, so the egress probe is guarded even
+  // where the live run is skipped.
+  const sample = samplePlan();
+  assert(sample.egress, "the Docker sample plan carries no egress sidecar");
+  const probes = egressProbes(sample);
+  assertEquals(probes.map((probe) => probe.kind), ["tcp"]);
+  assertEquals(probes[0]?.target, "1.1.1.1:443");
+
+  // Apple container has no internal network, so there is nothing to assert.
+  assertEquals(egressProbes({ ...sample, egress: undefined }), []);
+
+  // The probe script must know the kind the table asks for.
+  assert(
+    PROBE_SCRIPT.includes("tcp) probe_tcp"),
+    "the probe script has no handler for the tcp probe kind",
+  );
+});
+
+Deno.test("containment harness - the worker's networks are read from inspect, and a silent document is refused (Issue #4047)", () => {
+  const inspected = [{
+    Name: "/vibe-containment-sample",
+    HostConfig: { NetworkMode: "vibe-test-egress-abc" },
+    NetworkSettings: {
+      Networks: { "vibe-test-egress-abc": { IPAddress: "172.20.0.2" } },
+    },
+  }];
+  assertEquals(attachedNetworks(inspected), ["vibe-test-egress-abc"]);
+
+  const onBridge = [{
+    NetworkSettings: { Networks: { bridge: {}, "vibe-test-egress-abc": {} } },
+  }];
+  assertEquals(attachedNetworks(onBridge), [
+    "bridge",
+    "vibe-test-egress-abc",
+  ]);
+
+  assertThrows(
+    () => attachedNetworks([{ Name: "/vibe-containment-sample" }]),
+    Error,
+    "names no NetworkSettings.Networks map",
+  );
+  assertThrows(
+    () => attachedNetworks([]),
+    Error,
+    "names no NetworkSettings.Networks map",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // The operator's private layer (Issue #980, parent #933)
 // ---------------------------------------------------------------------------
@@ -1535,6 +1794,7 @@ function sampleExtensionPlan(): ContainerLaunchPlan {
       configStageDir: "/home/operator/.vibe-coder/run-config",
       credentialDir: "/home/operator/.vibe-coder/credentials",
     },
+    egressAllowlist: EGRESS_ALLOWLIST,
     containerExtension: {
       spec: {
         path: "/srv/vibe-extension",

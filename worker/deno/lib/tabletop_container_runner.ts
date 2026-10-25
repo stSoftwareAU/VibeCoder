@@ -45,7 +45,16 @@ import {
 import { resolveContainerImageReference } from "./container_image_hash.ts";
 import { readDeploymentImageSelection } from "./container_image_selection.ts";
 import { GH_CREDENTIAL_SUBDIR } from "./credential_preflight.ts";
-import type { EnvLookup } from "./env_lookup.ts";
+import { enabledAgentProviders } from "./agent_provider.ts";
+import { readConfiguredAgentProviderSet } from "./agent_provider_config.ts";
+import {
+  type RuntimeRunner,
+  startEgressSidecar,
+  stopEgressSidecar,
+} from "./container_egress.ts";
+import { resolveEgressAllowlist } from "./egress_allowlist.ts";
+import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
+import { resolveHostConfigPath } from "./host_config_path.ts";
 import {
   HOSTILE_PRE_COMMIT_HOOK,
   type TabletopFixture,
@@ -95,13 +104,39 @@ export interface TabletopContainerRunnerOptions {
    * (Issue #962). Defaults to the process environment.
    */
   readonly env?: EnvLookup;
+  /**
+   * The runtime the runner drives. Production leaves it unset and gets the real
+   * runtime; a test substitutes one so the order of the runtime calls, and the
+   * sidecar's teardown, can be asserted without starting a container (Issue
+   * #4047).
+   */
+  readonly runtime?: TabletopRuntime;
 }
 
-interface CommandResult {
+/** The two runtime calls the runner makes (Issue #4047). */
+export interface TabletopRuntime {
+  /** Finds the container runtime this host can drive. */
+  detect(): Promise<ContainerRuntimeDescriptor>;
+  /** Runs one runtime command with a bounded wait. */
+  run(
+    executable: string,
+    args: string[],
+    timeoutMs?: number,
+  ): Promise<CommandResult>;
+}
+
+/** The outcome of one runtime command. */
+export interface CommandResult {
   code: number;
   stdout: string;
   stderr: string;
 }
+
+/** The real runtime, used unless a caller substitutes its own. */
+const PRODUCTION_RUNTIME: TabletopRuntime = {
+  detect: () => detectContainerRuntime(),
+  run: runRuntime,
+};
 
 /** Run a runtime command with a bounded wait. */
 async function runRuntime(
@@ -162,11 +197,12 @@ interface HostFixture {
  * abandon a run that otherwise proves containment.
  */
 async function resolveImageDigest(
+  runtime: TabletopRuntime,
   descriptor: ContainerRuntimeDescriptor,
   image: string,
 ): Promise<string> {
   try {
-    const inspect = await runRuntime(
+    const inspect = await runtime.run(
       descriptor.executable,
       [...descriptor.dialect.imageInspectArgs, image],
       QUERY_TIMEOUT_MS,
@@ -181,6 +217,56 @@ async function resolveImageDigest(
   }
 }
 
+/**
+ * Copy a directory tree, skipping the named entries of its top level only.
+ *
+ * Symbolic links are refused rather than copied silently: a link could point
+ * outside the tree the egress sidecar is meant to run from (Issue #4047).
+ */
+async function copyTree(
+  from: string,
+  to: string,
+  skipTopLevel: readonly string[] = [],
+): Promise<void> {
+  await Deno.mkdir(to, { recursive: true });
+  for await (const entry of Deno.readDir(from)) {
+    if (skipTopLevel.includes(entry.name)) continue;
+    const source = `${from}/${entry.name}`;
+    const target = `${to}/${entry.name}`;
+    if (entry.isDirectory) {
+      await copyTree(source, target);
+    } else if (entry.isFile) {
+      await Deno.copyFile(source, target);
+    } else {
+      throw new Error(
+        `${source} is not a plain file or directory, so the worker source ` +
+          `copy for the egress sidecar cannot carry it.`,
+      );
+    }
+  }
+}
+
+/** Whether a path exists, distinguishing "absent" from "unreadable". */
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
+}
+
+/** What building the host fixture needs beyond the image and the attempts. */
+interface HostFixtureSetup {
+  /** The runtime every runtime command goes through. */
+  runtime: TabletopRuntime;
+  /** Repository root the worker's own source is copied from (Issue #4047). */
+  repoRoot: string;
+  /** The egress allowlist the sidecar enforces. */
+  egressAllowlist: readonly string[];
+}
+
 /** Build the host fixture and the launch plan that exposes it. */
 async function buildHostFixture(
   descriptor: ContainerRuntimeDescriptor,
@@ -189,6 +275,7 @@ async function buildHostFixture(
   token: string,
   canary: string,
   fixtures: readonly TabletopFixture[],
+  setup: HostFixtureSetup,
 ): Promise<HostFixture> {
   const root = await Deno.makeTempDir({ prefix: "vibe-tabletop-" });
   await Deno.chmod(root, 0o755);
@@ -266,10 +353,29 @@ async function buildHostFixture(
       // this container sees is per-run and thrown away with it.
       agentState: `vibe-tabletop-agent-${token}`,
     },
+    egressAllowlist: setup.egressAllowlist,
+    // Per-run names (Issue #4047): the tabletop can run on a host that is also
+    // running a production worker, and its sidecar must never stop or remove
+    // that worker's `vibe-coder-egress*` resources.
+    egressNames: {
+      network: `vibe-tabletop-egress-${token}`,
+      proxy: `vibe-tabletop-egress-proxy-${token}`,
+    },
   });
 
+  // The egress sidecar runs the worker's own code from a read-only mount of the
+  // checkout (Issue #4046), so the fixture carries a copy of it. The tests are
+  // left out: the sidecar never reads them.
+  if (plan.egress) {
+    await copyTree(
+      `${setup.repoRoot}/worker/deno`,
+      `${checkout}/worker/deno`,
+      ["tests"],
+    );
+  }
+
   for (const name of plan.volumes) {
-    const created = await runRuntime(
+    const created = await setup.runtime.run(
       descriptor.executable,
       ["volume", "create", name],
       QUERY_TIMEOUT_MS,
@@ -280,7 +386,10 @@ async function buildHostFixture(
       );
     }
   }
-  const initialised = await runRuntime(descriptor.executable, plan.initArgs);
+  const initialised = await setup.runtime.run(
+    descriptor.executable,
+    plan.initArgs,
+  );
   if (initialised.code !== 0) {
     throw new Error(
       `The volume-ownership init failed (exit ${initialised.code}):\n` +
@@ -425,6 +534,39 @@ export async function resolveTabletopImage(
   );
 }
 
+/**
+ * The egress allowlist the tabletop's sidecar enforces (Issue #4047).
+ *
+ * Resolved from the providers the deployment enables, the way the launcher
+ * resolves them, so the harness proves containment against the list a real
+ * worker would be given. The runner has no operator configuration of its own,
+ * so the file the deployment states is read here, or the default provider set
+ * is used when the deployment has no file. The imgbb key is not counted
+ * (`imgbbConfigured: false`): it only ever widens the list.
+ *
+ * @param options - The runner's options, including the repository root
+ * @param manifest - The container manifest, for the installed provider set
+ * @returns The hosts the sidecar will allow
+ */
+async function resolveTabletopEgressAllowlist(
+  options: TabletopContainerRunnerOptions,
+  manifest: ContainerManifest,
+): Promise<string[]> {
+  const env = options.env ?? processEnvLookup;
+  const configFile = resolveHostConfigPath({ baseDir: options.repoRoot, env });
+  const providers = await fileExists(configFile)
+    ? (await readConfiguredAgentProviderSet(
+      configFile,
+      manifest.installedProviders,
+      env,
+    )).providers
+    : enabledAgentProviders();
+  return resolveEgressAllowlist({
+    enabledProviderIds: providers.map((provider) => provider.id),
+    imgbbConfigured: false,
+  });
+}
+
 export function createTabletopContainerRunner(
   options: TabletopContainerRunnerOptions,
 ): TabletopRunner {
@@ -433,9 +575,10 @@ export function createTabletopContainerRunner(
       fixtures: readonly TabletopFixture[],
       runOptions: TabletopRunOptions,
     ): Promise<TabletopRunOutcome> {
+      const runtime = options.runtime ?? PRODUCTION_RUNTIME;
       let descriptor: ContainerRuntimeDescriptor;
       try {
-        descriptor = await detectContainerRuntime();
+        descriptor = await runtime.detect();
       } catch (error) {
         throw new TabletopContainerUnavailableError(
           (error as Error).message.split("\n")[0] ?? "no container runtime",
@@ -446,7 +589,7 @@ export function createTabletopContainerRunner(
         await Deno.readTextFile(`${options.repoRoot}/container/tools.json`),
       );
       const image = await resolveTabletopImage(options);
-      const present = await runRuntime(
+      const present = await runtime.run(
         descriptor.executable,
         [...descriptor.dialect.imageInspectArgs, image],
         QUERY_TIMEOUT_MS,
@@ -466,6 +609,14 @@ export function createTabletopContainerRunner(
         token,
         runOptions.canary,
         fixtures,
+        {
+          runtime,
+          repoRoot: options.repoRoot,
+          egressAllowlist: await resolveTabletopEgressAllowlist(
+            options,
+            manifest,
+          ),
+        },
       );
       const targets = containerTargetPaths(manifest);
       const env = [
@@ -481,15 +632,29 @@ export function createTabletopContainerRunner(
         }`,
       ];
 
+      // One sidecar for the whole run: every attempt container joins the same
+      // internal network, and the sidecar is torn down once, below.
+      const sidecar = fixture.plan.egress;
+      const sidecarRun: RuntimeRunner = (args) =>
+        runtime.run(descriptor.executable, [...args]);
+      let sidecarUp = false;
+
       const attempts: TabletopAttemptOutcome[] = [];
       try {
+        // A failed start has already torn itself down (startEgressSidecar), so
+        // only a sidecar that is up is stopped in the finally below.
+        if (sidecar) {
+          await startEgressSidecar(sidecar, sidecarRun);
+          sidecarUp = true;
+        }
+
         for (const [index, item] of fixtures.entries()) {
           // Each fixture gets a clean pair of sinks, so a leak attributes to
           // the attempt that produced it.
           await Deno.writeTextFile(fixture.outboxPath, "");
           await Deno.writeTextFile(fixture.runLogPath, "");
 
-          const run = await runRuntime(
+          const run = await runtime.run(
             descriptor.executable,
             attemptRunArgs(
               fixture.plan,
@@ -513,23 +678,31 @@ export function createTabletopContainerRunner(
           });
         }
       } finally {
-        for (const name of fixture.plan.volumes) {
-          await runRuntime(
-            descriptor.executable,
-            ["volume", "rm", "--force", name],
-            QUERY_TIMEOUT_MS,
-          ).catch(() => undefined);
+        try {
+          // Taken down even when an attempt fails, before the fixture it mounts
+          // is deleted below.
+          if (sidecar && sidecarUp) {
+            await stopEgressSidecar(sidecar, sidecarRun);
+          }
+        } finally {
+          for (const name of fixture.plan.volumes) {
+            await runtime.run(
+              descriptor.executable,
+              ["volume", "rm", "--force", name],
+              QUERY_TIMEOUT_MS,
+            ).catch(() => undefined);
+          }
+          await Deno.remove(fixture.root, { recursive: true }).catch(() =>
+            undefined
+          );
         }
-        await Deno.remove(fixture.root, { recursive: true }).catch(() =>
-          undefined
-        );
       }
 
       return {
         mode: "container",
         runtime: descriptor.displayName,
         image,
-        imageDigest: await resolveImageDigest(descriptor, image),
+        imageDigest: await resolveImageDigest(runtime, descriptor, image),
         attempts,
       };
     },

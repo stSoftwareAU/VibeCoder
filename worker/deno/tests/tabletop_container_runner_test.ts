@@ -10,15 +10,23 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
   attemptRunArgs,
+  createTabletopContainerRunner,
   DEFAULT_EGRESS_PROBE_URL,
   parseAttemptOutcome,
   parseOutboxArtefacts,
   TabletopContainerUnavailableError,
+  type TabletopRuntime,
 } from "../lib/tabletop_container_runner.ts";
 import type { ContainerLaunchPlan } from "../lib/container_launch.ts";
+import {
+  CONTAINER_RUNTIMES,
+  type ContainerRuntimeDescriptor,
+} from "../lib/container_runtime.ts";
+import { EGRESS_PROXY_READY_MARKER } from "../lib/egress_proxy.ts";
+import type { TabletopFixture } from "../lib/tabletop_fixtures.ts";
 import {
   parseWeakenedControls,
   tabletopReportPath,
@@ -194,5 +202,233 @@ Deno.test("a negative-control run writes to its own evidence file", () => {
   assertEquals(
     tabletopReportPath(day, true),
     "docs/evidence/tabletop-negative-control-2026-08-18.md",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The egress sidecar around the run (Issue #4047)
+// ---------------------------------------------------------------------------
+
+/** The repository root, from this test file's own location. */
+const REPO_ROOT = new URL(import.meta.url).pathname.replace(
+  /\/worker\/deno\/tests\/[^/]+$/,
+  "",
+);
+
+const CANARY = "ghp_tabletop_runner_unit_canary";
+
+/** The Docker descriptor the runner drives in these tests. */
+const DOCKER: ContainerRuntimeDescriptor = {
+  platform: "linux",
+  kind: "docker",
+  executable: CONTAINER_RUNTIMES.docker.executable,
+  displayName: CONTAINER_RUNTIMES.docker.displayName,
+  dialect: CONTAINER_RUNTIMES.docker.dialect,
+  probed: ["docker"],
+};
+
+/** The Apple descriptor: no internal network, so no egress sidecar. */
+const APPLE: ContainerRuntimeDescriptor = {
+  platform: "darwin",
+  kind: "apple-container",
+  executable: CONTAINER_RUNTIMES["apple-container"].executable,
+  displayName: CONTAINER_RUNTIMES["apple-container"].displayName,
+  dialect: CONTAINER_RUNTIMES["apple-container"].dialect,
+  probed: ["apple-container"],
+};
+
+/** A minimal attempt that reports itself refused. */
+function fixture(id: string): TabletopFixture {
+  return {
+    id,
+    surface: "issue-body",
+    objective: "read-credential",
+    expectation: "refused",
+    payload: "payload",
+    controls: [],
+    attempt: "#!/bin/bash\nprintf 'outcome\\trefused\\tblocked\\n'\n",
+  };
+}
+
+/** A runtime that answers every command, recording each argument list. */
+function fakeRuntime(
+  descriptor: ContainerRuntimeDescriptor,
+  behaviour: { failAttempt?: boolean } = {},
+): { runtime: TabletopRuntime; calls: string[][] } {
+  const calls: string[][] = [];
+  const runtime: TabletopRuntime = {
+    detect: () => Promise.resolve(descriptor),
+    run: (_executable, args) => {
+      calls.push([...args]);
+      if (isAttempt(args)) {
+        if (behaviour.failAttempt) {
+          return Promise.reject(new Error("attempt wedged"));
+        }
+        return Promise.resolve({
+          code: 0,
+          stdout: "outcome\trefused\tblocked\n",
+          stderr: "",
+        });
+      }
+      if (args[0] === "logs") {
+        return Promise.resolve({
+          code: 0,
+          stdout: `${EGRESS_PROXY_READY_MARKER}\n`,
+          stderr: "",
+        });
+      }
+      return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+    },
+  };
+  return { runtime, calls };
+}
+
+/** An attempt container: a `run` whose last argument is the attempt script. */
+function isAttempt(args: readonly string[]): boolean {
+  return args[0] === "run" && (args.at(-1) ?? "").endsWith(".sh");
+}
+
+/** The sidecar's detached run. */
+function isProxyRun(args: readonly string[]): boolean {
+  return args[0] === "run" && args.includes("--detach");
+}
+
+/** A runner whose configuration cannot be read from the developer's host. */
+function runnerWith(runtime: TabletopRuntime) {
+  return createTabletopContainerRunner({
+    repoRoot: REPO_ROOT,
+    image: "vibe-coder:tabletop-unit",
+    runtime,
+    // No configuration file: the provider set falls back to the defaults.
+    env: (name) =>
+      name === "CONFIG_FILE"
+        ? "/nonexistent-vibe-tabletop-unit/.config.json"
+        : undefined,
+  });
+}
+
+Deno.test("the egress sidecar comes up before the first attempt, and every attempt shares it", async () => {
+  const fake = fakeRuntime(DOCKER);
+  const outcome = await runnerWith(fake.runtime).run(
+    [fixture("a"), fixture("b")],
+    { canary: CANARY },
+  );
+  const calls = fake.calls;
+
+  const create = calls.findIndex((c) =>
+    c[0] === "network" && c[1] === "create"
+  );
+  const proxyRun = calls.findIndex(isProxyRun);
+  const connect = calls.findIndex((c) =>
+    c[0] === "network" && c[1] === "connect"
+  );
+  const attempts = calls.flatMap((c, i) => (isAttempt(c) ? [i] : []));
+  assert(create >= 0, "the internal network was never created");
+  assert(proxyRun > create, "the proxy started before its network existed");
+  assert(connect > proxyRun, "the proxy was not attached before the attempts");
+  assertEquals(attempts.length, 2, "both attempts should have run");
+  assert(
+    attempts[0]! > connect,
+    "an attempt started before the sidecar was up",
+  );
+
+  // One sidecar and one network for the whole run, not one per container.
+  assertEquals(
+    calls.filter((c) => c[0] === "network" && c[1] === "create").length,
+    1,
+  );
+  assertEquals(calls.filter(isProxyRun).length, 1);
+
+  // Every attempt is on the sidecar's internal network, and the sidecar's
+  // allowlist is the resolved one, not an empty list.
+  const network = calls[create]!.at(-1)!;
+  for (const index of attempts) {
+    const args = calls[index]!;
+    assertEquals(args[args.indexOf("--network") + 1], network);
+  }
+  const allowed = calls[proxyRun]!.find((arg) =>
+    arg.startsWith("VIBE_EGRESS_ALLOW_HOSTS=")
+  );
+  assert(
+    allowed?.includes("github.com"),
+    `the sidecar was not given the resolved allowlist: ${allowed}`,
+  );
+
+  // The attempts are still reported one per fixture.
+  assertEquals(outcome.attempts.map((attempt) => attempt.status), [
+    "refused",
+    "refused",
+  ]);
+});
+
+Deno.test("the egress sidecar is stopped after the last attempt, and before the fixture is deleted", async () => {
+  const fake = fakeRuntime(DOCKER);
+  await runnerWith(fake.runtime).run([fixture("a"), fixture("b")], {
+    canary: CANARY,
+  });
+  const calls = fake.calls;
+
+  const attempts = calls.flatMap((c, i) => (isAttempt(c) ? [i] : []));
+  const proxyName = calls[calls.findIndex(isProxyRun)]!.at(
+    calls[calls.findIndex(isProxyRun)]!.indexOf("--name") + 1,
+  );
+  // The last match is the teardown: the start also removes any leftover of an
+  // earlier launch, before anything is created.
+  const proxyRm = calls.findLastIndex((c) =>
+    c[0] === "rm" && c.at(-1) === proxyName
+  );
+  const networkRm = calls.findLastIndex((c) =>
+    c[0] === "network" && c[1] === "rm"
+  );
+  const volumeRm = calls.findLastIndex((c) =>
+    c[0] === "volume" && c[1] === "rm"
+  );
+  assert(proxyRm > attempts.at(-1)!, "the sidecar outlived the last attempt");
+  assert(networkRm > proxyRm, "the network was removed before the proxy");
+  assert(volumeRm > networkRm, "the fixture volumes went before the sidecar");
+});
+
+Deno.test("the egress sidecar is stopped in the finally even when an attempt fails", async () => {
+  const fake = fakeRuntime(DOCKER, { failAttempt: true });
+  await assertRejects(
+    () => runnerWith(fake.runtime).run([fixture("a")], { canary: CANARY }),
+    Error,
+    "attempt wedged",
+  );
+  const calls = fake.calls;
+
+  const attempt = calls.findIndex(isAttempt);
+  assert(attempt >= 0, "the failing attempt was never started");
+  const proxyName = calls[calls.findIndex(isProxyRun)]!.at(
+    calls[calls.findIndex(isProxyRun)]!.indexOf("--name") + 1,
+  );
+  // The last match is the teardown, after the leftover clean-up at start.
+  const proxyRm = calls.findLastIndex((c) =>
+    c[0] === "rm" && c.at(-1) === proxyName
+  );
+  const networkRm = calls.findLastIndex((c) =>
+    c[0] === "network" && c[1] === "rm"
+  );
+  const volumeRm = calls.findLastIndex((c) =>
+    c[0] === "volume" && c[1] === "rm"
+  );
+  assert(proxyRm > attempt, "a failed attempt left the sidecar running");
+  assert(networkRm > proxyRm, "a failed attempt left the network behind");
+  assert(volumeRm > networkRm, "a failed attempt skipped the volume clean-up");
+});
+
+Deno.test("an Apple run starts no egress sidecar and runs no network command", async () => {
+  const fake = fakeRuntime(APPLE);
+  const outcome = await runnerWith(fake.runtime).run([fixture("a")], {
+    canary: CANARY,
+  });
+  assertEquals(outcome.attempts.length, 1, "the attempt should have run");
+  const networkCommands = fake.calls.filter((c) =>
+    c[0] === "network" || c[0] === "logs" || isProxyRun(c)
+  );
+  assertEquals(
+    networkCommands,
+    [],
+    "Apple container has no internal network, so no sidecar command may run",
   );
 });

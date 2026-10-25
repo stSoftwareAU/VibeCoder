@@ -78,6 +78,7 @@ function inputs(
     // The build stamp the launch plan resolves from the checkout (Issue #1572).
     buildCommit: "0123456789abcdef0123456789abcdef01234567",
     watchdogSeconds: 11_400,
+    egressAllowlist: ["github.com", "api.anthropic.com"],
     hostPaths: {
       homeDir: "/home/operator",
       baseDir: "/opt/VibeCoder",
@@ -471,8 +472,10 @@ Deno.test("buildContainerLaunchPlan - starts the container with least privilege"
   assertEquals(plan.runArgs.includes("ALL"), true);
   assertEquals(plan.runArgs.includes("--security-opt"), true);
   assertEquals(plan.runArgs.includes("no-new-privileges"), true);
-  assertEquals(plan.runArgs.includes("--network"), true);
-  assertEquals(plan.runArgs.includes("bridge"), true);
+  // The worker joins the per-launch internal network, never the bridge: the
+  // egress sidecar is the only member that reaches out (Issue #4047).
+  assertEquals(plan.runArgs[plan.runArgs.indexOf("--network") + 1], "vibe-coder-egress");
+  assertEquals(plan.runArgs.includes("bridge"), false);
   assertEquals(
     plan.runArgs.some((arg) => arg.startsWith("/tmp:")),
     true,
@@ -1826,4 +1829,207 @@ Deno.test("buildContainerLaunchPlan - a Windows deployment builds its layer with
     "D:\\vibe\\extension\\Containerfile",
   );
   assertEquals(plan.extensionBuildArgs.at(-1), "D:\\vibe\\extension");
+});
+
+/** The value that follows the first `flag` in an argument list. */
+function valueAfter(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  return index === -1 ? undefined : args[index + 1];
+}
+
+/** Every `NAME=value` handed over by `--env` in an argument list. */
+function envPairs(args: string[]): string[] {
+  const pairs: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--env") pairs.push(args[i + 1] ?? "");
+  }
+  return pairs;
+}
+
+/** Where the worker reaches the egress sidecar (Issue #4047). */
+const EGRESS_PROXY_URL = "http://vibe-coder-egress-proxy:3128";
+
+Deno.test("buildContainerLaunchPlan - a Docker or Podman worker joins only the internal network (Issue #4047)", () => {
+  for (const kind of ["docker", "podman"] as const) {
+    const plan = buildContainerLaunchPlan(
+      inputs({ descriptor: descriptorFor(kind) }),
+    );
+    assertEquals(plan.runArgs.includes("bridge"), false, kind);
+    assertEquals(
+      valueAfter(plan.runArgs, "--network"),
+      "vibe-coder-egress",
+      kind,
+    );
+    const pairs = envPairs(plan.runArgs);
+    for (
+      const pair of [
+        `HTTPS_PROXY=${EGRESS_PROXY_URL}`,
+        `https_proxy=${EGRESS_PROXY_URL}`,
+        `HTTP_PROXY=${EGRESS_PROXY_URL}`,
+        `http_proxy=${EGRESS_PROXY_URL}`,
+        "NO_PROXY=localhost,127.0.0.1,::1",
+        "no_proxy=localhost,127.0.0.1,::1",
+      ]
+    ) {
+      assert(pairs.includes(pair), `${kind}: expected --env ${pair}`);
+    }
+  }
+});
+
+Deno.test("buildContainerLaunchPlan - the egress proxy is contained, read-only and carries the allowlist (Issue #4047)", () => {
+  for (const kind of ["docker", "podman"] as const) {
+    const plan = buildContainerLaunchPlan(
+      inputs({ descriptor: descriptorFor(kind) }),
+    );
+    const egress = plan.egress;
+    assert(egress !== undefined, kind);
+    const proxy = egress.proxyRunArgs;
+    assertEquals(valueAfter(proxy, "--cap-drop"), "ALL", kind);
+    assertEquals(
+      valueAfter(proxy, "--security-opt"),
+      "no-new-privileges",
+      kind,
+    );
+    assertEquals(proxy.includes("--read-only"), true, kind);
+    // No volume and no published port: the proxy's one host access is a
+    // single read-only bind of the worker's own code.
+    assertEquals(proxy.includes("--volume"), false, kind);
+    assertEquals(proxy.includes("-v"), false, kind);
+    assertEquals(proxy.includes("--publish"), false, kind);
+    assertEquals(proxy.includes("-p"), false, kind);
+    for (const flag of FORBIDDEN_RUN_FLAGS) {
+      assertEquals(
+        proxy.includes(flag),
+        false,
+        `${kind}: the proxy must not carry ${flag}`,
+      );
+    }
+    assertEquals(
+      proxy.some((arg) => arg === "host" || arg.endsWith("=host")),
+      false,
+      kind,
+    );
+    assertEquals(proxy.filter((arg) => arg === "--mount").length, 1, kind);
+    const mount = valueAfter(proxy, "--mount") ?? "";
+    assertStringIncludes(
+      mount,
+      "source=/opt/VibeCoder/worker/deno,target=/workspace/worker/deno,readonly",
+    );
+    // The allowlist rides in the environment, and the proxy is the only
+    // container on the outbound bridge; the worker is not.
+    assertEquals(
+      envPairs(proxy).includes(
+        "VIBE_EGRESS_ALLOW_HOSTS=github.com,api.anthropic.com",
+      ),
+      true,
+      kind,
+    );
+    assertEquals(valueAfter(proxy, "--network"), "bridge", kind);
+    assertEquals(plan.runArgs.includes("bridge"), false, kind);
+  }
+});
+
+Deno.test("buildContainerLaunchPlan - Apple container keeps its plan and carries no egress sidecar (Issue #4047)", () => {
+  const apple = descriptorFor("apple-container");
+  const plan = buildContainerLaunchPlan(inputs({ descriptor: apple }));
+  assertEquals("egress" in plan, false);
+  assertEquals(plan.runArgs.includes("--network"), false);
+  assertEquals(plan.runArgs.includes("bridge"), false);
+  assertEquals(
+    envPairs(plan.runArgs).some((pair) => pair.includes("PROXY")),
+    false,
+  );
+  // Apple's run argv does not depend on the egress list at all.
+  const otherList = buildContainerLaunchPlan(
+    inputs({ descriptor: apple, egressAllowlist: ["registry.example.com"] }),
+  );
+  assertEquals(otherList.runArgs, plan.runArgs);
+  // The opening of the Apple run argv, as it was before the sidecar existed.
+  assertEquals(
+    plan.runArgs.slice(0, 6),
+    ["run", "--rm", "--name", "vibe-coder-4242", "--memory", "8g"],
+  );
+  // Read off the stream directly: parseContainerLaunchPlanText does not know
+  // the builder-stop keys an Apple plan carries (a gap that predates #4047).
+  const rendered = renderContainerLaunchPlan(plan);
+  assertStringIncludes(rendered, "\0egress=none\0");
+  for (const key of ["network-create=", "network-remove=", "proxy-"]) {
+    assertEquals(rendered.includes(key), false, key);
+  }
+});
+
+Deno.test("renderContainerLaunchPlan - an enforced plan carries every sidecar key and parses back (Issue #4047)", () => {
+  const plan = buildContainerLaunchPlan(inputs());
+  const egress = plan.egress;
+  assert(egress !== undefined);
+  const text = renderContainerLaunchPlan(plan);
+  const parsed = parseContainerLaunchPlanText(text);
+  assertEquals(parsed.egress, "enforced");
+  assertEquals(parsed.networkCreate, egress.networkCreateArgs);
+  assertEquals(parsed.networkRemove, egress.networkRemoveArgs);
+  assertEquals(parsed.proxyRun, egress.proxyRunArgs);
+  assertEquals(parsed.proxyConnect, egress.proxyConnectArgs);
+  assertEquals(parsed.proxyLogs, egress.proxyLogsArgs);
+  assertEquals(parsed.proxyRemove, egress.proxyRemoveArgs);
+  assertEquals(parsed.proxyReady, egress.proxyReadyMarker);
+  assertEquals(parsed.run, plan.runArgs);
+  // The network and the proxy are up before the worker that needs them.
+  assert(text.indexOf("\0network-create=") < text.indexOf("\0run="));
+  assert(text.indexOf("\0proxy-run=") < text.indexOf("\0run="));
+});
+
+Deno.test("parseContainerLaunchPlanText - an unknown key still throws (Issue #4047)", () => {
+  const text = renderContainerLaunchPlan(buildContainerLaunchPlan(inputs()));
+  assertThrows(
+    () => parseContainerLaunchPlanText(`${text}bogus=1\0`),
+    Error,
+    "Unknown launch-plan key: bogus",
+  );
+});
+
+Deno.test("buildContainerLaunchPlan - an enforcing launch refuses an empty egress allowlist (Issue #4047)", () => {
+  assertThrows(
+    () => buildContainerLaunchPlan(inputs({ egressAllowlist: [] })),
+    Error,
+    "Refusing to launch: the egress allowlist is empty",
+  );
+  // The same launch with one host is accepted.
+  const plan = buildContainerLaunchPlan(
+    inputs({ egressAllowlist: ["github.com"] }),
+  );
+  assertEquals(plan.egress !== undefined, true);
+  // Apple container does not enforce, so it never reads the list.
+  buildContainerLaunchPlan(
+    inputs({ descriptor: descriptorFor("apple-container"), egressAllowlist: [] }),
+  );
+});
+
+Deno.test("buildContainerLaunchPlan - per-run egress names reach the worker network and the proxy (Issue #4047)", () => {
+  const plan = buildContainerLaunchPlan(
+    inputs({
+      egressNames: { network: "vc-test-net-4242", proxy: "vc-test-proxy-4242" },
+    }),
+  );
+  const egress = plan.egress;
+  assert(egress !== undefined);
+  assertEquals(valueAfter(plan.runArgs, "--network"), "vc-test-net-4242");
+  assertEquals(valueAfter(egress.proxyRunArgs, "--name"), "vc-test-proxy-4242");
+  assertEquals(egress.networkCreateArgs.at(-1), "vc-test-net-4242");
+  assertEquals(
+    envPairs(plan.runArgs).includes(
+      "HTTPS_PROXY=http://vc-test-proxy-4242:3128",
+    ),
+    true,
+  );
+});
+
+Deno.test("buildContainerLaunchPlan - a host network name is refused, never handed to the worker (Issue #4047)", () => {
+  assertThrows(
+    () =>
+      buildContainerLaunchPlan(
+        inputs({ egressNames: { network: "host", proxy: "vc-test-proxy" } }),
+      ),
+    Error,
+    "Refusing to launch",
+  );
 });

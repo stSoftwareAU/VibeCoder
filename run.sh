@@ -26,7 +26,10 @@ set -euo pipefail
 #   3. Notify a pinned host when a newer release exists (Issue #690).
 #   4. Build the launch plan (runtime detection, image reference, mounts).
 #   5. Build the image when the content-derived reference is absent.
-#   6. Launch the container, propagate SIGTERM/SIGINT, and exit with the
+#   6. Where the runtime can enforce it, start an internal network and the
+#      egress-proxy sidecar, so the worker has no route out but the proxy
+#      (Issue #4047). The sidecar is removed on exit, whatever the outcome.
+#   7. Launch the container, propagate SIGTERM/SIGINT, and exit with the
 #      container's exit status so loop.sh / launchd / cron / systemd see real
 #      failures.
 #
@@ -45,6 +48,13 @@ set -euo pipefail
 #              this launcher - and loop.sh behind it - for three hours on
 #              host-23. The wait now runs under the plan's `watchdog` deadline,
 #              and a stale worker container is reaped before the launch.
+# Issue #4047: Egress confinement. Where the runtime can enforce it (Docker,
+#              Podman) the worker joins a per-launch internal network with no
+#              route out, and the #4046 egress proxy on the outbound bridge is
+#              its only way out. The plan's argv is sequenced here, the sidecar
+#              is torn down on every exit, and a failed step refuses the launch.
+#              Apple container has no internal network, so it keeps its
+#              default network and says so with egress=none.
 # Issue #512:  The worker checkout is updated here, on the host, before the
 #              launch plan is built - the prerequisite for mounting it
 #              read-only (Issue #509). A failed update is a warning, never a
@@ -133,6 +143,10 @@ PLAN_FILE=""
 # Marker the watchdog writes before it reaps, so the exit status can name the
 # reason (Issue #4173). Set only once the container path starts the container.
 WEDGE_MARKER=""
+# Set once the egress sidecar's network exists (Issue #4047). From then on the
+# EXIT trap removes the proxy and the network on any exit, including a refused
+# proxy start or connect, and nothing else is removed by it.
+EGRESS_SIDECAR_STARTED=""
 # Where the image build's output is captured, so a failed build can be
 # classified by container-build-heal (Issue #4441). Set only when a build runs.
 BUILD_LOG=""
@@ -289,6 +303,38 @@ record_outcome() {
   fi
 }
 
+# Remove the egress sidecar (Issue #4047), once it was started. The proxy's own
+# log is kept first, under the run-core log directory, so what the proxy did
+# outlives the container. The proxy and the network are removed separately, and
+# a failed removal is a warning that names what may be left running; neither
+# changes this launcher's exit status.
+# Invoked from on_exit below; shellcheck cannot see that call.
+# shellcheck disable=SC2317,SC2329
+teardown_egress_sidecar() {
+  local proxy="${proxy_logs_args[${#proxy_logs_args[@]}-1]}"
+  local network="${network_remove_args[${#network_remove_args[@]}-1]}"
+  local stamp
+  EGRESS_SIDECAR_STARTED=""
+  if [[ -z "${RUN_CORE_LOG_DIR}" ]]; then
+    echo "[run.sh] warning: no log directory - the egress proxy's logs are not kept (Issue #4047)" >&2
+  else
+    stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if ! { mkdir -p "${RUN_CORE_LOG_DIR}" &&
+      {
+        printf '%s egress proxy %s - logs at launcher exit\n' "${stamp}" "${proxy}"
+        bounded 60 "${RUNTIME}" "${proxy_logs_args[@]}" </dev/null 2>&1 || true
+      } >>"${RUN_CORE_LOG_DIR}/egress-proxy.log"; } 2>/dev/null; then
+      echo "[run.sh] warning: cannot keep the egress proxy's logs in ${RUN_CORE_LOG_DIR}/egress-proxy.log (Issue #4047)" >&2
+    fi
+  fi
+  if ! bounded 60 "${RUNTIME}" "${proxy_remove_args[@]}" </dev/null >/dev/null 2>&1; then
+    echo "[run.sh] warning: could not remove the egress proxy ${proxy} - it may be left running (Issue #4047)" >&2
+  fi
+  if ! bounded 60 "${RUNTIME}" "${network_remove_args[@]}" </dev/null >/dev/null 2>&1; then
+    echo "[run.sh] warning: could not remove the egress network ${network} (Issue #4047)" >&2
+  fi
+}
+
 # shellcheck disable=SC2317,SC2329
 on_exit() {
   local status=$?
@@ -306,6 +352,11 @@ on_exit() {
   fi
   if [[ -n "${WEDGE_MARKER}" ]]; then
     rm -f "${WEDGE_MARKER}"
+  fi
+  # Before the record: the proxy's logs are evidence the outcome may quote, and
+  # the sidecar must not outlive the launch whatever the record says (Issue #4047).
+  if [[ -n "${EGRESS_SIDECAR_STARTED}" ]]; then
+    teardown_egress_sidecar
   fi
   record_outcome "${status}"
   # Removed after the record, never before it: the recorder quotes this log as
@@ -706,6 +757,18 @@ extension_build_args=()
 builder_stop_args=()
 builder_absent_patterns=()
 run_args=()
+# The egress sidecar (Issue #4047): every argv is a full command after the
+# runtime executable, one token per element, as the plan builds it. Checked
+# against the egress mode once the whole plan is read.
+egress_mode=""
+egress_proxy_ready_seen=""
+proxy_ready_marker=""
+network_create_args=()
+network_remove_args=()
+proxy_run_args=()
+proxy_connect_args=()
+proxy_logs_args=()
+proxy_remove_args=()
 
 while IFS= read -r -d '' token; do
   key="${token%%=*}"
@@ -731,6 +794,17 @@ while IFS= read -r -d '' token; do
     builder-stop) builder_stop_args+=("${value}") ;;
     builder-absent) builder_absent_patterns+=("${value}") ;;
     run) run_args+=("${value}") ;;
+    egress) egress_mode="${value}" ;;
+    network-create) network_create_args+=("${value}") ;;
+    network-remove) network_remove_args+=("${value}") ;;
+    proxy-run) proxy_run_args+=("${value}") ;;
+    proxy-connect) proxy_connect_args+=("${value}") ;;
+    proxy-logs) proxy_logs_args+=("${value}") ;;
+    proxy-remove) proxy_remove_args+=("${value}") ;;
+    proxy-ready)
+      proxy_ready_marker="${value}"
+      egress_proxy_ready_seen=1
+      ;;
     *)
       echo "Error: unrecognised launch-plan key: ${key}" >&2
       exit 1
@@ -749,6 +823,47 @@ if [[ -z "${RUNTIME}" || -z "${IMAGE}" || -z "${KEEP_IMAGES}" ]] ||
   echo "Error: incomplete container launch plan - refusing to launch" >&2
   exit 1
 fi
+
+# The egress mode (Issue #4047). The plan says whether the worker is confined to
+# the internal network behind the egress proxy ("enforced", Docker and Podman)
+# or keeps the runtime's default network ("none", Apple container, which has no
+# internal network). A plan that does not say is refused: it is never read as
+# an open network by default, and a "none" plan carrying sidecar keys is
+# contradictory, so it is refused too.
+case "${egress_mode}" in
+  enforced)
+    egress_missing=""
+    [[ ${#network_create_args[@]} -gt 0 ]] || egress_missing+=" network-create"
+    [[ ${#network_remove_args[@]} -gt 0 ]] || egress_missing+=" network-remove"
+    [[ ${#proxy_run_args[@]} -gt 0 ]] || egress_missing+=" proxy-run"
+    [[ ${#proxy_connect_args[@]} -gt 0 ]] || egress_missing+=" proxy-connect"
+    [[ ${#proxy_logs_args[@]} -gt 0 ]] || egress_missing+=" proxy-logs"
+    [[ ${#proxy_remove_args[@]} -gt 0 ]] || egress_missing+=" proxy-remove"
+    [[ -n "${proxy_ready_marker}" ]] || egress_missing+=" proxy-ready"
+    if [[ -n "${egress_missing}" ]]; then
+      echo "Error: incomplete container launch plan - egress=enforced but missing:${egress_missing} - refusing to launch" >&2
+      exit 1
+    fi
+    ;;
+  none)
+    egress_stray=""
+    [[ ${#network_create_args[@]} -eq 0 ]] || egress_stray+=" network-create"
+    [[ ${#network_remove_args[@]} -eq 0 ]] || egress_stray+=" network-remove"
+    [[ ${#proxy_run_args[@]} -eq 0 ]] || egress_stray+=" proxy-run"
+    [[ ${#proxy_connect_args[@]} -eq 0 ]] || egress_stray+=" proxy-connect"
+    [[ ${#proxy_logs_args[@]} -eq 0 ]] || egress_stray+=" proxy-logs"
+    [[ ${#proxy_remove_args[@]} -eq 0 ]] || egress_stray+=" proxy-remove"
+    [[ -z "${egress_proxy_ready_seen}" ]] || egress_stray+=" proxy-ready"
+    if [[ -n "${egress_stray}" ]]; then
+      echo "Error: incomplete container launch plan - egress=none but the plan carries sidecar keys:${egress_stray} - refusing to launch" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Error: incomplete container launch plan - egress mode is missing or not recognised (got \"${egress_mode}\"; expected enforced or none) - refusing to launch" >&2
+    exit 1
+    ;;
+esac
 
 # The watchdog deadline is what stops a wedged container VM blocking this
 # launcher for ever (Issue #4173), so a plan without a usable one is a loud
@@ -1793,6 +1908,84 @@ fi
 # The same reading, in the file the running worker will read from now on
 # (Issue #1550) - so the first tick after launch has something to compare to.
 write_host_disk_reading
+
+# The egress sidecar (Issue #4047). Brought up here, after the host-disk gate
+# and before the container starts, so a refusal exits through the outcome
+# record like every other launch failure. The worker is never started unless
+# the proxy has reported ready, and no failure falls back to the open network
+# or to a worker launched without its proxy.
+#
+# How long to wait for the proxy's ready line, in one-second tries by default.
+# The overrides exist for the launcher tests, which cannot wait 30 seconds per
+# case; a value that is not a positive integer is ignored.
+EGRESS_PROXY_READY_TRIES="${VIBE_EGRESS_PROXY_READY_TRIES:-30}"
+if ! [[ "${EGRESS_PROXY_READY_TRIES}" =~ ^[1-9][0-9]*$ ]]; then
+  EGRESS_PROXY_READY_TRIES=30
+fi
+EGRESS_PROXY_READY_INTERVAL="${VIBE_EGRESS_PROXY_READY_INTERVAL:-1}"
+if ! [[ "${EGRESS_PROXY_READY_INTERVAL}" =~ ^[1-9][0-9]*$ ]]; then
+  EGRESS_PROXY_READY_INTERVAL=1
+fi
+
+# The first line of a runtime's stderr that says anything, for a message an
+# operator reads. Nothing at all is an explicit "no explanation given".
+# Usage: first_stderr_line <captured stderr>
+first_stderr_line() {
+  local line
+  while IFS= read -r line; do
+    if [[ -n "${line// /}" ]]; then
+      printf '%s' "${line}"
+      return 0
+    fi
+  done <<<"$1"
+  printf '%s' "no explanation given"
+}
+
+# Start the sidecar in the order the plan gives: clear any leftover of the same
+# names from a crashed launch, create the internal network, start the proxy,
+# attach it to the network, then wait for its ready line. Every failure exits
+# 1 through the EXIT trap, which removes whatever was made.
+start_egress_sidecar() {
+  local err out try
+  # A leftover is what the run above did not remove. Its status is ignored:
+  # "no such container" or "no such network" is the normal case.
+  bounded 60 "${RUNTIME}" "${proxy_remove_args[@]}" </dev/null >/dev/null 2>&1 || true
+  bounded 60 "${RUNTIME}" "${network_remove_args[@]}" </dev/null >/dev/null 2>&1 || true
+
+  if ! err="$(bounded 60 "${RUNTIME}" "${network_create_args[@]}" </dev/null 2>&1 >/dev/null)"; then
+    echo "[run.sh] could not create the egress network: $(first_stderr_line "${err}") - refusing to launch (Issue #4047)" >&2
+    exit 1
+  fi
+  # The network exists from here on, so the EXIT trap removes it on any exit.
+  EGRESS_SIDECAR_STARTED=1
+
+  if ! err="$(bounded 60 "${RUNTIME}" "${proxy_run_args[@]}" </dev/null 2>&1 >/dev/null)"; then
+    echo "[run.sh] could not start the egress proxy: $(first_stderr_line "${err}") - refusing to launch (Issue #4047)" >&2
+    exit 1
+  fi
+
+  if ! err="$(bounded 60 "${RUNTIME}" "${proxy_connect_args[@]}" </dev/null 2>&1 >/dev/null)"; then
+    echo "[run.sh] could not attach the egress proxy to the internal network: $(first_stderr_line "${err}") - refusing to launch (Issue #4047)" >&2
+    exit 1
+  fi
+
+  for ((try = 1; try <= EGRESS_PROXY_READY_TRIES; try++)); do
+    out="$(bounded 60 "${RUNTIME}" "${proxy_logs_args[@]}" </dev/null 2>&1)" || true
+    if [[ "${out}" == *"${proxy_ready_marker}"* ]]; then
+      return 0
+    fi
+    if ((try < EGRESS_PROXY_READY_TRIES)); then
+      sleep "${EGRESS_PROXY_READY_INTERVAL}"
+    fi
+  done
+  echo "[run.sh] the egress proxy did not report ready (\"${proxy_ready_marker}\") after ${EGRESS_PROXY_READY_TRIES} tries - refusing to launch (Issue #4047). Its last output:" >&2
+  printf '%s\n' "${out}" | tail -n 40 | cut -c1-400 | sed 's/^/  | /' >&2
+  exit 1
+}
+
+if [[ "${egress_mode}" == "enforced" ]]; then
+  start_egress_sidecar
+fi
 
 # Exit status this launcher reports after reaping a wedged container - a named
 # reason rather than a bare failure, and deliberately outside the runtime CLI's

@@ -121,6 +121,7 @@ async function planFor(configFile: string): Promise<ContainerLaunchPlan> {
     image: "vibe-coder:0123456789ab",
     containerName: "vibe-coder-982",
     watchdogSeconds: 11_400,
+    egressAllowlist: ["github.com", "api.anthropic.com"],
     buildCommit: "0123456789abcdef0123456789abcdef01234567",
     hostPaths: {
       homeDir: "/home/operator",

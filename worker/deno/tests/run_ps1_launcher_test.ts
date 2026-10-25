@@ -43,6 +43,7 @@ import {
   declareContainerExtension,
   denoInvocationOrder,
   type Harness,
+  invocationOrder,
   type LauncherInvocation,
   type LaunchOutcome,
   mountValues,
@@ -55,7 +56,7 @@ import {
   REPO_ROOT,
   runCoreLog,
   runLauncher as runHarnessLauncher,
-  setupHarness,
+  setupHarness as setupSharedHarness,
   spawnLauncher as spawnHarnessLauncher,
   tempFileModes,
   waitForRecord,
@@ -79,6 +80,246 @@ function runLauncher(harness: Harness): Promise<LaunchOutcome> {
 /** Start `run.ps1` under the shared launcher harness. */
 function spawnLauncher(harness: Harness): Deno.ChildProcess {
   return spawnHarnessLauncher(harness, POWERSHELL_LAUNCHER!);
+}
+
+// ---------------------------------------------------------------------------
+// The egress sidecar's stubs (Issue #4047)
+// ---------------------------------------------------------------------------
+//
+// The launch plan now says how egress is handled, and `run.ps1` brings up the
+// sidecar it names - an internal network and a proxy on it - before the worker
+// starts, and tears it down on every exit. The shared harness knows nothing of
+// that: its runtime stub would record the proxy's `run` as the worker's, answer
+// its `logs` with nothing, and sleep through a proxy started with a stall
+// meant for the worker. So this file layers the sidecar on top of the shared
+// stubs rather than editing the harness that `run_sh_launcher_test.ts` shares.
+//
+// Two things are layered. The runtime answers the sidecar's own invocations
+// (recorded in order, labelled by step) and falls through to the shared stub
+// for everything else. The deno stub replaces the egress keys of the plan the
+// real `container-launch-plan` writes with the keys a test states, leaving the
+// rest of the plan exactly as the command wrote it - so the egress contract is
+// the test's to state, and the real plan's other keys are still what runs.
+
+/** The sidecar's proxy container, as the plan names it. */
+const PROXY_NAME = "vibe-coder-egress-proxy";
+/** The sidecar's internal network, as the plan names it. */
+const NETWORK_NAME = "vibe-coder-egress";
+/** The line the proxy logs once it listens, as the plan names it. */
+const PROXY_READY_LINE = "[EGRESS_PROXY] listening";
+
+/** The keys of the sidecar an enforced plan carries (Issue #4047). */
+const SIDECAR_KEYS: readonly string[] = [
+  "network-create",
+  "network-remove",
+  "proxy-run",
+  "proxy-connect",
+  "proxy-logs",
+  "proxy-remove",
+  "proxy-ready",
+];
+
+/**
+ * The egress keys of a plan that enforces egress: one token per argv element,
+ * exactly as `container-launch-plan` writes them.
+ */
+const ENFORCED_EGRESS: readonly string[] = [
+  "egress=enforced",
+  "network-create=network",
+  "network-create=create",
+  "network-create=--internal",
+  `network-create=${NETWORK_NAME}`,
+  "network-remove=network",
+  "network-remove=rm",
+  `network-remove=${NETWORK_NAME}`,
+  "proxy-run=run",
+  "proxy-run=-d",
+  "proxy-run=--name",
+  `proxy-run=${PROXY_NAME}`,
+  "proxy-run=--network",
+  "proxy-run=bridge",
+  "proxy-run=vibe-coder-egress-proxy:test",
+  "proxy-connect=network",
+  "proxy-connect=connect",
+  `proxy-connect=${NETWORK_NAME}`,
+  `proxy-connect=${PROXY_NAME}`,
+  "proxy-logs=logs",
+  `proxy-logs=${PROXY_NAME}`,
+  "proxy-remove=rm",
+  "proxy-remove=-f",
+  `proxy-remove=${PROXY_NAME}`,
+  `proxy-ready=${PROXY_READY_LINE}`,
+];
+
+/** The egress tokens of `tokens`, minus every token for `key`. */
+function without(tokens: readonly string[], key: string): string[] {
+  return tokens.filter((token) => !token.startsWith(`${key}=`));
+}
+
+/**
+ * Prepended to each runtime stub (Issue #4047, test-only). The sidecar's own
+ * invocations are answered here and recorded apart from the worker's; every
+ * other invocation falls through to the shared stub below.
+ */
+const SIDECAR_RUNTIME = `# Issue #4047 (test-only): the egress sidecar's own invocations.
+egress_note() {
+  printf '%s\\n' "$1" >> "\${VIBE_STUB_RECORD}/order.log"
+  shift
+  printf '%s\\n' "$*" >> "\${VIBE_STUB_RECORD}/egress-commands.log"
+}
+egress_has() {
+  local want="$1" a
+  shift
+  for a in "$@"; do
+    if [[ "$a" == "$want" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+if [[ "\${1:-}" == "network" && "\${2:-}" == "create" ]]; then
+  egress_note egress-network-create "$@"
+  if [[ -n "\${STUB_NETWORK_CREATE_STDERR:-}" ]]; then
+    printf '%s\\n' "\${STUB_NETWORK_CREATE_STDERR}" >&2
+  fi
+  exit "\${STUB_NETWORK_CREATE_EXIT:-0}"
+fi
+if [[ "\${1:-}" == "network" && "\${2:-}" == "connect" ]]; then
+  egress_note egress-network-connect "$@"
+  if [[ -n "\${STUB_PROXY_CONNECT_STDERR:-}" ]]; then
+    printf '%s\\n' "\${STUB_PROXY_CONNECT_STDERR}" >&2
+  fi
+  exit "\${STUB_PROXY_CONNECT_EXIT:-0}"
+fi
+if [[ "\${1:-}" == "network" && ( "\${2:-}" == "rm" || "\${2:-}" == "remove" ) ]]; then
+  egress_note egress-network-remove "$@"
+  if [[ -n "\${STUB_NETWORK_REMOVE_STDERR:-}" ]]; then
+    printf '%s\\n' "\${STUB_NETWORK_REMOVE_STDERR}" >&2
+  fi
+  exit "\${STUB_NETWORK_REMOVE_EXIT:-0}"
+fi
+if [[ "\${1:-}" == "run" ]] && egress_has vibe-coder-egress-proxy "$@"; then
+  egress_note egress-proxy-run "$@"
+  if [[ -n "\${STUB_PROXY_RUN_STDERR:-}" ]]; then
+    printf '%s\\n' "\${STUB_PROXY_RUN_STDERR}" >&2
+  fi
+  exit "\${STUB_PROXY_RUN_EXIT:-0}"
+fi
+if [[ "\${1:-}" == "logs" ]] && egress_has vibe-coder-egress-proxy "$@"; then
+  egress_note egress-proxy-logs "$@"
+  polls=$(( $(cat "\${VIBE_STUB_RECORD}/proxy-logs.count" 2>/dev/null || echo 0) + 1 ))
+  printf '%s' "\${polls}" > "\${VIBE_STUB_RECORD}/proxy-logs.count"
+  if [[ "\${polls}" -ge "\${STUB_PROXY_READY_AFTER:-1}" ]]; then
+    printf '%s\\n' "\${STUB_PROXY_LOGS:-}"
+  fi
+  exit 0
+fi
+if [[ "\${1:-}" == "rm" ]] && egress_has vibe-coder-egress-proxy "$@"; then
+  egress_note egress-proxy-rm "$@"
+  if [[ -n "\${STUB_PROXY_REMOVE_STDERR:-}" ]]; then
+    printf '%s\\n' "\${STUB_PROXY_REMOVE_STDERR}" >&2
+  fi
+  exit "\${STUB_PROXY_REMOVE_EXIT:-0}"
+fi`;
+
+/**
+ * Prepended to the deno stub (Issue #4047, test-only). The real
+ * `container-launch-plan` runs and writes its plan; then the plan's egress
+ * tokens are replaced by the ones the test named in `VIBE_TEST_EGRESS_TOKENS`.
+ */
+const SIDECAR_DENO = `# Issue #4047 (test-only): the plan's egress keys are this test's own.
+for arg in "$@"; do
+  if [[ "$arg" == "container-launch-plan" ]]; then
+    printf '%s\\n' "container-launch-plan" >> "\${VIBE_STUB_RECORD}/deno-order.log"
+    out=""
+    prev=""
+    for a in "$@"; do
+      if [[ "$prev" == "--out" ]]; then
+        out="$a"
+      fi
+      prev="$a"
+    done
+    "\${VIBE_REAL_DENO}" "$@" || exit $?
+    kept=()
+    while IFS= read -r t; do
+      if [[ -z "$t" ]]; then
+        continue
+      fi
+      case "$t" in
+        egress=*|network-*=*|proxy-*=*) continue ;;
+      esac
+      kept+=("$t")
+    done < <(tr '\\0' '\\n' < "$out")
+    while IFS= read -r t; do
+      if [[ -n "$t" ]]; then
+        kept+=("$t")
+      fi
+    done < "\${VIBE_TEST_EGRESS_TOKENS}"
+    printf '%s\\0' "\${kept[@]}" > "$out"
+    exit 0
+  fi
+done`;
+
+/** Insert `prelude` after the shebang of an installed stub, keeping its mode. */
+async function prependToStub(path: string, prelude: string): Promise<void> {
+  const original = await Deno.readTextFile(path);
+  const body = original.slice(original.indexOf("\n") + 1);
+  await Deno.writeTextFile(path, `#!/bin/bash\n${prelude}\n${body}`);
+  await Deno.chmod(path, 0o755);
+}
+
+/**
+ * The shared harness, with this file's egress contract on top (Issue #4047).
+ *
+ * Every launch in this file carries an enforced sidecar unless the test names
+ * other egress keys in `options.egress`, so the launches the file already
+ * covers still prove what they prove, now with the sidecar in place.
+ *
+ * @param extraEnv - Stub behaviour overrides, as for the shared harness
+ * @param options - The shared options, plus the egress tokens the plan carries
+ * @returns The harness, with the sidecar-aware stubs installed
+ */
+async function setupHarness(
+  extraEnv: Record<string, string> = {},
+  options: {
+    credentials?: boolean;
+    denoStub?: boolean;
+    egress?: readonly string[];
+  } = {},
+): Promise<Harness> {
+  const harness = await setupSharedHarness(extraEnv, options);
+  const tokensFile = `${harness.tmpDir}/egress-tokens.txt`;
+  const tokens = options.egress ?? ENFORCED_EGRESS;
+  await Deno.writeTextFile(
+    tokensFile,
+    tokens.map((token) => `${token}\n`).join(""),
+  );
+  harness.env.VIBE_TEST_EGRESS_TOKENS = tokensFile;
+  if (!("STUB_PROXY_LOGS" in harness.env)) {
+    harness.env.STUB_PROXY_LOGS = PROXY_READY_LINE;
+  }
+  for (const name of ["container", "docker", "podman"]) {
+    await prependToStub(`${harness.tmpDir}/bin/${name}`, SIDECAR_RUNTIME);
+  }
+  await prependToStub(`${harness.tmpDir}/bin/deno`, SIDECAR_DENO);
+  return harness;
+}
+
+/** The sidecar's own invocations, one argv per line, oldest first (Issue #4047). */
+async function egressCommands(harness: Harness): Promise<string[]> {
+  try {
+    const text = await Deno.readTextFile(
+      `${harness.recordDir}/egress-commands.log`,
+    );
+    return text.split("\n").filter((line) => line.trim() !== "");
+  } catch {
+    return [];
+  }
+}
+
+/** How many times one step ran, from the ordered runtime log. */
+function occurrences(order: readonly string[], label: string): number {
+  return order.filter((entry) => entry === label).length;
 }
 
 Deno.test({
@@ -188,10 +429,12 @@ Deno.test({
         );
       }
 
+      // Issue #4047: an enforced launch puts the worker on the internal egress
+      // network, the only route out being the proxy on it - not the default
+      // bridge, which would let it reach the network directly.
       const networkIndex = args.indexOf("--network");
-      if (networkIndex >= 0) {
-        assertEquals(args[networkIndex + 1], "bridge");
-      }
+      assert(networkIndex >= 0, "the worker must name its network");
+      assertEquals(args[networkIndex + 1], NETWORK_NAME);
       assertEquals(args.includes("--rm"), true);
       assertEquals(args[args.length - 1], IMAGE);
     } finally {
@@ -1465,6 +1708,476 @@ Deno.test({
       assertStringIncludes(outcome.stderr, "container extension");
       assertEquals(await buildCount(harness), 2);
       assertEquals(await recorded(harness, "run"), null);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// The egress sidecar: bring-up, teardown and the plan's egress contract
+// (Issue #4047)
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "run.ps1 - brings the egress sidecar up in order, before the worker starts (Issue #4047)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({ STUB_IMAGE_INSPECT_EXIT: "0" });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      // The internal network first, the proxy on it, the proxy connected, the
+      // proxy ready - and only then the worker, which has no route off the
+      // network except through that proxy.
+      const order = await invocationOrder(harness);
+      const steps = [
+        "egress-network-create",
+        "egress-proxy-run",
+        "egress-network-connect",
+        "egress-proxy-logs",
+        "run",
+      ];
+      let at = -1;
+      for (const step of steps) {
+        const next = order.indexOf(step, at + 1);
+        assert(
+          next > at,
+          `${step} must run after the step before it: ${order.join(", ")}`,
+        );
+        at = next;
+      }
+
+      // The argv is the plan's own, one token per element, run as given.
+      const commands = await egressCommands(harness);
+      assertEquals(
+        commands.find((line) => line.startsWith("network create")),
+        `network create --internal ${NETWORK_NAME}`,
+      );
+      const proxyRun = commands.find((line) => line.startsWith("run "));
+      assert(proxyRun, `no proxy run was recorded: ${commands.join(" | ")}`);
+      assertStringIncludes(proxyRun, `--name ${PROXY_NAME}`);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - removes a same-named leftover before creating the network, and ignores its status (Issue #4047)",
+  ignore,
+  fn: async () => {
+    // Both removals fail. The leftover is usually absent, which is the normal
+    // case, so a failed removal must never stop the launch.
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_PROXY_REMOVE_EXIT: "1",
+      STUB_NETWORK_REMOVE_EXIT: "1",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      const order = await invocationOrder(harness);
+      const create = order.indexOf("egress-network-create");
+      assert(create > -1, `the network was never created: ${order.join(", ")}`);
+      const staleProxy = order.indexOf("egress-proxy-rm");
+      const staleNetwork = order.indexOf("egress-network-remove");
+      assert(
+        staleProxy > -1 && staleProxy < create,
+        `the proxy leftover must be removed before the create: ${order.join(", ")}`,
+      );
+      assert(
+        staleNetwork > -1 && staleNetwork < create,
+        `the network leftover must be removed before the create: ${order.join(", ")}`,
+      );
+      assert(await recorded(harness, "run"), "the worker must still launch");
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - keeps the proxy's log, then removes the proxy and the network on exit (Issue #4047)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_PROXY_LOGS: `${PROXY_READY_LINE}\n[EGRESS_PROXY] allowed api.github.com:443`,
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+
+      // Logs first: removing the proxy takes its account with it.
+      const order = await invocationOrder(harness);
+      const worker = order.indexOf("run");
+      const logs = order.lastIndexOf("egress-proxy-logs");
+      const proxyRemoval = order.lastIndexOf("egress-proxy-rm");
+      const networkRemoval = order.lastIndexOf("egress-network-remove");
+      assert(
+        worker > -1 && logs > worker && proxyRemoval > logs &&
+          networkRemoval > proxyRemoval,
+        `teardown must keep the logs, then remove the proxy, then the ` +
+          `network, after the worker: ${order.join(", ")}`,
+      );
+
+      const kept = await Deno.readTextFile(`${harness.logDir}/egress-proxy.log`);
+      const lines = kept.split("\n");
+      assert(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z /.test(lines[0] ?? ""),
+        `the proxy log must open with a timestamped header: ${kept}`,
+      );
+      assertStringIncludes(kept, PROXY_READY_LINE);
+      assertStringIncludes(kept, "allowed api.github.com:443");
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - a failed teardown warns by name, keeps the exit status, and skips nothing (Issue #4047)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_RUN_EXIT: "17",
+      STUB_PROXY_REMOVE_EXIT: "1",
+      STUB_PROXY_REMOVE_STDERR: "Error: no such container",
+      STUB_NETWORK_REMOVE_EXIT: "1",
+      STUB_NETWORK_REMOVE_STDERR: "Error: network is in use",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      // The worker's own status, untouched by a removal that failed.
+      assertEquals(outcome.code, 17, outcome.stderr);
+      assertStringIncludes(
+        outcome.stderr,
+        "[run.ps1] warning: could not remove the egress proxy",
+      );
+      assertStringIncludes(outcome.stderr, "Error: no such container");
+      assertStringIncludes(
+        outcome.stderr,
+        "[run.ps1] warning: could not remove the egress network",
+      );
+      assertStringIncludes(outcome.stderr, "Error: network is in use");
+
+      // The proxy's failed removal did not stop the network's.
+      const order = await invocationOrder(harness);
+      assertEquals(occurrences(order, "egress-proxy-rm"), 2);
+      assertEquals(occurrences(order, "egress-network-remove"), 2);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - refuses to launch, and tears down what it started, when the egress sidecar cannot come up (Issue #4047)",
+  ignore,
+  fn: async () => {
+    const cases = [
+      {
+        step: "network create",
+        env: {
+          STUB_NETWORK_CREATE_EXIT: "1",
+          STUB_NETWORK_CREATE_STDERR:
+            "Error: network with name vibe-coder-egress already exists",
+        },
+        line: "Error: network with name vibe-coder-egress already exists",
+        proxyRuns: 0,
+        connects: 0,
+        torn: false,
+      },
+      {
+        step: "proxy run",
+        env: {
+          STUB_PROXY_RUN_EXIT: "125",
+          STUB_PROXY_RUN_STDERR: "Error: no such image",
+        },
+        line: "Error: no such image",
+        proxyRuns: 1,
+        connects: 0,
+        torn: true,
+      },
+      {
+        step: "proxy connect",
+        env: {
+          STUB_PROXY_CONNECT_EXIT: "1",
+          STUB_PROXY_CONNECT_STDERR: "Error: network not found",
+        },
+        line: "Error: network not found",
+        proxyRuns: 1,
+        connects: 1,
+        torn: true,
+      },
+    ];
+    for (const c of cases) {
+      const harness = await setupHarness({
+        STUB_IMAGE_INSPECT_EXIT: "0",
+        ...c.env,
+      });
+      try {
+        const outcome = await runLauncher(harness);
+        assertEquals(outcome.code, 1, `${c.step}: ${outcome.stderr}`);
+        assertStringIncludes(outcome.stderr, c.line);
+        assertEquals(
+          await recorded(harness, "run"),
+          null,
+          `${c.step}: a failed sidecar must never start the worker`,
+        );
+
+        const order = await invocationOrder(harness);
+        assertEquals(occurrences(order, "egress-proxy-run"), c.proxyRuns, c.step);
+        assertEquals(
+          occurrences(order, "egress-network-connect"),
+          c.connects,
+          c.step,
+        );
+        // The leftover removals run first and always; the teardown runs only
+        // once the network exists (Issue #4047).
+        const removals = c.torn ? 2 : 1;
+        assertEquals(occurrences(order, "egress-proxy-rm"), removals, c.step);
+        assertEquals(
+          occurrences(order, "egress-network-remove"),
+          removals,
+          c.step,
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - refuses to launch when the egress proxy never reports ready, and says what it last said (Issue #4047)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      VIBE_EGRESS_PROXY_READY_TRIES: "2",
+      VIBE_EGRESS_PROXY_READY_INTERVAL: "1",
+      STUB_PROXY_LOGS: "[EGRESS_PROXY] booting",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 1, outcome.stderr);
+      assertStringIncludes(outcome.stderr, "[EGRESS_PROXY] booting");
+      assertEquals(await recorded(harness, "run"), null);
+
+      // Two polls, one per try, then the teardown's own look at the logs.
+      const order = await invocationOrder(harness);
+      assertEquals(occurrences(order, "egress-proxy-logs"), 3);
+      assertEquals(occurrences(order, "egress-proxy-rm"), 2);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - waits for the egress proxy to report ready, however late (Issue #4047)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      // Not ready on the first two looks; the third finds the marker.
+      STUB_PROXY_READY_AFTER: "3",
+    });
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+      assert(await recorded(harness, "run"), "the worker must launch once ready");
+
+      // Three polls to find it, then the teardown's look at the logs.
+      const order = await invocationOrder(harness);
+      assertEquals(occurrences(order, "egress-proxy-logs"), 4);
+    } finally {
+      await harness.cleanup();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - refuses a readiness override that is not a positive integer (Issue #4047)",
+  ignore,
+  fn: async () => {
+    const overrides: [string, string][] = [
+      ["VIBE_EGRESS_PROXY_READY_TRIES", "0"],
+      ["VIBE_EGRESS_PROXY_READY_TRIES", "soon"],
+      ["VIBE_EGRESS_PROXY_READY_INTERVAL", "-1"],
+    ];
+    for (const [name, value] of overrides) {
+      const harness = await setupHarness({
+        STUB_IMAGE_INSPECT_EXIT: "0",
+        [name]: value,
+      });
+      try {
+        const outcome = await runLauncher(harness);
+        assert(outcome.code !== 0, `${name}=${value} must refuse: ${outcome.stderr}`);
+        assertStringIncludes(outcome.stderr, name);
+
+        // Refused before anything is started, not after the network exists.
+        const order = await invocationOrder(harness);
+        assertEquals(occurrences(order, "egress-network-create"), 0);
+        assertEquals(await recorded(harness, "run"), null);
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - refuses a plan whose egress key is absent or not 'enforced' or 'none' (Issue #4047)",
+  ignore,
+  fn: async () => {
+    // An absent key must never be read as an open network.
+    const cases: [string, string[]][] = [
+      ["no egress key", without(ENFORCED_EGRESS, "egress")],
+      ["egress=open", ["egress=open", ...without(ENFORCED_EGRESS, "egress")]],
+      [
+        "egress=Enforced",
+        ["egress=Enforced", ...without(ENFORCED_EGRESS, "egress")],
+      ],
+      ["an empty egress", ["egress=", ...without(ENFORCED_EGRESS, "egress")]],
+    ];
+    for (const [label, egress] of cases) {
+      const harness = await setupHarness(
+        { STUB_IMAGE_INSPECT_EXIT: "0" },
+        { egress },
+      );
+      try {
+        const outcome = await runLauncher(harness);
+        assertEquals(outcome.code, 1, `${label}: ${outcome.stderr}`);
+        assertStringIncludes(
+          outcome.stderr,
+          "incomplete container launch plan - refusing to launch",
+        );
+        assertStringIncludes(
+          outcome.stderr,
+          "egress key missing or not 'enforced' or 'none'",
+        );
+        const order = await invocationOrder(harness);
+        assertEquals(
+          order.filter((step) => step.startsWith("egress-")).length,
+          0,
+          `${label} must start nothing: ${order.join(", ")}`,
+        );
+        assertEquals(await recorded(harness, "run"), null, label);
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - refuses an enforced plan missing any one sidecar key (Issue #4047)",
+  ignore,
+  fn: async () => {
+    for (const key of SIDECAR_KEYS) {
+      const harness = await setupHarness(
+        { STUB_IMAGE_INSPECT_EXIT: "0" },
+        { egress: without(ENFORCED_EGRESS, key) },
+      );
+      try {
+        const outcome = await runLauncher(harness);
+        assertEquals(outcome.code, 1, `${key} missing: ${outcome.stderr}`);
+        assertStringIncludes(
+          outcome.stderr,
+          "egress is enforced but the plan omits",
+        );
+        assertStringIncludes(outcome.stderr, key);
+
+        const order = await invocationOrder(harness);
+        assertEquals(
+          occurrences(order, "egress-network-create"),
+          0,
+          `${key} missing must not create a network`,
+        );
+        assertEquals(await recorded(harness, "run"), null, key);
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - refuses egress=none when the plan still carries sidecar keys (Issue #4047)",
+  ignore,
+  fn: async () => {
+    const cases: [string, string[]][] = [
+      [
+        "one sidecar key",
+        ["egress=none", `proxy-ready=${PROXY_READY_LINE}`],
+      ],
+      [
+        "the full sidecar",
+        ["egress=none", ...without(ENFORCED_EGRESS, "egress")],
+      ],
+    ];
+    for (const [label, egress] of cases) {
+      const harness = await setupHarness(
+        { STUB_IMAGE_INSPECT_EXIT: "0" },
+        { egress },
+      );
+      try {
+        const outcome = await runLauncher(harness);
+        assertEquals(outcome.code, 1, `${label}: ${outcome.stderr}`);
+        assertStringIncludes(outcome.stderr, "carries sidecar keys");
+
+        const order = await invocationOrder(harness);
+        assertEquals(
+          occurrences(order, "egress-network-create"),
+          0,
+          `${label} must not create a network`,
+        );
+        assertEquals(await recorded(harness, "run"), null, label);
+      } finally {
+        await harness.cleanup();
+      }
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "run.ps1 - egress=none runs no network command and launches the worker (Issue #4047)",
+  ignore,
+  fn: async () => {
+    const harness = await setupHarness(
+      { STUB_IMAGE_INSPECT_EXIT: "0" },
+      { egress: ["egress=none"] },
+    );
+    try {
+      const outcome = await runLauncher(harness);
+      assertEquals(outcome.code, 0, outcome.stderr);
+      assert(await recorded(harness, "run"), "the worker must launch");
+
+      assertEquals(await egressCommands(harness), []);
+      const order = await invocationOrder(harness);
+      assertEquals(
+        order.filter((step) => step.startsWith("egress-")).length,
+        0,
+        `no sidecar step may run under none: ${order.join(", ")}`,
+      );
     } finally {
       await harness.cleanup();
     }

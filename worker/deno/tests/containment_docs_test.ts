@@ -92,6 +92,7 @@ function launchInputs(): ContainerLaunchInputs {
     // The build stamp the launch plan resolves from the checkout (Issue #1572).
     buildCommit: "0123456789abcdef0123456789abcdef01234567",
     watchdogSeconds: 11_400,
+    egressAllowlist: ["github.com", "api.anthropic.com"],
     hostPaths: {
       homeDir: "/home/operator",
       baseDir: "/opt/VibeCoder",

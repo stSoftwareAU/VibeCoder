@@ -46,6 +46,11 @@ import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { formatReleaseNotice } from "../lib/release_notice.ts";
 import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import {
+  DEFAULT_EGRESS_NETWORK_NAME,
+  DEFAULT_EGRESS_PROXY_NAME,
+} from "../lib/container_egress.ts";
+import { EGRESS_PROXY_READY_MARKER } from "../lib/egress_proxy.ts";
+import {
   HOST_DISK_REFRESH_FILE,
   HOST_DISK_REFRESH_INTERVAL_ENV,
 } from "../lib/host_disk.ts";
@@ -86,13 +91,197 @@ const TARGETS = containerTargetPaths(MANIFEST);
 const PROVIDER_SUBDIR = activeAgentProvider().credentials.subdir;
 const IMAGE = await resolveContainerImageReference(REPO_ROOT);
 
-/** Run `run.sh` under the shared launcher harness. */
+/**
+ * Plan keys the egress sidecar adds (Issue #4047). A plan that says
+ * `egress=enforced` must carry every one; a plan that says `egress=none` must
+ * carry none.
+ */
+const EGRESS_SIDECAR_KEYS = [
+  "network-create",
+  "network-remove",
+  "proxy-run",
+  "proxy-connect",
+  "proxy-logs",
+  "proxy-remove",
+  "proxy-ready",
+];
+
+/**
+ * The runtime stand-in that understands the egress sidecar (Issue #4047).
+ *
+ * The shared stub cannot serve the sidecar: it records only a call's first
+ * word, so `network create` and `network rm` look alike; it answers `logs`
+ * with nothing, so the proxy never reports ready; and it reads the proxy's
+ * `run --entrypoint` as a volume init. This stand-in records every call's
+ * whole argument list in order, answers the sidecar's own calls, and hands
+ * every other call to the shared stub unchanged.
+ *
+ * Driven by `STUB_NETWORK_CREATE_EXIT` and `STUB_NETWORK_CREATE_STDERR`,
+ * `STUB_PROXY_RUN_EXIT`, `STUB_PROXY_RUN_STDERR`, `STUB_PROXY_CONNECT_EXIT`,
+ * `STUB_PROXY_CONNECT_STDERR`, and `STUB_PROXY_LOGS` (what the proxy logs; by
+ * default the ready line). A test seeds `stale-network` or `stale-proxy` in the
+ * record directory to make the create or the run refuse until the matching
+ * removal has run.
+ *
+ * @param sharedStub - Path of the shared stub this stand-in hands calls to
+ * @returns The script source
+ */
+function runtimeStubSource(sharedStub: string): string {
+  return [
+    "#!/bin/bash",
+    "set -u",
+    'record_dir="${VIBE_STUB_RECORD}"',
+    'mkdir -p "${record_dir}"',
+    'printf "%s\\n" "$*" >> "${record_dir}/calls.log"',
+    `real="${sharedStub}"`,
+    "proxy_named=0",
+    'prev=""',
+    'for arg in "$@"; do',
+    '  if [[ "${prev}" == "--name" && "${arg}" == *-egress-proxy ]]; then proxy_named=1; fi',
+    '  prev="${arg}"',
+    "done",
+    'last="${*: -1}"',
+    'case "${1:-}" in',
+    "  network)",
+    '    case "${2:-}" in',
+    "      create)",
+    '        if [[ -e "${record_dir}/stale-network" && ! -e "${record_dir}/network-removed" ]]; then',
+    '          echo "Error response from daemon: network ${last} already exists" >&2',
+    "          exit 1",
+    "        fi",
+    '        if [[ -n "${STUB_NETWORK_CREATE_STDERR:-}" ]]; then printf "%s\\n" "${STUB_NETWORK_CREATE_STDERR}" >&2; fi',
+    "        echo stub-network-id",
+    '        exit "${STUB_NETWORK_CREATE_EXIT:-0}"',
+    "        ;;",
+    "      rm)",
+    '        : > "${record_dir}/network-removed"',
+    "        exit 0",
+    "        ;;",
+    "      connect)",
+    '        if [[ -n "${STUB_PROXY_CONNECT_STDERR:-}" ]]; then printf "%s\\n" "${STUB_PROXY_CONNECT_STDERR}" >&2; fi',
+    '        exit "${STUB_PROXY_CONNECT_EXIT:-0}"',
+    "        ;;",
+    "    esac",
+    "    ;;",
+    "  logs)",
+    '    printf "%s\\n" "${STUB_PROXY_LOGS-' + EGRESS_PROXY_READY_MARKER + '}"',
+    "    exit 0",
+    "    ;;",
+    "  rm)",
+    '    if [[ "${last}" == *-egress-proxy ]]; then',
+    '      : > "${record_dir}/proxy-removed"',
+    "      exit 0",
+    "    fi",
+    "    ;;",
+    "  run)",
+    '    if [[ "${proxy_named}" == 1 ]]; then',
+    '      if [[ -e "${record_dir}/stale-proxy" && ! -e "${record_dir}/proxy-removed" ]]; then',
+    '        echo "Conflict. The container name is already in use by a stale egress proxy" >&2',
+    "        exit 125",
+    "      fi",
+    '      if [[ -n "${STUB_PROXY_RUN_STDERR:-}" ]]; then printf "%s\\n" "${STUB_PROXY_RUN_STDERR}" >&2; fi',
+    "      echo stub-proxy-id",
+    '      exit "${STUB_PROXY_RUN_EXIT:-0}"',
+    "    fi",
+    "    ;;",
+    "esac",
+    'exec "${real}" "$@"',
+  ].join("\n") + "\n";
+}
+
+/**
+ * The Deno stand-in that lets a test edit the launch plan (Issue #4047).
+ *
+ * The real `container-launch-plan` runs and writes its plan as usual, then
+ * `STUB_PLAN_DROP` (keys to remove, space-separated) and `STUB_PLAN_SET`
+ * (`key=value` tokens to replace or add, space-separated) are applied to it.
+ * That makes every refusal and the `egress=none` shape reachable on a Linux
+ * host, where the runtime the plan picks always enforces egress. Every other
+ * invocation goes to the shared stub unchanged.
+ *
+ * @param sharedStub - Path of the shared stub this stand-in hands calls to
+ * @returns The script source
+ */
+function denoStubSource(sharedStub: string): string {
+  return [
+    "#!/bin/bash",
+    "set -u",
+    `real="${sharedStub}"`,
+    "is_plan=0",
+    'plan_out=""',
+    'prev=""',
+    'for arg in "$@"; do',
+    '  if [[ "${arg}" == "container-launch-plan" ]]; then is_plan=1; fi',
+    '  if [[ "${prev}" == "--out" ]]; then plan_out="${arg}"; fi',
+    '  prev="${arg}"',
+    "done",
+    'if [[ "${is_plan}" != 1 || -z "${plan_out}" ]]; then',
+    '  exec "${real}" "$@"',
+    "fi",
+    '"${real}" "$@" || exit $?',
+    'if [[ -z "${STUB_PLAN_DROP:-}" && -z "${STUB_PLAN_SET:-}" ]]; then',
+    "  exit 0",
+    "fi",
+    'edited="${plan_out}.edit"',
+    ': > "${edited}"',
+    'while IFS= read -r -d "" token; do',
+    '  key="${token%%=*}"',
+    "  drop=0",
+    "  for k in ${STUB_PLAN_DROP:-}; do",
+    '    if [[ "${k}" == "${key}" ]]; then drop=1; fi',
+    "  done",
+    "  for s in ${STUB_PLAN_SET:-}; do",
+    '    if [[ "${s%%=*}" == "${key}" ]]; then drop=1; fi',
+    "  done",
+    '  if [[ "${drop}" == 0 ]]; then printf "%s\\0" "${token}" >> "${edited}"; fi',
+    "done < \"${plan_out}\"",
+    'for s in ${STUB_PLAN_SET:-}; do printf "%s\\0" "${s}" >> "${edited}"; done',
+    'mv -f "${edited}" "${plan_out}"',
+    "exit 0",
+  ].join("\n") + "\n";
+}
+
+/**
+ * Install the sidecar-aware stand-ins over the harness's own, once per
+ * harness (Issue #4047). The harness's runtime stub is left in place under
+ * `<name>.harness` and called through.
+ *
+ * @param harness - The harness whose `bin` directory is to be extended
+ */
+function installEgressStubs(harness: Harness): void {
+  const stubDir = `${harness.tmpDir}/bin`;
+  try {
+    Deno.statSync(`${stubDir}/deno.harness`);
+    return;
+  } catch {
+    // Not installed yet.
+  }
+  for (const name of ["container", "docker", "podman"]) {
+    Deno.renameSync(`${stubDir}/${name}`, `${stubDir}/${name}.harness`);
+    writeExecutableSync(
+      `${stubDir}/${name}`,
+      runtimeStubSource(`${stubDir}/${name}.harness`),
+    );
+  }
+  Deno.renameSync(`${stubDir}/deno`, `${stubDir}/deno.harness`);
+  writeExecutableSync(`${stubDir}/deno`, denoStubSource(`${stubDir}/deno.harness`));
+}
+
+/** Write a script and make it executable. */
+function writeExecutableSync(path: string, text: string): void {
+  Deno.writeTextFileSync(path, text);
+  Deno.chmodSync(path, 0o755);
+}
+
+/** Run `run.sh` under the shared launcher harness (Issue #4047 stand-ins included). */
 function runLauncher(harness: Harness): Promise<LaunchOutcome> {
+  installEgressStubs(harness);
   return runHarnessLauncher(harness, BASH_LAUNCHER);
 }
 
-/** Start `run.sh` under the shared launcher harness. */
+/** Start `run.sh` under the shared launcher harness (Issue #4047 stand-ins included). */
 function spawnLauncher(harness: Harness): Deno.ChildProcess {
+  installEgressStubs(harness);
   return spawnHarnessLauncher(harness, BASH_LAUNCHER);
 }
 
@@ -386,9 +575,19 @@ Deno.test("run.sh - never mounts the host home, a runtime socket, or opens the c
       );
     }
 
+    // Issue #4047: an enforcing runtime puts the worker on the internal egress
+    // network, which has no route out; Apple container keeps its bridge. Never
+    // the host's network, either way.
     const networkIndex = args.indexOf("--network");
     if (networkIndex >= 0) {
-      assertEquals(args[networkIndex + 1], "bridge");
+      assert(
+        [DEFAULT_EGRESS_NETWORK_NAME, "bridge"].includes(
+          args[networkIndex + 1] ?? "",
+        ),
+        `the worker must be on the egress network or the bridge, got ${
+          args[networkIndex + 1]
+        }`,
+      );
     }
     assertEquals(args.includes("--rm"), true);
     assertEquals(args[args.length - 1], IMAGE);
@@ -2911,6 +3110,7 @@ Deno.test("run.sh - the stderr capture FIFO is private to this account (Issue #1
     // Run under a permissive umask on purpose: a launcher that leaves the
     // mode to the umask is only distinguishable from one that sets it when
     // the umask would have allowed the wider mode through.
+    installEgressStubs(harness);
     const outcome = await runHarnessLauncher(
       harness,
       PERMISSIVE_UMASK_LAUNCHER,
@@ -3380,6 +3580,418 @@ Deno.test("run.sh - no extension leaves the launch exactly as it was (Issue #980
     const run = await recorded(harness, "run");
     assert(run, `no container run was recorded: ${outcome.stderr}`);
     assertEquals(run.at(-1), IMAGE);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The egress sidecar (Issue #4047)
+// ---------------------------------------------------------------------------
+
+const EGRESS_NETWORK = DEFAULT_EGRESS_NETWORK_NAME;
+const EGRESS_PROXY = DEFAULT_EGRESS_PROXY_NAME;
+
+/** Every runtime call the launcher made, in order, one argument list each. */
+async function runtimeCalls(harness: Harness): Promise<string[]> {
+  try {
+    const raw = await Deno.readTextFile(`${harness.recordDir}/calls.log`);
+    return raw.split("\n").filter((line) => line !== "");
+  } catch {
+    return [];
+  }
+}
+
+/** Index of the first call that matches, or -1. */
+function firstCall(
+  calls: string[],
+  matches: (call: string) => boolean,
+): number {
+  return calls.findIndex(matches);
+}
+
+/** Index of the last call that matches, or -1. */
+function lastCall(calls: string[], matches: (call: string) => boolean): number {
+  for (let i = calls.length - 1; i >= 0; i--) {
+    if (matches(calls[i] ?? "")) return i;
+  }
+  return -1;
+}
+
+const isNetworkCreate = (call: string) => call.startsWith("network create ");
+const isNetworkRemove = (call: string) =>
+  call === `network rm ${EGRESS_NETWORK}`;
+const isProxyRun = (call: string) =>
+  call.startsWith("run ") && call.includes(` --name ${EGRESS_PROXY} `);
+const isProxyConnect = (call: string) =>
+  call === `network connect ${EGRESS_NETWORK} ${EGRESS_PROXY}`;
+const isProxyLogs = (call: string) => call === `logs ${EGRESS_PROXY}`;
+const isProxyRemove = (call: string) => call === `rm -f ${EGRESS_PROXY}`;
+const isWorkerRun = (call: string) =>
+  call.startsWith("run ") && !call.includes("--entrypoint");
+const isSidecarCall = (call: string) =>
+  isNetworkCreate(call) || isNetworkRemove(call) || isProxyRun(call) ||
+  isProxyConnect(call) || isProxyLogs(call) || isProxyRemove(call);
+
+/** Runtime calls that change something: the sidecar's, the worker's, and their teardown. */
+function mutatingCalls(calls: string[]): string[] {
+  return calls.filter((call) => /^(network|run|logs|rm) /.test(call));
+}
+
+/** The egress proxy's log, as the launcher kept it on exit, or null. */
+async function egressProxyLog(harness: Harness): Promise<string | null> {
+  try {
+    return await Deno.readTextFile(`${harness.logDir}/egress-proxy.log`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Assert a plan the launcher must refuse: exit 1, the reason on stderr, and
+ * nothing done to the runtime (Issue #4047).
+ */
+async function assertPlanRefused(
+  harness: Harness,
+  outcome: LaunchOutcome,
+  reason: string,
+): Promise<void> {
+  assertEquals(outcome.code, 1, outcome.stderr);
+  assertStringIncludes(outcome.stderr, "refusing to launch");
+  assertStringIncludes(outcome.stderr, reason);
+  assertEquals(
+    mutatingCalls(await runtimeCalls(harness)),
+    [],
+    "a refused plan changes nothing on the runtime",
+  );
+  assertEquals(await recorded(harness, "run"), null, "the worker never runs");
+}
+
+Deno.test("run.sh - an enforced plan brings the sidecar up in order and starts the worker last (Issue #4047)", async () => {
+  // Docker and Podman enforce egress, so the real plan is `egress=enforced`.
+  const harness = await setupHarness(
+    { STUB_IMAGE_INSPECT_EXIT: "0" },
+    { denoStub: true },
+  );
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const calls = await runtimeCalls(harness);
+    const create = firstCall(calls, isNetworkCreate);
+    const proxyRun = firstCall(calls, isProxyRun);
+    const connect = firstCall(calls, isProxyConnect);
+    const ready = firstCall(calls, isProxyLogs);
+    const worker = firstCall(calls, isWorkerRun);
+    assert(
+      create >= 0 && proxyRun >= 0 && connect >= 0 && ready >= 0 &&
+        worker >= 0,
+      `expected every sidecar step and the worker run, got: ${calls.join(" | ")}`,
+    );
+    assert(
+      create < proxyRun,
+      `the network must exist before the proxy starts: ${calls.join(" | ")}`,
+    );
+    assert(
+      proxyRun < connect,
+      `the proxy must start before it is attached: ${calls.join(" | ")}`,
+    );
+    assert(
+      connect < ready && ready < worker,
+      `the proxy is attached and ready before the worker starts: ${calls.join(" | ")}`,
+    );
+    assertEquals(
+      lastCall(calls, isWorkerRun),
+      worker,
+      `the worker is run once, and last: ${calls.join(" | ")}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a stale sidecar from a crashed launch is removed before the network is created (Issue #4047)", async () => {
+  const harness = await setupHarness(
+    { STUB_IMAGE_INSPECT_EXIT: "0" },
+    { denoStub: true },
+  );
+  try {
+    // A crashed launch left both behind. The create and the run refuse until
+    // each is removed, so a clean launch proves the removals came first.
+    await Deno.writeTextFile(`${harness.recordDir}/stale-network`, "");
+    await Deno.writeTextFile(`${harness.recordDir}/stale-proxy`, "");
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const calls = await runtimeCalls(harness);
+    const proxyRemove = firstCall(calls, isProxyRemove);
+    const networkRemove = firstCall(calls, isNetworkRemove);
+    const create = firstCall(calls, isNetworkCreate);
+    const proxyRun = firstCall(calls, isProxyRun);
+    assert(
+      proxyRemove >= 0 && networkRemove >= 0,
+      `the stale sidecar was not removed: ${calls.join(" | ")}`,
+    );
+    assert(
+      proxyRemove < networkRemove && networkRemove < create,
+      `the stale proxy and network must go before the network is created: ${calls.join(" | ")}`,
+    );
+    assert(
+      proxyRemove < proxyRun,
+      `the stale proxy must go before the new one starts: ${calls.join(" | ")}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - on success the proxy's logs are kept, then the proxy and network are removed (Issue #4047)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_PROXY_LOGS: "[EGRESS_PROXY] listening - proxy log line",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const log = await egressProxyLog(harness);
+    assert(log !== null, `no egress-proxy.log was written: ${outcome.stderr}`);
+    assertStringIncludes(log, "[EGRESS_PROXY] listening - proxy log line");
+    assertStringIncludes(log, EGRESS_PROXY);
+
+    const calls = await runtimeCalls(harness);
+    const worker = firstCall(calls, isWorkerRun);
+    const logs = lastCall(calls, isProxyLogs);
+    const proxyRemove = lastCall(calls, isProxyRemove);
+    const networkRemove = lastCall(calls, isNetworkRemove);
+    assert(
+      worker < logs && logs < proxyRemove && proxyRemove < networkRemove,
+      `teardown must keep the logs, then remove the proxy, then the network: ${calls.join(" | ")}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - when the worker fails the sidecar is still kept and removed, and the status stands (Issue #4047)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_RUN_EXIT: "3",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 3, outcome.stderr);
+
+    const log = await egressProxyLog(harness);
+    assert(log !== null, `no egress-proxy.log was written: ${outcome.stderr}`);
+    assertStringIncludes(log, EGRESS_PROXY);
+
+    const calls = await runtimeCalls(harness);
+    const worker = firstCall(calls, isWorkerRun);
+    const logs = lastCall(calls, isProxyLogs);
+    const proxyRemove = lastCall(calls, isProxyRemove);
+    const networkRemove = lastCall(calls, isNetworkRemove);
+    assert(
+      worker < logs && logs < proxyRemove && proxyRemove < networkRemove,
+      `teardown after a failed worker must keep the logs, then remove the proxy, then the network: ${calls.join(" | ")}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a refused network create refuses the launch and starts nothing further (Issue #4047)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_NETWORK_CREATE_EXIT: "1",
+    STUB_NETWORK_CREATE_STDERR:
+      "Error response from daemon: egress network refused",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+    assertStringIncludes(
+      outcome.stderr,
+      "Error response from daemon: egress network refused",
+    );
+
+    const calls = await runtimeCalls(harness);
+    assertEquals(firstCall(calls, isProxyRun), -1, "no proxy starts");
+    assertEquals(await recorded(harness, "run"), null, "the worker never runs");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a refused proxy start refuses the launch and removes the network it made (Issue #4047)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_PROXY_RUN_EXIT: "125",
+    STUB_PROXY_RUN_STDERR: "docker: image pull denied",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+    assertStringIncludes(outcome.stderr, "image pull denied");
+
+    const calls = await runtimeCalls(harness);
+    const proxyRun = firstCall(calls, isProxyRun);
+    assert(proxyRun >= 0, `the proxy start was never attempted: ${calls.join(" | ")}`);
+    assert(
+      lastCall(calls, isNetworkRemove) > proxyRun,
+      `the network made for the sidecar must be removed: ${calls.join(" | ")}`,
+    );
+    assertEquals(await recorded(harness, "run"), null, "the worker never runs");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a refused proxy attach refuses the launch and removes the network it made (Issue #4047)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_PROXY_CONNECT_EXIT: "1",
+    STUB_PROXY_CONNECT_STDERR: "Error: no such network",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+    assertStringIncludes(outcome.stderr, "no such network");
+
+    const calls = await runtimeCalls(harness);
+    const connect = firstCall(calls, isProxyConnect);
+    assert(connect >= 0, `the proxy attach was never attempted: ${calls.join(" | ")}`);
+    assert(
+      lastCall(calls, isNetworkRemove) > connect,
+      `the network made for the sidecar must be removed: ${calls.join(" | ")}`,
+    );
+    assertEquals(await recorded(harness, "run"), null, "the worker never runs");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a proxy that never reports ready refuses the launch, quoting its log (Issue #4047)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_PROXY_LOGS: "proxy booting - no listener yet",
+    // The smallest valid values: two tries one second apart.
+    VIBE_EGRESS_PROXY_READY_TRIES: "2",
+    VIBE_EGRESS_PROXY_READY_INTERVAL: "1",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 1, outcome.stderr);
+    assertStringIncludes(outcome.stderr, "did not report ready");
+    assertStringIncludes(outcome.stderr, "proxy booting - no listener yet");
+
+    const calls = await runtimeCalls(harness);
+    assert(
+      calls.filter(isProxyLogs).length >= 2,
+      `the log was not polled for each try: ${calls.join(" | ")}`,
+    );
+    assertEquals(await recorded(harness, "run"), null, "the worker never runs");
+    const log = await egressProxyLog(harness);
+    assert(log !== null, "the proxy's log was not kept");
+    assertStringIncludes(log, "proxy booting - no listener yet");
+    assert(
+      lastCall(calls, isNetworkRemove) > firstCall(calls, isProxyRun),
+      `the network made for the sidecar must be removed: ${calls.join(" | ")}`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+for (const key of EGRESS_SIDECAR_KEYS) {
+  Deno.test(`run.sh - an enforced plan without ${key} is refused, and nothing runs (Issue #4047)`, async () => {
+    const harness = await setupHarness({
+      STUB_IMAGE_INSPECT_EXIT: "0",
+      STUB_PLAN_DROP: key,
+    }, { denoStub: true });
+    try {
+      const outcome = await runLauncher(harness);
+      await assertPlanRefused(harness, outcome, key);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+}
+
+Deno.test("run.sh - an enforced plan whose proxy-ready marker is empty is refused (Issue #4047)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_PLAN_SET: "proxy-ready=",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    await assertPlanRefused(harness, outcome, "proxy-ready");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a plan with no egress key is refused, and nothing runs (Issue #4047)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_PLAN_DROP: "egress",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    await assertPlanRefused(harness, outcome, "egress mode is missing");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a plan with an unrecognised egress mode is refused, never read as open (Issue #4047)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_PLAN_SET: "egress=open",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    await assertPlanRefused(harness, outcome, "not recognised");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a plan that says egress=none but carries sidecar keys is refused (Issue #4047)", async () => {
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_PLAN_SET: "egress=none",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    await assertPlanRefused(harness, outcome, "carries sidecar keys");
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("run.sh - a plan that says egress=none launches the worker and starts no sidecar (Apple container, Issue #4047)", async () => {
+  // Apple container has no internal network, so its plan carries no sidecar.
+  const harness = await setupHarness({
+    STUB_IMAGE_INSPECT_EXIT: "0",
+    STUB_PLAN_DROP: EGRESS_SIDECAR_KEYS.join(" "),
+    STUB_PLAN_SET: "egress=none",
+  }, { denoStub: true });
+  try {
+    const outcome = await runLauncher(harness);
+    assertEquals(outcome.code, 0, outcome.stderr);
+
+    const calls = await runtimeCalls(harness);
+    assertEquals(
+      calls.filter(isSidecarCall),
+      [],
+      `no network or proxy command may run: ${calls.join(" | ")}`,
+    );
+    assert(
+      firstCall(calls, isWorkerRun) >= 0,
+      `the worker must still launch: ${calls.join(" | ")}`,
+    );
+    assertEquals(await egressProxyLog(harness), null, "no proxy log is kept");
   } finally {
     await harness.cleanup();
   }
