@@ -2,6 +2,8 @@
  * Issue #4109: settle an issue run's provider and sub-agent switches before spawn.
  *
  * Only the Claude CLI accepts `--agents`; the Issue #4010 guard stays as a backstop.
+ * A run the health gate moved onto a fallback provider is stripped, not rerouted
+ * back to Claude, whose pool the gate found exhausted.
  */
 
 import {
@@ -11,6 +13,7 @@ import {
   imageAgentProviderIds,
   resolveAgentProvider,
   resolveEnabledAgentProviderIds,
+  runProviderOverrideId,
 } from "./agent_provider.ts";
 import { buildIssueRunAgents } from "./issue_executor_agents.ts";
 import { probeDescriptorInvocationCapabilities } from "./provider_feasibility.ts";
@@ -98,7 +101,12 @@ export function planIssueRunProvider(
 
   const selection = input.selection ?? {};
   const logger = input.logger ?? createLogger();
-  if (claudeUsable(selection)) {
+  // A health-gate fallback means the Claude pool is exhausted (Issue #2062);
+  // rerouting back to it would spawn on the pool the gate just left.
+  const fallbackOverride = runProviderOverrideId();
+  const onHealthGateFallback = fallbackOverride !== undefined &&
+    fallbackOverride !== CLAUDE_PROVIDER_ID;
+  if (!onHealthGateFallback && claudeUsable(selection)) {
     logger.warn(
       `Issue run asked the ${provider.id} provider for sub-agents it cannot ` +
         `carry; rerouting the run to the ${CLAUDE_PROVIDER_ID} provider (Issue #4109)`,
@@ -112,8 +120,11 @@ export function planIssueRunProvider(
 
   logger.warn(
     `Issue run asked the ${provider.id} provider for sub-agents it cannot ` +
-      `carry and ${CLAUDE_PROVIDER_ID} is not enabled; starting the run without ` +
-      `sub-agents (Issue #4109)`,
+      `carry and ${CLAUDE_PROVIDER_ID} ` +
+      (onHealthGateFallback
+        ? `is exhausted (health-gate fallback to ${fallbackOverride})`
+        : `is not enabled`) +
+      `; starting the run without sub-agents (Issue #4109)`,
   );
   return {
     provider,

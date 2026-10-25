@@ -30,6 +30,7 @@ import {
   CLAUDE_PROVIDER_ID,
   setConfiguredAgentProviderId,
   setConfiguredEnabledAgentProviderIds,
+  setRunProviderOverride,
 } from "../lib/agent_provider.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { rtkSeam } from "./support/rtk_seam.ts";
@@ -447,6 +448,57 @@ Deno.test("execute_phase - with claude not enabled the run starts on codex witho
   }
 });
 
+Deno.test("execute_phase - a health-gate fallback run is stripped on codex, not rerouted to the exhausted claude pool (Issue #4109)", async () => {
+  configureCodexWithClaude();
+  setRunProviderOverride("codex");
+  try {
+    const logs: string[] = [];
+    const runOptions: Record<string, unknown>[] = [];
+    const { ctx, state } = executePhaseFixture(logs);
+    const deps = createMockDeps({
+      claude: {
+        env: hostEnv("codex"),
+        runClaudeWithRetry: ((options: Record<string, unknown>) => {
+          runOptions.push(options);
+          return Promise.resolve({
+            ok: true,
+            value: { output: "done", exitCode: 0, timedOut: false },
+          });
+        }) as never,
+      },
+      pr: {
+        findExistingPrForIssue: (() =>
+          Promise.resolve({ ok: true, value: null })) as never,
+      },
+      logger: {
+        info: (message: string) => {
+          logs.push(message);
+        },
+        warn: (message: string) => {
+          logs.push(message);
+        },
+      },
+    });
+
+    await workOnIssueExecuteClaude(ctx, state, deps);
+
+    assertEquals(runOptions.length >= 1, true, "the agent must be invoked");
+    assert(
+      runOptions[0]?.agentProvider !== CLAUDE_PROVIDER_ID,
+      "the runner must not receive the exhausted claude provider",
+    );
+    assertEquals(runOptions[0]?.agents, undefined);
+    assert(
+      logs.some((line) => line.includes("starting the run without sub-agents")),
+      `expected the strip warning, saw: ${JSON.stringify(logs)}`,
+    );
+    assert(!logs.some((line) => line.includes(REROUTE_WARNING)));
+  } finally {
+    setRunProviderOverride(undefined);
+    resetProviderConfig();
+  }
+});
+
 Deno.test("execute_phase - an external-orchestration run is not planned, so nothing is rerouted (Issue #4109)", async () => {
   configureCodexWithClaude();
   try {
@@ -698,6 +750,33 @@ Deno.test("execute_claude_phase - the runner receives the rerouted provider (Iss
       "the runner must receive the rerouted provider, not codex",
     );
   } finally {
+    resetProviderConfig();
+  }
+});
+
+Deno.test("execute_claude_phase - a health-gate fallback run reaches the runner stripped, not as claude (Issue #4109)", async () => {
+  configureCodexWithClaude();
+  setRunProviderOverride("codex");
+  try {
+    const observed: ClaudePhaseObserved = {
+      codegraphProviderIds: [],
+      logs: [],
+    };
+
+    await runExecuteClaudePhase(
+      claudePhaseOptions(),
+      claudePhaseDeps(observed, rtkSeam([]), "codex"),
+    );
+
+    const run = observed.runOptions;
+    assert(run, "the fallback run must reach the runner");
+    assert(
+      run.agentProvider !== CLAUDE_PROVIDER_ID,
+      "the runner must not receive the exhausted claude provider",
+    );
+    assertEquals(run.agents, undefined);
+  } finally {
+    setRunProviderOverride(undefined);
     resetProviderConfig();
   }
 });
