@@ -78,6 +78,15 @@ flowchart LR
   The DENO_JOBS container bound is still decided from the parent env, so it is
   unaffected.
 
+- Merged with `main` after #4338, which landed a second route to the same
+  ladder (`resolverRungDue`, `applyResolverRecovery`: roll-back, rebuild, then
+  close and requeue). Both stay. A branch whose roll-back is already spent
+  (`rollbacks + rollbackFailures > 0`) skips that route's roll-back rung and
+  takes `handOffSpentBudget`, which rebuilds first and falls through to the
+  roll-back. The route's rebuild rung uses the sweep's gated `rebuildFn` when
+  no `rebuildMilestoneFn` is injected, and closes the milestone if it does not
+  land.
+
 ### Undiscoverable Facts
 
 - The production symptom is only in the host's `~/logs/self-heal.jsonl`

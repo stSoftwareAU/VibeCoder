@@ -45,6 +45,7 @@ import {
   HAIKU_ISSUE_EXECUTOR_MODEL,
   ISSUE_EXECUTOR_MODEL,
 } from "./issue_executor_agents.ts";
+import { planIssueRunProvider } from "./issue_run_provider_agents.ts";
 import { resolveIssueSubAgentTier } from "./issue_sub_agent_tier.ts";
 import { generateBoundaryId } from "./prompt_delimiter.ts";
 import { resolveVerbosity } from "./verbosity.ts";
@@ -77,6 +78,8 @@ import {
 } from "./orchestration/role_config.ts";
 import { runOrchestratedIssueRun } from "./orchestration/issue_run_gate.ts";
 import {
+  plannedActiveAgentProvider,
+  resolveAgentProvider,
   resolveInvocationAgentProvider,
   selectAgentProvider,
 } from "./agent_provider.ts";
@@ -474,6 +477,12 @@ export interface ExecuteClaudePhaseDeps {
    * spawns `rtk`.
    */
   prepareRtkRun?: typeof prepareRtkRun;
+  /**
+   * Environment lookup the pre-spawn provider planner reads (Issue #4109):
+   * the image stamp and provider settings. Optional so existing doubles need
+   * no change; absent, the process environment is read.
+   */
+  env?: (name: string) => string | undefined;
   /** Build the issue prompt with SHA-based cache integration (Issue #1273). */
   buildCachedIssuePrompt: (
     options: CachedIssuePromptOptions,
@@ -958,6 +967,7 @@ export function createDefaultDeps(): ExecuteClaudePhaseDeps {
   const phaseLog = bindLogger(createLogger({ host: "" }));
   return {
     handOffContextBudget: defaultHandOffContextBudget,
+    env: (name) => Deno.env.get(name),
     runClaudeWithRetry,
     runExternalOrchestratedIssueRun: (input) =>
       runOrchestratedIssueRun(input, { runClaudeWithRetry }),
@@ -1280,6 +1290,62 @@ async function executeClaudePhaseBody(
     deps.log(describeGraftContext(graftContext));
   }
 
+  // --- Issue run provider and sub-agents (Issues #2342, #3402, #3642, #4109) ---
+  // The repository's `repo_config` layers over the host-wide sub-agent tier.
+  const repoConfig = repoConfigs?.[repo];
+  // Issue #3642: with external orchestration on, no native split or `--agents` is built.
+  const { externalOrchestration, effectiveOrchestrationSettings } =
+    resolveIssueOrchestration(
+      (repoConfigs?.[repo]?.externalOrchestration ??
+        options.externalOrchestration) === true,
+      resolveOrchestrationSettings(
+        options.externalOrchestrationSettings ?? {},
+        repoConfigs?.[repo]?.externalOrchestrationSettings,
+      ),
+      selectAgentProvider(invocationAgentProvider, { env: deps.env }).id,
+      isAutomaticProviderRoutingActive(),
+    );
+  const requestedExecutorSplit = !externalOrchestration &&
+    isIssueExecutorSplitEnabled(
+      "issue",
+      repoConfig,
+      { issueExecutorSplit: options.issueExecutorSplit === true },
+    );
+  const issueSubAgentTier = resolveIssueSubAgentTier(
+    { issueSubAgentTier: options.issueSubAgentTier ?? "sonnet" },
+    repoConfig,
+    deps.log,
+  );
+  deps.log(
+    `Issue sub-agent tier resolved to '${issueSubAgentTier}' (Issue #3402)`,
+  );
+  // Issue #4109: settle the run's provider before any step below reads it.
+  const issueRunPlan = externalOrchestration
+    ? undefined
+    : planIssueRunProvider({
+      provider: typeof invocationAgentProvider === "string"
+        ? resolveAgentProvider(invocationAgentProvider)
+        : invocationAgentProvider ?? plannedActiveAgentProvider(),
+      selection: { env: deps.env },
+      executorSplit: requestedExecutorSplit,
+      reviewerAgents: options.issueReviewerAgents === true,
+      subAgentTier: issueSubAgentTier,
+      logger,
+    });
+  const issueExecutorSplit = issueRunPlan
+    ? issueRunPlan.executorSplit
+    : requestedExecutorSplit;
+  const issueRunAgents = issueRunPlan
+    ? buildIssueRunAgents({
+      executorSplit: issueRunPlan.executorSplit,
+      reviewerAgents: issueRunPlan.reviewerAgents,
+      subAgentTier: issueRunPlan.subAgentTier,
+    })
+    : undefined;
+  const effectiveAgentProvider = issueRunPlan?.outcome === "rerouted-to-claude"
+    ? issueRunPlan.provider.id
+    : invocationAgentProvider;
+
   // --- CodeGraph repo-context index (Issue #2159, part of #2145) ---
   // The same checkout the codebase map was built from. Off, this spawns
   // nothing and every decision below is the one it always was; on, the run
@@ -1288,8 +1354,8 @@ async function executeClaudePhaseBody(
   const codegraph = await prepareCodegraphRun({
     repoDir,
     enabled: codegraphContextEnabled,
-    ...(invocationAgentProvider
-      ? { agentProvider: invocationAgentProvider }
+    ...(effectiveAgentProvider
+      ? { agentProvider: effectiveAgentProvider }
       : {}),
     logger,
     ...(deps.prepareCodegraphContext
@@ -1305,7 +1371,7 @@ async function executeClaudePhaseBody(
   // prompt line travel together, and losing RTK never fails the run.
   const rtk = await (deps.prepareRtkRun ?? prepareRtkRun)({
     enabled: rtkOutputEnabled,
-    providerId: rtkProviderId(invocationAgentProvider, logger),
+    providerId: rtkProviderId(effectiveAgentProvider, logger),
     logger,
     cwd: repoDir,
   });
@@ -1317,8 +1383,8 @@ async function executeClaudePhaseBody(
   const graft = bindGraftRun({
     result: graftContext,
     repoDir,
-    ...(invocationAgentProvider
-      ? { agentProvider: invocationAgentProvider }
+    ...(effectiveAgentProvider
+      ? { agentProvider: effectiveAgentProvider }
       : {}),
     logger,
   });
@@ -1344,7 +1410,6 @@ async function executeClaudePhaseBody(
   // --- Resolve verbosity level (Issue #1332) ---
   // The verbosity level controls how verbose Claude's response should be.
   // Two tiers since Issue #798: per-repo override > global default.
-  const repoConfig = repoConfigs?.[repo];
   const verbosityLevel = resolveVerbosity(repoConfig);
   if (verbosityLevel !== "standard") {
     deps.log(
@@ -1360,57 +1425,6 @@ async function executeClaudePhaseBody(
     ? new PromptCache({ cacheDir: promptCacheDir })
     : undefined;
 
-  // The issue-executor split (Issue #2342): with the key on, the invocation
-  // carries `--agents` definitions so the advisor delegates mechanical edit
-  // work to executors on the run's sub-agent tier — Haiku by default, Sonnet
-  // under `issue_sub_agent_tier: "sonnet"` (Issue #3402) — and the prompt
-  // carries the advisor/executor block that tells it to (Issue #2343). Off
-  // (`issue_executor_split: false`), no executor definitions are built and the
-  // advisor/executor block renders nothing. `--agents` is still emitted when
-  // reviewer agents are on (`issue_reviewer_agents`, default on), or when the
-  // Haiku sub-agent tier adds the explorer definition (see
-  // `buildIssueRunAgents` in `issue_executor_agents.ts`). Resolved
-  // before the prompt is built so the prompt and the argv cannot disagree.
-  // Issue #3642: with external orchestration on, the native split is never
-  // resolved, so no executor definition reaches the prompt or the argv.
-  const { externalOrchestration, effectiveOrchestrationSettings } =
-    resolveIssueOrchestration(
-      (repoConfigs?.[repo]?.externalOrchestration ??
-        options.externalOrchestration) === true,
-      resolveOrchestrationSettings(
-        options.externalOrchestrationSettings ?? {},
-        repoConfigs?.[repo]?.externalOrchestrationSettings,
-      ),
-      selectAgentProvider(invocationAgentProvider).id,
-      isAutomaticProviderRoutingActive(),
-    );
-  const issueExecutorSplit = !externalOrchestration &&
-    isIssueExecutorSplitEnabled(
-      "issue",
-      repoConfig,
-      { issueExecutorSplit: options.issueExecutorSplit === true },
-    );
-  // The sub-agent tier (Issue #3402): host-wide `issueSubAgentTier`, with the
-  // repository's own `repo_config` override layered over it here. Resolved
-  // and logged unconditionally, every issue run, before the prompt is built.
-  const issueSubAgentTier = resolveIssueSubAgentTier(
-    { issueSubAgentTier: options.issueSubAgentTier ?? "sonnet" },
-    repoConfig,
-    deps.log,
-  );
-  deps.log(
-    `Issue sub-agent tier resolved to '${issueSubAgentTier}' (Issue #3402)`,
-  );
-  // The reviewer sub-agents (Issue #2575): host-wide, on by default (Issue
-  // #2812); `issue_reviewer_agents: false` opts out.
-  // Issue #3642: no `--agents` is built on the external path (fail closed).
-  const issueRunAgents = externalOrchestration
-    ? undefined
-    : buildIssueRunAgents({
-      executorSplit: issueExecutorSplit,
-      reviewerAgents: options.issueReviewerAgents === true,
-      subAgentTier: issueSubAgentTier,
-    });
   if (issueExecutorSplit) {
     const executorModel = issueSubAgentTier === "haiku"
       ? HAIKU_ISSUE_EXECUTOR_MODEL
@@ -1696,7 +1710,7 @@ async function executeClaudePhaseBody(
       // Per-invocation provider selection (Issue #4109) with the repo pin
       // layered in (Issue #2048); undefined keeps the active provider,
       // exactly as before.
-      agentProvider: invocationAgentProvider,
+      agentProvider: effectiveAgentProvider,
       // The checkout the agent works in (Issue #2159). Without it the
       // runner's `mcpRequest && cwd` gate writes no MCP configuration at
       // all, so this path would append the CodeGraph prompt line and
