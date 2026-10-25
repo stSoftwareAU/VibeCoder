@@ -374,7 +374,7 @@ stateDiagram-v2
 Compatibility with the split switched on. "Silent" means no warning is logged by
 the descriptor's `buildInvocation`. On the native split path the issue-run
 planner (`planIssueRunProvider`,
-`worker/deno/lib/issue_run_provider_agents.ts:75-125`) reroutes or strips such
+`worker/deno/lib/issue_run_provider_agents.ts:77-136`) reroutes or strips such
 an `issue` run before spawn (Issue #4109); the runner
 (`runClaudeWithTimeoutBody`, `worker/deno/lib/claude_runner.ts:1263-1275`) only
 refuses, as a backstop (Issue #4010).
@@ -395,7 +395,7 @@ provider. Both phase paths call it with no provider argument
 is the planner's `executorSplit` (`execute_claude_phase.ts:1335-1337`,
 `phases/execute_phase.ts:850-852`, passed at `execute_claude_phase.ts:1468` and
 `phases/execute_phase.ts:918`). On the strip path the planner sets it to `false`
-(`worker/deno/lib/issue_run_provider_agents.ts:118-124`), so no advisor/executor
+(`worker/deno/lib/issue_run_provider_agents.ts:129-135`), so no advisor/executor
 block renders there. The block renders on the unchanged and rerouted-to-Claude
 outcomes. `prompt_builder.ts:832-834` splices the block whenever it is true. The
 `--settings` hook is gated to Claude
@@ -459,7 +459,7 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   (`worker/deno/lib/execute_claude_phase.ts:1298-1307`,
   `worker/deno/lib/phases/execute_phase.ts:799-815`). The fail-loud invariant is
   now delivered on this path too: the issue-run planner
-  (`worker/deno/lib/issue_run_provider_agents.ts:75-125`) reroutes or strips
+  (`worker/deno/lib/issue_run_provider_agents.ts:77-136`) reroutes or strips
   such a run before spawn (Issue #4109), and `runClaudeWithTimeoutBody`
   (`worker/deno/lib/claude_runner.ts:1263-1275`) refuses loudly as a backstop
   when a run carries `agents` but the provider's argv lacks `--agents` (Issue
@@ -478,7 +478,8 @@ workspace-write sandboxes, and Gemini and DeepSeek fail closed. See
   in the rollout changes them. The defaults keep `--agents` on every native
   `issue` run, so with them a host whose `issue` phase runs on `gemini` or
   `deepseek` has each such run rerouted to Claude when Claude is enabled and
-  installed, or stripped with a warning otherwise (Issue #4109), unless it
+  installed and the run is not on a health-gate fallback, or stripped with a
+  warning otherwise (Issue #4109), unless it
   applies the full rollback below or opts into external orchestration. A `codex`
   run under automatic provider routing is forced onto external orchestration
   (`worker/deno/lib/orchestration/role_config.ts:370`) and is never planned, so

@@ -11,7 +11,7 @@ through a new planner, `planIssueRunProvider`
 
 - the provider's own argv decides whether it carries sub-agents
   (`probeDescriptorInvocationCapabilities`), so no provider-id table;
-- **rerouted-to-claude** — Claude is enabled and installed: the run itself uses
+- **rerouted-to-claude** — Claude is enabled and installed, and the health gate has not moved the run to a fallback provider: the run itself uses
   Claude in both call sites (each passes the rerouted provider to the runner).
   Only `lib/phases/execute_phase.ts` records a run assignment, and it records
   the planned provider (`recordRunAssignment` takes `issueRunPlan?.provider`).
@@ -25,7 +25,7 @@ through a new planner, `planIssueRunProvider`
   an optional provider id, and `createDefaultDeps` resolves it with
   `agentProviderById`, falling back to the active provider when none is named,
   so the one other caller shape (no id) keeps its old result;
-- **agents-stripped** — Claude is not usable: the run starts on its own provider
+- **agents-stripped** — Claude is not usable, or the health gate has moved the run to a non-Claude fallback provider: the run starts on its own provider
   with the split and reviewers off and the sub-agent tier set to `sonnet`, and a
   warning says so;
 - **unchanged** — no sub-agents wanted, or the provider carries them.
@@ -62,7 +62,7 @@ final version.
 
 - Carriage is decided by probing the descriptor's argv quietly
   (`probeDescriptorInvocationCapabilities`), not by a provider-id table.
-- Reroute to Claude only when Claude is both enabled and installed in the image.
+- Reroute to Claude only when Claude is both enabled and installed in the image and no non-Claude health-gate override is set (`runProviderOverrideId()`).
   The image stamp is checked first: when it lacks Claude, the run is stripped.
   When the stamp lists Claude, `claudeUsable` calls
   `resolveEnabledAgentProviderIds`, which asserts every enabled id is installed
@@ -115,7 +115,7 @@ the external-orchestration test (`execute_claude_phase.ts:1298-1307`,
 (`execute_claude_phase.ts:1308-1313`, `execute_phase.ts:816-821`), the planner's
 `executorSplit` and `buildPrompt` inputs (`execute_claude_phase.ts:1335-1337`,
 `:1468`; `execute_phase.ts:850-852`, `:918`), the planner and its strip return
-(`issue_run_provider_agents.ts:75-125`, `:118-124`), the retry ladder
+(`issue_run_provider_agents.ts:77-136`, `:129-135`), the retry ladder
 (`claude_runner.ts:2938`, `:3496-3516`), the provider-table cites
 (`agent_provider.ts:646-648`, `:653-655`, `:737`, `:861`, `:900`, `:926`,
 `:1005`, `:1099`, `:1154-1155`, `:1166`) and the "Phase wiring" row and its
@@ -132,7 +132,7 @@ The planner outcomes, for the native split path only:
 flowchart TD
     A["issue run, external orchestration off"] --> B{"sub-agents wanted, and does the provider's argv carry --agents?"}
     B -- "carries, or none wanted" --> U["unchanged"]
-    B -- "does not carry" --> C{"Claude enabled and installed in the image?"}
+    B -- "does not carry" --> C{"Claude enabled and installed in the image, and not on a health-gate fallback?"}
     C -- yes --> R["rerouted-to-claude"]
     C -- no --> S["agents-stripped"]
 ```
@@ -179,18 +179,20 @@ Provenance: the issue numbers this diff cites.
 - **status** — `verified` — at HEAD `e6f9187b` (the merge of `origin/main`;
   re-observed after the merge), with `lib/phases/execute_phase.ts` and
   `lib/execute_claude_phase.ts` replaced by their `origin/main` versions,
-  `tests/issue_4109_callsite_test.ts` gave `FAILED | 2 passed | 8 failed`: the 8
-  failing were the execute_phase reroute, assignment and strip tests and the
-  five execute_claude_phase tests, including the regression test and
+  `worker/deno/tests/issue_4109_callsite_test.ts` (16 tests at head) gave
+  `FAILED | 3 passed | 13 failed`: the 13 failing were the execute_phase
+  reroute, assignment, sink, auth, strip and health-gate tests and the six
+  execute_claude_phase tests, including the regression test and
   `execute_claude_phase - claude not enabled strips agents and disables the split (Issue #4109)`;
-  the 2 passing were
-  `execute_phase - a non-external allocation plans the claude provider (Issue #4109)`
+  the 3 passing were
+  `execute_phase - a non-external allocation plans the claude provider (Issue #4109)`,
+  `createDefaultDeps - isClaudeAuthError classifies with the named provider (Issue #4109)`
   and
   `execute_phase - an external-orchestration run is not planned, so nothing is rerouted (Issue #4109)`.
   That file does not type-check against `origin/main` (`TS2353`: `env` is not a
   member of `ExecuteClaudePhaseDeps`), so this observation used
   `deno test --no-check`. On the branch the same file gives
-  `ok | 14 passed | 0 failed`
+  `ok | 16 passed | 0 failed`
 - **regression test** —
   `worker/deno/tests/issue_4109_callsite_test.ts::execute_phase - a run asked for sub-agents on codex is rerouted to claude at the runner (Issue #4109)`
 
@@ -206,11 +208,12 @@ comment re-worded in `worker/deno/tests/manager_worker_contract_3641_test.ts`
 Red check (HEAD `e6f9187b` (the merge of `origin/main`; re-observed after the
 merge)): `lib/phases/execute_phase.ts` and `lib/execute_claude_phase.ts` were
 overwritten with `git show origin/main:<path>` and
-`tests/issue_4109_callsite_test.ts` was run with
-`env -u VIBE_IMAGE_AGENT_PROVIDERS deno test -A --no-check`:
-`FAILED | 2 passed | 8 failed` (the failing and passing names are in
-Reproduction). Both files were then restored with `git checkout HEAD --` and the
-file re-run with type-checking on: `ok | 14 passed | 0 failed` (before the health-gate fallback tests below were added).
+`worker/deno/tests/issue_4109_callsite_test.ts` (16 tests at head) was run with
+`env -u VIBE_IMAGE_AGENT_PROVIDERS deno test -A --no-check`, re-run on the
+review-fix head `4088a3a6`: `FAILED | 3 passed | 13 failed` (the failing and
+passing names are in Reproduction). Both files were then restored with
+`git checkout HEAD --` and the file re-run with type-checking on:
+`ok | 16 passed | 0 failed`.
 
 Mutation-gate follow-up: the facts flip verifier found no flip of the last
 statement of `claudeUsable` (`return enabled.includes(claude)`), because its
@@ -229,9 +232,11 @@ Red check for the `execute_phase.ts` sink and auth fixes (verifier finding on
 `prepareCodegraphRun` and `bindGraftRun`, the
 `rtkProviderId(reroutedProviderId, …)` argument and the
 `isClaudeAuthError(authSurface, reroutedProviderId)` argument reverted to the
-earlier shape (no provider), the file gave `FAILED | 11 passed | 3 failed`: the
-graft, rtk-and-codegraph and auth-classification `execute_phase` tests above
-went red, and they pass again on the head.
+earlier shape (no provider), the graft, rtk-and-codegraph and
+auth-classification `execute_phase` tests above in
+`worker/deno/tests/issue_4109_callsite_test.ts` (16 tests at head) went red;
+the same three also fail against the `origin/main` production files (the base
+run above), and they pass on the head (`ok | 16 passed | 0 failed`).
 
 Tests added on this branch, all passing at the head:
 
@@ -302,9 +307,9 @@ the container's `VIBE_IMAGE_AGENT_PROVIDERS=claude` set.
 Head run, with the five named files
 (`env -u VIBE_IMAGE_AGENT_PROVIDERS deno test -A` from `worker/deno`,
 `< /dev/null`):
-`tests/issue_4109_callsite_test.ts tests/issue_run_provider_agents_test.ts tests/agent_provider_test.ts tests/external_orchestration_3642_phase_test.ts tests/manager_worker_contract_3641_test.ts`
-gives `ok | 84 passed | 0 failed`. With the stamp set to `claude`, the same five
-files give `79 passed | 1 failed`: the failure is the existing
+`worker/deno/tests/issue_4109_callsite_test.ts worker/deno/tests/issue_run_provider_agents_test.ts worker/deno/tests/agent_provider_test.ts worker/deno/tests/external_orchestration_3642_phase_test.ts worker/deno/tests/manager_worker_contract_3641_test.ts`
+gives `ok | 85 passed | 0 failed` (16 + 15 + 37 + 7 + 10 tests at head; the last three files are unchanged existing tests, run as regression checks). With
+the stamp set to `claude`, the same five files give one failure, the existing
 `automatic Codex issue phase keeps all roles on Codex without native sub-agent definitions`,
 which also fails on the base without this change when the stamp is `claude`.
 
@@ -330,9 +335,16 @@ reroutes to Claude when `runProviderOverrideId()` names a provider other than
 Claude, because the gate sets that override only after every Claude credential
 is exhausted (`lib/run_core.ts:6629`). The run takes the `agents-stripped`
 path and runs on the fallback. Red check: dropping the
-`!onHealthGateFallback &&` operand turned three tests red (the planner test and
-the two call-site tests named `a health-gate fallback run ...`), `27 passed | 3 failed`;
-restored, `30 passed | 0 failed`. Docs updated: `docs/CONFIGURATION.md` and
+`!onHealthGateFallback &&` operand turned three tests red (the planner test in
+`worker/deno/tests/issue_run_provider_agents_test.ts` and the two call-site
+tests named `a health-gate fallback run ...` in
+`worker/deno/tests/issue_4109_callsite_test.ts`). Mutation follow-up: the
+`fallbackOverride !== CLAUDE_PROVIDER_ID` operand (`issue_run_provider_agents.ts:108`)
+survived, so `issue run provider - an override that names Claude is not a fallback, so the run reroutes (Issue #4109)`
+(`worker/deno/tests/issue_run_provider_agents_test.ts`, 15 tests at head) sets
+the override to `claude` and asserts `rerouted-to-claude`; replacing that
+operand with `true` turned it red (`14 passed | 1 failed`), restored
+`ok | 15 passed | 0 failed`. Docs updated: `docs/CONFIGURATION.md` and
 `docs/MODEL-AND-CACHING.md` reroute sentences.
 
 <!-- vibe-branch-outcomes -->

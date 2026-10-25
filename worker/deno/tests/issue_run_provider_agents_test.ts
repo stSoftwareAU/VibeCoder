@@ -314,3 +314,21 @@ Deno.test("issue run provider - the same Claude-enabled run reroutes once the ov
   });
   assertEquals(plan.outcome, "rerouted-to-claude");
 });
+
+Deno.test("issue run provider - an override that names Claude is not a fallback, so the run reroutes (Issue #4109)", () => {
+  setRunProviderOverride("claude");
+  try {
+    const plan = planIssueRunProvider({
+      provider: resolveAgentProvider("codex"),
+      executorSplit: true,
+      reviewerAgents: false,
+      subAgentTier: "haiku",
+      selection: selectionFor("claude", ["claude", "codex"], "claude,codex"),
+      logger: createLogger({ write: () => {} }),
+    });
+    assertEquals(plan.outcome, "rerouted-to-claude");
+    assertEquals(plan.provider.id, "claude");
+  } finally {
+    setRunProviderOverride(undefined);
+  }
+});

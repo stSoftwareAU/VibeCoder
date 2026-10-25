@@ -856,7 +856,8 @@ The repository-owned checklists it also applies are in
 > executors and the reviewers above; `codex` and `gemini` never build the
 > argument, and `deepseek` strips it and warns. A native `issue` run carrying
 > these definitions under `codex`, `gemini` or `deepseek` is rerouted to Claude
-> when `claude` is enabled, or has them stripped with a warning before spawn
+> when `claude` is enabled and the health gate has not moved the run to a
+> fallback provider, or has them stripped with a warning before spawn
 > otherwise (Issue #4109); the runner's refusal (Issue #4010) is only a
 > backstop.
 
