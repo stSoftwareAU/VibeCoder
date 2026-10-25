@@ -9,6 +9,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  CONFLICT_RESOLVER_DECLINED,
   conflictAttemptDue,
   failedConflictRung,
   findActiveMilestoneBranches,
@@ -1220,6 +1221,7 @@ type LedgerFailure =
   | "resolution-gate"
   | "ruleset"
   | "plain"
+  | "resolver-refusal"
   | "success";
 
 /** One milestone's scripted outcome for a ledger cycle. */
@@ -1335,6 +1337,14 @@ function ledgerOutcome(
       return {
         ok: false,
         error: new Error("refusing to merge unrelated histories"),
+      };
+    case "resolver-refusal":
+      return {
+        ok: false,
+        error: new Error(
+          "Refusing to resolve the merge of 'main' into " +
+            `'${branch}': 1 of 1 conflicted file(s) need a human`,
+        ),
       };
     case "success":
       return { ok: true, value: { message: "already up to date" } };
@@ -2516,6 +2526,16 @@ Deno.test("judgeSyncFailure - only an unresolved conflict is charged (Issue #177
   );
   assertEquals(plain.outcome, "not-charged");
   assertStringIncludes(plain.reason, "unrelated histories");
+
+  const declined = judgeSyncFailure(
+    new Error(
+      "Refusing to resolve the merge of 'main' into 'milestone/v2': " +
+        "1 of 1 conflicted file(s) need a human",
+    ),
+    false,
+  );
+  assertEquals(declined.outcome, "failed");
+  assertEquals(declined.reason, CONFLICT_RESOLVER_DECLINED);
 });
 
 Deno.test("judgeSyncFailure - an agent timeout is charged, a worker kill is disrupted (Issue #2305)", () => {
@@ -2903,6 +2923,111 @@ Deno.test("syncMilestoneBranches - a ledger that cannot be persisted is said out
       ),
       `the write failure was swallowed: ${JSON.stringify(logs)}`,
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a resolver refusal reaches the next ladder rung on the cycle after N refusals (Issue #4328)", async () => {
+  const budget = MILESTONE_CONFLICT_ATTEMPT_BUDGET;
+  const dir = await Deno.makeTempDir({ prefix: "issue-4328-rung-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    const rollbacks: string[] = [];
+    const rebuilds: string[] = [];
+    const closes: string[] = [];
+    let syncs = 0;
+
+    const runCycle = async (cycle: number) => {
+      const deps = ledgerDeps([], {
+        milestones: [{
+          title: LEDGER_TITLE,
+          branch: LEDGER_BRANCH,
+          failure: "resolver-refusal",
+        }],
+        streakPath,
+        nowMs: cycle * 10_000,
+        rollbacks,
+      });
+      const inner = deps.syncBranchFn;
+      deps.syncBranchFn = (repo, branch, base, opts) => {
+        syncs++;
+        return inner(repo, branch, base, opts);
+      };
+      deps.rebuildMilestoneFn = () => {
+        rebuilds.push(LEDGER_BRANCH);
+        return Promise.resolve(false);
+      };
+      deps.closeMilestoneFn = () => {
+        closes.push(LEDGER_BRANCH);
+        return Promise.resolve(true);
+      };
+      return await syncMilestoneBranches(deps);
+    };
+
+    for (let cycle = 1; cycle <= budget; cycle++) {
+      await runCycle(cycle);
+    }
+    assertEquals(syncs, budget, "the first N cycles still try to resolve");
+    assertEquals(rollbacks, []);
+    assertEquals(rebuilds, []);
+    assertEquals(closes, []);
+
+    syncs = 0;
+    await runCycle(budget + 1);
+    assertEquals(syncs, 0, "cycle N+1 does not refuse the merge again");
+    assertEquals(rollbacks.length, 1, "cycle N+1 takes the roll-back");
+    assertEquals(rebuilds, []);
+    assertEquals(closes, []);
+
+    await runCycle(budget + 2);
+    assertEquals(rollbacks.length, 1);
+    assertEquals(rebuilds, [LEDGER_BRANCH], "the following cycle rebuilds");
+    assertEquals(closes, []);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a resolver refusal already repeated for several budgets is retired in one cycle (Issue #4328)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4328-retire-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    await saveSyncStreaks(streakPath, {
+      [`owner/repo|${LEDGER_BRANCH}`]: {
+        count: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 3,
+        escalated: false,
+        lastAttempt: {
+          at: new Date(1_000).toISOString(),
+          outcome: "failed",
+          reason: CONFLICT_RESOLVER_DECLINED,
+        },
+      },
+    });
+    const closes: string[] = [];
+    let syncs = 0;
+    const deps = ledgerDeps([], {
+      milestones: [{
+        title: LEDGER_TITLE,
+        branch: LEDGER_BRANCH,
+        failure: "resolver-refusal",
+      }],
+      streakPath,
+      nowMs: 10_000,
+    });
+    const inner = deps.syncBranchFn;
+    deps.syncBranchFn = (repo, branch, base, opts) => {
+      syncs++;
+      return inner(repo, branch, base, opts);
+    };
+    deps.closeMilestoneFn = () => {
+      closes.push(LEDGER_BRANCH);
+      return Promise.resolve(true);
+    };
+    const result = await syncMilestoneBranches(deps);
+    assert(result.ok);
+    assertEquals(syncs, 0, "a long-refused branch is not merged again");
+    assertEquals(closes, [LEDGER_BRANCH]);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
