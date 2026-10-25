@@ -591,11 +591,7 @@ Six checks run, each only when it applies:
    file, several counts that do not each follow the test file they count, or
    different counts for one test file. Each unchecked figure is drift, not a
    log line: it goes to the recovery turn below.
-3. **Docs sweep re-check** — when the push changes a code file and the PR's
-   own summary exists, the Issue #3073 docs-sweep gate is re-run against the
-   PR's changed files. Another issue's archived summary is not part of that
-   check (Issue #4155). That gate also requires the Docs sweep line's
-   `siblings:` part (Issue #3371), so a feedback push's summary needs it too.
+3. **Docs sweep re-check** — removed (Issue #4234). A feedback push still updates the manuals the change makes false. The worker does not re-check a Docs sweep line.
 4. **Deterministic quoted-sentence check (Issue #3244)** — on every
    non-skipped push, the change request this push answers is parsed for its
    findings in the review-fleet-prs shape (`**\`<file>[:<line>]\`**:
@@ -608,44 +604,7 @@ Six checks run, each only when it applies:
    hit. A named summary that cannot be read at the head is reported as not
    checked rather than given a recovery turn on its own — the same as a
    model pass that returns no verdict.
-5. **Deterministic line-citation check (Issue #3341)** — on every
-   non-skipped push, for the PR's own
-   `docs/archive/pr-summaries/pr-summary-<issue>.md` when it also existed
-   at the before-run head (Issue #4155), the
-   summary as it stood at the before-run head is read with `git show`, and
-   its `Branch outcomes:` list entries — plus the header's own inline body,
-   not a table under the header — are parsed for `path:N` / `path:N-M`
-   citations. Another issue's archived summary is left out. When the head
-   branch names no issue, a summary a base merge left identical to the base
-   is left out, and one this branch changed is still checked. Where the facts file
-   `docs/archive/pr-summaries/pr-summary-<N>.facts.json` exists at a ref
-   (the before-run head, read with `git ls-tree` / `git show`, or the head
-   working tree), its structured entries' `path`, `line` and `endLine` are
-   that ref's citations and the summary's prose `Branch outcomes:` list at
-   that ref is not read (Issue #3536); with no facts file at a ref, the
-   prose list is read as above, so a transition from one form to the other
-   compares citations from the two. A citation naming a file this push
-   changed (an exact path match, or a unique `/`-boundary suffix match
-   such as a bare basename) is
-   mapped through this push's diff of that file (`git diff -U0
-   <before-run head> -- <path>`, the working tree against the before-run
-   head). Two things count as a hit: the cited line(s) moved and the
-   `Branch outcomes:` entry still cites the old `path:N`/`N-M`, reported
-   naming the old and the new line numbers; or this push changed or removed
-   a cited line and the entry citing it is word-for-word unchanged from the
-   before-run head, reported as a flip result carried over. Rewriting the
-   entry — renumbered, with the flip re-run — clears it. A citation of a
-   file this push did not change is never a hit, and a citation this push
-   added (absent from the before-run summary) is not checked. The check
-   reports, as not-checked rather than a hit, a cited name matching more
-   than one changed file, a diff it cannot read as text (`git` failed, or a
-   binary file), a malformed citation (line `0`, a reversed range) of a
-   changed file, a before-run summary it could not read, a before-run
-   `Branch outcomes:` list longer than the parser reads, and a facts file
-   it cannot read or that fails to parse or validate at either ref (never
-   read as "no citations"). A hit whose head citations came from the facts
-   file names that facts file, not the `.md` summary, and asks for the
-   entry's `line`/`endLine` to be renumbered there.
+5. **Line-citation check** — removed with the branch-outcomes facts file (Issue #4234). A test the summary names must still exist at the head.
 6. **Diff-scoped mutation check (Issue #3750)** — in every review-fix run the
    mutation check runs over the lines this run itself added: the working tree,
    uncommitted edits and untracked files included, against the before-run head.
@@ -664,13 +623,9 @@ Six checks run, each only when it applies:
 Any hit gets **one** recovery turn — a Test Plan figure the recount could not
 check is a hit too (Issue #3740) — and the agent, with full tools, is asked
 to rewrite the listed sentences, recount the Test Plan, restate each unchecked
-figure as "`<file>` (N tests at head)" or remove it, fix the Docs sweep
-line, rewrite or remove each stale quoted sentence, and renumber each
-listed line citation to the head, in the file each hit names (a facts
-entry's `line`/`endLine`, or the `.md` summary's `Branch outcomes:` list) —
-re-running the flip for any entry whose
-cited code this push changed rather than carrying the old result over —
-without changing code, except that a mutation survivor (item 6) is answered
+figure as "`<file>` (N tests at head)" or remove it, and rewrite or remove
+each stale quoted sentence, without changing code, except that a mutation
+survivor (item 6) is answered
 with tests or docs, never production code. The checks are then re-run, and
 the mutation check runs once more when survivors were found and the turn ran;
 a prose finding counts

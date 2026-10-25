@@ -20,8 +20,8 @@
  *
  * 1. Always runs a fast check over just the files the push introduces
  *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
- *    `markdownlint-cli2`, `cspell` when the repo's CI runs it, plus the sweep
- *    ledger `sweptAt` ancestry check, and the Floci CloudFormation deploy test
+ *    `markdownlint-cli2`, `cspell` when the repo's CI runs it, and the Floci
+ *    CloudFormation deploy test
  *    when the push changes `infra/cloudformation/` and the repo tracks its
  *    script), whatever the repo's own pre-flight list says and whatever the
  *    run budget — these checks are never skipped for budget; all but the Floci
@@ -39,7 +39,6 @@ import type { Result } from "../types.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
 import { type PreFlightRunner, runPreFlightGate } from "./pre_flight_gate.ts";
-import { checkSweptAtAncestry } from "./pre_push_sweep_check.ts";
 import {
   type DenoScopeConfig,
   inDenoScope,
@@ -788,18 +787,6 @@ export async function runPrePushGate(opts: {
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
   });
   if (!plan.ok) return fail(plan.error);
-
-  const sweep = await checkSweptAtAncestry({
-    cwd: opts.cwd,
-    changed: changed.value,
-    git,
-    defaultRef: opts.defaultRef,
-  });
-  if (!sweep.ok) {
-    return sweep.infrastructure
-      ? infrastructureFail(sweep.error)
-      : fail(sweep.error);
-  }
 
   const checksRun: string[] = [];
   for (const check of plan.value) {

@@ -31,10 +31,6 @@ import {
 import { buildIdempotencyMarker } from "../lib/pr_body.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
-import {
-  prSummaryDigestInput,
-  prSummaryFactsPath,
-} from "../lib/pr_summary_facts.ts";
 import type { Logger } from "../types.ts";
 
 const REPO = "owner/repo";
@@ -45,13 +41,10 @@ const FLEET_LOGIN = "fleet-bot";
 const HEAD_SHA = "0123456789abcdef0123456789abcdef01234567";
 const ARCHIVE_PATH = `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`;
 const LEGACY_PATH = `docs/pr-summary-${ISSUE_NUMBER}.md`;
-const FACTS_PATH = prSummaryFactsPath(ISSUE_NUMBER);
 const NOT_FOUND = "gh command failed (exit 1): gh: Not Found (HTTP 404)";
 
 const SUMMARY_V1 = "## Summary\n\nOriginal summary text. Closes #42.\n";
 const SUMMARY_V2 = "## Summary\n\nRewritten summary text. Closes #42.\n";
-const FACTS_V1 = '{"branchOutcomes":[]}\n';
-const FACTS_V2 = '{"branchOutcomes":["changed"]}\n';
 
 const OPTS: ReconcilePrBodiesOptions = {
   repos: [REPO],
@@ -195,8 +188,8 @@ function prEntry(
   };
 }
 
-async function digestOf(summary: string, facts: string | null = null) {
-  return await prSummaryDigest(prSummaryDigestInput(summary, facts));
+async function digestOf(summary: string, _facts: string | null = null) {
+  return await prSummaryDigest(summary);
 }
 
 /** A worker PR body that records `digest` as the summary it was built from. */
@@ -265,9 +258,9 @@ Deno.test("reconcile - second pass with a memo hit makes no contents call", asyn
   const inSync = new Map<string, string>();
 
   await reconcilePrBodyDigests(OPTS, passDeps(h, inSync));
-  // The first pass reads the summary and the (absent) facts file.
+  // The first pass reads the summary.
   const afterFirst = apiCalls(h).length;
-  assertEquals(afterFirst, 2);
+  assertEquals(afterFirst, 1);
 
   const second = await reconcilePrBodyDigests(OPTS, passDeps(h, inSync));
   assertEquals(
@@ -776,48 +769,6 @@ Deno.test("reconcile - a gh pr view reply whose headRefOid is not a string is sk
 
 // --- Facts file and summary candidates --------------------------------------
 
-Deno.test("reconcile - facts file absent (404): digest of the summary alone matches, quiet", async () => {
-  const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
-  const h = harness({
-    prs: [prEntry(body)],
-    files: { [ARCHIVE_PATH]: SUMMARY_V1 },
-  });
-
-  const summary = await reconcilePrBodyDigests(OPTS, passDeps(h, new Map()));
-
-  assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 0 });
-  assertEquals(h.logs, []);
-  assert(
-    apiCalls(h).some((c) => c[1]?.includes(FACTS_PATH)),
-    "facts read attempted",
-  );
-});
-
-Deno.test("reconcile - facts-only change: mismatch, rebuild", async () => {
-  const body = await bodyRecording(
-    SUMMARY_V1,
-    await digestOf(SUMMARY_V1, FACTS_V1),
-  );
-  const h = harness({
-    prs: [prEntry(body)],
-    files: { [ARCHIVE_PATH]: SUMMARY_V1, [FACTS_PATH]: FACTS_V2 },
-  });
-  let prepared = 0;
-
-  const summary = await reconcilePrBodyDigests(
-    OPTS,
-    passDeps(h, new Map(), {
-      prepareCheckout: async () => {
-        prepared += 1;
-        return { ok: false, error: new Error("stop after the digest check") };
-      },
-    }),
-  );
-
-  assertEquals(summary, { checked: 1, rebuilt: 0, readFailures: 0 });
-  assertEquals(prepared, 1);
-});
-
 Deno.test("reconcile - archive 404 but legacy summary present: legacy used, quiet", async () => {
   const body = await bodyRecording(SUMMARY_V1, await digestOf(SUMMARY_V1));
   const h = harness({
@@ -1001,37 +952,6 @@ function tempDirOf(cloneDir: string): string {
   assert(cloneDir.endsWith("/checkout"), `unexpected clone dir ${cloneDir}`);
   return cloneDir.slice(0, -"/checkout".length);
 }
-
-Deno.test("headSummaryDigest - reads the summary and facts as raw content at the ref and returns a digest result", async () => {
-  const calls: string[][] = [];
-  const gh = async (args: string[]): Promise<string> => {
-    calls.push(args);
-    if (args[1]?.includes(ARCHIVE_PATH)) return SUMMARY_V1;
-    if (args[1]?.includes(FACTS_PATH)) return FACTS_V1;
-    throw new Error(NOT_FOUND);
-  };
-
-  const result = await headSummaryDigest(REPO, ISSUE_NUMBER, HEAD_SHA, gh);
-
-  assertEquals(result, {
-    kind: "digest",
-    digest: await digestOf(SUMMARY_V1, FACTS_V1),
-  });
-  assertEquals(calls, [
-    [
-      "api",
-      `repos/${REPO}/contents/${ARCHIVE_PATH}?ref=${HEAD_SHA}`,
-      "-H",
-      "Accept: application/vnd.github.raw",
-    ],
-    [
-      "api",
-      `repos/${REPO}/contents/${FACTS_PATH}?ref=${HEAD_SHA}`,
-      "-H",
-      "Accept: application/vnd.github.raw",
-    ],
-  ]);
-});
 
 Deno.test("headSummaryDigest - the error reason quotes the failure message, not the Error's string form", async () => {
   const gh = async (): Promise<string> => {
